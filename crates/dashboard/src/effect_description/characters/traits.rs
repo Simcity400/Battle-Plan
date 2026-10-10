@@ -32,7 +32,7 @@ fn trait_operand(item: &Item) -> &[u8] {
 }
 
 impl Renderer<'_, '_, '_> {
-    // 140BBA630 -> 140BBA780: localise for the selected viewing country;
+    // Localise for the selected viewing country;
     // only a defined TAG_key replaces the literal catalogue key.
     pub(in crate::effect_description) fn char_current_country_key(
         &self,
@@ -73,7 +73,7 @@ impl Renderer<'_, '_, '_> {
                     .find(|category| category.name.eq_ignore_ascii_case(name.as_bytes()))?;
                 String::from_utf8(category.name.clone()).ok()
             },
-            // 1406042A0 finds the lexer's token before the modifier definition.
+            // Find the lexer token before the modifier definition.
             &|name| match world.token_of(name) {
                 Ok(token) => Some(token.is_some_and(|token| definition_tokens.contains(&token))),
                 Err(why) => {
@@ -88,7 +88,7 @@ impl Renderer<'_, '_, '_> {
         Ok(Cow::Owned(leaders))
     }
 
-    // 1406042A0 -> 1424A7060/14022EC40: folded lexer lookup, then definition.
+    // Use folded lexer lookup, then resolve the definition.
     fn char_trait_modifier_definition(
         &self,
         name: &str,
@@ -105,7 +105,7 @@ impl Renderer<'_, '_, '_> {
             .ok_or_else(|| format!("trait modifier {name} has no recorded definition"))
     }
 
-    // IsEligible 140552BC0; both the getter and FormatLine test the feature.
+    // Both the eligibility getter and line formatter test the feature.
     fn char_trait_modifier_eligible(
         &self,
         definition: &replay::rows::ModifierDefinitionRow,
@@ -119,9 +119,8 @@ impl Renderer<'_, '_, '_> {
         Ok(features.dlc_mask & definition.feature_selector != 0)
     }
 
-    // 1410079E0 / IsEffectivelyEmpty 140600440 keep custom tooltip/child
-    // blocks or any eligible entry,
-    // even a hidden/zero entry that FormatLine will not show.
+    // Custom tooltip or child blocks, or any eligible entry, make a block nonempty.
+    // This includes hidden and zero entries that the line formatter will not show.
     pub(super) fn char_trait_modifier_kept(&self, source: &Modifiers) -> Result<bool, String> {
         if let Some(why) = source.unheld.cause() {
             return Err(why.to_owned());
@@ -139,15 +138,15 @@ impl Renderer<'_, '_, '_> {
         Ok(false)
     }
 
-    // 140AD9089 keeps R9 unchanged; 140AD929B/140AD9346 pass it to raw
-    // FormatDescription. CAddTraitEffect sets fixed5 scale 100000 at 1402EB5F8.
+    // Pass the caller scale unchanged to the raw modifier formatter.
+    // add_trait uses the fixed5 unit scale of 100000.
     fn char_trait_modifiers(
         &self,
         source: &Modifiers,
         prefix: &str,
         separator: &str,
     ) -> Result<String, String> {
-        // A wholly empty block reaches neither FormatLine nor a tooltip.
+        // A wholly empty block reaches neither line formatting nor a tooltip.
         if source == &Modifiers::default() {
             return Ok(String::new());
         }
@@ -163,8 +162,8 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 1407118A0 -> 140711C80: authored equipment name, yellow controls,
-    // ': \n'@1427D4220; stat rows are the native stored order, not sorted.
+    // Use the authored equipment name with yellow controls and a colon plus LF.
+    // Stat rows retain their stored order.
     pub(in crate::effect_description) fn char_equipment_bonuses(
         &self,
         bonuses: &[EquipmentBonus],
@@ -181,7 +180,7 @@ impl Renderer<'_, '_, '_> {
             let mut first = true;
             for value in &bonus.values {
                 let Some(index) = installed_content::equipment::stat_index(value.name.as_bytes()) else {
-                    continue; // 140625D00 reports and drops unknown stats.
+                    continue; // Report and drop unknown stats.
                 };
                 if !first {
                     text.push('\n');
@@ -194,15 +193,15 @@ impl Renderer<'_, '_, '_> {
         Ok(text)
     }
 
-    // 1413D0370 uses a defined per-stat _MOD_DIFF, else the native
-    // sign-polarity fallback. Shared by traits and swap-idea differentials.
+    // Use a defined per-stat _MOD_DIFF, else the sign-polarity fallback.
+    // Traits and swap-idea differentials share this formatter.
     pub(in crate::effect_description) fn char_equipment_stat_difference(
         &self,
         index: usize,
         value: i64,
         scopes: Scopes,
     ) -> Result<String, String> {
-        let (_, name, positive) = installed_content::equipment::STAT_METADATA[index];
+        let (_, name, positive) = installed_content::equipment::stat_metadata()[index];
         let mut text = self.char_native_text(name.as_bytes(), &[], scopes, false)?;
         let candidate = format!("{name}_MOD_DIFF");
         let key: &[u8] = if self.context.localisation.get(&candidate).is_some() {
@@ -221,7 +220,7 @@ impl Renderer<'_, '_, '_> {
         Ok(text)
     }
 
-    // 140712850 resolves each targeted country in a fresh empty event scope.
+    // Resolve each targeted country in a fresh empty event scope.
     fn char_country_trait_body(
         &self,
         trait_: &installed_content::leader_traits::LeaderTrait,
@@ -233,17 +232,17 @@ impl Renderer<'_, '_, '_> {
         let empty = Scopes::empty();
         let mut targets = String::new();
         for target in &trait_.targeted {
-            // The shared reader currently merges absent/dynamic operands into
-            // None. 1406039B0 retains the latter for 140712850 to evaluate.
+            // The shared reader merges absent and dynamic operands into None.
+            // A dynamic operand must remain available for target evaluation.
             let tag = target.tag.as_deref().ok_or_else(|| format!(
-                "country trait {} targeted-country operand is not retained by the shared catalogue (1406039B0/140712850)", trait_.token,
+                "country trait {} targeted-country operand is not retained by the shared catalogue", trait_.token,
             ))?;
             let country = self
                 .evaluator()?
                 .scoped_country(tag.as_bytes(), empty)?
                 .filter(|country| *country > 0);
             let context = if let Some(country) = country {
-                // 1406E63A0: capitalise the stored definite country name.
+                // Capitalise the stored definite country name.
                 let name = installed_content::localisation::crt_case_text(
                     &self.country_name(country, true)?,
                     true,
@@ -261,7 +260,7 @@ impl Renderer<'_, '_, '_> {
             } else {
                 String::new()
             };
-            // 140712BE0: raw, 24-bit default mask, caller separator.
+            // Use raw modifiers, the 24-bit default mask and the caller separator.
             let body = self.modifier_description_with(
                 &target.modifiers,
                 &context,
@@ -283,8 +282,8 @@ impl Renderer<'_, '_, '_> {
         let mut equipment =
             self.char_equipment_bonuses(&trait_.equipment_bonuses, &equipment_prefix, scopes)?;
         if text.is_empty() && !equipment.is_empty() {
-            // 140712180 removes only the first prefix's indentation when
-            // equipment is first (prefix length minus its LF count).
+            // When equipment is first, remove only the first prefix's indentation
+            // (prefix length minus its LF count).
             equipment.drain(..equipment_prefix.len());
         }
         text.push_str(&equipment);
@@ -294,7 +293,7 @@ impl Renderer<'_, '_, '_> {
         Ok(text)
     }
 
-    // 140712180, body only; callers supply the trait's highlighted name.
+    // Return the body only; callers supply the highlighted trait name.
     pub(in crate::effect_description) fn char_country_trait_description(
         &self,
         name: &[u8],
@@ -318,7 +317,7 @@ impl Renderer<'_, '_, '_> {
             .map(Some)
     }
 
-    // 140FFFDD0 -> 140FFF670, fixed native key construction and line order.
+    // Preserve the description-key construction and component line order.
     pub(in crate::effect_description) fn char_adjuster_lines(
         &self,
         adjuster: &Adjuster,
@@ -346,8 +345,8 @@ impl Renderer<'_, '_, '_> {
         Ok(text)
     }
 
-    // 140AD9060: indent 2, fixed5 scale 100000. Only the tooltip-item
-    // callers invoke custom_effect_tooltip through 140AD8CF0.
+    // Use two-space indentation and fixed5 scale 100000.
+    // Only tooltip-item callers invoke custom_effect_tooltip.
     fn char_unit_trait_body(
         &self,
         definition: &TraitEffects,
@@ -357,9 +356,7 @@ impl Renderer<'_, '_, '_> {
             return Err(why.clone());
         }
         if !definition.conditions.is_empty() {
-            return Err(
-                "unit trait modifier registry conditions remain unresolved (140ADCB60)".into(),
-            );
+            return Err("unit trait modifier registry conditions remain unresolved".into());
         }
         let mut text = String::new();
         if !definition.override_tooltips.is_empty() {
@@ -400,7 +397,7 @@ impl Renderer<'_, '_, '_> {
             for entry in &definition.sub_units {
                 let index = match database.get(&entry.adjuster.key) {
                     SubUnit::Index(index) => index,
-                    SubUnit::Unknown => continue, // 1410079E0 reports/drops it.
+                    SubUnit::Unknown => continue, // Report and drop unknown sub-units.
                     SubUnit::Uncertain(why) => return Err(why.to_owned()),
                 };
                 if entries.contains_key(&index) {
@@ -415,10 +412,10 @@ impl Renderer<'_, '_, '_> {
                     entries.insert(index, entry);
                 }
             }
-            // 140AD9060 appends 140AD36C0's separate buffer without a LF.
+            // Append the separate sub-unit buffer without a LF.
             let mut sub_units = String::new();
             for (index, entry) in entries {
-                // 140AD5F70 prefixes each numeric row, never custom tooltips.
+                // Prefix each numeric row, leaving custom tooltips unprefixed.
                 let block = self.char_trait_modifiers(&entry.block, "    ", "\n")?;
                 let lines = self.char_adjuster_lines(&entry.adjuster, scopes)?;
                 newline(&mut sub_units);
@@ -532,8 +529,8 @@ impl Renderer<'_, '_, '_> {
         self.char_unit_trait_body(definition, scopes).map(Some)
     }
 
-    // Own 1402EB210 / 1402EC760; NAME@142727E7C, TRAITNAME@142727BD0,
-    // TRAITMODIFIER@142727BC0; prefixes '  -'@142727E78 and explicit LF.
+    // Substitute NAME, TRAITNAME and TRAITMODIFIER with a two-space bullet prefix
+    // and an explicit LF.
     pub(in crate::effect_description) fn char_trait(
         &self,
         item: &Item,
@@ -622,8 +619,8 @@ impl Renderer<'_, '_, '_> {
         }
     }
 
-    // Own 1402EBC60 / 1402ED1D0 / 1402EADD0 use only the main modifier
-    // (+0x370), separator '\n      - '@142727BB0. Duration NUMDAYS is i32.
+    // Use only the main modifier with a LF and six-space bullet separator.
+    // The duration NUMDAYS is i32.
     pub(in crate::effect_description) fn char_unit_trait(
         &self,
         item: &Item,
@@ -631,7 +628,7 @@ impl Renderer<'_, '_, '_> {
         remove: bool,
         timed: bool,
     ) -> Result<String, String> {
-        // Timed 1402F0FF0 reads trait/days; untimed 141385570 reads only the scalar.
+        // Timed effects read trait/days; untimed effects read only the scalar.
         let token = if timed {
             operand(item, "trait").unwrap_or_default()
         } else {
@@ -673,8 +670,8 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // Own 1403723B0 / 140388540; TRAIT@142750A08, LEADER@142750024;
-    // name highlight is '\n    ' + H(name) + LF, body '  - ' + helper + LF.
+    // Highlight the TRAIT name after a LF and four spaces, then append LF.
+    // Prefix its body with a two-space bullet and append LF.
     pub(in crate::effect_description) fn char_country_trait(
         &self,
         item: &Item,
@@ -739,9 +736,8 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // Own 140397AB0 / 1402EDD50; 'ADD'@1427285D4, REMOVE@142751904.
-    // AddFilteredModifierBlock 14054AD00/14054AE00 adds raw new minus old.
-    // It does not copy source hidden sets or custom tooltips to the root.
+    // Accumulate the raw new modifiers minus the old modifiers.
+    // Do not copy source hidden sets or custom tooltips to the root.
     pub(in crate::effect_description) fn char_swap_traits(
         &self,
         item: &Item,
@@ -766,7 +762,7 @@ impl Renderer<'_, '_, '_> {
                 String::new()
             } else {
                 "ERROR: TRAITS ARE MISSING\n".into()
-            }); // literal@142751A88.
+            });
         };
         let character = if character_only {
             let Some(character) = self.effect_character(scopes.this)? else {
@@ -822,8 +818,8 @@ impl Renderer<'_, '_, '_> {
         Ok(text)
     }
 
-    // Own 1402EA740 -> 1402EECF0: remove already held definition pointers,
-    // draw on a copied event scope; the caller's seed words do not advance.
+    // Remove already held trait definitions, then draw on a copied event scope.
+    // The caller's seed words do not advance.
     pub(in crate::effect_description) fn char_random_trait(
         &self,
         item: &Item,
@@ -884,7 +880,7 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // Own 1402EA3E0: fixed_round 1424D8760, NUM@142727638, explicit LF.
+    // Round NUM and append an explicit LF.
     pub(in crate::effect_description) fn char_max_trait(
         &self,
         item: &Item,

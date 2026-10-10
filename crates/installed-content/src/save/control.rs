@@ -31,9 +31,9 @@ pub enum StateControlEmission {
 }
 
 impl Save {
-    /// CState writer 1409d4040 omits controllers equal to a positive owner by
-    /// raw id or canonical link slot; post-load 1409cdf80 restores owner.
-    /// The writer emits zero controllers, unlike CProvince. A missing owner
+    /// The state writer omits controllers equal to a positive owner by raw id
+    /// or canonical link slot; loading restores the owner as controller.
+    /// The writer emits zero controllers, unlike the province writer. A missing owner
     /// is refused because that path omits both fields, losing controller data.
     /// Membership supplies only the kept state-ID inventory; control comes
     /// entirely from the save, including for states with excluded membership.
@@ -44,8 +44,8 @@ impl Save {
         self.state_control_for(&state_inventory(membership))
     }
 
-    /// CState::Serialize@1409D4040 writes owner (0x283E), and only then
-    /// controller (0x283F), when signed +0xC8 > 0. Absence certifies only
+    /// The state writer saves owner, and only then controller, when the
+    /// stored signed owner is positive. Absence certifies only
     /// the nonpositive class; it supplies no controller or exact raw owner.
     /// The strict positive-only control reader remains separate.
     pub fn state_control_emissions(
@@ -118,8 +118,8 @@ impl Save {
         })
     }
 
-    /// CProvince writer 140E6CA90 emits only signed-positive controllers that
-    /// differ from the state's owner. CState writer 1409D4040 omits nonpositive
+    /// The province writer emits only signed-positive controllers that differ
+    /// from the state's owner. The state writer omits nonpositive
     /// owners: their provinces retain no positive owner or omitted controller.
     /// Unknown provinces retain explicit saved controllers; their state/owner
     /// and omitted controllers remain unknown. Other rows use native omissions.

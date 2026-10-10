@@ -4,17 +4,14 @@
 //!
 //! Every value is a recorded field, kept exact:
 //!
-//! - `Autonomy` is the subject's own `CCurrentAutonomyStatus`: `score_raw`,
-//!   `lower_score` and `upper_score` are fixed5 (the fresh-save oracle compares
-//!   the save's `progress=4312.86618` with a recorded 431,286,618), `state` the
-//!   level's id and `previous`/`next` the levels below and above it, null at
-//!   either end. The live W4 part-M recording shows the bounds are the level's and
-//!   the next level's `min_freedom_level` times one total (puppet 2,000..3,000,
-//!   colony 3,000..4,000) and a subject at the top level past its upper bound
-//!   (South Africa, 5,125 of 5,000, no next level).
-//! - `Subjects` names the overlord (overlord → subject relations), and its
-//!   `autonomy_ratio` (fixed5, the save's `value`) is carried as recorded; its
-//!   role in the game is not established, so it is not interpreted.
+//! - `Autonomy` is the subject's recorded status: `score_raw`, `lower_score`
+//!   and `upper_score` are fixed5; `state` is the level's id, and
+//!   `previous`/`next` are the levels below and above it, null at either end.
+//!   The bounds use the level's and next level's `min_freedom_level` times
+//!   the total score. A subject may pass its upper bound at the top level.
+//! - `Subjects` names the overlord (overlord to subject relations), and its
+//!   fixed5 `autonomy_ratio` is carried as recorded. Its role in the game is
+//!   not established, so it is not interpreted.
 //! - Levels are ordered by the content's autonomy states (`installed_content::autonomy`,
 //!   by `min_freedom_level`) and named by their localisation. Without the game
 //!   folders, or for a level the content does not define, the order falls back
@@ -55,9 +52,7 @@ pub struct Autonomy;
 
 /// Branches kept per source.
 const CACHED_BRANCHES: usize = 4;
-/// Units per point of an autonomy score: fixed5. The status's writer
-/// five-decimal `progress`, which the fresh-save oracle matches with the recorded
-/// integer (`progress=4312.86618`, 431,286,618).
+/// Units per point of an autonomy score: fixed5, retaining five decimal places.
 const SCORE_SCALE: u32 = 100_000;
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]

@@ -321,7 +321,7 @@ impl<M: Memory> OriginalRiskShips for Observer<'_, M> {
         if let Ok(count) = count
             && count > 0
         {
-            // 140D5AE30/140D5AB80 walk every original +348/+354 SHIPS member.
+            // Walk every original SHIPS member.
             // Keep rejected occurrences in this pass, independent of admission
             // and retained demand from earlier hours.
             self.ship_occurrences = self.ship_occurrences.saturating_add(count as usize);

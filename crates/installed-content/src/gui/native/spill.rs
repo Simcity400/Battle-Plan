@@ -1,22 +1,16 @@
-//! In-object spills: the one place the game's unbounded component readers land.
+//! In-object spills from the game's unbounded component readers.
 //!
-//! `read_axis_components@140ACEBE0` (each number through `read_float_token@1424B0320`) and
-//! `CReader::ReadIntComponents@1402C7A50` (each `%i`) write component `i` at `start + 4 i`, with
-//! no count bound, into whatever object (or stack frame) the caller hands them; a component the
-//! scan stores nothing for is skipped but still counted. Where such a write lands is a fact of
-//! the object's layout, so each receiving object describes its bytes as a [`Layout`]: the field a
-//! 4-byte write lands on, whether anything reads that field before the game rewrites it, and,
-//! only where the write corrupts something the game later reads in an undefined way or leaves
-//! the allocation, the native access that fails. [`spill`] applies the components in order and
-//! stops at the first failure.
+//! Float axis and integer component readers write component `i` at `start + 4 i` with no count
+//! bound into the receiving object or stack frame. A scan storing nothing skips that write but
+//! still counts the component. Each [`Layout`] describes the receiving bytes: the field
+//! reached, whether it is read before being rewritten, and the failed access when a write
+//! leaves the allocation or corrupts something later read in an undefined way. [`spill`]
+//! applies writes in order and stops at the first failure.
 //!
-//! `heap_allocate@1421B4B50` is `HeapAlloc(heap, 0, size)` (`XOR EDX,EDX` at `14255FD3C`):
-//! allocations are not zeroed, so a field no constructor writes holds no defined value.
-//!
-//! [`CxxString`] is the MSVC `std::string` such a write can land in: its 16-byte buffer (the
-//! text inline while the capacity is at most 15, else the heap pointer), its size (`+0x10`) and
-//! its capacity (`+0x18`), as `msvc_string::assign_bytes_candidate@140129790` and the
-//! destructors use them.
+//! Heap allocations are not zeroed, so a field the constructor never writes has no defined
+//! value. [`CxxString`] models an MSVC `std::string` reached by a spill: its 16-byte buffer
+//! holds inline text with capacity at most 15, or a heap pointer otherwise; size is at `+0x10`
+//! and capacity at `+0x18`. Assignment and destruction use those fields.
 
 /// An object's bytes as the component readers can reach them.
 pub(super) trait Layout {
@@ -59,10 +53,7 @@ pub(super) fn spill(
 pub(super) fn heap_end(size: usize, allocated: &str) -> (usize, String) {
     (
         size,
-        format!(
-            "past the {size:#X} bytes {allocated} allocates (heap_allocate@1421B4B50): a heap \
-             overflow"
-        ),
+        format!("past the {size:#X} bytes {allocated} allocates: a heap overflow"),
     )
 }
 
@@ -95,10 +86,10 @@ impl Default for CxxString {
 }
 
 impl CxxString {
-    /// `msvc_string::assign_bytes_candidate@140129790`: into the current buffer (the text and a
-    /// NUL) when it fits the capacity, else into a new heap block of `max(len | 15,
-    /// capacity * 3 / 2)` bytes and one, whose pointer the buffer then holds. Only a capacity a
-    /// component wrote below 15 can make that new capacity 15, which reads the pointer as text.
+    /// Assign text and a NUL into the current buffer when capacity allows. Otherwise allocate a
+    /// heap block with `max(len | 15, capacity * 3 / 2)` bytes plus one and store its pointer
+    /// in the buffer. Only a component-written capacity below 15 can make the new capacity 15,
+    /// causing the pointer to be read as text.
     pub(super) fn assign(&mut self, text: &[u8]) -> Result<(), String> {
         let len = text.len() as u64;
         if len > self.capacity {
@@ -232,7 +223,7 @@ impl CxxString {
 pub(super) struct VectorSite {
     /// The vector, with its offset: `"the animation records' vector (+0x118)"`.
     pub what: &'static str,
-    /// The native append (growth through the allocator, or a copy to `data + count × size`).
+    /// The native append (growth through the allocator, or a copy to `data + count Ã— size`).
     pub append: &'static str,
     /// The readers of `count` elements from the data pointer.
     pub readers: &'static str,
@@ -240,11 +231,10 @@ pub(super) struct VectorSite {
     pub destructor: &'static str,
 }
 
-/// The engine's vector (`string_vector::initialize@14011DA30`: data `+0x0`, capacity `+0x8`,
-/// count `+0xC`, allocator `+0x10`) as its appends and the component readers leave it. An append
-/// (`string_vector::push_string@14011D230` and its copies): when the count equals the capacity,
-/// allocator, the `count` old elements moved and the old block freed through it; else the
-/// element copied to `data + count × size`. Then the count is raised.
+/// The engine vector's layout: data `+0x0`, capacity `+0x8`, count `+0xC`, allocator `+0x10`.
+/// When count equals capacity, append allocates `max(cvttss2si(capacity Ã— 1.5), count + 1)`
+/// elements, moves the counted elements and frees the old block through the allocator.
+/// Otherwise it copies to `data + count Ã— size`. It then increments count.
 #[derive(Clone, Debug)]
 pub(super) struct Vector<T> {
     site: VectorSite,
@@ -256,8 +246,8 @@ pub(super) struct Vector<T> {
     /// The capacity and count as held.
     capacity: i32,
     count: i32,
-    /// The key whose component wrote the allocator pointer, which holds the image's `14306D170`
-    /// at a load address the replay does not hold (the image is `DYNAMIC_BASE`).
+    /// The key whose component wrote the allocator pointer, initially an image-load address
+    /// that the replay does not hold.
     allocator: Option<&'static str>,
 }
 
@@ -355,8 +345,7 @@ impl<T: Clone> Vector<T> {
         Ok(())
     }
 
-    /// A clear that destroys the `count` elements from the data pointer, then sets the count to
-    /// 0 (`string_vector::destroy_range@1401207D0`); the block stays.
+    /// Destroy the counted elements and set count to 0, retaining the allocated block.
     pub(super) fn clear(&mut self, clearer: &str) -> Result<(), String> {
         if let Ok(count) = usize::try_from(self.count)
             && count > 0
@@ -420,6 +409,8 @@ mod tests {
     /// whose pointer a write corrupts.
     #[test]
     fn a_string_takes_writes_as_its_bytes_lie() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut string = CxxString::default();
         string.assign(b"abcdef").unwrap();
         string.write(0, 0x41).unwrap();

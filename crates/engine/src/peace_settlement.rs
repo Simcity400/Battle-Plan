@@ -1,8 +1,7 @@
-//! Owned observation at peace_finalizer_site, never an hourly walk.
-//! History order matches 140E245D0/140E3DED0: in-order country nodes,
-//! turn vector order, then action vector order. Statuses 3/4 are excluded by
-//! the same native predicate. Reduced transfers are kept separately, since
-//! accepted split demands need not each transfer a state to their taker.
+//! Owned observation at `peace_finalizer_site`, distinct from hourly walks.
+//! History uses in-order country nodes, turn order and action order; statuses
+//! three and four are excluded. Reduced transfers remain separate because a
+//! split demand need not transfer a state to its taker.
 
 use crate::{
     Memory, cpdx_array::Array, peace_action, peace_conference as conference,
@@ -62,9 +61,7 @@ pub struct Output<'a> {
     pub name_bytes: &'a mut [u8],
 }
 
-/// Buffers for a worker's resident-bid acquisition. Original 140E245D0 /
-/// 140E3DED0 country and action counts and 14150D430 retained name lengths
-/// size each arena before filling.
+/// Worker resident-bid buffers sized from original country/action counts and retained name lengths.
 pub struct GrowingOutput<'a> {
     pub winners: crate::walk::Buffer<'a, u32>,
     pub losers: crate::walk::Buffer<'a, u32>,
@@ -256,8 +253,7 @@ fn copy_internal(
                     .ok_or("peace demand country registry unreadable")? as usize;
             let countries = array(memory, state, crate::cgame_state::COUNTRIES, 8)?;
             validate_last::<u64>(memory, countries)?;
-            // 140E2CBE0 keys history by country. 1401D8120/1401D4390 walk
-            // CGameState+0x310, with the live country count at +0x31C.
+            // History keys select countries through the live game-state country roster.
             if expected > u64::from(countries.count) {
                 return Err("peace history exceeds country registry");
             }

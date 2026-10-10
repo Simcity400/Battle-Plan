@@ -126,6 +126,7 @@ fn water_edges_take_the_sea_classes_and_a_coast_takes_none() {
     assert_eq!(topology.static_class(4, 6), Some(BorderClass::Sea));
     // Two sea provinces in different strategic regions.
     assert_eq!(topology.static_class(4, 5), Some(BorderClass::SeaRegion));
+    // A coast has no material: 0xff suppresses its row.
     assert_eq!(topology.static_class(1, 4), None);
     assert_eq!(topology.static_class(3, 5), None);
     // And it must not fall into the land bucket either, or the hour would give it a class.
@@ -315,7 +316,7 @@ fn records_with_a_through_on_land_become_quads() {
     // Nor does a crossing visited from a sea province.
     let coastal = [strait(1, 9, (1, 1), (3, 3))];
     assert!(strait_quads(&coastal, &map, &land).unwrap().is_empty());
-    // The kind is not tested: BlackICE's `3260;3325;;2408` row draws.
+    // An empty crossing kind still draws when the through value is nonzero.
     let mut rule_only = strait(1, 2, (1, 1), (3, 3));
     rule_only.kind = 0;
     assert_eq!(strait_quads(&[rule_only], &map, &land).unwrap().len(), 6);

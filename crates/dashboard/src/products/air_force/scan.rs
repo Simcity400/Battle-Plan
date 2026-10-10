@@ -182,9 +182,8 @@ fn add_part(
     Ok(())
 }
 
-/// +0x7C is trunc(sum of the wing's fixed5 equipment bank / 100000), written
-/// by AddEquipmentPool@140F45AD0, AddAirplanes@140F45C50 and
-/// KillAirplanes@140F4E400. The total uses the recorded native word even if the
+/// The recorded plane count truncates the sum of the wing's fixed5 equipment
+/// bank divided by 100000. The total uses that recorded word even if the
 /// companion bank is missing or cannot reconcile; no stockpile is joined.
 fn wing_counts(
     wing: &AirWingRow,
@@ -575,7 +574,7 @@ impl Census {
             } else {
                 shared_counts(wing_counts(wing, equipment, &tokens, &mut notes)?, pool)
             };
-            // GetEffectiveCountryTag@140F45950 uses a signed-positive override.
+            // The effective country uses a signed-positive override.
             let effective = if wing.country_override > 0 {
                 wing.country_override as u32
             } else {

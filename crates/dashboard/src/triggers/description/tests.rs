@@ -72,7 +72,7 @@ fn run(source: &str, scripted: &str, entries: &str, extra: &str) -> Result<Strin
                     " IS_ATTACKER:0 \"Attack\"\n IS_NOT_ATTACKER:0 \"Defend\"\n",
                     " TRIGGER_IS_FRONTAGE_FULL:0 \"Full\"\n TRIGGER_IS_NOT_FRONTAGE_FULL:0 \"Space\"\n",
                     " TRIGGER_HAS_RESERVES:0 \"Reserve\"\n TRIGGER_DOES_NOT_HAVE_RESERVES:0 \"No reserve\"\n",
-                    " PHASE_DEFAULT:0 \"Default\"\n opening:0 \"Opening\"\n IS_IN_PHASE:0 \"In $PHASE$\"\n",
+                    " PHASE_DEFAULT:0 \"Fixture idle phase\"\n opening:0 \"Opening\"\n IS_IN_PHASE:0 \"In $PHASE$\"\n",
                     " TRIGGER_SKILL_ADVANTAGE_GREATER_THEN:0 \"Advantage $VALUE|0$\"\n",
                     " TRIGGER_HARDNESS_GREATER_THAN:0 \"Hardness $VALUE|%0$\"\n",
                     " TRIGGER_MORE_THAN_ARTILLERY_RATIO:0 \"Artillery $NUM|%0$\"\n",
@@ -121,7 +121,7 @@ fn run(source: &str, scripted: &str, entries: &str, extra: &str) -> Result<Strin
     assert_eq!(
         evaluator.description_depth.get(),
         0,
-        "a refusal must close the native variable context"
+        "a refusal must close the variable context"
     );
     match result {
         Ok(text) if !refusals.is_empty() => Err(format!("{text} {refusals:?}")),
@@ -130,7 +130,9 @@ fn run(source: &str, scripted: &str, entries: &str, extra: &str) -> Result<Strin
 }
 
 #[test]
-fn native_groups_share_evaluation_and_reset_descendant_mode() {
+fn groups_share_evaluation_and_reset_descendant_mode() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(
         run(
             "is_attacker=yes OR={is_attacker=yes frontage_full=yes} NOT={has_reserves=no}",
@@ -141,8 +143,8 @@ fn native_groups_share_evaluation_and_reset_descendant_mode() {
         .unwrap(),
         "[yes]Attack\n[yes]Any:\n   Attack\n   Full\n[no]Reserve\n"
     );
-    // A scripted trigger has no own description/Check prefix; its template
-    // receives the bool operand's inversion, including a block's native no.
+    // A scripted trigger has no own description/check prefix; its template
+    // receives the bool operand's inversion, including a block's false value.
     assert_eq!(
         run("SYN_CHECK=no", "SYN_CHECK={is_attacker=yes}", "", "").unwrap(),
         "[no]Defend\n"
@@ -154,7 +156,9 @@ fn native_groups_share_evaluation_and_reset_descendant_mode() {
 }
 
 #[test]
-fn native_operands_use_integer_fixed5_and_stored_phase_names() {
+fn operands_use_integer_fixed5_and_stored_phase_names() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(
         run(
             "phase=0 skill_advantage>2 hardness>0.5 has_artillery_ratio>0.1 skill>2 NOT={skill>2}",
@@ -169,6 +173,8 @@ fn native_operands_use_integer_fixed5_and_stored_phase_names() {
 
 #[test]
 fn conditional_entry_keeps_combat_world_and_tls_across_large_stack_handoff() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut entries = String::new();
     let mut loc = String::new();
     for index in 0..10 {
@@ -179,13 +185,15 @@ fn conditional_entry_keeps_combat_world_and_tls_across_large_stack_handoff() {
     }
     entries.push_str("entry={name=Hop10 text={trigger={is_attacker=yes check_variable={temp_var:x=7}} localization_key=YES} text={localization_key=NO}}");
     loc.push_str(" YES:0 \"Correct side\"\n NO:0 \"Wrong side\"\n TIP:0 \"[Hop0]\"\n");
-    // Setting a temp is a supported evaluation operation, but its native own
+    // Setting a temp is a supported evaluation operation, but its own
     // text is empty; use a conditional limit to execute it before the tooltip.
     assert_eq!(run("if={limit={set_temp_variable={x=7}} custom_trigger_tooltip={tooltip=TIP is_attacker=yes}}", "", &entries, &loc).unwrap(), "[yes]Correct side\n");
 }
 
 #[test]
-fn native_empty_combat_scope_heading_and_counted_refusal_do_not_invent_country() {
+fn empty_combat_scope_heading_and_counted_refusal_do_not_invent_country() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(
         run("ROOT={is_attacker=yes}", "", "", "").unwrap(),
         "[yes]: Attack\n"
@@ -195,7 +203,7 @@ fn native_empty_combat_scope_heading_and_counted_refusal_do_not_invent_country()
         ""
     );
     let refused = run("is_attacker=yes night=yes has_reserves=no", "", "", "").unwrap_err();
-    assert!(refused.contains("night native description"), "{refused}");
+    assert!(refused.contains("night description"), "{refused}");
     assert!(
         refused.contains("[yes]Attack\n") && refused.contains("[yes]No reserve\n"),
         "{refused}"
@@ -204,6 +212,8 @@ fn native_empty_combat_scope_heading_and_counted_refusal_do_not_invent_country()
 
 #[test]
 fn refused_conditional_taints_later_temp_read_but_keeps_pure_siblings() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let result = run(
         "if={limit={set_temp_variable={x=7}} is_attacker=yes} if={limit={night=yes} set_temp_variable={x=8}} custom_trigger_tooltip={tooltip=TIP is_attacker=yes} has_reserves=no",
         "",

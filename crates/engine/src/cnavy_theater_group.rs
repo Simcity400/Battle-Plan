@@ -1,16 +1,16 @@
-//! CNavyTheaterGroup, called a navy theatre by the old selector.
+//! CNavyTheaterGroup layout.
 
-/// CNavyTheaterGroup primary vtable; old NAVY_THEATRE_VTABLE_RVA, pinned RTTI confirms actual class.
+/// CNavyTheaterGroup primary vtable.
 pub const VTABLE_RVA: usize = 0x029c_60f0;
-/// CNavyTheaterGroup reference handle {u32 type, u32 id}; theatre_selector::navy reference_id read.
+/// Full navy-theatre reference handle: u32 type and u32 id.
 pub const HANDLE: usize = 0x08;
-/// CNavyTheaterGroup CFleet pointer array; old theatre_selector::navy uses offsets.rs:985.
+/// CNavyTheaterGroup CFleet pointer array.
 pub const FLEETS: usize = 0x20;
-/// CNavyTheaterGroup fleet array capacity, u32; old offsets.rs:986 and theatre_selector::navy.
+/// CNavyTheaterGroup fleet array capacity, u32.
 pub const FLEET_CAPACITY: usize = 0x28;
-/// CNavyTheaterGroup fleet array count, u32; old offsets.rs:987 and theatre_selector::navy.
+/// CNavyTheaterGroup fleet array count, u32.
 pub const FLEET_COUNT: usize = 0x2c;
-/// CNavyTheaterGroup runtime name string; old offsets.rs:988 and theatre_selector::navy.
+/// CNavyTheaterGroup runtime name string.
 pub const NAME: usize = 0x38;
-/// CNavyTheaterGroup priority ordinal, u8; old offsets.rs:1033 and theatre_selector::navy.
+/// CNavyTheaterGroup priority ordinal, u8.
 pub const PRIORITY_ORDINAL: usize = 0x58;

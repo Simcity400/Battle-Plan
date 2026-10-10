@@ -880,7 +880,8 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
             report.differences
         );
     }
-    // 140C80E00 writes the block only when an entry weighs above zero
+    // The game writes the block only when an entry weighs above zero
+    // whatever the maximum: without one the save's
     // omission agrees, and a written block or a positive weight without
     // one differs.
     for (weights, maximum, block, differences) in [
@@ -1626,7 +1627,7 @@ fn garrison_equipment_dispatch_skips_carried_rows_and_compares_actual_refreshes(
                     )
             );
         }
-        // 140FEB450/140FFDB00 save variants, not the allocation cache at pool+8.
+        // The save writes variants, not the allocation cache.
         assert_eq!(
             report.limitations.iter().any(|(reason, subjects)| {
                 reason.contains("allocation cache")
@@ -2397,8 +2398,8 @@ fn state_ownership_and_controller_differences_are_independent_of_provinces() {
     assert_eq!(report.provinces, 2);
 }
 
-/// The +0x38 rename compares with the stored-length-gated saved `name`;
-/// the unsaved +0xE8 owner name is a named limitation, never compared.
+/// The rename compares with the stored-length-gated saved `name`;
+/// the unsaved owner name is a named limitation, never compared.
 #[test]
 fn state_rename_compares_with_the_saved_name_and_the_owner_name_is_a_limitation() {
     fn first(frame: &mut replay::frame::DecodedFrame) -> &mut StateRow {
@@ -2737,13 +2738,15 @@ fn convoy_clamp_is_per_row_and_preserves_order() {
     assert_eq!(convoy_add(convoy_add(0, i64::MIN), 10), -CONVOY_LIMIT + 10);
 }
 
-/// A stockpile row counts as a convoy by its variant's flags (140BC4530
-/// for SumQuantityByFlags 140FF8A00): the type's categories, else its
+/// A stockpile row counts as a convoy by its variant's flags:
+/// the type's categories, else its
 /// archetype's, within the archetype's `allowed_types`, normalized; the
 /// type is found without case. A modular type is decided only while no
 /// module of the content can add the convoy bit.
 #[test]
 fn convoy_variants_follow_the_variant_category() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let equipment = "equipments = {
             Convoy = { is_archetype = yes type = convoy }
             convoy_1 = { archetype = convoy }
@@ -2765,7 +2768,7 @@ fn convoy_variants_follow_the_variant_category() {
     let database = load("capital_ship");
     let convoy = |name: &str| convoy_variant(&database, name.as_bytes());
     assert_eq!(convoy("CONVOY_1"), Ok(true));
-    // The screen ship bit clears the convoy bit (140F75EA0).
+    // The screen ship bit clears the convoy bit.
     assert_eq!(convoy("raider"), Ok(false));
     // The archetype allows armor only.
     assert_eq!(convoy("barge_1"), Ok(false));
@@ -3466,7 +3469,7 @@ fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
     assert_eq!(differences(&frame, &saved), 4);
 }
 
-// Uses that module's existing fixture() and add_country() helpers.
+// Uses that module's existing fixture and add_country helpers.
 
 fn naval_fixture() -> (
     DecodedFrame,
@@ -4816,7 +4819,7 @@ fn the_boundary_witness_reports_changes_without_certifying_an_equal_instant() {
     let report = compare_at(&frame, &save, &membership, &equipment, after).unwrap();
     let verdict = report.boundary_verdict.clone().unwrap();
     assert!(verdict.contains("after further engine work"), "{verdict}");
-    assert!(verdict.contains("debug_current_ref_id +3"), "{verdict}");
+    assert!(verdict.contains("debug_current_ref_id "), "{verdict}");
     // The same gap at the end-of-hour boundary cannot follow the sample.
     let end = compare(&frame, &save, &membership, &equipment).unwrap();
     let end_verdict = end.boundary_verdict.clone().unwrap();
@@ -4825,7 +4828,7 @@ fn the_boundary_witness_reports_changes_without_certifying_an_equal_instant() {
         "{end_verdict}"
     );
     assert!(differences(&end).is_empty());
-    assert!(verdict.contains("navy_id +1"), "{verdict}");
+    assert!(verdict.contains("navy_id "), "{verdict}");
     assert_eq!(
         report.compared_tables["boundary counter witnesses (printed, never a difference)"],
         12

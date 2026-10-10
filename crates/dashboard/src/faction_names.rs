@@ -31,9 +31,9 @@ pub(crate) fn template_spelling(
         .map_err(|_| format!("Faction template token {token} is not UTF-8"))
 }
 
-/// `CFaction::display_name@140D77360` copies a nonempty literal unchanged;
-/// otherwise `1404A7A00` resolves the template's bound name (`+0xD0`). A recorded
-/// null template returns empty text without reading content or lexer tokens.
+/// A nonempty literal is copied unchanged; otherwise the template's
+/// bound name is resolved. A recorded null template returns empty text
+/// without reading content or lexer tokens.
 /// The bound scalar may be a key or text: the localiser copies undefined keys.
 pub(crate) fn name(
     literal: &[u8],
@@ -48,7 +48,7 @@ pub(crate) fn name(
             localisation,
             recorded_language,
             literal,
-            "faction name (140D77360)",
+            "faction name",
         );
     }
     let Some(token) = template? else {
@@ -58,10 +58,10 @@ pub(crate) fn name(
         .get(token)?
         .ok_or_else(|| format!("Faction template {token:?} is not in the recorded content"))?;
     if bound.is_empty() {
-        // 14238F0BA..14238F0D6 returns a valid empty string for zero entries.
+        // Zero entries return a valid empty string.
         return Ok(String::new());
     }
-    // 14238F14B..14238F16D accepts the string variant without a length guard.
+    // The string variant is accepted without a length guard.
     bound_name(bound, localisation, token_of)
         .map_err(|why| format!("Faction template {token:?}: {why}"))
 }
@@ -149,8 +149,8 @@ fn formatted(
             .localise_with(key, arguments)
             .map(BoundArgument::Text)
             .map_err(|why| why.to_string()),
-        // 1423939C0 interns token: payloads; 142393810 returns the integer
-        // variant. The payload's spelling is never parsed as a number.
+        // Interned token: payloads return the integer variant.
+        // The payload's spelling is never parsed as a number.
         FormattedLocalization::Token(token) => token_of(token)?
             .map(|token| BoundArgument::Token(token as i32))
             .ok_or_else(|| {
@@ -160,14 +160,13 @@ fn formatted(
                 )
             }),
         FormattedLocalization::Formatter { formatter, .. } => Err(format!(
-            "faction bound localisation formatter {} requires core registry callback (142393810)",
+            "faction bound localisation formatter {} requires core registry callback",
             String::from_utf8_lossy(formatter)
         )),
     }
 }
 
-/// Arguments in authored order (14238F3B0), then the core localiser
-/// (142393810 -> 142230F20).
+/// Arguments in authored order, then the core localiser.
 /// The work stack sizes from the parsed tree, without a private depth limit.
 fn bound_name(
     bound: &BoundLocalization,
@@ -247,10 +246,9 @@ fn bound_name(
         .ok_or("faction bound localisation node is absent")?
     {
         BoundArgument::Text(text) => Ok(text),
-        BoundArgument::Token(_) => Err(
-            "faction bound root returns a token integer, not the native string variant (14238F090)"
-                .into(),
-        ),
+        BoundArgument::Token(_) => {
+            Err("faction bound root returns a token integer, not the string variant".into())
+        }
     }
 }
 

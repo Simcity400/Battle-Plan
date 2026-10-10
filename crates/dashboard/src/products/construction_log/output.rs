@@ -1,6 +1,6 @@
-//! The output capture observes the building spend at 140F556F4 and the railway's
-//! first progress call at 1419EF440. Its separate factory totals already exclude
-//! CIC-bank draws, railway carries and instant progress; never price completions.
+//! The output capture observes building spend and the railway's first progress
+//! call. Its separate factory totals already exclude CIC-bank draws, railway
+//! carries and instant progress; never price completions.
 use super::{ConstructionProject, EndKind, ProjectKind, ScannedLog, UnknownEnd, ended};
 use replay::{
     frame::{DecodedFrame, TableView},

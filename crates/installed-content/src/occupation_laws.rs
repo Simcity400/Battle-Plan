@@ -15,17 +15,17 @@ pub struct Law {
     pub token: String,
     pub sprite: String,
     pub frame: i32,
-    /// 140A66620 reads visible into +0x80 and available into +0xD8.
+    /// Visibility and availability triggers are stored separately.
     pub visible: Vec<crate::parser::Item>,
     pub available: Vec<crate::parser::Item>,
 }
 
-/// COccupationLaw ctor 140A63E00 (+0x50/+0x78), literal at 142928260.
+/// Default occupation-law sprite name.
 const DEFAULT_SPRITE: &str = "GFX_occupation_policy_icon_strip";
 
-/// 140A66620 dispatch; SSpriteFramePair::vf3 1422B93A0 reads ONE token,
-/// not an icon object. Digits change only the frame; `sprite:frame` changes
-/// both, and a sprite alone retains the frame. 1424B0160 checks all digits.
+/// The sprite/frame pair reads one token, not an icon object. Digits
+/// change only the frame; `sprite:frame` changes both, and a sprite alone
+/// retains the frame. A frame token must contain only digits.
 pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Vec<Law>> {
     #[derive(Clone, Copy)]
     enum Node {
@@ -122,8 +122,8 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Vec<Law>> {
 #[derive(Default)]
 pub struct Laws {
     pub definitions: BTreeMap<String, Law>,
-    /// An unread tail can replace any earlier law (140A65A60). Refuse lookups
-    /// rather than presenting an earlier definition as the final one.
+    /// An unread tail can replace any earlier law. Refuse lookups rather
+    /// than presenting an earlier definition as the final one.
     pub warnings: Vec<String>,
 }
 
@@ -142,8 +142,8 @@ impl Laws {
 
 pub fn read(layers: &ResolvedLayers) -> io::Result<Laws> {
     let mut laws = Laws::default();
-    // LoadOccupationLawDatabaseFiles 140A65A60: direct files in native order,
-    // last declaration replaces the previous object of the same token.
+    // Direct files in file order; the last declaration replaces the previous
+    // object of the same token.
     let names = layers.key_names()?;
     for path in script_files::paths(layers, "common/occupation_laws/", Some(".txt")) {
         match parse(&layers.read(&path)?, &names) {
@@ -164,7 +164,9 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Laws> {
 mod tests {
     use super::*;
     #[test]
-    fn native_sprite_pair_and_last_definition() {
+    fn sprite_pair_and_last_definition() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let laws = parse(br#"@frame=4 custom={icon="mod_sprite:3" icon=@frame icon=other visible={always=yes} ai_will_do={base=1 modifier={factor=2 always=yes}} state_modifier={compliance_gain=0.1}} custom={icon="new:2"}"#, &KeyNames::default()).unwrap();
         assert_eq!((laws[0].sprite.as_str(), laws[0].frame), ("other", 4));
         assert_eq!((laws[1].sprite.as_str(), laws[1].frame), ("new", 2));
@@ -179,7 +181,9 @@ mod tests {
         assert_eq!(numeric[3].frame, 0);
     }
     #[test]
-    fn native_eligibility_trigger_bodies_are_preserved() {
+    fn eligibility_trigger_bodies_are_preserved() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let laws = parse(
             b"custom={visible={always=yes} visible={has_dlc=Example} available={FROM={tag=MOD}}}",
             &KeyNames::default(),
@@ -194,6 +198,8 @@ mod tests {
 
     #[test]
     fn unsettled_modifier_is_named_not_assumed() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let error = parse(
             b"extra={state_modifier={modded={a=1}}}",
             &KeyNames::default(),
@@ -208,6 +214,8 @@ mod tests {
     #[test]
     #[ignore = "requires the installed vanilla and Workshop corpus"]
     fn installed_corpus() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let game =
             std::path::PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("BATTLE_PLAN_GAME_DIR"));
         let workshop = std::path::PathBuf::from(

@@ -3,8 +3,7 @@
 use super::*;
 use replay::rows::PoliticalPartyRow;
 
-// These are executable literals, not a content ideology catalogue:
-// 141A7B350 cases 0x15..0x18 / 0x2A..0x2D, bytes 14271D898..14271D8D0.
+// Property labels and their ideology-group bindings.
 const GROUPS: [(&str, &str); 4] = [
     ("Communist", "communism"),
     ("Democratic", "democratic"),
@@ -29,19 +28,17 @@ fn group(name: &str, suffix: &str) -> Option<&'static str> {
 /// Which party a property reads.
 #[derive(Clone, Copy)]
 pub(super) enum Party<'a> {
-    /// The ruling-party pointer (141A7B350 cases 10 and 15, the pronouns).
+    /// The ruling party, used by party support and pronouns.
     Ruling,
-    /// The first party of the group a lexer token names (141A7D890:
-    /// FindTokenNoCaseOrDefault 14022EC40, so ASCII A-Z fold, then 140B980C0).
+    /// The first party of the group a lexer token names, with ASCII A-Z folding.
     Token(&'a str),
-    /// The first party whose group name is these exact bytes (141A7DB70,
-    /// memcmp 142574D50).
+    /// The first party whose group name is these exact bytes.
     Named(&'a str),
 }
 
 impl ScriptedText<'_> {
-    /// 141A7B350 case 15 normalizes the ruling group's stored popularity by
-    /// the sum of every party before FormatFixed5Trimmed, without a `%`.
+    /// Normalizes the ruling group's stored popularity by the sum of every
+    /// party before trimmed fixed5 formatting, without a `%`.
     pub(super) fn party_support(&self, slot: u32) -> Result<String, String> {
         let ruling = self
             .party(slot, Party::Ruling)?
@@ -78,12 +75,11 @@ impl ScriptedText<'_> {
         ))
     }
 
-    /// 140CE7BD0: the stored country residual plus the stored available pool
-    /// of each state in the controlled-state array, with native signed 32-bit
-    /// wrapping addition. `CCountry::AddControlledState@1406C3890` leaves out
-    /// a state with no provinces (CState+0x24); a controlled state no recorded
-    /// province names as its state is refused, since its count is not
-    /// recorded.
+    /// The stored country residual plus the stored available pool of each
+    /// state in the controlled-state array, with signed 32-bit wrapping
+    /// addition. A state with no provinces is excluded; a controlled state
+    /// no recorded province names as its state is refused, since its count
+    /// is not recorded.
     pub(super) fn manpower(&self, slot: u32) -> Result<i32, String> {
         let (countries, gap) = rows::<tables::Countries>(self.frame);
         let country = countries
@@ -114,7 +110,7 @@ impl ScriptedText<'_> {
             if controller == slot {
                 if !populated.contains(&state.id) {
                     return Err(format!(
-                        "GetManpower: no province names state {} as its state, so whether it is in the controlled-state array (1406C3890 skips a state without provinces) is unknown",
+                        "GetManpower: no province names state {} as its state, so whether it is in the controlled-state array (states without provinces are excluded) is unknown",
                         state.id
                     ));
                 }
@@ -124,9 +120,9 @@ impl ScriptedText<'_> {
         Ok(total)
     }
 
-    /// 141A7B350 case 0x19: a created agency's stored name (+0x80), even if
-    /// empty; otherwise the executable's key `AGENCY_NAME`. Every country
-    /// holds an agency object, so a missing row is a gap, not "no agency".
+    /// A created agency's stored name, even if empty; otherwise the
+    /// localisation key `AGENCY_NAME`. Every country holds an agency object,
+    /// so a missing row is a gap, not "no agency".
     pub(super) fn agency(&self, slot: u32) -> Result<String, String> {
         let agency = self
             .country_row::<tables::IntelligenceAgencies>(slot, |row| row.country)
@@ -137,26 +133,22 @@ impl ScriptedText<'_> {
         if agency.created == 0 {
             return self.localise("AGENCY_NAME");
         }
-        // The name is a user's literal or a historical name 140614FD0
-        // localised before 140FC8480 or 141A14B60 stored it.
-        self.stored_text(&agency.name, "GetAgency: the agency's name (+0x80)")
+        // The name is a user's literal or a historical name
+        // localised before it was stored.
+        self.stored_text(&agency.name, "GetAgency: the agency's name")
     }
 
-    /// 141A7B350 cases 5-9 copy the retained old name (CCountry+0x90),
-    /// definite name (+0xD0) or adjective (+0xB0), or the current text when
-    /// it is empty.
+    /// Copies the retained old name, definite name or adjective,
+    /// or the current text when it is empty.
     pub(super) fn old_name(&self, slot: u32, entry: &str, suffix: &str) -> Result<String, String> {
         let row = self
             .country_row::<tables::CountryAppearance>(slot, |row| row.country)
             .map_err(|reason| format!("{entry}: {reason}"))?
             .ok_or_else(|| format!("{entry}: country slot {slot} has no CountryAppearance row"))?;
         let (old, what) = match suffix {
-            "_DEF" => (
-                &row.old_definite_name,
-                "the old definite name (CCountry+0xD0)",
-            ),
-            "_ADJ" => (&row.old_adjective, "the old adjective (CCountry+0xB0)"),
-            _ => (&row.old_name, "the old name (CCountry+0x90)"),
+            "_DEF" => (&row.old_definite_name, "the old definite name"),
+            "_ADJ" => (&row.old_adjective, "the old adjective"),
+            _ => (&row.old_name, "the old name"),
         };
         let old = old
             .as_ref()
@@ -176,7 +168,7 @@ impl ScriptedText<'_> {
             .ok_or_else(|| format!("character {id}'s gender: Characters {gap}"))
     }
 
-    // 141A7B350 -> 140FB5FB0: missing party, leader or parent is gender 0.
+    // A missing party, leader or parent is gender 0.
     pub(super) fn country_pronoun(&self, slot: u32, name: &str) -> Result<String, String> {
         let mut female = false;
         if let Some(party) = self.party(slot, Party::Ruling)? {
@@ -198,8 +190,8 @@ impl ScriptedText<'_> {
         self.pronoun(name, female)
     }
 
-    // Executable keys, 141A7B350 cases 27..36 and 141A72900 cases 1..10.
-    // Character feminine predicate 140F8FAC0 is exactly gender == 2. The Cap calls capitalise the
+    // Pronoun localisation keys are shared by country and character properties.
+    // A character is feminine exactly when gender == 2. The Cap calls capitalise the
     // localised first byte; they do not select different localisation keys.
     pub(super) fn pronoun(&self, name: &str, female: bool) -> Result<String, String> {
         let index = PRONOUNS
@@ -217,7 +209,7 @@ impl ScriptedText<'_> {
         if index % 2 == 0 {
             Ok(text)
         } else {
-            // SsoString_UppercaseFirstCharacter (1424B6FE0), the "C" locale's toupper.
+            // Uppercase the first byte using the "C" locale's toupper.
             Ok(crt_case_text(&text, true, true))
         }
     }
@@ -269,8 +261,8 @@ impl ScriptedText<'_> {
         }
     }
 
-    /// 14118E5A0 selects vector entry zero. A null CCharacter gives empty
-    /// text (140FB5FD0), rather than falling through to the next leader.
+    /// Selects vector entry zero. A null character gives empty text,
+    /// rather than falling through to the next leader.
     pub(super) fn party_leader(&self, slot: u32, which: Party<'_>) -> Result<String, String> {
         let Some(party) = self.party(slot, which)? else {
             return Ok(String::new());
@@ -291,7 +283,7 @@ impl ScriptedText<'_> {
         }
     }
 
-    /// 141A80CA0: the event scope's date properties use the sampled date.
+    /// The event scope's date properties use the sampled date.
     pub(super) fn date_property(&self, name: &str) -> Result<Option<String>, String> {
         let date = date_parts(self.frame.hour);
         Ok(Some(if named(name, "GetDateText") {
@@ -307,7 +299,7 @@ impl ScriptedText<'_> {
         }))
     }
 
-    // The keys are literal executable operands in 1422542E0.
+    // Month localisation keys.
     fn month(&self, month: usize) -> Result<String, String> {
         const MONTHS: [&str; 12] = [
             "January",
@@ -328,7 +320,7 @@ impl ScriptedText<'_> {
             .map_or_else(|| Ok(String::new()), |key| self.localise(key))
     }
 
-    /// 140526B50 preserves the leading space and uses hours 1..24, including
+    /// Preserves the leading space and uses hours 1..24, including
     /// for GetLastElection. This is not a UI date formatter.
     pub(super) fn date_text(&self, hour: i32) -> Result<String, String> {
         let (year, month, day, hour) = date_parts(hour);
@@ -342,8 +334,7 @@ impl ScriptedText<'_> {
     }
 }
 
-// GetMonthZeroBased 140177140 / GetDayOfMonthZeroBased 140176DB0 use the
-// executable's fixed 365-day calendar (14306D210), with signed arithmetic.
+// Uses the fixed 365-day calendar with signed arithmetic.
 fn date_parts(raw: i32) -> (i32, usize, i32, i32) {
     let hours = raw.wrapping_sub(engine::cdate::HOUR_EPOCH);
     let mut day = hours / 24 % 365;

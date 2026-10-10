@@ -1,17 +1,12 @@
 //! The viewing country's raid offers, evaluated a batch of targets at a
 //! time as the game's player cache evaluates them.
 //!
-//! `CPlayerStatusCache::Update@141998AB0` keeps one row per target status,
-//! index for index with `CRaidSystem+8` (`EvaluateTarget@14199A190` reads
-//! both at one index), each row holding the target's shown and launchable
-//! bits. A rebuild frame, after every executed command and so at least every
-//! hour, makes every row pending. Each frame then evaluates
-//! `n = min(pending, NRaids.MAX_TARGETS_TO_UPDATE_PER_FRAME)` rows from a
-//! rolling cursor, `(cursor + i) % rows`, and advances the cursor to
-//! `(cursor + n) % rows`; the other rows keep the bits they were last
-//! evaluated with. The target array only grows (`SyncTargets@141997E60`
-//! adds rows, `AppendTarget@141948CF0` is its only writer), so a row is one
-//! target for the whole session.
+//! Keep one row per target status, at the same index, holding shown and
+//! launchable bits. A rebuild frame after each executed command (at least
+//! every hour) marks all rows pending. Each frame evaluates up to
+//! `NRaids.MAX_TARGETS_TO_UPDATE_PER_FRAME` pending rows from a rolling cursor,
+//! wrapping and advancing by the batch size. Other rows retain their previous
+//! bits. The target array only grows, so each row retains one target for the session.
 //!
 //! A [`Cycle`] is that cache for one viewing country since a reset: each
 //! hour begins as a rebuild frame ([`Cycle::begin`]) and each step evaluates
@@ -20,13 +15,11 @@
 //! history, which no recording holds; a cycle starts at row 0. Each kept row
 //! holds its target's scope, and an hour whose row holds another target, or
 //! whose table lost rows, cannot continue the cycle: it must start again.
-//! A step's rows may be evaluated on several threads, as the game's
-//! `parallel_for` splits them; the result is the in-order one
-//! ([`Sweep::evaluate`]).
+//! A step may evaluate rows on several threads; the result equals evaluation
+//! in row order ([`Sweep::evaluate`]).
 //!
-//! Each province's offer is kept with its rows and made again only when a
-//! step evaluates one of them (`refresh_counters@141999D30` recounts every
-//! province; the counts of the others are unchanged).
+//! Keep each province offer with its rows and rebuild it only when a step
+//! evaluates one of them; other provinces' counts stay unchanged.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -49,7 +42,7 @@ const CHUNK: usize = 64;
 #[derive(Clone, Debug)]
 struct Row {
     scope: RaidScope,
-    /// The province its offer counts in (`province_resolver@140FD1760`).
+    /// Province in which the offer is counted.
     province: Option<u32>,
     /// Its last evaluation and the hour it was made at, since the reset.
     kept: Option<Arc<(Hour, Evaluation)>>,
@@ -74,11 +67,11 @@ pub struct Shown {
 pub struct Cycle {
     branch: BranchId,
     ours: u32,
-    /// `CPlayerStatusCache+0x134`: the next row to evaluate.
+    /// The next row to evaluate.
     cursor: usize,
-    /// `+0x138`: rows still to evaluate at this hour.
+    /// Rows still to evaluate at this hour.
     pending: usize,
-    /// `+0x70`, by row, in chunks.
+    /// Per-row cached state, stored in chunks.
     rows: Vec<Arc<Vec<Row>>>,
     len: usize,
     /// Each target province's rows and offer.
@@ -187,8 +180,8 @@ impl Cycle {
         Ok(())
     }
 
-    /// One frame of `Update@141998AB0` at `sweep`'s hour: the next
-    /// `min(pending, sweep.batch)` rows from the cursor, evaluated.
+    /// Evaluate the next `min(pending, sweep.batch)` rows from the cursor
+    /// at `sweep`'s hour.
     pub fn step(&mut self, sweep: &Sweep<'_, '_>) {
         if self.pending == 0 {
             return;

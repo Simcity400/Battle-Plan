@@ -225,8 +225,8 @@ export function airState(view: AirView): string {
   if (view.state === 'inactive') return 'No air activity';
   const friendly = view.parts.find(part => part.id === 'friendly');
   if (friendly) {
-    // 140DFFC8A-93 uses signed IMUL/IDIV, then strict CMP thresholds at
-    // 140DFFC96-A4. The enclosing 140DFF6E0 guard accepts i64::MAX as good.
+    // Signed multiplication wraps before division; thresholds are strict.
+    // The maximum signed score counts as air superiority.
     if (friendly.score === 9223372036854775807n) return 'Air superiority';
     const denominator = BigInt.asIntN(64, view.total);
     if (!denominator) return 'Air superiority';
@@ -250,7 +250,7 @@ export function airTooltip(region: { name: string }, view: AirView, viewpoint: b
   const friendly = parts.find(part => part.id === 'friendly');
   const viewpointName = view.viewpoint.tag ? country(view.viewpoint.tag).name : friendly?.side ? sideLabel(friendly.side)
     : friendly?.label.replace(/ \(friendly\)$/, '') ?? view.viewpoint.name;
-  // Native air-map thresholds (140DFF6E0) are supplied by the product.
+  // Air-map thresholds are supplied by the product.
   const overflows = friendly && (BigInt.asIntN(64, view.total) !== view.total || BigInt.asIntN(64, friendly.score * BigInt(view.scale)) !== friendly.score * BigInt(view.scale));
   const thresholds = `Above ${airPercent(BigInt(view.goodAbove), BigInt(view.scale))}: air superiority; below ${airPercent(BigInt(view.badBelow), BigInt(view.scale))}: enemy superiority; otherwise contested.`;
   const viewpointNote = overflows

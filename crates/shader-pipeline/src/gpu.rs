@@ -274,8 +274,8 @@ pub struct Cache {
 }
 
 impl Cache {
-    /// The packed pipeline of `selection` drawing `topology` (the draw's
-    /// `GfxSetPrimitiveTopology@1424002E0`); each topology is its own pipeline.
+    /// The packed pipeline of `selection` drawing the caller's `topology`; each topology
+    /// is its own pipeline.
     pub fn get(
         &mut self,
         device: &wgpu::Device,
@@ -496,7 +496,7 @@ impl Pipeline {
                 } else {
                     wgpu::MipmapFilterMode::Nearest
                 },
-                anisotropy_clamp: if anisotropic { 16 } else { 1 }, // 1423FD550 ignores authored MaxAnisotropy and supplies 16.
+                anisotropy_clamp: if anisotropic { 16 } else { 1 }, // Authored MaxAnisotropy is ignored; anisotropic filtering uses 16.
                 lod_min_clamp: fact.min_lod.max(0) as f32,
                 lod_max_clamp: fact.max_lod.max(0) as f32,
                 border_color: Some(wgpu::SamplerBorderColor::TransparentBlack),
@@ -720,8 +720,7 @@ impl Pipeline {
     ) -> Result<Bindings, String> {
         let sampled = |key| {
             let view = textures(key)?;
-            // load_dds@142410030 and create_texture@1423FB4F0 use only the DDS cube flag;
-            // texture_sampler_binder@1424005A0 binds that SRV without reshaping it.
+            // The DDS cube flag alone determines the texture view; binding does not reshape it.
             // The native hardware GPU samples a 2D SRV through TextureCube as zero.
             // Preserve the caller's view: a later Texture2D draw still reads its texels.
             if let Some(zero) = &self.null_cube
@@ -934,7 +933,7 @@ impl Pipeline {
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, draw: &Draw) {
-        // 142400090 passes a null BlendFactor pointer, whose D3D11 value is all ones.
+        // A null blend-factor pointer gives D3D11's all-ones blend constant.
         pass.set_blend_constant(wgpu::Color::WHITE);
         draw.bindings.bind(pass);
         pass.set_vertex_buffer(0, draw.vertices.slice());
@@ -983,13 +982,12 @@ fn scoped<T>(device: &wgpu::Device, create: impl FnOnce() -> T) -> Result<T, Str
     }
 }
 
-/// Native blend descriptor defaults and lowering: `1423F7110`, `142347E10`, `1423FCB30`.
+/// Native blend descriptor defaults and lowering.
 pub fn blend(
     program: &Program,
     technique: &Technique,
 ) -> Result<(Option<wgpu::BlendState>, wgpu::ColorWrites), String> {
     let state = program.blend(technique);
-    // Native numeric factor/operation codes: 1423F73B0 / 1423F75C0.
     let factor = |code: u32| {
         [
             wgpu::BlendFactor::Zero,
@@ -1041,7 +1039,7 @@ pub fn blend(
     let enabled = state.enable;
     let mask = wgpu::ColorWrites::from_bits_truncate(state.write_mask);
     // Native defaults ONE/ZERO/ADD form a sentinel: even an explicitly authored sentinel
-    // inherits the colour equation (1423FCB30). This includes SRC_ALPHA on the alpha channel.
+    // inherits the colour equation. This includes SRC_ALPHA on the alpha channel.
     if blend.alpha == wgpu::BlendComponent::REPLACE {
         blend.alpha = blend.color;
     }
@@ -1058,10 +1056,10 @@ pub fn blend(
     Ok((enabled.then_some(blend), mask))
 }
 
-/// Native depth-stencil lowering (`lower@1423FCFC0`). Comparisons and stencil operations both
-/// pass through `lower_comparison@142411060` (authored index plus one, in D3D11 order, anything
-/// else the first), the front-face stencil state applies to both faces and the masks are their
-/// low bytes. D3D11's depth bias is rasterizer state but wgpu's is depth state, so it comes from
+/// Native depth-stencil lowering. Comparisons and stencil operations both use the authored
+/// index plus one in D3D11 order, anything else the first. The front-face stencil state applies
+/// to both faces and the masks are their low bytes. D3D11's depth bias is rasterizer state but
+/// wgpu's is depth state, so it comes from
 /// `rasterizer`. The stencil reference is the caller's dynamic `set_stencil_reference`.
 pub fn depth_stencil(
     state: &DepthStencilState,
@@ -1134,8 +1132,8 @@ pub fn depth_stencil(
     (descriptor, state.stencil_ref)
 }
 
-/// Native rasterizer lowering (`lower@1423FD2F0`): only `fill_solid` fills, cull mode through
-/// `lower_cull_mode@1424110D0`, the authored winding, and depth clipping always on. Multisample
+/// Native rasterizer lowering: only `fill_solid` fills, cull mode follows the authored index,
+/// winding is authored, and depth clipping is always on. Multisample
 /// and line antialiasing come from the renderer, not the authored value. The second value is
 /// the authored scissor enable; the rectangle is the caller's dynamic `set_scissor_rect`.
 pub fn primitive(

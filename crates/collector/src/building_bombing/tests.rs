@@ -333,7 +333,7 @@ fn assembly_preserves_six_arguments_return_pointer_and_observer_lifetime() {
     assert_eq!(active(), 0);
 }
 
-// Synthetic native frame uses ApplyDamage's proven first sixteen bytes and
+// Synthetic native frame uses the damage hook's first sixteen sentinel bytes and
 // documented stack/register saves. Its pdata is independent of the wrapper.
 core::arch::global_asm!(
     ".text",

@@ -7,7 +7,7 @@ use super::{
 };
 use crate::parser::{Item, Value};
 
-/// Native CLoopHistory metric indices; these are unrelated to region indices.
+/// Air-history metric indices; these are unrelated to region indices.
 pub const STATISTIC_CHANNELS: [usize; 24] = [
     0, 1, 2, 3, 10, 17, 24, 36, 37, 38, 39, 40, 41, 42, 43, 44, 51, 58, 65, 77, 78, 79, 80, 81,
 ];
@@ -30,7 +30,7 @@ pub struct Pack {
 pub struct AirBase {
     pub id: u64,
     pub state: Option<u32>,
-    /// C57070 writes the host only for stateless bases.
+    /// The writer includes the host only for stateless bases.
     pub host: Option<u64>,
     pub capacity: i32,
     pub kind: i32,
@@ -42,9 +42,9 @@ pub struct Ace {
     pub country: Vec<u8>,
     pub ordinal: u32,
     pub modifier: Option<Vec<u8>>,
-    /// 14060F1F0 emits is_female only for a nonzero raw byte.
+    /// The writer emits is_female only for a nonzero raw byte.
     pub female: bool,
-    /// 14060F1F0 always writes the signed portrait word.
+    /// The writer always writes the signed portrait word.
     pub portrait: i32,
     pub alive: bool,
     pub handled: bool,
@@ -54,7 +54,7 @@ pub struct Ace {
     pub killer_country: Option<Vec<u8>>,
     pub name: Vec<u8>,
     pub surname: Vec<u8>,
-    /// CAce::Serialize@14060F1F0 gates +0x130 on stored length +0x140;
+    /// The callsign is emitted only for a nonzero stored length;
     /// an emitted empty first-NUL prefix differs from omission.
     pub callsign: Option<Vec<u8>>,
 }
@@ -74,22 +74,22 @@ pub struct EquipmentPool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Wing {
     pub id: u64,
-    /// F53E70 unconditionally writes the containing pool definition's token
-    /// as `definition` (0x2FE3), not `type`; every wing retains it for the
-    /// recorded-content index join. 1424ADCE0 has no empty-token omission gate.
+    /// The containing pool definition's token is always written as
+    /// `definition`, not `type`; every wing retains it for the recorded-content
+    /// index join. Even an empty token is emitted.
     pub pool_type: Vec<u8>,
-    /// F539B0 writes primary+998 as `name` outside checksum mode.
-    /// 1424ADF40 -> 1424AF5A0 escapes quotes/backslashes; the parser decodes them.
+    /// The writer saves `name` outside checksum mode.
+    /// It escapes quotes/backslashes; the parser decodes them.
     /// Missing text remains distinct from a successfully saved empty name.
     pub name: Option<Vec<u8>>,
-    /// F539B0 emits accidents only when signed-positive.
+    /// The writer emits accidents only when signed-positive.
     pub accidents: Option<i32>,
     pub experience: Decimal,
     pub equipment: EquipmentPool,
     /// The wing writer emits this only when its full reference resolves.
     pub ace: Option<u64>,
-    /// F539B0 writes primary+A2C as `raid` only when that full reference
-    /// resolves. Omission does not reveal the exact null or stale bits.
+    /// The writer saves `raid` only when that full reference resolves.
+    /// Omission does not reveal the exact null or stale bits.
     pub raid: Option<u64>,
 }
 
@@ -112,7 +112,7 @@ pub struct CombatRecord {
     pub mission_mask: u32,
     pub selection: bool,
     pub attributed_country: Vec<u8>,
-    /// Native record+90 is the copied equipment pool's allow-zero byte.
+    /// The copied equipment pool retains its allow-zero byte.
     pub equipment: EquipmentPool,
     /// Preserve both physical damage channels and their order, including duplicates.
     pub damage: [Vec<Damage>; 2],
@@ -214,7 +214,7 @@ fn parse_base(fields: &[Item]) -> io::Result<AirBase> {
 }
 
 fn parse_ace(country: &[u8], ordinal: u32, fields: &[Item]) -> io::Result<Ace> {
-    // 60F1F0 omits alive=true, handled=false, kill_type=0, the null killer
+    // The ace writer omits alive=true, handled=false, kill_type=0, the null killer
     // reference, and an empty callsign. Name and surname are always emitted.
     Ok(Ace {
         id: object_id(fields)?,
@@ -334,9 +334,9 @@ fn parse_statistics(country: &[u8], region: u32, fields: &[Item]) -> io::Result<
     }
     let year_window_wrapped = flag(annual, b"is_full")?;
     let mut channels = [0; 24];
-    // 1505BB0 serializes all five 89-field rows in physical slot order if any
+    // The annual history writer serializes all five 89-field rows in physical slot order if any
     // field is nonzero. Omitted data therefore proves zero, including at the
-    // current slot. 24AE9A0 uses the same fixed5 formatter as scalar 24AE590.
+    // current slot. Lists use the same fixed5 formatter as scalar values.
     if let Some(data) = field(annual, b"data")? {
         let data = block(data)?;
         if data.len() != 5 * 89 {
@@ -372,8 +372,8 @@ fn parse_daily_statistics(
     region: u32,
     fields: &[Item],
 ) -> io::Result<Option<DailyStatistics>> {
-    // CLoopHistory::vf2@141505B90 writes its queue. The queue writer
-    // @141505F20 serializes +8/+10/+18 as keys 0/1/2: daily is key 0.
+    // The history writer saves its three queue windows as keys 0/1/2:
+    // daily is key 0.
     let queue = required_block(fields, b"history_queue")?;
     let Some(daily) = field(queue, b"0")? else {
         return Ok(None);
@@ -381,8 +381,8 @@ fn parse_daily_statistics(
     let daily = block(daily)?;
     let capacity: u32 = number(daily, b"max_elements")?;
     let current_slot: u32 = number(daily, b"offset")?;
-    // GetOrCreateRegionHistory@140C40870 constructs 89 fields. Its
-    // @141504680 -> @141504690 initialization constructs 30 daily records.
+    // Region history has 89 fields per record and initializes
+    // 30 daily records.
     if capacity != 30 || current_slot >= capacity {
         return Err(invalid(
             "air daily history has invalid native capacity or cursor",
@@ -392,7 +392,7 @@ fn parse_daily_statistics(
     let previous_slot = (current_slot + capacity - 1) % capacity;
     let mut previous_fields = [0; 89];
     let mut current_fields = [0; 89];
-    // Container::vf2@141505BB0 saves all records in physical slot order;
+    // The container writer saves all records in physical slot order;
     // it omits data only when every field in every record is zero.
     if let Some(data) = field(daily, b"data")? {
         let data = block(data)?;
@@ -524,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn pool_definition_uses_native_key_and_retains_wing_values() {
+    fn pool_definition_uses_saved_key_and_retains_wing_values() {
         let doc = parser::parse(
             br#"strategic_air={TST={
                 air_wing_pool={
@@ -660,7 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn ace_omissions_keep_native_defaults_and_all_reference_bits() {
+    fn ace_omissions_keep_writer_defaults_and_all_reference_bits() {
         let doc = parser::parse(br#"countries={GER={ace={id={id=4294967295 type=4294967295} name="" surname="S" portrait=0} ace={id={id=1 type=4} name="N" surname="S" modifier="authored_type" is_female=yes portrait=-1 alive=no handled=yes kill_type=-1 killer_name={id=9 type=2147483648} killer_country="ENG"}}}"#).unwrap();
         let pack = parse(&doc.items).unwrap();
         assert_eq!(pack.aces[0].id, u64::MAX);
@@ -682,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_record_keys_and_equipment_are_preserved_in_native_order() {
+    fn duplicate_record_keys_and_equipment_are_preserved_in_saved_order() {
         let fields = parser::parse(br#"tag="GER" enemy={id=0 equipment={allow_zero_entries=yes} time=-4 mission=-1 count=-2 tag="---" ground_attack=no destination=yes receiver={type=-1 value=-0.00001} receiver={type=-1 value=1}} friend={id=0 equipment={equipment={id={id=1 type=70} amount=0} equipment={id={id=1 type=70} amount=-2} allow_zero_entries=yes} time=-4 mission=0 count=0 tag="GER" ground_attack=no destination=no} friend={id=0 equipment={allow_zero_entries=no} time=-4 mission=0 count=0 tag="GER" ground_attack=no destination=no}"#).unwrap();
         let row = parse_region(b"GER", 23, &fields.items).unwrap();
         assert_eq!(
@@ -718,7 +718,7 @@ mod tests {
     }
 
     #[test]
-    fn daily_previous_slot_preserves_every_native_field_and_wraps_at_zero() {
+    fn daily_previous_slot_preserves_every_history_field_and_wraps_at_zero() {
         for current_slot in [0_usize, 1, 29] {
             let previous_slot = (current_slot + 29) % 30;
             let mut values = vec!["0".to_owned(); 30 * 89];

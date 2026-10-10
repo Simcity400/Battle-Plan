@@ -2026,6 +2026,8 @@ fn faction_top_accepts_the_full_ui_safe_integer_count() {
 
 #[test]
 fn faction_totals_use_main_template_names_and_dated_refusal_reasons() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::ContentOptions;
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
         (

@@ -1,10 +1,9 @@
 //! Current-hour simulation operands for a fresh counter route.
 //!
-//! BED3A0's cache-miss duration (BECF90) needs actual first-edge speed only
-//! when it subtracts progress on a matching first node. Other route legs use
-//! the C6FA10/C70670 speed tree. The stored route determines the native
-//! invasion/attacking selectors; it does not bound the terrain domain.
-//! No selection, cache history or UI clock is read.
+//! A cache-miss duration needs actual first-edge speed only when subtracting
+//! progress on a matching first node. Other route legs use the movement speed
+//! tree. The stored route determines invasion and attacking selectors; it does
+//! not bound the terrain domain. No selection, cache history or UI clock is read.
 //! Readers use prepared caller storage and the parent's current-pass memos.
 
 use super::*;
@@ -627,7 +626,7 @@ fn capture_row(
         .map(Some)
     };
     row.current_speed = current;
-    // BECF90 consumes current_speed only for its progress-subtraction branch.
+    // The duration calculation consumes current_speed only for its progress-subtraction branch.
     // Different-first routes may still use the independently acquired domains.
     // Context stages retain both success and failure, so this does not retry a
     // failed common/root/rail getter through the fresh domain.

@@ -483,6 +483,8 @@ fn completion_scan_refuses_a_reassigned_country_at_its_completion_hour() {
 
 #[test]
 fn completion_projection_uses_mod_override_name_and_native_art_path() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let guard = super::super::tests::TempRoot::new("feed-mod");
     let base = guard.0.join("base");
     let over = guard.0.join("mod");
@@ -558,9 +560,9 @@ fn completion_projection_uses_mod_override_name_and_native_art_path() {
     assert_eq!(event.name.as_deref(), Some("Mod completion name"));
     assert_eq!(event.name.as_ref(), Some(&country.presentations[0].name));
     assert_eq!(event.icon, country.presentations[0].icon);
-    // The mod replaces the same native relative file. A separately named
-    // mod.txt would read before test.txt, whose later body restores base art
-    // while retaining the narrative (140141670/140A85D70).
+    // The mod replaces the same relative file. A separately named mod.txt
+    // would read before test.txt, whose later body restores base art while
+    // retaining the narrative.
     assert!(event.icon_missing.is_none(), "{:?}", event.icon_missing);
     assert!(
         event

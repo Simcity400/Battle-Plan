@@ -20,9 +20,9 @@ pub enum TextureFormat {
     Bc7 { srgb: bool },
     /// Straight 8-bit R, G, B, A, row-major from the top-left corner.
     Rgba8,
-    /// `DXGI_FORMAT_B5G6R5_UNORM`, as the game's DDS loader keeps a 5-6-5 surface (its format 7,
-    /// `format_to_dxgi@142411320`, uploaded unexpanded by `build_upload_rows@1423FC160`): one
-    /// little-endian word per texel, blue in bits 0-4, green in 5-10, red in 11-15, row-major
+    /// `DXGI_FORMAT_B5G6R5_UNORM`, as the game's DDS loader keeps a 5-6-5 surface (format 7)
+    /// and uploads it unexpanded: one little-endian word per texel, blue in bits 0-4, green
+    /// in 5-10, red in 11-15, row-major
     /// from the top-left corner. It samples as [`Self::sample_16`] says.
     B5G6R5,
     /// `DXGI_FORMAT_B5G5R5A1_UNORM` (the game's format 8, likewise kept): one little-endian word

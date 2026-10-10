@@ -1,4 +1,4 @@
-//! Collection representative selection uses the one evaluator (1404B8B30).
+//! Collection representative selection uses the shared evaluator.
 use super::{Evaluator, Scope, Scopes};
 use installed_content::{
     collections::{Collection, Input, Operator},
@@ -7,8 +7,8 @@ use installed_content::{
 use replay::rows::tables;
 
 impl Evaluator<'_, '_> {
-    /// CEveryCollectionElementEffect's representative is the first terminal
-    /// scope, in source/operator order (1404C3640/1404BEDA0/1404C1760).
+    /// A collection effect's representative is the first terminal
+    /// scope, in source/operator order.
     pub(crate) fn collection_representative(
         &self,
         collection: &Collection,
@@ -23,7 +23,7 @@ impl Evaluator<'_, '_> {
                 Scope::CountryLeader { country, .. } => source.push(Scope::Country(country)),
                 Scope::Country(0) | Scope::State(0) => return Ok(None),
                 Scope::Country(_) | Scope::State(_) => source.push(caller.this),
-                _ => return Err("game:scope collection object is not ported (1404C2DC0)".into()),
+                _ => return Err("game:scope collection object is not supported".into()),
             },
             Input::Countries { possible } => {
                 let mut rows = world
@@ -32,7 +32,7 @@ impl Evaluator<'_, '_> {
                     .map_err(|why| why.to_string())?
                     .iter()
                     .collect::<Vec<_>>();
-                rows.sort_by_key(|row| row.canonical_slot); // CGameState+0x310.
+                rows.sort_by_key(|row| row.canonical_slot); // Physical country-array order.
                 if *possible && !rows.iter().any(|row| row.canonical_slot == 0) {
                     source.push(Scope::Country(0)); // The native possible-country vector includes its null slot.
                 }
@@ -49,7 +49,7 @@ impl Evaluator<'_, '_> {
                     .map_err(|why| why.to_string())?
                     .iter()
                     .collect::<Vec<_>>();
-                rows.sort_by_key(|row| row.id); // CGameState+0x2C8, skips index zero.
+                rows.sort_by_key(|row| row.id); // State-array order, skips index zero.
                 source.extend(
                     rows.into_iter()
                         .filter(|row| row.id != 0)
@@ -82,7 +82,7 @@ impl Evaluator<'_, '_> {
                             Ok(Scope::State(id as u32))
                         } else {
                             Err(format!(
-                                "collection constant state {id} resolves to a null pointer read by SetStateFromPointer (1404B8110/14052EBA0)"
+                                "collection constant state {id} resolves to a null state pointer"
                             ))
                         }
                     };
@@ -108,7 +108,7 @@ impl Evaluator<'_, '_> {
         }
         let mut representative = None;
         // The native top-level source loop continues after the first result;
-        // the output slot is written only once (1404B8B30/1404BEDA0).
+        // the output slot is written only once.
         for target in source {
             let selected = self.collection_path(caller, target, &collection.operators)?;
             if representative.is_none() {
@@ -136,7 +136,7 @@ impl Evaluator<'_, '_> {
             };
         }
         let Scope::Country(country) = target else {
-            // Country operators log and return false on a state (1404C1760).
+            // Country operators log and return false on a state.
             return Ok(None);
         };
         let world = self.world();
@@ -162,7 +162,7 @@ impl Evaluator<'_, '_> {
                     .iter()
                     .filter(|row| row.faction == faction)
                     .collect::<Vec<_>>();
-                rows.sort_by_key(|row| row.ordinal); // CFaction+0x58, 1404BEDA0.
+                rows.sort_by_key(|row| row.ordinal); // Stored faction-member order.
                 for row in rows {
                     targets.push(Scope::Country(slot(row.country)?));
                 }
@@ -170,14 +170,11 @@ impl Evaluator<'_, '_> {
             Operator::OwnedStates | Operator::ControlledStates => {
                 let inputs = world.country_counter_inputs(country)?;
                 let (recorded, name) = if matches!(operator, Operator::OwnedStates) {
-                    (
-                        &inputs.owned_states,
-                        "CountryCounterInputs.owned_states (CCountry+0x478)",
-                    )
+                    (&inputs.owned_states, "CountryCounterInputs.owned_states")
                 } else {
                     (
                         &inputs.controlled_states,
-                        "CountryCounterInputs.controlled_states (CCountry+0x460)",
+                        "CountryCounterInputs.controlled_states",
                     )
                 };
                 for &state in recorded
@@ -189,7 +186,7 @@ impl Evaluator<'_, '_> {
                 }
             }
             Operator::CountryAndSubjects => {
-                // 1404B7980 tries the country before even reading its subjects.
+                // Try the country before even reading its subjects.
                 let intermediate = self.collection_scope(caller, target, false)?;
                 if let Some(found) = self.collection_path(intermediate, target, tail)? {
                     return Ok(Some(found));
@@ -199,7 +196,7 @@ impl Evaluator<'_, '_> {
                     .subjects
                     .require("CountryAppearance.subjects")?
                 {
-                    targets.push(Scope::Country(if raw == 0 { 0 } else { slot(raw as u32)? })); // CDiplomacyStatus+0x170.
+                    targets.push(Scope::Country(if raw == 0 { 0 } else { slot(raw as u32)? })); // Stored subject references.
                 }
             }
             Operator::Limit(_) => unreachable!(),
@@ -207,7 +204,7 @@ impl Evaluator<'_, '_> {
         for next in targets {
             let intermediate = self.collection_scope(caller, target, false)?;
             if let Some(found) = self.collection_path(intermediate, next, tail)? {
-                return Ok(Some(found)); // 1404BEDA0 stops at the first successful path.
+                return Ok(Some(found)); // Stop at the first successful path.
             }
         }
         Ok(None)

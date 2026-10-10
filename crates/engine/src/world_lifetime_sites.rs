@@ -1,13 +1,13 @@
-//! Invalidation before current-world retirement or publication, a729.
+//! Invalidation before current-world retirement or publication.
 
 pub struct Site {
     pub rva: usize,
     pub sentinel: [u8; 16],
 }
 
-/// ResetRuntimeState@1401D09B0: first state write, before reset byte@1401D09F4,
-/// queue drain@1401D0DEF and owned-object destruction. Load worker1401C85E0
-/// reaches it through1401E9E30; even a subsequently failed load invalidates.
+/// First reset state write, before the reset byte, queue drain and
+/// owned-object destruction. A load reaching reset invalidates the world
+/// even if loading subsequently fails.
 pub const RESET: Site = Site {
     rva: 0x001d_09e5,
     sentinel: [
@@ -15,9 +15,9 @@ pub const RESET: Site = Site {
     ],
 };
 
-/// Current-world ctor1401BF4D0, after base construction and before derived
-/// ownership setup and singleton publication@1401D2883. No incoming branch
-/// or CALL return enters the seven-byte MOV being replaced.
+/// World construction after base setup and before derived ownership
+/// and singleton publication. No incoming branch or call return enters
+/// the replaced seven-byte instruction.
 pub const CONSTRUCT: Site = Site {
     rva: 0x001b_f509,
     sentinel: [
@@ -25,8 +25,8 @@ pub const CONSTRUCT: Site = Site {
     ],
 };
 
-/// Deleting destructor1401C9080. Its entry precedes quadtree clear1401C90A4,
-/// ResetRuntimeState1401C90E6 and eventual deallocation1401C911A.
+/// Deleting-destructor entry before quadtree clearing, runtime reset
+/// and eventual deallocation.
 pub const DELETE: Site = Site {
     rva: 0x001c_9080,
     sentinel: [

@@ -1,27 +1,13 @@
 //! `SnowMudData`: the hour's snow and mud grid the terrain, water and river
 //! passes sample, built from the display bytes the game stores.
 //!
-//! The weather manager keeps one snow and one mud display byte per province
-//! (`CWeatherManager+0x310`/`+0x328`, `engine::cweather_manager`). A load
-//! zeroes both arrays (`140f07a00`), and `140f0a240` writes a province's bytes
-//! only when a weather pass changes its snow or mud, so a province the load's
-//! passes leave unchanged keeps drawing bare ground until a later pass moves
-//! it. The recorder copies both arrays every hour (`WeatherProvinces
-//! .display_snow/.display_mud`), so every hour, including the first after a
-//! load and any hour reached by a seek has its own simulation operands.
+//! Snow and mud display bytes start at zero after load and change only when a weather pass updates
+//! them. Recorded WeatherProvinces display bytes supply each hour, including seeks. Four-by-four
+//! pixel blocks average into grid cells with fixed division by sixteen; permanent-snow terrain
+//! contributes 255. Retain recorded boundary cells. RGBA packs previous mud, current snow, previous
+//! snow and current mud. Presentation keeps both planes and advances the linear graphics-time fade
+//! independently of replay hours.
 //!
-//! `140f00200` averages four by four province-image pixels into one grid cell
-//! (a `perm_snow` terrain pixel counts 255 snow), always dividing by sixteen;
-//! the grid is the province image's size shifted right by two. `14124be50`
-//! packs RGBA (previous mud, current snow, previous snow, current mud) and the
-//! shaders mix the planes by `SnowMudFade`. The final row/column come from the
-//! live +388/+390 boundary recorded in slot zero, including a mid-game attach.
-//! [`Presentation`] carries previous/current planes and the native linear fade
-//! on the viewer's graphics clock; no replay hour drives that phase.
-//!
-//! The terrain shading of this grid was checked term by term against the
-//! engine's own `PixelShaderTerrain` in RenderDoc (reference 03, archived
-//! rendering notes, "Terrain snow shading").
 
 use std::{io, time::Duration, time::Instant};
 
@@ -103,7 +89,7 @@ impl Summary {
     }
 }
 
-/// `MAP_SIZE / 4`: the grid `140f00200` fills for a province image.
+/// `MAP_SIZE / 4`: the grid fills for a province image.
 pub fn grid_size(width: u32, height: u32) -> [u32; 2] {
     [width / SNOW_MUD_BLOCK, height / SNOW_MUD_BLOCK]
 }
@@ -195,8 +181,8 @@ fn grid_with(
         summary.missing_edges = edge_cells;
         None
     };
-    // 140F0A240 never dirties these cells. Missing historical data is unknown,
-    // not evidence that the edge follows today's per-province simulation.
+    // Boundary cells retain recorded edges. Missing history is unknown, rather than evidence that
+    // an edge follows this hour's per-province simulation.
     let boundary = (0..height - 1)
         .map(|z| z * width + width - 1)
         .chain((0..width).map(|x| (height - 1) * width + x));
@@ -319,10 +305,9 @@ impl SnowCells {
     }
 }
 
-/// Averages the per-province display bytes into the grid, as `140f00200`:
-/// sixteen source pixels per cell, a pixel outside the image reading province
-/// 0 but still counting, and an integer division by sixteen. Row 0 of the
-/// result is world `z = 0`, the image's last row. Two bytes a cell: snow, mud.
+/// Average sixteen per-province display bytes per cell with integer division. Pixels outside the
+/// image use province zero while still contributing to the count. Output row zero is world z zero,
+/// the image's last row. Each cell stores snow and mud.
 #[cfg(test)]
 fn rasterise(
     image: &ProvinceMap<'_>,

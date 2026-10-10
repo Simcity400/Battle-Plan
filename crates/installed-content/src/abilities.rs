@@ -1,10 +1,9 @@
 //! Ability descriptions and sprites from the recorded content stack.
 //!
-//! `CAbility::CAbility` (140FF44E0) starts from `GFX_ability_<token>`;
-//! `CAbility::parse_key` (140FF5EC0) replaces that base with `icon`. Its
-//! finalizer (140FF5B20) appends `_animated`, and the map-counter update
-//! (1418C5CE0) gives that sprite to each active-ability child. Recordings hold
-//! only the ability token; the sprite is resolved here from the content stack.
+//! The default sprite starts from `GFX_ability_<token>`; `icon` replaces
+//! that base, and finalization appends `_animated`. Each active-ability
+//! map-counter child uses that sprite. Recordings hold only the ability
+//! token; the sprite is resolved here from the content stack.
 
 use crate::key_names::KeyNames;
 use std::{collections::BTreeMap, io};
@@ -18,36 +17,33 @@ use crate::{
     scope::ScopeKind,
 };
 
-/// Static token 0x165, the token CUnitAdjuster's constructor leaves in +8
-/// (InitializeDefaultTokenField 1424A9460); the engine registers its
-/// spelling (140088938 loads `none` at 14271C2A4), as unit_leader cites.
+/// The default adjuster token identifies `none`.
 const DEFAULT_TOKEN_KEY: &[u8] = b"none";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AbilitySprites {
     /// Ability token to the `GFX_...` sprite its map-counter child shows.
     pub by_token: BTreeMap<Vec<u8>, String>,
-    /// The first exact-name definition in the native database roster
-    /// (140606A40 / lookup 140606930).
+    /// The first exact-name definition in the database roster.
     pub definitions: BTreeMap<Vec<u8>, Definition>,
     /// Native reading notes and counted deferred effect warnings, with
     /// file/line context when loaded through the recorded stack.
     pub warnings: Vec<crate::Diagnostic>,
 }
 
-/// The authored operands consumed by CAbility::BuildDescription (140FF5220).
+/// The authored operands used to build an ability description.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Definition {
-    /// ReadStringInto fields +0x248 / +0x268. Constructor defaults are the
-    /// declaration's token and that token followed by `_desc` (140FF44E0).
+    /// String fields whose defaults are the declaration's token and that token
+    /// followed by `_desc`.
     pub name: Vec<u8>,
     pub description: Vec<u8>,
-    /// Country, leader and unit CModifier accumulators, in native display order.
+    /// Country, leader and unit modifier accumulators, in native display order.
     pub modifiers: [Modifiers; 3],
-    /// +0x538 pointer roster, first encounter order.
+    /// Adjusters in first encounter order.
     pub adjusters: Vec<crate::unit_leader::Adjuster>,
-    /// One-time, hourly and daily CEffect child arrays. Repeated blocks append
-    /// through CEffect::ReadScript, with the type's current scope mask.
+    /// One-time, hourly and daily effect arrays. Repeated blocks append with
+    /// the current type's scope mask.
     pub effects: [Vec<Item>; 3],
 }
 
@@ -56,12 +52,12 @@ impl AbilitySprites {
         self.by_token.get(token).map(String::as_str)
     }
 
-    /// Static +288 sprite before Finalize@140FF5B20 appends `_animated`.
+    /// The base sprite before finalization appends `_animated`.
     pub fn static_sprite(&self, token: &[u8]) -> Option<&str> {
         self.sprite(token)?.strip_suffix("_animated")
     }
 
-    /// CAbility +248: constructor token, replaced by `name` (140FF44E0/140FF5EC0).
+    /// The display name defaults to the declaration token and is replaced by `name`.
     pub fn name_key(&self, token: &[u8]) -> Option<&str> {
         std::str::from_utf8(&self.definition(token)?.name).ok()
     }
@@ -77,8 +73,8 @@ fn apply_with_terrain(
     terrains: &BTreeMap<Vec<u8>, Vec<u8>>,
     names: &KeyNames,
 ) -> io::Result<Vec<crate::Diagnostic>> {
-    /// Each declaration is a new CAbility (140606A40 -> 140FF44E0), its
-    /// adjusters (+0x538) shared by all its `unit_modifiers` blocks.
+    /// Each declaration is a new ability; its adjusters are shared by all its
+    /// `unit_modifiers` blocks.
     #[derive(Clone, Copy)]
     enum Node {
         File,
@@ -91,13 +87,12 @@ fn apply_with_terrain(
     }
     let mut undecided = Vec::new();
     let mut declared = 0;
-    // CAbility constructor140FF44E0 and type dispatch140FF5EC0.
+    // Constructor defaults and type dispatch.
     let mut ability_scopes = Vec::new();
     let mut adjusters: BTreeMap<usize, Vec<Vec<u8>>> = BTreeMap::new();
-    // 140606A40: file and ability loops. CAbility::parse_key 140FF5EC0
-    // ignores unknown fields without skipping; invalid type values record
-    // an error and skip. Effects read by key, allowed through LoadBody.
-    // 1406073D0 constructs each file's lexer in mode 0 (1424A6370).
+    // Each file uses a mode-0 lexer. Unknown fields are ignored without skipping;
+    // invalid type values report an error and skip. Effects read by key, while
+    // `allowed` reads a trigger body.
     let document = native::read(
         input,
         native::Mode::KeepMark,
@@ -108,7 +103,7 @@ fn apply_with_terrain(
             Node::File => Shape::Skip,
             Node::Abilities => {
                 declared += 1;
-                // CAbility::CAbility 140FF44E0 seeds +2EC to country at 140FF46B6.
+                // Abilities start in country scope.
                 ability_scopes.push(ScopeKind::Country.bit());
                 Shape::Object(Node::Ability(declared))
             }
@@ -116,7 +111,7 @@ fn apply_with_terrain(
                 Some(b"allowed") => Shape::Trigger,
                 Some(b"ai_will_do") => Shape::Object(Node::Mtth),
                 Some(b"one_time_effect" | b"hourly_effect" | b"daily_effect" | b"end_effect") => {
-                    // CAbility::parse_key 140FF5EC0 passes the current +2EC to slot 3.
+                    // Effects use the current ability scope.
                     Shape::EffectIn(ability_scopes[ability - 1])
                 }
                 Some(b"country_modifiers" | b"leader_modifiers") => {
@@ -128,7 +123,7 @@ fn apply_with_terrain(
                         kind @ (b"army_leader" | b"navy_leader" | b"target" | b"state" | b"country"
                         | b"air_zone" | b"naval_zone"),
                     ) => {
-                        // CAbility::parse_key 140FF5EC0 updates +2EC at each type.
+                        // Each type field updates the current ability scope.
                         ability_scopes[ability - 1] = match kind {
                             b"army_leader" | b"navy_leader" => ScopeKind::Character.bit(),
                             b"state" => ScopeKind::State.bit(),
@@ -142,11 +137,9 @@ fn apply_with_terrain(
                 _ => Shape::One,
             },
             Node::Mtth => native::mean_time_to_happen(field),
-            // 140FF5EC0 finds the ability's adjuster by the key's token, else
-            // CreateUnitAdjusterForToken 141001790 makes one for these five
-            // built-in tokens or a registered terrain and reads it
-            // (CUnitAdjuster::vf4 141001740); either is then read (again) only
-            // while its token is the default `none` (0x165).
+            // Find the ability's adjuster by the key's token, or create and read one
+            // for a built-in token or registered terrain. It is then read again only
+            // while its token is the default `none`.
             Node::UnitModifiers(ability)
                 if field.keyword().is_some_and(|key| {
                     matches!(
@@ -195,8 +188,8 @@ fn apply_with_terrain(
         .filter(|item| item.keyword_is("ability"))
     {
         for item in block(&root.value, "ability")? {
-            // 140606A40 constructs the declaration name using strlen on the
-            // current key's text, independently of its quoted token kind.
+            // The declaration name uses the current key's text up to its first NUL,
+            // independently of its quoted token kind.
             let token = crate::parser::c_string(
                 item.key
                     .as_deref()
@@ -293,7 +286,7 @@ fn apply_with_terrain(
                         .extend(field.value.items().unwrap_or_default().iter().cloned());
                 }
             }
-            // Every duplicate is parsed, but lookup 140606930 stops at the
+            // Every duplicate is parsed, but lookup stops at the
             // first exact-length/byte match rather than replacing its object.
             sprites
                 .by_token
@@ -349,7 +342,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ability_notes_keep_native_kind() {
+    fn ability_notes_keep_kind() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let notes = apply_with_terrain(
             b"ability = { a = { duration = { x = 1 } } }",
             &mut AbilitySprites::default(),
@@ -372,7 +367,9 @@ mod tests {
     }
 
     #[test]
-    fn native_unknown_fields_leave_contents_in_the_ability() {
+    fn unknown_fields_leave_contents_in_the_ability() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sprites = AbilitySprites::default();
         apply(
             br#"@sprite=custom ability={a={"icon"=ignored unknown={ICON=@sprite}}}"#,
@@ -397,6 +394,8 @@ mod tests {
 
     #[test]
     fn default_and_authored_sprites_take_the_animated_suffix() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sprites = AbilitySprites::default();
         apply(
             b"ability={ force_attack={ duration=168 } special={ icon=GFX_custom } }",
@@ -413,6 +412,8 @@ mod tests {
 
     #[test]
     fn lookup_keeps_the_first_exact_token_and_later_malformed_fields_still_fail() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sprites = AbilitySprites::default();
         apply(b"ability={ special={ icon=GFX_old } }", &mut sprites).unwrap();
         apply(b"ability={ special={ icon=GFX_new } }", &mut sprites).unwrap();
@@ -428,6 +429,8 @@ mod tests {
 
     #[test]
     fn repeated_adjusters_are_read_again_only_on_the_default_token() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let terrains = BTreeMap::from([
             (b"none".to_vec(), b"none".to_vec()),
             (b"plains".to_vec(), b"plains".to_vec()),
@@ -437,7 +440,7 @@ mod tests {
             apply_with_terrain(text, &mut sprites, &terrains, &KeyNames::default()).unwrap();
             sprites.sprite(b"a").map(str::to_owned)
         };
-        // A repeated `night` (token not 0x165) reads its value token alone:
+        // A repeated `night` with a nondefault token reads its value token alone:
         // the block's `}` ends unit_modifiers, the next ends the ability, so
         // `icon` is no field of `a`.
         assert_eq!(
@@ -458,9 +461,9 @@ mod tests {
                 .as_deref(),
             Some("GFX_ability_a_animated")
         );
-        // A terrain named `none` is read twice when new (141001790, then
-        // 140FF5EC0), and again when repeated: the second read takes the
-        // tokens after its block, so `icon` is read inside it.
+        // A new terrain named `none` is read twice, and again when repeated:
+        // the second read takes the tokens after its block, so `icon` is read
+        // inside it.
         assert_eq!(
             sprite(b"ability={a={unit_modifiers={none={} icon=custom}}}").as_deref(),
             Some("GFX_ability_a_animated")
@@ -469,6 +472,8 @@ mod tests {
 
     #[test]
     fn a_comment_only_file_declares_nothing() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sprites = AbilitySprites::default();
         apply(b"# no abilities in this layer\n", &mut sprites).unwrap();
         assert!(sprites.by_token.is_empty());
@@ -476,6 +481,8 @@ mod tests {
 
     #[test]
     fn value_effect_scopes_follow_ability_type_in_authored_order() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sprites = AbilitySprites::default();
         let notes = apply_with_terrain(br#"
         ability={
@@ -494,7 +501,9 @@ mod tests {
     }
 
     #[test]
-    fn description_keeps_native_accumulators_adjusters_and_appended_effect_order() {
+    fn description_keeps_accumulators_adjusters_and_appended_effect_order() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut catalog = AbilitySprites::default();
         let terrains = BTreeMap::from([(b"synthetic".to_vec(), b"SYNTHETIC".to_vec())]);
         apply_with_terrain(
@@ -552,6 +561,8 @@ mod tests {
 
     #[test]
     fn description_defaults_and_duplicate_lookup_preserve_exact_case() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut catalog = AbilitySprites::default();
         apply(
             b"ability={a={name=FIRST} a={name=LATER} A={name=UPPER}}",

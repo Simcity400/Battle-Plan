@@ -1,18 +1,18 @@
-//! Original hourly CConvoys observation. No daily stock or cache retry joins.
+//! Original hourly convoy observation. No daily stock or cache retry joins.
 use super::*;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TransportConvoys {
     pub sample_hour: i32,
     pub priority: Option<i32>,
-    /// Independent signed CCountry+1288 branch of BEFC40.
+    /// Independent stored signed unreserved-convoy operand.
     pub unreserved: Option<i32>,
     /// None refuses the original cache attempt. Dirty requires `pool` below.
     pub cache: Option<TransportConvoyCache>,
     /// Complete unfiltered native order, including zero/negative quantities.
     pub pool: Option<Vec<TransportConvoyEntry>>,
     pub reservations: Option<Vec<TransportConvoyReservation>>,
-    /// C740(1) selects the first NONZERO quantity, without classifier filtering.
+    /// Select the first nonzero quantity, without classifier filtering.
     /// Some(None) proves an empty selection; None refuses its identity.
     /// Selected variant stat failures remain independent optional leaves.
     pub first_variant: Option<Option<TransportConvoyVariant>>,
@@ -51,8 +51,8 @@ value_struct!(TransportConvoyReservation {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TransportConvoyVariant {
     pub variant: u64,
-    /// Native signed cached stats +198/+1A0/+1A8/+208. None refuses only
-    /// that original leaf; F97BF0 demands visibility alone.
+    /// Signed cached surface/submarine detection, visibility and speed. None
+    /// refuses only that leaf; strategic spotting demands visibility alone.
     pub surface_detection: Option<i64>,
     pub submarine_detection: Option<i64>,
     pub visibility: Option<i64>,

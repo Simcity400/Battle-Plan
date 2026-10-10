@@ -46,11 +46,9 @@ export function validateFactoriesReply(data: unknown): CountryFactoriesReply {
 }
 
 /** The engine's factory groups, as the product names them: which of them a top-N
- * request sums (none: all). They are engine structures, not content
- * (`CProductionStatus` +0x2b0, +0x310, +0x370, rebuilt by
- * `RecalculateFactoryTotals@140e57f10`), so a mod cannot add one; its factory types
- * count in them through their flags and are named from content. Kept complete by
- * the type below. */
+ * request sums (none: all). Mods cannot add groups; their factory types count
+ * in the existing groups through their flags and are named from content. Kept
+ * complete by the type below. */
 const GROUP_KEYS = { military: true, naval: true, civilian: true } as const satisfies Record<FactoryGroupKey, true>;
 const isGroupKey = (token: string): token is FactoryGroupKey => Object.hasOwn(GROUP_KEYS, token);
 

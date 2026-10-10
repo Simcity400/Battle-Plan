@@ -194,9 +194,7 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
 pub const GLOBAL_SCOPE: u8 = 0;
 pub const COUNTRY_SCOPE: u8 = 1;
 pub const STATE_SCOPE: u8 = 2;
-/// A character's own flags (`CCharacter+0x110`) and script variables
-/// (`CCharacter+0xD8`), keyed by its id (`CCharacter+0xC`, the Characters
-/// id).
+/// A character's own flags and script variables, keyed by its Characters id.
 pub const CHARACTER_SCOPE: u8 = 3;
 
 #[derive(Default)]
@@ -213,7 +211,7 @@ impl SeedWork {
             "refusals": crate::status::map(std::iter::once((
                 "script variable random seed unreadable", self.refused,
             )).filter(|(_, count)| *count != 0)),
-            "scope": "hourly CVariables+8 for admitted ScriptVariables rows; unread seeds remain absent while the entries and scope rows stand",
+            "scope": "hourly random seeds for admitted ScriptVariables rows; unread seeds remain absent while the entries and scope rows stand",
         })
     }
 }
@@ -248,7 +246,7 @@ fn first_seen(bits: &mut [u64], index: usize) -> bool {
 pub struct Capacities {
     pub rows: [usize; N],
     /// Bytes of scratch for the bulk intel-record copies. The worker prepares
-    /// at least one native record (`140CEFE90`); larger populations use bounded batches.
+    /// at least one native record; larger populations use bounded batches.
     pub intel_scratch: usize,
     pub subject_names: usize,
     pub autonomy_names: usize,
@@ -262,8 +260,8 @@ pub struct Capacities {
 }
 
 impl Capacities {
-    /// Serializer@140D19300 emits each original nonzero cached opinion and
-    /// retained typed relation; an empty walk counts their exact live demand.
+    /// Count each original nonzero cached opinion and retained typed relation;
+    /// an empty walk counts their exact live demand.
     pub(crate) fn presize_relations(
         &mut self,
         memory: &impl Memory,
@@ -2100,7 +2098,7 @@ fn valid_variable_parts(
 /// null state holes are not scopes; canonical country aliases are visited once.
 /// Every character in both serialized rosters is a scope too, with its flag
 /// manager embedded in the character (`ccharacter::FLAGS`); each manager's
-/// live count (+0x14) sizes its rows, and an omitted count is kept for growth.
+/// live count sizes its rows, and an omitted count is kept for growth.
 fn walk_flags(
     memory: &impl Memory,
     base: usize,
@@ -3003,9 +3001,8 @@ fn cap_link(
 }
 
 /// One structural copy pass: shared census plus, per country, the diplomacy
-/// pointer and one bulk diplomacy object (0x360 bytes enclosing 0x188..0x350
-/// capitulation scalars). Stops at the first typed abort point; later extras
-/// are harmless.
+/// pointer and one bulk diplomacy object enclosing the capitulation scalars.
+/// Stops at the first typed abort point; later extras are harmless.
 fn copy_capitulation_pass(
     memory: &impl Memory,
     base: usize,

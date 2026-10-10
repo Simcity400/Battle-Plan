@@ -79,6 +79,8 @@ fn frame() -> DecodedFrame {
 
 #[test]
 fn best_uses_depth_upgrade_owner_and_native_id_instead_of_stock_or_obsolete() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = database();
     let mut frame = frame();
     let best = |frame: &DecodedFrame| best_variants(frame, &database, 9001, 7).unwrap()["infantry_equipment"];
@@ -113,6 +115,8 @@ fn best_uses_depth_upgrade_owner_and_native_id_instead_of_stock_or_obsolete() {
 
 #[test]
 fn incomplete_candidates_refuse_a_guess_and_count_named_failures() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = frame();
     *frame.tables[TableId::AvailableEquipmentVariants.index()] =
         TableView::Complete(TableRows::AvailableEquipmentVariants(vec![
@@ -141,6 +145,8 @@ fn incomplete_candidates_refuse_a_guess_and_count_named_failures() {
 
 #[test]
 fn five_thousand_foreign_country_candidates_do_not_hide_the_selected_country() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = frame();
     if let TableView::Complete(TableRows::CountryLinks(rows)) =
         &mut *frame.tables[TableId::CountryLinks.index()]

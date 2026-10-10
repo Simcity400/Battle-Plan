@@ -1,40 +1,25 @@
-//! Registered air missions in the order the flying-aircraft map visits them.
+//! Registered air missions in flying-aircraft map order. Regional vectors
+//! retain every ordinary occurrence. Sorted active-region IDs also include
+//! carrier combat regions, so a listed region can have no ordinary registrations.
+//! The all-active count includes only ordinary registrations; missed regions
+//! cannot pass as empty.
 //!
-//! `BuildRegionalAircraftScenarios@14122EFD0` scans each region's
-//! `CStrategicAir+0x98` mission vector in order. The sorted active-region IDs
-//! at +0xC8 also include carrier combat regions from +0x140: a listed region
-//! can have no ordinary registrations. `_AllActiveMissions` at +0xB0 counts
-//! only the ordinary registrations, so a missed region cannot pass as empty.
+//! Registration appends regional and all-active occurrences and inserts the
+//! region ID. Unregistration removes both and erases an ordinarily empty region.
+//! Region changes, loading, teardown and base transfers use those writers;
+//! incompatible targets are unassigned.
 //!
-//! Native writer audit (a729, virtual addresses): RegisterMission@140C4E360
-//! appends to +0x98[region] and +0xB0 and sorted-inserts +0xC8;
-//! UnregisterMission@140C4E570 removes both registrations and erases +0xC8
-//! when the ordinary regional count reaches zero. CAirMission::SetRegion
-//! @140F70850 calls these writers for the old and new regions.
-//! Mission load @140F6FBC0 uses SetRegion; wing teardown @140F45430 calls
-//! the mission destructor @140F60460, which uses SetRegion(NULL).
-//! TransferToBase @140C55170 changes pools then refreshes the mission through
-//! @140F4F220; incompatible targets are unassigned through SetRegion(NULL).
+//! Carrier refresh separately clears its regional counts and visits hosts in
+//! naval combat. Wings without an assigned region or enabled mask are added
+//! only to carrier registrations and active-region IDs. The active list is not
+//! cleared first, so a special-only region can stay listed after combat ends.
+//! That is a stable empty ordinary vector.
 //!
-//! The carrier pass @140C56D40 is a separate writer: it clears +0x140's
-//! regional counts (@140C56D70), then visits carrier hosts in naval combat.
-//! For a wing with no assigned region or a zero mission mask (@140C56EA2),
-//! it appends the embedded mission to +0x140[combat region] (@140C56F06)
-//! and inserts that region into +0xC8 (@140C56F68-140C56FF2), without
-//! writing +0x98 or +0xB0. It does not clear +0xC8 first, so a special-only
-//! region can remain listed after its carrier combat ends. This is a stable
-//! empty ordinary vector, not evidence of a missed registration.
-//!
-//! PtrVector::PushBack_stride8@140120090 also temporarily zeroes a vector's
-//! count while reallocating. Capture at HourlyUpdate@1401DCEF0 entry joins
-//! every native read before the trampoline; it does not retry or wait out a
-//! writer. Invalid headers, unreadable entries and count mismatches still
-//! refuse the census; dependents must not treat that failure as absence.
-//! The strategic-air hourly pass @140C485F0 calls the carrier refresh through
-//! @140C368F0 / @140C57F80. The tag command @14113E4B0 changes the local
-//! player through @1401EE470 (+0x520/+0x524), not these registries: SetRegion
-//! resolves ownership through the wing's pool, and this census visits every
-//! country air object independently of the local player.
+//! Reallocation may temporarily zero vector counts. Capture at the hourly entry
+//! joins every read before the trampoline, without retries or waits. Invalid
+//! headers, unreadable entries and count mismatches refuse the census; dependents
+//! retain failure rather than absence. Ownership resolves through the wing
+//! pool, and every country air object is visited independently of local player.
 
 use crate::{
     Memory, ccountry,
@@ -85,7 +70,7 @@ impl WingIdentity {
         })
     }
 
-    /// `CAirWing::GetEffectiveCountryTag@140F45950`: a positive override wins.
+    /// A positive country override wins over the pool owner.
     pub fn effective_country(&self) -> u32 {
         if self.country_override > 0 {
             self.country_override as u32
@@ -444,8 +429,8 @@ fn root_missions<M: Memory>(
                 .ok_or("active mission region vector missing or invalid");
             observer.region(canonical_slot, region, missions);
             let missions = missions?;
-            // RegisterMission@140C4E360 appends every occurrence to this
-            // regional vector; grow before visiting its original members.
+            // Registration appends every regional occurrence; grow storage before
+            // visiting the original members.
             output.ensure(
                 len.checked_add(missions.count as usize)
                     .ok_or("regional mission row count overflow")?,

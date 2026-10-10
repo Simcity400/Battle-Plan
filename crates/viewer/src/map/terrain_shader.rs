@@ -1,5 +1,5 @@
-//! Compiled content pdxmap passes. Native streams: 141263E30/141263440;
-//! submission and b1 writes: 141264D30. The uniform LOD is an owner exception.
+//! Compiled content pdxmap passes with native vertex streams and constant bindings. The uniform
+//! terrain LOD is an approved fidelity limit.
 use eframe::wgpu::{self, util::DeviceExt};
 use installed_content::{
     ResolvedLayers,
@@ -28,7 +28,7 @@ impl Grid {
     }
 }
 
-// 141263E30 allocates 65*65 vertices and 64*64*6 indices per block.
+// Allocate 65*65 vertices and 64*64*6 indices per block.
 const SIDE: u32 = 64;
 fn refuse(reason: impl Into<String>) -> io::Error {
     io::Error::other(format!(
@@ -92,8 +92,8 @@ fn heights(bytes: &[u8], map: [u32; 2], patch: Patch) -> Vec<[i16; 2]> {
     let sample = |x: u32, z: u32| {
         let x = x % map[0];
         let z = z.min(map[1] - 1);
-        // 1412636CC..6D4 multiplies 0.1 by 100 first; 1412638EE..8F7 truncates to int16.
-        // The decoded bitmap is top-down; native CMap+178 bytes are bottom-up.
+        // Multiply 0.1 by 100 before truncating to signed 16-bit. Decoded bitmap rows are top-down;
+        // height samples for the terrain vertex stream are bottom-up.
         i16::from(bytes[((map[1] - 1 - z) * map[0] + x) as usize]) * 10
     };
     positions()
@@ -162,7 +162,7 @@ fn patches(grid: Grid, map: [u32; 2], offset: f32) -> io::Result<Vec<Patch>> {
     Ok(result)
 }
 fn constants(patch: Patch, matrix: [[f32; 4]; 4]) -> Vec<u8> {
-    // All112 bytes are initialized to zero at141264D30. Uniform LOD has no snaps.
+    // All 112 bytes are initialized to zero. Uniform LOD has no snaps.
     let mut data = vec![0; 112];
     data[..64].copy_from_slice(bytemuck::bytes_of(&matrix));
     for (offset, value) in [
@@ -229,7 +229,7 @@ impl Terrain {
         map: [u32; 2],
         samples: u32,
     ) -> io::Result<Self> {
-        // Native loader141263E30 explicitly errors on dimensions not divisible by64.
+        // Native loader explicitly errors on dimensions not divisible by64.
         if map.contains(&0)
             || map.iter().any(|n| !n.is_multiple_of(SIDE))
             || u64::from(map[0]) * u64::from(map[1]) != bytes.len() as u64
@@ -305,7 +305,7 @@ impl Terrain {
         };
         let mut pass = gpu::Pass::packed(&compiled, &state, format, samples);
         let mut attributes: [Vec<wgpu::VertexAttribute>; 2] = Default::default();
-        // Declaration141261456: signed16x4 POSITION stream0, signed16x2 TEXCOORD0 stream1.
+        // Declaration: signed16x4 POSITION stream0, signed16x2 TEXCOORD0 stream1.
         for input in &compiled.vertex.inputs {
             let (slot, format, width) = match input.semantic.as_str() {
                 "POSITION" | "POSITION0" => (0, wgpu::VertexFormat::Sint16x4, 4),
@@ -336,8 +336,8 @@ impl Terrain {
                 attributes,
             })
             .collect();
-        // All three callers bind CPdxMap+58: front_ccw=1 (1412625E9..601).
-        // Underwater CPdxMap+78 and renderer+90 both enable depth writes/LESS_EQUAL.
+        // Terrain uses counterclockwise fronts. Underwater and ordinary renderer depth states both
+        // enable writes with LESS_EQUAL.
         let raster = RasterizerState {
             front_ccw: true,
             ..Default::default()

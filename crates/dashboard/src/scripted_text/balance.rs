@@ -1,25 +1,80 @@
-//! CCountry's balance-of-power properties (141A7B350 cases 46..58).
+//! Country balance-of-power properties.
 use super::*;
 use installed_content::localisation::Argument;
 
-const PROPERTIES: [&str; 13] = [
-    "GetPowerBalanceName",
-    "GetLeftSideName",
-    "GetRightSideName",
-    "GetActiveSideName",
-    "GetTrendingSideName",
-    "GetActiveRangeName",
-    "GetChangeRateDesc",
-    "GetBopTrendTextIcon",
-    "GetPowerBalanceModDesc",
-    "GetActiveRangeModDesc",
-    "GetActiveRangeRuleDesc",
-    "GetActiveRangeActivationEffect",
-    "GetActiveRangeDeactivationEffect",
-];
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BalanceProperty {
+    Name,
+    LeftSideName,
+    RightSideName,
+    ActiveSideName,
+    TrendingSideName,
+    ActiveRangeName,
+    ChangeRateDescription,
+    TrendIcon,
+    ModifierDescription,
+    ActiveRangeModifiers,
+    ActiveRangeRules,
+    ActivationEffects,
+    DeactivationEffects,
+}
 
-pub(super) fn is_property_exact(name: &str) -> bool {
-    PROPERTIES.contains(&name)
+impl BalanceProperty {
+    fn parse(name: &str) -> Option<Self> {
+        Some(if named(name, "GetPowerBalanceName") {
+            Self::Name
+        } else if named(name, "GetLeftSideName") {
+            Self::LeftSideName
+        } else if named(name, "GetRightSideName") {
+            Self::RightSideName
+        } else if named(name, "GetActiveSideName") {
+            Self::ActiveSideName
+        } else if named(name, "GetTrendingSideName") {
+            Self::TrendingSideName
+        } else if named(name, "GetActiveRangeName") {
+            Self::ActiveRangeName
+        } else if named(name, "GetChangeRateDesc") {
+            Self::ChangeRateDescription
+        } else if named(name, "GetBopTrendTextIcon") {
+            Self::TrendIcon
+        } else if named(name, "GetPowerBalanceModDesc") {
+            Self::ModifierDescription
+        } else if named(name, "GetActiveRangeModDesc") {
+            Self::ActiveRangeModifiers
+        } else if named(name, "GetActiveRangeRuleDesc") {
+            Self::ActiveRangeRules
+        } else if named(name, "GetActiveRangeActivationEffect") {
+            Self::ActivationEffects
+        } else if named(name, "GetActiveRangeDeactivationEffect") {
+            Self::DeactivationEffects
+        } else {
+            return None;
+        })
+    }
+
+    fn from_country_ordinal(ordinal: u32) -> Option<Self> {
+        Some(match ordinal {
+            46 => Self::Name,
+            47 => Self::ModifierDescription,
+            48 => Self::LeftSideName,
+            49 => Self::RightSideName,
+            50 => Self::ActiveSideName,
+            51 => Self::TrendingSideName,
+            52 => Self::ActiveRangeName,
+            53 => Self::ActiveRangeModifiers,
+            54 => Self::ActiveRangeRules,
+            55 => Self::ActivationEffects,
+            56 => Self::DeactivationEffects,
+            57 => Self::ChangeRateDescription,
+            58 => Self::TrendIcon,
+            _ => return None,
+        })
+    }
+}
+
+pub(super) fn matches_numeric_handler(name: &str, ordinal: u32) -> bool {
+    let handler = BalanceProperty::from_country_ordinal(ordinal);
+    handler.is_some() && BalanceProperty::parse(name) == handler
 }
 
 impl<'a> ScriptedText<'a> {
@@ -49,12 +104,12 @@ impl<'a> ScriptedText<'a> {
             let mut context = crate::effect_description::Context::new(
                 self,
                 self.localisation,
-                self.root, // Viewing country, native CContextLocalizationText +0x520/+0x524.
+                self.root, // Viewing country.
                 name,
                 content.view(None),
             )
             .with_expansion_scopes(scopes);
-            // Nested BuildDescription preserves active TLS (1405354A0/140544190).
+            // Nested descriptions preserve active thread-local variables.
             let session = scopes.session.borrow().clone();
             if let Some(session) = &session {
                 context = context.with_variable_session(session);
@@ -113,7 +168,7 @@ impl<'a> ScriptedText<'a> {
         };
         let mut text = String::new();
         let key = if which == 9 {
-            // 14054E050 lists registered keys by index, then custom tooltip slots.
+            // List registered keys by index, then custom tooltip slots.
             let mut values: Vec<_> = range
                 .modifiers
                 .listed()
@@ -134,7 +189,7 @@ impl<'a> ScriptedText<'a> {
                 {
                     continue;
                 }
-                // 140551820 clamps first; 14054E050 wraps even this unit scale.
+                // Clamp first; even this unit scale uses wrapping multiplication.
                 let value = if definition.flags & engine::modifier_definition::CLAMP_MAXIMUM != 0 {
                     modifier.value.clamp(0, 100_000)
                 } else {
@@ -145,10 +200,8 @@ impl<'a> ScriptedText<'a> {
                     continue;
                 }
                 if definition.feature_selector != 0 {
-                    // Register 14054A990 writes param 9 to definition +0x68.
-                    // 14054E050's getter 140551820 and formatter 14054F6D0
-                    // require any selector bit, not has_feature 1401AE640.
-                    // 143317CD0 -> 1401AE190 returns the recorded 143316E78.
+                    // The definition's feature selector requires any matching bit
+                    // in the recorded DLC mask.
                     let Ok([features]) = self
                         .frame
                         .complete::<tables::SimulationFeatures>()
@@ -207,10 +260,10 @@ impl<'a> ScriptedText<'a> {
             }
             b"PROGRESS_SECTION_MODIFIER".as_slice()
         } else if which == 10 {
-            // CRule::BuildChangedRulesDescription 14062CE10, registry order.
+            // Changed rules follow registry order.
             let mut start = 0;
             for (&value, &(_, key, default, fulfilled)) in
-                range.rules.iter().zip(installed_content::power_balance::RULES)
+                range.rules.iter().zip(installed_content::power_balance::rules())
             {
                 if value == default {
                     continue;
@@ -242,7 +295,7 @@ impl<'a> ScriptedText<'a> {
             )?;
             if !refused.is_empty() {
                 return Err(format!(
-                    "{name}: {} unsupported effect descriptions ({}); their renderers are not ported (CEffect::BuildDescription 140532780)",
+                    "{name}: {} unsupported effect descriptions ({}); their renderers are not implemented",
                     refused.len(),
                     refused.join(", ")
                 ));
@@ -256,7 +309,7 @@ impl<'a> ScriptedText<'a> {
         if text.is_empty() {
             return Ok(text);
         }
-        // 140A04DA0/140A05130/140A04500/140A047C0: text DESC, country event.
+        // Substitute DESC, then expand in a country event.
         let text = self
             .localisation
             .localise_with(key, &[("DESC", Argument::Text(&text))])
@@ -274,10 +327,11 @@ impl<'a> ScriptedText<'a> {
         name: &str,
         scopes: &ExpansionScopes<'_, 'a>,
     ) -> Result<Option<String>, String> {
-        let Some(which) = PROPERTIES.iter().position(|p| named(p, name)) else {
+        let Some(property) = BalanceProperty::parse(name) else {
             return Ok(None);
         };
-        // find_by_country 140E424F0: first manager record containing the country.
+        let which = property as usize;
+        // Select the first manager record containing the country.
         // Whole membership is required, including records preceding a found one.
         let members = self
             .frame
@@ -310,7 +364,7 @@ impl<'a> ScriptedText<'a> {
         };
         if which < 6 {
             let Some(record) = record else {
-                // Null identities are empty: 140A7C300, 140A7C610, 140A7C800.
+                // Null identities are empty.
                 return Ok(Some(String::new()));
             };
             let key = match which {
@@ -323,8 +377,8 @@ impl<'a> ScriptedText<'a> {
                 _ => &record.active_range,
             };
             let text = self.localisation.localise(key).map_err(|e| e.to_string())?;
-            // 140A7E7B0 starts a fresh empty event; the range vf9 instead
-            // receives a fresh country event (140A7E780).
+            // Definition names use a fresh empty event; the active range
+            // instead receives a fresh country event.
             if which == 5 {
                 return self
                     .expand_fresh_country(&text, slot, name, scopes)
@@ -332,7 +386,7 @@ impl<'a> ScriptedText<'a> {
             }
             if text.contains('[') && text.contains(']') {
                 return Err(format!(
-                    "{name}: the definition name requires scripted localisation in an empty event scope (140A7E7B0), which this country view cannot reproduce"
+                    "{name}: the definition name requires scripted localisation in an empty event scope, which this country view cannot reproduce"
                 ));
             }
             return Ok(Some(text));
@@ -419,7 +473,7 @@ impl<'a> ScriptedText<'a> {
                         Ok(text)
                     },
                 )?;
-                // 140E422E0 adds a separator after nonempty daily text only
+                // Add a separator after nonempty daily text only
                 // when the breakdown has not already ended with a newline.
                 if !output.is_empty() && !output.ends_with('\n') {
                     output.push('\n');
@@ -442,11 +496,11 @@ impl<'a> ScriptedText<'a> {
                 weekly = weekly.wrapping_add(native.weekly_effective());
             }
         }
-        // 140E41430: signed 64-bit seven-times-daily plus weekly.
+        // Signed 64-bit seven-times-daily plus weekly.
         let weekly_change = daily.wrapping_mul(7);
         let weekly_change = weekly_change.wrapping_add(weekly);
         if which == 7 {
-            // Executable literals and trailing space at 142700920.
+            // Trend icon name and trailing space.
             return Ok(Some(if weekly_change == 0 {
                 String::new()
             } else {
@@ -456,7 +510,7 @@ impl<'a> ScriptedText<'a> {
                 )
             }));
         }
-        // 140E420B0 preserves its sentinel path and wrapping fixed5 product.
+        // Preserve the sentinel path and wrapping fixed5 product.
         let converted = if !(i64::MIN + 2..=i64::MAX - 1).contains(&weekly) {
             0xffff_ffff
         } else {

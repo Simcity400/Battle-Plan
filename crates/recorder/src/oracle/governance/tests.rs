@@ -103,6 +103,8 @@ fn active_ideas_report(actual: &[&[u8]], expected: &[&[u8]], tokens: &[&[u8]]) -
 
 #[test]
 fn active_ideas_use_recorded_canonical_spelling_across_mod_files() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "oracle_idea_case_{}_{:?}",
         std::process::id(),
@@ -375,7 +377,7 @@ fn format99_rosters_compare_order_and_exact_values_for_5000_countries() {
     assert!(compare_decision_random_items(&frame, &pack, &links, &mut Report::default()).is_err());
 }
 
-/// Saved status N is canonical slot N's (140D6C880, 140D6A7B0). Every
+/// Saved status N is canonical slot N's. Every
 /// census country needs its captured row, empty or not; only a status
 /// whose slot is outside the census may be missing from the recording,
 /// and then only while it holds no unlock.

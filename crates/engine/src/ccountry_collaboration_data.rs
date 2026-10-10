@@ -1,14 +1,14 @@
-//! CCountryCollaborationData, confirmed by the pinned executable's RTTI.
+//! Country collaboration relation state.
 
 use crate::Memory;
 
-/// CCountryCollaborationData vtable; old D52 collector_module.rs:45 and pinned RTTI agree.
+/// Collaboration-data vtable.
 pub const VTABLE_RVA: usize = 0x029a_5d08;
-/// CCountryCollaborationData target country link, u32; old read_country_collaboration_relations reads +8.
+/// Target country link, u32.
 pub const TARGET_COUNTRY: usize = 0x08;
-/// CCountryCollaborationData progress, i64/100000; old collector_module.rs:676 reads the full native qword without narrowing.
+/// Progress, signed i64 scaled by 100000.
 pub const PROGRESS: usize = 0x10;
-/// CCountryCollaborationData progress denominator; old D52 fixed-point contract and read_country_collaboration_relations use 100000.
+/// Progress fixed-point denominator.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

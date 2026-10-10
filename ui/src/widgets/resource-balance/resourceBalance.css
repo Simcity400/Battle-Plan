@@ -1,7 +1,7 @@
 .resource-balance { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; min-height: 0; padding: var(--space-2) 0 var(--space-2); }
 .resource-balance > .chip-set { padding: 0 var(--space-3); }
 .resource-caption { margin: 0; padding: 0 var(--space-3); font-size: var(--type-xs); color: var(--muted); }
-/* Mock-up economy-1: icon and name, then a supply bar above a demand bar, then the net. */
+/* Icon and name, then a supply bar above a demand bar, then the net. */
 .resource-bars { display: grid; grid-template-columns: max-content minmax(60px, 1fr) max-content; grid-auto-rows: minmax(34px, 1fr); align-content: start;
   flex: 1; min-height: 0; margin: 0; padding: 0 var(--space-3); overflow-y: auto; list-style: none; }
 /* Each row spans the columns as a subgrid, so it is one focusable box. */

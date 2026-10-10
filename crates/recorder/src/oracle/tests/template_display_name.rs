@@ -425,7 +425,7 @@ fn daily_key_presence_is_independent_of_inactive_hourly_fallback() {
     assert!(report_daily_name(&frame, &saved).outcome().is_ok());
     assert!(report_name(&frame, &saved).outcome().is_ok());
 
-    // The native writer still emits the key, but GetDisplayName does not read
+    // The native writer still emits the key, but display-name lookup does not read
     // it: the literal has nonzero stored length despite its empty text prefix.
     saved_name_fields(&mut saved, "name=\"\"");
     let daily = report_daily_name(&frame, &saved);

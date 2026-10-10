@@ -1,7 +1,7 @@
-//! Optional strike-readiness operands from 141976180. The four ship bases are
-//! stored simulation words; only torpedo cooldown calls 140C29020, with key
-//! 0x1BE and the task force's selected fleet leader. No combat-side object,
-//! getter invocation, modifier tree, client state or carried packet is used.
+//! Optional strike-readiness operands. Four ship bases are stored simulation
+//! words; torpedo cooldown alone needs its effective modifier with the task
+//! force's selected fleet leader. No combat side, game call, modifier tree,
+//! client state or carried packet supplies these operands.
 
 use crate::{
     Memory, allocation, cnaval_combatant::field, cpdx_array::Array,
@@ -10,8 +10,7 @@ use crate::{
 };
 
 const ONE: i64 = 100_000;
-// Register@1405D9556; modifier_keys/builtins.rs calls this
-// naval_torpedo_cooldown_factor. Root owns the named fixed-layout guard.
+// Torpedo-cooldown modifier key; root owns its named fixed-layout guard.
 const COOLDOWN_KEY: u32 = 0x1be;
 pub const METADATA_CAPACITY: &str = "ship strike modifier metadata capacity exceeded";
 
@@ -154,8 +153,7 @@ impl TorpedoCooldownMemo {
         // or unreadable header. Original organisation metadata is untouched.
         let table = modifier_definition::table(memory, base);
         if self.worker_growth {
-            // ReserveTable@140604E40 retains the complete +C definition count;
-            // the original metadata table header admits
+            // The complete definition count in the original metadata header admits
             // every current definition before recording this reached result.
             let count = table.as_ref().map_or(0, |table| table.count as usize);
             let required = count.max(
@@ -221,9 +219,9 @@ pub fn read_maximum_organisation_and_torpedo_cooldown(
     })
 }
 
-/// Four independent exact 8-byte spans, in 141976180's summary lane order.
-/// The caller has already admitted/authenticated this same ShipModels seed.
-/// A missing span does not stop or manufacture any sibling base value.
+/// Four independent exact 8-byte spans in summary lane order. The caller
+/// already authenticated this ShipModels seed. Missing spans neither stop
+/// nor manufacture sibling values.
 pub fn read_strike_bases(memory: &impl Memory, ship: usize) -> [Option<i64>; 4] {
     [0x1e8, 0x1f8, 0x210, 0x208].map(|offset| field(memory, ship, offset).ok())
 }
@@ -285,9 +283,9 @@ fn read_cooldown(
         return Err("ship strike task differs from organisation invocation");
     }
     auth(memory, base, task, ctask_force::VTABLE_RVA)?;
-    // 141976180 passes 140D4FCE0(task) explicitly. Authenticate that selection
-    // independently before reusing the recursive 1BB result obtained with the
-    // original getter's default leader. A mismatch never substitutes a leader.
+    // Authenticate the task force's selected fleet leader independently before
+    // reusing a result obtained with the original query's default leader.
+    // A mismatch never substitutes a leader.
     let fleet = ptr(memory, task, ctask_force::FLEET)?;
     let leader = if fleet == 0 {
         None

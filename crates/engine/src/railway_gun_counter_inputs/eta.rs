@@ -1,9 +1,9 @@
-//! Passive first-edge `140BECF90` operands for class13.
+//! Passive first-edge ETA operands for class-13 units.
 //!
-//! `140E74B20` dispatches transfer/sea edges to `141955DF0`, otherwise adds
-//! on-demand variant stat0x3E to the directed rail contribution (`141954DD0`).
-//! The land branch applies outer scale then `140E75CB0`'s fresh supply factor.
-//! No client duration/path cache is read, and no engine getter is called.
+//! Transfer or sea edges use transport speed; land edges add current
+//! variant stat 0x3E to the directed rail contribution. The land branch
+//! applies outer scale, then the fresh supply factor. No client duration
+//! or path cache is read, and no engine getter is called.
 
 use super::{EtaOperands, FreshEtaObservations, Row, at};
 use crate::{
@@ -13,13 +13,13 @@ use crate::{
 };
 use std::cell::OnceCell;
 
-// 140E74B20 resolves the retained variant reference at gun+338.
+// The retained variant reference is at gun +0x338.
 const VARIANT: usize = 0x338;
-// 140E75CB0's independent supply storage, not CSupplyConsumer+40.
+// Independent supply storage, separate from supply-consumer +0x40.
 const SUPPLY_CAPACITY: usize = 0x400;
 const SUPPLY_REMAINING: usize = 0x410;
 const OUT_OF_SUPPLY_SPEED_RVA: usize = 0x0331_9050;
-// 140E74B20 and 141954DD0 read signed fixed5 globals at these addresses.
+// Signed fixed5 speed globals.
 const LAND_SCALE_RVA: usize = 0x0331_d688;
 const NAVAL_SCALE_RVA: usize = 0x0331_efe0;
 const RAIL_MAX_RVA: usize = 0x0331_d0e8;
@@ -48,7 +48,7 @@ fn variant(
     registry: &mut HeaderResolver,
 ) -> Result<Option<usize>, &'static str> {
     let handle = field::<u64>(memory, gun, VARIANT)?;
-    // IsReferenceValid@14052BDE0: an absent/deleted reference contributes zero.
+    // An absent or deleted reference contributes zero.
     let Some(variant) = registry.resolve(memory, base, handle)? else {
         return Ok(None);
     };
@@ -73,6 +73,7 @@ pub(super) fn named_demand(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn equipment_speed(
     memory: &impl Memory,
     base: usize,
@@ -81,12 +82,13 @@ fn equipment_speed(
     named: &mut railway_gun_speed::NamedBonuses<'_>,
     registry: &mut HeaderResolver,
     layout: &OnceCell<Result<fixed_layout::Report, &'static str>>,
+    layout_buffer: &mut [u8],
 ) -> Result<i64, &'static str> {
     let Some(variant) = variant(memory, base, gun, registry)? else {
         return Ok(0);
     };
     let checked = layout
-        .get_or_init(|| fixed_layout::check(memory, base))
+        .get_or_init(|| fixed_layout::check(memory, base, layout_buffer))
         .as_ref()
         .map_err(|reason| *reason)?;
     if checked
@@ -141,11 +143,21 @@ pub(super) fn maximum_speed(
     named: &mut railway_gun_speed::NamedBonuses<'_>,
     registry: &mut HeaderResolver,
     layout: &OnceCell<Result<fixed_layout::Report, &'static str>>,
+    layout_buffer: &mut [u8],
     observations: &mut FreshEtaObservations,
 ) -> Result<i64, &'static str> {
-    *observations
-        .maximum_speed
-        .get_or_insert_with(|| equipment_speed(memory, base, state, gun, named, registry, layout))
+    *observations.maximum_speed.get_or_insert_with(|| {
+        equipment_speed(
+            memory,
+            base,
+            state,
+            gun,
+            named,
+            registry,
+            layout,
+            layout_buffer,
+        )
+    })
 }
 
 pub(super) fn land_supply_factor(
@@ -171,6 +183,7 @@ pub(super) fn capture(
     named: &mut railway_gun_speed::NamedBonuses<'_>,
     registry: &mut HeaderResolver,
     layout: &OnceCell<Result<fixed_layout::Report, &'static str>>,
+    layout_buffer: &mut [u8],
     observations: &mut FreshEtaObservations,
 ) -> Result<EtaOperands, &'static str> {
     let (gun, from) = source;
@@ -193,7 +206,7 @@ pub(super) fn capture(
     let from_definition = definition(memory, from, row.province)?;
     let from_land =
         field::<u8>(memory, from_definition, province_definition::TERRAIN_FLAGS)? & 1 != 0;
-    // 140E74B20 stops the terrain predicate at a nonland departure.
+    // The terrain predicate stops at a nonland departure.
     let to_land = from_land
         && field::<u8>(
             memory,
@@ -216,6 +229,7 @@ pub(super) fn capture(
             named,
             registry,
             layout,
+            layout_buffer,
             observations,
         )?;
         let rail = crailway_manager::railway_percentage(memory, base, state, from, to)?;

@@ -1,9 +1,7 @@
 use super::*;
 
 impl Renderer<'_, '_, '_> {
-    // Own 14039AA90 / 140396550, readers 1403ACF40 / 1403ABDF0.
-    // EFFECT_WHITE_PEACE_WITH@14275BF60; COUNTRY@142728968.
-    // A nonempty tooltip suppresses target resolution; both paths expand + LF.
+    // A nonempty tooltip suppresses target resolution; both paths expand and append LF.
     pub(in crate::effect_description) fn char_peace(
         &self,
         item: &Item,
@@ -84,21 +82,25 @@ mod tests {
         }
     }
 
-    // common/decisions/ast.txt:79.
+    // A scalar country and a tooltip-override block.
     #[test]
     fn white_peace() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         check(&[
             ("white_peace=BBB", "Peace Beta AAA\n"),
             ("white_peace={tag=missing tooltip=SYN_TIP}", "Tip AAA\n"),
         ]);
     }
 
-    // common/scripted_effects/ita_scripted_effects.txt:6677.
+    // A country block with an execution-only score factor.
     #[test]
     fn start_peace_conference() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         check(&[
             (
-                "start_peace_conference={tag=BBB score_factor=0.25}",
+                "start_peace_conference={score_factor=0.6 tag=BBB}",
                 "Conference Beta AAA\n",
             ),
             (

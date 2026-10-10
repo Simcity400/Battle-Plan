@@ -1,4 +1,4 @@
-//! F49710 normalized attack/defence and F4B6E0 normalized speed.
+//! Normalized air attack, defence and speed.
 //! Every define is resolved through the recording's content stack. Raw
 //! observations retain the original producer's branch-local failures.
 use crate::rows::{
@@ -18,7 +18,7 @@ pub struct Defines {
     pub night_threshold: i64,
 }
 impl Defines {
-    /// Unclamped Lua fixed5 loads7C9E50/7CA270/7CA480/7C5F10/7C6120/7D0950.
+    /// Unclamped content-defined fixed5 operands.
     pub fn read<E>(
         mut fixed5: impl FnMut(&'static str, &'static str) -> Result<i64, E>,
     ) -> Result<Self, E> {
@@ -51,8 +51,8 @@ fn ace(source: &Source) -> Fact<Option<&Ace>> {
     )
     .map(Option::as_ref)
 }
-/// 60B790: unresolved assignment or exactly zero signed count supplies unity.
-/// Negative aircraft counts remain native signed division operands.
+/// Unresolved assignment or exactly zero signed count supplies unity.
+/// Negative aircraft counts remain signed division operands.
 fn ace_scale(ace: &Ace, defines: Defines) -> Fact<i64> {
     let assigned = required(
         ace.assigned_aircraft,
@@ -116,8 +116,8 @@ fn mission_bonus(country: &Modifiers, kind: u32) -> Fact<i64> {
     }
 }
 
-/// F49710's two normalized leaves. Each leaf is independent: an unrelated
-/// attack failure cannot replace a known nonpositive defence with a refusal.
+/// Two independent normalized combat leaves: an unrelated attack failure
+/// cannot replace a known nonpositive defence with a refusal.
 pub fn combat(source: &Source, current_type: u32, defines: Defines) -> [Fact<i64>; 2] {
     [
         combat_lane(source, current_type, defines, 0),
@@ -170,7 +170,7 @@ fn combat_lane(source: &Source, kind: u32, defines: Defines, lane: usize) -> Fac
                 ));
             }
         }
-        // F48230 always reaches this effective lookup and type vector for a live ace.
+        // A live ace always demands this effective lookup and type vector.
         let bonus = modifier(country, 7)?;
         let kind = required(
             ace.type_modifiers.as_ref(),
@@ -188,8 +188,8 @@ fn combat_lane(source: &Source, kind: u32, defines: Defines, lane: usize) -> Fac
     )?;
     let mission = if let Some(environment) = environment {
         let mission = mission_bonus(country, kind)?;
-        // F62FE0 supplies current kind as explicit override; only override8
-        // receives the strategic bomber defence modifier.
+        // Current kind is an explicit override; only override 8 receives the
+        // strategic bomber defence modifier.
         if lane == 1 && kind == 8 {
             factor = factor.wrapping_add(modifier(country, 10)?);
         }
@@ -261,8 +261,8 @@ fn combat_lane(source: &Source, kind: u32, defines: Defines, lane: usize) -> Fac
         },
     )
 }
-/// F4B5E0 followed by F4B6E0. It uses default speed+580, never the
-/// current mission speed slot, and has no weather/night/location branch.
+/// Normalize ace-modified default speed, never the current mission speed
+/// slot; there is no weather/night/location branch.
 pub fn speed(source: &Source, defines: Defines) -> Fact<i64> {
     let base = required(source.speed, "transport original default air speed refused")?;
     let ace = ace(source)?;

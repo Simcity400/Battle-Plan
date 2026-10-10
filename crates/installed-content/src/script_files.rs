@@ -7,17 +7,10 @@
 use crate::{DiagnosticKind, DiagnosticMessage, ResolvedLayers, parser::Document};
 use std::io;
 
-/// The files a database loader reads from `folder` (lower case, ending in
-/// `/`), in its order: `enumerate_directory_wrapper` (1424C73B0) or
-/// `Vfs_EnumerateRecursive` (1424C7630), both with depth 0, so
-/// `enumerate_directory` (1424C5170) does not enter subdirectories
-/// (`param_7` 0 at 140A34150, 140A34320, 140712E90, 1401886F0, 1406025E0,
-/// 140A9D0E0, 1406B0120, 1409B8510, 140AB3660 and 140AAE5A0). It keys the merged tree's
-/// regular files (CollectVfsEnumerationEntry 1424C5EF0, types 0, 2, 3) by
-/// name in a `std::map`, bytewise, so the files of every layer sort together
-/// by name and a name listed by several layers is one entry, read from the
-/// winning layer; `filter` is `ends_with` (1424B6AB0, exact bytes), and
-/// `None` lists every file (1401886F0 passes no filter).
+/// List regular files directly in `folder` (lowercase and ending in `/`) without
+/// recursion. Merge every layer's filenames in byte order, listing repeated names once
+/// and reading them from the winning layer. Match `filter` by an exact suffix; `None`
+/// lists every file.
 pub fn paths(layers: &ResolvedLayers, folder: &str, filter: Option<&str>) -> Vec<String> {
     let mut files: Vec<(String, String)> = layers
         .listed_paths(folder)
@@ -70,9 +63,8 @@ mod tests {
     #[cfg(feature = "test-support")]
     use super::*;
 
-    /// enumerate_directory (1424C5170) with depth 0: the regular files
-    /// directly in the folder, every layer's names in one bytewise order, a
-    /// name several layers list once, `ends_with` the filter exactly.
+    /// List regular files directly in the folder, merging all layer names in byte order
+    /// and listing repeated names once. The suffix filter compares exact bytes.
     #[cfg(feature = "test-support")]
     #[test]
     fn a_folder_lists_as_the_database_loaders_list_it() {

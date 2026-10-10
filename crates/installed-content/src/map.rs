@@ -30,7 +30,7 @@ pub struct ProvinceDefinition {
     pub rgb: [u8; 3],
     pub kind: ProvinceKind,
     /// One-based index into `map/default.map`'s continent list; zero is none.
-    /// `141530D60` narrows the eighth column's `strtol` to the record's u8.
+    /// The eighth column's signed decimal prefix narrowed to u8.
     pub continent: u8,
 }
 
@@ -60,10 +60,8 @@ pub struct MapData {
     pub country_colors: CountryColors,
 }
 
-/// One `definition.csv` record as `map_definition_record_layout::parse@141530D60`
-/// builds it and `append_definition@1415307C0` stores it (u16 id at `+0x00`,
-/// red, green and blue at `+0x02..+0x04`, kind `+0x05`, coastal `+0x06`,
-/// continent `+0x07`, terrain name `+0x08`).
+/// One `definition.csv` record: a u16 id, byte red, green and blue,
+/// kind, coastal and continent fields, and the terrain name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DefinitionRow {
     /// One-based line of the file, for messages.
@@ -90,18 +88,15 @@ impl DefinitionRow {
     }
 }
 
-/// Every record of `definition.csv` in file order, as
-/// `read_fixed_definitions@1415329E0` and `map_definition_record_layout::parse@141530D60`
-/// read it. The file is read as a C string (it ends at its first NUL) and split
-/// on line feeds (`split_byte_views@1424D23B0`, which keeps empty pieces); each
-/// line ends at its first carriage return and splits on `;` into at most eight
-/// columns. A line of fewer than three columns is logged and skipped. Each
-/// number is `strtol` (`parse_signed_integer32@14253D550`, [`engine_number`])
-/// from its column's first byte in the whole text, so an empty last column
-/// reads on through the line break, and is narrowed to the record's field; the
-/// kind and coastal columns compare their exact bytes (`true` is coastal).
-/// Absent columns take the parser's defaults: kind 1, not coastal, terrain
-/// `unknown`, continent 0.
+/// Every record of `definition.csv` in file order. The text ends at its
+/// first NUL and splits on line feeds, keeping empty pieces; each line ends
+/// at its first carriage return and splits on `;` into at most eight columns.
+/// A line of fewer than three columns is logged and skipped. Each number is
+/// a signed decimal prefix ([`engine_number`]) scanned from its column's first
+/// byte in the whole text, so an empty last column reads through the line
+/// break, then narrows to the record's field. Kind and coastal columns
+/// compare exact bytes (`true` is coastal). Absent columns take the parser's
+/// defaults: kind 1, not coastal, terrain `unknown`, continent 0.
 pub(crate) fn definition_rows(input: &[u8]) -> io::Result<Vec<DefinitionRow>> {
     let text = parser::c_string(input);
     let mut rows = Vec::new();
@@ -162,9 +157,9 @@ pub struct Definitions {
     pub provinces: BTreeMap<u32, ProvinceDefinition>,
     /// Each record's id in file order, which is its native record position.
     pub record_ids: Vec<u16>,
-    /// `build_id_raster@141532390`'s lookup: each record in file order whose
-    /// id is not zero writes its id under its colour, so a later record takes
-    /// a colour an earlier one also declares and record zero's is a miss.
+    /// Each nonzero record writes its id under its colour in file order,
+    /// so a later record takes a colour an earlier one also declares and
+    /// record zero's colour is a miss.
     colors: HashMap<u32, u32>,
 }
 
@@ -208,9 +203,9 @@ pub fn read_definitions(input: &[u8]) -> io::Result<Definitions> {
     })
 }
 
-/// Each record's terrain name by id (`+0x08`, column seven, `unknown` when
-/// the row has none), from the rows `definition_rows` reads; two records of
-/// one id are refused, as [`read_definitions`] refuses them.
+/// Each record's terrain name by id (column seven, `unknown` when absent),
+/// from the rows [`definition_rows`] reads; duplicate ids are refused as
+/// [`read_definitions`] refuses them.
 pub fn province_terrains(input: &[u8]) -> io::Result<BTreeMap<u32, Vec<u8>>> {
     let mut terrains = BTreeMap::new();
     for row in definition_rows(input)? {
@@ -226,10 +221,10 @@ pub fn parse_definitions(input: &[u8]) -> io::Result<BTreeMap<u32, ProvinceDefin
     Ok(read_definitions(input)?.provinces)
 }
 
-/// Resolves the provinces bitmap as `build_id_raster@141532390` does, through
-/// the native map bitmap loader (`NativeBitmap`) and the definitions' colour
-/// lookup. A colour no record claims is refused: the game invents a land
-/// province for it, which the map does not model.
+/// Resolves the provinces bitmap through the map bitmap loader
+/// (`NativeBitmap`) and the definitions' colour lookup. A colour no record
+/// claims is refused: the game invents a land province for it, which this
+/// map reader does not model.
 pub fn decode_provinces_bmp(input: &[u8], definitions: &Definitions) -> io::Result<ProvinceImage> {
     let bitmap = NativeBitmap::decode(input)?;
     let count = bitmap
@@ -272,10 +267,8 @@ fn apply_autonomy_colors(
         Mtth,
     }
     let mut undecided = Vec::new();
-    // CAutonomousStateDatabase::ReadMember 14066C470 accepts both spellings;
-    // vtable 1427CD350 +0x18 is CPersistent::Read, including at file level.
-    // CAutonomousState::ReadMember 14066C200 dispatches all fields below.
-    // 14066B1B0 constructs each file's lexer in mode 0 (1424A6370).
+    // The database accepts both top-level spellings, then reads each
+    // definition's fields through the shared script reader.
     let read = native::read(
         input,
         native::Mode::KeepMark,
@@ -336,7 +329,7 @@ fn apply_autonomy_colors(
             continue;
         };
         let mut id = None;
-        let mut inherit = false; // 14066C470 initializes +0x2C to zero.
+        let mut inherit = false;
         for field in items {
             if field.keyword_is("id") {
                 id = Some(
@@ -346,8 +339,8 @@ fn apply_autonomy_colors(
                         .map_err(|error| invalid(format!("autonomy id: {error}")))?,
                 );
             } else if field.keyword_is("use_overlord_color") {
-                // 1424B06E0 compares C strings, independent of token kind;
-                // anything other than exact yes/no leaves the stored byte.
+                // Compare C strings independently of token kind; anything
+                // other than exact yes/no leaves the stored value.
                 inherit = field
                     .value
                     .scalar()
@@ -375,8 +368,8 @@ pub fn read_country_colors(layers: &ResolvedLayers) -> io::Result<CountryColors>
     Ok(colors)
 }
 
-/// Reads the definitions and provinces bitmap `map/default.map` names. The
-/// bitmap's size is the engine's `MAP_SIZE` (`CMap::load_province_raster`).
+/// Reads the definitions and provinces bitmap `map/default.map` names.
+/// The bitmap's size supplies the map's raster extent.
 pub fn load(layers: &ResolvedLayers) -> io::Result<MapData> {
     let files = crate::terrain::read_default_map(layers)?;
     let definitions = read_definitions(&layers.read(&files.file("definitions")?)?)?;
@@ -464,7 +457,7 @@ mod tests {
 
     #[test]
     fn a_later_record_takes_a_shared_colour_and_record_zero_never_claims_one() {
-        // Millennium Dawn's province 16257 shares record zero's black.
+        // A nonzero province can share record zero's colour.
         let definitions =
             read_definitions(b"0;0;0;0;land\n1;0;0;0;land\n2;5;5;5;sea\n3;0;0;0;lake\n").unwrap();
         assert_eq!(definitions.provinces.len(), 4);
@@ -588,6 +581,8 @@ mod tests {
 
     #[test]
     fn the_autonomy_colour_switch_defaults_to_off() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut colors = CountryColors::default();
         apply_autonomy_colors(&mut colors, b"autonomy_state={id=puppet} autonomy_state={id=union use_overlord_color=yes} autonomy_state={id=free use_overlord_color=no}", &KeyNames::default()).unwrap();
         assert!(!colors.use_overlord_color[b"puppet".as_slice()]);
@@ -604,6 +599,8 @@ mod tests {
 
     #[test]
     fn autonomy_replays_variables_and_keyword_kinds() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut colors = CountryColors::default();
         apply_autonomy_colors(&mut colors, br#"
             @flag="yes"

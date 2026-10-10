@@ -1,13 +1,12 @@
-//! F49710/F4B6E0 source graph borrowed by the original regional-air pass.
-//! Native vectors are copied once per callback, including failed observations.
-//! Direct combat scans preserve occurrences; effective lookups use the exact
-//! 551820 key-search recurrence and metadata. No game getter is called.
-//! F51060 rebuilds cached default/mission statistics from live equipment;
-//! F4D5D0, creation and pool split can reach that writer. Capture borrows the
-//! original F49280 selector and retains its stored values, including native
-//! staleness. F044D0/F04640 read the held simulation clock; no astronomical
-//! time or displayed weather substitutes. The owning callback must admit the
-//! current world/hour and native writer boundary before lending this graph.
+//! Source graph borrowed by the original regional-air pass. Vectors are
+//! copied once per callback, including failures. Direct combat scans retain
+//! occurrences; effective lookups retain the exact key-search recurrence
+//! and metadata. No game getter is called. Cached default/mission stats
+//! are rebuilt from live equipment during creation, pool splits and updates.
+//! Capture borrows the original selector and retains stored values, including
+//! staleness. It reads the held simulation clock without substituting
+//! astronomical time or displayed weather. The owning callback must admit
+//! the current world/hour and writer boundary before lending this graph.
 
 use crate::{
     Memory, cair_regional_mission::WingIdentity, ccountry, cpdx_array::Array,
@@ -17,7 +16,7 @@ use std::mem::size_of;
 
 pub type Fact<T> = Result<T, &'static str>;
 
-/// Off-thread header demand for F49710/F97BF0 weather and sampled clocks.
+/// Off-thread header demand for regional weather and sampled clocks.
 /// Every physical clock is a possible next-hour sample; no scalar is acquired.
 pub fn weather_entry_demand(memory: &impl Memory, base: usize, game: usize) -> Fact<usize> {
     let manager = field::<u64>(memory, game, crate::cgame_state::WEATHER_MANAGER)? as usize;
@@ -45,9 +44,9 @@ pub fn weather_entry_demand(memory: &impl Memory, base: usize, game: usize) -> F
     Ok(total)
 }
 
-/// F62FE0's normalized producer can borrow wing, effective-country, live ace,
-/// ace-type and ace-owner accumulators. Repeated census rows are an upper bound
-/// for their unique journal; this hint records no values or admission.
+/// The normalized producer borrows wing, effective-country, live ace,
+/// ace-type and ace-owner accumulators. Repeated census rows bound unique
+/// journal demand; this hint records no values or admission.
 pub fn wing_entry_demand(memory: &impl Memory, base: usize, game: usize) -> Fact<usize> {
     let countries = ccountry::Reader::new(memory, base, game)?;
     let mut total = Ok(0usize);
@@ -66,7 +65,7 @@ pub fn wing_entry_demand(memory: &impl Memory, base: usize, game: usize) -> Fact
                         .ok_or("transport normalization sizing demand overflow")?;
                     Ok(())
                 };
-                add(address(wing, 0x238)?)?; // F48230/F69BC0.
+                add(address(wing, 0x238)?)?;
                 let owner = if row.country_override > 0 {
                     row.country_override as u32
                 } else {
@@ -82,7 +81,7 @@ pub fn wing_entry_demand(memory: &impl Memory, base: usize, game: usize) -> Fact
                     authenticate(memory, base, ace, crate::cace::VTABLE_RVA)?;
                     if field::<u8>(memory, ace, crate::cace::ALIVE)? != 0 {
                         add(address(ace, crate::cace::MODIFIERS)?)?;
-                        // GetTypeModifiers@14060D010 returns type+38, accumulator+10.
+                        // Ace-type modifiers are at type +0x38, with accumulator +0x10.
                         add(address(field::<u64>(memory, ace, 0x170)? as usize, 0x48)?)?;
                         let owner = countries.of_pointer(field::<u64>(
                             memory,
@@ -98,8 +97,8 @@ pub fn wing_entry_demand(memory: &impl Memory, base: usize, game: usize) -> Fact
     );
     match walked.naval {
         crate::walk::Outcome::Rows { .. } => total,
-        // CountryEntry@1406ECA90 returns null when game+690 is null:
-        // no wing accumulator can be reached for this sizing observation.
+        // A null game-state +0x690 selects no country entry, so no wing
+        // accumulator is reached for this sizing observation.
         crate::walk::Outcome::Unavailable {
             reason: "strategic air manager absent",
         } => Ok(0),
@@ -115,8 +114,8 @@ fn entry_demand(memory: &impl Memory, at: usize) -> Fact<usize> {
         .map(|array| array.count as usize)
         .ok_or("transport normalization sizing modifier header invalid")
 }
-/// Native keys read by F48230/F69BC0/F47850/F46B00/F4B5E0. Their semantic
-/// layout must be admitted independently before these observations are used.
+/// Requested keys for wing and ace statistics. Their semantic layout
+/// must be admitted independently before observations are used.
 pub const KEYS: [u32; 16] = [
     2, 0xb, 0xd, 0xf, 0x10, 0x6f, 0x70, 0x72, 0x74, 0x75, 0x76, 0x104, 0x105, 0x106, 0x10d, 0x25a,
 ];
@@ -126,7 +125,7 @@ pub struct Modifiers {
     pub direct: [Option<i64>; 2],
     pub positive: [Option<u32>; 2],
     pub effective: [Option<i64>; 16],
-    /// Only the ace's direct F48230 scan needs its ordered raw occurrences.
+    /// Only the direct ace scan needs ordered raw occurrences.
     pub combat: Option<(usize, usize)>,
 }
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -145,7 +144,7 @@ pub struct Environment {
 }
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Source {
-    /// F4B7F0 indexes30/2F in the original current-mission stat block.
+    /// Mission-stat indices 0x30/0x2F in the original current-mission stat block.
     pub attack: Option<i64>,
     pub defence: Option<i64>,
     pub speed: Option<i64>,
@@ -459,7 +458,7 @@ impl Capture {
             }
         }
         for (position, key) in KEYS.into_iter().enumerate() {
-            // 551820's exact key-search recurrence. Failed unvisited keys or
+            // Retain the exact key-search recurrence. Failed unvisited keys or
             // unrelated raw words do not suppress an independently valid lookup.
             let selected = lookup(&self.entries[entry_first..], key);
             output.effective[position] = match selected {
@@ -481,7 +480,7 @@ impl Capture {
     }
 
     /// Original lookup_many_at's full16 census also supplies the new native
-    /// lookups. The old raw result has no extension entry-capacity dependency.
+    /// lookups. The original raw result has no extension entry-capacity dependency.
     fn weather_modifiers(
         &mut self,
         memory: &impl Memory,
@@ -631,7 +630,7 @@ impl Capture {
         (modifiers, naval)
     }
 
-    /// The old strict caller borrows any original graph observation. If its
+    /// The strict caller borrows any original graph observation. If its
     /// region was unattempted because extension node storage was unavailable,
     /// it still runs its original streaming census once. The caller guarantees
     /// one strict call per original, unique region before retiring this arena.
@@ -658,9 +657,9 @@ impl Capture {
         self.copy_weather_modifiers(memory, base, at, false).1
     }
 
-    /// Original F97BF0 key2A and F49710's weather keys borrow the same node.
-    /// A native null weather record skips F97BF0, while normalized combat
-    /// retains its own reached null-record refusal.
+    /// Radar/weather detection and combat weather keys borrow the same node.
+    /// A null weather record skips the detection query, while normalized
+    /// combat retains its own reached null-record refusal.
     pub fn environment_and_detection(
         &mut self,
         memory: &impl Memory,
@@ -731,8 +730,8 @@ impl Capture {
         )
     }
 
-    /// F04E40's already attempted record and the original clocks header are
-    /// borrowed. Neither selector can be healed by another header read.
+    /// Borrow the already attempted weather record and original clock header.
+    /// Neither selector can be healed by another header read.
     pub fn environment(
         &mut self,
         memory: &impl Memory,
@@ -772,8 +771,8 @@ impl Capture {
         }
     }
 
-    /// Called only for F62FE0's reached positive-disruption producer. `stats`
-    /// is the original F49280 selector success/failure used by stat13/14.
+    /// Called only for the reached positive-disruption producer. `stats`
+    /// is the original selector result used by stat 0x13/0x14.
     #[allow(clippy::too_many_arguments)]
     pub fn capture<M: Memory>(
         &mut self,
@@ -885,7 +884,7 @@ impl Capture {
         let modifiers = self
             .modifiers(memory, base, address(ace, crate::cace::MODIFIERS)?)
             .ok();
-        // 60D010 returns type+38; its accumulator starts another +10 later.
+        // Ace-type modifiers are at type +0x38, with accumulator +0x10.
         let type_modifiers = field::<u64>(memory, ace, 0x170)
             .and_then(|kind| self.modifiers(memory, base, address(kind as usize, 0x48)?))
             .ok();
@@ -1060,9 +1059,9 @@ fn authenticate(memory: &impl Memory, base: usize, pointer: usize, rva: usize) -
     Ok(())
 }
 
-/// F49710's base-region fallback AA is executable code, never a vanilla ID.
-/// F46B00 separately reaches a carrier host even for a state-backed base.
-/// Both directly resolve pool+18: F4A6B0's wing override is not their caller.
+/// The base-region fallback 0xAA is a query rule rather than a vanilla ID.
+/// Carrier-host queries may be reached even for state-backed bases. Both
+/// resolve pool +0x18 directly, without the wing-country override.
 fn base_context(
     memory: &impl Memory,
     base: usize,

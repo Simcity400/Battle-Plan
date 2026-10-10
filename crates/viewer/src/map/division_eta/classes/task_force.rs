@@ -1,5 +1,5 @@
-//! Class-1 fresh counter duration: 140D58800/140C28590 speed and
-//! 140BECF90 integration. Arrival does not enter the task-force speed getter.
+//! Class-1 fresh counter duration: speed and integration.
+//! Arrival does not enter the task-force speed getter.
 
 use super::fresh_search::{Inputs, available};
 use crate::{
@@ -32,10 +32,9 @@ impl TerrainSpeedContent {
         regions: &BTreeMap<u32, StrategicRegion>,
         subunits: Fact<TokenKeys>,
     ) -> Self {
-        // GetTerrainOrOcean@141593150 checks the generic valid byte +10,
-        // which real categories construct as 1 (1414297D0). Unknown/absent
-        // authored terrain is null and uses the executable's five-byte key.
-        // The authored naval_terrain boolean at +190 is unrelated to +10.
+        // The generic terrain-validity byte is 1 for real categories.
+        // Unknown or absent authored terrain is null and uses the five-byte fallback key.
+        // The authored naval_terrain boolean is independent of that validity byte.
         let fallback = terrain.category(b"ocean");
         let regions = regions
             .iter()
@@ -65,8 +64,8 @@ impl TerrainSpeedContent {
             .get(&region)
             .ok_or_else(|| format!("fresh naval ETA region {region} has no content template"))?;
         let Some(at) = *selected else {
-            // CTerrainDatabase::construct@140AC6860 installs a null terrain;
-            // its common CUnitAdjuster constructs all three values as zero.
+            // The terrain database supplies a null terrain; its common unit adjuster
+            // initializes all three values to zero.
             return Ok(0);
         };
         let terrain = &self.terrain.categories[at];
@@ -84,7 +83,7 @@ impl TerrainSpeedContent {
         else {
             return Ok(common);
         };
-        // 14142C780 skips an authored class whose sub-unit resolves to null.
+        // Skip an authored class whose sub-unit resolves to null.
         // Registered repeated class tokens keep their first bucket.
         if available(&self.subunits)?.resolve(name)?.is_none() {
             return Ok(common);
@@ -94,7 +93,7 @@ impl TerrainSpeedContent {
             .get(at)
             .ok_or("fresh naval ETA terrain class adjuster is unavailable")?
             .movement;
-        // 14142C5C0 -> 140FFF550 merges common into each class after load.
+        // Merge common values into each class after load.
         Ok(common.wrapping_add(own))
     }
 }
@@ -215,7 +214,7 @@ fn speed(
         let count = i32::try_from(ships.len())
             .map_err(|_| "fresh naval ETA ship count exceeds the native signed representation")?;
         let sum = ships.iter().try_fold(0_i64, |sum, ship| {
-            // Native CShip+88 is a raw lexer token, including signed values.
+            // Ship class is a raw lexer token, including signed values.
             Ok::<_, String>(sum.wrapping_add(adjustment(ship.class_id as u32)?))
         })?;
         class_mean(sum, count)
@@ -228,8 +227,8 @@ fn speed(
     ))
 }
 
-/// 140D5A6B0: its fixed5 product wraps before the division; sum/count alone
-/// changes extreme operands. The zero roster does not reach a division.
+/// The fixed5 product wraps before the division; sum/count alone changes
+/// extreme operands. The zero roster does not reach a division.
 fn class_mean(sum: i64, count: i32) -> i64 {
     if count == 0 {
         return 0;
@@ -266,7 +265,7 @@ fn remaining(
         if from == to {
             continue;
         }
-        // BEDC10/BECF90 apply embark distance only to classes 0 and 13.
+        // Apply embark distance only to classes 0 and 13.
         let distance =
             inputs.content.map.distance(from, to).ok_or_else(|| {
                 format!("fresh naval ETA edge {from}->{to} distance is unavailable")
@@ -289,8 +288,8 @@ fn remaining(
             .movement_numerator
             .require("TaskForceMapMotion.movement_numerator")?
             .ok_or("fresh naval ETA movement numerator was refused")?;
-        // vf+D8 ignores destination, so the first searched edge already
-        // evaluated exactly the actual-departure speed from this fresh packet.
+        // The speed getter ignores destination, so the first searched edge already
+        // evaluates actual-departure speed from this fresh packet.
         let actual_speed = match actual_speed {
             Some(speed) => speed,
             None => speed(inputs, force, fresh, source_region(force.province)?)?,
@@ -334,12 +333,11 @@ mod tests {
     }
 
     fn metadata(frame: &mut DecodedFrame, keys: &[u32]) {
+        engine::executable_tables::initialize_for_tests()
+            .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
         let mut definitions = Vec::new();
         let mut tokens = Vec::new();
-        for key in engine::modifier_keys::ALL
-            .iter()
-            .filter(|key| keys.contains(&key.index))
-        {
+        for key in engine::modifier_keys::all().filter(|key| keys.contains(&key.index)) {
             definitions.push(replay::rows::ModifierDefinitionRow {
                 index: key.index,
                 token: key.index + 10_000,

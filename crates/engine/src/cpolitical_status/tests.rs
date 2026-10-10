@@ -309,7 +309,7 @@ fn renamed_party_keys_are_copied_exactly_and_count_toward_the_arena() {
     array(&mut bytes, STATUS + PARTIES, 0x3800, 2, 2);
     party(&mut bytes, 0, b"x");
     party(&mut bytes, 1, b"y");
-    // set_party_name: the flag clears; the long key is on the heap.
+    // Renaming clears the default-name flag; the long key is on the heap.
     let long = b"AAA_mod_party_long_key";
     put(&mut bytes, 0x4000 + cpolitical_party::NAME_DEFAULT, [0]);
     inline(

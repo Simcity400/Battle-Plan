@@ -182,8 +182,8 @@ fn texts(tokens: &[Token]) -> Vec<(Kind, String)> {
         .collect()
 }
 
-/// 1424A7A90: comments on `!`, `#` and `;`, one-character operators and
-/// brackets, `?=`, quoted escapes, and 0xFF read as the end.
+/// Comments start with `!`, `#` or `;`. Operators and brackets are single characters,
+/// except `?=`. Quoted escapes decode, and 0xFF reads as the end.
 #[test]
 fn the_lexer_splits_as_the_game_does() {
     let lexed = lex(
@@ -214,21 +214,17 @@ fn the_lexer_splits_as_the_game_does() {
             (Kind::Bare, "q".into()),
             (Kind::Open, "{".into()),
             (Kind::Close, "}".into()),
-            // The 0xFF: read_token returns 0.
+            // The 0xFF ends the token read.
             (Kind::End, "".into()),
         ]
     );
     assert_eq!(tokens[3].line, 2);
 }
 
-/// CMemoryFile::ReadNextCharacter (1424D92C0) reads a byte 0xFF as -1,
-/// as it reads the end of the text, and always advances; read_token
-/// (1424A7A90, CMP AL,0xFF at 1424A7B10) returns `c != -1`. So a 0xFF is
-/// one end and reading goes on after it: read_token returns 0 where a
-/// token starts, after `?`, and for a bare token it ends, whose text it
-/// keeps; it ends a comment, and a quoted string, which is returned. A
-/// block's loop (1424A9730) ends at it and the enclosing reader reads
-/// on; a file loop (140AD6030) stops there.
+/// The byte 0xFF reads as an end marker and advances, so reading can continue after it.
+/// At a token start or after `?`, it returns an end token; for a bare token it keeps
+/// the text already read. It ends a comment or quoted string, returning the latter. A
+/// block loop ends there and its enclosing reader continues; a file loop stops.
 #[test]
 fn a_byte_0xff_is_one_end_and_reading_goes_on_after_it() {
     let tokens = |bytes: &[u8]| texts(&lex(bytes, Mode::KeepMark).tokens);
@@ -260,8 +256,7 @@ fn a_byte_0xff_is_one_end_and_reading_goes_on_after_it() {
         tokens(b"?\xffa\n"),
         [token(Kind::End, "?"), token(Kind::Bare, "a")]
     );
-    // The `?` is the lexer's token after that read: a value read there
-    // takes it (1424AC5E0 copies the token it peeked).
+    // The `?` remains the lexer's token after that read, so a value read takes it.
     let read = test_read(b"a = { n = ?\xff n = 2 }");
     assert_eq!(
         block(&read.items, "a")[0].value,
@@ -269,10 +264,8 @@ fn a_byte_0xff_is_one_end_and_reading_goes_on_after_it() {
     );
 }
 
-/// The retry after a lone `?` or a comment skips white space and
-/// returns 0 at a -1, a 0xFF or the end, keeping the `?` or the marker
-/// as the token (1424A7CDE-1424A7D80, 1424A7C53-1424A7C86, 1424A7B32);
-/// a token it finds replaces it.
+/// Retrying after a lone `?` or comment skips white space and returns an end at 0xFF or
+/// EOF, keeping `?` or the marker as its token. A token found by the retry replaces it.
 #[test]
 fn a_failed_retry_keeps_the_question_mark_or_comment_marker() {
     let tokens = |bytes: &[u8]| texts(&lex(bytes, Mode::KeepMark).tokens);
@@ -302,8 +295,7 @@ fn a_failed_retry_keeps_the_question_mark_or_comment_marker() {
         [token(Kind::Bare, "x"), token(Kind::End, "#")]
     );
     assert_eq!(tokens(b"? # c\n y"), [token(Kind::End, "y")]);
-    // A value read at such a read takes the kept text (1424AC5E0 copies
-    // the token it peeked).
+    // A value read at such a read takes the kept text from the peeked token.
     for (text, value) in [
         (&b"a = { n = ? \xff n = 2 }"[..], "?"),
         (b"a = { n = ?\n", "?"),
@@ -386,8 +378,7 @@ fn object_list_read(text: &[u8]) -> Read {
     )
 }
 
-/// 14144E640 copies each raw `{` into the value slot, then
-/// 1424ABB40 reads that element as a CPersistent object.
+/// Each raw `{` is copied into the value slot before its element is read as an object.
 #[test]
 fn object_lists_read_each_raw_entry_as_an_object() {
     let result =
@@ -408,8 +399,8 @@ fn object_lists_read_each_raw_entry_as_an_object() {
     assert_eq!(result.items[1].value, Value::Scalar(b"3".to_vec()));
 }
 
-/// Neither 14144E640's list nor the element's CPersistent read guards
-/// on `{`: scalar values pull the following fields into the object.
+/// Neither the list nor its element object read guards on `{`: scalar values pull
+/// subsequent fields into the object.
 #[test]
 fn object_lists_read_scalar_outer_values_and_scalar_entries_unconditionally() {
     for (text, entry_kind) in [
@@ -430,8 +421,8 @@ fn object_lists_read_scalar_outer_values_and_scalar_entries_unconditionally() {
     }
 }
 
-/// Both closing reads leave the reader's value slot: only nonclosing
-/// raw entries and fields within their objects replace it (14144E640).
+/// Both closing reads leave the value slot intact; only nonclosing raw entries and
+/// fields inside their objects replace it.
 #[test]
 fn object_lists_keep_the_last_value_slot_through_closing_reads() {
     for (text, expected_kind, expected_text) in [
@@ -475,10 +466,9 @@ fn a_block_where_one_value_is_read_shifts_the_rest_up() {
     assert!(read.misreads[0].what.starts_with("field `n` is a block"));
 }
 
-/// 1424A7A90 returns false for a bare token that runs into the end of
-/// the text, its text kept. A peek turns it into the end (0x13): a list
-/// (1401426E0) or a block loop stops before it, while 1424AC5E0 takes
-/// it, text and all, as a value. A quoted string at the end succeeds.
+/// A bare token reaching EOF retains its text but fails the read. A peek turns it into
+/// an end token, so lists and block loops stop before it, while a field-value read
+/// takes its text. A quoted string at EOF succeeds.
 #[test]
 fn a_last_bare_token_fails_its_advance_but_keeps_its_text() {
     let last = |bytes: &[u8]| {
@@ -507,9 +497,8 @@ fn a_last_bare_token_fails_its_advance_but_keeps_its_text() {
     assert!(read.misreads.is_empty(), "{:?}", read.misreads);
 }
 
-/// 140C89020's pair: one entry, then SkipBlock (1424AD210) to the
-/// block's `}`; a second entry is reported and passed over, defining
-/// nothing; a value that is no `{` is reported.
+/// A pair reads one entry, then skips to the block's `}`. A second entry is reported
+/// and passed over without defining anything; a value other than `{` is reported.
 #[test]
 fn a_pair_reads_one_entry_and_skips_the_rest_of_its_block() {
     let pair = |text: &[u8]| {
@@ -534,7 +523,7 @@ fn a_pair_reads_one_entry_and_skips_the_rest_of_its_block() {
     let read = pair(b"a = { pair = { x = 1 @y = 2 obj = { z = 1 } w } n = @y } b = { n = 3 }");
     let a = block(&read.items, "a");
     assert_eq!(keys(a), ["pair", "n"]);
-    // SkipBlock defines nothing: `@y` keeps its text.
+    // Raw skipping defines nothing: `@y` keeps its text.
     assert_eq!(a[1].value, Value::Scalar(b"@y".to_vec()));
     assert!(
         read.misreads[0].what.contains("more than one entry"),
@@ -550,8 +539,8 @@ fn a_pair_reads_one_entry_and_skips_the_rest_of_its_block() {
     );
 }
 
-/// A reader that tests for `{` and otherwise reports (RecordError
-/// 1424ACF90) skips a block the reporting stands on.
+/// A reader that requires `{` reports any other value and skips the block at the
+/// current token.
 #[test]
 fn an_object_or_list_given_a_value_is_reported() {
     let read = read(
@@ -567,8 +556,8 @@ fn an_object_or_list_given_a_value_is_reported() {
         },
     );
     let a = block(&read.items, "a");
-    // `obj` consumed `{` as its operator (1424AC5E0) and kept the stale
-    // value `1`; the report skips the block it stands on.
+    // `obj` consumed `{` as its operator and retained value `1`; reporting skips the
+    // block at the current token.
     assert_eq!(keys(a), ["n", "obj", "list", "n"]);
     assert_eq!(a[3].value, Value::Scalar(b"2".to_vec()));
     assert!(
@@ -578,9 +567,8 @@ fn an_object_or_list_given_a_value_is_reported() {
     );
 }
 
-/// lexer's mode 1 (characters, 1406B0120; names, 140A5C200); in mode 0
-/// (1406B3690, 140A34320 and most loaders) its three bytes start the
-/// first token, which is then no keyword.
+/// Lexer mode 1 skips a leading UTF-8 byte-order mark. Mode 0 keeps its three bytes at
+/// the start of the first token, preventing a keyword match.
 #[test]
 fn a_byte_order_mark_is_skipped_only_in_mode_one() {
     let text = b"\xef\xbb\xbfa = { n = 1 } b = { n = 2 }";
@@ -604,12 +592,9 @@ fn a_byte_order_mark_is_skipped_only_in_mode_one() {
     assert!(!finds_a(Mode::KeepMark));
 }
 
-/// A read that returns 0 keeps the lexer's token and its quoted flag
-/// (+0x1C, 1424A7A90); a peek that returns 0 gives it the id 0x13 and
-/// leaves the flag, and resolve_variable_token (1424AB540) leaves a
-/// quoted token: a quoted `@x` before a 0xFF or the end is no reference
-/// when CPersistent::Read's end (1424A9730) resolves the token it stops
-/// at.
+/// A failed read keeps the token and quoted flag. A failed peek changes its kind to End
+/// but keeps that flag, so a quoted `@x` before 0xFF or EOF remains literal when the
+/// block's closing read resolves it.
 #[test]
 fn a_failed_peek_keeps_a_quoted_tokens_flag() {
     for text in [&b"@x = 1 k = \"@x\"\xff"[..], b"@x = 1 k = \"@x\""] {
@@ -626,15 +611,14 @@ fn a_failed_peek_keeps_a_quoted_tokens_flag() {
     }
 }
 
-/// SkipBlockResolvingVariables (1424AD270) resolves each token it reads
-/// through 1424AB540 and writes it back before testing it for `{`: a
-/// reference to a definition that kept only a block's brace opens a
-/// nested skip, which takes the `}` after it, so the skip ends at the
-/// enclosing block's `}` and its reader reads on after that.
+/// Variable-resolving skips write each resolved token back before checking for `{`. A
+/// reference that retained only a block brace opens a nested skip, which consumes the
+/// next `}`. The outer skip ends at its enclosing block's `}`, and reading continues
+/// after it.
 #[test]
 fn a_skip_resolves_each_token_it_reads() {
-    // `@o` keeps only `{` (1424AC830); `u` is skipped (test_read's
-    // default); inside it `@o` is `{`, so the skip also takes `a`'s `}`.
+    // `@o` retains only `{`; `u` is skipped by the default dispatch. Inside it, `@o`
+    // opens a nested skip that also takes `a`'s `}`.
     let read = test_read(b"@o = { a = { u = { @o } } n = 1 } b = { n = 2 }");
     assert_eq!(keys(&read.items), ["a", "b"]);
     assert_eq!(keys(block(&read.items, "a")), ["u", "n"]);
@@ -648,9 +632,8 @@ fn a_skip_resolves_each_token_it_reads() {
     assert_eq!(keys(block(&read.items, "a")), ["u", "n"]);
 }
 
-/// A text ending in a definition: 1424AC5E0 reads no key, and the loop
-/// dispatches the key slot as the last read left it (1424A9730), the
-/// empty key 1424A9D30 sets when no key was read yet.
+/// A definition at EOF reads no key, so the loop dispatches the key slot as the last
+/// read left it, or its initial empty key if none was read.
 #[test]
 fn a_text_ending_in_a_definition_dispatches_the_key_slot() {
     let read = test_read(b"@x = 1");
@@ -664,9 +647,8 @@ fn a_text_ending_in_a_definition_dispatches_the_key_slot() {
     assert_eq!(keys(&read.items), ["a", "n"]);
 }
 
-/// A value without a key: 1424AC5E0 consumes the next token as its
-/// operator and dispatches the key with the previous value; a `{` after
-/// it is skipped whole for a key the reader does not know.
+/// A value without a key consumes the next token as its operator and dispatches the key
+/// with the previous value. A following `{` is skipped whole for an unknown key.
 #[test]
 fn a_value_without_a_key_consumes_the_next_token() {
     let read = test_read(b"a = { n = 7 stray n = 1 unknown { n = 9 } n = 2 }");
@@ -736,21 +718,16 @@ fn by_key_blocks_with_values_without_keys() {
     assert!(read.unsettled.is_none());
     assert_eq!(keys(block(&read.items, "a")), ["trigger", "n"]);
     let read = test_read(b"a = { trigger = { x @y = 1 } n = 2 } b = { n = 3 }");
-    assert!(
-        read.unsettled
-            .unwrap()
-            .what
-            .starts_with("variable @y is in a block read by a trigger")
-    );
+    assert!(read.unsettled.unwrap().what.starts_with(
+        "variable @y is in a trigger or effect block that also holds anonymous values"
+    ));
     assert_eq!(keys(&read.items), ["a"]);
 }
 
-/// A known trigger body (CTrigger::LoadBody 1405431C0) is never read as
-/// a list: a token without a key is a key whose missing operator
-/// consumes the next token, LoadKey takes every key with the slots
-/// 1424AC5E0 left, and a definition there is consumed, not a list's
-/// unsettled one. A scalar is reported and nothing is read. The list a
-/// reader the port does not know reads keeps each operand's kind.
+/// A known trigger body reads by key. A token without a key consumes the next token as
+/// its missing operator, and dispatch sees the resulting slots. A definition is
+/// consumed as a definition. Scalars are reported without further reading. Lists with
+/// unknown dispatch retain each operand's kind.
 #[test]
 fn a_known_trigger_body_is_read_by_key_never_as_a_list() {
     let body = |text: &[u8]| {
@@ -786,7 +763,9 @@ fn a_known_trigger_body_is_read_by_key_never_as_a_list() {
     assert!(
         read.misreads[0]
             .what
-            .contains("\"Non assign trigger is not enclosed in {}\" is reported"),
+            .contains(
+                "field `body` is `yes` where its trigger reads a block: the missing block is reported and nothing is read"
+            ),
         "{:?}",
         read.misreads
     );
@@ -797,9 +776,9 @@ fn a_known_trigger_body_is_read_by_key_never_as_a_list() {
     assert_eq!(list[1].value, Value::Scalar(b"5".to_vec()));
 }
 
-/// std_pair_parser (140C88A60): two tokens of any kind are the strings;
-/// a third is reported, a block it opens skipped, and SkipBlock passes
-/// to the pair's `}`; fewer than two are reported; nothing defines.
+/// Two tokens of any kind become pair strings. A third is reported, its block skipped
+/// if present, then the pair is skipped to `}`. Fewer than two are reported; nothing
+/// defines variables.
 #[test]
 fn a_string_pair_reads_two_tokens_and_skips_to_its_end() {
     let pair = |text: &[u8]| {
@@ -862,11 +841,10 @@ fn a_string_pair_reads_two_tokens_and_skips_to_its_end() {
     assert!(read.misreads[0].what.contains("reads `{ string string }`"));
 }
 
-/// LoadBody (1405431C0) hands LoadKey a key read without an operator
-/// with the value slot the last read left: a `{` consumed as the
-/// operator under a stale `{` is read by key as its block; a stale
-/// value that opens no block is RecordError's skip; a stale `{` with
-/// no `{` consumed depends on the key's reader, so it is unsettled.
+/// Trigger dispatch receives the previous value when a key has no operator. A `{`
+/// consumed as operator beneath a stale `{` is read by key as its block. A stale
+/// nonopening value uses the reporting skip; a stale `{` without a consumed `{` depends
+/// on dispatch and is unsettled.
 #[test]
 fn an_untraced_key_without_an_operator_follows_the_stale_value() {
     let trigger = |text: &[u8]| {
@@ -912,14 +890,13 @@ fn an_untraced_key_without_an_operator_follows_the_stale_value() {
     assert!(
         unsettled
             .what
-            .starts_with("field `maybe`: LoadKey (1405434F0) reads it"),
+            .starts_with("field `maybe`: trigger dispatch reads it"),
         "{unsettled}"
     );
 }
 
-/// The value slot's token kind reaches the item: the end of the text a
-/// failed advance left (0x13) keeps its text but is no keyword, and a
-/// reader of the current token (140606100) takes that token's kind.
+/// Items retain the source token's kind. End tokens keep text but cannot be keywords;
+/// readers of the current lexer token keep that token's kind.
 #[test]
 fn items_keep_the_value_tokens_kind() {
     let kinds = |text: &[u8], name: &str| {
@@ -966,8 +943,8 @@ fn items_keep_the_value_tokens_kind() {
     );
 }
 
-/// 1424AC5E0 keeps the operator it read (+0x78), `<` 0x1D4 and `>`
-/// 0x1D3 beside `=`; a key read without one keeps the slot's last.
+/// The operator slot retains `<`, `>` or `=`. A key without an operator keeps the
+/// previous operator.
 #[test]
 fn items_keep_the_operator_slot() {
     let read = test_read(b"a = { n < 5 stray n n > 3 n = 1 } b = { n >= 2 }");
@@ -989,10 +966,9 @@ fn items_keep_the_operator_slot() {
     assert_eq!(b[0].value, Value::Scalar(b"=".to_vec()));
 }
 
-/// 1424A7A90 makes `>` and `<` tokens of their own, and 1424AC5E0 writes
-/// each field's operator into the one slot (+0x78). A block's item keeps
-/// the `=` read with its key, not the last comparison inside it, whether
-/// the block is read as an object or by key unread ([`Shape::ByKey`]).
+/// Each field writes its single-character operator into one shared slot. A block item
+/// keeps the `=` read with its key rather than the last comparison within it, for both
+/// object and [`Shape::ByKey`] reads.
 #[test]
 fn a_block_keeps_its_own_operator_after_comparisons_inside() {
     let read = read(
@@ -1045,11 +1021,10 @@ fn a_block_keeps_its_own_operator_after_comparisons_inside() {
     );
 }
 
-/// 1424AC830 stores the whole defining token and 1424AB540 copies it
-/// back, so a reference keeps its definition's kind (a quoted one is no
-/// keyword); a chain takes the value it names, whose token is then read
-/// as the next key, a taken name; names compare exactly (`@N` is not
-/// `@n`); a quoted token or an unknown name stays its own text.
+/// A reference copies its whole defining token, including its kind. Quoted definitions
+/// stay nonkeywords. Chains take the named value, whose token becomes the next key when
+/// its name is taken. Names compare exactly; quoted or unknown references retain their
+/// own text.
 #[test]
 fn a_reference_keeps_its_definitions_token_kind() {
     let read = test_read(
@@ -1137,7 +1112,7 @@ fn quoted_strings_keep_the_game_escapes() {
     assert!(tokens.iter().all(Token::quoted));
 }
 
-/// `read_token` numbers a word by its first byte before any lookup, and the lookup reads the
+/// The lexer classifies a word by its first byte before any lookup, and lookup reads the
 /// text up to its NUL.
 #[test]
 fn number_and_keyword_tokens_follow_the_lexer() {
@@ -1197,6 +1172,8 @@ fn a_byte_0xff_is_one_end_of_the_stream() {
 
 #[test]
 fn modifiers_keep_scoped_operands_before_trigger_dispatch() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let names = KeyNames::default();
     let read = read(
         b"modifier = { factor = x add = 3 always = yes }",
@@ -1212,7 +1189,7 @@ fn modifiers_keep_scoped_operands_before_trigger_dispatch() {
     assert!(modifier[1].keyword_is("add"));
     assert_eq!(modifier[1].value.scalar(), Some(b"3".as_slice()));
 
-    // CRailwayConstructionContext::vf4 (140436D30) uses the same MTTH.
+    // Railway-construction context uses the same mean-time-to-happen reader.
     let railway = crate::triggers::read(
         b"can_build_railway = { controller_priority = { modifier = { factor = x add = 3 always = yes } } }",
         &names,

@@ -1,7 +1,7 @@
 //! The game's own equipment-loss records.
 //!
-//! CombatLogEquipment: every country's Combat Log (NCombatLog,
-//! CGameState+0x880), per orders group, loss reason, month and variant, and
+//! CombatLogEquipment: every country's Combat Log, per orders group,
+//! loss reason, month and variant, and
 //! its recoveries. It is sliced by country: each hour reads the countries of
 //! that hour's slice. A country whose last complete read was in this or the
 //! previous calendar month is read through each array's last two month
@@ -20,7 +20,7 @@
 //! session (load signal) they were observed in and are shared by every
 //! capture buffer ([`Store`]); a load starts them afresh.
 //!
-//! CombatLogState: hourly, the writer's country-gate operand (CGameState+0x520)
+//! CombatLogState: hourly, the writer's country-gate operand
 //! and whether the prunes since the previous sample were observed. It helps
 //! explain why the game did not keep a country's land losses; the writer also
 //! requires an orders group. It never selects what the collector captures.
@@ -50,9 +50,9 @@ pub const TABLES: [TableId; N] = [
 ];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
-/// The sample before the daily prune: CGameState::HourlyUpdate@1401dcef0 runs
-/// CGameState::DailyUpdate@1401d4390 (and so the Combat Log prune) inside the
-/// update entered at raw hour `% 24 == 23`, after that hour's sample.
+/// The sample before the daily prune: the hourly update runs the daily
+/// update, including the Combat Log prune, at raw hour `% 24 == 23`,
+/// after that hour's sample.
 pub const PRUNE_HOUR: i32 = 23;
 
 /// Hours a published final is kept, to be published again if the frame that
@@ -81,7 +81,7 @@ struct Store {
     hour: Option<i32>,
     finals: Vec<Final>,
     /// Each observed country's last complete read hour, sorted by raw owner.
-    /// Native manager headers retain these links (`140CC87C0`, `140CD0E30`).
+    /// Manager headers retain these links.
     read_hour: Vec<(u32, i32)>,
 }
 

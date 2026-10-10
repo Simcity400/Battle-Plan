@@ -9,7 +9,7 @@ Read the [project rules](../../AGENTS.md) before changing a reader. Consumers sh
 | Area | Entry points and responsibility |
 |---|---|
 | Content stack | [content.rs](src/content.rs): identities, verification and overlays. [physfs_zip.rs](src/content/physfs_zip.rs): native archives. [visual.rs](src/content/visual.rs): explicit cosmetic overlays. |
-| Text readers | [parser.rs](src/parser.rs): byte-preserving data and balanced trees. [parser/native.rs](src/parser/native.rs): native lexer/CReader. [script_files.rs](src/script_files.rs): database file order. [crt.rs](src/crt.rs) and [fixed5.rs](src/fixed5.rs): number conversions. |
+| Text readers | [parser.rs](src/parser.rs): byte-preserving data and balanced trees. [parser/native.rs](src/parser/native.rs): script lexer and persistent reader. [script_files.rs](src/script_files.rs): database file order. [crt.rs](src/crt.rs) and [fixed5.rs](src/fixed5.rs): number conversions. |
 | Script dispatch | [key_names.rs](src/key_names.rs): load-point names. [trigger_keys.rs](src/trigger_keys.rs), [combat_tactics](src/combat_tactics.rs), [effect_keys.rs](src/effect_keys.rs) and [modifiers.rs](src/modifiers.rs): shared body readers. [tokens.rs](src/tokens.rs): name identity. [coverage.rs](src/coverage.rs): unread suffixes. |
 | Names and text | [localisation.rs](src/localisation.rs), [country_names.rs](src/country_names.rs), [scripted_localisation.rs](src/scripted_localisation.rs), [scripted_keys.rs](src/scripted_keys.rs) and [defines.rs](src/defines.rs). |
 | Authored catalogues | Domain modules such as [equipment.rs](src/equipment.rs), [ideas.rs](src/ideas.rs), [characters.rs](src/characters.rs) and [events.rs](src/events.rs) own database and lookup rules. [lib.rs](src/lib.rs) indexes all modules and defines typed diagnostics. |
@@ -37,11 +37,15 @@ Missing or mismatching recorded content is refused. The viewer's explicit `--all
 
 ## Parser contracts
 
-Script content uses `parser::native`, the loader's lexer mode and each field's `Shape` or CReader dispatch. Native token consumption, operators, variables, recovery and block endings differ from balanced trees. Use `Item::keyword`/`keyword_is`: quoted keys are not keywords; bare keywords use the lexer's fold.
+Script content uses `parser::native`, the loader's lexer mode and each field's `Shape` or shared typed reader. Native token consumption, operators, variables, recovery and block endings differ from balanced trees. Use `Item::keyword`/`keyword_is`: quoted keys are not keywords; bare keywords use the lexer's fold.
 
 Keep the separate tree grammar for saves and descriptor consumers that use it. Save brace mismatches are corruption. Do not add guessed variable evaluation or recovery to tree-based content readers. Numbers stay lexical bytes until native conversion; script fixed5 and save decimal parsing are separate paths.
 
 Triggers share `combat_tactics::Shaper` and the trigger registry; effects share `effect_keys`; modifiers share `modifiers`. Pass the native load point's `KeyNames`: later registrations must not change earlier reads. Reuse memoized names and common keyword/dynamic-token tables.
+
+Static keyword, modifier, trigger, effect, equipment, rule and AI metadata comes from `engine::executable_tables`, initialized explicitly from the selected installation's hash-verified executable. The process shares one immutable table set. Content binding validates the selected installation before using it; parsers do not guess an installation or fall back to bundled names. Authored definitions still use `ResolvedLayers` and the load point's `KeyNames`.
+
+Built-in variable names come from the same installation's `documentation/dynamic_variables_documentation.md`. The reader extracts declaration headings by scope, excludes examples, preserves exact spelling and checks sorted names against the supported semantic digests. Missing, changed or duplicate declarations refuse initialization. Mod documentation does not replace executable metadata. Global, country, state and character variable stores use these names; the character scope is documented as `unit_leader`.
 
 Retain conditions and effects as data. Evaluation and descriptions over recorded state belong to [dashboard triggers](../dashboard/src/triggers.rs) and their consumers.
 
@@ -101,7 +105,7 @@ Technology description catalogues retain every indexed declaration in native ord
 
 ## Adding or changing a reader
 
-1. Identify the native loader, file order, lexer mode, field and lookup rules. Cite addresses beside code.
+1. Identify the loader's file order, lexer mode, field and lookup rules. Describe their behavior beside code.
 2. Extend the owning module/shared dispatch. Use `ResolvedLayers`, load-point names and native conversions.
 3. Preserve order, defaults, redefinitions and required operands; propagate diagnostics and uncertain suffixes through lookups.
 4. Add synthetic regressions for changed behaviour, layered replacements and reached mod forms. Reuse helpers (`test-support` exposes cross-crate fixtures) and update affected consumers together.
@@ -110,9 +114,11 @@ Technology description catalogues retain every indexed declaration in native ord
 
 ## Checking changes
 
-Follow [AGENTS.md](../../AGENTS.md) for wrapped, crate-scoped format/clippy/affected tests. Layer changes need order, folder/archive, `replace_path`, identity-failure and changed-file cases. [mod_layers_tests.rs](src/mod_layers_tests.rs) provides synthetic stacks; other tests live beside readers.
+Follow [AGENTS.md](../../AGENTS.md) for crate-scoped formatting, clippy and affected tests. Layer changes need order, folder/archive, `replace_path`, identity-failure and changed-file cases. [mod_layers_tests.rs](src/mod_layers_tests.rs) provides synthetic stacks; other tests live beside readers.
 
-Real-game tests are ignored and read-only. Set `BATTLE_PLAN_GAME_DIR` to the game folder; run the relevant filtered installed-content test with `-- --ignored --nocapture` through the wrapper. Examples: `every_shipped_gui_file_reads`, `every_shipped_gfx_file_reads`, `vanilla_state_history_reads_without_diagnostics`. Check each test's environment: corpus audits may require `BATTLE_PLAN_WORKSHOP_DIR`; special projects use `BATTLE_PLAN_SP_GAME`/`BATTLE_PLAN_SP_WORKSHOP`. Missing variables can skip a test, so confirm it read files.
+Tests that exercise runtime keyword or registry metadata call `engine::executable_tables::initialize_for_tests()`. Set `BATTLE_PLAN_GAME_DIR` to the supported installation for those tests; an unset variable or incompatible installation is an explicit failure. Fixtures supply synthetic authored content while the immutable metadata comes from that installation. Equipment fixtures initialize this metadata before loading authored content, and shader parsing tests initialize it before using the shared lexer. Tests limited to table decoding and byte lookup use synthetic data without an installation.
+
+Real-game tests are ignored and read-only. Set `BATTLE_PLAN_GAME_DIR` to the game folder; run `cargo test -p installed-content <filter> -- --ignored --nocapture` from the repository root. Example filters: `every_shipped_gui_file_reads`, `every_shipped_gfx_file_reads`, `vanilla_state_history_reads_without_diagnostics`. Check each test's environment: corpus audits may require `BATTLE_PLAN_WORKSHOP_DIR`; special projects use `BATTLE_PLAN_SP_GAME`/`BATTLE_PLAN_SP_WORKSHOP`. Missing variables can skip a test, so confirm it read files.
 
 Compare relevant DLC/mod diagnostics with the [viewer corpus workflow](../viewer/README.md#mod-corpus-check); identity support alone does not prove reader coverage. Asset changes follow [rendering rules](../viewer/README.md#rendering-rules); integration follows the [recorder fresh-save/smoke workflow](../recorder/README.md). Commit synthetic inputs; keep installed content, captures and audits outside Git under [shared storage rules](../../AGENTS.md).
 

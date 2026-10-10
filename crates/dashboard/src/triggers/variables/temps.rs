@@ -16,7 +16,7 @@ struct Operands<'v> {
     if_zero: ScopedVariable,
 }
 
-// AssignScopedVariableFromTokenText@140539370 parses into the existing
+// Scoped-variable reading parses into the existing
 // operand. Empty text changes nothing; a repeated nonliteral can keep fields.
 pub(super) fn assign(
     evaluator: &Evaluator,
@@ -29,13 +29,13 @@ pub(super) fn assign(
     let next = evaluator.operand(text)?;
     if operand.parsed {
         if next.literal.is_some() {
-            // Numeric/constant paths@14053A999/14053A7A3 change +9/+0x40,
-            // keeping the name/default/indices read by explicit TLS@1405389B0.
+            // Numeric/constant paths change the literal flag and value,
+            // keeping the name/default/indices read by explicit TLS lookup.
             operand.literal = next.literal;
             return Ok(());
         }
         return Err(super::super::refused(format!(
-            "repeated variable operand {} keeps fields from its earlier read (140539B50), which is not reproduced",
+            "repeated variable operand {} keeps fields from its earlier read, which is not reproduced",
             String::from_utf8_lossy(text)
         )));
     }
@@ -44,7 +44,7 @@ pub(super) fn assign(
 }
 
 pub(super) fn zero() -> ScopedVariable {
-    // Constructor@14014AAC0: literal zero, but parsed (+8) is clear.
+    // Initially literal zero, but the parsed flag is clear.
     ScopedVariable {
         literal: Some(0),
         ..ScopedVariable::default()
@@ -106,22 +106,22 @@ impl Evaluator<'_, '_> {
         let mut max = zero();
         let mut if_zero = zero();
         if name == "round_temp_variable" {
-            // The scalar reader@141385570 already consumed this value.
+            // The scalar reader already consumed this value.
             assign(self, &mut var, item.value.scalar().unwrap_or_default())?;
         } else {
-            // Consume the native reader's Items; no token/block reader here.
-            // CVariableTrigger@14043B2C0 differs from the effect divide reader:
+            // Consume the parsed Items; no token/block reader here.
+            // The variable trigger differs from the effect divide reader:
             // `if_zero` is shorthand here, not an extra divide field.
             for field in item.value.items().unwrap_or_default() {
                 let key = field.keyword().map(|key| key.folded());
                 let scalar = field.value.scalar().unwrap_or_default();
                 if effect && name == "divide_temp_variable" && key.as_deref() == Some(b"if_zero") {
-                    // CDivideTempVariableEffect reader@1403B2580 owns +0x220.
+                    // The divide effect owns the fallback operand.
                     assign(self, &mut if_zero, scalar)?;
                     continue;
                 }
                 if name == "clamp_temp_variable" {
-                    // CClampVariableTrigger::load_key@140437640.
+                    // Read the clamp trigger's named fields.
                     match key.as_deref() {
                         Some(b"var") => assign(self, &mut var, scalar)?,
                         Some(b"min") => assign(self, &mut min, scalar)?,
@@ -139,17 +139,19 @@ impl Evaluator<'_, '_> {
                     Some(b"value") => {}
                     _ => assign(self, &mut var, field.key.as_deref().unwrap_or_default())?,
                 }
-                // Modulo's 140480E00 / 140481020 reader takes one token,
-                // including shorthand `tooltip`; it has no CExpression.
+                // Modulo's reader takes one token,
+                // including shorthand `tooltip`; it has no expression form.
                 if field.value.items().is_some() && name != "modulo_temp_variable" {
                     right = Right::Expression(&field.value);
                 } else {
                     match &mut right {
                         Right::Scalar(operand) => assign(self, operand, scalar)?,
-                        Right::Expression(_) => return Err(super::super::refused(
-                            "scalar RHS after a CExpression calls bad_variant_access (1403BA3C0)"
-                                .into(),
-                        )),
+                        Right::Expression(_) => {
+                            return Err(super::super::refused(
+                                "scalar RHS after an expression has an incompatible value form"
+                                    .into(),
+                            ));
+                        }
                     }
                 }
             }
@@ -169,11 +171,11 @@ impl Evaluator<'_, '_> {
         scopes: Scopes,
         index: Option<&ScopedVariable>,
     ) -> Result<Vec<u8>, String> {
-        // GetMutableValue@140535A10 receives TLS explicitly: scope prefixes
+        // Mutable lookup receives TLS explicitly: scope prefixes
         // never select a persistent destination. It inserts BEFORE the RHS.
         if var.literal.is_some() || var.token.is_some() || var.random || var.ai_random {
             return Err(super::super::refused(
-                "temp destination is read-only; GetMutableValue asserts (140535A10)".into(),
+                "temp destination is read-only; mutable lookup asserts".into(),
             ));
         }
         let key = self.key(var, scopes, index)?;
@@ -218,9 +220,9 @@ impl Evaluator<'_, '_> {
                 .and_then(|value| self.raw(value.unwrap_or(Value::Raw(0))))
         };
         let value = match name {
-            "round_temp_variable" => rounded(current()?), // 1403DC6A0 -> 1424D87B0
+            "round_temp_variable" => rounded(current()?),
             "clamp_temp_variable" => {
-                // Trigger/effect@1403CF5F0/14034EDD0: min then max; clamp max then min.
+                // Read min then max; clamp max then min.
                 let lower = if min.parsed {
                     Some(
                         self.evaluate_operand(min, scopes, None)
@@ -242,7 +244,7 @@ impl Evaluator<'_, '_> {
                 lower.map_or(value, |lower| value.max(lower))
             }
             "modulo_temp_variable" => {
-                // ApplyScriptVariableModulo@14047B280 caches the floored,
+                // Modulo caches the floored,
                 // narrowed target BEFORE evaluating/rounding the divisor.
                 let numerator = modulo_integer(current()?);
                 if numerator < 0 {
@@ -267,23 +269,23 @@ impl Evaluator<'_, '_> {
             _ => {
                 let rhs = self.variable_right(right, scopes)?;
                 match name {
-                    "set_temp_variable" => rhs, // Trigger/effect@1403DC700/140364070.
-                    "add_to_temp_variable" => current()?.wrapping_add(rhs), // 1403CE2A0/14034C050.
-                    "subtract_from_temp_variable" => current()?.wrapping_sub(rhs), // 1403DCD50/140366420.
-                    "multiply_temp_variable" => current()?.wrapping_mul(rhs) / ONE, // 1403DB1C0/14035B2B0.
+                    "set_temp_variable" => rhs,
+                    "add_to_temp_variable" => current()?.wrapping_add(rhs),
+                    "subtract_from_temp_variable" => current()?.wrapping_sub(rhs),
+                    "multiply_temp_variable" => current()?.wrapping_mul(rhs) / ONE,
                     "divide_temp_variable" => {
-                        // Effect@1403554E0 reads if_zero through explicit TLS
-                        // (1405389B0), even when the divisor is nonzero.
+                        // The effect reads if_zero through explicit TLS,
+                        // even when the divisor is nonzero.
                         let fallback = if effect {
                             Some(self.temp_fallback(if_zero, scopes)?)
                         } else {
                             None
                         };
                         if rhs == 0 && !effect {
-                            return Ok(()); // 1403D0360: trigger logs zero without a store.
+                            return Ok(()); // The trigger logs zero without a store.
                         }
                         let value = current()?;
-                        // 1403D0360 logs zero and leaves the inserted value.
+                        // Log zero and leave the inserted value.
                         if rhs == 0 {
                             fallback.unwrap_or(value)
                         } else {
@@ -309,8 +311,8 @@ impl Evaluator<'_, '_> {
     }
 
     fn temp_fallback(&self, operand: &ScopedVariable, scopes: Scopes) -> Result<i64, String> {
-        // 1405389B0 builds the key and evaluates the default, then looks up
-        // only the supplied TLS store. It does not Evaluate a scalar literal.
+        // Build the key and evaluate the default, then look up
+        // only the supplied TLS store. Do not evaluate a scalar literal.
         let key = self.key(operand, scopes, None)?;
         let default = operand
             .default
@@ -325,7 +327,7 @@ impl Evaluator<'_, '_> {
             .and_then(|v| self.raw(v.unwrap_or(Value::Raw(default))))
     }
 
-    /// 140379020 executes temporary scalars before 14039A7D0 evaluates
+    /// Execute temporary scalars before evaluating
     /// RIGHT then LEFT. Persistent scalars describe without executing.
     pub(crate) fn description_variable(
         &self,
@@ -355,10 +357,10 @@ impl Evaluator<'_, '_> {
         Ok(Some((left, right)))
     }
 
-    /// Scorer configuration readers@14047C500/14047C6C0 retain parsed
+    /// Scorer configuration readers retain parsed
     /// operands across repeated fields and assign a default only if unparsed.
-    /// GetMutableValue@140535A10 inserts TLS; the separate index overrides
-    /// authored indices, including `num` for sorted lengths (14047AD60).
+    /// Mutable lookup inserts TLS; the separate index overrides
+    /// authored indices, including `num` for sorted lengths.
     pub(crate) fn description_temp_destination_fields(
         &self,
         fields: &[Item],
@@ -393,8 +395,8 @@ impl Evaluator<'_, '_> {
         self.taint_temps(reason);
     }
 
-    /// 14047BF80 -> 14047B530 evaluates min then max and returns before
-    /// destination/RNG for a reversed range. Constructor@140479C50: 0..1.
+    /// Evaluate min then max and return before
+    /// destination/RNG for a reversed range. The initial range is 0..1.
     pub(crate) fn description_random_temp(
         &self,
         item: &Item,
@@ -432,7 +434,7 @@ impl Evaluator<'_, '_> {
             false,
         );
         let value = if integer {
-            // 14047B530 floors/narrows each endpoint, then the scaled delta.
+            // Floor/narrow each endpoint, then the scaled delta.
             let lower = modulo_integer(min);
             let upper = modulo_integer(max);
             let delta = i64::from(upper.wrapping_sub(lower))
@@ -447,7 +449,7 @@ impl Evaluator<'_, '_> {
         Ok(())
     }
 
-    /// 14047BEE0 -> 14047B0B0; reader@140480FD0. Only recognized bare
+    /// Only recognized bare
     /// truck/train tokens read a total; all other types store zero.
     pub(crate) fn description_supply_temp(
         &self,
@@ -475,15 +477,13 @@ impl Evaluator<'_, '_> {
             return Ok(());
         }
         if kind.as_deref() == Some("train") && !need {
-            return Err("get_supply_vehicles_temp actual trains CCountrySupplySystem+0x110 i32 are not recorded (14047B0B0)".into());
+            return Err("get_supply_vehicles_temp actual train count is not recorded".into());
         }
         let country = match scopes.this {
             Scope::Country(country) | Scope::CountryLeader { country, .. } => country,
             Scope::Combat => self.combat_country()?,
             _ => {
-                return Err(
-                    "get_supply_vehicles_temp needs the caller's country (14047B0B0)".into(),
-                );
+                return Err("get_supply_vehicles_temp needs the caller's country".into());
             }
         };
         let raw = self
@@ -501,18 +501,16 @@ impl Evaluator<'_, '_> {
         let value = match (kind.as_deref(), need) {
             (Some("truck"), false) => i64::from(
                 row.allocated_trucks
-                    .require("TrainInventory.allocated_trucks (CCountrySupplySystem+0x138 i32)")?
+                    .require("TrainInventory.allocated_trucks")?
                     .ok_or("TrainInventory.allocated_trucks capture unavailable")?,
             )
             .wrapping_mul(ONE),
             (Some("truck"), true) => {
                 let raw = row
                     .required_trucks_raw
-                    .require(
-                        "TrainInventory.required_trucks_raw (CSupplyCalculationData+0x130 i64)",
-                    )?
+                    .require("TrainInventory.required_trucks_raw")?
                     .ok_or("TrainInventory.required_trucks_raw capture unavailable")?;
-                // 14047C4A0 ceilings fixed5 (wrapping product); 14047B0B0
+                // Ceiling fixed5 with a wrapping product; the vehicle total
                 // narrows the resulting whole count to i32 before scaling it.
                 let rounded = if raw % ONE == 0 {
                     raw
@@ -524,10 +522,10 @@ impl Evaluator<'_, '_> {
             (Some("train"), true) => {
                 let count = row
                     .required_trains
-                    .require("TrainInventory.required_trains (CSupplyCalculationData+0x140 i32)")?
+                    .require("TrainInventory.required_trains")?
                     .ok_or("TrainInventory.required_trains capture unavailable")?;
                 let raw = i64::from(count).wrapping_mul(ONE);
-                // 14047B0B0: strictly greater than the content define, else zero.
+                // Strictly greater than the content define, else zero.
                 if raw > minimum_trains()? { raw } else { 0 }
             }
             _ => unreachable!(),
@@ -536,15 +534,15 @@ impl Evaluator<'_, '_> {
         Ok(())
     }
 
-    /// Core CExpression instructions@1414052C0, from the shared math reader.
-    /// Unported operators are refused where reached, including lazy operators.
+    /// Core expression instructions from the shared math reader.
+    /// Unsupported operators are refused where reached, including lazy operators.
     fn temp_expression(&self, expression: &ParsedValue, scopes: Scopes) -> Result<i64, String> {
         let Some(fields) = expression.items() else {
             return self.scoped_value(expression.scalar().unwrap_or_default(), scopes);
         };
         let Some(first) = fields.first().filter(|field| field.keyword_is("value")) else {
             return Err(super::super::refused(
-                "CExpression without its initial value (141406A00)".into(),
+                "expression without its initial value".into(),
             ));
         };
         let mut value = self.temp_expression(&first.value, scopes)?;
@@ -552,7 +550,7 @@ impl Evaluator<'_, '_> {
             let key = field.keyword().map(|key| key.folded()).unwrap_or_default();
             if matches!(key.as_slice(), b"round" | b"not") && field.value.scalar() != Some(b"yes") {
                 return Err(super::super::refused(format!(
-                    "CExpression unary {} requires yes (1414072C0)",
+                    "expression unary {} requires yes",
                     String::from_utf8_lossy(&key)
                 )));
             }
@@ -580,7 +578,7 @@ impl Evaluator<'_, '_> {
                     | b"not_equals"
             ) {
                 return Err(super::super::refused(format!(
-                    "CExpression operator {} (1414052C0) is not reproduced",
+                    "expression operator {} is not reproduced",
                     String::from_utf8_lossy(&key)
                 )));
             }
@@ -612,12 +610,12 @@ impl Evaluator<'_, '_> {
 }
 
 fn rounded(value: i64) -> i64 {
-    // 1424D87B0: the shared fixed_round result, returned as fixed5.
+    // The shared fixed_round result, returned as fixed5.
     fixed_round(value).wrapping_mul(ONE)
 }
 
 fn modulo_integer(value: i64) -> i32 {
-    // 14047B280 floors in fixed5, wraps that product, divides, then narrows.
+    // Floor in fixed5, wrap that product, divide, then narrow.
     let whole = value / ONE;
     let floored = if value % ONE == 0 {
         value
@@ -628,13 +626,11 @@ fn modulo_integer(value: i64) -> i32 {
 }
 
 fn quotient(value: i64, rhs: i64) -> Result<i64, String> {
-    // Divide@1403D0360 / CExpression@1414052C0 sentinel guard.
+    // Shared division and expression sentinel guard.
     if matches!(value, i64::MIN | i64::MAX) || value == i64::MIN + 1 {
         return Ok(0xffff_ffff);
     }
     value.wrapping_mul(ONE).checked_div(rhs).ok_or_else(|| {
-        super::super::refused(
-            "fixed5 divide faults on native signed quotient overflow (1403D0360)".into(),
-        )
+        super::super::refused("fixed5 divide faults on signed quotient overflow".into())
     })
 }

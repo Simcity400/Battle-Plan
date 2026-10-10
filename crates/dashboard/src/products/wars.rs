@@ -409,7 +409,7 @@ impl Hour {
             world.adjacent.entry(p.0).or_default().push(p.1);
             world.adjacent.entry(p.1).or_default().push(p.0);
         }
-        // Factions@140D2AC10 are equality operands, never side rosters.
+        // Factions are equality operands, never side rosters.
         frame
             .complete::<tables::Factions>()
             .map_err(|e| e.to_string())?;
@@ -685,7 +685,7 @@ fn append_losses(war: &mut WarTimeline, hour: i32, losses: [String; 4], previous
     }
 }
 fn append_relations(war: &mut WarTimeline, hour: i32, relations: &[RelationRun]) {
-    // Native BuildWarBlobs@140D27BB0 / inside@1419734F0 decide membership.
+    // Grouping and representative selection decide membership.
     // One indexed tail per lifetime keeps long, wide wars linear in their edges.
     for relation in relations {
         if let Some(&index) = war.open_relations.get(&relation.identity)

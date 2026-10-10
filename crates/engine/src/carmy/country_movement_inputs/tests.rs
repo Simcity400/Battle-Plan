@@ -49,8 +49,7 @@ impl Fixture {
         world.u32(links.element(3, 4).unwrap(), 2);
         world.u32(target + ccountry::ID, 3);
 
-        // CDiplomacyStatus::constructor@140D1E540 stores its owning country
-        // at +0x288; reserve that backlink before allocating the matrix.
+        // Reserve the diplomacy owner backlink before allocating the matrix.
         let diplomacy = world.alloc(cdiplomacy_status::COUNTRY + std::mem::size_of::<u64>());
         let matrix = world.alloc(4 * 8);
         world.u64(owner + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
@@ -106,7 +105,7 @@ impl Fixture {
         let weather = world.alloc(0x100);
         world.u64(state + cgame_state::WEATHER_MANAGER, weather as u64);
         world.u64(weather, (MODULE + cweather_manager::VTABLE_RVA) as u64);
-        // F04E40 returns no regional weather outside this valid empty array.
+        // The weather query returns no regional weather outside this valid empty array.
         world.array(weather + cweather_manager::REGIONS, 0, 0);
         let globals = BTreeMap::from([
             (

@@ -1,4 +1,4 @@
-//! Native contextual sources of 14157BC30/140F49710/140F4D130.
+//! Stored contextual sources for raid and wing tooltips.
 use super::*;
 use crate::memory::{RecordField, RecordLayout, RecordSources};
 use crate::modifier_keys as keys;
@@ -49,7 +49,7 @@ fn region_id(m: &impl Memory, base: usize, p: usize) -> Result<Option<u32>, &'st
     cstrategic_region::id(m, base, p)
 }
 
-/// 141581940 -> 141580C30: capture the kind of the exact selected base.
+/// Capture the kind of the exact selected base.
 pub(super) fn source(
     m: &impl Memory,
     base: usize,
@@ -77,7 +77,7 @@ pub(super) fn source(
             authenticate(m, base, province, cprovince::VTABLE_RVA)?;
             let state = pointer(m, province, cprovince::STATE)?;
             authenticate(m, base, state, cstate::VTABLE_RVA)?;
-            // 140C3B7F0: source-country access table, indexed by state ID.
+            // Source-country access table, indexed by state ID.
             let access = pointer(m, air, 0x88)?;
             item(m, array(m, access, 0x90, 8)?, field(m, state, cstate::ID)?)?
         }
@@ -142,7 +142,7 @@ pub(super) fn target(
         return Ok(());
     }
     let provinces = array(m, state, cstate::PROVINCES, 8)?;
-    // GetStrategicRegion 1409CCDE0 selects the first stored province.
+    // The strategic region is selected from the first stored province.
     let first = if provinces.count == 0 {
         0
     } else {
@@ -212,8 +212,8 @@ fn target_country(
     Ok(0)
 }
 
-/// `14157BC30` counts only the target country's wings whose mission region
-/// (+C0) is the target's; rows are kept for those wings alone.
+/// Count only the target country's wings whose mission region at +0xC0
+/// is the target's; retain rows for those wings alone.
 fn interception(
     m: &impl Memory,
     base: usize,
@@ -238,7 +238,7 @@ fn interception(
     if countries.link(field(m, owner, cstrategic_air::COUNTRY)?)? != Some(slot) {
         return Err("raid tooltip air owner mismatch");
     }
-    // 140C3FDF0 appends every occurrence, retaining duplicate pools/wings.
+    // Append every occurrence, retaining duplicate pools and wings.
     interceptors(
         m,
         base,
@@ -354,8 +354,8 @@ fn anti_air(
     state: usize,
     sink: &mut Sink<'_>,
 ) -> Result<(), &'static str> {
-    // 140677D30 fills +220 with all templates whose air_defence(+314)!=0.
-    // 141160CD0 performs this index lookup before 1409CB2C0 reads healthy level.
+    // The +0x220 list holds templates with nonzero air defence at +0x314.
+    // Index lookup precedes the healthy-level read.
     let db = pointer(m, base, cbuilding_database::SINGLETON_RVA)?;
     let types = array(m, db, 0x220, 8)?;
     let status = state
@@ -439,7 +439,7 @@ pub(super) fn wing(
         ],
         sink,
     )?;
-    // UpdateDayNight 140F03670 bounds the +370 array by +37C, stride 330.
+    // The day/night array at +0x370 is bounded by +0x37C, with stride 0x330.
     let environment = array(m, manager, 0x370, 0x330)?
         .element(id, 0x330)
         .ok_or("raid tooltip weather province outside array")?;
@@ -468,7 +468,7 @@ pub(super) fn wing(
             sink.push(CONTEXT, BASE_REGION, i64::from(id))?;
         }
         if let Some(ship) = creference_registry::resolve(m, base, host)? {
-            // 140C44050/140F46B00 use the resolved ship directly (+728).
+            // Use the resolved ship directly, reading +0x728.
             authenticate(m, base, ship, crate::cship::VTABLE_RVA)?;
             let task = pointer(m, ship, 0x728)?;
             authenticate(m, base, task, crate::ctask_force::VTABLE_RVA)?;
@@ -480,7 +480,7 @@ pub(super) fn wing(
             if state == 0 {
                 let mut location = pointer(m, task, 0x1f0)?;
                 let definition = pointer(m, location, cprovince::DEFINITION)?;
-                // 140D58930 redirects a coastal land province to its sea edge.
+                // Redirect a coastal land province to its sea edge.
                 if field::<u8>(m, definition, 0xd2)? & 1 != 0 {
                     location = object(m, base, game, field(m, definition, 0xc8)?, true)?;
                 }
@@ -504,7 +504,7 @@ fn land_base_province(
     if cached != 0 {
         return Ok(cached);
     }
-    // 140C44050 -> 140C441D0: first ID in the kind's state-indexed roster.
+    // Use the first ID in the kind's state-indexed roster.
     authenticate(m, base, state, cstate::VTABLE_RVA)?;
     let kind = field::<i32>(m, airbase, cair_base::KIND)?;
     let offset = match kind {

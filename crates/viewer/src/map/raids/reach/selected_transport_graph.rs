@@ -1,5 +1,5 @@
-//! F9EE50's reached spotting/interception caller. Independent original raw
-//! domains are joined only after the native caller reaches each operand.
+//! Reached spotting/interception joins. Independent raw domains are joined
+//! only after each operand is reached.
 use super::*;
 use installed_content::unit_path::CommonMoveWorld;
 use replay::rows::{
@@ -155,14 +155,14 @@ impl Inputs<'_, '_, '_, '_> {
             .ok_or("transport original spotting contributor stat selector refused")?;
         let raw = stats
             .detection_138
-            .ok_or("transport original contributor stat138 refused")?;
+            .ok_or("transport original contributor detection stat refused")?;
         let carrier = stats
             .carrier_detection_160
-            .ok_or("transport original contributor stat160 refused")?;
+            .ok_or("transport original contributor carrier detection stat refused")?;
         let fill = self.carrier_fill(receiver)?;
         let combined = receiver
             .combined_detection
-            .ok_or("transport original contributor combined2A refused")?;
+            .ok_or("transport original contributor detection modifier refused")?;
         Ok(damage::detection([raw, carrier], fill, combined))
     }
 }
@@ -204,9 +204,9 @@ impl spotting::Inputs for Inputs<'_, '_, '_, '_> {
             .map_err(|_| "transport original mission singleton refused")?;
         let mut output = Vec::new();
         for &handle in view.ledger(slot, region)? {
-            // F97BF0 dereferences these entries; its law has no E8B8E0 null skip.
+            // These entries are dereferenced; nulls cannot be skipped.
             if handle == 0 {
-                return Err("transport F97BF0 reached null mission or backlink");
+                return Err("transport detection reached null mission or backlink");
             }
             output.push(self.receiver_detection(view.receiver(handle)?)?);
         }
@@ -300,7 +300,7 @@ impl spotting::Inputs for Inputs<'_, '_, '_, '_> {
         {
             let mission = mission
                 .as_ref()
-                .ok_or("transport F96470 reached null mission or backlink");
+                .ok_or("transport interception reached null mission or backlink");
             let kind = mission.and_then(|mission| {
                 mission
                     .current_type
@@ -349,10 +349,10 @@ impl spotting::Inputs for Inputs<'_, '_, '_, '_> {
                 Ok([
                     mission
                         .detection_13
-                        .ok_or("transport original air detection stat13 refused")?,
+                        .ok_or("transport original primary air detection stat refused")?,
                     mission
                         .detection_14
-                        .ok_or("transport original air detection stat14 refused")?,
+                        .ok_or("transport original secondary air detection stat refused")?,
                 ])
             });
             missions.push(spotting::AirMission {
@@ -441,7 +441,7 @@ impl damage::Inputs for Inputs<'_, '_, '_, '_> {
     fn combined_detection(&mut self) -> damage::Fact<i64> {
         self.receiver
             .combined_detection
-            .ok_or("transport original combined2A refused")
+            .ok_or("transport original detection modifier refused")
     }
     fn detection_stats(&mut self) -> damage::Fact<[i64; 2]> {
         let stats = self
@@ -452,10 +452,10 @@ impl damage::Inputs for Inputs<'_, '_, '_, '_> {
         Ok([
             stats
                 .detection_138
-                .ok_or("transport original damage stat138 refused")?,
+                .ok_or("transport original damage detection stat refused")?,
             stats
                 .carrier_detection_160
-                .ok_or("transport original damage stat160 refused")?,
+                .ok_or("transport original damage carrier detection stat refused")?,
         ])
     }
     fn carrier_fill_sum(&mut self) -> damage::Fact<i64> {
@@ -484,10 +484,10 @@ impl damage::Inputs for Inputs<'_, '_, '_, '_> {
         Ok([
             stats
                 .visibility_148
-                .ok_or("transport original visibility stat148 refused")?,
+                .ok_or("transport original primary visibility stat refused")?,
             stats
                 .visibility_150
-                .ok_or("transport original visibility stat150 refused")?,
+                .ok_or("transport original secondary visibility stat refused")?,
         ])
     }
     fn detached_activity(&mut self) -> damage::Fact<i32> {
@@ -498,7 +498,7 @@ impl damage::Inputs for Inputs<'_, '_, '_, '_> {
     fn visibility_modifier(&mut self) -> damage::Fact<i64> {
         self.risk()?
             .visibility
-            .ok_or("transport original combined19F refused")
+            .ok_or("transport original visibility modifier refused")
     }
     fn actual_speed(&mut self) -> damage::Fact<i64> {
         let packet = self.risk()?;
@@ -530,17 +530,17 @@ impl damage::Inputs for Inputs<'_, '_, '_, '_> {
     fn coordination(&mut self) -> damage::Fact<i64> {
         self.risk()?
             .coordination
-            .ok_or("transport original combined19 refused")
+            .ok_or("transport original coordination modifier refused")
     }
     fn spotting_modifier(&mut self) -> damage::Fact<i64> {
         self.risk()?
             .spotting_chance
-            .ok_or("transport original combined55 refused")
+            .ok_or("transport original spotting modifier refused")
     }
     fn targeted_spotting_modifier(&mut self) -> damage::Fact<i64> {
         self.risk()?
             .targeted_spotting_modifier
-            .ok_or("transport original targeted spotting1C5 refused")
+            .ok_or("transport original targeted spotting modifier refused")
     }
     fn simulation_night_factor(&mut self) -> damage::Fact<i64> {
         carrier::night(self.moves, self.receiver)
@@ -548,6 +548,6 @@ impl damage::Inputs for Inputs<'_, '_, '_, '_> {
     fn night_spotting_modifier(&mut self) -> damage::Fact<i64> {
         self.risk()?
             .night_spotting_chance
-            .ok_or("transport original combined108 refused")
+            .ok_or("transport original night spotting modifier refused")
     }
 }

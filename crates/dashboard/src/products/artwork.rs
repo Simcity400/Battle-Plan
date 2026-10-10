@@ -16,8 +16,7 @@ use std::{
     },
 };
 
-/// The sprite `CNationalFocus::GetIconName` (1402D0890) names for a focus
-/// without an icon.
+/// The fallback sprite for a focus without an icon.
 const UNKNOWN_FOCUS_ICON: &str = installed_content::focus::UNKNOWN_ICON;
 
 /// Longest side of returned product artwork previews.
@@ -67,10 +66,9 @@ fn technology_children(
         |child| {
             let database =
                 database.ok_or_else(|| "native equipment database is unavailable".to_owned())?;
-            // 140EBDC40/140C87E70 test normalized category bit 9;
-            // feature 0x21 tests DLC bit 7 (1401AE640). Native names/masks
-            // 1401ADD20 share the recorded DLC roster used by the
-            // content-only has_dlc evaluator, never a row-hour scope.
+            // Normalized equipment category bit 9 and feature 0x21's DLC bit 7
+            // use the recorded DLC roster shared with the content-only has_dlc
+            // evaluator, never a row-hour scope.
             let enabled = world
                 .as_ref()
                 .map(|world| {
@@ -252,8 +250,8 @@ impl Context {
         text
     }
 
-    /// Focus names and descriptions go through 1412B9CA0 (1402D2250,
-    /// 1402D21E0); full technology names are plain (140EC9A60).
+    /// Focus names and descriptions expand scoped text; full technology names
+    /// are plain.
     fn view(&self) -> catalogue::View {
         match self.kind {
             Kind::Focus => catalogue::View::Scripted,
@@ -274,10 +272,10 @@ impl Context {
         warnings
     }
 
-    /// Description 140EC51F0 uses the owner's own tag, never the dynamic
-    /// original tag used by names. A single non-duplicate child selects the
-    /// first admitted child, then its archetype if neither child key exists;
-    /// otherwise 140AC1830 selects the template's nonempty parent/id.
+    /// Descriptions use the owner's own tag, never the dynamic original tag
+    /// used by names. A single non-duplicate child selects the first admitted
+    /// child, then its archetype if neither child key exists; otherwise the
+    /// template's nonempty parent/id supplies the key.
     fn description_key(&self, token: &str, tag: Option<&str>) -> Result<String, String> {
         if self.kind == Kind::Focus {
             return Ok(self
@@ -292,7 +290,7 @@ impl Context {
             .as_ref()
             .map_err(Clone::clone)?;
         let key_for = |root: &str| {
-            // LocalizeDescriptionForCountry 140BBA390, suffix 1427C7718.
+            // Descriptions use the country-specific localisation suffix.
             let key = format!("{root}_desc");
             let prefixed = tag.map(|tag| format!("{tag}_{key}"));
             prefixed
@@ -325,7 +323,7 @@ impl Context {
                     return Ok(key);
                 }
                 let archetype = first.archetype.and_then(|index| database.equipment.get(index))
-                    .ok_or_else(|| format!("technology {token}: first equipment description archetype is unavailable (140EC51F0)"))?;
+                    .ok_or_else(|| format!("technology {token}: first equipment description archetype is unavailable"))?;
                 return Ok(key_for(
                     archetype.name_str().map_err(|error| error.to_string())?,
                 ));
@@ -412,7 +410,7 @@ impl Context {
     )> {
         use crate::content_check::{Finding, Kind as FindingKind};
         let selected = match self.kind {
-            // Technology badge 141BC1A00 uses _medium (142936B70).
+            // Technology badges use the _medium suffix.
             Kind::Technology => Some(format!("GFX_{token}_medium")),
             Kind::Focus => match self.definitions.get(token) {
                 Some(definition) => match definition.icon(None, |trigger| {
@@ -628,8 +626,8 @@ impl Context {
                 let definition = self.definitions.get(token).ok_or_else(|| {
                     format!("focus {token}: definition absent from recorded content")
                 })?;
-                // Focus-tree button 140B32B40 probes authored country/id and
-                // id overrides before GetIconName. Event uses the definition.
+                // Focus-tree buttons probe authored country/id and id overrides before
+                // the definition's icon. Events use the definition.
                 if tree {
                     for name in definition.sprite_overrides(token, Some(tag)) {
                         if catalogue.sprites.find(&name)?.is_some() {
@@ -696,9 +694,8 @@ impl Context {
                 let mut scope = crate::scripted_text::EventScope::of(
                     crate::scripted_text::EventObject::Country(slot),
                 );
-                // GetLocalizedName/GetDescription 1402D2250/1402D21E0
-                // seed a fresh scope with Clock seed + byte-exact focus ID
-                // FNV-1a (1402DADC0/1402D70E0), then the shared hash lanes.
+                // Focus names and descriptions seed a fresh scope with Clock seed
+                // plus the byte-exact focus ID's FNV-1a hash, then the shared hash lanes.
                 let seed = frame
                     .complete::<replay::rows::tables::Clock>()
                     .ok()
@@ -722,7 +719,7 @@ impl Context {
                     context.expand_in_without_random_seed(
                         &raw,
                         &scopes,
-                        "focus random_list: Clock seed is not recorded (1402DADC0)",
+                        "focus random_list: Clock seed is not recorded",
                     )
                 }?;
                 catalogue::plain_text(&expanded)
@@ -857,13 +854,9 @@ impl Context {
     }
 }
 
-/// The stockpile indicator's authored image. The executable selects the
-/// "topbar" template (140B52390, literal 142934CD8) and "nukes" container
-/// (14188BA30, literal 142712608). Container creation 1422FAF10/14229F050
-/// runs 1422A9950 over authored children; 1422FA550 dispatches their registered
-/// factories. CIconType 142358760 constructs CIcon 1422E5D40, whose drawable
-/// builder 1422E6B90 resolves the authored sprite through 142222AD0. Its sole
-/// icon supplies the artwork; ambiguous content refuses by authored paths.
+/// The stockpile indicator's authored image uses the topbar template's nukes
+/// container. Its sole icon supplies the artwork through the authored sprite;
+/// ambiguous content refuses by authored paths.
 pub fn nuke_icon(catalogue: &Catalogue) -> io::Result<Option<String>> {
     use installed_content::gui::native::{Fields, Kind};
     let (_, root) =
@@ -916,9 +909,8 @@ pub fn nuke_icon(catalogue: &Catalogue) -> io::Result<Option<String>> {
     };
     let name = std::str::from_utf8(&icon.sprite).map_err(|error| invalid(error.to_string()))?;
     let sprite = catalogue::created_gui_sprite(&catalogue.sprites, name)?;
-    // CIconType 142358760 -> SetFrame 1422E6A90 -> CSprite 1422E95C0 sends
-    // the authored frame to 14222D0D0/14222D5A0: a positive frame stores
-    // frame-1 at sprite+0xFC before 14222A990 computes its offset.
+    // A positive authored frame stores frame-1 before calculating the
+    // sprite's frame offset.
     let frame = u32::try_from(
         icon.frame
             .checked_sub(1)
@@ -957,6 +949,8 @@ mod tests {
 
     #[test]
     fn focus_icons_evaluate_native_cases_and_preserve_caller_overrides() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use replay::{
             frame::{DecodedFrame, TableView},
             rows::{CountryRow, TableId, TableRows, tables},
@@ -1027,6 +1021,8 @@ mod tests {
 
     #[test]
     fn focus_art_uses_the_row_country_and_only_refuses_a_missing_random_seed() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use replay::{
             frame::{DecodedFrame, TableView},
             rows::{
@@ -1102,7 +1098,13 @@ mod tests {
                 .is_some_and(|reason| reason.contains("localisation"))
         );
         assert!(result[1].0.name.is_none());
-        assert!(result[1].1.as_deref().unwrap().contains("1402DADC0"));
+        assert!(
+            result[1]
+                .1
+                .as_deref()
+                .unwrap()
+                .contains("Clock seed is not recorded")
+        );
         let conditional = context
             .focuses_at(&[("conditional", "M0")], &frame)
             .remove(0);
@@ -1130,8 +1132,8 @@ mod tests {
             context.focuses_at(&[("random", "M0")], &frame)[0].0.name,
             seeded.0.name
         );
-        // ROOT selects the country context 141A81250; its entry fallback
-        // constructs a fresh known 424242 scope 1410CD900/1410CDDF0.
+        // ROOT selects the country context; its entry fallback constructs a
+        // fresh known 424242 scope.
         assert!(matches!(result[2].0.name.as_deref(), Some("A" | "B")));
         assert!(
             !result[2]
@@ -1153,7 +1155,7 @@ mod tests {
             !context
                 .refusal_lines()
                 .iter()
-                .any(|reason| reason.contains("1402DADC0"))
+                .any(|reason| reason.contains("Clock seed is not recorded"))
         );
         frame.hour = 11;
         // Keep M0 a native tag operand while the row's country renames to M1.
@@ -1249,8 +1251,10 @@ mod tests {
 
     #[test]
     fn technology_limits_use_load_time_dlcs_empty_scope_and_unknown_globals() {
-        // The executable maps this DLC name to bit7 (1401ADD20), which
-        // feature0x21 tests 1401AE640. No content key is hard-coded here.
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        // The selected DLC name maps to bit 7, which feature 0x21 tests.
+        // No content key is hard-coded here.
         let feature_dlc = engine::dlc_feature_state::NAME_MASKS
             .iter()
             .find(|(_, mask)| *mask == 1 << 7)
@@ -1313,8 +1317,8 @@ mod tests {
             .unwrap(),
             "mod_child"
         );
-        // The name is the executable's feature mask mapping 1401ADD20, not a
-        // content importance list. Feature0x21 tests the same bit7.
+        // The name comes from the feature-mask mapping rather than content
+        // importance. Feature 0x21 tests the same bit 7.
         let enabled = BTreeSet::from([feature_dlc.to_owned()]);
         let world = crate::triggers::World::unrecorded(&enabled, &triggers, &aliases);
         assert_eq!(
@@ -1339,6 +1343,8 @@ mod tests {
 
     #[test]
     fn technology_catalogue_keeps_parent_text_and_skips_unrequested_children() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folders) = texture_catalogue(
             &[
                 (
@@ -1378,6 +1384,8 @@ mod tests {
 
     #[test]
     fn technology_descriptions_use_distinct_child_gate_and_archetype_fallback() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folders) = texture_catalogue(
             &[
                 (
@@ -1435,6 +1443,8 @@ mod tests {
 
     #[test]
     fn nuke_artwork_uses_the_recorded_gui_sprite_and_authored_frame() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let sheet = Rgba8Image {
             width: 2,
             height: 1,
@@ -1474,6 +1484,8 @@ mod tests {
 
     #[test]
     fn mod_png_artwork_and_native_refusals_reach_the_catalogue_reply() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let image = Rgba8Image {
             width: 6,
             height: 3,
@@ -1518,8 +1530,8 @@ mod tests {
             .unwrap();
         let frame = from_url(icon);
         assert_eq!((frame.width, frame.height), (2, 4));
-        // build_geometry@14222CB90 clips its fractional width at the queried
-        // integer extent instead of squeezing the complete pitch into it.
+        // Geometry clips its fractional width at the queried integer extent
+        // instead of squeezing the complete pitch into it.
         assert_eq!(&frame.pixels[..8], [0, 20, 30, 200, 1, 20, 30, 200]);
         assert_eq!(&frame.pixels[24..], [0; 8]);
         for (token, reason) in [
@@ -1548,6 +1560,8 @@ mod tests {
 
     #[test]
     fn every_texture_refusal_reaches_artwork_warnings() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let refusals = crate::catalogue::texture_tests::refusal_textures();
         let sprites = format!(
             "spriteTypes = {{ {} }}",
@@ -1600,6 +1614,8 @@ mod tests {
 
     #[test]
     fn unknown_gui_decode_is_the_items_problem_and_keeps_its_text() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut catalogue, _folders) = texture_catalogue(
             &[
                 (

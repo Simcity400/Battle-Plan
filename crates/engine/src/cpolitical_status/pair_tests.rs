@@ -257,8 +257,8 @@ fn idea_capacity_still_validates_tokens_without_reading_omitted_heap_payloads() 
     }
 }
 
-// Frozen scalar row body from 55004fbe0. The unchanged identity reader is
-// deliberately shared; every observation it issues remains in the trace.
+// Independent scalar-row baseline for pair-read equivalence. The identity
+// reader is shared; every observation it issues remains in the trace.
 fn scalar_row(reader: &Reader<'_, impl Memory>) -> Result<Row, &'static str> {
     let last_election =
         read::<i32>(reader.memory, reader.at(LAST_ELECTION)?).ok_or("last election unreadable")?;

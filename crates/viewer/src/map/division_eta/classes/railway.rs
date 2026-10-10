@@ -1,4 +1,4 @@
-//! Class13's fresh counter duration (`140E74B20`, `140BECF90`).
+//! Class-13's fresh counter duration.
 //! The common route search owns admission. Land speed uses equipment maximum
 //! plus the directed railway bonus, then land scale and the gun's own supply
 //! factor; it never uses the army road-speed fallback.
@@ -144,8 +144,8 @@ fn remaining(
             }
             .evaluate()
         };
-        // BECF90 exits immediately on zero speed, before later edges or the
-        // independently captured actual first-edge progress are demanded.
+        // Zero speed returns immediately, before later edges or independently
+        // recorded actual first-edge progress are demanded.
         if speed == 0 {
             return Ok(0);
         }
@@ -347,6 +347,8 @@ mod tests {
 
     #[test]
     fn railway_bonus_is_directed_and_applies_supply_after_land_scale() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = frame();
         rails(&mut frame);
         let mut content = content(1);
@@ -363,6 +365,8 @@ mod tests {
 
     #[test]
     fn transport_skips_refused_land_domains_and_uses_embark_distance() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = frame();
         transport(&mut frame, 200_000);
         let mut transport_content = content(0);
@@ -396,6 +400,8 @@ mod tests {
 
     #[test]
     fn actual_progress_is_demanded_only_for_the_same_first_edge() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = frame();
         rails(&mut frame);
         let content = content(1);
@@ -421,6 +427,8 @@ mod tests {
 
     #[test]
     fn zero_speed_stops_before_progress_or_later_land_operands() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = frame();
         transport(&mut frame, 0);
         let content = content(0);
@@ -451,6 +459,8 @@ mod tests {
 
     #[test]
     fn earlier_edge_division_overflow_is_not_hidden_by_later_zero_speed() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = frame();
         put(
             &mut frame,
@@ -528,6 +538,8 @@ mod tests {
 
     #[test]
     fn land_common_refusals_never_become_an_army_fallback() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = frame();
         rails(&mut frame);
         let content = content(1);

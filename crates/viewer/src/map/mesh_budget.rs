@@ -1,19 +1,12 @@
-//! `NGraphics.MAX_MESHES_LOADED_PER_FRAME`, the map entities the game
-//! creates per frame. `CGraphicalMap::update@140B49340` zeroes the counter
-//! `1433232A4` before `140B4C120` updates the provinces, in ascending ID
-//! order (`140B3F5C0`, comparator `140B3E900`), each province's buildings
-//! (`14127B2E0`) before its units (`14127D260`).
+//! Shared content-defined allowance for mesh creations per frame.
+//! The frame resets the counter, then visits provinces in ascending ID order,
+//! updating each province's buildings before its units.
 //!
-//! It is not a hard cap. Buildings (`141663E70`) and hulls (`1416542A0`) test
-//! and increment inline. `141277810` queues land creations against what is
-//! left, in each province, without reserving it; after the province loop
-//! `140B3E400` resolves them and `141276C20` creates each changed definition
-//! with no further test, so land can take the total past the define.
-//!
-//! The counter's other readers and writers (`14127C910`'s show-bit hold) are
-//! unit ones; trees, cities, aircraft and trains do not use it. Naval combat
-//! graphics attach hulls through `1416542A0` too (`1416535A0` ->
-//! `14164F560`); the viewer does not draw them, so they spend none of it.
+//! Buildings and hulls test and increment the counter inline. Land creations
+//! queue against the remaining allowance and run after the province walk;
+//! their final creation has no budget guard and can exceed the allowance.
+//! Held show bits retry on later frames. Naval combat graphics also use the
+//! shared allowance, but their hulls are not drawn by this layer.
 
 /// One viewer frame's creation allowance. Offline dumps settle every
 /// admitted model whatever the allowance.
@@ -23,7 +16,7 @@ pub(super) struct Budget {
 }
 
 impl Budget {
-    /// The content's allowance (loader `14084FEE0`).
+    /// The content's allowance.
     pub fn read(defines: &installed_content::defines::Defines) -> std::io::Result<i32> {
         defines.int32("NGraphics", "MAX_MESHES_LOADED_PER_FRAME")
     }
@@ -36,7 +29,7 @@ impl Budget {
         }
     }
 
-    /// What is left, as `141277810` reads it.
+    /// The remaining allowance for deferred land creations.
     pub fn remaining(&self) -> usize {
         if self.steady {
             usize::MAX
@@ -45,7 +38,7 @@ impl Budget {
         }
     }
 
-    /// Counts a creation that does not test the allowance (`141276C20`).
+    /// Counts a creation that does not test the allowance.
     pub fn charge(&mut self) {
         self.remaining = self.remaining.saturating_sub(1);
     }

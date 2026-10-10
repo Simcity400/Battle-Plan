@@ -368,7 +368,7 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// Only the two proven CALLs in 140C4D420 are patched. Their native
+    /// Only the two supported loss CALLs are patched. Their native
     /// continuation frames and unwind metadata remain untouched.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
         BASE.store(base, Ordering::Relaxed);

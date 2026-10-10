@@ -1,27 +1,24 @@
-//! TEST ONLY: L4b's carmy_combat_inputs readers before per-pass sharing,
-//! copied verbatim from political/l4b-combat-window 1077912ad3 (which is main's
-//! readers of the time plus L4b's changes), except that its row types are the
-//! current module's (they are unchanged), and the exile reader, which shares
-//! nothing, is left out. The sharing equivalence tests run this as the
-//! baseline: every read in the unshared order, every failure with its reason.
+//! Test-only sequential, unshared combat-input readers. Row types match
+//! the shared reader so outputs compare directly. The exile reader shares
+//! no inputs and is omitted. Equivalence tests compare every read in the
+//! unshared order and every failure with its reason.
 #![allow(dead_code, clippy::all)]
 
 use crate::{Memory, carmy, cpdx_array::Array, csub_unit_definition, cunit, read, read_slice};
 
 /// Explicit bound, exceeding it makes this division unavailable.
 pub const MODIFIER_LIMIT: usize = 256;
-/// Stat-block armour and piercing operands, consumed together by 1415CA660.
+/// Stat-block armour and piercing operands consumed together by combat calculations.
 pub const ARMOUR: usize = 0x298;
-/// Anti-air operand passed to 141297FD0 by 1415CA660.
+/// Anti-air operand used by combat calculations.
 pub const AIR_ATTACK: usize = 0x220;
-/// Width getter140C6E270 traverses one term per native subunit type/count.
+/// Combat width traverses one term per subunit type and count.
 pub const WIDTH_TERM_LIMIT: usize = 64;
-/// The division's `CNameGroupMember`: 140C72F00 returns its generated +0x60
-/// name, which committed 1415BA240 and reserve 1415BAC10 entries draw.
+/// The division's generated name-group member, drawn for committed and reserve entries.
 pub const NAME_GROUP_MEMBER: usize = 0x340;
-/// 141298E00 groups attacking units with a positive value here into one direction.
+/// A positive value groups attacking units into one direction.
 pub const DIRECTION_GROUP: usize = 0x4a8;
-/// Raw contextual keys used by width140C6E270 and reinforcement140C6D610.
+/// Raw contextual keys used by combat width and reinforcement.
 pub const CONTEXT_MODIFIER_KEYS: [u32; 3] = [0xfb, 0x10f, 0x250];
 
 pub use crate::carmy_combat_inputs::{ContextModifier, ContextRow, Modifier, Row, WidthTerm};

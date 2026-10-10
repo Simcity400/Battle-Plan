@@ -1,8 +1,6 @@
 //! Faction template display names through the recorded content stack.
-//! CFaction::display_name (140D77360) uses the nullable template +0x568
-//! only when its own +0x18 name is empty, then evaluates +0xD0's bound
-//! localization (1404A7A00). The template token is not a name fallback.
-//! Loader, token and binding evidence: [engine::cfaction_template](../../engine/src/cfaction_template.rs).
+//! When the faction's own name is empty, its nullable template supplies
+//! bound localisation. The template token is not a name fallback.
 
 use crate::{
     ResolvedLayers, combat_tactics,
@@ -65,8 +63,7 @@ fn parse(bytes: &[u8], names: &KeyNames) -> native::Read {
     let registry = |key: &[u8]| modifiers::registered(key, Some(names));
     let mut undecided = Vec::new();
     let mut triggers = combat_tactics::Shaper::new(Some(names));
-    // 140140720 -> 14012E4B0: mode 0, loop to EOF, repeated tokens reuse
-    // their existing template. CFactionTemplate::ReadToken 140A220D0.
+    // Lexer mode 0 reads through EOF. Repeated tokens reuse existing templates.
     native::read(
         bytes,
         native::Mode::KeepMark,
@@ -81,14 +78,13 @@ fn parse(bytes: &[u8], names: &KeyNames) -> native::Read {
                 Some(b"icon" | b"can_leader_join_other_factions" | b"manifest") => Shape::One,
                 Some(b"color") => Shape::Color,
                 Some(b"visible" | b"available") => Shape::Trigger,
-                Some(b"default_rules") => Shape::List, // ReadDynamicTokenIdList 1403B6DD0.
-                Some(b"goals") => Shape::Statements(Node::UniformGoal), // 1409BFE50.
+                Some(b"default_rules") => Shape::List, // dynamic-token list read.
+                Some(b"goals") => Shape::Statements(Node::UniformGoal),
                 _ => Shape::Skip,
             },
             Node::UniformGoal if field.opens() => Shape::Object(Node::Goal),
             Node::UniformGoal => Shape::One,
-            // Inline CFactionGoal::ReadToken 140A148A0; consumption matters
-            // even though only the enclosing template's name is projected.
+            // Goal consumption matters even when only the template name is projected.
             Node::Goal => match field.keyword().as_deref() {
                 Some(b"name" | b"description") => {
                     effect_keys::bound_localization_shape(field).map(|()| Node::Goal)
@@ -103,10 +99,10 @@ fn parse(bytes: &[u8], names: &KeyNames) -> native::Read {
                     b"select_effect" | b"complete_effect" | b"cancel_effect" | b"remove_effect",
                 ) => Shape::EffectIn(4),
                 Some(b"ai_will_do") => Shape::Object(Node::Mtth),
-                Some(b"ratio_progress") => Shape::ObjectOrSkip(Node::Ratio), // 140A126A0.
+                Some(b"ratio_progress") => Shape::ObjectOrSkip(Node::Ratio),
                 _ => Shape::Skip,
             },
-            // CRatioProgress loop 140A126A0 -> 140A124B0, not a generic tree.
+            // Ratio progress uses its field loop rather than a balanced tree.
             Node::Ratio => match field.keyword().as_deref() {
                 Some(b"min" | b"max" | b"total_amount" | b"completed_amount") => Shape::One,
                 Some(b"total_amount_custom_tooltip" | b"completed_amount_custom_tooltip") => {
@@ -115,23 +111,24 @@ fn parse(bytes: &[u8], names: &KeyNames) -> native::Read {
                 Some(b"scale" | b"reversed") => {
                     Shape::Object(Node::Modifier(modifiers::Node::Targeted))
                 }
-                Some(b"range") => Shape::Object(Node::MinMax), // 140A10AC0.
+                Some(b"range") => Shape::Object(Node::MinMax),
                 Some(b"total_amount_collection" | b"completed_amount_collection") => {
-                    Shape::ObjectIfOpen(Node::Trigger(combat_tactics::Node::KeyReader(0x140A0FC90)))
+                    Shape::ObjectIfOpen(Node::Trigger(combat_tactics::Node::KeyReader(
+                        crate::collections::COLLECTION_KEY_READER,
+                    )))
                 }
-                Some(b"progress_sections") => Shape::Statements(Node::Sections), // 140A12690 -> 140A10D40.
+                Some(b"progress_sections") => Shape::Statements(Node::Sections),
                 _ => Shape::Skip,
             },
             Node::MinMax if matches!(field.keyword().as_deref(), Some(b"min" | b"max")) => {
                 Shape::One
             }
             Node::MinMax => Shape::Skip,
-            // Raw values/anonymous blocks are reported by 1404968A0 /
-            // 140496090; assignments create and read a CProgressSection.
+            // Raw values and anonymous blocks are reported; assignments create
+            // and read progress-section objects.
             Node::Sections if field.key.text.is_empty() => Shape::Skip,
             Node::Sections => Shape::Object(Node::Section),
             Node::Section => match field.keyword().as_deref() {
-                // 140A05820.
                 Some(b"min" | b"max") => Shape::One,
                 Some(b"modifier") => Shape::Object(Node::Modifier(modifiers::Node::Targeted)),
                 Some(b"rule") => Shape::Object(Node::Rule(ideas::RuleNode::Rule)),
@@ -174,8 +171,7 @@ fn apply(catalogue: &mut Catalog, items: &[Item]) {
 pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
     let names = layers.key_names()?;
     let mut result = Catalog::default();
-    // Executable directory literal 142707C90, shared database-load routine
-    // 14018B610. Template definitions merge in native file/layer order.
+    // Template definitions merge in file and layer order.
     for path in script_files::paths(layers, "common/factions/templates/", Some(".txt")) {
         result.coverage.next_file();
         let file = parse(&layers.read(&path)?, &names);
@@ -208,6 +204,8 @@ mod tests {
 
     #[test]
     fn faction_template_names_merge_and_replace_the_whole_bound_tree() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let db = catalog(
             br#"@label = first f = { name = @label } F = { icon = art }
             g = { name = { localization_key = old arg = token:17 } name = final }
@@ -229,7 +227,9 @@ mod tests {
     }
 
     #[test]
-    fn faction_bound_names_keep_native_arguments_and_preorder_nodes() {
+    fn faction_bound_names_keep_arguments_and_preorder_nodes() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let db = catalog(
             br#"f = { name = { localization_key = ROOT
             arg = { localization_key = CHILD nested = token:17 }
@@ -274,7 +274,9 @@ mod tests {
     }
 
     #[test]
-    fn faction_template_inline_goals_follow_the_native_nested_readers() {
+    fn faction_template_inline_goals_follow_the_nested_readers() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let db = catalog(br#"f = { visible = { always = yes } available = { always = yes }
             default_rules = { rule_a rule_b } color = { 1 0 0 } manifest = goal
             goals = { goal inline = { name = { localization_key = GOAL a = B }
@@ -298,6 +300,8 @@ mod tests {
 
     #[test]
     fn faction_templates_use_winning_files_and_merge_later_tokens() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "installed-content-faction-templates-{}",
             std::process::id()
@@ -329,6 +333,8 @@ mod tests {
 
     #[test]
     fn faction_templates_resolve_mod_files_merge_names_and_localisation() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let stack = Stack::new("faction_templates");
         let (base, addon) = (stack.base(), stack.addon());
         stack.write(
@@ -391,6 +397,8 @@ mod tests {
 
     #[test]
     fn faction_templates_refuse_unknown_suffixes_until_an_explicit_name_replaces_them() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let stack = Stack::new("faction_template_coverage");
         let base = stack.base();
         stack.write(

@@ -1,7 +1,7 @@
-//! Exact signed equipment-line factory IC from CREDIT's applied progress input
-//! (141920AF0), independently of delivery or the later census cost. Instant
-//! progress is recorded separately and excluded. See engine::line_output_sites
-//! for all four callers and their instant predicates. Deleted lines retain their
+//! Exact signed equipment-line factory IC from the applied progress input,
+//! independently of delivery or the later census cost. Instant progress is
+//! recorded separately and excluded. See engine::line_output_sites for the
+//! four callers and their instant predicates. Deleted lines retain their
 //! last publication through the shared Equipment produced branch scan.
 //! Rocket sites use their independent retained country/design observation.
 

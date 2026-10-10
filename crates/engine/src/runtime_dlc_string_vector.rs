@@ -1,16 +1,15 @@
-//! DLC enumerator output ABI recovered by the old render roster reader; concrete template name unproven.
-//!
-//! This is the old reader's authenticated engine-call buffer, not a claim that every CPdxArray has this size.
+//! DLC enumeration output ABI. This buffer size does not establish the
+//! size of every array container.
 
-/// Enumerated std::string element pointer; production_render_submit_live RuntimeDlcStringVector repr(C) begins here.
+/// Enumerated string element pointer.
 pub const DATA: usize = 0;
-/// Output vector capacity u32; RuntimeDlcStringVector repr(C) places it at +8.
+/// Output capacity, u32, at +8.
 pub const CAPACITY: usize = 8;
-/// Output vector count u32; RuntimeDlcStringVector repr(C) places it at +0xc.
+/// Output count, u32, at +0xc.
 pub const COUNT: usize = 0xc;
-/// Output vector allocator pointer; sample_runtime_dlc_names initializes this qword before the engine call.
+/// Allocator pointer initialized before enumeration.
 pub const ALLOCATOR: usize = 0x10;
-/// Output vector allocator auxiliary qword; sample_runtime_dlc_names initializes this field from the next global.
+/// Allocator auxiliary qword initialized from its companion global.
 pub const ALLOCATOR_AUX: usize = 0x18;
-/// Output vector ABI byte size; derived from the old RuntimeDlcStringVector repr(C) field layout on x64.
+/// Output ABI byte size on x64.
 pub const SIZE: usize = 0x20;

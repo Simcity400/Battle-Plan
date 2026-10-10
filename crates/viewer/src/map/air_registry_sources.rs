@@ -78,15 +78,13 @@ impl AirRegistrySources {
         Ok(sources)
     }
 
-    /// `IsAirWingScenarioEligible@140F66100` rejects a transfer only when its
-    /// base resolves.
+    /// Reject a transfer only when its base resolves.
     pub(super) fn transfer_resolves(&self, handle: u64) -> bool {
         handle != 0 && self.bases.contains_key(&handle)
     }
 
-    /// A stateless base's controller: its host's roster owner, or zero (the
-    /// native null controller) when the host does not resolve. `None` for a
-    /// null task force, which `GetTaskForceOwnerTag@140C215C0` dereferences.
+    /// A stateless base uses its host's roster owner, or raw zero when the host does not resolve. A
+    /// null task force leaves the controller unavailable.
     pub(super) fn host_owner(&self, base: u64) -> Option<u32> {
         if self.hosts_without_task_force.contains(&base) {
             return None;

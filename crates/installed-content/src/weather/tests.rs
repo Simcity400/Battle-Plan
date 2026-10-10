@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn thermal_pairs_keep_native_order_fixed5_and_repeated_group_values() {
+fn thermal_pairs_keep_order_fixed5_and_repeated_group_values() {
     let ranges = parse_temperature_ranges(
         br#"
         @boundary=-0.00001
@@ -42,7 +42,7 @@ fn thermal_pairs_keep_native_order_fixed5_and_repeated_group_values() {
 }
 
 #[test]
-fn native_variables_keyword_tokens_and_error_recovery() {
+fn variables_keyword_tokens_and_error_recovery() {
     let names = parse_effect_names(
         br#"@sprite=rain weather_effects={RAIN_LIGHT={
         weather_effect={unknown={entity=hidden} "entity"=ignored ENTITY=@sprite small=yes small=bad}
@@ -250,7 +250,9 @@ fn weather_refuses_a_requested_name_from_an_unreadable_later_descriptor() {
 }
 
 #[test]
-fn particle_consumer_refuses_native_loader_abort_and_thermal_notes_survive() {
+fn particle_consumer_refuses_loader_abort_and_thermal_notes_survive() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!("hoi4-weather-consumer-{}", std::process::id()));
     std::fs::create_dir_all(root.join("common/modifiers")).unwrap();
     std::fs::write(

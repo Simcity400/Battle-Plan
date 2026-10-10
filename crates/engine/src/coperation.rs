@@ -2,11 +2,11 @@
 
 use crate::{Memory, read};
 
-/// COperation primary vtable; build_profile.rs:516 and pinned a729 RTTI confirm the class, subobject offset zero.
+/// Primary vtable at subobject offset zero.
 pub const VTABLE_RVA: usize = 0x0292_8c98;
-/// COperation embedded preparation CMeanTimeToHappen; A6C9F0 calls 544BA0 on +0x10, whose constructor installs that type's vtable.
+/// Embedded preparation mean-time-to-happen object.
 pub const PREPARATION_TIME: usize = 0x10;
-/// COperation native LexerToken; 1189390 resolves this key before constructing an instance.
+/// Lexer token resolved before constructing an operation instance.
 pub const TOKEN_ID: usize = 0x08;
 
 /// Reads the exact definition token. +0x10 is an embedded timing object, not a

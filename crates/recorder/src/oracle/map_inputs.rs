@@ -32,7 +32,7 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
 /// physical manager slots. Both complete task-force tables must agree before
 /// absence certifies no demand; a genuinely empty census needs no province join.
 /// The fresh owner loan also serves stationary task forces' range/port inputs
-/// (141534980/1415349B0); its capture no longer has a route/target gate.
+/// and has no route/target gate in capture.
 pub(super) fn navy_owner_slots(frame: &DecodedFrame) -> io::Result<BTreeSet<u32>> {
     let motions = frame.complete::<tables::TaskForceMapMotion>()?;
     let mut forces = BTreeMap::new();
@@ -254,8 +254,8 @@ fn reserved_naming(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> 
             "ReservedCountryNaming.original_tag: 1 guarded read or arena refusal",
         );
     }
-    report.limitation("CGameState::Write@1401F2A20 skips physical slot zero but writes positive physical aliases of the reserved object; its original_tag emission is compared separately through the admitted full-save ledger, while stored-length built and other naming caches remain runtime witnesses", "ReservedCountryNaming: singleton decoded, built and other naming caches remain unverified");
-    report.limitation("CGameState::Write@1401F2A20 starts its +0x310 country census at slot one (1401F4185/1401F4190), so the save omits slot zero; a positive physical reserved alias supplies saved original_tag presence/bytes only through the admitted full-save ledger", "ReservedCountryNaming.original_tag: saved comparison requires an admitted physical alias");
+    report.limitation("the game state save writer skips physical slot zero but writes positive physical aliases of the reserved object; its original_tag emission is compared separately through the admitted full-save ledger, while stored-length built and other naming caches remain runtime witnesses", "ReservedCountryNaming: singleton decoded, built and other naming caches remain unverified");
+    report.limitation("the game state save writer starts its country census at slot one, so the save omits slot zero; a positive physical reserved alias supplies saved original_tag presence/bytes only through the admitted full-save ledger", "ReservedCountryNaming.original_tag: saved comparison requires an admitted physical alias");
     if let Some(None) = report.recorded(
         &rows[0].original_tag_reference,
         "ReservedCountryNaming.original_tag_reference",
@@ -266,7 +266,7 @@ fn reserved_naming(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> 
             "ReservedCountryNaming.original_tag_reference: guarded read refusal",
         );
     }
-    report.limitation("CCountry::Serialize@14070C580 writes original_tag bytes only for a signed positive +0x130C reference; even a saved positive physical reserved alias cannot certify that reference's exact magnitude or alias identity", "ReservedCountryNaming.original_tag_reference: unsaved raw identity");
+    report.limitation("the country save writer writes original_tag bytes only for a signed positive reference; even a saved positive physical reserved alias cannot certify that reference's exact magnitude or alias identity", "ReservedCountryNaming.original_tag_reference: unsaved raw identity");
     if let Some(None) = report.recorded(
         &rows[0].original_tag_buckets,
         "ReservedCountryNaming.original_tag_buckets",
@@ -277,7 +277,7 @@ fn reserved_naming(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> 
             "ReservedCountryNaming.original_tag_buckets: guarded read or arena refusal",
         );
     }
-    report.limitation("CGameState+0x988 is a runtime original-tag bucket cache rebuilt by 1401DA010 and changed by native setters; serialized countries cannot certify retained cache order, repeats or alias reference identity", "ReservedCountryNaming.original_tag_buckets: unsaved native cache");
+    report.limitation("the original-tag bucket cache is runtime state rebuilt by the game and changed by native setters; serialized countries cannot certify retained cache order, repeats or alias reference identity", "ReservedCountryNaming.original_tag_buckets: unsaved native cache");
     if let Some(None) = report.recorded(
         &rows[0].country_array,
         "ReservedCountryNaming.country_array",
@@ -288,7 +288,7 @@ fn reserved_naming(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> 
             "ReservedCountryNaming.country_array: guarded read or arena refusal",
         );
     }
-    report.limitation("the country save census starts at physical slot one and serializes tags rather than exact raw CCountry+0x8 IDs; it cannot certify the full physical array's reserved-zero, alias and duplicate occurrences", "ReservedCountryNaming.country_array: raw physical order and identity remain unverified");
+    report.limitation("the country save census starts at physical slot one and serializes tags rather than exact raw country IDs; it cannot certify the full physical array's reserved-zero, alias and duplicate occurrences", "ReservedCountryNaming.country_array: raw physical order and identity remain unverified");
     if let Some(None) = report.recorded(
         &rows[0].owned_state_count,
         "ReservedCountryNaming.owned_state_count",
@@ -296,7 +296,7 @@ fn reserved_naming(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> 
     ) {
         report.limitation("reserved country owned-state count unreadable at capture; other naming operands remain available", "ReservedCountryNaming.owned_state_count: guarded read refusal");
     }
-    report.limitation("CCountry::Write@14070C580 does not directly serialize the exact signed +0x484 getter operand, even when a positive physical alias emits the reserved country; that owned-state count still requires a matched native witness", "ReservedCountryNaming.owned_state_count: unsaved reserved getter operand");
+    report.limitation("the country save writer does not directly serialize the exact signed getter operand, even when a positive physical alias emits the reserved country; that owned-state count still requires a matched native witness", "ReservedCountryNaming.owned_state_count: unsaved reserved getter operand");
     if let Some(None) = report.recorded(
         &rows[0].faction,
         "ReservedCountryNaming.faction",
@@ -321,7 +321,7 @@ fn reserved_naming(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> 
             "ReservedCountryNaming.dynamic_tag_boundary: guarded read refusal",
         );
     }
-    report.limitation("CountryDatabase+0x88 is a runtime signed slot boundary read by 140BA61F0; CGameState::Write and CCountry::Serialize do not serialize it, so fresh-save original-tag text cannot certify this predicate", "ReservedCountryNaming.dynamic_tag_boundary: unsaved native predicate; matched-hour memory needed");
+    report.limitation("the dynamic-tag slot boundary is a runtime signed slot boundary read by the game; the game state save writer and the country save writer do not serialize it, so fresh-save original-tag text cannot certify this predicate", "ReservedCountryNaming.dynamic_tag_boundary: unsaved native predicate; matched-hour memory needed");
     Ok(())
 }
 
@@ -474,7 +474,7 @@ mod original_tag_tests {
                 report
                     .limitations
                     .keys()
-                    .any(|reason| reason.contains("CGameState::Write@1401F2A20")
+                    .any(|reason| reason.contains("the game state save writer")
                         && reason.contains("save omits slot zero"))
             );
             assert_eq!(
@@ -607,7 +607,7 @@ mod original_tag_tests {
                 report
                     .limitations
                     .keys()
-                    .any(|reason| reason.contains("runtime original-tag bucket cache"))
+                    .any(|reason| reason.contains("original-tag bucket cache is runtime state"))
             );
             assert!(
                 report
@@ -643,7 +643,7 @@ mod original_tag_tests {
                 report
                     .limitations
                     .keys()
-                    .any(|reason| reason.contains("exact signed +0x484 getter operand"))
+                    .any(|reason| reason.contains("exact signed getter operand"))
             );
             assert_eq!(
                 report
@@ -756,17 +756,17 @@ pub(super) fn countries(frame: &DecodedFrame, save: &Save, report: &mut Report) 
     );
     report.compared("CountryAppearance", rows.len());
     report.limitation("the save carries cosmetic_tag but has no counterpart for current primary RGBA; all four raw f32 bit patterns, including alpha, remain independently unverified", "CountryAppearance raw RGBA");
-    report.limitation("the country writer serializes neither colour object (CCountry::ReadMember 1406F9170 reads tokens 0x56 color and 0x31B8 color_ui, but no writer emits 0x31B8), so the current UI RGBA (CCountry+0x390) has no save counterpart; its four raw f32 bit patterns need a matched-hour screenshot of a counter plate in country-colour mode", "CountryAppearance raw UI RGBA");
+    report.limitation("the country writer serializes neither colour object (the country loader reads tokens 0x56 color and 0x31B8 color_ui, but no writer emits 0x31B8), so the current UI RGBA (the UI colour) has no save counterpart; its four raw f32 bit patterns need a matched-hour screenshot of a counter plate in country-colour mode", "CountryAppearance raw UI RGBA");
     report.limitation("name_tag and overlord are census only; the viewer's resolved names need a matched-hour screenshot", "CountryAppearance name operands");
-    report.limitation("graphical_culture (CCountry+0x1028) is not serialized by the country writer; it comes from the country's content file and needs a matched-hour screenshot of a model or portrait that depends on it", "CountryAppearance.graphical_culture");
-    report.limitation("graphical_culture_2d (CCountry+0x1050) is not serialized by the country writer; it comes from the country's content file and needs a matched-hour screenshot of an equipment icon that depends on it", "CountryAppearance.graphical_culture_2d");
-    report.limitation("the old-name caches (CCountry+0x90, +0xB0, +0xD0) are runtime text: CCountry::Write (14070C580) does not save them and only 140709950 writes them, so a save cannot certify them; they need a live check of GetOld* text", "CountryAppearance old names");
-    report.limitation("CDiplomacyStatus::Serialize@140D32BD0 does not save the ordered subject roster at +0x170/count +0x17C; active_relations do not certify this array's order, repeats or raw reference words", "CountryAppearance.subjects");
+    report.limitation("graphical_culture is not serialized by the country writer; it comes from the country's content file and needs a matched-hour screenshot of a model or portrait that depends on it", "CountryAppearance.graphical_culture");
+    report.limitation("graphical_culture_2d is not serialized by the country writer; it comes from the country's content file and needs a matched-hour screenshot of an equipment icon that depends on it", "CountryAppearance.graphical_culture_2d");
+    report.limitation("the old-name caches are runtime text: the country save writer does not save them and runtime updates write them, so a save cannot certify them; they need a live check of old-name text", "CountryAppearance old names");
+    report.limitation("the diplomacy save writer does not save the ordered subject roster; active_relations do not certify this array's order, repeats or raw reference words", "CountryAppearance.subjects");
     Ok(())
 }
 
-/// 14070C580 emits original_tag/token3551 iff signed +0x130C>0; it passes
-/// that exact reference to tag_string (positive raw-indexed live +0x358).
+/// The country writer emits original_tag iff its signed reference is positive; it passes
+/// that exact reference to the raw-indexed live tag-string lookup.
 /// The signed reference selects original bytes, including actual empty strings;
 /// nonpositive references certify saved omission without inventing zero.
 fn original_tag(
@@ -790,7 +790,7 @@ fn original_tag(
         );
         return;
     };
-    report.limitation("CCountry::Serialize@14070C580 emits original tag bytes only for signed positive +0x130C; it does not serialize the raw reference magnitude or alias identity, including exact nonpositive values", format!("{label}.original_tag_reference={reference}: unsaved raw identity"));
+    report.limitation("the country save writer emits original tag bytes only for a signed-positive reference; it does not serialize the raw reference magnitude or alias identity, including exact nonpositive values", format!("{label}.original_tag_reference={reference}: unsaved raw identity"));
     let actual = if *reference > 0 {
         eq(
             report,
@@ -829,9 +829,10 @@ fn original_tag(
 }
 
 /// The ruling party's first saved `country_leader` against the recorded leader
-/// ideology and character. CCountry::Write@14070C580 writes `politics`
-/// unconditionally; CPoliticalStatus::vf2@140BA12D0 omits `ruling_party` for a
+/// ideology and character. The country save writer writes `politics`
+/// unconditionally; the politics save writer omits `ruling_party` for a
 /// null party, and the party writer lists its leaders in vector order, the
+/// first being the game's. A null parent character is saved as `{0, 0}`
 /// and recorded as missing.
 fn ruling_leader(
     save: &Save,
@@ -913,7 +914,7 @@ fn armies(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
     Ok(())
 }
 
-/// FFAC80 starts from entry zero and replaces only on strictly greater signed
+/// pool maximum selection starts from entry zero and replaces only on strictly greater signed
 /// quantity. Do not sum duplicates, filter nonpositive values, or use max_by_key
 /// (whose tie behavior selects the last entry).
 fn selected_variant(pool: &save::production::Pool) -> Option<u64> {
@@ -925,7 +926,7 @@ fn selected_variant(pool: &save::production::Pool) -> Option<u64> {
             selected = Some(entry);
         }
     }
-    // FFDB00 retains negative entries, but omits zeros unless allow_zero_entries
+    // the pool writer retains negative entries, but omits zeros unless allow_zero_entries
     // is enabled. Hidden zeros can beat every negative or make an empty saved
     // list nonempty natively. Never turn those cases into an invented variant0.
     if pool.allow_zero_entries == Some(true) || selected.is_some_and(|entry| entry.amount.raw >= 0)
@@ -955,7 +956,7 @@ fn ships(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<(
                     &index_label,
                 );
             } else {
-                report.limitation("CShip::Serialize@140C2EF80 saves the subunit token, not the signed CShip+0x60C index; token equality cannot distinguish rejected-name aliases. The index/name pairing requires an independent matched native and write witness, still pending", &index_label);
+                report.limitation("the ship save writer saves the subunit token, not the signed ship subunit index; token equality cannot distinguish rejected-name aliases. The index/name pairing requires an independent matched native and write witness, still pending", &index_label);
             }
         }
         let Some(saved) = save.ships.get(&row.ship) else {
@@ -980,7 +981,7 @@ fn ships(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<(
         if let Some(expected) = selected_variant(pool) {
             eq(report, &format!("{label}.variant"), row.variant, expected);
         } else {
-            report.limitation("FFDB00 omits zero-quantity entries unless allow_zero_entries is enabled; an empty or all-negative saved pool cannot identify the native maximum when omitted zeros may exist, so this ship's selected variant is not compared", format!("{label}.variant"));
+            report.limitation("the pool writer omits zero-quantity entries unless allow_zero_entries is enabled; an empty or all-negative saved pool cannot identify the native maximum when omitted zeros may exist, so this ship's selected variant is not compared", format!("{label}.variant"));
         }
         ship_tooltip_suffixes(row, save, report);
     }
@@ -995,7 +996,7 @@ fn ships(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<(
     eq(report, "ShipModels Ships key census", seen, parents);
     report.compared("ShipModels", rows.len());
     report.limitation("selected variant identity is independently derived from the saved equipment pool; saved registry definition keys and variant names are compared by VariantDefinitions on its refresh hours, not inferred from hull sprite bytes", "ShipModels.variant names");
-    report.limitation("compared: the ship census against the save and the Ships table, each ship's roster ordinal and, where the saved pool identifies it, its selected variant. Ship hull/fallback sprite keys, model number, the full formation-selection flags, positive-equipment flag union, definition-valid byte, carrier air-base reference, strength maximum, anti-air base (CShip+0x218) and derived organisation maximum have no counterpart in CShip::Serialize@140C2EF80; they cannot be independently checked against this text save", "ShipModels hull_sprite, fallback_sprite, model_number, formation_flags, counter operands");
+    report.limitation("compared: the ship census against the save and the Ships table, each ship's roster ordinal and, where the saved pool identifies it, its selected variant. Ship hull/fallback sprite keys, model number, the full formation-selection flags, positive-equipment flag union, definition-valid byte, carrier air-base reference, strength maximum, anti-air base and derived organisation maximum have no counterpart in the ship save writer; they cannot be independently checked against this text save", "ShipModels hull_sprite, fallback_sprite, model_number, formation_flags, counter operands");
     Ok(())
 }
 
@@ -1028,7 +1029,7 @@ fn ship_tooltip_suffixes(row: &replay::rows::ShipModelRow, save: &Save, r: &mut 
                         );
                     }
                 }
-                r.limitation("CShip::Serialize@140C2EF80 does not write the four cached weapon bases or the effective fleet-leader torpedo cooldown modifier; all five require an independent matched native/cache-writer witness, still pending", &strike_label);
+                r.limitation("the ship save writer does not write the four cached weapon bases or the effective fleet-leader torpedo cooldown modifier; all five require an independent matched native/cache-writer witness, still pending", &strike_label);
             }
         }
     }
@@ -1105,7 +1106,7 @@ fn ship_tooltip_suffixes(row: &replay::rows::ShipModelRow, save: &Save, r: &mut 
         );
     }
     if let Some(sum) = hull.upgrade_level_sum {
-        // BD0D50 resets +414 then adds every upgrade byte, with i32 wrap.
+        // upgrade refresh resets then adds every upgrade byte, with i32 wrap.
         let saved_sum = expected
             .upgrades
             .as_deref()
@@ -1122,7 +1123,7 @@ fn ship_tooltip_suffixes(row: &replay::rows::ShipModelRow, save: &Save, r: &mut 
         );
     }
     r.limitation("the general equipment definition ordinal is not serialized; its authenticated recorded-content index/name join and runtime writers require independent evidence, not a guessed token ordinal", format!("{hull_label}.definition_index"));
-    r.limitation("module serialization191E6F0 can omit inactive assignments; neither current +C4 count nor +418 priority sum is universally reconstructible from the saved modules. Existing serialized-module comparisons remain exact on their refresh hours; these current caches need an independent matched native/cache-writer witness, still pending", format!("{hull_label}.module_count/module_priority_sum"));
+    r.limitation("module serialization can omit inactive assignments; neither current count nor priority sum is universally reconstructible from the saved modules. Existing serialized-module comparisons remain exact on their refresh hours; these current caches need an independent matched native/cache-writer witness, still pending", format!("{hull_label}.module_count/module_priority_sum"));
 }
 
 #[cfg(test)]
@@ -1313,7 +1314,7 @@ mod tests {
                 country: 101,
                 cosmetic_tag: b"GER_cosmetic".to_vec(),
                 red: u32::MAX,
-                // 14070C580 omits original_tag for the observed zero reference.
+                // The game omits original_tag for the observed zero reference.
                 original_tag_reference: Recorded::Value(Some(0)),
                 ..Default::default()
             }]));

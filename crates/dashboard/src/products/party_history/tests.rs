@@ -13,12 +13,12 @@ use std::sync::atomic::AtomicBool;
 fn a_party_is_named_as_the_game_names_it() {
     let loc = crate::catalogue::tests::loaded(concat!(
         "l_english:\n",
-        " GER_fascism_party:0 \"NSDAP\"\n",
-        " GER_fascism_party_long:0 \"Nationalsozialistische Deutsche Arbeiterpartei\"\n",
-        " SOV_x_party:0 \"VKP(b)\"\n",
-        " fascism:0 \"Fascism\"\n",
+        " GER_fascism_party:0 \"Copper Circle\"\n",
+        " GER_fascism_party_long:0 \"Copper Circle Assembly\"\n",
+        " SOV_x_party:0 \"Quartz League\"\n",
+        " fascism:0 \"Fixture ideology\"\n",
         " scoped_party:0 \"[ROOT.GetAdjective] Party\"\n",
-        " gap_party:0 \"Front¤Populaire\"\n",
+        " gap_party:0 \"Bloc¤Ribbon\"\n",
     ));
     let refused = std::cell::RefCell::new(crate::catalogue::Refusals::default());
     let name = |naming: &PartyNaming| {
@@ -37,17 +37,17 @@ fn a_party_is_named_as_the_game_names_it() {
     // The tag's key; the original tag is not needed when it exists.
     assert_eq!(
         name(&naming("fascism", Some("GER"), None, None)).as_deref(),
-        Some("NSDAP")
+        Some("Copper Circle")
     );
     // A dynamic country takes its original tag's key.
     assert_eq!(
         name(&naming("fascism", Some("D01"), Some("GER"), None)).as_deref(),
-        Some("NSDAP")
+        Some("Copper Circle")
     );
     // Neither: the ideology group's own name, or its token.
     assert_eq!(
         name(&naming("fascism", Some("ITA"), Some(""), None)).as_deref(),
-        Some("Fascism")
+        Some("Fixture ideology")
     );
     assert_eq!(
         name(&naming("modism", Some("ITA"), Some(""), None)).as_deref(),
@@ -59,7 +59,7 @@ fn a_party_is_named_as_the_game_names_it() {
     // set_party_name: the stored key, shown as itself when undefined.
     assert_eq!(
         name(&naming("x", Some("GER"), None, Some("SOV_x_party"))).as_deref(),
-        Some("VKP(b)")
+        Some("Quartz League")
     );
     assert_eq!(
         name(&naming("x", Some("GER"), None, Some("MOD_key"))).as_deref(),
@@ -71,8 +71,7 @@ fn a_party_is_named_as_the_game_names_it() {
         Some("§YCustom Party§!")
     );
     assert!(refused.borrow().lines("x").is_empty());
-    // Party names reach their text boxes plain (14118F860): brackets
-    // are glyphs.
+    // Party names reach their text boxes plain: brackets are glyphs.
     assert_eq!(
         name(&naming("x", Some("GER"), None, Some("scoped_party"))).as_deref(),
         Some("[ROOT.GetAdjective] Party")
@@ -101,7 +100,7 @@ fn exact_selected_empty_party_tag_keeps_the_legacy_absence_contract() {
     let defines = |key: &str| key == "_mod_group_party";
     // Legacy consumers' empty original still means known absence.
     assert_eq!(party_key(&naming, defines).as_deref(), Some("mod_group"));
-    // The exact native getter's empty selection is a real prefix.
+    // The exact empty selection is a real prefix.
     assert_eq!(
         party_key_with_selected_tag(&naming, "", defines).as_deref(),
         Some("_mod_group_party")

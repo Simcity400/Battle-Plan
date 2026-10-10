@@ -108,6 +108,8 @@ fn native_producer_scan_follows_renames_excludes_reused_tags_and_keeps_real_gaps
 
 #[test]
 fn changed_modifier_layout_refuses_only_the_production_supplement_and_counts_the_supplying_read() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::rows::{
         CountryProductionModifiersRow, LexicalTokenRow, ModifierBreakdownNode,
         ModifierDefinitionRow, ProductionLineModifiersRow, ProductionModifierTree,
@@ -702,6 +704,8 @@ fn production_output_stops_at_the_first_unavailable_hour_and_lines_between_reads
 /// read only after that census, gets its icon once the definition arrives.
 #[test]
 fn a_variant_defined_after_its_census_gets_its_icon_when_its_definition_arrives() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{
         equipment_icon::{Icon, IconContent},
         production_lines::scan,
@@ -796,6 +800,8 @@ fn a_variant_defined_after_its_census_gets_its_icon_when_its_definition_arrives(
 /// entry) gets its new icon at that read, not at the next census.
 #[test]
 fn a_known_variants_icon_follows_a_changed_definition_at_its_read() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{
         equipment_icon::{Icon, IconContent},
         production_lines::scan,

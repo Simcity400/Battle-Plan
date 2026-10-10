@@ -1,19 +1,18 @@
-//! The stored-control builder `141251430` and its forward loop removal
-//! `1412531B0`. Offset fronts resubmit their smoothed points through this
-//! builder; paradrops use it with intersection checks disabled.
+//! Stored-control builder and forward loop removal. Offset fronts resubmit
+//! their smoothed points through this builder; paradrops disable intersection checks.
 //!
 //! These are graphics objects built by this viewer. No native control array,
 //! selection, clock or other client history is recorded.
 
 use super::fixed::{Point, SCALE};
 
-/// `14125145E` stops accepting another point at 8192 stored controls. An
-/// insertion reaches 8191 and still appends its target, so the cap is 8192.
+/// Stop accepting another point at 8192 stored controls. An insertion reaches
+/// 8191 and still appends its target, so the cap is 8192.
 const POINT_CAP: usize = 0x2000;
 
 fn squared_delta(a: Point, b: Point) -> i64 {
     let [x, z] = [a[0].wrapping_sub(b[0]), a[1].wrapping_sub(b[1])];
-    // The two products are divided separately (141251596..5C6).
+    // Divide the two products separately.
     (x.wrapping_mul(x) / SCALE).wrapping_add(z.wrapping_mul(z) / SCALE)
 }
 
@@ -27,8 +26,8 @@ fn divided_step(value: i64, steps: i32) -> i64 {
     }
 }
 
-/// x86 `CVTTSS2SI`, whose invalid conversion is the signed minimum rather
-/// than Rust's saturating float conversion (1412516A2).
+/// x86 `CVTTSS2SI` uses the signed minimum for an invalid conversion rather
+/// than Rust's saturating float conversion.
 fn truncate(value: f32) -> i32 {
     if !(-2_147_483_648.0..2_147_483_648.0).contains(&value) {
         i32::MIN
@@ -51,8 +50,8 @@ pub(super) fn controls(points: &[Point], intersection_tests: Option<i32>) -> Vec
             controls.extend([point, point]);
             continue;
         }
-        // 1412514F6..57F: the threshold is based on the count before this
-        // submission, not its chord length or the final control count.
+        // Base the threshold on the count before this submission, rather than its
+        // chord length or the final control count.
         let fraction = (count as i64 * 10_000_000_000 / 4_000_000).min(SCALE);
         let threshold = fraction * 300_000 / SCALE + 800;
         let steps;
@@ -62,8 +61,8 @@ pub(super) fn controls(points: &[Point], intersection_tests: Option<i32>) -> Vec
                 (squared_delta(point, last) as f32 / SCALE as f32).sqrt()
                     / (threshold as f32 / SCALE as f32).sqrt(),
             );
-            // 1412516AF tests the wrapping signed `steps - 1`, including
-            // CVTTSS2SI's exceptional minimum result.
+            // Test the wrapping signed step count minus one, including CVTTSS2SI's
+            // exceptional minimum result.
             let insertions = steps.wrapping_sub(1);
             if insertions > 0 {
                 let step = [
@@ -98,10 +97,8 @@ fn world(point: Point) -> [f32; 2] {
     point.map(|value| value as f32 / SCALE as f32)
 }
 
-/// Segment/segment `1422D7880` -> `1422D7710`. Its two ray flags are both
-/// zero: nonparallel lines meet only for closed parameters in [0,1]. The
-/// apparent epsilon argument in the caller's decompile is unused in the
-/// indexed wrapper instructions (1422D7884..789E).
+/// Closed segment intersection. Nonparallel lines meet only when both
+/// parameters are in [0,1]; no epsilon adjustment applies.
 fn intersects(a: Point, b: Point, c: Point, d: Point) -> bool {
     let (a, b, c, d) = (world(a), world(b), world(c), world(d));
     let ab = [b[0] - a[0], b[1] - a[1]];
@@ -116,10 +113,9 @@ fn intersects(a: Point, b: Point, c: Point, d: Point) -> bool {
     (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u)
 }
 
-/// Forward mode (`param_3 = 0`) of 1412531B0, the only mode 141251430
-/// calls. The first crossing removes the earlier segment's start through
-/// the later segment's end-exclusive range. It does not insert the computed
-/// crossing, reverse the list, or repeat the search after this removal.
+/// Forward loop removal. The first crossing removes the earlier segment's
+/// start through the later segment's end-exclusive range. Do not insert the
+/// computed crossing, reverse the list, or repeat the search after removal.
 fn remove_loop(controls: &mut Vec<Point>, threshold: i64, steps: i32, limit: i32) {
     let count = controls.len();
     if count < 3 {
@@ -147,9 +143,9 @@ fn remove_loop(controls: &mut Vec<Point>, threshold: i64, steps: i32, limit: i32
             }
         }
     }
-    // 1412533B0..4A4 also trims a near-closed tail. The loop starts at
-    // control zero even when the crossing scan starts later. Its budget is
-    // tested after each distance test, so zero still tests the first point.
+    // Also trim a near-closed tail. Start at control zero even when the crossing
+    // scan starts later. Test the budget after each distance test, so zero still
+    // tests the first point.
     let budget = if limit < 0 { count } else { limit as usize };
     let last = world(controls[count - 1]);
     let maximum_squared = threshold as f32 / SCALE as f32 * 1.5;

@@ -6,14 +6,14 @@ pub struct ProgressRow {
     pub id: u64,
     pub attacker_progress: i64,
     pub defender_progress: i64,
-    /// First attacker with a nonnull map entity, or zero if none. This is the
-    /// province operand used by 1418A94B0, not its camera-dependent angle.
+    /// First attacker with a nonnull map entity, or zero when absent.
+    /// This supplies a province-direction operand, not a camera angle.
     pub direction_attacker: u64,
     pub direction_province: u32,
 }
 
-/// Exact qword arithmetic of 1413CCB10. Both ordinary and border-war combat
-/// vtable +C8 use it; both side vtable +60 entries use 1412A02A0 in a729.
+/// Exact qword organisation-progress arithmetic shared by ordinary
+/// and border-war combat.
 pub fn progress_from_organisation(attacker: i64, defender: i64) -> Option<i64> {
     let total = attacker.wrapping_add(defender);
     if total < 1 {
@@ -28,11 +28,11 @@ pub fn progress_from_organisation(attacker: i64, defender: i64) -> Option<i64> {
         .map(|v| v.clamp(0, 100_000))
 }
 
-/// Uses an already authenticated census, never scans the combat registry again
-/// or calls the engine. 1412A02A0 sums current organisation of all ordered side
-/// units, including reserves. 1418B4BD0 complements the fraction for defender
-/// POV. 1418A94B0 selects the first attacker with CUnit+298 nonnull for direction.
-/// The map-entity pointer itself and all camera/GUI state stay out of the file.
+/// Use the authenticated census without scanning the registry again or
+/// calling the game. Sum organisation of all ordered side units, reserves
+/// included. Defender viewpoint complements the fraction. Direction uses
+/// the first attacker with a nonnull map entity. Process pointers and
+/// camera/GUI state remain outside the recording.
 pub fn read_progress(
     memory: &impl Memory,
     base: usize,

@@ -1,11 +1,10 @@
-//! The naval battle title and naval result name: 1415B06C0.
+//! Naval battle titles and naval result names.
 //!
-//! With no port-strike result (RefreshCombatDetails 1417DA2F0 passes none; a
-//! result passes itself and 1415B06C0 tests its +0x128 byte) the name is the
+//! Without a port-strike result, the name is the
 //! battle province's strategic region name, replaced by the localised name of
 //! the best-scoring province of the region's states once that score reaches
 //! `NNavy.BATTLE_NAME_VP_CUTOFF`, all through `NAVAL_BATTLE_TITLE` with the
-//! text argument `NAME` (142727E7C). A port strike localises
+//! text argument `NAME`. A port strike localises
 //! `NAVAL_PORT_STRIKE_TITLE` with the region name alone.
 use super::binding::{TextIcons, builtin, token};
 use crate::{
@@ -18,42 +17,40 @@ use installed_content::localisation::{Argument, Localisation};
 use replay::{frame::DecodedFrame, rows::tables};
 use std::{collections::BTreeMap, io};
 
-/// The recorded province facts 140E69320's name ladder reads.
+/// Recorded province facts used by the name fallback chain.
 struct Province<'a> {
     id: u32,
-    /// The recorded rename (CProvince+0x40, `ProvinceNames`): `Ok(None)` for
+    /// The recorded rename (`ProvinceNames`): `Ok(None)` for
     /// none, or why the hour cannot say.
     rename: Result<Option<&'a [u8]>, String>,
-    /// The tag 140E68E30 qualifies the victory point key with: the
-    /// province's state owner's original tag or tag (CCountry::
-    /// GetOriginalTagOrTag 1406DF830), or why it is unavailable.
+    /// The tag qualifying the victory point key: the province's
+    /// state owner's original tag or own tag, or why it is unavailable.
     vp_tag: Result<&'a str, String>,
-    /// The province's recorded state (CProvince+0xC0, `Provinces.state`):
+    /// The province's recorded state (`Provinces.state`):
     /// `None` for no state, else the state's recorded names and the name key
     /// of its definition, or why they are unavailable.
     state: Option<Result<StateNames<'a>, String>>,
-    /// The key of the province's strategic region name (CProvince+0xC8),
+    /// The key of the province's strategic region name,
     /// which the ladder takes for a province without a state.
     region_name_key: Option<&'a str>,
 }
 
-/// What CState::display_name (1409CC380) reads.
+/// What the state display name reads.
 struct StateNames<'a> {
     id: u32,
-    /// CState+0x38 (`States.custom_name`) and +0xE8 (`States.owner_name`).
+    /// The state's recorded custom and owner names.
     custom_name: &'a [u8],
     owner_name: &'a [u8],
     /// The recording client's language, in which the game stored those two.
     recorded_language: &'a str,
-    /// The definition's `name` key (CStateTemplate+0x40), or why the
+    /// The definition's `name` key, or why the
     /// definition's reading cannot be followed.
     name_key: Result<&'a str, &'a str>,
 }
 
-/// CState::display_name (1409CC380) through [`super::text::state_name`]:
-/// the template's name is localised from the `name` key when CStateTemplate's
-/// reader (140AAF580) reads the file (a key the localisation lacks is its own
-/// text). 140E69320 copies the returned string.
+/// State display naming through [`super::text::state_name`]:
+/// the template's `name` key is localised when the definition is read.
+/// A key the localisation lacks is its own text.
 fn state_display_name(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -69,9 +66,9 @@ fn state_display_name(
     })
 }
 
-/// 140E69320 for a province of a state: a nonempty recorded rename through
+/// For a province with a state: a nonempty recorded rename through
 /// the localiser (a key the localisation lacks is its own text); else
-/// ResolveVictoryPointLocalization (140E68E30), which localises the first of
+/// victory-point localisation, which localises the first of
 /// `<TAG>_VICTORY_POINTS_<id>` and `VICTORY_POINTS_<id>` the localisation
 /// holds, or gives nothing; a nonempty result is the name. Otherwise the
 /// state's display name ([`state_display_name`]), else for a province
@@ -82,18 +79,19 @@ fn province_name(
     province: &Province<'_>,
 ) -> Result<String, String> {
     let id = province.id;
-    let rename = province.rename.as_ref().map_err(|reason| {
-        format!("province {id}'s recorded rename (CProvince+0x40) is unknown: {reason}")
-    })?;
+    let rename = province
+        .rename
+        .as_ref()
+        .map_err(|reason| format!("province {id}'s recorded rename is unknown: {reason}"))?;
     if let Some(bytes) = rename.filter(|bytes| !bytes.is_empty()) {
         return token(icons, loc, bytes)
             .map_err(|reason| format!("province {id}'s recorded rename: {reason}"));
     }
     let tag = province.vp_tag.as_deref().map_err(|reason| {
-        format!("province {id}'s qualified victory point key (140E68E30) needs a tag, but {reason}")
+        format!("province {id}'s qualified victory point key needs a tag, but {reason}")
     })?;
-    // 140E68E30 picks one key, and its localised text, empty included, is
-    // the result; 140E69320 goes on only when that is empty.
+    // the game picks one key, and its localised text, empty included, is
+    // the result; the game goes on only when that is empty.
     let chosen = [
         format!("{tag}_VICTORY_POINTS_{id}"),
         format!("VICTORY_POINTS_{id}"),
@@ -108,9 +106,7 @@ fn province_name(
     }
     match &province.state {
         Some(Ok(state)) => state_display_name(icons, loc, state),
-        Some(Err(reason)) => Err(format!(
-            "province {id}'s state display name (CState::display_name 1409CC380): {reason}"
-        )),
+        Some(Err(reason)) => Err(format!("province {id}'s state display name: {reason}")),
         None => match province.region_name_key {
             Some(key) => token(icons, loc, key.as_bytes())
                 .map_err(|reason| format!("province {id}'s region name: {reason}")),
@@ -120,7 +116,7 @@ fn province_name(
 }
 
 /// The naval battle title for `province`, or for a result whose port-strike
-/// byte (+0x128) is `port_strike`; the error names the missing operand.
+/// flag is `port_strike`; the error names the missing operand.
 pub(super) fn title(
     document: &Document,
     frame: &DecodedFrame,
@@ -138,8 +134,8 @@ pub(super) fn title(
             "strategic region {region} has no content definition"
         )));
     };
-    // CStrategicRegion::GetName (140E0EB10): the template's name, localised
-    // when the definition is read (1415938B0); the instance override is only
+    // The strategic region name is the template's name, localised
+    // when the definition is read; the instance override is only
     // a nudger edit or a copy of that same name.
     let region_name = match token(icons, loc, definition.name_key.as_bytes()) {
         Ok(name) => name,
@@ -174,7 +170,7 @@ pub(super) fn title(
         })
     };
     let geometry = &document.province_geometry;
-    // A province with no pixels keeps the zero position 1413F4FD0 leaves.
+    // A province with no pixels keeps the zero position the game leaves.
     let position = |id: u32| geometry.map_position(id).unwrap_or([0, 0]);
     let picker = Picker {
         width: document.map.width as i32,
@@ -276,16 +272,11 @@ pub(super) fn title(
     ))
 }
 
-/// The tag 140E68E30 qualifies a province's victory point key with, through
-/// CCountry::GetOriginalTagOrTag (1406DF830), which takes the original tag
-/// (+0x130C) when it is positive. The independent original-only suffix
-/// plus the country's own tag supplies the getter, without the name generator's dynamic gate.
-/// The country is the province's state owner
-/// (CState+0xC8), resolved by resolve_country_reference (140BA56A0): a null
-/// link is country index 0, any other its canonical slot (140BA6240). A
-/// province without a state takes ConstructCountryLinkFromCountryIndex(0)
-/// (140BA4BB0): FindCountryLinkFromSlot (1401DA340) gives the first link to
-/// index 0, or 0 itself, which both resolve to the country at index 0.
+/// The tag qualifying a province's victory point key: a positive original
+/// tag, otherwise the country's own tag. This selection has no dynamic-name gate.
+/// The country is the province's state owner, resolved to its canonical slot;
+/// a null link resolves to country index 0. A province without a state uses the
+/// first link to country index 0, or 0 itself; both resolve to that country.
 fn vp_tag(
     frame: &DecodedFrame,
     state: u32,
@@ -294,8 +285,7 @@ fn vp_tag(
 ) -> io::Result<Result<String, String>> {
     let (subject, slot) = if state == 0 {
         (
-            "the country at index 0, which a province without a state qualifies with (140BA4BB0)"
-                .to_owned(),
+            "the country at index 0, which a province without a state qualifies with".to_owned(),
             0,
         )
     } else {

@@ -18,7 +18,6 @@ pub mod stream;
 pub mod vertices;
 
 /// Native registers are separate namespaces. Vertex and pixel bindings are separate too.
-/// `1424000F0` and `1424005A0` bind them independently.
 /// Saturating: an authored index beyond D3D11's slots is refused at compile, never wrapped.
 pub fn binding(index: u32, stage: Stage) -> u32 {
     index
@@ -95,8 +94,8 @@ pub struct Compiled {
 impl Compiled {
     /// Seconds after its restart past which the draw no longer changes on the clock alone, when
     /// constant buffer `register` holds the clock at byte `time` and the restart at `since` in
-    /// both stages (the sprite constants `CSpriteType::draw@14222D5A0` binds to each): the
-    /// longer stage's [`clock::Clock::settles`]; `None` while either keeps changing.
+    /// both stages, as sprite constants do: the longer stage's [`clock::Clock::settles`];
+    /// `None` while either keeps changing.
     pub fn settles(&self, register: u32, time: u32, since: u32) -> Option<f32> {
         let mut settles = 0.0_f32;
         for (stage, shader) in [(Stage::Vertex, &self.vertex), (Stage::Pixel, &self.pixel)] {
@@ -208,7 +207,7 @@ impl Compiler {
             .arg(&output)
             .arg(&input)
             .current_dir(&scratch.0);
-        // The engine binds only declared registers (142411840, 142411AB0).
+        // The engine binds only declared registers.
         let buffers: Vec<u32> = program
             .common
             .buffers

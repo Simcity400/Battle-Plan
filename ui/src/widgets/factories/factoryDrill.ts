@@ -10,8 +10,8 @@ export const factoryDrillNumbers = (reply: CountryFactoriesReply): CountryFactor
   groups: reply.groups.map(group => ({ key: group.key, flag: group.flag,
     buildings: group.buildings.map(building => ({ token: building.token, name: null })) })) });
 
-/** The recorded native groups, with the same construction/top-bar formulas
- * (1416fe6c0 / 14187f760, in factoriesData); no finer building split is recorded. */
+/** The recorded groups use the same construction/top-bar formulas as
+ * factoriesData; no finer building split is recorded. */
 export function factoryDrillData(model: FactoryModel, groups: readonly FactoryGroupKey[], mode: CountMode): CountryPartsData {
   const parts = model.reply.groups.filter(group => groups.includes(group.key)).map(group => ({ id: group.key, label: groupName(group) }));
   return {

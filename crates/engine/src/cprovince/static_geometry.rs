@@ -92,13 +92,12 @@ impl StaticGeometry {
     pub fn begin(&mut self, memory: &impl Memory, base: usize, state: usize) -> bool {
         // The counters describe this walk, not the memo's whole life.
         self.counters = StaticCounters::default();
-        // LoadGameDefines (14073dda0), including the common/defines file-watch
-        // callback 140174be0, rewrites this define without changing the session
-        // or province census. Only immutable map geometry survives this walk.
+        // Define reloading, including file-watch updates, rewrites this value without
+        // changing the session or province census. Only immutable map geometry
+        // survives this walk.
         self.embark = None;
-        // reloadfx straits (14027a250 -> 140a53290) updates existing crossing
-        // kinds through 1413f51e0 and may append adjacencies. It does not replace
-        // the province census or begin a new play session.
+        // Strait reloading updates existing crossing kinds and can append
+        // adjacencies without replacing the province census or play session.
         self.edges.clear();
         let (key, root) = observe_static_key(memory, base, state);
         if key.is_none() || self.key != key {

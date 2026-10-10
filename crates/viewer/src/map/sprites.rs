@@ -1,25 +1,8 @@
-//! The screen-space sprite batch: textured quads in **device pixels**.
-//!
-//! R2 section 5.4 measures the 29 x 27 victory-point frame as 28 x 27 device
-//! pixels in the 2560 x 1440 screenshot, which is a 1.25x upscale of a
-//! 2048 x 1152 frame (R1 section 0): the map-icon layer draws 1:1 with no GUI
-//! scaling. Section 6.7 confirms it independently on the 27 px counter plate.
-//! So this pass takes rectangles in device pixels, snaps them to the pixel grid
-//! and converts to clip space on the CPU — there is no projection matrix.
-//!
-//! The one scale factor is the viewer's own interface scale
-//! ([`super::ui_scale`]): callers lay the batch out in interface pixels and
-//! [`device_corners`] multiplies each snapped rectangle into device pixels at
-//! upload. At 1.0, which a dump uses, interface and device pixels are the same.
-//!
-//! Every glyph of [`super::text`] goes through the same batch, so a label's
-//! sprite and its text are one draw when they share a page. Quads are grouped
-//! by texture before upload, which changes the order of *unrelated* quads only;
-//! the map-icon priorities of R2 5.5 are honoured by the order the caller
-//! pushes them in, and everything this slice draws is priority 5.
-//!
-//! Depth is off and the batch runs after every world pass, so it always wins
-//! against the terrain, the water and the country names.
+//! Screen-space sprites and compiled GUI draws.
+//! Callers lay out rectangles in interface pixels. The simple atlas path snaps their corners
+//! to device pixels and supplies clip-space vertices; compiled GUI draws retain their own
+//! geometry, constants, sampler states and scissors. Layer keys preserve icon-child ordering
+//! while grouping compatible glyphs by texture. The pass draws after the world without depth.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -60,9 +43,7 @@ pub struct SpriteSheet {
 }
 
 impl SpriteSheet {
-    /// One frame's size in device pixels: `floor(w / n)` texels wide.
-    /// **UNVERIFIED** for strips that do not divide evenly: the game may draw
-    /// the frame `w / n` wide, a third of a pixel more on the naval-base strip.
+    /// One frame's size, with its horizontal extent truncated to whole texels.
     pub fn frame_size(&self) -> [f32; 2] {
         [
             (self.size[0] / self.frames.max(1)) as f32,
@@ -71,12 +52,7 @@ impl SpriteSheet {
     }
 
     /// The atlas rectangle of a zero-based frame, clamped to the last frame.
-    ///
-    /// Frames sit at `i / n` of the strip. The naval-base strip is 301 texels
-    /// for 11 frames and its glyphs are authored on that 27.36-texel pitch;
-    /// slicing at `i * floor(w / n)` drew frame `i` `0.36 * i` px right of the
-    /// game (measured on frames 0-7 in the 2026-09-24 L1a pairs) and cut the
-    /// gold badge's right edge.
+    /// Frames retain their evenly divided strip pitch even when their width is fractional.
     pub fn frame_uv(&self, frame: u32) -> [f32; 4] {
         let frames = self.frames.max(1);
         let index = frame.min(frames - 1);
@@ -105,14 +81,8 @@ pub struct MapIcons {
 }
 
 impl MapIcons {
-    /// Reads the fonts and the map-icon sprites from the resolved layers.
-    ///
-    /// `interface` and `gfx/interface` are covered content and go through
-    /// [`ResolvedLayers::read`]; `gfx/fonts` is not, and [`text::Fonts::load`]
-    /// states that limitation ([archived rendering notes](#) section 4).
-    ///
-    /// `decode` is the client's texture decode state
-    /// ([`installed_content::settings::SettingsKeys::texture_decode`]), which the font pages load under.
+    /// Reads fonts and map-icon sprites through the resolved content stack, using the client's
+    /// texture decode state for their pages.
     #[allow(clippy::too_many_arguments)] // The content stack plus the client's settings.
     pub fn load(
         layers: &ResolvedLayers,
@@ -135,9 +105,8 @@ impl MapIcons {
         let mut font_warnings = Vec::new();
         // The battle-plan label font is named by `maparrows.txt`'s `arrowText`.
         let arrow_font = super::orders::arrow_text_font(layers)?;
-        // The fonts and sprites of one read of the interface files, as the game reads them.
-        //140180C00 reads interface, then gfx/**/*.gfx into the same graphics/font/sprite
-        //registries; a later mod font override or textcolors block affects world and GUI text.
+        // Interface definitions and graphics files share registries, so later font and colour
+        // overrides affect both world and GUI text.
         let registry = installed_content::gui::native::resources::Registry::from_files(
             installed_content::gui::native::sprites::read_object_layers(layers)?,
         );
@@ -301,7 +270,6 @@ pub fn decode_sheet(
         .texture
         .as_deref()
         .ok_or_else(|| invalid(format!("sprite {name} names no texturefile")))?;
-    // CSpriteType::load_base_texture@14222B2A0 uses DecodeTextureImage@1423F9A50.
     let texture = resources::stack_texture(layers, path.as_bytes(), decode)?
         .map_err(|why| invalid(format!("sprite {name}: {why}")))?;
     let texture = texture.image;
@@ -327,29 +295,22 @@ pub struct Quad {
     /// Straight RGBA multiplier; `[1, 1, 1, 1]` draws the texture as authored.
     pub color: [f32; 4],
     // counters
-    /// Clockwise rotation about the rectangle's centre, in radians.
-    ///
-    /// `mapicons.gui` rotates two children of the map icons this pass draws:
-    /// the counter bars by `1.5708` and `battle_indicator_direction` by the
-    /// combat's own heading. Everything else pushes zero and keeps the
-    /// pixel-snapped axis-aligned path.
+    /// Clockwise rotation about the rectangle's centre, in radians. Zero retains the snapped
+    /// axis-aligned path.
     pub rotation: f32,
     // counters
     /// The sort key [`layer`] builds; see it for the field order.
     pub layer: u64,
-    /// `buttonstate.shader`'s Over (positive) and Down (negative) techniques: after the colour,
-    /// `rgb + (0.5 + rgb) * shade`; 0 for none.
+    /// Signed brightness adjustment after tinting: positive brightens, negative darkens.
     pub shade: f32,
     /// A quad [`super::native_gui`] places and shades as the game does; `rect`, `uv`, `rotation`
     /// and `shade` are then unused.
     pub exact: Option<Exact>,
 }
 
-/// A quad drawn where the game's GUI draws it (`CSpriteType::build_geometry@14222CB90` through
-/// the composed world matrix to the rasteriser): its corners are not snapped, a scissor cuts it,
-/// and its effect's program runs with the effect's sampler state (see
-/// [`super::native_effects`]). `Quad::texture` is slot 0 and `Quad::color` the program's `Color`
-/// (a progress bar's first colour, a glyph's vertex colour).
+/// An unsnapped GUI draw with compiled resources, or layout-fixture geometry and metadata.
+/// Its scissor clips interface-pixel corners after scaling. Compiled draws carry their own
+/// complete vertex and constant payload in `native`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Exact {
     pub native: Option<Arc<super::native_shader::draw::Quad>>,
@@ -358,10 +319,10 @@ pub struct Exact {
     /// Each vertex's texture coordinate as the vertex buffer holds it (before `Offset`).
     pub uv: [[f32; 2]; 4],
     /// The scissor `x0, y0, x1, y1` in whole interface pixels: the device's is each coordinate
-    /// times the interface scale, truncated (`CGraphics::convert_coordinates@1422225B0`).
+    /// times the interface scale, truncated.
     pub scissor: Option<[i32; 4]>,
-    /// [`super::native_effects::Pixel::packed`].
-    pub pixel: u32,
+    /// Selected technique ID for compiler-independent layout fixtures.
+    pub technique: u32,
     pub blend: super::native_effects::Blend,
     /// The samplers of slot 0, slot 1 and the masking slot 5, ten bits each from bit 0, 10 and
     /// 20 ([`super::native_effects::Sampler::packed`]).
@@ -384,7 +345,7 @@ pub struct Exact {
 /// the pass, then the child's place inside its window.
 ///
 /// Quads are uploaded sorted by `(layer, texture)`. The engine sorts map icons
-/// by `DEFAULT_PRIORITY_*` (R2 section 5.5) and draws each icon's children in
+/// by the content priorities and draws each icon's children in
 /// the order `mapicons.gui` declares them, so **only quads that are the same
 /// child of the same icon may be reordered** — which is what batches a run of
 /// glyphs onto one page without ever letting one counter's flag overtake
@@ -400,9 +361,8 @@ pub const fn layer(priority: i8, icon: u32, child: u32) -> u64 {
     band_layer((priority as u8 ^ 0x80) as u64, icon, child)
 }
 
-/// `CUnitsStackMapIcon::UpdateGuiPositionAndVisibility@141901280` adds five
-/// to the signed content byte as an i32 when its window contains the active
-/// GUI object. The sum can exceed i8::MAX, so it must not wrap back below the map.
+/// A window containing the active GUI object adds five to its signed content priority.
+/// The sum can exceed i8::MAX, so it must not wrap back below the map.
 pub const fn hovered_layer(priority: i8, hovered: bool, icon: u32, child: u32) -> u64 {
     band_layer(
         (priority as i32 + 128 + if hovered { 5 } else { 0 }) as u64,
@@ -421,9 +381,7 @@ const fn band_layer(band: u64, icon: u32, child: u32) -> u64 {
     band * PRIORITY_STRIDE + icon as u64 * CHILD_SLOTS as u64 + child as u64
 }
 
-/// `NMapIcons.<name>` as an icon's sort priority: `SetMapIconPrioritiesForMapMode`
-/// (`140e02410`) stores the integer define's low byte, and every icon reads it back
-/// sign-extended into `CMapIcon + 0x70` (`MOVSX`, e.g. `1418bbed9`), so 300 sorts as 44.
+/// Reads an icon's content priority as a sign-extended low byte.
 pub fn priority(defines: &installed_content::defines::Defines, name: &str) -> io::Result<i8> {
     Ok(defines.int32("NMapIcons", name)? as i8)
 }
@@ -438,7 +396,7 @@ const _: () = assert!((u32::MAX as u64 + 1) * CHILD_SLOTS as u64 <= PRIORITY_STR
 /// including the native five-point GUI-hover lift.
 const GUI_BAND: u64 = 261;
 
-/// ToolTip uses the final GUI pass (1402A2150 → 14228F460; 142228970).
+/// Tooltips use the final GUI pass above ordinary windows.
 pub const TOOLTIP_LAYER: u64 = band_layer(GUI_BAND + 1, 0, 0);
 
 /// The priority a [`layer`] key was built with.
@@ -612,8 +570,7 @@ pub fn device_corners(rect: [f32; 4], ui_scale: f32) -> [f32; 4] {
 }
 
 /// An exact quad's scissor in device pixels, `x, y, width, height`, within a target of `size`:
-/// each coordinate times the interface scale, truncated (`CGraphics::convert_coordinates
-/// @1422225B0`), then held inside the target, which the device's rasteriser never passes.
+/// Each coordinate is scaled and truncated, then clipped to the target bounds.
 /// `None` when nothing is left.
 pub fn device_scissor(scissor: [i32; 4], ui_scale: f32, size: [u32; 2]) -> Option<[u32; 4]> {
     let device = scissor.map(|value| (value as f32 * ui_scale) as i64);
@@ -625,7 +582,7 @@ pub fn device_scissor(scissor: [i32; 4], ui_scale: f32, size: [u32; 2]) -> Optio
 }
 
 /// The texel-centre window a quad's atlas rectangle is sampled inside, as the
-/// shader's `window` computes it: the rectangle inset by half a texel on every
+/// shader uses: the rectangle inset by half a texel on every
 /// side, so no bilinear tap reaches a neighbouring frame, glyph or flag cell.
 /// A rectangle narrower than a texel collapses to its centre.
 ///
@@ -633,8 +590,7 @@ pub fn device_scissor(scissor: [i32; 4], ui_scale: f32, size: [u32; 2]) -> Optio
 /// so this changes nothing there. A magnified one, which a UI scale above 1.0
 /// draws, samples its edge pixels past the last texel centre; clamping them to
 /// the window repeats the cell's edge texels, which is what an edge-extended
-/// gutter around the cell would hold. The shader's `window` is the one that
-/// runs; this is its specification for the tests.
+/// gutter around the cell would hold. Tests use this window to check atlas bounds.
 #[cfg(test)]
 pub fn sample_window(uv: [f32; 4], texels: [u32; 2]) -> [f32; 4] {
     let mut out = [0.0; 4];
@@ -660,24 +616,6 @@ struct Vertex {
     cell: [f32; 4],
     filter: f32,
     shade: f32,
-}
-
-/// One vertex of an [`Exact`] quad: its position in clip space, its texture coordinate as the
-/// vertex buffer holds it and its masking coordinate, then the draw's constants.
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-#[cfg(test)]
-struct ExactVertex {
-    position: [f32; 2],
-    uv: [f32; 2],
-    mask_uv: [f32; 2],
-    color: [f32; 4],
-    second: [f32; 4],
-    offsets: [f32; 4],
-    inputs: [f32; 4],
-    lod_bias: [f32; 4],
-    pixel: u32,
-    samplers: u32,
 }
 
 /// How the shader samples a batch drawn at `ui_scale`: 0 the plain bilinear
@@ -799,22 +737,13 @@ impl IconTextures {
 enum Pipe {
     /// The snapped screen-space sprites.
     Legacy,
-    /// [`Exact`] quads, blended or not.
-    #[cfg(test)]
-    Exact(super::native_effects::Blend),
     Native(usize),
 }
-
-/// The textures an exact run binds: slot 0, slot 1 and the masking slot.
-#[cfg(test)]
-type Slots = [usize; 3];
 
 /// One run of consecutive vertices sharing a pipeline, its textures and a scissor.
 struct Run {
     pipe: Pipe,
     texture: usize,
-    #[cfg(test)]
-    slots: Slots,
     scissor: Option<[u32; 4]>,
     range: std::ops::Range<u32>,
 }
@@ -843,20 +772,10 @@ pub struct SpritePass {
     bind_groups: Vec<wgpu::BindGroup>,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    /// [`Exact`] quads: blended (`src_alpha`, `inv_src_alpha`) and not.
-    #[cfg(test)]
-    exact_alpha: wgpu::RenderPipeline,
-    #[cfg(test)]
-    exact_off: wgpu::RenderPipeline,
-    #[cfg(test)]
-    exact_layout: wgpu::BindGroupLayout,
-    /// The static pages' views, which exact bind groups combine.
+    /// Static page views used by compiled effect bindings.
     views: Vec<wgpu::TextureView>,
     /// One transparent texel for an empty slot.
     empty: Bound,
-    /// Exact bind groups by their slots, rebuilt when the lazy textures change.
-    #[cfg(test)]
-    exact_groups: HashMap<Slots, wgpu::BindGroup>,
     /// The content's lazy textures, mirrored into `dynamic` by [`SpritePass::sync`].
     lazy: Arc<LazyTextures>,
     synced: Option<u64>,
@@ -865,13 +784,8 @@ pub struct SpritePass {
     failed: HashMap<usize, u64>,
     vertices: wgpu::Buffer,
     capacity: u64,
-    #[cfg(test)]
-    exact_vertices: wgpu::Buffer,
-    #[cfg(test)]
-    exact_capacity: u64,
     runs: Vec<Run>,
     count: u32,
-    exact_count: u32,
 }
 
 /// Vertices a freshly built pass can hold before it grows; six per quad.
@@ -936,8 +850,7 @@ impl SpritePass {
                 cull_mode: None,
                 ..Default::default()
             },
-            // The icon layer is drawn last and never tests depth (R2 5.5: the
-            // priorities are a sort order inside the layer, not a depth test).
+            // Priorities order the final icon layer; they do not participate in depth tests.
             depth_stencil: None,
             multisample: wgpu::MultisampleState {
                 count: samples,
@@ -952,74 +865,6 @@ impl SpritePass {
             multiview_mask: None,
             cache: None,
         });
-        #[cfg(test)]
-        let exact_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("exact sprite textures"),
-            entries: &[0, 1, 2].map(|binding| {
-                texture_entry(
-                    binding,
-                    wgpu::ShaderStages::FRAGMENT,
-                    wgpu::TextureViewDimension::D2,
-                )
-            }),
-        });
-        #[cfg(test)]
-        let exact_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("exact sprites"),
-            source: wgpu::ShaderSource::Wgsl(EXACT_SHADER.into()),
-        });
-        #[cfg(test)]
-        let exact_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("exact sprites"),
-                bind_group_layouts: &[Some(&exact_layout)],
-                immediate_size: 0,
-            });
-        #[cfg(test)]
-        let exact = |label, blend: Option<wgpu::BlendState>| {
-            let targets = target(blend);
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&exact_pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &exact_module,
-                    entry_point: Some("exact_vertex"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<ExactVertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![
-                            0 => Float32x2, 1 => Float32x2, 2 => Float32x2, 3 => Float32x4,
-                            4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4,
-                            8 => Uint32, 9 => Uint32
-                        ],
-                    })],
-                },
-                primitive: wgpu::PrimitiveState {
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState {
-                    count: samples,
-                    ..Default::default()
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &exact_module,
-                    entry_point: Some("exact_fragment"),
-                    compilation_options: Default::default(),
-                    targets: &targets,
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        // `src_alpha` over `inv_src_alpha` on colour; the write mask keeps the target's alpha,
-        // so an effect's alpha operation (`text.shader`'s `BlendOpAlpha = max`) writes nothing.
-        #[cfg(test)]
-        let exact_alpha = exact("exact sprites", Some(wgpu::BlendState::ALPHA_BLENDING));
-        #[cfg(test)]
-        let exact_off = exact("exact sprites, no blending", None);
         let empty = upload(
             device,
             queue,
@@ -1043,33 +888,20 @@ impl SpritePass {
             bind_groups,
             layout,
             sampler: textures.screen_clamp().clone(),
-            #[cfg(test)]
-            exact_alpha,
-            #[cfg(test)]
-            exact_off,
-            #[cfg(test)]
-            exact_layout,
             views: textures
                 .bound
                 .iter()
                 .map(|texture| texture.view.clone())
                 .collect(),
             empty,
-            #[cfg(test)]
-            exact_groups: HashMap::new(),
             lazy: Arc::clone(lazy),
             synced: None,
             dynamic: HashMap::new(),
             failed: HashMap::new(),
             vertices: buffer(device, INITIAL_VERTICES, std::mem::size_of::<Vertex>()),
             capacity: INITIAL_VERTICES,
-            #[cfg(test)]
-            exact_vertices: buffer(device, INITIAL_VERTICES, std::mem::size_of::<ExactVertex>()),
-            #[cfg(test)]
-            exact_capacity: INITIAL_VERTICES,
             runs: Vec::new(),
             count: 0,
-            exact_count: 0,
         })
     }
 
@@ -1144,8 +976,6 @@ impl SpritePass {
             );
         }
         // A combination may name a page that changed or left.
-        #[cfg(test)]
-        self.exact_groups.clear();
         self.synced = Some(version);
     }
 
@@ -1164,36 +994,6 @@ impl SpritePass {
         self.views
             .get(texture)
             .or_else(|| self.dynamic.get(&texture).map(|page| &page.texture.view))
-    }
-
-    /// Makes the exact bind group of `slots`; `false` when a slot's texture is not resident.
-    #[cfg(test)]
-    fn exact_group(&mut self, device: &wgpu::Device, slots: Slots) -> bool {
-        if self.exact_groups.contains_key(&slots) {
-            return true;
-        }
-        let Some(views) = slots
-            .iter()
-            .map(|slot| self.view(*slot).cloned())
-            .collect::<Option<Vec<_>>>()
-        else {
-            return false;
-        };
-        let entries: Vec<wgpu::BindGroupEntry> = views
-            .iter()
-            .enumerate()
-            .map(|(binding, view)| wgpu::BindGroupEntry {
-                binding: binding as u32,
-                resource: wgpu::BindingResource::TextureView(view),
-            })
-            .collect();
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("exact sprite textures"),
-            layout: &self.exact_layout,
-            entries: &entries,
-        });
-        self.exact_groups.insert(slots, group);
-        true
     }
 
     /// Turns one frame's quads into vertices, grouped by texture. Compiled GUI draws upload
@@ -1224,7 +1024,6 @@ impl SpritePass {
         self.native.refused.clear();
         self.native.invalidate_bindings();
         self.count = 0;
-        self.exact_count = 0;
         // The lazy textures this frame draws stay pinned in their LRU.
         self.lazy.mark_drawn(
             batch
@@ -1281,8 +1080,6 @@ impl SpritePass {
         let height = size[1] as f32;
         let clip = |x: f32, y: f32| [x / width * 2.0 - 1.0, 1.0 - y / height * 2.0];
         let mut vertices: Vec<Vertex> = Vec::with_capacity(order.len() * 6);
-        #[cfg(test)]
-        let mut exact_vertices: Vec<ExactVertex> = Vec::new();
         let filter = filter_mode(ui_scale);
         for index in order {
             let quad = batch.quads[index].clone();
@@ -1302,8 +1099,6 @@ impl SpritePass {
                             self.runs.push(Run {
                                 pipe: Pipe::Native(index),
                                 texture: NO_TEXTURE,
-                                #[cfg(test)]
-                                slots: [NO_TEXTURE; 3],
                                 scissor,
                                 range: 0..0,
                             });
@@ -1319,79 +1114,12 @@ impl SpritePass {
                     }
                     continue;
                 }
-                #[cfg(not(test))]
-                {
-                    // What the game binds for it is unknown here.
-                    self.native.invalidate_bindings();
-                    *self
-                        .native_refusals
-                        .entry("GUI quad has no compiled effect payload".into())
-                        .or_default() += 1;
-                    continue;
-                }
-                #[cfg(test)]
-                {
-                    self.native.invalidate_bindings();
-                    let slots = [
-                        quad.texture,
-                        exact.second.unwrap_or(NO_TEXTURE),
-                        exact.masking.unwrap_or(NO_TEXTURE),
-                    ];
-                    if !self.exact_group(device, slots) {
-                        continue;
-                    }
-                    let scissor = match exact.scissor {
-                        Some(scissor) => match device_scissor(scissor, ui_scale, size) {
-                            Some(device) => Some(device),
-                            None => continue,
-                        },
-                        None => None,
-                    };
-                    let vertex = |corner: usize| {
-                        let [x, y] = exact.corners[corner];
-                        let uv = exact.uv[corner];
-                        ExactVertex {
-                            position: clip(x * ui_scale, y * ui_scale),
-                            uv,
-                            // `saturate(vTexCoord * 1000)` per vertex (buttonstate's `MASKING`).
-                            mask_uv: uv.map(|value| (value * 1000.0).clamp(0.0, 1.0)),
-                            color: quad.color,
-                            second: exact.second_color,
-                            offsets: exact.offsets,
-                            inputs: exact.inputs,
-                            lod_bias: [
-                                exact.lod_bias[0],
-                                exact.lod_bias[1],
-                                exact.lod_bias[2],
-                                0.0,
-                            ],
-                            pixel: exact.pixel,
-                            samplers: exact.samplers,
-                        }
-                    };
-                    let start = exact_vertices.len() as u32;
-                    exact_vertices.extend([0, 1, 2, 0, 2, 3].map(vertex));
-                    let end = exact_vertices.len() as u32;
-                    let pipe = Pipe::Exact(exact.blend);
-                    match self.runs.last_mut() {
-                        Some(run)
-                            if run.pipe == pipe
-                                && run.slots == slots
-                                && run.scissor == scissor
-                                && run.range.end == start =>
-                        {
-                            run.range.end = end;
-                        }
-                        _ => self.runs.push(Run {
-                            pipe,
-                            texture: quad.texture,
-                            slots,
-                            scissor,
-                            range: start..end,
-                        }),
-                    }
-                    continue;
-                }
+                self.native.invalidate_bindings();
+                *self
+                    .native_refusals
+                    .entry("GUI quad has no compiled effect payload".into())
+                    .or_default() += 1;
+                continue;
             }
             self.native.invalidate_bindings();
             if self.group(quad.texture).is_none() {
@@ -1446,8 +1174,6 @@ impl SpritePass {
                 _ => self.runs.push(Run {
                     pipe: Pipe::Legacy,
                     texture: quad.texture,
-                    #[cfg(test)]
-                    slots: [NO_TEXTURE; 3],
                     scissor: None,
                     range: start..end,
                 }),
@@ -1455,32 +1181,12 @@ impl SpritePass {
         }
         self.bakes.retain(|bake| bake.used);
         self.count = vertices.len() as u32;
-        #[cfg(test)]
-        {
-            self.exact_count = exact_vertices.len() as u32;
-        }
         if self.count > 0 {
             if u64::from(self.count) > self.capacity {
                 self.capacity = u64::from(self.count).next_power_of_two();
                 self.vertices = buffer(device, self.capacity, std::mem::size_of::<Vertex>());
             }
             queue.write_buffer(&self.vertices, 0, bytemuck::cast_slice(&vertices));
-        }
-        #[cfg(test)]
-        if self.exact_count > 0 {
-            if u64::from(self.exact_count) > self.exact_capacity {
-                self.exact_capacity = u64::from(self.exact_count).next_power_of_two();
-                self.exact_vertices = buffer(
-                    device,
-                    self.exact_capacity,
-                    std::mem::size_of::<ExactVertex>(),
-                );
-            }
-            queue.write_buffer(
-                &self.exact_vertices,
-                0,
-                bytemuck::cast_slice(&exact_vertices),
-            );
         }
     }
 
@@ -1518,14 +1224,6 @@ impl SpritePass {
                         pass.set_pipeline(&self.pipeline);
                         pass.set_vertex_buffer(0, self.vertices.slice(..));
                     }
-                    #[cfg(test)]
-                    Pipe::Exact(blend) => {
-                        pass.set_pipeline(match blend {
-                            super::native_effects::Blend::Alpha => &self.exact_alpha,
-                            super::native_effects::Blend::Off => &self.exact_off,
-                        });
-                        pass.set_vertex_buffer(0, self.exact_vertices.slice(..));
-                    }
                     Pipe::Native(_) => unreachable!(),
                 }
                 bound = Some(run.pipe);
@@ -1534,8 +1232,6 @@ impl SpritePass {
             pass.set_scissor_rect(x, y, w, h);
             let group = match run.pipe {
                 Pipe::Legacy => self.group(run.texture),
-                #[cfg(test)]
-                Pipe::Exact(_) => self.exact_groups.get(&run.slots),
                 Pipe::Native(_) => unreachable!(),
             };
             let Some(group) = group else {
@@ -1548,7 +1244,7 @@ impl SpritePass {
 
     /// Quads the last upload produced, for reporting.
     pub fn quad_count(&self) -> u32 {
-        (self.count + self.exact_count) / 6 + self.native_draws.len() as u32
+        self.count / 6 + self.native_draws.len() as u32
     }
 
     fn prepare_native(
@@ -1634,7 +1330,7 @@ impl SpritePass {
         }
         let format = wgpu::TextureFormat::Bgra8Unorm;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("CTextSprite bake14228C8D0"),
+            label: Some("text sprite bake"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -1745,14 +1441,10 @@ fn self_contained(draw: &super::native_shader::draw::Quad) -> bool {
 /// A slot's texture as the replay holds it: `Ok(None)` a null bind, `Err` one it does not hold.
 type View = Result<Option<wgpu::TextureView>, String>;
 
-/// Makes `draw`'s binds on `native` in the game's order, then prepares it. A draw the replay
-/// cannot make is refused with its first reason (its bake, a texture that is not resident, a
-/// technique that does not compile, its blend state), but still leaves the binds the game makes
-/// for it: its program record (`shader_program_binder@142400520`: a declared technique binds
-/// its record even when its shaders failed, `142344DF0`; an undeclared one binds nothing), its
-/// constants, and its textures and samplers (`1424005A0`). What the replay lacks of them (the
-/// program of a technique it could not compile, a texture it does not hold) is forgotten, so a
-/// later draw that reads it is refused rather than given an earlier bind.
+/// Applies the draw's program, constants, textures and samplers before preparing submission.
+/// A refusal retains available bindings and forgets missing resources, so later inherited
+/// draws cannot accidentally use resources from an earlier successful draw. Missing techniques
+/// retain the program; a declared technique that fails compilation makes it unavailable.
 #[allow(clippy::too_many_arguments)]
 fn prepare_draw(
     native: &mut super::native_shader::stream::Stream,
@@ -1895,443 +1587,114 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// The whole pass: positions arrive in clip space, so there is no transform.
+/// The screen-space atlas program.
 pub(super) const SHADER: &str = r#"
-struct VertexOut {
-    @builtin(position) clip: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-    @location(1) color: vec4<f32>,
+struct SpriteVertex {
+    @location(0) clip_xy: vec2<f32>,
+    @location(1) texcoord: vec2<f32>,
+    @location(2) tint: vec4<f32>,
+    @location(3) cell: vec4<f32>,
+    @location(4) sampling: f32,
+    @location(5) shade: f32,
+}
+
+struct SpriteFragment {
+    @builtin(position) position: vec4<f32>,
+    @location(0) texcoord: vec2<f32>,
+    @location(1) tint: vec4<f32>,
     @location(2) @interpolate(flat) cell: vec4<f32>,
     @location(3) @interpolate(flat) sampling: f32,
     @location(4) @interpolate(flat) shade: f32,
 }
 
-@group(0) @binding(0) var page: texture_2d<f32>;
-@group(0) @binding(1) var page_sampler: sampler;
+@group(0) @binding(0) var sprite_texture: texture_2d<f32>;
+@group(0) @binding(1) var sprite_sampler: sampler;
 
 @vertex
-fn vertex_main(
-    @location(0) position: vec2<f32>,
-    @location(1) uv: vec2<f32>,
-    @location(2) color: vec4<f32>,
-    @location(3) cell: vec4<f32>,
-    @location(4) sampling: f32,
-    @location(5) shade: f32,
-) -> VertexOut {
-    var out: VertexOut;
-    out.clip = vec4<f32>(position, 0.0, 1.0);
-    out.uv = uv;
-    out.color = color;
-    out.cell = cell;
-    out.sampling = sampling;
-    out.shade = shade;
-    return out;
+fn vertex_main(vertex: SpriteVertex) -> SpriteFragment {
+    var fragment: SpriteFragment;
+    fragment.position = vec4<f32>(vertex.clip_xy, 0.0, 1.0);
+    fragment.texcoord = vertex.texcoord;
+    fragment.tint = vertex.tint;
+    fragment.cell = vertex.cell;
+    fragment.sampling = vertex.sampling;
+    fragment.shade = vertex.shade;
+    return fragment;
 }
 
-// `sample_window` in sprites.rs: the cell inset by half a texel.
-fn window(cell: vec4<f32>, texels: vec2<f32>) -> vec4<f32> {
-    let half = 0.5 / texels;
-    let low = min(cell.xy, cell.zw);
-    let high = max(cell.xy, cell.zw);
-    let middle = (low + high) * 0.5;
-    return vec4<f32>(min(low + half, middle), max(high - half, middle));
-}
+fn read_sprite(
+    texcoord: vec2<f32>,
+    cell: vec4<f32>,
+    sampling: f32,
+    horizontal: vec2<f32>,
+    vertical: vec2<f32>,
+) -> vec4<f32> {
+    if sampling < 0.5 {
+        return textureSampleLevel(sprite_texture, sprite_sampler, texcoord, 0.0);
+    }
 
-// `filter_mode` in sprites.rs: 0 one plain tap; 1 one tap clamped to the
-// cell's window; 2 the texels a minified pixel covers, up to 4 x 4, each
-// clamped. The derivatives are taken before any branch.
-fn texel(uv: vec2<f32>, cell: vec4<f32>, sampling: f32) -> vec4<f32> {
-    let dx = dpdx(uv);
-    let dy = dpdy(uv);
-    if (sampling < 0.5) {
-        return textureSampleLevel(page, page_sampler, uv, 0.0);
+    let dimensions = vec2<f32>(textureDimensions(sprite_texture, 0));
+    let first_corner = min(cell.xy, cell.zw);
+    let last_corner = max(cell.xy, cell.zw);
+    let middle = (first_corner + last_corner) * 0.5;
+    let inset = vec2<f32>(0.5) / dimensions;
+    let lower = min(first_corner + inset, middle);
+    let upper = max(last_corner - inset, middle);
+
+    if sampling <= 1.5 {
+        return textureSampleLevel(
+            sprite_texture,
+            sprite_sampler,
+            clamp(texcoord, lower, upper),
+            0.0,
+        );
     }
-    let texels = vec2<f32>(textureDimensions(page, 0));
-    let bounds = window(cell, texels);
-    var taps = 1u;
-    if (sampling > 1.5) {
-        let footprint = max(abs(dx), abs(dy)) * texels;
-        taps = u32(clamp(ceil(max(footprint.x, footprint.y) - 0.001), 1.0, 4.0));
-    }
-    var sum = vec4<f32>(0.0);
-    for (var j = 0u; j < taps; j = j + 1u) {
-        for (var i = 0u; i < taps; i = i + 1u) {
-            let offset = (vec2<f32>(f32(i), f32(j)) + 0.5) / f32(taps) - 0.5;
-            let at = clamp(uv + dx * offset.x + dy * offset.y, bounds.xy, bounds.zw);
-            sum = sum + textureSampleLevel(page, page_sampler, at, 0.0);
+
+    let footprint = max(abs(horizontal), abs(vertical)) * dimensions;
+    let longest_axis = max(footprint.x, footprint.y);
+    let count = u32(clamp(ceil(longest_axis - 0.001), 1.0, 4.0));
+    let taps_per_axis = f32(count);
+    var total = vec4<f32>(0.0);
+
+    for (var row = 0u; row < count; row += 1u) {
+        let row_center = (f32(row) + 0.5) / taps_per_axis - 0.5;
+        for (var column = 0u; column < count; column += 1u) {
+            let column_center = (f32(column) + 0.5) / taps_per_axis - 0.5;
+            let horizontal_uv = texcoord + horizontal * column_center;
+            let tap = clamp(horizontal_uv + vertical * row_center, lower, upper);
+            total += textureSampleLevel(sprite_texture, sprite_sampler, tap, 0.0);
         }
     }
-    return sum / f32(taps * taps);
+    return total / f32(count * count);
 }
 
-// The atlases are authored straight, not premultiplied (R2 5.3), so the colour
-// multiplies both parts and the blend state does the compositing. A negative
-// alpha selects `buttonstate.shader`'s `PixelShaderDisable`: the texel's
-// luminance grey, then the colour with its alpha negated back. A shade is its
-// Over (positive) or Down (negative) technique, applied after the colour.
+fn shade_sprite(source: vec4<f32>, tint: vec4<f32>, shade: f32) -> vec4<f32> {
+    if tint.a < 0.0 {
+        let luminance = dot(source.rgb, vec3<f32>(0.212671, 0.715160, 0.072169));
+        return vec4<f32>(luminance * tint.rgb, source.a * abs(tint.a));
+    }
+
+    let tinted = source * tint;
+    let brightened = tinted.rgb + shade * (tinted.rgb + vec3<f32>(0.5));
+    return vec4<f32>(brightened, tinted.a);
+}
+
 @fragment
-fn fragment_main(in: VertexOut) -> @location(0) vec4<f32> {
-    let sample = texel(in.uv, in.cell, in.sampling);
-    if (in.color.a < 0.0) {
-        let grey = dot(sample.rgb, vec3<f32>(0.212671, 0.715160, 0.072169));
-        return vec4<f32>(grey, grey, grey, sample.a) * vec4<f32>(in.color.rgb, -in.color.a);
-    }
-    let out = sample * in.color;
-    return vec4<f32>(out.rgb + (0.5 + out.rgb) * in.shade, out.a);
-}
-"#;
-
-/// The [`Exact`] pass: the modelled programs of [`super::native_effects`], each texel read and
-/// filtered as the effect's sampler state reads it (every addressing mode, the magnifying or
-/// minifying filter by the level of detail, the mip filter over the texture's levels).
-#[cfg(test)]
-pub(super) const EXACT_SHADER: &str = r#"
-struct ExactOut {
-    @builtin(position) clip: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-    @location(1) mask_uv: vec2<f32>,
-    @location(2) @interpolate(flat) color: vec4<f32>,
-    @location(3) @interpolate(flat) second: vec4<f32>,
-    @location(4) @interpolate(flat) offsets: vec4<f32>,
-    @location(5) @interpolate(flat) inputs: vec4<f32>,
-    @location(6) @interpolate(flat) lod_bias: vec4<f32>,
-    @location(7) @interpolate(flat) pixel: u32,
-    @location(8) @interpolate(flat) samplers: u32,
-}
-
-@group(0) @binding(0) var slot0: texture_2d<f32>;
-@group(0) @binding(1) var slot1: texture_2d<f32>;
-@group(0) @binding(2) var slot5: texture_2d<f32>;
-
-@vertex
-fn exact_vertex(
-    @location(0) position: vec2<f32>,
-    @location(1) uv: vec2<f32>,
-    @location(2) mask_uv: vec2<f32>,
-    @location(3) color: vec4<f32>,
-    @location(4) second: vec4<f32>,
-    @location(5) offsets: vec4<f32>,
-    @location(6) inputs: vec4<f32>,
-    @location(7) lod_bias: vec4<f32>,
-    @location(8) pixel: u32,
-    @location(9) samplers: u32,
-) -> ExactOut {
-    var out: ExactOut;
-    out.clip = vec4<f32>(position, 0.0, 1.0);
-    out.uv = uv;
-    out.mask_uv = mask_uv;
-    out.color = color;
-    out.second = second;
-    out.offsets = offsets;
-    out.inputs = inputs;
-    out.lod_bias = lod_bias;
-    out.pixel = pixel;
-    out.samplers = samplers;
-    return out;
-}
-
-// A texel index on one axis: wrap, mirror, clamp, border (-1: transparent black, the only border
-// colour `lower_d3d11@1423FD550` sets), mirror once.
-fn address(c: i32, size: i32, mode: u32) -> i32 {
-    switch mode {
-        case 0u: {
-            return ((c % size) + size) % size;
-        }
-        case 1u: {
-            let period = 2 * size;
-            let m = ((c % period) + period) % period;
-            return select(m, period - 1 - m, m >= size);
-        }
-        case 2u: {
-            return clamp(c, 0, size - 1);
-        }
-        case 3u: {
-            return select(c, -1, c < 0 || c >= size);
-        }
-        default: {
-            return min(select(c, -c - 1, c < 0), size - 1);
-        }
-    }
-}
-
-fn fetch(t: texture_2d<f32>, at: vec2<i32>, level: i32, state: u32) -> vec4<f32> {
-    let size = vec2<i32>(textureDimensions(t, level));
-    let x = address(at.x, size.x, state & 7u);
-    let y = address(at.y, size.y, (state >> 3u) & 7u);
-    if (x < 0 || y < 0) {
-        return vec4<f32>(0.0);
-    }
-    return textureLoad(t, vec2<i32>(x, y), level);
-}
-
-fn filtered(t: texture_2d<f32>, uv: vec2<f32>, level: i32, linear: bool, state: u32) -> vec4<f32> {
-    let at = uv * vec2<f32>(textureDimensions(t, level));
-    if (!linear) {
-        return fetch(t, vec2<i32>(floor(at)), level, state);
-    }
-    let p = at - 0.5;
-    let base = floor(p);
-    let f = p - base;
-    let i = vec2<i32>(base);
-    let a = fetch(t, i, level, state);
-    let b = fetch(t, i + vec2<i32>(1, 0), level, state);
-    let c = fetch(t, i + vec2<i32>(0, 1), level, state);
-    let d = fetch(t, i + vec2<i32>(1, 1), level, state);
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-}
-
-// `state` (ten bits): the addressing, the magnifying and minifying filters (bits 6 and 7), and
-// the mip filter (bits 8-9: 1 point, 2 linear). `lod` already carries the slot's bias.
-fn sample_slot(t: texture_2d<f32>, uv: vec2<f32>, state: u32, lod: f32) -> vec4<f32> {
-    let magnified = lod <= 0.0;
-    let linear = select(((state >> 7u) & 1u) == 1u, ((state >> 6u) & 1u) == 1u, magnified);
-    let mip = (state >> 8u) & 3u;
-    let top = f32(textureNumLevels(t) - 1u);
-    if (magnified) {
-        return filtered(t, uv, 0, linear, state);
-    }
-    let level = clamp(lod, 0.0, top);
-    if (mip == 1u) {
-        return filtered(t, uv, i32(floor(level + 0.5)), linear, state);
-    }
-    let low = floor(level);
-    let high = min(low + 1.0, top);
-    return mix(
-        filtered(t, uv, i32(low), linear, state),
-        filtered(t, uv, i32(high), linear, state),
-        level - low,
+fn fragment_main(fragment: SpriteFragment) -> @location(0) vec4<f32> {
+    let horizontal = dpdx(fragment.texcoord);
+    let vertical = dpdy(fragment.texcoord);
+    let source = read_sprite(
+        fragment.texcoord,
+        fragment.cell,
+        fragment.sampling,
+        horizontal,
+        vertical,
     );
-}
-
-fn lod_of(t: texture_2d<f32>, dx: vec2<f32>, dy: vec2<f32>) -> f32 {
-    let size = vec2<f32>(textureDimensions(t, 0));
-    let a = dx * size;
-    let b = dy * size;
-    return 0.5 * log2(max(dot(a, a), dot(b, b)));
-}
-
-// buttonstate's timed Over (k 4, +) and Down (k 16, -) shade.
-fn timed(c: vec4<f32>, since: f32, k: f32, sign: f32) -> vec4<f32> {
-    var t = 0.9 - saturate(since * k);
-    t = t * t;
-    t = 0.9 * 0.9 - t;
-    return vec4<f32>(c.rgb + sign * (0.5 + c.rgb) * (vec3<f32>(0.15) * t), c.a);
-}
-
-fn sprite(in: ExactOut, p: u32, lods: vec3<f32>) -> vec4<f32> {
-    let s0 = in.samplers & 1023u;
-    let s5 = (in.samplers >> 20u) & 1023u;
-    var offset = in.offsets.xy;
-    if (((p >> 5u) & 1u) == 1u) {
-        offset = vec2<f32>(in.offsets.x, 0.0);
-    }
-    let uv = in.uv + offset;
-    var c = sample_slot(slot0, uv, s0, lods.x);
-    if (((p >> 4u) & 1u) == 1u) {
-        let next = sample_slot(slot0, in.uv + in.offsets.zw, s0, lods.x);
-        c = mix(c, next, in.inputs.y);
-    }
-    if (((p >> 6u) & 1u) == 1u) {
-        let grey = dot(c.rgb, vec3<f32>(0.212671, 0.715160, 0.072169));
-        c = vec4<f32>(grey, grey, grey, c.a);
-    }
-    if (((p >> 14u) & 1u) == 1u) {
-        var at = uv;
-        if (((p >> 15u) & 1u) == 1u) {
-            at = in.mask_uv;
-        }
-        c.a = c.a * sample_slot(slot5, at, s5, lods.z).a;
-    }
-    if (((p >> 12u) & 1u) == 1u) {
-        let t = in.inputs.y;
-        c = c * (min(t / 0.05, 1.0) * min((1.0 - t) / 0.1, 1.0));
-    }
-    if (((p >> 7u) & 1u) == 1u) {
-        c = c * in.color;
-    }
-    switch (p >> 8u) & 7u {
-        case 1u: {
-            c = timed(c, in.inputs.x, 4.0, 1.0);
-        }
-        case 2u: {
-            c = timed(c, in.inputs.x, 16.0, -1.0);
-        }
-        case 3u: {
-            c = c + vec4<f32>(0.1, 0.1, 0.1, 0.0);
-        }
-        case 4u: {
-            c = c - vec4<f32>(0.1, 0.1, 0.1, 0.0);
-        }
-        case 5u: {
-            c = vec4<f32>(c.rgb + (0.5 + c.rgb) * 0.15, c.a);
-        }
-        case 6u: {
-            c = vec4<f32>(c.rgb - (0.5 + c.rgb) * 0.15, c.a);
-        }
-        default: {}
-    }
-    if (((p >> 11u) & 1u) == 1u) {
-        c = c * in.color;
-    }
-    if (((p >> 13u) & 1u) == 1u) {
-        c.a = 1.0;
-    }
-    return c;
-}
-
-// The start, middle and stop thirds of the first texture (progress_startend, _reverse).
-fn thirds(uv: vec2<f32>, state: f32, s0: u32, lod: f32) -> vec4<f32> {
-    var start = uv;
-    start.y = start.y / 3.0;
-    start.y = start.y + 1.0 / 3.0;
-    var middle = start;
-    middle.y = middle.y + 1.0 / 3.0;
-    var stop = middle;
-    stop.y = stop.y + 1.0 / 3.0;
-    stop.x = stop.x + 1.0 - state;
-    let a = sample_slot(slot0, start, s0, lod);
-    let m = sample_slot(slot0, middle, s0, lod);
-    let z = sample_slot(slot0, stop, s0, lod);
-    var c = mix(m, a, a.a);
-    c = mix(c, z, z.a);
-    c.a = m.a;
-    return c;
-}
-
-fn progress(in: ExactOut, p: u32, lods: vec3<f32>) -> vec4<f32> {
-    let texture = ((p >> 4u) & 1u) == 1u;
-    let variant = (p >> 6u) & 7u;
-    var uv = in.uv;
-    if (((p >> 5u) & 1u) == 1u) {
-        uv.y = -uv.y;
-    }
-    let state = in.inputs.z;
-    let s0 = in.samplers & 1023u;
-    let s1 = (in.samplers >> 10u) & 1023u;
-    let x = uv.x;
-    switch variant {
-        case 1u: {
-            let first = x >= 1.0 - state;
-            if (!texture) {
-                return select(in.second, in.color, first);
-            }
-            if (first) {
-                return thirds(uv, state, s0, lods.x);
-            }
-            return sample_slot(slot1, uv, s1, lods.y);
-        }
-        case 2u: {
-            let first = x <= state;
-            if (!texture) {
-                return select(in.second, in.color, first);
-            }
-            if (first) {
-                return thirds(uv, state, s0, lods.x);
-            }
-            return sample_slot(slot1, uv, s1, lods.y);
-        }
-        case 3u: {
-            if (!texture) {
-                let front = (x <= 0.5 && x <= state) || (x >= 0.5 && x >= state);
-                return select(in.second, in.color, front);
-            }
-            let front = (x < 0.5 && x >= state) || (x >= 0.5 && x <= state);
-            if (front) {
-                return sample_slot(slot0, uv, s0, lods.x);
-            }
-            return sample_slot(slot1, uv, s1, lods.y);
-        }
-        case 4u: {
-            if (!texture) {
-                return select(in.second, in.color, x <= state);
-            }
-            let diff = vec2<f32>(0.5) - uv;
-            let angle = atan2(diff.x, diff.y) + 3.14159265;
-            let t = saturate((angle - state * 3.14159265 * 2.0) * 50.0);
-            return mix(
-                sample_slot(slot0, uv, s0, lods.x),
-                sample_slot(slot1, uv, s1, lods.y),
-                t,
-            );
-        }
-        default: {
-            let first = x <= state;
-            if (!texture) {
-                return select(in.second, in.color, first);
-            }
-            if (first) {
-                return sample_slot(slot0, uv, s0, lods.x);
-            }
-            return sample_slot(slot1, uv, s1, lods.y);
-        }
-    }
-}
-
-@fragment
-fn exact_fragment(in: ExactOut) -> @location(0) vec4<f32> {
-    // Derivatives before any branch on the quad's own program.
-    let dx = dpdx(in.uv);
-    let dy = dpdy(in.uv);
-    let lods = vec3<f32>(lod_of(slot0, dx, dy), lod_of(slot1, dx, dy), lod_of(slot5, dx, dy))
-        + in.lod_bias.xyz;
-    // A masked flag's slot 0 is read at `FlagCoords.xy + uv * FlagCoords.zw`.
-    let flag_uv = in.offsets.xy + in.uv * in.offsets.zw;
-    let flag_lod = lod_of(slot0, dpdx(flag_uv), dpdy(flag_uv)) + in.lod_bias.x;
-    // circularprogressbar.shader reads both slots at half the vertex coordinate, flipped.
-    var circle = (in.uv - vec2<f32>(0.5)) * 0.5 + vec2<f32>(0.25);
-    circle.y = 1.0 - circle.y;
-    let circle_lods = vec3<f32>(
-        lod_of(slot0, dpdx(circle), dpdy(circle)),
-        lod_of(slot1, dpdx(circle), dpdy(circle)),
-        0.0,
-    ) + in.lod_bias.xyz;
-    switch in.pixel & 15u {
-        case 1u: {
-            return progress(in, in.pixel, lods);
-        }
-        case 3u: {
-            // maskedflag.shader: the flag at `FlagCoords.xy + uv * FlagCoords.zw` (carried in
-            // `offsets`), the mask's alpha at `uv`.
-            var c = sample_slot(slot0, flag_uv, in.samplers & 1023u, flag_lod);
-            c.a = sample_slot(slot1, in.uv, (in.samplers >> 10u) & 1023u, lods.y).a;
-            switch (in.pixel >> 4u) & 3u {
-                case 1u: {
-                    c = vec4<f32>(c.rgb + vec3<f32>(0.1), c.a);
-                }
-                case 2u: {
-                    c = vec4<f32>(c.rgb - vec3<f32>(0.1), c.a);
-                }
-                case 3u: {
-                    let grey = dot(c.rgb, vec3<f32>(0.212671, 0.715160, 0.072169));
-                    c = vec4<f32>(grey, grey, grey, c.a);
-                }
-                default: {}
-            }
-            return c;
-        }
-        case 4u: {
-            // circularprogressbar.shader: `lerp(TextureOne, TextureTwo, vTextureToRender.x)` at
-            // `circle - 0.5`, the sector carried in `inputs.z`.
-            let at = circle - vec2<f32>(0.5);
-            let one = sample_slot(slot0, at, in.samplers & 1023u, circle_lods.x);
-            let two = sample_slot(slot1, at, (in.samplers >> 10u) & 1023u, circle_lods.y);
-            return mix(one, two, in.inputs.z);
-        }
-        case 2u: {
-            // text.shader: the vertex program forms `vColor * ModColor`; the pixel program
-            // multiplies the glyph texel by it.
-            return sample_slot(slot0, in.uv, in.samplers & 1023u, lods.x) * (in.color * in.second);
-        }
-        default: {
-            return sprite(in, in.pixel, lods);
-        }
-    }
+    return shade_sprite(source, fragment.tint, fragment.shade);
 }
 "#;
 
-/// The quad colour that draws a sprite in the GUI's disabled state (`buttonstate.shader`'s
-/// `PixelShaderDisable`, luminance weights `0.212671, 0.715160, 0.072169`); the negative alpha is
-/// the flag and its magnitude the multiplier.
+/// Disabled-state tint: negative alpha selects luminance greyscale, its magnitude the opacity.
 pub const DISABLED: [f32; 4] = [1.0, 1.0, 1.0, -1.0];
 
 #[cfg(test)]
@@ -2340,6 +1703,8 @@ mod tests {
 
     #[test]
     fn counter_sheet_uses_the_native_texture_decoder_and_client_setting() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "hoi4_counter_native_texture_{}",
             std::process::id()
@@ -2384,7 +1749,7 @@ mod tests {
 
     #[test]
     fn frames_slice_the_strip_evenly() {
-        // `GFX_onmap_victorypoints_strip`: 580 x 27, 20 frames of 29 x 27.
+        // Twenty frames of 29 by 27 pixels share one strip.
         let vp = strip(20, 580);
         assert_eq!(vp.frame_size(), [29.0, 27.0]);
         assert_eq!(vp.frame_uv(0), [0.0, 0.0, 29.0 / 580.0, 1.0]);
@@ -2395,7 +1760,7 @@ mod tests {
 
     #[test]
     fn a_strip_that_does_not_divide_evenly_keeps_the_authored_pitch() {
-        // `mapicon_building_navalbase.dds` is 301 wide with 11 frames.
+        // A fractional frame pitch retains the full strip extent.
         let naval = strip(11, 301);
         assert_eq!(naval.frame_size()[0], 27.0);
         assert_eq!(naval.frame_uv(10), [10.0 / 11.0, 0.0, 1.0, 1.0]);
@@ -2405,6 +1770,8 @@ mod tests {
 
     #[test]
     fn layer_keys_stay_distinct_and_ordered_past_62500_icons() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         // The old `priority * 1_000_000 + icon * 16 + child` key made icon
         // 62,500 of priority 5 equal to priority 6's first key.
         assert_ne!(layer(5, 62_500, 0), layer(6, 0, 0));

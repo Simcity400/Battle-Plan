@@ -30,17 +30,15 @@ impl From<&'static str> for CountrySetError {
     }
 }
 
-/// Read both sides' primary (+0x38) and secondary (+0x50) country sets in native
-/// order, raw tags and aliases kept. `1413CEBE0` tests the primary sets for shared
-/// vision and the secondary sets for the viewer itself; `1418AEDE0` tests both
-/// defender sets for shared vision to mirror the marker. A set holds at most one node per country
-/// plus tag 0 (`1413CC0D0` appends only absent tags), so `max_len` is the live
-/// country count plus one. Capacity is checked before any node is followed.
+/// Read primary (+0x38) and secondary (+0x50) country sets in stored order,
+/// keeping raw tags and aliases. Primary sets select shared vision and
+/// secondary sets the viewer; defender markers check both for shared vision.
+/// Insertion keeps at most one node per country plus tag zero, so `max_len`
+/// is the live country count plus one. Check capacity before following nodes.
 ///
-/// The marker's own operands are read here too, so a failure elsewhere in the
-/// window's context never hides a marker: the combat's `+0x98` indicator byte
-/// and each side's `+0x08` flag word (`1418B4BD0`). Each side's flag word and
-/// both set headers (`+0x08..+0x64`) are one read.
+/// Read marker operands independently of other window context: combat +0x98
+/// indicator byte and side +0x08 flag words. Each side flag and both set
+/// headers at +0x08..+0x64 use one read.
 pub fn read_country_sets(
     memory: &impl Memory,
     base: usize,
@@ -57,7 +55,7 @@ pub fn read_country_sets(
     )
 }
 
-/// 1413CC0D0's four list counts reserve the complete worker arena before nodes.
+/// The four original list counts reserve the complete worker arena before nodes.
 pub fn read_country_sets_buffer(
     memory: &impl Memory,
     base: usize,
@@ -129,9 +127,8 @@ pub fn read_country_sets_buffer(
             if prev != previous || (last && (node != tail || next != 0)) || (!last && next == 0) {
                 return Err("land country-set node links inconsistent".into());
             }
-            // 1413CC0D0 keeps each set distinct (and the secondary positive)
-            // when it inserts; reading a set checks no more than the game's
-            // own readers do, only that its links hold together.
+            // Insertion keeps sets distinct and secondary tags positive. Reading
+            // checks linked-list integrity without adding stricter value constraints.
             tags[used] = tag;
             used += 1;
             previous = node;

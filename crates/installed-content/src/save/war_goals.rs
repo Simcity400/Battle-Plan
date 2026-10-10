@@ -1,4 +1,4 @@
-//! CWarGoal::Serialize@1415CE720 -> goal data@1415CE460.
+//! Saved war-goal references and their goal data.
 use super::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -7,7 +7,7 @@ pub struct WarGoal {
     pub recipient: Vec<u8>,
     pub kind: Vec<u8>,
     pub states: Vec<u32>,
-    /// Goal+0x60, saved as liberate (0x30D0), in native order.
+    /// Countries saved as `liberate`, in stored order.
     pub countries: Vec<Vec<u8>>,
 }
 pub(super) fn references(items: &[Item], key: &[u8]) -> io::Result<Vec<u64>> {

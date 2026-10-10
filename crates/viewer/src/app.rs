@@ -352,7 +352,7 @@ struct Uploaded {
 /// the panel and left the map one pixel tall.
 const WARNING_SHARE: f32 = 0.4;
 
-/// Reserve last frame's measured warning content before sizing the map (owner 2026-10-07).
+/// Reserve last frame's measured warning content before sizing the map.
 fn reserve_warnings(ui: &mut egui::Ui, measured: f32) -> egui::Rect {
     let height = measured.min(ui.available_height() * WARNING_SHARE).max(0.0);
     let size = egui::vec2(ui.available_width(), height);
@@ -949,11 +949,13 @@ impl Viewer {
         }
     }
 
-    fn configure_service(&self) {
-        if let Some(embedded) = &self.embedded {
-            embedded
+    fn configure_service(&mut self) {
+        if let Some(embedded) = &self.embedded
+            && let Err(error) = embedded
                 .service()
-                .configure_content(&self.config, self.options.allow_unverified);
+                .configure_content(&self.config, self.options.allow_unverified)
+        {
+            self.error = Some(format!("Game tables: {error}"));
         }
     }
 
@@ -1000,15 +1002,17 @@ impl Viewer {
     fn create(
         config: Config,
         options: Options,
-        error: Option<String>,
+        mut error: Option<String>,
         failure: Arc<Mutex<Option<String>>>,
         embedded: Option<crate::embedded::Controller>,
         gpu: Option<(wgpu::Device, wgpu::Queue)>,
     ) -> Self {
-        if let Some(embedded) = &embedded {
-            embedded
+        if let Some(embedded) = &embedded
+            && let Err(tables_error) = embedded
                 .service()
-                .configure_content(&config, options.allow_unverified);
+                .configure_content(&config, options.allow_unverified)
+        {
+            error = Some(format!("Game tables: {tables_error}"));
         }
         // capture: `--window-dump` arms the readback before the first frame, so
         // every frame it draws is a capture frame and the animation clock never
@@ -2370,8 +2374,7 @@ impl Viewer {
         // than at the size the panels left over, so the frame it writes does not
         // depend on this display's scale factor or on where the warning area
         // wrapped. Match game renders into the game's framebuffer pixel space
-        // before presenting its completed image at the desktop stretch
-        // (CGraphics::InitializeDevice@142224600, projection@1422206C0).
+        // before presenting its completed image at the desktop stretch.
         let pixels = match pinned {
             Some((size, _)) => size,
             None => raster.target([
@@ -2421,7 +2424,7 @@ impl Viewer {
             .as_ref()
             .and_then(|capture| capture.time)
             .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
-        // Hit tests and drawing use the same GUI clock (CGraphics+0x32590).
+        // Hit tests and drawing use the same GUI clock.
         let combat_geometry = self
             .combat
             .draw(
@@ -2563,7 +2566,7 @@ impl Viewer {
             }
         }
         // Playing, the raid units move every rendered frame by the playback
-        // fraction, the tick's progress `UpdateUnitMovement@141CD7750` reads
+        // fraction, the tick's progress read by movement updates
         // each frame; paused, they stand where the hour's start put them.
         // Only they move within the hour: the figures and ships stay uploaded.
         let tick = if self.playing {
@@ -2645,7 +2648,7 @@ impl Viewer {
             // share with a headless frame, so a capture frame renders at 0, the
             // still frame `--dump` renders, or at its explicit sequence clock. The
             // window runs one presentation clock: the map scene and the map-icon
-            // windows' GUI clock (`Time`, `CGraphics+0x32590`) share it.
+            // windows' GUI clock (`Time`) share it.
             // A background flag or portrait load repaints the window, which then
             // lays the overlay out again with what it decoded.
             if !document.icons.lazy.has_wake() {
@@ -2762,7 +2765,7 @@ impl Viewer {
             }
             laps.lap("overlay_prepare");
             // The frame's province schedule, advanced before its map icons read the dirty bits
-            // (`CGraphicalMap::update` runs before `CMapIconManagerImpl::update`); the scene's
+            // (province updates precede map-icon updates); the scene's
             // render takes it.
             if let Some(scene) = self.scene.as_mut() {
                 scene.share_province_schedule(self.counter_view.presentation.schedule());
@@ -2795,7 +2798,7 @@ impl Viewer {
                 self.overlay_fraction = Some(document.hour_fraction);
             }
             // A fading map-icon window is laid out on the next frame; native ticks every
-            // window each frame (UpdateTransitions@1422AF9F0).
+            // window each frame.
             if self.counter_view.presentation.take_running() {
                 self.overlay_at = None;
                 ui.ctx().request_repaint();
@@ -3687,6 +3690,8 @@ pub(crate) mod tests {
 
     #[test]
     fn task_force_children_outside_the_plate_keep_its_priority_and_block_unknown_hit_forms() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use map::{
             counter_tooltips::task_force::{Control, Hover},
             sprites::layer,

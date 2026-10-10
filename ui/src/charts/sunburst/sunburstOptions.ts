@@ -1,4 +1,4 @@
-/** The settings every sunburst offers (spec 2.4, mock-up style-3): growth, slice
+/** The settings every sunburst offers: growth, slice
  * labels, the side legend, the breadcrumb and hover dimming, all on by default
  * except Fill. A sunburst widget lists `SUNBURST_OPTIONS` among its own, adds a
  * toggle per level of its hierarchy with `levelOption`, and reads them with

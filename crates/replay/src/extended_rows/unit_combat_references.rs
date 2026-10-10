@@ -1,5 +1,5 @@
 //! Unit-owned ordered combat references, sampled once with existing motion.
-//! This is CUnit+1A8/+1B4, not a saved combat-side membership reconstruction.
+//! Stored unit combat references and count, independent of saved combat-side membership.
 use super::*;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -1,5 +1,5 @@
 //! Child allocation object reached through CStateGarrisonData's child vector.
-//! Its native class and RTTI are not established by the old alert reader.
+//! This layout does not authenticate the child's concrete class.
 
-/// Garrison child embedded equipment allocation pool; old a729_garrison_alert.rs:307-315 reads its 24-byte archetype/amount rows.
+/// Garrison child embedded equipment allocation pool.
 pub const EQUIPMENT_POOL: usize = 0x38;

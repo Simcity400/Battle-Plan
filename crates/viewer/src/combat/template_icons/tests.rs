@@ -151,7 +151,7 @@ fn the_occupier_badge_needs_a_committed_occupying_opponent_and_a_bonus() {
     );
 }
 
-/// 1415CA660 shows frame 14 when any opposing committed unit qualifies:
+/// the game shows frame 14 when any opposing committed unit qualifies:
 /// a later occupying opponent decides although an earlier opponent's
 /// owner is unknown; without one, the first unknown opponent is named.
 #[test]
@@ -228,7 +228,7 @@ fn the_core_badge_compares_the_location_cores_through_country_links() {
     assert_eq!(inputs.contains(&[99, 7], 5), Ok(true));
 }
 
-/// 140C79AC0 is exactly `origin == 2`: any other recorded origin, 0 and
+/// the game is exactly `origin == 2`: any other recorded origin, 0 and
 /// 1 or outside 0..=2, is not exiled, so the entry flies the division's
 /// owner flag and neither badge is drawn.
 #[test]

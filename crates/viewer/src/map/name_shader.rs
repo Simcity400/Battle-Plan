@@ -1,4 +1,4 @@
-//! Country-name submission141637D20, font groups1422860E0, forced raster140B48E50.
+//! Country-name submission, font groups, forced raster.
 use eframe::wgpu;
 use installed_content::{
     ResolvedLayers,
@@ -98,7 +98,7 @@ impl Names {
             attributes,
         }];
         let raster = RasterizerState {
-            // 14125DDB3: arrow labels retain the manager's cull-none raster.
+            // arrow labels retain the manager's cull-none raster.
             cull_mode: if arrow_technique.is_some() {
                 0
             } else {
@@ -140,7 +140,7 @@ impl Names {
         alpha_offset: [f32; 2],
         page: &wgpu::TextureView,
     ) -> io::Result<gpu::Bindings> {
-        // 141637D20 initializes all16 bytes and binds b0/b1 to both stages.
+        // Initialize all16 bytes and binds b0/b1 to both stages.
         let b1 = [alpha_offset[0], alpha_offset[1], 0., 0.];
         let buffers = BTreeMap::from([
             (binding(0, Stage::Vertex), frame.to_vec()),

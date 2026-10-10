@@ -1,14 +1,11 @@
-//! Manpower-value entry used by division training, deployment and garrison walks.
-//!
-//! These readers use the same eight-byte layout with an i32 count at +4.
-//! 140C5B350 losses, 140C5B0D0 SetCountryAmount and 140C5B610 serializer
-//! prove the same country-reference/signed-amount representation in divisions.
+//! Manpower-value entry used by division training, deployment and garrison
+//! walks. Each eight-byte entry holds a country reference and signed i32 amount.
 
-/// Loss walker 140C5B350 and serializer 140C5B610 advance eight bytes.
+/// Manpower-value entry stride.
 pub const STRIDE: usize = 0x08;
-/// 140C5B0D0 writes a four-byte country reference at 0; 140C5B610 saves it as tag.
+/// Four-byte country reference, serialized as a tag.
 pub const SOURCE_COUNTRY_LINK: usize = 0x00;
-/// 140C5B0D0 stores amount at 4; 140C5B350 uses signed dword losses and 140C5B610 only saves amounts greater than 0.
+/// Signed i32 amount; serialization includes only positive amounts.
 pub const COUNT: usize = 0x04;
 
 use crate::{Memory, carmy_manpower_values, cpdx_array::Array, read};

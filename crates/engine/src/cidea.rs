@@ -1,12 +1,12 @@
-//! CIdea definition. Offsets here use the complete object's primary base.
-//! The old reader also accepted the secondary vtable without adjusting the token base;
-//! that path is retained as a known uncertainty, not a second valid token offset.
+//! CIdea definition uses the complete primary base. Accepting a secondary
+//! vtable without adjusting that base does not establish another valid
+//! token offset.
 
-/// CIdea primary vtable, confirmed by pinned-exe RTTI; old offsets.rs:62.
+/// Idea primary vtable.
 pub const VTABLE_RVA: usize = 0x0296_a9b0;
-/// CIdea secondary vtable, confirmed by pinned-exe RTTI with complete-object offset 0x10; old offsets.rs:63.
+/// Idea secondary vtable at complete-object displacement +0x10.
 pub const SECONDARY_VTABLE_RVA: usize = 0x0296_aa00;
-/// CIdea secondary-subobject displacement from primary, confirmed by the pinned RTTI complete-object locator.
+/// Idea secondary-subobject displacement from primary.
 pub const SECONDARY_BASE: usize = 0x10;
-/// CIdea token std::string at primary +0x18; old cached_idea_token and domain47_idea_token read it.
+/// CIdea token std::string at primary +0x18.
 pub const TOKEN: usize = 0x18;

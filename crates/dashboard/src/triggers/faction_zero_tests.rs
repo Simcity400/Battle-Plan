@@ -32,6 +32,8 @@ fn faction_frame() -> DecodedFrame {
 
 #[test]
 fn faction_leader_raw_zero_is_empty_at_the_context_mask_in_flat_and_graph_paths() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = faction_frame();
     *frame.tables[TableId::WarRelations.index()] = TableView::Unavailable {
         reason: "masked operand must not be reached".into(),
@@ -86,6 +88,8 @@ fn faction_leader_raw_zero_is_empty_at_the_context_mask_in_flat_and_graph_paths(
 
 #[test]
 fn only_known_clearing_carriers_use_the_reserved_faction_fallback() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = faction_frame();
     if let TableView::Complete(TableRows::FactionMembers(rows)) =
         &mut *frame.tables[TableId::FactionMembers.index()]
@@ -153,6 +157,8 @@ fn only_known_clearing_carriers_use_the_reserved_faction_fallback() {
 
 #[test]
 fn faction_leader_predicate_does_not_compare_raw_zero_by_canonical_identity() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = faction_frame();
     // Synthetic positive event-word alias to actual canonical0; its carrier
     // remains country-valid. This is distinct from a fresh raw0 setter.

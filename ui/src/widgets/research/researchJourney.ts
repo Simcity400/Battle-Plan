@@ -14,7 +14,7 @@ export interface ResearchJourneyPeriod extends ResearchPeriod {
   paused?: boolean;
 }
 
-/** ECE4F0 applies and refunds saved days at the SLOT'S stored assignment rate,
+/** Saved days are applied and refunded at the slot's stored assignment rate,
  * not the rate recalculated at the later playback hour. */
 export function savedResearchCredit(state: ResearchSlotState): bigint | null {
   const days = BigInt(state.appliedDaysRaw), speed = BigInt(state.speedMultiplierRaw);

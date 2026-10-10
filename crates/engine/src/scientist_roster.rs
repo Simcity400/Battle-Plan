@@ -1,23 +1,19 @@
-//! Scientist roster: the +0xa0 vector of the CCountryCharacters object at `CCountry +0xff0` (`ccountry_characters.rs`).
-//!
-//! Sources: `scientists_live_lane/src/lib.rs:9-12` and archived collector
-//! `scientist_pins_from_country_object`. No vtable guard identifies this root,
-//! so the walk authenticates what it can prove instead: the country roster
-//! itself, each entry's CCharacter vtable and reference type, and each
-//! character's CScientist vtable. The roster's own object identity remains
-//! unproved and is recorded as such in [archived domain index](#).
+//! Scientist roster at +0xa0 of the country-character object selected by
+//! country +0xff0. No vtable guard identifies the root. The walk authenticates
+//! the country roster, each character vtable and reference type, and each
+//! scientist vtable. The roster root's own identity remains unestablished.
 
 use crate::{
     Memory, ccharacter, ccountry, cpdx_array::Array, cscientist, read, scientist_roster_entry,
     scientist_skill_entry, walk::Outcome,
 };
 
-/// Scientist roster +0xa0 wrapper-pointer array data; read by collector and standalone scientist lane.
+/// Wrapper-pointer array data at roster +0xa0.
 pub const ENTRIES: usize = 0xa0;
-/// Scientist roster +0xa8 wrapper capacity u32; no writer names it, so it is only the position the engine's
-/// uniform data/capacity/count vector header puts between the +0xa0 data pointer and the +0xac count.
+/// Wrapper capacity, u32, between the +0xa0 data pointer and +0xac count
+/// in the data/capacity/count header.
 pub const CAPACITY: usize = 0xa8;
-/// Scientist roster +0xac wrapper count; old SCIENTIST_ROSTER_VECTOR_COUNT +0x0c is vector-relative.
+/// Wrapper count at roster +0xac.
 pub const COUNT: usize = 0xac;
 
 /// One country roster entry and the scientist state of its character.
@@ -42,11 +38,11 @@ pub struct Row {
 pub struct SkillRow {
     pub character: u32,
     pub ordinal: u32,
-    /// Full native u32 specialization token; the archived readers kept only its low half.
+    /// Full specialization token, u32.
     pub token: u32,
     /// Native signed level; zero is a real level, never an absence.
     pub level: i32,
-    /// Native signed experience at record +0x10, which no archived reader read.
+    /// Signed experience at record +0x10, independent of level.
     pub experience_raw: i64,
 }
 
@@ -131,9 +127,9 @@ impl Count {
     }
 }
 
-/// Walks every canonical country's scientist roster once. A null roster pointer
-/// is the engine's own "this country has no roster object" and contributes no
-/// rows; an unreadable or invalid one fails both tables with its reason.
+/// Walks every canonical country's scientist roster once. A null roster
+/// pointer contributes no rows; an unreadable or invalid roster fails both
+/// tables with its reason.
 pub fn walk(
     memory: &impl Memory,
     base: usize,

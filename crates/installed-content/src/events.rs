@@ -1,4 +1,4 @@
-//! Native CEvent and option tooltip content (1413D69D0/1413832F0), through the recorded stack.
+//! Event and option tooltip content through the recorded stack.
 use crate::{
     ResolvedContent, ResolvedLayers,
     key_names::KeyNames,
@@ -20,13 +20,13 @@ pub struct Event {
     pub titles: Vec<Item>,
     pub immediate: Vec<Item>,
     pub options: Vec<Vec<Item>>,
-    /// CEventOption+0x178 strings in the same native order as `options`.
+    /// Option-name strings in the same order as `options`.
     pub option_names: Vec<Vec<u8>>,
     pub refused: Option<String>,
 }
 
 impl Event {
-    // CTriggeredText::vf4 14116C100: text/key share the last string field.
+    // Text and key share the last string field.
     fn title_key(item: &Item) -> &[u8] {
         crate::parser::c_string(
             item.value
@@ -44,8 +44,8 @@ impl Event {
         )
     }
 
-    /// 14116C180 returns its sole candidate before evaluating its trigger.
-    /// Without a caller evaluator, multiple candidates remain a named refusal.
+    /// A sole candidate bypasses its trigger. Without an evaluator, multiple
+    /// candidates remain a named refusal.
     pub fn sole_title_key(&self) -> Result<Option<&[u8]>, String> {
         match self.titles.as_slice() {
             [] => Ok(None),
@@ -54,16 +54,16 @@ impl Event {
                 Ok((!key.is_empty()).then_some(key))
             }
             _ => Err(format!(
-                "{} event {} has multiple title candidates; 14116C180 selects with an unrecorded high-resolution seed",
+                "{} event {} has multiple title candidates; title selection needs an unrecorded high-resolution seed",
                 self.source,
                 String::from_utf8_lossy(&self.id)
             )),
         }
     }
 
-    /// 14116C180 bypasses a sole candidate's trigger, otherwise evaluates
-    /// all candidates and falls back to the first when none pass. Only
-    /// differing eligible keys depend on the transient performance-clock seed.
+    /// A sole candidate bypasses its trigger. Otherwise evaluate all candidates
+    /// and fall back to the first when none pass. Differing eligible keys need
+    /// the transient selection seed.
     pub fn deterministic_title_key(
         &self,
         mut matches: impl FnMut(&[Item]) -> Result<bool, String>,
@@ -76,8 +76,7 @@ impl Event {
         }
         let mut eligible = Vec::new();
         for item in &self.titles {
-            // CTrigger::LoadBody 1405431C0 appends each authored block to
-            // the candidate's CAndTrigger (+0x28), in declaration order.
+            // Append each trigger block to the candidate's AND trigger in order.
             let triggers: Vec<_> = item
                 .value
                 .items()
@@ -97,7 +96,7 @@ impl Event {
             .unwrap_or_else(|| Self::title_key(first));
         if eligible.iter().any(|candidate| *candidate != key) {
             return Err(format!(
-                "{} event {} has different eligible title keys; 14116C180 selects with an unrecorded high-resolution seed",
+                "{} event {} has different eligible title keys; title selection needs an unrecorded high-resolution seed",
                 self.source,
                 String::from_utf8_lossy(&self.id)
             ));
@@ -120,18 +119,18 @@ enum Node {
     Mtth,
 }
 
-/// 1401F03A0 compares namespace names without case; 1424B8700 reduces
-/// signed bytes with wrapping arithmetic, without digit validation.
+/// Namespace names compare without case. Suffixes reduce signed bytes
+/// with wrapping arithmetic and no digit validation.
 pub fn identifier_key(id: &[u8]) -> Result<Vec<u8>, String> {
     let id = crate::parser::c_string(id);
     let dot = id.iter().rposition(|byte| *byte == b'.').ok_or_else(|| {
         format!(
-            "event {} has no namespace; 1401F03A0 cannot resolve it",
+            "event {} has no namespace; event lookup cannot resolve it",
             String::from_utf8_lossy(id)
         )
     })?;
     if dot == 0 {
-        return Err("event namespace is empty (1401F03A0)".into());
+        return Err("event namespace is empty".into());
     }
     let suffix = id[dot + 1..].iter().fold(0_i32, |value, byte| {
         value
@@ -141,7 +140,7 @@ pub fn identifier_key(id: &[u8]) -> Result<Vec<u8>, String> {
     });
     if !(0..100_000).contains(&suffix) {
         return Err(format!(
-            "event {} suffix {suffix} crosses a native namespace slot; registration order is unavailable (1401F03A0)",
+            "event {} suffix {suffix} crosses a native namespace slot; registration order is unavailable",
             String::from_utf8_lossy(id)
         ));
     }
@@ -157,7 +156,7 @@ impl Events {
         let dot = key.iter().rposition(|byte| *byte == b'.').unwrap();
         if !self.namespaces.contains(&key[..dot]) {
             return Err(format!(
-                "event {} namespace is not registered through add_namespace (1401F03A0)",
+                "event {} namespace is not registered through add_namespace",
                 String::from_utf8_lossy(id)
             ));
         }
@@ -171,10 +170,9 @@ impl Events {
     }
 }
 
-/// CEvent::ReadToken@14116BDB0 retains option order and delegates immediate
-/// to CEffect::ReadScript. CEventOption::vf4@1415279D0 delegates other keys to
-/// the effect reader; metadata is not an effect. Unknown descriptions remain
-/// named at the consumer, while native effect parsing still consumes exactly.
+/// Event options retain order; immediate and option effect fields use the
+/// shared effect reader. Metadata is separate. Unknown descriptions remain
+/// named refusals while effect parsing retains its exact consumption.
 pub fn parse(bytes: &[u8], source: &str, names: &KeyNames) -> Events {
     read_events(bytes, names, None).selected(source)
 }
@@ -196,7 +194,7 @@ fn read_events(bytes: &[u8], names: &KeyNames, wanted: Option<&BTreeSet<usize>>)
     let mut lines = Vec::new();
     let read = native::read(
         bytes,
-        native::Mode::SkipMark, // Event file lexer mode 1, 140A03E00.
+        native::Mode::SkipMark, // Event-file lexer mode 1.
         native::Top::File(Node::File),
         Some(names),
         &mut |node, field| match node {
@@ -206,9 +204,7 @@ fn read_events(bytes: &[u8], names: &KeyNames, wanted: Option<&BTreeSet<usize>>)
                     | b"news_event"
                     | b"state_event"
                     | b"unit_leader_event"
-                    // 140A01920 token 0x4B41 constructs the same CEvent
-                    // (140A01E53, mask 8; chrome store 140A01E60), read by
-                    // 14116B730 / 14116BDB0, with no subtype token reader.
+                    // Operative-leader events use the shared reader without subtype fields.
                     | b"operative_leader_event",
                 ) => {
                     let ordinal = lines.len();
@@ -230,8 +226,7 @@ fn read_events(bytes: &[u8], names: &KeyNames, wanted: Option<&BTreeSet<usize>>)
                 Some(b"id") => Shape::One,
                 Some(b"title" | b"desc") if field.opens() => Shape::Object(Node::Title),
                 Some(b"title" | b"desc") => Shape::One,
-                // 14116BDB0 forwards CEvent+0x60 to ReadScript for both
-                // immediate (+0x380) and after (+0x310).
+                // Immediate and after effects use the event scope mask.
                 Some(b"immediate" | b"after") => scope.map_or(Shape::Effect, Shape::EffectIn),
                 Some(b"option") => Shape::Object(Node::Option(scope)),
                 Some(b"trigger" | b"show_major") => Shape::Trigger,
@@ -252,10 +247,8 @@ fn read_events(bytes: &[u8], names: &KeyNames, wanted: Option<&BTreeSet<usize>>)
                 Some(b"trigger") => Shape::Trigger,
                 Some(b"ai_chance") => Shape::Object(Node::Mtth),
                 _ => {
-                    // 14116A610 stores the event mask at option+0x8;
-                    // 1415279D0 passes it to ReadEffect at option+0x120.
-                    // This supplies direct fields only. Nested value readers
-                    // retain named scope refusals until scoped Object lands.
+                    // Option effects use the event scope mask. Direct fields are supported;
+                    // nested value readers retain named scoped-object refusals.
                     let field = native::Field {
                         effect_scope: scope.or(field.effect_scope),
                         ..*field
@@ -296,7 +289,7 @@ fn string_field<'a>(fields: &'a [Item], key: &str) -> &'a [u8] {
 }
 
 fn option_name(fields: &[Item]) -> &[u8] {
-    // CEventOption::vf4@1415279D0 uses ReadStringInto, including its LF check.
+    // Option names use string reads, including the line-feed check.
     crate::parser::read_string(string_field(fields, "name"))
 }
 
@@ -340,7 +333,7 @@ impl EventRead {
                     && (note.what.contains("parse scope unavailable")
                         || note.what.starts_with("Deferred effect `remove_unit_leader_role`"))
                 {
-                    format!("COperativeLeaderEventEffect needs the scoped-object parser helper for option+0x8 (1415279D0): {description}")
+                    format!("the operative-leader event effect needs the scoped-object parser helper for the option scope: {description}")
                 } else { description }
             }).collect();
         if !blockers.is_empty() {
@@ -578,8 +571,8 @@ impl Index {
             if let Ok(key) = identifier_key(string_field(fields, "id")) {
                 self.events.entry(key).or_default().push(reference.clone());
             }
-            // 140A01920 routes state events to manager+0x18/+0x24. The
-            // dependent-tooltip scan 1413833BE walks only manager+0/+0x0C.
+            // State events use a separate array; dependent-tooltip scanning
+            // visits the ordinary event array.
             if item.keyword_is("state_event") {
                 continue;
             }
@@ -589,8 +582,8 @@ impl Index {
                 .enumerate()
             {
                 let name = option_name(field.value.items().unwrap_or_default());
-                // 1415279D0 stores raw +0x178; 141383433/14138343D compares
-                // length and bytes, without country/event-id prefixes or folding.
+                // Raw option names compare length and bytes without country or event-ID
+                // prefixes and without case folding.
                 self.options
                     .entry(name.to_vec())
                     .or_default()
@@ -620,8 +613,8 @@ impl LazyEvents {
         if cache.index.is_none() {
             cache.index = Some((|| {
                 let mut index = Index::default();
-                // 1409FF340 joins prefetched files before registration;
-                // 140A01920 appends event pointers, including duplicate IDs.
+                // Prefetched files join before registration; duplicate event IDs
+                // retain separate references in registration order.
                 for path in self
                     .layers
                     .directory_files("events", ".txt")
@@ -743,7 +736,7 @@ impl LazyEvents {
             let dot = key.iter().rposition(|byte| *byte == b'.').unwrap();
             if !index.namespaces.contains(&key[..dot]) {
                 return Err(format!(
-                    "event {} namespace is not registered through add_namespace (1401F03A0)",
+                    "event {} namespace is not registered through add_namespace",
                     String::from_utf8_lossy(id)
                 ));
             }
@@ -765,7 +758,7 @@ impl LazyEvents {
                 return Ok(event);
             }
             // Preserve the existing ID-lookup refusal. Option lookup separately
-            // keeps every pointer in the native registration array (140A01920).
+            // keeps every pointer in the native registration array.
             let mut event = (*event).clone();
             event.refused = Some(format!(
                 "{}: repeated event identifier {}; native registration order is not reconstructed",
@@ -778,9 +771,9 @@ impl LazyEvents {
         result
     }
 
-    /// 1413832F0's raw option-name candidates, in registered event/option order.
-    /// The renderer skips candidates containing token 0x3FF4 before describing.
-    /// Empty, bare and non-normalizable event IDs do not affect this name scan.
+    /// Raw option-name candidates in registered event and option order.
+    /// The renderer skips candidates containing `event_option_tooltip` before describing.
+    /// Empty, bare, and non-normalizable event IDs do not alter this scan.
     pub fn options(&self, name: &[u8]) -> Result<Vec<(Arc<Event>, usize)>, String> {
         let name = crate::parser::c_string(name);
         let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());

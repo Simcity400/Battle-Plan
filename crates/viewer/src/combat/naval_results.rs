@@ -1,4 +1,4 @@
-//! Retained-result lists and hit details: 1417C7B10 / 1417C8D20.
+//! Retained naval-result lists and hit details.
 use super::{
     Values, Widget,
     binding::{Bindings, FLAG, Flags, SPRITE, TEXT, TextIcons, builtin, country_flag, hide, text},
@@ -19,7 +19,7 @@ use replay::{
 };
 use std::{collections::BTreeMap, io};
 
-// Executable keys in 1417C7B10, 141DF1A30, 141DF29E0, 141DEBD90 and 1415B43F0/4110/46D0.
+// Localisation keys for retained naval results.
 super::text::tooltip_keys! {
     NAVAL_COMBAT_RESULT_VICTORY = "NAVAL_COMBAT_RESULT_VICTORY",
     NAVAL_COMBAT_RESULT_DEFEAT = "NAVAL_COMBAT_RESULT_DEFEAT",
@@ -110,7 +110,7 @@ impl<'a> Countries<'a> {
                 groups.push((country, count));
             }
         }
-        // 141DEFAE0 (air survivors), 141DE8A40/141DE87F0 (losses).
+        // Aircraft survivors and losses use their respective grouping order.
         native_sort(&mut groups, &|&(a, ac), &(b, bc)| {
             if self.same(a, b).expect("resolved countries") {
                 return ac > bc;
@@ -130,7 +130,7 @@ impl<'a> Countries<'a> {
     }
 }
 
-/// 1417C7B10: +0x12B nonzero hides outcome; +0xF8 is an embedded-side selector.
+/// Nonzero readiness hides the outcome; winning_side selects an embedded side.
 /// Only a complete winning-country list can prove defeat; an observed match proves victory.
 fn outcome(
     result: &NavalResultRow,
@@ -172,7 +172,7 @@ fn outcome(
     Ok(Some(NAVAL_COMBAT_RESULT_DEFEAT))
 }
 
-/// 141DEFD20 / 141DF0910 / 141DEEAB0 / 141DEE680: native insertion, buffered
+/// native insertion, buffered
 /// runs and adaptive merge. The asymmetric ship comparator makes their exact
 /// comparison order observable, including insertion's first-element shortcut.
 fn native_sort<T: Clone>(entries: &mut [T], before: &impl Fn(&T, &T) -> bool) {
@@ -277,8 +277,8 @@ fn merge<T: Clone>(
 }
 
 fn ship_before(a: &NavalResultShip, b: &NavalResultShip, order: &Countries<'_>) -> bool {
-    // 141DEFD20, copied CNavalCombatShipEntry+0x10: +0x29 is CONVOY,
-    // not pride (+0x28). Two convoys of equal IC keep their order.
+    // Convoy status is separate from pride status.
+    // Two convoys of equal IC keep their order.
     if order.same(a.owner, b.owner).expect("resolved countries") {
         if a.build_cost_ic != b.build_cost_ic {
             return a.build_cost_ic > b.build_cost_ic;
@@ -314,7 +314,7 @@ fn classify<'a>(
         lost_planes: Vec::new(),
     };
     let mut refused = Vec::new();
-    // 1417C45C0: positive current/lost counts are independently admitted.
+    // positive current/lost counts are independently admitted.
     for plane in &side.planes {
         if plane.current_planes <= 0 && plane.lost_planes <= 0 {
             continue;
@@ -348,7 +348,7 @@ fn classify<'a>(
 
 fn order_survivors<T: Clone>(entries: &mut [(i32, bool, T)], columns: Option<i32>) {
     native_sort(entries, &|a, b| a.0 < b.0);
-    // 1417C8D20: the first plane in its own stable priority order reaches row one.
+    // the first plane in its own stable priority order reaches row one.
     if let Some(columns) =
         columns.filter(|columns| *columns > 0 && (*columns as usize) < entries.len())
         && let Some(air) = entries
@@ -385,14 +385,14 @@ fn ship_groups(side: &NavalResultSideDetails, losses: bool) -> Vec<Vec<&NavalRes
         }
     }
     if losses {
-        // 1417C8D20 appends ordinary ship groups, aircraft, then convoy groups.
+        // the game appends ordinary ship groups, aircraft, then convoy groups.
         groups.sort_by_key(|group| group[0].is_convoy != 0);
     }
     groups
 }
 
 fn priority_ships(group: &[&NavalResultShip]) -> i32 {
-    // 141DF1500/141DF29D0 truncate each ship's IC before accumulating.
+    // the game truncates each ship's IC before accumulating.
     group
         .iter()
         .fold(0_i32, |cost, ship| {
@@ -401,8 +401,8 @@ fn priority_ships(group: &[&NavalResultShip]) -> i32 {
         .wrapping_neg()
 }
 fn priority_planes(group: &[&NavalResultPlane]) -> i32 {
-    // 141DF1400/141DF29B0: variant +0x2A8 * +0x2A0, truncated before count;
-    // the joint-list virtual then divides the negative accumulated cost by five.
+    // Multiply the recorded variant summary inputs and truncate before
+    // applying the plane count. Negate the accumulated cost, then divide by five.
     let cost = group.iter().fold(0_i32, |cost, plane| {
         let per_plane = (plane.variant_summary_inputs[0]
             .wrapping_mul(plane.variant_summary_inputs[1])
@@ -470,7 +470,7 @@ impl Content<'_> {
         Ok(index)
     }
     fn air_sprite(&self, model: usize, small: bool) -> Result<String, String> {
-        // 141DF1660: archetype name first, then that archetype's sprite token.
+        // archetype name first, then that archetype's sprite token.
         let database = self
             .document
             .icons
@@ -505,7 +505,7 @@ impl Content<'_> {
         )
     }
     fn loss_type(&self, ship: &NavalResultShip) -> Result<String, String> {
-        // 141DED2F0: null sub-unit and convoys retain the copied type;
+        // null sub-unit and convoys retain the copied type;
         // ordinary ships localise the recorded sub-unit for the viewing country.
         if ship.subunit_index == 0 || ship.is_convoy != 0 {
             return self.stored(&ship.type_name, "retained ship loss type");
@@ -554,7 +554,7 @@ fn air_icon(
     small: bool,
     exists: &impl Fn(&str) -> bool,
 ) -> Result<String, String> {
-    // 141DF1660 tries the archetype name before its authored sprite identity.
+    // the game tries the archetype name before its authored sprite identity.
     let prefix = if small {
         "GFX_navalcombat_air_small_icon_"
     } else {
@@ -603,7 +603,7 @@ fn ship_sprite(
 ) -> Result<String, String> {
     let token =
         std::str::from_utf8(&ship.sprite).map_err(|_| "retained ship sprite is not UTF-8")?;
-    // 141DF3420 (survivor), 141DED2F0 (loss); names are native prefixes.
+    // Survivor and loss sprite names use their respective prefixes.
     let name = if lost {
         format!("GFX_navalcombat_ship_icon_{token}")
     } else {
@@ -616,9 +616,8 @@ fn ship_sprite(
 }
 
 pub(super) fn pride_color(defines: &installed_content::defines::Defines) -> Result<[f32; 4], String> {
-    // 140857260 -> 14073E680 walks at most four Lua values; three are HSV,
-    // four are RGBA. 1423F8520 applies powf(2.2) to RGB in the normal sRGB
-    // mode installed by 140126940; alpha is unchanged.
+    // Read at most four Lua colour values: three are HSV, four are RGBA.
+    // Convert RGB with power 2.2 in sRGB mode; alpha stays unchanged.
     let values = defines
         .numbers("NGraphics", "PRIDE_OF_THE_FLEET_MODULATE")
         .map_err(|error| error.to_string())?;
@@ -647,7 +646,7 @@ fn loss_color(
     pride: bool,
     color: &Result<[f32; 4], String>,
 ) {
-    // 141DED2F0 explicitly restores white when no member is pride.
+    // the game explicitly restores white when no member is pride.
     let color = if pride { color.clone() } else { Ok([1.0; 4]) };
     match color {
         Ok(color) => values.entry("equipment".into()).or_default().color = Some(color),
@@ -664,7 +663,7 @@ pub(super) fn show_details(values: &mut Values, open: bool) {
     for path in ["attacker_details", "defender_details"] {
         values.entry(path.into()).or_default().hidden = !open || !available;
     }
-    // Native SetFrame takes 1/2; this binding uses zero-based frames.
+    // The game uses frames 1/2; this binding uses zero-based frames.
     values.entry("open_details".into()).or_default().frame = Some(u32::from(open && available));
 }
 fn flags(out: &mut Bindings, values: &mut Values, countries: &[(u32, i32)], flags: &Flags) {
@@ -706,7 +705,7 @@ fn survivor_text(
     group: &[&NavalResultShip],
     flags: &Flags,
 ) -> Result<String, String> {
-    // 141DF2500 splits damaged ships individually; full-strength and convoy
+    // the game splits damaged ships individually; full-strength and convoy
     // runs coalesce by the same native country/IC/strength comparator.
     let mut text = String::new();
     let mut first = 0;
@@ -750,7 +749,7 @@ fn survivor_description(
     flag: &str,
     kind: &str,
 ) -> Result<String, String> {
-    // 141DF1A30 supplies only the arguments of the selected branch.
+    // the game supplies only the arguments of the selected branch.
     let mut args = vec![("FLAG", Argument::Text(flag))];
     let key = if ship.is_convoy != 0 {
         args.push(("COUNT", Argument::Int32(count)));
@@ -777,7 +776,7 @@ fn air_text(
     countries: &[(u32, i32)],
     flags: &Flags,
 ) -> Result<String, String> {
-    // 141DF29E0 / 141DF0D00 use the viewing country's short-name localiser.
+    // the game uses the viewing country's short-name localiser.
     let heading = builtin(
         content.icons,
         content.loc,
@@ -796,8 +795,8 @@ fn air_text(
         content.loc,
         countries,
         |country| {
-            // CountryTag_FormatMarkedName 140BA59E0 includes the small flag and
-            // capitalised definite name, before AIR_COUNT_ORIGIN applies its colour.
+            // Include the small flag and capitalised definite country name before
+            // AIR_COUNT_ORIGIN applies its colour.
             let name = installed_content::localisation::crt_case_text(
                 &content
                     .country_names
@@ -845,7 +844,7 @@ fn lost_ship_text(
     group: &[&NavalResultShip],
     line: &impl Fn(&NavalResultShip) -> Result<String, String>,
 ) -> Result<String, String> {
-    // 141DEBD90: the heading then the first twenty lines, then the remainder.
+    // the heading then the first twenty lines, then the remainder.
     let heading = builtin(
         icons,
         loc,
@@ -876,7 +875,7 @@ fn loss_text(
     group: &[&NavalResultShip],
 ) -> Result<String, String> {
     lost_ship_text(content.icons, content.loc, kind, group, &|ship| {
-        // 141DEA070, distinct from active SHIP_SUNK_BY.
+        // Retained sinking text uses a separate key from active SHIP_SUNK_BY.
         let name = content.ship_name(ship)?;
         let killer = content.stored(&ship.sunk_by, "retained ship killer")?;
         builtin(
@@ -892,7 +891,6 @@ fn loss_text(
 }
 
 fn lost_air_text(content: &Content<'_>, model: usize, count: i32) -> Result<String, String> {
-    // 141DEC2B0 / 141DEC070 (literal at 142A667E0).
     let kind = content.air_name(model)?;
     builtin(
         content.icons,
@@ -905,7 +903,7 @@ fn lost_air_text(content: &Content<'_>, model: usize, count: i32) -> Result<Stri
     )
 }
 
-/// All three ordered lanes, 1415B43F0 then 1415B4110 then 1415B46D0.
+/// Append the three hit lanes in their stored order.
 fn hits(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -1002,7 +1000,7 @@ fn detail_text(
             &|name| content.stored(name, "retained naval hit target"),
         )
     };
-    // 1417C45C0 before 1417C4C30; planes with a null variant do not contribute.
+    // Planes with a null variant do not contribute.
     for plane in side.planes.iter().filter(|plane| plane.variant != 0) {
         let hits = build(&plane.air_hits, &plane.naval_hits)?;
         if hits.is_empty() {
@@ -1041,7 +1039,7 @@ fn join_details(
     for entry in &entries {
         order.slot(entry.0)?;
     }
-    // 1417C6130 / 1417C38F0: viewer first, canonical slot, member kind,
+    // viewer first, canonical slot, member kind,
     // then descending hit score; equal entries keep their admission order.
     native_sort(&mut entries, &|a, b| {
         if order.same(a.0, b.0).expect("resolved countries") {
@@ -1252,7 +1250,7 @@ pub(super) fn bind(
                 (format!("naval_combat_results_{label}_air_entry"), values),
             ));
         }
-        // 1417C8D20 keeps the highest-priority aircraft in the visible first row.
+        // the game keeps the highest-priority aircraft in the visible first row.
         let columns = document
             .icons
             .combat
@@ -1333,7 +1331,7 @@ pub(super) fn bind(
                     .copied()
                     .filter(|ship| order.same(ship.owner, owner).expect("resolved countries"))
                     .collect();
-                // 141DECDE0 / 141DE8D50 sort each country's copied entries by IC alone.
+                // the game sorts each country's copied entries by IC alone.
                 native_sort(&mut members, &|a, b| a.build_cost_ic > b.build_cost_ic);
                 hover(
                     out,

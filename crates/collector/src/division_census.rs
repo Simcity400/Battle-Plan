@@ -389,7 +389,7 @@ impl Census {
         let reader = ccountry::Reader::new(memory, base, state)?;
         let [countries, links] = reader.arrays();
         self.required_counts = links.count as usize;
-        // CGameState::PreHourlyUpdate@1401D8120 uses the live country roster.
+        // The hourly update uses the live country roster.
         // This worker keeps the original header even when a load outgrows hints.
         if self.growing {
             engine::walk::Buffer::Growing(&mut self.counts).ensure(self.required_counts)?;
@@ -414,8 +414,7 @@ impl Census {
         }];
         const POINTER_LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&POINTER, 8).expect("valid division pointer layout");
-        // Native country loops (CGameState::DailyUpdate 0x1401d4c85 and
-        // 0x1401d5567, hourly 0x1401d81ab) dereference every slot without a
+        // The daily and hourly country loops dereference every slot without a
         // null test: a non-null slot with another vtable is never legitimate.
         for slot in 1..reader.count() {
             // Keep the census's established reason for an unreadable slot.
@@ -446,7 +445,7 @@ impl Census {
                 "division roster unreadable or invalid",
             )?;
             self.required_slots = self.required_slots.saturating_add(roster.count as usize);
-            // GetDivisionArray@1406C25B0 returns this original +290 header.
+            // The division roster getter returns this original header.
             if self.growing {
                 let inputs = self
                     .unit_inputs
@@ -664,8 +663,8 @@ impl Census {
         counts_error: &mut Option<&'static str>,
         row: &carmy::Row,
     ) {
-        // CArmy::active_damage@140c7bfc0 chooses +0x1dc when signed-positive,
-        // otherwise the roster owner (+0x1d8). Count here, never walk twice.
+        // Damage attribution chooses the expeditionary owner when signed-positive,
+        // otherwise the roster owner. Count here, never walk twice.
         let owner = if (row.expeditionary_owner as i32) > 0 {
             row.expeditionary_owner
         } else {

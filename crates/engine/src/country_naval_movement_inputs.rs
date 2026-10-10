@@ -1,25 +1,16 @@
-//! Current-hour simulation inputs for class-1 counter path admission.
-//!
-//! `CTaskForce` vf+70 (`140D5BD20 -> 140D5BAA0`) selects its roster owner's
-//! navy and all owned land theatres. `140E93C00` consumes the navy's stored
-//! nearest-base array and stored foreign *physical manager slots*, without
-//! resolving those slots through newer country links. `140E93DA0` consumes
-//! stored hub order. These are shared campaign inputs: nearest/foreign writers
-//! `140E98CF0/140E98DF0` run from hourly dirty gates `140E92520`, staggered daily
-//! refresh `140E8DE40`, setup and territory/base mutations. Hub writer
-//! `140E9C6B0` runs from setup, construction and territory/base mutations.
-//!
-//! `140E68D90` compares every owned theatre's stored area pointers with the
-//! target's actual `CProvince+D0`; a null entry can match a null target area.
-//! Theatre writers `140ED6840/140EE7540/140EEC6A0/140ED69D0` and save reader
-//! `140EE9120` establish simulation membership. No volunteer filter, current
-//! area province-list substitute, native call or local UI/cache input is used.
-//!
-//! Controls are private, acquired once and consumed once. All payload buffers
-//! are caller-owned. A refused vector exposes no prefix and retains its known
-//! full demand; independent vectors and theatre domains survive each other's
-//! failures. Drop/clear removes private pointers before a frozen pass ends.
-//! Synthetic fixtures are source-only; live agreement and cost are unverified.
+//! Current-hour simulation operands for class-1 counter path admission.
+//! Select the roster owner's navy and owned theatres. Nearest-base and foreign
+//! physical-manager slots retain stored order without resolution through newer
+//! country links. Hub order remains stored order. These shared inputs refresh
+//! through hourly dirty gates, staggered daily updates, setup and territory/base
+//! changes; hubs also change on construction.
+//! Compare every owned theatre's stored area pointers with the target actual
+//! area, permitting null-to-null matches. Membership is simulation state;
+//! volunteer filters, current-area province lists and UI caches do not substitute.
+//! Controls are private and acquired/consumed once. Payload buffers are caller-
+//! owned. Refused vectors expose no prefix but retain full known demand;
+//! independent vectors and theatre domains preserve separate failures.
+//! Drop/clear removes private pointers before the frozen pass ends.
 
 use crate::{
     Memory,
@@ -31,13 +22,13 @@ use crate::{
     read,
 };
 
-/// `140E93C00` indexes this pointer array by province ID (count at +3C).
+/// Province-ID-indexed nearest-base pointer array.
 pub const NEAREST_BASES: usize = 0x30;
-/// `140E93C00` follows these stored physical navy slots, in order (count +54).
+/// Foreign physical navy slots retained in stored order.
 pub const FOREIGN_NAVY_SLOTS: usize = 0x48;
-/// Constructor `140E88190` stores the selecting manager; `140E93C00` uses it.
+/// Selecting manager stored during construction.
 pub const MANAGER: usize = 0x60;
-/// Hub writer `140E9C6B0` and range getter `140E93DA0` use this u32 array.
+/// Stored hub u32 array used by range selection.
 pub const SUPPLY_HUBS: usize = crate::naval_mission_inputs::HUBS;
 /// Complete membership source/domain succeeded before this capacity refusal.
 pub const THEATRE_PROVINCE_CAPACITY: &str = "naval movement theatre province arena exhausted";
@@ -419,13 +410,13 @@ impl<'a, M: Memory> Reader<'a, M> {
         self.reserved = Err("naval movement pass cleared");
     }
 
-    /// Read exactly this physical manager slot; foreign slots are NOT links.
-    /// `140E92F70` creates navies per physical slot1..count and leaves zero null.
+    /// Read the exact physical manager slot; foreign slots are not links.
+    /// Construction fills physical slots 1..count and leaves zero null.
     pub fn observe_navy(&self, slot: u32) -> Result<NavyInputs, &'static str> {
         let Some(manager) = self.manager? else {
             return Ok(NavyInputs::absent(slot));
         };
-        // Native GetStrategicNavy returns null when the manager array is empty.
+        // The strategic-navy lookup returns null when the manager array is empty.
         if manager.navies.count == 0 {
             return Ok(NavyInputs::absent(slot));
         }
@@ -623,7 +614,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             }
         };
         let required_headers = theatres.count as usize;
-        // GetTheatreMembership@140E68D90 reaches every original owned header.
+        // Theatre-membership lookup reaches every original owned header.
         if let Err(reason) = output.ensure(required_headers) {
             return TheatreHeaderCapture {
                 len: Err(reason),
@@ -986,9 +977,9 @@ impl NavyInputs {
         self.ledgers.take().ok_or(CONSUMED)?
     }
 
-    /// Same original physical navy's current +B0/+BC observation. E91150
-    /// indexes this array; E8FD10 searches these exact bytes for modes1/2.
-    /// A failed initial header is consumed as failure, never reacquired.
+    /// The same original physical navy's current +B0/+BC observation is indexed
+    /// and searched for modes 1/2. A failed initial header stays failed and is
+    /// never reacquired.
     pub fn take_access_modes(&mut self) -> Result<Array, &'static str> {
         self.access.take().ok_or(CONSUMED)?
     }

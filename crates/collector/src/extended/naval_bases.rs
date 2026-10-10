@@ -28,7 +28,7 @@ impl Capacities {
         base: usize,
         state: usize,
     ) -> Result<(), &'static str> {
-        // GetNavalBase@140E67B20 bounds its map; 140E93BF0 reaches each country list.
+        // Size from the bounded map and every country list.
         let demand = cnaval_base::walk(memory, base, state, &mut [], &mut []);
         let rows = crate::country_scale::table_demand::rows(demand.outcome)?;
         crate::country_scale::raise(&mut self.rows, rows);
@@ -198,7 +198,7 @@ mod tests {
             for index in 0..count {
                 let base = bases + index * cnaval_base::SIZE;
                 let entry = buckets + index * 0x18;
-                // GetNavalBase@140E67B20: probe marker, province key, pointer.
+                // Probe marker, province key, pointer.
                 put(entry + 4, &[1]);
                 put(entry + 8, &(index as u32 + 1).to_le_bytes());
                 put(entry + 0x10, &(base as u64).to_le_bytes());

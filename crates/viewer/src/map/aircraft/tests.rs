@@ -14,6 +14,8 @@ fn registration(wing: u64, ordinal: u32) -> replay::rows::AirRegionalMissionRow 
 
 #[test]
 fn wings_fly_region_by_region_ours_first_then_both_arrays_in_registration_order() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let wings = [
         wing(1, 7, 5),
         wing(2, 7, 5),
@@ -812,7 +814,7 @@ fn wing_batch_discards_remainder_after_choosing_triples() {
 }
 
 #[test]
-fn naval_patrol_follows_141237d20() {
+fn naval_patrol_uses_combat_location_and_recorded_losses() {
     let kinds = BTreeMap::from([
         (10, ProvinceKind::Sea),
         (11, ProvinceKind::Land),
@@ -851,7 +853,7 @@ fn naval_patrol_follows_141237d20() {
 }
 
 #[test]
-fn region_draws_keep_first_listings_like_add_province() {
+fn region_draws_keep_first_listings() {
     assert_eq!(first_listings(&[5, 3, 5, 9, 3]), [5, 3, 9]);
 }
 

@@ -1,10 +1,10 @@
-//! Retained reduced territory outcomes, consumed by 141442C20 before finalization.
+//! Retained reduced territory outcomes, consumed before finalization.
 
 use crate::{Memory, cpdx_array::Array, read};
 
-/// 141442C20 passes this raw country to CState::SetOwner.
+/// Raw country reference used when applying state ownership.
 pub const COUNTRY: usize = 0x08;
-/// Ordered state pointers; 140E24170 appends, 141442C20 applies without clearing.
+/// Ordered state pointers, appended and applied without clearing.
 pub const STATES: usize = 0x18;
 
 /// Caller authenticates the concrete participant before reading its base.

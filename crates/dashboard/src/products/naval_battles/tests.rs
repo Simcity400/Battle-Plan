@@ -76,7 +76,7 @@ fn frame(hour: i32) -> DecodedFrame {
                 ordinal: 0,
                 side: 0,
             },
-            // Convoy reference is NONZERO in retained results (140CD38C0).
+            // Convoy references are nonzero in retained results.
             NavalResultMemberRow {
                 result: 800,
                 member: 32,
@@ -502,8 +502,8 @@ fn naval_battles_same_province_disappearance_and_new_result_prove_no_join() {
     assert!(
         matches!(&run.measures[1], BattleValue::Unknown { unknown, .. } if unknown == "Not recorded")
     );
-    // 1415B2790 can skip creating this combat's result, and 140CD5840 can
-    // aggregate another engagement in the same province within this hour.
+    // A combat's result may be absent, and another engagement in the same
+    // province can be aggregated within this hour.
     let ranked = scan
         .ranked(&ranking(100, 101, "Length", 30.0), &AtomicBool::new(false))
         .unwrap();

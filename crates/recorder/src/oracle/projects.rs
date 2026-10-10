@@ -29,7 +29,7 @@ fn token<'a>(
     label: &str,
 ) -> Option<&'a [u8]> {
     if value == engine::cpdx_lexer::FIXED15_TOKEN {
-        report.limitation("24AAC50 formats reserved lexical token 0x167 as fixed15 numeric text; its raw dictionary literal cannot certify this saved field", label);
+        report.limitation("the token writer formats reserved lexical token 0x167 as fixed15 numeric text; its raw dictionary literal cannot certify this saved field", label);
         return None;
     }
     let Some(result) = tokens.get(&value).copied() else {
@@ -197,10 +197,11 @@ pub(super) fn compare(
 
 /// Scientist roster membership and its specialization records.
 ///
-/// The roster itself is `CCountry +0xff0`, which no writer serializes: the save
+/// The country scientist roster itself is not saved: the save
 /// carries a scientist only as the `scientist={...}` block of its own
-/// `character={...}`, whose `country=` is `CCharacter +0x68`. F913A0 emits that
-/// tag only while the raw reference is strictly positive, so a saved scientist
+/// `character={...}`, whose `country=` is the character's country reference.
+/// The character writer emits that tag only while the raw reference is strictly
+/// positive, so a saved scientist
 /// without one has no country at all and cannot be in a country roster. Every
 /// recorded roster entry is therefore compared against its saved character, and
 /// every saved scientist that does carry a country is required to be recorded.
@@ -276,7 +277,7 @@ pub(super) fn compare_scientists(
                         saved.active,
                     );
                     if *active > 1 {
-                        report.limitation("CScientist::vf2@1413F7B60 saves +0x130 as Boolean truth; nonzero byte magnitude is not serialized", format!("{label}.active"));
+                        report.limitation("the scientist save writer saves the active flag as Boolean truth; nonzero byte magnitude is not serialized", format!("{label}.active"));
                     }
                 }
                 None => {
@@ -284,7 +285,7 @@ pub(super) fn compare_scientists(
                 }
             }
         }
-        // The roster country and CCharacter +0x68 are two different native
+        // The roster country and the character's country reference are two different native
         // fields; the save carries only the second one.
         equal(
             report,
@@ -330,7 +331,7 @@ pub(super) fn compare_scientists(
                 ),
                 None => nonpositive_levels += 1,
             }
-            // 14144E480 guards the record's i64 at +0x10 the same way.
+            // The game gates the record's signed experience on positivity too.
             match &expected_skill.experience {
                 Some(experience) => equal(
                     report,
@@ -362,14 +363,14 @@ pub(super) fn compare_scientists(
     }
     if nonpositive_levels != 0 || nonpositive_experience != 0 {
         report.limitation(
-            "14144E480 emits a specialization level and its experience only while each is strictly positive; an omitted field proves a nonpositive raw value but cannot distinguish zero from a negative one",
+            "the game emits a specialization level and its experience only while each is strictly positive; an omitted field proves a nonpositive raw value but cannot distinguish zero from a negative one",
             format!(
                 "{nonpositive_levels} omitted specialization levels and {nonpositive_experience} omitted experience values"
             ),
         );
     }
     report.limitation(
-        "no writer serializes the CCountry +0xff0 scientist roster itself, so its native membership order is recorded but has no saved counterpart; saved scientists without a positive country reference cannot belong to a roster and are not required to be recorded",
+        "no writer serializes the country scientist roster itself, so its native membership order is recorded but has no saved counterpart; saved scientists without a positive country reference cannot belong to a roster and are not required to be recorded",
         "Scientists.ordinal and unowned saved scientists",
     );
     report.compared("Scientists", compared);
@@ -925,7 +926,7 @@ fn reconstructed_turn(saved: &saved::Conference) -> Option<i32> {
         .then_some(first)
 }
 /// `FacilityMapFlags` against the saved programs. The flag is the recording client's
-/// `CProvinceGraphics+0x175B`, which only program code sets, so a flagged province must hold a
+/// facility-presence display byte, which only program code sets, so a flagged province must hold a
 /// saved program. The save does not hold the flag, and dynamic-country reuse clears every flag
 /// until the next load, so an unflagged program province is counted rather than a difference.
 fn compare_facility_flags(

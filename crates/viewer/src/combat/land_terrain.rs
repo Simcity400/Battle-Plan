@@ -1,4 +1,4 @@
-//! Land terrain hover: CLandCombatView@1415C1A60 -> 14142A4C0.
+//! Land combat terrain hovers.
 use super::{
     Selection,
     binding::{Bindings, TextIcons, builtin, token},
@@ -13,8 +13,7 @@ use installed_content::{
 use replay::{frame::DecodedFrame, rows::tables};
 use std::io;
 
-// Executable literals: 14142A4C0 and CUnitAdjuster::Describe@140FFFDD0
-// -> 140FFF670 (the STAT_ADJUSTER_ prefix and _VALUE suffix).
+// Localisation keys for terrain and unit adjuster descriptions.
 super::text::tooltip_keys! {
     UNIT_TERRAIN_MODIFIER = "UNIT_TERRAIN_MODIFIER",
     STAT_ADJUSTER_MOVEMENT = "STAT_ADJUSTER_MOVEMENT",
@@ -28,7 +27,7 @@ super::text::tooltip_keys! {
     MOVEMENT_COST = "MOVEMENT_COST",
 }
 
-/// 14142A4C0: common unit adjuster, nonzero width, common modifiers,
+/// common unit adjuster, nonzero width, common modifiers,
 /// supply-flow reduction (even zero), then movement cost (even zero).
 fn effects(
     terrain: &TerrainCategory,
@@ -87,8 +86,8 @@ fn effects(
         )?);
         super::text::ensure_newlines(&mut text, 1);
     }
-    // 14142A4C0 calls 14054E050(precision=2, colour=0, include=-1,
-    // scale=100000), exactly the shared Block::describe contract.
+    // The shared Block::describe contract: precision 2, no colour, all categories
+    // and scale 100000.
     let (block, unknown) =
         Block::build(definitions, &terrain.modifiers).map_err(|why| why.to_string())?;
     dropped.extend(unknown);
@@ -149,7 +148,7 @@ pub(super) fn bind(
             out.refuse(format!("Land terrain reader: {why}"));
         }
         let terrain = &content.categories[terrain];
-        let title = token(icons, loc, &terrain.name)?; // 140616BC0, immediate string.
+        let title = token(icons, loc, &terrain.name)?; // The terrain name is immediate text.
         let definitions =
             Definitions::read(frame, &document.modifier_names).map_err(|why| why.to_string())?;
         let body = effects(
@@ -169,9 +168,11 @@ pub(super) fn bind(
         }
     };
     for name in dropped {
-        out.refuse(format!("Land combat {id} terrain modifier {name} is not registered; its hover line is omitted (1406042A0)."));
+        out.refuse(format!(
+            "Land combat {id} terrain modifier {name} is not registered; its hover line is omitted."
+        ));
     }
-    // 1415C1A60 compares the hovered element to terrain_picture.
+    // the game compares the hovered element to terrain_picture.
     set_hover(&mut out.values, "terrain_picture", title, body);
     Ok(())
 }

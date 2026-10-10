@@ -1,34 +1,25 @@
-//! Mesh owner reached through render entity +0x58.
-//!
-//! Harvested from `extractor/native/lanes/production_render_submit_live/src/a729_hook.rs` and its submodules at
-//! `archive/pre-rewrite-2026-09-09`. The original C++ class name is unproven.
-//! Presentation knowledge only; this module does not enable a recorded table or hook.
-//! Collision fields are also witnessed by `replay_interface/native/map_viewer/src/
-//! native_model_selection.rs` and exact-build exports in
-//! `portable_replay/native/engine_evidence/artifacts/`.
+//! Mesh owner reached through a render entity.
+//! Draw groups, LOD thresholds, bounds and collision fields describe presentation
+//! operands; these layouts do not enable a recorded table or hook.
 
-/// Draw-group array pointer; a729_hook.rs:10517 and s1_tree_caster.rs:116 follow it.
+/// Draw-group array pointer.
 pub const DRAW_GROUPS: usize = 0x48;
-/// Draw-group count i32 in s1_tree_caster.rs:109; the main entity path selects by outer-row group.
+/// Signed i32 draw-group count, selected by the outer entity row.
 pub const DRAW_GROUP_COUNT: usize = 0x54;
-/// Draw-group header stride; a729_hook.rs:10520 and s1_tree_caster.rs:121.
+/// Draw-group header stride.
 pub const GROUP_STRIDE: usize = 0x18;
-/// LOD threshold array pointer; s1_tree_caster.rs:87 reads it.
+/// LOD threshold array pointer.
 pub const LOD_THRESHOLDS: usize = 0x138;
-/// LOD threshold count i32; s1_tree_caster.rs:82 reads it.
+/// LOD threshold signed i32 count.
 pub const LOD_THRESHOLD_COUNT: usize = 0x144;
-/// Native f32 LOD threshold stride; s1_tree_caster.rs:96 reads each threshold.
+/// LOD threshold f32 stride.
 pub const LOD_THRESHOLD_STRIDE: usize = 0x04;
 
-/// Mesh local bounds, two xyz corners [f32; 6]; map_viewer/src/native_model_selection.rs:405 supplies this field.
-/// engine_evidence/artifacts/func_142261df0.decompile.c:26-29 copies three qwords from mesh+0xa0/+0xa8/+0xb0.
+/// Mesh local bounds as two xyz corners, [f32; 6].
 pub const LOCAL_BOUNDS: usize = 0xa0;
-/// Mesh collision vertex [f32; 3] array pointer; map_viewer/src/native_model_selection.rs:408 supplies it.
-/// engine_evidence/artifacts/func_1422627e0.decompile.c:89,96-102 reads mesh+0x108 and uses a 0xc-byte vertex stride.
+/// Mesh collision [f32; 3] vertex-array pointer.
 pub const COLLISION_VERTICES: usize = 0x108;
-/// Mesh collision u16 index array pointer; map_viewer/src/native_model_selection.rs:409 supplies it.
-/// engine_evidence/artifacts/func_1422627e0.decompile.c:90,94-100 reads mesh+0x120 through a ushort pointer.
+/// Mesh collision u16 index-array pointer.
 pub const COLLISION_INDICES: usize = 0x120;
-/// Mesh collision index count i32; map_viewer/src/native_model_selection.rs:410 supplies it; fixture bytes do not prove sizeof.
-/// engine_evidence/artifacts/func_1422627e0.instructions.txt:149 sign-extends the dword at mesh+0x12c.
+/// Mesh collision signed i32 index count.
 pub const COLLISION_INDEX_COUNT: usize = 0x12c;

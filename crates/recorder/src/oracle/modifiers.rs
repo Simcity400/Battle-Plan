@@ -66,7 +66,7 @@ fn definitions(
     }
     report.compared("ModifierDefinitions", 0);
     report.limitation(
-        "modifier definitions are engine registration state (modifier_definition::Register@14054A990) that no save writer serializes, so this table has no save comparison; the recorded rows decode but are not certified against a save",
+        "modifier definitions are engine registration state that no save writer serializes, so this table has no save comparison; the recorded rows decode but are not certified against a save",
         format!("ModifierDefinitions: {} decoded rows, zero save comparisons", rows.len()),
     );
     Ok(())
@@ -77,10 +77,11 @@ fn character_handle(id: u32) -> u64 {
 }
 
 /// Each country's appointed array against `appointed_advisors`, which
-/// `CCountryCharacters::vf2@1410DB3D0` writes in array order: order, character
+/// the country character save writer writes in array order: order, character
 /// and slot compare exactly. The save has no idea token for the entry; it is
 /// compared with the saved advisor role of the same character and slot (one
-/// `CCharacter::GetAdvisorRoleForSlot@140F8A580`).
+/// role per slot: the game refuses a second through
+/// the advisor-slot lookup).
 fn hired_advisors(
     frame: &DecodedFrame,
     pack: &saved::Pack,

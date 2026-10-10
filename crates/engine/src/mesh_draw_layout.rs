@@ -1,14 +1,11 @@
 //! Mesh draw record selected through a mesh-owner draw group.
-//!
-//! Harvested from `extractor/native/lanes/production_render_submit_live/src/a729_hook.rs` and its submodules at
-//! `archive/pre-rewrite-2026-09-09`. The original C++ class name is unproven.
-//! Presentation knowledge only; this module does not enable a recorded table or hook.
+//! These presentation layouts do not enable a recorded table or hook.
 
-/// Mesh draw row stride; a729_hook.rs:10541 and s1_pdxmesh_caster.rs:15.
+/// Mesh draw row stride.
 pub const STRIDE: usize = 0x108;
-/// First draw effect key u32; s1_tree_caster.rs:132 reads it.
+/// First draw effect key u32.
 pub const EFFECT_KEY: usize = 0x24;
-/// Draw skinning pointer; s1_pdxmesh_caster.rs walks it after selecting the draw record.
+/// Draw skinning pointer selected through the draw record.
 pub const SKINNING: usize = 0x40;
-/// Draw variant u8; a729_hook.rs:10549 reads it.
+/// Draw variant u8.
 pub const VARIANT: usize = 0x7d;

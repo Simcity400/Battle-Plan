@@ -1,24 +1,17 @@
 //! The frame a combat map icon keeps while its combat is unseen.
 //!
-//! `1418B4BD0` (land, `mapicon_land_combat_frame` at +0x5D8) and `1418E3E30`
-//! (naval, the icon's own frame at +0x5E0) set the frame only for a combat the
-//! viewer sees; the unseen path leaves it as it was. So the icon shows the
-//! frame of its last seen update.
+//! Land and naval icons set their frame only for a combat the viewer sees.
+//! The unseen path leaves it unchanged, showing its last seen update.
 //!
-//! The icon's lifetime: `14127BFC0` (land) and `1412766F0` (naval, from
-//! `14127C6B0`) take an icon for a combat whose two sides' country lists
-//! (`side+0x38`, count `+0x48`) are both non-empty, and erase it when either
-//! empties or the combat ends. The icon comes from a per-type pool
-//! (`140B63880`, through `140B63D40` for land and `140B63DB0` for naval),
-//! which reuses a released icon; `Release` (`1418B0D10` land, `1418E3C70`
-//! naval, both through `14162D030`) clears the combat reference and the
-//! position, never the frame. A new instance therefore shows whatever frame
-//! its pool slot last had, which the recording does not hold.
+//! An icon lives while both sides' country lists are nonempty and the combat
+//! continues. Its per-type pool reuses released icons; release clears the
+//! combat reference and position, preserving the frame. A new instance shows
+//! its pool slot's last frame, which the recording does not hold.
 //!
 //! The same producers also erase every icon of a province that leaves the
-//! view or the combat cutoff (show flags +0x1197 / +0x1198 from `141277FC0`),
-//! and the icon manager releases icons that fail projection (`140B2F270`).
-//! The camera is not recorded. By owner decision (2026-09-29) the viewer
+//! view or the combat cutoff,
+//! and the icon manager releases icons that fail projection.
+//! The camera is not recorded. The viewer
 //! assumes a camera that kept watching: an instance lives while its combat
 //! lasts with both sides non-empty, and every frame carried from an earlier
 //! hour is counted under that assumption ([`CARRIED`]).
@@ -27,14 +20,13 @@
 //! recording ([`crate::engaged_index::kept_frames`]), so a seek shows the
 //! same kept frame.
 //!
-//! When history establishes no frame, the owner ruling (2026-10-06) uses the
+//! When history establishes no frame, the viewer uses the
 //! child's content-authored initial frame, with a named limitation. For land,
-//! CIconType+0x134 defaults to 1 (142358490), accepts token 0xFC (142358910),
-//! and is applied by the object factory (142358760). It is a presentation
-//! fallback, not an observation of the recording client's pool slot. The
+//! the icon defaults to frame 1 and reads its authored initial frame. This
+//! is a presentation fallback, not an observation of the recording client's pool slot. The
 //! limitation keeps the history state's reason, including a pending index.
-//! Naval instead binds a button at +0x5E0 and sets frame 1 explicitly
-//! (1418E42A0), overriding that button's authored frame.
+//! Naval instead sets its button to frame 1 explicitly, overriding the
+//! authored frame.
 
 use crate::{
     combat::engaged::{Continuity, Engaged},
@@ -44,13 +36,15 @@ use replay::{frame::DecodedFrame, rows::tables};
 use std::{collections::BTreeMap, io};
 
 /// The limitation every frame carried from an earlier hour reports.
-pub(crate) const CARRIED: &str = "frame carried from the last seen hour, assuming the camera kept the icon alive (the camera and the icon pool are not recorded; 14127BFC0 and 14127C6B0 erase a province's combat icons when it leaves the view)";
+pub(crate) const CARRIED: &str = "frame carried from the last seen hour, assuming the camera kept the icon alive (the camera and the icon pool are not recorded; a province's combat icons are erased when it leaves the view)";
 
 /// The limitation for an unseen land icon drawn at its authored initial frame.
-pub(crate) const LAND_NO_HISTORY: &str = "frame index not from history (client icon pool, CLandCombatMapIcon+0x5D8 -> CIcon+0xE8 -> drawable+0x44)";
+pub(crate) const LAND_NO_HISTORY: &str =
+    "frame index not from history (the client land icon pool is not recorded)";
 
 /// The limitation for an unseen naval icon drawn at its native binding's initial frame.
-pub(crate) const NAVAL_NO_HISTORY: &str = "frame index not from history (client icon pool, CNavalCombatMapIcon+0x5E0 -> CButtonStandard+0xF0 -> drawable+0x44)";
+pub(crate) const NAVAL_NO_HISTORY: &str =
+    "frame index not from history (the client naval icon pool is not recorded)";
 
 /// What an unseen combat icon's frame is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,8 +108,7 @@ pub(crate) fn engaged_seen(flag: Engaged) -> Option<bool> {
 }
 
 /// The land icons' hour: `alive` from both `LandCombatSides` primary lists
-/// (`side+0x38`, whose count `+0x48` 14127BFC0 tests), `seen` from the
-/// engaged `flag`, and the frame 1418B4BD0 sets for a seen combat (frame 1
+/// for `alive`, the engaged `flag` for `seen`, and the frame for a seen combat (frame 1
 /// or 2 by the combat's indicator byte, zero-based here).
 pub(crate) fn land_hour(
     frame: &DecodedFrame,

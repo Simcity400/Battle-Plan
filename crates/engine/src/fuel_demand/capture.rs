@@ -165,7 +165,7 @@ fn divisions(
             if class != 0 {
                 return Err("fuel demand division roster contains another unit class");
             }
-            let rate = field(memory, pointer, 0x628); // Unit_GetFuelValue140C77090, no refresh.
+            let rate = field(memory, pointer, 0x628); // Stored division fuel rate, without refresh.
             let group = (|| {
                 let group = field::<u64>(memory, pointer, carmy::ORDERS_GROUP)? as usize;
                 if group == 0 {
@@ -184,7 +184,7 @@ fn divisions(
                     identity(memory, base, group, expected, corders_group::HANDLE, 0)
                 }
             })();
-            // GetName140C72F00 returns army+340 member+60 without generation.
+            // Read the stored division name cache without generation.
             let stored = field::<u64>(memory, pointer, 0x340).and_then(|member| {
                 if member == 0 {
                     Err("fuel demand division name member is null")
@@ -277,7 +277,7 @@ pub fn capture(
     out: &mut Buffers<'_>,
 ) -> Result<(), &'static str> {
     let countries = ccountry::Reader::new(memory, base, state)?;
-    // FuelPanel_BuildBreakdown@1410DE880 visits the original country contributors.
+    // Fuel breakdown visits the original country contributors.
     out.countries.demand(countries.count().saturating_sub(1))?;
     for slot in 1..countries.count() {
         let Some(country) = countries.at(slot)? else {
@@ -310,7 +310,7 @@ pub fn capture(
             } => {
                 out.fleets.demand(1)?;
                 out.tasks.demand(tasks.count)?;
-                let stored = name(memory, at(fleet, cfleet::NAME), out); // Shared LAND getter140D41680.
+                let stored = name(memory, at(fleet, cfleet::NAME), out); // Stored task-force fuel status.
                 out.fleets.push(Fleet {
                     country: country.id,
                     reference: handle,
@@ -318,8 +318,8 @@ pub fn capture(
                 })
             }
             cfleet::Visit::TaskForce(task, ordinal) => {
-                let rate = field(memory, task.task, 0x500); // GetCurrentFuelUsage140D5A290.
-                let stored = name(memory, at(task.task, 0x258), out); // GetName140BEDEB0.
+                let rate = field(memory, task.task, 0x500); // Stored task-force current fuel usage.
+                let stored = name(memory, at(task.task, 0x258), out); // Stored task-force name cache.
                 out.tasks.push(CachedUnit {
                     country: task.country.id,
                     reference: task.id,

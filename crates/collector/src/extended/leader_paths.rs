@@ -1,3 +1,4 @@
+//! Hourly picture-directory inputs for the current land HQ leaders.
 use crate::{sampling::qpc, spooling::table, table_capture::CaptureRows};
 use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, cunit_leader, walk::Outcome};

@@ -146,15 +146,11 @@ impl Hit {
     }
 }
 
-/// An open land window refills its lists only when they change membership.
-/// 1415CA230 (committed) and 1415CA460 (reserves) first walk the grid's
-/// existing entries: when the grid holds as many entries as the side's
-/// `CLandCombatant+0xC8`/`+0xE0` array, and each entry's unit still belongs to
-/// this combat and is found anywhere in that array, the entries are only
-/// refreshed (1415C7E00/1415C8570) and keep their order. Otherwise the grid is
-/// cleared and rebuilt in array index order. The window's `+0xAF4` flag forces
-/// a rebuild on construction and when the `+0x2AC` interface setting changes;
-/// neither is a recorded input, and a newly opened window starts empty.
+/// An open land window refills its lists only when membership changes.
+/// If the existing entries match the committed or reserve array count and each
+/// unit remains in the combat and in that array, refresh values and preserve order.
+/// Otherwise clear the grid and rebuild in array order. Construction and an
+/// interface-setting change force a rebuild; a newly opened window starts empty.
 fn keep_list_order(next: &mut [(u64, Values)], shown: &[(u64, Values)]) {
     let members = |list: &[(u64, Values)]| {
         let mut units: Vec<u64> = list.iter().map(|(unit, _)| *unit).collect();
@@ -174,15 +170,15 @@ fn keep_list_order(next: &mut [(u64, Values)], shown: &[(u64, Values)]) {
 
 #[derive(Default)]
 pub struct Window {
-    /// Viewer playback state for the in-game idler PAUSED virtual (140DC3DB0).
+    /// Viewer playback pause state.
     playing: bool,
     pub selection: Option<Selection>,
     pub offset: [f32; 2],
     pub dragging: bool,
-    /// The possible-tactics popup (1415C7D20): window presentation state,
+    /// The possible-tactics popup: window presentation state,
     /// never recorded.
     pub tactics_open: bool,
-    /// 1417C7B10 / 1417C8D20: retained-result detail panels are local UI state.
+    /// retained-result detail panels are local UI state.
     result_details_open: bool,
     tactics_position: Option<[f32; 2]>,
     dragging_tactics: bool,
@@ -264,12 +260,12 @@ struct Cached {
     shown: bool,
     /// Why the window holds contents it may not show natively, reported.
     held: Option<String>,
-    /// SetCombat/refresh serial; holds keep the bound generation (1415CA230).
+    /// combat selection/refresh serial; holds keep the bound generation.
     generation: u64,
     gui_assets: Option<gui_resources::GuiAssets>,
 }
 
-/// The hour's engaged flags (1413CD880) for the viewer, of every land and
+/// The hour's engaged flags for the viewer, of every land and
 /// naval combat.
 fn combat_flags(
     frame: &replay::frame::DecodedFrame,
@@ -309,13 +305,10 @@ enum Update {
     },
 }
 
-/// 1415C8950 hides an active land window when 1413CD880 finds neither side
-/// engaged; an undecided land flag keeps the window, whose marker reports the
-/// gap. A naval window opens only for an engaged combat (1418E3B40) and
-/// 1417DA2F0 refreshes it only while the combat stays engaged, both on
-/// 1413CD880's positive answer, so every other hour holds the last engaged
-/// contents (owner decision, 2026-09-27): a disengaged one silently, an
-/// undecided or absent one reported.
+/// An active land window hides when neither side is engaged; an undecided
+/// flag keeps it open while the marker reports the gap. A naval window opens
+/// and refreshes only while engaged. Other hours hold its last engaged contents:
+/// a disengaged hour silently, an undecided or absent combat with a report.
 fn update(selection: Selection, flags: &crate::engaged_index::CombatFlags) -> Update {
     use engaged::Engaged;
     let flag = |flags: &BTreeMap<u64, Engaged>, id| flags.get(&id).copied();
@@ -367,8 +360,7 @@ fn hold(
 pub type HoverHit<'a> = (&'a str, Option<&'a str>, [f32; 4], Option<u32>);
 
 impl Window {
-    /// The native speed-above-3 night picture asks whether the UI is paused
-    /// (140B387D0 -> CInGameIdler slot +0x2E8, 140DC3DB0).
+    /// The speed-above-3 night picture depends on whether playback is paused.
     pub(crate) fn set_playing(&mut self, playing: bool) {
         self.playing = playing;
     }
@@ -534,7 +526,7 @@ impl Window {
                         naval_window: Some(window),
                     });
         }
-        // Explicit anchors retain their position while the hide timer runs (1402A5CFF).
+        // Explicit anchors retain their position while the hide timer runs.
         let anchor = self.hover.anchor;
         self.hover
             .shown(
@@ -568,7 +560,7 @@ impl Window {
     /// rebuilds. Only a draw with `hovers` collects the hover regions
     /// [`Self::tooltip`] needs, so a frame that lays the window out
     /// twice (once for its hit tests) does the hover work once.
-    /// Hit preparation does not advance; drawing ticks once after input (142247750).
+    /// Hit preparation does not advance; drawing ticks once after input.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw(
         &mut self,
@@ -762,8 +754,8 @@ struct TooltipHit {
     anchor: TooltipAnchor,
 }
 
-/// Producer-specific placement; only CFexShipIcon's group branch supplies a
-/// naval window anchor (1417D5260). Pride, sunk ships and air keep their own default.
+/// Producer-specific placement; ship groups anchor beside the naval window.
+/// Pride, sunk ships and air entries keep their own default placement.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TooltipAnchor {
     #[default]
@@ -810,21 +802,21 @@ impl Drawn {
 #[derive(Clone, Default)]
 pub struct Widget {
     pub text: Option<String>,
-    /// 1417C6130 overrides the text scrollbar's step from its newline count.
+    /// the game overrides the text scrollbar's step from its newline count.
     pub text_scroll_lines: Option<bool>,
     /// Hover text, and the delayed body shown after its longer delay.
     pub tooltip: Option<HoverText>,
     pub tooltip_description: Option<HoverText>,
-    /// Native shortcut tail, appended after the immediate and delayed strings (1402A4080).
+    /// Native shortcut tail, appended after the immediate and delayed strings.
     pub tooltip_shortcut: Option<HoverText>,
     pub tooltip_anchor: TooltipAnchor,
     /// A dynamic hover builder owns both strings ([`tooltips::set_hover`]):
-    /// the window's update (1415C1A60, 1415BF4B0, 1415C0AE0) replaces the
+    /// the window's update replaces the
     /// authored `pdx_tooltip` the widget was created with, so the authored
     /// seed never replaces its text or its refusal.
     pub hover_owned: bool,
     pub sprite: Option<String>,
-    /// 141C5DD20 leaves the existing drawable untouched when its picture path is absent.
+    /// the game leaves the existing drawable untouched when its picture path is absent.
     pub retain_sprite: bool,
     pub flag: Option<String>,
     pub fill: Option<f32>,
@@ -845,9 +837,9 @@ pub struct Widget {
 }
 pub type Values = BTreeMap<String, Widget>;
 /// The viewer's inline flag: this marker, then the resolved flag-atlas key.
-/// Native text presentation resolves its complete key. The game writes 0x12 and a country tag
-/// (CCombatantEntry 1415BA240); the viewer resolves the tag first and marks it
-/// with a byte the localisation loader never makes a control (142386AD0), so
+/// Native text presentation resolves the complete key. The game writes 0x12
+/// and a country tag; the viewer resolves the tag first and marks it with a
+/// byte the localisation loader never makes a control, so
 /// an authored `@` (0x12) inside localised text around it is still refused
 /// by name ([`binding::displayable`]), in combat windows and map hovers alike.
 pub(crate) const INLINE_FLAG: char = crate::map::native_text::RESOLVED_FLAG;

@@ -1,6 +1,6 @@
-//! CAbility::BuildDescription (140FF5220), shared by active-map ability hovers
+//! Ability descriptions, shared by active-map ability hovers
 //! and the ability controller. Its caller supplies the fresh country/commander
-//! carrier (1418BFCE0); the communications tail belongs to that caller.
+//! carrier; the communications tail belongs to that caller.
 
 use super::*;
 use installed_content::abilities::Definition;
@@ -16,7 +16,7 @@ fn newline(text: &mut String) {
 
 /// Raw modifier/adjuster text followed by independent native effect-description
 /// sessions. Known fragments survive failures of other accumulators or effects.
-/// The nonempty result includes 140FF5220's leading LF, before the communications
+/// The nonempty result includes a leading LF, before the communications
 /// helper that the map-counter caller appends.
 pub fn ability_description(
     definition: &Definition,
@@ -32,8 +32,8 @@ pub fn ability_description(
     };
     let selected = crate::triggers::event_scopes::project(scopes, 0);
     let mut text = String::new();
-    // Three direct 14054E050 calls: precision2, no outer colour, include -1,
-    // exclude0, scale100000, no prefix, force_plus0, invert0. No ProcessString.
+    // Three direct calls: precision2, no outer colour, include -1,
+    // exclude0, scale100000, no prefix, force_plus0, invert0. No scope expansion.
     for (label, modifiers) in ["country", "leader", "unit"]
         .into_iter()
         .zip(&definition.modifiers)
@@ -53,7 +53,7 @@ pub fn ability_description(
         }
         newline(&mut text);
     }
-    // +0x538 roster order, Describe(1,NULL,1,0): highlighted token header,
+    // Roster order: highlighted token header,
     // then movement/attack/defence lines with zero indentation.
     for adjuster in &definition.adjusters {
         let fragment = (|| {
@@ -95,7 +95,7 @@ pub fn ability_description(
                 Err(why) => renderer.refuse("ability effect heading", why),
             }
         }
-        // Each virtual BuildDescription(arg4=0) owns its TLS begin/end. In
+        // Each description owns its variable session. In
         // particular one-time writes do not seed the hourly/daily invocation.
         let description = describe(effects, context, scopes);
         text.push_str(&description.text);

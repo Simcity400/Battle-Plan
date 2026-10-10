@@ -88,8 +88,8 @@ impl Totals {
                     .collect(),
             )
         }));
-        // The task-force aggregation is signed i64 (140D5B0E0); negative HP
-        // is malformed because SetStrength@140C2E4D0 clamps it. Refuse locally.
+        // Task-force aggregation is signed i64; negative HP is malformed
+        // because stored strength is clamped. Refuse locally.
         let hp = (self.negative == 0)
             .then(|| i64::try_from(self.hp).ok())
             .flatten();
@@ -198,8 +198,7 @@ impl Census {
         let class = match self.class_keys.entry(token) {
             std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
             std::collections::hash_map::Entry::Vacant(entry) => {
-                // Authored-name token at CSubUnitDefinition+8 (141002DD0),
-                // serialized by CShip::Serialize@140C2EF80. Spellings are dated.
+                // The serialized authored-name token supplies the dated spelling.
                 let spelling = decoded
                     .complete::<tables::LexicalTokens>()
                     .ok()
@@ -268,8 +267,8 @@ impl Census {
                 .as_ref()
                 .is_none_or(|old| !old.is(force_view))
         {
-            // +1D8 roster (140BF5480), +1E0 logical (140BF5290); +1DC is
-            // the expeditionary sender (140BF4F70), never an inferred host.
+            // Roster owner, logical owner and expeditionary sender are separate
+            // recorded links; the sender is never an inferred host.
             let current: HashMap<_, _> = forces
                 .unwrap_or_default()
                 .iter()
@@ -309,7 +308,7 @@ impl Census {
             && (models.is_none()
                 || changed_ids(&frame.tables[TableId::ShipModels.index()], 0, &mut ids));
         let models = models.unwrap_or_default();
-        // GetMaximumStrength@140C29000 clamps the model word to 100 (fixed5).
+        // Maximum strength clamps the model word to 100 (fixed5).
         if sparse {
             let dense = ids.len() >= ships.len();
             let mut ship_index = 0;

@@ -32,8 +32,8 @@ pub struct Capacities {
 }
 
 impl Capacities {
-    /// Serialize@140E5D3B0 (+A0/+E8) and AddEquipmentVariant@140E48C70 (+B8)
-    /// provide three independent live roster counts, with duplicates retained.
+    /// Three independent live equipment rosters provide their own counts,
+    /// with duplicates retained.
     pub(crate) fn presize(
         &mut self,
         memory: &impl Memory,

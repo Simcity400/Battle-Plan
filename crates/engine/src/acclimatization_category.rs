@@ -2,12 +2,11 @@
 
 use crate::{Memory, cpdx_array::Array, read, read_slice};
 
-/// 1406082B0 returns this pointer to a CPdxArray header at +0 whose ordered
-/// entries are the registered category pointers (constructor 140607560).
+/// Pointer to the array header of ordered registered category pointers.
 pub const REGISTRY_RVA: usize = 0x0331_8080;
-/// Acclimatization-category MSVC name string at object start; division_presentation_inputs.rs:959.
+/// Category name string at object start.
 pub const NAME: usize = 0x00;
-/// Acclimatization-category u32 token; serializer 140609C70 keys each weight by it.
+/// Category u32 token used to key serialized weights.
 pub const TOKEN: usize = 0x20;
 
 /// The registered categories as (pointer, token), sorted by pointer. Read once

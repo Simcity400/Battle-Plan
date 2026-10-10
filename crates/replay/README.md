@@ -83,6 +83,8 @@ Naval trees retain native source/child order, formatting gates and root values w
 - Event application time can differ from frame time. Complete empty batches certify only their capture scope; missing batches/partial intervals/lost drains never prove zero. Domain rows own these contracts.
 - [fixed_layout.rs](src/fixed_layout.rs) owns fixed-key/token families and named refusals. Verify complete recorded dictionaries and registered spelling/layout; dynamic keys remain content-driven.
 
+Fixed modifier-name authentication requires initialized executable metadata and reports a family-scoped refusal when it is unavailable. Raw recording histories remain readable. Its name-dependent tests initialize from `BATTLE_PLAN_GAME_DIR`; format and index-membership fixtures use synthetic data without an installation.
+
 Research inventories and definitions key each native template occurrence by database index. Slot inputs append exact occurrence identity with historical absence retained by `Recorded`; equal handles cannot establish assignment continuity. The inventory also retains the native serializer's applied-bonus-count inclusion operand.
 
 ## Add or change a table

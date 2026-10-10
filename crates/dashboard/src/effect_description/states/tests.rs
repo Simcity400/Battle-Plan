@@ -6,6 +6,8 @@ use replay::{frame::TableView, rows::*};
 
 #[test]
 fn state_category_description_uses_cached_validity_and_operand_spelling() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -95,7 +97,9 @@ fn state_category_description_uses_cached_validity_and_operand_spelling() {
 }
 
 #[test]
-fn state_content_descriptions_use_cached_native_names() {
+fn state_content_descriptions_use_cached_names() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -428,7 +432,7 @@ fn state_content_descriptions_use_cached_native_names() {
             "build_railway={path={1} build_only_on_allied=yes}",
             C(1),
             "",
-            Some("1406F3A90"),
+            Some("country/controller eligibility"),
         ),
         (
             "remove_building={type=syn_tower province=1}",
@@ -452,7 +456,7 @@ fn state_content_descriptions_use_cached_native_names() {
             "build_railway={start_state=1 target_state=2}",
             C(1),
             "",
-            Some("140E7E560"),
+            Some("endpoint selection/pathfinding"),
         ),
         ("add_building_construction={}", C(1), "", Some("template")),
         (
@@ -465,13 +469,13 @@ fn state_content_descriptions_use_cached_native_names() {
             "modify_building_resources={building=syn_mill resource=syn_ore}",
             C(1),
             "",
-            Some("0x58"),
+            Some("missing or failed amount assignment leaves the amount uninitialised"),
         ),
         (
             "modify_building_resources={building=syn_mill amount=1}",
             C(1),
             "",
-            Some("0x5C"),
+            Some("missing resource leaves the resource index uninitialised"),
         ),
     ] {
         let mut scopes = EventScopes::new(vec![EventScope::of(object)]);
@@ -496,13 +500,15 @@ fn state_content_descriptions_use_cached_native_names() {
 }
 
 #[test]
-fn state_content_province_display_uses_native_fallbacks() {
+fn state_content_province_display_uses_fallbacks() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
     {
-        // VP naming@140E68E30 asks the state's owner for GetOriginalTagOrTag.
-        // This owner has no original reference; +0x130C zero selects its own tag.
+        // Victory-point names use the state owner's original or current tag.
+        // This owner has no original reference; zero selects its own tag.
         rows.iter_mut()
             .find(|row| row.country == 100)
             .unwrap()
@@ -635,7 +641,9 @@ fn state_content_province_display_uses_native_fallbacks() {
 }
 
 #[test]
-fn state_effect_zero_keeps_native_target() {
+fn state_effect_zero_keeps_target() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     for (body, expected) in [
         ("add_state_claim=0", "Claim \n"),
@@ -651,7 +659,9 @@ fn state_effect_zero_keeps_native_target() {
 }
 
 #[test]
-fn reserved_country_names_describe_reached_omitted_country_operands() {
+fn reserved_country_names_describe_omitted_country_operands() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.catalogue.localisation = fixture
         .catalogue
@@ -730,6 +740,8 @@ fn reserved_country_names_describe_reached_omitted_country_operands() {
 
 #[test]
 fn country_effect_state_links_use_recorded_owner() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.catalogue.localisation = fixture
         .catalogue
@@ -789,12 +801,14 @@ fn country_effect_state_links_use_recorded_owner() {
 }
 
 #[test]
-fn native_states_branches() {
+fn states_branches() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
     {
-        // VP descriptions reach the owner's original-or-own getter@1406DF830.
+        // VP descriptions reach the owner's original-or-own.
         rows.iter_mut()
             .find(|row| row.country == 100)
             .unwrap()
@@ -962,7 +976,12 @@ fn native_states_branches() {
         ),
         ("add_state_core=capital", C(1), "Core \n", None),
         ("add_state_core=capital", S(1), "Core Four\n", None),
-        ("add_state_core=capital", S(6), "", Some("+0x1018")),
+        (
+            "add_state_core=capital",
+            S(6),
+            "",
+            Some("reserved country zero's capital state"),
+        ),
         (
             "goto_state=capital",
             S(999),
@@ -1026,7 +1045,7 @@ fn native_states_branches() {
             "set_state_controller_to=event_target:syn_state",
             S(1),
             "",
-            Some("CCountry[0]"),
+            Some("country zero"),
         ),
         (
             "transfer_state_to=occupied",
@@ -1034,7 +1053,7 @@ fn native_states_branches() {
             "TransferTo Beta\n",
             None,
         ),
-        ("transfer_state_to=0", S(1), "", Some("CCountry[0]")),
+        ("transfer_state_to=0", S(1), "", Some("country zero")),
         (
             "set_state_name=SYN_NAME",
             S(1),
@@ -1189,13 +1208,13 @@ fn native_states_branches() {
             "transfer_state_to=controller",
             C(1),
             "",
-            Some("CCountry[0]"),
+            Some("country zero"),
         ),
         (
             "transfer_state_to=owner",
             EventObject::Province(1),
             "",
-            Some("CEventScope.state_id"),
+            Some("event scope's state ID"),
         ),
         ("start_resistance=ROOT", S(0), "Init", None),
         ("start_resistance=yes", S(1), "Init", None),
@@ -1265,8 +1284,8 @@ fn native_states_branches() {
             "Target \u{11}R+2.4%\u{11}!/\u{12}AAA Alpha/\u{12}BBB Beta/2 [This.GetName] (2 days [This.GetName])\n",
             None,
         ),
-        // ReadEffect@14031B3B0 fills CScopedVariable operands; Own@1403144B0
-        // calls EvaluateCountryTag@140536ED0. Unlike start_resistance's country
+        // effect parsing fills scoped variable operands;
+        // evaluate those operands. Unlike start_resistance's country
         // selector, this reads the state's computed `controller` builtin.
         (
             "add_resistance_target={amount=var:syn occupied=event_target:syn_country occupier=controller days=var:syn}",
@@ -1290,7 +1309,7 @@ fn native_states_branches() {
             "add_resistance_target={amount=1 days=random occupied=AAA occupier=BBB}",
             S(1),
             "",
-            Some("ScriptVariables.seed (CVariables+8)"),
+            Some("ScriptVariables.seed"),
         ),
         (
             "add_resistance_target={amount=0 add_political_power=1}",
@@ -1543,19 +1562,17 @@ fn native_states_branches() {
         );
         if let Some(reason) = refusal {
             let parsed = installed_content::parser::parse(body.as_bytes()).unwrap();
-            let class =
-                installed_content::effect_keys::native_class(&parsed.items[0].keyword().unwrap().folded())
-                    .unwrap();
+            let effect_key = key(&parsed.items[0]);
             assert!(
                 out.refusals
                     .keys()
-                    .any(|why| why.contains(class.name) && why.contains(reason)),
+                    .any(|why| why.contains(effect_key.as_str()) && why.contains(reason)),
                 "{body}: {:?}",
                 out.refusals
             );
         }
     }
-    // The shared child projection sends non-own fields through ReadEffect@1405345D0.
+    // The shared child projection sends non-own fields through effect parsing.
     let mut scopes = EventScopes::new(vec![EventScope::of(S(1))]);
     let out = fixture.render(
         "add_resistance_target={amount=0 ignored_field=yes}",
@@ -1591,6 +1608,8 @@ fn native_states_branches() {
 
 #[test]
 fn state_tables_refuse_gaps_and_country_names_scale() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     for (table, rows, body, name) in [
         (

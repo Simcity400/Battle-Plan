@@ -15,7 +15,7 @@ fn hour(year: i64, month: usize, day: i64, hour: i64) -> i32 {
     (i64::from(HOUR_EPOCH) + (year * 365 + before + day - 1) * 24 + hour) as i32
 }
 
-/// Projection fixtures already own their native read/identity evidence. Give
+/// Projection fixtures already have recorded reads and identities. Give
 /// them a separate settled empty Rocket scope, without fabricating designs.
 fn zero_rocket_scope(scanned: &mut ScannedProduced) {
     scanned.rocket.tags = scanned
@@ -938,6 +938,8 @@ fn produced_decode(
 
 #[test]
 fn produced_empty_resolved_groups_remain_unknown_for_an_unresolved_only_country() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::equipment_produced::{
         Named, ProducedGrouping, ProducedMeasure, reply, scan,
     };
@@ -1026,6 +1028,8 @@ fn produced_empty_resolved_groups_remain_unknown_for_an_unresolved_only_country(
 
 #[test]
 fn produced_types_an_unresolved_variant_could_belong_to_are_unknown_while_it_holds_anything() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{
         equipment::Texts,
         equipment_produced::{Named, ProducedGrouping, ProducedMeasure, reply, scan},
@@ -1688,6 +1692,8 @@ fn coverage_merges_overlaps_and_subtracts_unknown_spans_without_walking_hours() 
 
 #[test]
 fn produced_types_and_names_come_from_the_recorded_content_stack_mods_included() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{
         equipment::Texts,
         equipment_produced::{Named, ProducedGrouping, ProducedMeasure, reply, scan},

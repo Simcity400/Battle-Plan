@@ -1,6 +1,6 @@
 //! How a compiled stage's output depends on its constant buffers' scalars, read from the program
 //! itself (the naga module DXC's SPIR-V translates to), so a caller can tell how long a draw keeps
-//! changing on the clock alone: `CSpriteType::draw@14222D5A0` uploads the graphics clock `Time`
+//! changing on the clock alone: sprite draws upload the graphics clock `Time`
 //! and the drawable's `AnimationTime` (the restart of its state effect) into buffer `b0`, and the
 //! program decides what it does with them.
 //!

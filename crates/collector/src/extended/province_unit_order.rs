@@ -39,8 +39,8 @@ impl Capacities {
         base: usize,
         state: usize,
     ) -> Result<(), &'static str> {
-        // Empty row storage still walks all +E0/+EC and +F8/+104 headers
-        // (141277A00, 1418DDF50), without acquiring the unit bodies.
+        // Empty row storage still walks all unit-order headers without
+        // acquiring the unit bodies.
         let demand =
             cprovince::walk_unit_order_with_land(memory, base, state, &mut [], &mut [], |_, _| {
                 Ok(())

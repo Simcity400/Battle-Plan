@@ -556,7 +556,7 @@ fn live_pool_signed_nets_include_rounding_gains_and_real_removals() {
 
 #[test]
 fn negative_damage_gain_is_signed() {
-    // 140C7C1AC scales by 1-damage; damage=-0.1 changes 10 to 11.
+    // Negative damage of one tenth scales ten equipment units to eleven.
     let mut events = Vec::new();
     removals(&mut [row(70, 1000000)], &mut [row(70, 1100000)], |d, q| {
         events.push((d, q));
@@ -567,7 +567,7 @@ fn negative_damage_gain_is_signed() {
 
 #[test]
 fn fractional_pool_rounding_gain_is_signed() {
-    // 140C7C327 -> 140FFCCE0 can ceil 10.3*0.99=10.197 to 11.
+    // Stochastic ceiling can round a reduced fractional pool upward.
     let mut events = Vec::new();
     removals(&mut [row(70, 1030000)], &mut [row(70, 1100000)], |d, q| {
         events.push((d, q));
@@ -578,7 +578,7 @@ fn fractional_pool_rounding_gain_is_signed() {
 
 #[test]
 fn scripted_factor_above_one_and_sign_flip_are_signed() {
-    // Evaluate@14049B2B3 is unclamped before CALLs 14049B2C0/14049B2F3.
+    // Scripted equipment fractions are unclamped before stockpile and division scaling.
     let mut events = Vec::new();
     removals(&mut [row(70, 400001)], &mut [row(70, 800002)], |d, q| {
         events.push((d, q));

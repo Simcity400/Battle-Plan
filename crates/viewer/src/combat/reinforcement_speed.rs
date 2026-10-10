@@ -1,10 +1,9 @@
-//! Reinforcement's movement factor, `140C76E90 -> 140C70670(1, 1, nullptr)`.
+//! Reinforcement movement factor.
 //!
-//! This call ignores terrain and combat movement penalties. It is not the
-//! route's effective speed and must not inherit route organisation/fuel terms.
-//! The collector preserves the dependency graph; all arithmetic below belongs
-//! to playback. Native fixed5 products wrap at 64 bits before signed division.
-//! Every refusal names the recorded operand, scope or division that failed.
+//! Ignore terrain and combat movement penalties; route organisation and fuel
+//! terms do not contribute. The collector records dependencies; playback owns
+//! all arithmetic. Fixed5 products wrap at 64 bits before signed division.
+//! Every refusal names the failed recorded operand, scope or division.
 use super::fixed::{EXCEPTIONAL, ONE, TRAP, mul, ratio};
 use replay::rows::{LandCombatDivisionRow, LandReinforcementModifier};
 
@@ -482,8 +481,8 @@ fn transport(inputs: &Inputs<'_>) -> Speed {
         }
     }
     if amount > 0 && category_mask != 0 && source.present != 0 {
-        // 140E908E0 composes the raw static entry before 141956170 asks the
-        // ordinary metadata-gated getter; clamping before multiplication differs.
+        // Compose the raw static entry before applying the metadata-gated
+        // getter; clamping before multiplication differs.
         Ok(value.wrapping_add(inputs.effective(source, mul(amount, source.raw))))
     } else {
         Ok(value)
@@ -613,7 +612,7 @@ mod tests {
         set(&mut row, 0, 0x5e, -20_000);
         set(&mut row, 0, 0x17f, -40_000);
         assert_eq!(modifier(&row), Ok(60_000));
-        // Exceptional grace division gives +0xffffffff, then clamps supplied1.
+        // Exceptional grace division gives the positive sentinel, then clamps the supply ratio.
         row.reinforcement.scalar_values[6] = 0;
         assert_eq!(modifier(&row), Ok(90_000));
         row.reinforcement.flags[11] = 0;

@@ -191,7 +191,7 @@ export interface LaneOptions {
   countries: ReadonlySet<string> | null;
   /** Manual all-ever holders or group holders at their counted membership dates. */
   countryIds?: ReadonlySet<string> | null;
-  /** The neutral colour of an overlord's band (a theme colour, as the mock-up's war bars). */
+  /** The neutral theme colour of an overlord's band. */
   bandColor?: string;
 }
 

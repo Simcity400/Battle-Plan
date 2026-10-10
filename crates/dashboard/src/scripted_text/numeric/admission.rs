@@ -1,74 +1,62 @@
 //! Numeric localisation's live-scope grammar and property dispatch admission.
 
 use super::*;
+use engine::executable_tables::numeric::{
+    NumericIdentity, NumericProperty, NumericScope, NumericTables,
+};
 
-// 1412BA1F0 compares these exact suffix bytes in the country/state/leader/
-// character registries (141A7D880, 141A85570, 141A87CD0, 141A732A0), then
-// the six callbacks registered by 1400783C0 in 143371100. These are native
-// code entry points, not content names. The other three registries do not
-// independently enter property dispatch; their GetName is already here.
-const PROPERTIES: &[&str] = &[
-    "GetAdjective",
-    "GetAdjectiveCap",
-    "GetAgency",
-    "GetCapitalVictoryPointName",
-    "GetCodeName",
-    "GetCommunistLeader",
-    "GetCommunistParty",
-    "GetContinent",
-    "GetDemocraticLeader",
-    "GetDemocraticParty",
-    "GetFactionName",
-    "GetFascistLeader",
-    "GetFascistParty",
-    "GetFlag",
-    "GetHerHim",
-    "GetHerHimCap",
-    "GetHerHis",
-    "GetHerHisCap",
-    "GetHerselfHimself",
-    "GetHerselfHimselfCap",
-    "GetHersHis",
-    "GetHersHisCap",
-    "GetID",
-    "GetIdeology",
-    "GetIdeologyGroup",
-    "GetLastElection",
-    "GetLeader",
-    "GetLeaderSkill",
-    "GetManpower",
-    "GetName",
-    "GetNameDef",
-    "GetNameDefCap",
-    "GetNameWithFlag",
-    "GetNeutralLeader",
-    "GetNeutralParty",
-    "GetNonIdeologyAdjective",
-    "GetNonIdeologyAdjectiveCap",
-    "GetNonIdeologyName",
-    "GetNonIdeologyNameDef",
-    "GetNonIdeologyNameDefCap",
-    "GetOldAdjective",
-    "GetOldAdjectiveCap",
-    "GetOldName",
-    "GetOldNameDef",
-    "GetOldNameDefCap",
-    "GetPartySupport",
-    "GetRank",
-    "GetRulingIdeology",
-    "GetRulingIdeologyNoun",
-    "GetRulingParty",
-    "GetRulingPartyLong",
-    "GetSheHe",
-    "GetSheHeCap",
-    "GetTag",
-    "GetDateString",
-    "GetDateStringShortMonth",
-    "GetDateStringNoHour",
-    "GetDateStringNoHourLong",
-    "GetTokenKey",
-    "GetTokenLocalizedKey",
-];
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PropertyHandler {
+    Country,
+    State,
+    UnitLeader,
+    Character,
+    Balance,
+    Callback,
+}
+
+fn property_handler(property: &NumericProperty) -> Result<PropertyHandler, String> {
+    Ok(match property.identity {
+        NumericIdentity::Scope {
+            scope: NumericScope::Country,
+            ordinal: ordinal @ 46..=58,
+            ..
+        } => {
+            if !balance::matches_numeric_handler(property.name, ordinal) {
+                return Err(format!(
+                    "{}: numeric balance property has no matching implemented handler",
+                    property.name
+                ));
+            }
+            PropertyHandler::Balance
+        }
+        NumericIdentity::Scope {
+            scope: NumericScope::Country,
+            ..
+        } => PropertyHandler::Country,
+        NumericIdentity::Scope {
+            scope: NumericScope::State,
+            ..
+        } => PropertyHandler::State,
+        NumericIdentity::Scope {
+            scope: NumericScope::UnitLeader,
+            ..
+        } => PropertyHandler::UnitLeader,
+        NumericIdentity::Scope {
+            scope: NumericScope::Character,
+            ..
+        } => PropertyHandler::Character,
+        NumericIdentity::Callback { .. } => PropertyHandler::Callback,
+    })
+}
+
+fn registered_property(tables: &NumericTables, name: &str) -> Result<bool, String> {
+    tables
+        .exact(name)
+        .map(property_handler)
+        .transpose()
+        .map(|handler| handler.is_some())
+}
 
 pub(super) fn admit<'a>(
     text: &ScriptedText<'a>,
@@ -77,12 +65,11 @@ pub(super) fn admit<'a>(
     start: usize,
 ) -> Result<(), String> {
     if let Some((_, suffix)) = operand.rsplit_once('.') {
-        if PROPERTIES.contains(&suffix)
-            || balance::is_property_exact(suffix)
+        if registered_property(&engine::executable_tables::get().numeric, suffix)?
             || text.content.names.entries.contains_key(suffix.as_bytes())
         {
             return Err(format!(
-                "{suffix}: numeric localisation's property dispatch is not reproduced (1412BA1F0)"
+                "{suffix}: numeric localisation's property dispatch is not reproduced"
             ));
         }
         if !text.content.names.unknown.is_empty() {
@@ -94,7 +81,7 @@ pub(super) fn admit<'a>(
     }
     let evaluator = scopes.evaluator(text, crate::triggers::Temps::Stale)?;
     let parsed = evaluator.operand(operand.as_bytes())?;
-    // These grammar exits precede 140536AB0. Nested defaults, indices,
+    // These grammar exits precede live-scope character selection. Nested defaults, indices,
     // targets and prefixes parse with a default scope, not the live one.
     if parsed.literal.is_some()
         || parsed.token.is_some()
@@ -141,6 +128,36 @@ mod tests {
     use super::*;
     use replay::rows::{CharacterRow, CountryCharacterRow, LexicalTokenRow, TableId, TableRows};
 
+    #[test]
+    fn property_admission_uses_runtime_names_and_handler_identity() {
+        let tables = NumericTables {
+            properties: vec![NumericProperty {
+                name: "SyntheticProperty",
+                identity: NumericIdentity::Scope {
+                    scope: NumericScope::State,
+                    ordinal: 1,
+                    handler_rva: 1,
+                },
+            }],
+        };
+        assert_eq!(registered_property(&tables, "SyntheticProperty"), Ok(true));
+        assert_eq!(registered_property(&tables, "syntheticproperty"), Ok(false));
+        assert_eq!(registered_property(&tables, "GetName"), Ok(false));
+        let wrong_balance = NumericProperty {
+            name: "SyntheticProperty",
+            identity: NumericIdentity::Scope {
+                scope: NumericScope::Country,
+                ordinal: 46,
+                handler_rva: 1,
+            },
+        };
+        assert!(
+            property_handler(&wrong_balance)
+                .unwrap_err()
+                .contains("matching implemented handler")
+        );
+    }
+
     fn fixture() -> (
         crate::catalogue::Catalogue,
         crate::catalogue::tests::Folder,
@@ -170,6 +187,8 @@ mod tests {
 
     #[test]
     fn live_character_grammar_uses_country_rosters_before_temps() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder, mut frame) = fixture();
         let event = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
         {
@@ -183,12 +202,12 @@ mod tests {
             assert!(
                 admit(&text, "temp_var:AtTaCk", &scopes, 0)
                     .unwrap_err()
-                    .contains("140536AB0")
+                    .contains("live character")
             );
             assert!(
                 admit(&text, "attack.value", &scopes, 0)
                     .unwrap_err()
-                    .contains("140536AB0")
+                    .contains("live character")
             );
             assert!(admit(&text, "3.5", &scopes, 0).is_ok());
             assert!(admit(&text, "ROOT.attack", &scopes, 0).is_ok());
@@ -210,6 +229,8 @@ mod tests {
 
     #[test]
     fn exact_properties_and_missing_character_census_remain_named() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder, mut frame) = fixture();
         let event = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
         *frame.tables[TableId::Characters.index()] = TableView::Unavailable {
@@ -241,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn original_character_fallback_runs_only_after_native_temp_admission() {
+    fn original_character_fallback_runs_only_after_temp_admission() {
         let (catalogue, _folder, mut frame) = fixture();
         *frame.tables[TableId::LexicalTokens.index()] =
             TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
@@ -266,7 +287,7 @@ mod tests {
             evaluator
                 .scoped_localisation_value(b"target_province?5", scopes)
                 .unwrap_err()
-                .contains("140536BB0")
+                .contains("before stored variables")
         );
         assert_eq!(
             evaluator.scoped_value(b"target_province?5", scopes),
@@ -290,13 +311,15 @@ mod tests {
             evaluator
                 .scoped_localisation_value(b"ROOT.attack", scopes)
                 .unwrap_err()
-                .contains("140536BB0")
+                .contains("before stored variables")
         );
         assert_eq!(evaluator.scoped_value(b"ROOT.attack", scopes), Ok(90_000));
     }
 
     #[test]
     fn known_empty_character_registry_needs_no_token_dictionary() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder, mut frame) = fixture();
         *frame.tables[TableId::Characters.index()] =
             TableView::Complete(TableRows::Characters(Vec::new()));

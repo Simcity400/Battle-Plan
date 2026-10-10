@@ -148,13 +148,13 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// The container's names are plain bytes; every shipped one is ASCII, and a
+/// The container's names are plain bytes; ASCII names retain their spelling, and a
 /// byte above 127 becomes the Latin-1 character rather than a parse error.
 fn latin1(bytes: &[u8]) -> String {
     bytes.iter().map(|&byte| char::from(byte)).collect()
 }
 
-/// Parses a `.mesh` or `.anim` container into its node tree (section 1.1).
+/// Parses a `.mesh` or `.anim` container into its node tree.
 ///
 /// Errors are named `InvalidData` for a wrong magic, an unknown property type,
 /// a byte that starts no token, a depth that skips a level, or any length that

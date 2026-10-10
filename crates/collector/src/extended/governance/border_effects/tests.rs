@@ -133,7 +133,7 @@ impl Fixture {
             (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193)
         });
         self.integer(0x15500 + event_namespace::NAME_HASH, hash as i32);
-        // 1413D69D0 uses reference type 0x32; 1401F03A0 resolves test.7.
+        // The event reference resolves test.7 in the synthetic namespace.
         let handle = (1_000_007_u64 << 32) | 0x32;
         self.word(IMAGE + registry::LOW_ROOTS_RVA + 0x32 * 8, 0x19000);
         self.word(0x19000 + registry::ENTRIES, 0x19100);
@@ -148,14 +148,14 @@ impl Fixture {
         self.put(cell + bucket::DISTANCE, &[1]);
         self.word(cell + bucket::TYPE, handle as usize);
         self.word(cell + bucket::OBJECT, EVENT);
-        // CEvent/CEventOption RTTI, 14116A440/14116A610; immediate effect +238.
+        // Event and option identities, followed by the immediate effect.
         self.word(EVENT, IMAGE + 0x0298_2fb8);
         self.word(EVENT + 8, handle as usize);
         self.word(EVENT + 0x118, IMAGE + 0x0298_2f18);
         self.word(EVENT + 0x238, IMAGE + 0x027b_e4c0);
         self.array(EVENT + 0x240, 0x18900, 1);
         self.word(0x18900, 0x18a00);
-        // CRemoveTargetedDecisionEffect RTTI; name +58 at 14038BF60.
+        // Targeted-decision removal effect with the requested name.
         self.word(0x18a00, IMAGE + 0x0275_e4c0);
         self.text(0x18a00 + 0x58, b"needed");
     }

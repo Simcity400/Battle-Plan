@@ -1,5 +1,5 @@
-//! Standard raw success factors, 14157BC30/14157C670. Mapping and text are
-//! separate: every arithmetic step here is native wrapping fixed5 arithmetic.
+//! Standard raw success factors using wrapping fixed5 arithmetic.
+//! Mapping and text are separate.
 use super::super::{RaidAssets, arrows, script::World, target_country};
 use super::{chance, intel};
 use engine::modifier_keys as keys;
@@ -419,7 +419,7 @@ impl<'a, 'w> Inputs<'a, 'w> {
                     .regions
                     .get(&province)
                     .ok_or("target province has no strategic region")?;
-                // 140F49710's fallback constant is executable code, not a content ID assumption.
+                // The fallback is a fixed control value, independent of content IDs.
                 let base = self.one(CONTEXT, BASE_REGION).unwrap_or(0xaa) as u32;
                 if target != 0 && base != 0 {
                     factor = factor.wrapping_add(self.modifier(
@@ -437,8 +437,8 @@ impl<'a, 'w> Inputs<'a, 'w> {
     }
 }
 
-/// 140F652A0 gives supported air-superiority priority over interception;
-/// its fallback 140F64560 never returns interception.
+/// Supported air-superiority takes priority over interception;
+/// the fallback never returns interception.
 fn intercepts(enabled: u32, supported: u32) -> bool {
     let both = enabled & supported;
     both & 1 == 0 && both & 4 != 0

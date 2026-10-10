@@ -589,8 +589,8 @@ fn build(
         );
     }
     for event in &subject_scan.starts {
-        // CRelation::save@140D19260 writes +0x20 as start_date. The shared
-        // scan proves both tags at that hour before keeping the exact date.
+        // The relation stores start_date. The shared scan proves both tags
+        // at that hour before keeping the exact date.
         builder.row(
             EventFeedKind::BecameSubject,
             RowDate {
@@ -647,7 +647,7 @@ fn build(
     }
     for (tag, scanned) in &parties.countries {
         for run in scanned.ruling.iter().filter(|run| !run.starts_segment) {
-            // SetRulingPartyByIdeologyGroup@140B9F440 writes no date.
+            // Ruling-party changes store no date.
             let name = scanned
                 .party_name_runs
                 .iter()
@@ -749,7 +749,7 @@ fn build(
                         .0
                     })
                     .clone();
-                // IsLaw is content group +0x58, loaded by 140FC0B30/140FC0E90.
+                // The idea group's authored law flag selects this branch.
                 let kind = if span.character.is_some() {
                     EventFeedKind::AdvisorHired
                 } else if info.law {
@@ -906,8 +906,8 @@ fn build(
             let (Some(old), Some(new_total)) = (old.total, new.total) else {
                 continue;
             };
-            // GetNukes@1410828A0 supplies signed i32 totals. Their observed
-            // positive difference can span u32; widening retains every rise.
+            // Nuclear stockpile totals are signed i32. Their observed positive
+            // difference can span u32; widening retains every rise.
             let increase = i64::from(new_total) - i64::from(old);
             if increase > 0 {
                 let amount = u32::try_from(increase)
@@ -1066,7 +1066,7 @@ fn focus_completion_rows(
                     }
                 }
                 let item = builder.item(item)?;
-                // AddCompletedFocus@1402CD170 retains ordinal/token, no date.
+                // Completed-focus entries retain ordinal/token, no date.
                 builder.row(
                     EventFeedKind::FocusCompleted,
                     RowDate::by(event.hour),

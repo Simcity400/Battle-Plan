@@ -3,17 +3,17 @@
 //! which the game counts nowhere per line. A detour only records and calls the
 //! original; it never changes game behaviour and calls no game function.
 //!
-//! The delivery site runs only when a ProduceEquipment delivers, with the
-//! units times [`UNIT_SCALE`]; from one of the four ProduceEquipment call sites
+//! The delivery site runs only when a production call delivers, with the
+//! units times [`UNIT_SCALE`]; from one of the four equipment production callers
 //! it leaves that amount pending on its thread. The credit site ends every
-//! ProduceEquipment with the count the game credits the line's organisation;
-//! it takes the pending delivery of the same ProduceEquipment and appends the
+//! production call with the count the game credits the line's organisation;
+//! it takes the pending delivery of the same production call and appends the
 //! line's handle, producing country, variant and organisation with both counts
 //! and the exact signed CREDIT input, including ticks with no delivery,
 //! to a bounded lock-free log. A naval line that cannot deploy credits without
 //! delivering, so the two counts differ exactly there and on non-positive
-//! counts. Rocket spending comes from DailyProduce (140F5C150), and its
-//! delivery uses the same DELIVERY hook with return PC 140F5C24A.
+//! counts. Rocket spending comes from daily production, and its delivery
+//! uses the same DELIVERY hook with a distinct return PC.
 //!
 //! Every clocked hourly callback hands the log over since its last drain into
 //! its frame ([`drain`]); the spool totals it per branch
@@ -190,7 +190,7 @@ static BASE: AtomicUsize = AtomicUsize::new(0);
 static CONSUMED: &AtomicU64 = &OBSERVATION.consumed;
 /// Why the hooks are not installed, when they are not.
 static UNHOOKED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-/// `[credits, deliveries from a ProduceEquipment, other deliveries, entries,
+/// `[credits, deliveries from a production call, other deliveries, entries,
 /// inexact entries, drains, entries handed over, overflowed logs, unobserved
 /// drains, failed producer reads]`.
 static COUNTERS: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
@@ -223,13 +223,13 @@ pub(crate) fn refuse_sizing(reason: &'static str) {
 pub struct Entry {
     /// Common-log payload discriminator, independent of equipment fields.
     pub kind: OutputKind,
-    /// The line's CID (+0x08), `ProductionLines.handle`.
+    /// The line's CID, `ProductionLines.handle`.
     pub line: u64,
     /// Producing country's raw reference, resolved through CountryLinks.
     pub country: u32,
     /// The produced variant's CID, zero when the line had no variant.
     pub variant: u64,
-    /// The organisation CID the game credits (+0x90), zero for none.
+    /// The organisation CID the game credits, zero for none.
     pub mio: u64,
     /// Equipment units are zero without an exact paired delivery. Rocket
     /// DELIVERY retains known signed units even if ownership is inexact.
@@ -239,8 +239,8 @@ pub struct Entry {
     /// Applied fixed5 progress, classified as factory output or instant input.
     /// Classification fails together; units/MIO remain independently exact.
     pub spending: Option<(i64, i64)>,
-    /// The caller was a ProduceEquipment and any delivery paired with it: the
-    /// same ProduceEquipment, the same variant, and a nonnegative whole number
+    /// The caller produced equipment and any delivery paired with it: the
+    /// same production call, the same variant, and a nonnegative whole number
     /// of units equal to the credit (including a conversion clamped to zero).
     /// Rocket spending uses operand completeness; Rocket DELIVERY uses
     /// producer/design coherence independently of signed unit availability.
@@ -326,11 +326,11 @@ pub(crate) fn rocket_unavailable_reason() -> Option<&'static str> {
     rocket_observer::unavailable_reason()
 }
 
-/// A delivery waiting for the credit of its ProduceEquipment.
+/// A delivery waiting for the credit of its production call.
 #[derive(Clone, Copy)]
 struct Pending {
     generation: Option<u64>,
-    /// Index of the delivering ProduceEquipment (`HookSite::callers`).
+    /// Index of the delivering equipment production caller (`HookSite::callers`).
     producer: Option<usize>,
     variant: usize,
     amount: i64,
@@ -363,7 +363,7 @@ impl Call {
     }
 }
 
-/// The ProduceEquipment index whose call returns to `caller`, if any.
+/// The equipment production caller index returning to `caller`, if any.
 fn producer(site: &HookSite, caller: usize) -> Option<usize> {
     let base = BASE.load(Ordering::Relaxed);
     site.callers
@@ -378,7 +378,7 @@ fn live_u64(address: usize) -> u64 {
 }
 
 /// After the delivery site returned to `caller`: leave its amount pending when
-/// a ProduceEquipment called it.
+/// a production call called it.
 fn observe_delivery(caller: usize, variant: usize, amount: i64) {
     let Some(index) = producer(&DELIVERY, caller) else {
         COUNTERS[2].fetch_add(1, Ordering::Relaxed);
@@ -694,7 +694,7 @@ pub(crate) fn reset_log_for_test(capacity: usize) {
     };
 }
 
-/// One ProduceEquipment of a synthetic line: the delivery (when `delivered`
+/// One production call of a synthetic line: the delivery (when `delivered`
 /// is some) and the credit, as the native calls return to `producer`'s sites.
 /// Hold [`test_lock`].
 #[cfg(test)]
@@ -952,7 +952,7 @@ mod tests {
         observe_for_test(false);
     }
 
-    /// Deliveries pair with the credit of the same ProduceEquipment; a naval
+    /// Deliveries pair with the credit of the same production call; a naval
     /// line that cannot deploy credits without delivering; ticks without
     /// either still retain the applied input; rocket delivery is never paired.
     #[test]
@@ -1041,7 +1041,7 @@ mod tests {
         observe_for_test(true);
         let a = Line::new(0x11_0000_0021, 0x5_0000_0046, 0);
         let other = Line::new(0x12_0000_0021, 0x6_0000_0046, 0);
-        // 140F5979D/140F597B8..BD can clamp the conversion to zero after
+        // Conversion can clamp to zero after
         // entering the positive-count block, which still calls both hooks.
         produce_for_test(a.address(), MILITARY, 0, Some(0));
         produce_for_test(a.address(), MILITARY, 1, Some(UNIT_SCALE));
@@ -1102,7 +1102,7 @@ mod tests {
         observe_for_test(false);
     }
 
-    /// A delivery that another ProduceEquipment, another variant, a second
+    /// A delivery that another production call, another variant, a second
     /// delivery or an amount that is not whole units claims is not guessed.
     #[test]
     fn deliveries_that_do_not_pair_exactly_make_the_tick_inexact() {

@@ -147,7 +147,7 @@ fn group_commander_null_and_refusal_are_distinct_saved_outcomes() {
         changed
             .differences
             .iter()
-            .any(|line| line.contains("saved direct +88"))
+            .any(|line| line.contains("saved direct leader"))
     );
     packet.commander = None;
     let mut refused = Report::default();
@@ -176,7 +176,7 @@ fn parent_commander_and_failed_numeric_leaf_cannot_hide_direct_leader_difference
         report
             .differences
             .iter()
-            .any(|line| line.contains("saved direct +88"))
+            .any(|line| line.contains("saved direct leader"))
     );
     assert!(
         report
@@ -204,6 +204,8 @@ fn building(saved: &mut Save, province: u32, name: &[u8], healthy: i16) {
 
 #[test]
 fn fort_sum_uses_exact_signed_content_weights_and_healthy_not_total_levels() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_, mut saved, _, _) = super::super::tests::fixture();
     let content = installed_content::buildings::parse(
         b"buildings={cosmic={land_fort=2147483647} other={land_fort=-3} maritime={naval_fort=8}}",
@@ -226,6 +228,8 @@ fn fort_sum_uses_exact_signed_content_weights_and_healthy_not_total_levels() {
 
 #[test]
 fn unknown_or_ambiguous_fort_content_is_refused_instead_of_classified_by_name() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_, mut saved, _, _) = super::super::tests::fixture();
     building(&mut saved, 17, b"unmapped", 1);
     let content =
@@ -242,6 +246,8 @@ fn unknown_or_ambiguous_fort_content_is_refused_instead_of_classified_by_name() 
 
 #[test]
 fn fort_saved_difference_survives_an_independent_state_modifier_refusal() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut frame, mut saved, _, _) = super::super::tests::fixture();
     fort_dictionary(&mut frame);
     let content =
@@ -460,6 +466,8 @@ fn country_frame_dispatch_refuses_negative_roster_owner_without_losing_actual_ze
 
 #[test]
 fn shared_fort_keyword_keeps_two_provinces_content_and_difference_failures_independent() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut frame, mut saved, _, _) = super::super::tests::fixture();
     fort_dictionary(&mut frame);
     let content =

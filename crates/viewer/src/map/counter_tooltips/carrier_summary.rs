@@ -1,11 +1,11 @@
-//! CAirBase::summary@140C45850, shared by at-sea and port carrier controls.
-//! Membership stays the base's registered pools, never wings merely located there.
+//! Carrier air-base summaries shared by at-sea and port controls.
+//! Membership uses registered base pools rather than wings merely located there.
 
 use super::{Arg, Context, Localisation, Tooltip, append, localise, refuse};
 use replay::rows::{AirBaseRegistrationRow, AirBaseRow, AirWingRow, CarrierAirPool, tables};
 use std::collections::BTreeMap;
 
-/// 140FFE9A0 has an exact single-mask switch. Unknown and combined masks
+/// The game has an exact single-mask switch. Unknown and combined masks
 /// produce empty mission text, rather than selecting the first active bit.
 fn mission_key(mask: u32) -> Option<&'static str> {
     Some(match mask {
@@ -31,8 +31,8 @@ fn mission_key(mask: u32) -> Option<&'static str> {
     })
 }
 
-/// 140C3BA80 counts positive-plane WINGS by their native (pool short name,
-/// status) string pair; 140C34660 sorts the pair by bytes. The caller passes
+/// Count positive-plane WINGS by their native (pool short name,
+/// status) string pair; the game sorts the pair by bytes. The caller passes
 /// the authentic pool owner's name selection, independently of wing overrides.
 pub(super) fn wing_groups<'a>(
     loc: &Localisation,
@@ -121,7 +121,7 @@ fn base_header(loc: &Localisation, kind: i32, host_name: &str) -> Result<String,
         0 => "AIR_BASE_LEVEL_UNKNOWN",
         1 => "ROCKET_SITE_LEVEL_UNKNOWN",
         2 => "GUN_EMPLACEMENT_LEVEL_UNKNOWN",
-        _ => return Err(format!("CAirBase kind {kind} has no native summary header")),
+        _ => return Err(format!("air base kind {kind} has no native summary header")),
     };
     let mut text = localise(loc, key, &[("NAME", Arg::Text(host_name))])?;
     crate::combat::text::ensure_newlines(&mut text, 2);
@@ -134,7 +134,7 @@ fn occupancy(loc: &Localisation, kind: i32, planes: i32, capacity: i32) -> Resul
         1 => "ROCKETBASE_ROCKETS_KNOWN",
         _ => {
             return Err(format!(
-                "CAirBase kind {kind} has no native occupancy header"
+                "air base kind {kind} has no native occupancy header"
             ));
         }
     };
@@ -153,7 +153,7 @@ fn occupancy(loc: &Localisation, kind: i32, planes: i32, capacity: i32) -> Resul
     Ok(text)
 }
 
-/// 140C45850's tier-zero/estimated title branch. `None` selects native
+/// The tier-zero/estimated title branch. `None` selects native
 /// NO_INTEL; a missing reached estimate must instead be refused by the caller.
 pub(super) fn low_header(
     loc: &Localisation,
@@ -174,7 +174,7 @@ pub(super) fn low_header(
             0 => "AIR_BASE_LEVEL_UNKNOWN",
             1 => "ROCKET_SITE_LEVEL_UNKNOWN",
             2 => "GUN_EMPLACEMENT_LEVEL_UNKNOWN",
-            _ => return Err(format!("CAirBase kind {kind} has no native summary header")),
+            _ => return Err(format!("air base kind {kind} has no native summary header")),
         };
         localise(loc, key, &[("NAME", Arg::Text(host_name))])?
     };
@@ -196,7 +196,7 @@ pub(super) fn full_country_header(tag: &str, name: &str) -> String {
     format!("\u{12}{tag}\u{11}H{name}\u{11}!:\n")
 }
 
-/// 140C1F290's fuel quantity formatter. This is not the localisation
+/// The fuel quantity formatter. This is not the localisation
 /// metric suffix modifier: its positive cutoffs and rounding differ.
 fn fuel_amount(raw: i64) -> String {
     use installed_content::fixed5::format_fixed5;
@@ -215,7 +215,7 @@ fn fuel_amount(raw: i64) -> String {
     format!("{}{suffix}", format_fixed5(value, false, precision))
 }
 
-/// 140C44DB0 supplies hourly stored amounts; 140C43070 displays daily
+/// Supply hourly stored amounts; the game displays daily
 /// values. Native shows both numbers on surplus, not on shortage.
 pub(super) fn fuel_header(
     loc: &Localisation,
@@ -248,7 +248,7 @@ pub(super) fn fuel_header(
     Ok(text)
 }
 
-/// 140C43070's maximum heading. The caller sums before multiplying by24;
+/// The maximum heading. The caller sums before multiplying by24;
 /// the delayed description is formatted independently.
 fn maximum_header(loc: &Localisation, maximum: i64) -> Result<String, String> {
     let maximum = fuel_amount(maximum.wrapping_mul(24));
@@ -261,8 +261,8 @@ fn maximum_header(loc: &Localisation, maximum: i64) -> Result<String, String> {
     Ok(title)
 }
 
-/// 140C2F510 reads its known byte independently from the signed range.
-/// Carrier caller delimiter1427500A4 is exactly '-'.
+/// Read its known byte independently from the signed range.
+/// Carrier ranges use a hyphen delimiter.
 pub(super) fn count_text([lower, upper]: [i32; 2], known: bool) -> String {
     if !known {
         "?".into()
@@ -273,7 +273,7 @@ pub(super) fn count_text([lower, upper]: [i32; 2], known: bool) -> String {
     }
 }
 
-/// 140C42A10 emits a line for every subtype pool group, including empty
+/// The game emits a line for every subtype pool group, including empty
 /// pools and signed-nonpositive plane totals. Fuel is summed before times24.
 pub(super) fn fuel_line(
     loc: &Localisation,
@@ -299,8 +299,8 @@ fn registration<'a>(
         .ok_or_else(|| format!("AirBaseRegistrations base {base} slot {slot} is absent"))
 }
 
-/// 140B00380 returns the viewer's indexed pointer; a null container is valid
-/// absence in 140C45850. Registered-country occurrences still require a row.
+/// The viewer's registration may be absent through a null indexed container.
+/// Every reached registered-country occurrence still requires its recorded row.
 fn optional_registration<'a>(
     context: &Context<'a>,
     base: u64,
@@ -363,19 +363,19 @@ fn seed(context: &Context<'_>, numeric_id: u32) -> Result<u32, String> {
     Ok((clock.seed as u32).wrapping_add(numeric_id))
 }
 
-/// 140C448F0 falls back to controller zero for an absent host, but the
+/// Fall back to controller zero for an absent host, but the
 /// stateless summary's subsequent mission pretest dereferences that same host
-/// and its task force (140C45850). Do not invent a completed null-host summary.
+/// and its task force. Do not invent a completed null-host summary.
 fn host(context: &Context<'_>, base: &AirBaseRow) -> Result<(u32, u32, bool), String> {
     if base.state.is_some() {
         return Err(format!(
-            "CAirBase {} is state-backed, not a carrier summary",
+            "air base {} is state-backed, not a carrier summary",
             base.id
         ));
     }
     if base.host == 0 {
         return Err(format!(
-            "CAirBase {} null host reaches the native-invalid mission pretest",
+            "air base {} null host reaches the native-invalid mission pretest",
             base.id
         ));
     }
@@ -388,7 +388,7 @@ fn host(context: &Context<'_>, base: &AirBaseRow) -> Result<(u32, u32, bool), St
         .map(|index| &ships[index])
         .map_err(|_| {
             format!(
-                "CAirBase {} stale host {} reaches the native-invalid mission pretest",
+                "air base {} stale host {} reaches the native-invalid mission pretest",
                 base.id, base.host
             )
         })?;
@@ -400,13 +400,12 @@ fn host(context: &Context<'_>, base: &AirBaseRow) -> Result<(u32, u32, bool), St
         Ok(index) if ship.task_force != 0 => &forces[index],
         _ => {
             return Err(format!(
-                "CAirBase {} live host {} has a native-invalid task force {}",
+                "air base {} live host {} has a native-invalid task force {}",
                 base.id, base.host, ship.task_force
             ));
         }
     };
-    // 140C24B40 stores type at +8 and numeric id at +C. 140C45850
-    // seeds the estimate from +C: the high word of the full reference.
+    // Seed the estimate from the numeric id, the high word of the full reference.
     Ok((
         slot(context, force.roster_owner)?,
         (ship.id >> 32) as u32,
@@ -421,13 +420,13 @@ fn host_name(context: &Context<'_>, base: &AirBaseRow) -> Result<String, String>
         .as_ref()
         .ok_or_else(|| {
             format!(
-                "CAirBase {} carrier inputs were unreadable when recorded",
+                "air base {} carrier inputs were unreadable when recorded",
                 base.id
             )
         })?;
     let name = inputs.host_name.as_ref().ok_or_else(|| {
         format!(
-            "CAirBase {} host name was unreadable when recorded",
+            "air base {} host name was unreadable when recorded",
             base.id
         )
     })?;
@@ -542,7 +541,7 @@ fn append_country(out: &mut Tooltip, context: &Context<'_>, text: String) {
     }
 }
 
-/// Both carrier controls share this stateless CAirBase consumer. Captured
+/// Both carrier controls share this stateless air-base consumer. Captured
 /// simulation facts are independent of the viewer's local selection and NATO.
 pub(super) fn summary(context: &Context<'_>, id: u64, out: &mut Tooltip) {
     let reached = (|| {
@@ -560,7 +559,7 @@ pub(super) fn summary(context: &Context<'_>, id: u64, out: &mut Tooltip) {
             .shares_vision_or_fog(controller)
             .map_err(|reason| reason.describe())?;
         let tier = context.vision.air_port_level(controller).ok_or_else(|| {
-            format!("CAirBase {id} controller {controller} air intel tier is unavailable")
+            format!("air base {id} controller {controller} air intel tier is unavailable")
         })?;
         Ok::<_, String>((base, controller, numeric_id, mission, tier))
     })();
@@ -573,8 +572,7 @@ pub(super) fn summary(context: &Context<'_>, id: u64, out: &mut Tooltip) {
     };
     let name = host_name(context, base);
     if tier == 0 {
-        // 140C46957 -> 140C4774B: lower tiers finish at 140C47B50,
-        // bypassing the full-detail fuel gate at 140C474D4.
+        // Lower intel tiers bypass the full-detail fuel gate.
         append(
             out,
             context,
@@ -590,9 +588,9 @@ pub(super) fn summary(context: &Context<'_>, id: u64, out: &mut Tooltip) {
             .carrier
             .require("AirBases.carrier")?
             .as_ref()
-            .ok_or_else(|| format!("CAirBase {id} carrier inputs were unreadable when recorded"))?;
+            .ok_or_else(|| format!("air base {id} carrier inputs were unreadable when recorded"))?;
         let occurrences = inputs.registered_countries.as_deref().ok_or_else(|| {
-            format!("CAirBase {id} registered countries were unreadable when recorded")
+            format!("air base {id} registered countries were unreadable when recorded")
         })?;
         let mut total = Ok(0_i32);
         for occurrence in occurrences {
@@ -781,9 +779,9 @@ fn footer(context: &Context<'_>, base: u64, out: &mut Tooltip) {
         }
     };
     let mut groups = BTreeMap::<i32, Vec<&CarrierAirPool>>::new();
-    // 140C427A0's complete sort is stable, including its >=33 low-buffer
+    // The complete sort is stable, including its >=33 low-buffer
     // merges/rotations. Equal signed keys keep original inventory order;
-    // 140C42A10 uses the first pool's definition even when DB indices differ.
+    // Use the first pool's definition even when DB indices differ.
     for pool in inventory {
         groups.entry(pool.type_index).or_default().push(pool);
     }
@@ -1196,6 +1194,8 @@ mod tests {
 
     #[test]
     fn composed_carrier_keeps_dense_repeats_pool_owner_names_and_empty_fuel_pools() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let out = render(&fixture(), false, false, None);
         assert!(out.refused.is_empty(), "{:?}", out.refused);
         let first = out.title.find("\u{12}BBB").unwrap();
@@ -1213,6 +1213,8 @@ mod tests {
 
     #[test]
     fn sea_and_port_controls_share_composed_carrier_and_viewer_nato() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = fixture();
         with_context(&frame, false, true, None, |context| {
             let sea = super::super::task_force_children::specific(
@@ -1263,6 +1265,8 @@ mod tests {
 
     #[test]
     fn current_fuel_failure_keeps_maximum_and_other_signed_groups() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = fixture();
         let mut rows = registrations(&frame);
         let Recorded::Value(Some(inputs)) = &mut rows[0].carrier else {
@@ -1280,6 +1284,8 @@ mod tests {
 
     #[test]
     fn repeated_wings_and_equal_signed_fuel_groups_wrap_before_daily_scaling() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = fixture();
         let mut wings = frame.complete::<tables::AirWings>().unwrap().to_vec();
         wings[0].planes = i32::MAX;
@@ -1317,6 +1323,8 @@ mod tests {
     #[test]
     fn large_equal_key_group_uses_first_empty_definition_and_keeps_mixed_indices_and_signed_counts()
     {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = fixture();
         let mut wings = frame.complete::<tables::AirWings>().unwrap().to_vec();
         wings[0].planes = -3;
@@ -1387,6 +1395,8 @@ mod tests {
 
     #[test]
     fn maximum_failure_preserves_current_groups_and_other_maximum_groups() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = fixture();
         let mut rows = registrations(&frame);
         let Recorded::Value(Some(inputs)) = &mut rows[0].carrier else {
@@ -1404,6 +1414,8 @@ mod tests {
 
     #[test]
     fn empty_inventory_keeps_container_fuel_without_requiring_wings_or_subtype_content() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = fixture();
         let mut rows = registrations(&frame);
         for row in &mut rows {
@@ -1427,6 +1439,8 @@ mod tests {
 
     #[test]
     fn low_tier_uses_complete_clock_host_numeric_id_and_native_country_slots() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = fixture();
         with_context(&frame, true, false, None, |context| {
             assert_eq!(context.vision.air_port_level(3), Some(1));
@@ -1462,6 +1476,8 @@ mod tests {
 
     #[test]
     fn absent_viewer_fuel_container_is_known_absence_in_a_complete_census() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = fixture();
         let mut bases = frame.complete::<tables::AirBases>().unwrap().to_vec();
         let Recorded::Value(Some(inputs)) = &mut bases[0].carrier else {
@@ -1496,6 +1512,8 @@ mod tests {
 
     #[test]
     fn no_intel_does_not_require_unreached_estimates_and_unknown_sharing_cannot_choose_a_tier() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = fixture();
         put(
             &mut frame,
@@ -1528,6 +1546,8 @@ mod tests {
 
     #[test]
     fn historical_pool_absence_and_bad_ranges_do_not_erase_known_plane_totals_or_fuel_scalars() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         for bad_range in [false, true] {
             let mut frame = fixture();
             let mut rows = registrations(&frame);
@@ -1561,6 +1581,8 @@ mod tests {
 
     #[test]
     fn host_language_failure_preserves_independent_occupancy_countries_and_fuel() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let out = render(&fixture(), false, false, Some("other_language"));
         assert!(!out.title.contains("Host deck"));
         assert!(out.title.contains("\u{11}R7\u{11}!"));
@@ -1575,6 +1597,8 @@ mod tests {
 
     #[test]
     fn refused_country_fragment_keeps_ordered_known_siblings_at_both_intel_tiers() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = fixture();
         let mut appearances = frame
             .complete::<tables::CountryAppearance>()
@@ -1596,6 +1620,8 @@ mod tests {
 
     #[test]
     fn null_stale_and_live_broken_hosts_keep_native_invalid_refusals() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         for (host, task_force) in [(0, 7), (SHIP + 1, 7), (SHIP, 0)] {
             let mut frame = fixture();
             let mut bases = frame.complete::<tables::AirBases>().unwrap().to_vec();
@@ -1616,6 +1642,8 @@ mod tests {
 
     #[test]
     fn subtype_database_index_distinguishes_null_unknown_and_registered_content() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         with_context(&fixture(), false, false, None, |context| {
             let units = context.units.as_ref().unwrap();
             assert_eq!(units.subunit(0).unwrap(), ("", 0));
@@ -1626,6 +1654,8 @@ mod tests {
 
     #[test]
     fn pool_owner_zero_uses_the_recorded_reserved_tag() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = fixture();
         put(
             &mut frame,

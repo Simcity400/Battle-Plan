@@ -64,7 +64,7 @@ export interface LogListProps<T> {
 
 const EMPTY_ROWS: readonly LogRow<never>[] = [];
 
-/** A log (spec 2.2d, mock-up style-5): HTML rows newest first, each with its date,
+/** A log: HTML rows newest first, each with its date,
  * that flash in as playback reaches them and glide when their order changes
  * (`useRowMotion`). Only the rows in view are drawn. Hovering a row, or reaching it
  * with the arrow keys, shows its tooltip fitted to the window, read out for the

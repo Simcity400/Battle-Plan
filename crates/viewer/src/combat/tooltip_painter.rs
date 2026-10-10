@@ -1,4 +1,4 @@
-//! Shared ToolTip painter, clocks and placement (tooltip_controller::update@1402A4080).
+//! Shared ToolTip painter, clocks and placement (tooltip updates).
 use crate::map::{counters::gui_windows, native_gui, sprites::Batch};
 use installed_content::defines::Defines;
 use std::{
@@ -10,7 +10,7 @@ use std::{
 type TooltipHit<'a> = (&'a str, Option<&'a str>, Option<&'a str>, [f32; 4]);
 
 /// `NInterface.TOOLTIP_SCREEN_{LEFT,TOP,RIGHT,BOTTOM}_OFFSET_{X,Y}` and the
-/// `NGraphics.TOOLTIP_{SHOW,DELAYED,HIDE}_DELAY` seconds `1402A4080` reads.
+/// `NGraphics.TOOLTIP_{SHOW,DELAYED,HIDE}_DELAY` seconds the game reads.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TooltipDefines {
     offsets: [i32; 4],
@@ -20,9 +20,8 @@ pub(crate) struct TooltipDefines {
 impl TooltipDefines {
     pub(crate) fn read(defines: &Defines) -> io::Result<Self> {
         let offset = |name: &str| defines.int32("NInterface", name);
-        // The game keeps each delay as a float (14331D158, 14331D1E8,
-        // 14331D25C) and only compares it (1402A4080): any value is a delay,
-        // a negative one included.
+        // Delays remain floats and are only compared, so negative values are
+        // accepted too.
         let delay =
             |name: &str| -> io::Result<f32> { Ok(defines.number("NGraphics", name)? as f32) };
         Ok(Self {
@@ -41,15 +40,10 @@ impl TooltipDefines {
     }
 }
 
-/// Per-viewer tooltip clocks, corresponding to the controller's presentation
-/// clocks in `1402A4080`. A widget rectangle identifies the current binding:
-/// refreshing its simulation values does not restart the delayed-body timer.
-///
-/// The show and hide timers are deadlines on the presentation clock, as the
-/// game keeps them (14331730C, 143317308): seconds since the clock started
-/// (ReadPresentationClockSeconds 142238C90 accumulates from its start), as a
-/// float, with a deadline at or below 0 meaning unset. The viewer's clock
-/// starts at its first frame.
+/// Per-viewer tooltip clocks start with the first presentation frame.
+/// Deadlines are float seconds; values at or below zero are unset. A widget
+/// rectangle identifies the binding for delayed text, and refreshing the same
+/// province preserves its hover target.
 #[derive(Default)]
 pub(super) struct HoverState {
     province: Option<u32>,
@@ -58,9 +52,9 @@ pub(super) struct HoverState {
     delayed_pending: bool,
     /// The presentation clock's start.
     clock: Option<Instant>,
-    /// The show deadline (14331730C); 0 or below is unset.
+    /// The show deadline; 0 or below is unset.
     show_deadline: f32,
-    /// The hide deadline (143317308); 0 or below is unset.
+    /// The hide deadline; 0 or below is unset.
     hide_deadline: f32,
     /// Text waits for the show deadline.
     showing: bool,
@@ -82,7 +76,7 @@ pub(crate) struct TooltipPosition {
 }
 
 impl HoverState {
-    /// 140B450E0's province binding changes independently of the map rectangle.
+    /// The province binding changes independently of the map rectangle.
     pub(super) fn bind_province(&mut self, province: Option<u32>) {
         if self.province != province {
             self.province = province;
@@ -93,7 +87,7 @@ impl HoverState {
     /// Delays are `[show, delayed-body, hide]` seconds. Call this on every
     /// requested frame, including frames without a hit, so hiding can finish.
     /// An already visible tooltip updates immediately when its binding changes;
-    /// the show delay applies only while the CTextBox is hidden in the game.
+    /// the show delay applies only while the tooltip text box is hidden.
     pub(super) fn shown(
         &mut self,
         hit: Option<TooltipHit<'_>>,
@@ -106,7 +100,7 @@ impl HoverState {
         if let Some(point) = point {
             self.point = point;
         }
-        // 1402A4080 tests the stored byte lengths, then appends those bytes.
+        // the game tests the stored byte lengths, then appends those bytes.
         // Spaces and authored leading newlines are part of the tooltip.
         let hit = point.and(hit).filter(|(text, delayed, shortcut, _)| {
             !text.is_empty()
@@ -131,7 +125,7 @@ impl HoverState {
                 }
                 candidate.push_str(delayed);
             }
-            // 1402A4080 appends the shortcut after the currently admitted body.
+            // the game appends the shortcut after the currently admitted body.
             if let Some(shortcut) = shortcut.filter(|text| !text.is_empty()) {
                 if !candidate.is_empty() {
                     candidate.push_str("\n--------------\n");
@@ -148,8 +142,8 @@ impl HoverState {
             self.showing = false;
             self.hiding = self.visible;
             if self.visible {
-                // 1402A5C0B sets an unset deadline; 1402A5C3B hides once
-                // `0 < deadline < now`.
+                // Set an unset hide deadline, then hide after a positive deadline
+                // passes on the presentation clock.
                 if self.hide_deadline <= 0.0 {
                     self.hide_deadline = seconds + timing[2];
                 }
@@ -167,8 +161,8 @@ impl HoverState {
             self.candidate = std::mem::replace(&mut self.text, candidate);
             if !self.visible {
                 self.showing = true;
-                // 1402A5AF1 sets an unset deadline; 1402A5B1C shows unless
-                // `deadline <= 0 || now <= deadline`.
+                // Set an unset show deadline, then show after a positive deadline
+                // passes on the presentation clock.
                 if self.show_deadline <= 0.0 {
                     self.show_deadline = seconds + timing[0];
                 }
@@ -224,13 +218,13 @@ impl HoverState {
     }
 }
 
-/// 1402A4080's delayed-body test, `delay < now - start`: a negative delay
+/// delayed-body test, `delay < now - start`: a negative delay
 /// passes at once, a NaN never.
 fn past(start: Option<Instant>, now: Instant, delay: f32) -> bool {
     start.is_some_and(|start| delay < now.saturating_duration_since(start).as_secs_f32())
 }
 
-/// 1402A4080's show test (1402A5B1C): it skips while `deadline <= 0` or
+/// show test: it skips while `deadline <= 0` or
 /// `now <= deadline`, so a NaN deadline shows at once.
 fn shows(deadline: f32, now: f32) -> bool {
     use std::cmp::Ordering::{Equal, Less};
@@ -238,9 +232,7 @@ fn shows(deadline: f32, now: f32) -> bool {
         && !matches!(now.partial_cmp(&deadline), Some(Less | Equal))
 }
 
-/// Default, unanchored tooltip placement from `1402A4080`, in interface
-/// pixels. Producer-specific relative anchors and its above-pointer flag are
-/// not used by the land window.
+/// Default tooltip placement in interface pixels, without an explicit anchor.
 fn position(point: [f32; 2], size: [f32; 2], extent: [f32; 2], offsets: [i32; 4]) -> [f32; 2] {
     let point = point.map(f32::trunc);
     let mut x = (point[0] + 21.0).max(offsets[0] as f32);
@@ -254,8 +246,7 @@ fn position(point: [f32; 2], size: [f32; 2], extent: [f32; 2], offsets: [i32; 4]
     [x.max(0.0), y.max(0.0)]
 }
 
-/// 1417D47E0 asks 14029FEA0 for CTextBox+0xF8 (the authored maximum
-/// width), chooses the free side of the combat window, and anchors at y+250.
+/// Use the authored maximum tooltip width from the text-box declaration.
 fn naval_ship_anchor(window: [f32; 4], pointer_x: f32, width: f32, screen_width: f32) -> [f32; 2] {
     let [x, y, w, _] = window.map(f32::trunc);
     let left = x - width;
@@ -279,9 +270,8 @@ fn placed(
         return position(at.point, size, extent, offsets);
     };
     let mut at = naval_ship_anchor(window, at.point[0], wrap_width, extent[0]);
-    // 141994D20 sets an absolute anchor and below flag 1. 1402A5CFF
-    // skips pointer offsets; overflowing explicit anchors subtract size+20
-    // from the anchor itself (1402A5F1F/1402A5F82).
+    // An absolute anchor places the tooltip below its point.
+    // Clamping starts from that anchor.
     for axis in 0..2 {
         at[axis] = at[axis].max(offsets[axis] as f32);
         if at[axis] > extent[axis] - size[axis] - offsets[axis + 2] as f32 {
@@ -292,8 +282,8 @@ fn placed(
     at
 }
 
-/// 14029FEA0 reads the authored CTextBox+0xF8. CreateTextBox@142247010
-/// selects defaultTextBox only when ToolTip is absent, not when its type is wrong.
+/// Read the authored tooltip wrap width. Creation selects defaultTextBox
+/// only when ToolTip is absent, not when its type is wrong.
 fn authored_wrap_width(resources: &impl native_gui::Resources) -> Result<f32, native_gui::Refusal> {
     let element = resources
         .gui_type(native_gui::text_sprites::TOOLTIP)
@@ -301,14 +291,18 @@ fn authored_wrap_width(resources: &impl native_gui::Resources) -> Result<f32, na
         .ok_or_else(|| native_gui::Refusal {
             path: "ToolTip".into(),
             kind: native_gui::RefusalKind::NullRead,
-            detail: "authored tooltip wrap width is unavailable: ToolTip and defaultTextBox are absent (142247010, 14029FEA0)".into(),
+            detail:
+                "authored tooltip wrap width is unavailable: ToolTip and defaultTextBox are absent"
+                    .into(),
         })?;
     match &element.fields {
         installed_content::gui::native::Fields::TextSprite(text) => Ok(text.max_width as f32),
         _ => Err(native_gui::Refusal {
             path: element.path.clone(),
             kind: native_gui::RefusalKind::TypeConfusion,
-            detail: "authored tooltip wrap width is unavailable: tooltip template is not a textBoxType (142247010, 14029FEA0)".into(),
+            detail:
+                "authored tooltip wrap width is unavailable: tooltip template is not a textBoxType"
+                    .into(),
         }),
     }
 }

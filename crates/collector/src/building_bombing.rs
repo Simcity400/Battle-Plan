@@ -1,4 +1,4 @@
-//! Signed CBuilding health removals, observed without querying native code.
+//! Signed building health removals, observed without querying native code.
 //! A lost interval is unavailable; unresolved execution retains partial recovery.
 use crate::{
     event_ledger::{Event, EventLedger},

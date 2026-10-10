@@ -259,12 +259,12 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) ->
     });
     if expected_zero == 0 {
         report.limitation(
-            "CGameState::Write@1401F2A20 skips only physical slot0 and writes every other pointer; this authenticated physical array has no actual Country0 occurrence after slot0, so its admitted intel vector count and all four lanes have no country-save counterpart and require a matched same-hour native witness",
+            "the game state save writer skips only physical slot0 and writes every other pointer; this authenticated physical array has no actual Country0 occurrence after slot0, so its admitted intel vector count and all four lanes have no country-save counterpart and require a matched same-hour native witness",
             format!("{LABEL}: count {} at hour {}", actual.count, actual.sample_hour),
         );
     }
     report.limitation(
-        "serialized country intel lanes do not certify the actual reserved object's nonnull +0xFE8 pointer, OWNER+8 identity, signed native header or paired acquisition certificate; these native facts require a matched same-hour witness even when every saved positional lane agrees",
+        "serialized country intel lanes do not certify the actual reserved object's nonnull pointer, owner identity, signed native header or paired acquisition certificate; these native facts require a matched same-hour witness even when every saved positional lane agrees",
         LABEL,
     );
     Ok(())

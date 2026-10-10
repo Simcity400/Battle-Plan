@@ -49,7 +49,7 @@ export function powerPartsAt(index: PowerBalanceIndex, mode: PowerBreakdown, hou
     const gross = sum(observations.map(row => row.ppGrossRaw));
     const costs = sum(observations.map(row => row.ppCostRaw));
     const net = sum(observations.map(row => row.ppIncomeRaw));
-    // P: politics.daily@140B990B0 subtracts signed fixed5 cost at 140B993AC.
+    // Daily political power subtracts the signed fixed5 cost.
     // The captured native net includes its i64 wrapping; BigInt never replaces it.
     const wrapping = gross === null || costs === null || net === null ? null : net - (gross - costs);
     return { parts: [

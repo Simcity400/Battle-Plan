@@ -188,8 +188,8 @@ impl carrier::Inputs for Carrier<'_, '_, '_, '_> {
                 .ok_or("transport original carrier equipment flag union refused"),
             carrier_air_base: Err("transport noncarrier base query unreached"),
         };
-        // Keep C2B7E0's predicate ahead of every carrier base/table demand.
-        // A later stored bit cannot bypass the original first-pool failure.
+        // Check carrier eligibility before demanding any carrier base or table.
+        // A later stored bit cannot bypass the first-pool failure.
         if carrier::is_carrier(observation) == Ok(true) {
             observation.carrier_air_base = row
                 .carrier_air_base

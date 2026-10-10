@@ -40,8 +40,8 @@ export default function GameFolderSettings({ folders, native, client, onFoldersC
     finally { setBusy(false); }
   }}>
     {[
-      { kind: 'game' as const, label: 'the game installation', help: 'The the game folder containing hoi4.exe.', value: game, set: setGame },
-      { kind: 'user' as const, label: 'Paradox user folder', help: 'Usually Documents / Paradox Interactive / Hearts of Iron IV. Contains settings and mod descriptors.', value: user, set: setUser },
+      { kind: 'game' as const, label: 'Game installation', help: 'The folder where the game is installed.', value: game, set: setGame },
+      { kind: 'user' as const, label: 'Paradox user folder', help: 'The game’s user folder under Documents / Paradox Interactive. Contains settings and mod descriptors.', value: user, set: setUser },
     ].map(field => <div className="folder-setting-row" key={field.label}>
       <label className="field"><span className="folder-field-title">{field.label}<span className="folder-info" role="img" tabIndex={0} aria-label={`About ${field.label}`} data-tooltip={field.help}><Icon name="info" /></span></span><input aria-label={field.label} value={field.value} placeholder={folders ? 'Choose folder' : 'Reading configured folders…'} readOnly={!ready}
         disabled={busy || (desktopAvailable && !ready)} onChange={event => { field.set(event.currentTarget.value); setDirty(true); }} data-tooltip={field.value || undefined} />

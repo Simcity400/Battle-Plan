@@ -12,7 +12,7 @@ use crate::{
 };
 use std::{collections::BTreeMap, io};
 
-/// GetIconName@1402D0890 literal fallback (142724470), resolved through content.
+/// The default focus icon resolved through content.
 pub const UNKNOWN_ICON: &str = "GFX_goal_unknown";
 
 /// Focus definitions by id.
@@ -30,14 +30,14 @@ pub struct FocusDefinition {
     pub scripted_icon: bool,
     pub icons: crate::scripted_keys::ScriptedKey,
     pub alternate_icons: crate::scripted_keys::ScriptedKey,
-    /// +C8: parsed alternate definitions, even an empty block (1402C71E0).
+    /// Parsed alternate icon definitions, including an empty block.
     pub alternate_icon_present: bool,
 }
 
 impl FocusDefinition {
-    /// GetIconName 1402D0890 reads alternate cases only when present and the
-    /// window mode selects them. Without that operand, equal normalized choices
-    /// remain exact; differing choices retain the named refusal.
+    /// Alternate icon cases are read only when present and selected by
+    /// window mode. Without that operand, equal normalized choices remain
+    /// exact; differing choices retain a named refusal.
     pub fn icon(
         &self,
         alternate: Option<bool>,
@@ -55,15 +55,14 @@ impl FocusDefinition {
                 if normal.unwrap_or(UNKNOWN_ICON) == alternate.unwrap_or(UNKNOWN_ICON) {
                     Ok(normal)
                 } else {
-                    Err("focus alternate icon: focus-window mode is not recorded (1402D0890/141378F40)".into())
+                    Err("focus alternate icon: focus-window mode is not recorded".into())
                 }
             }
         }
     }
 
-    /// 140B32B40 first tries country-qualified and token-qualified sprites;
-    /// neither path reads the normal/alternate icon selector. Notification
-    /// caller 1413630F0 passes the empty suffix, as used for this thumbnail.
+    /// Try country-qualified and token-qualified sprites before icon
+    /// selection. Notification thumbnails use an empty suffix.
     pub fn sprite_overrides(&self, token: &str, tag: Option<&str>) -> Vec<String> {
         let mut sprites = Vec::new();
         if let Some(tag) = tag {
@@ -73,8 +72,8 @@ impl FocusDefinition {
         sprites
     }
 
-    /// Normal GetIconName path (1402D0890), independent of the unrecorded
-    /// interface-window alternate-mode flag. Fallback is exe data 142724470.
+    /// Normal icon selection is independent of the unrecorded alternate-mode
+    /// flag and retains the default icon fallback.
     pub fn select_normal_icon(
         &self,
         evaluate: impl FnMut(&[Item]) -> Result<bool, String>,
@@ -98,19 +97,18 @@ fn scalar<'a>(items: &'a [Item], key: &str) -> io::Result<Option<&'a str>> {
 /// The database a file is read into, by its directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Database {
-    /// `common/national_focus` (1402D7F90).
+    /// `common/national_focus`.
     National,
-    /// `common/continuous_focus` (1406B6140).
+    /// `common/continuous_focus`.
     Continuous,
 }
 
 #[derive(Clone, Copy)]
 enum Node {
-    /// The national database's tokens (1402D7F90): `focus_tree`,
+    /// The national database's tokens: `focus_tree`,
     /// `shared_focus`, `joint_focus`, `search_filter_prios`, `style`.
     NationalFile,
-    /// The continuous database's (1406B6140): `continuous_focus_palette`
-    /// (0x36DD) alone.
+    /// The continuous database reads only `continuous_focus_palette` roots.
     ContinuousFile,
     Tree,
     Palette,
@@ -128,11 +126,10 @@ enum Node {
     Modifier(modifiers::Node),
 }
 
-/// National database 1402D7F90, tree 1402D8880, focus 1402D76A0 and
-/// joint 140DE1F10; continuous database 1406B6140, palette 1406B62F0 and
-/// focus 1406B67D0. The databases and nested objects use CPersistent::Read;
-/// CNationalFocus::Read 1402D71D0 only adds source metadata before that loop.
-/// Each database reports and skips the other's roots.
+/// National files read trees, shared focuses, and joint focuses; continuous
+/// files read palettes and continuous focuses. Both use persistent object
+/// semantics, and focus reads add source metadata. Each database reports
+/// and skips roots belonging to the other.
 pub fn parse(
     input: &[u8],
     database: Database,
@@ -145,8 +142,7 @@ pub fn parse(
         Database::National => NationalFile,
         Database::Continuous => ContinuousFile,
     };
-    // The national files' preparation task (1402DC730) constructs the lexer
-    // in mode 1, the continuous loader (1406B5860) in mode 0.
+    // National files use lexer mode 1; continuous files use mode 0.
     let mode = match database {
         Database::National => native::Mode::SkipMark,
         Database::Continuous => native::Mode::KeepMark,
@@ -173,8 +169,8 @@ pub fn parse(
                 (Tree, Some(b"shortcut")) => Shape::Object(Shortcut),
                 (Tree, Some(b"inlay_window")) => Shape::Object(Inlay),
                 (Tree, Some(b"initial_show_position")) => Shape::Object(Position),
-                // 1402C7A50 and 140A3D660 read the lexer's tokens, leaving the
-                // value slot; search_filters (1402C7640) resolves into it.
+                // Some lists read lexer tokens while retaining the value slot;
+                // `search_filters` resolves entries into that slot.
                 (Tree, Some(b"continuous_focus_position")) | (Palette, Some(b"position")) => {
                     if field.opens() {
                         Shape::RawList
@@ -222,10 +218,10 @@ pub fn parse(
                 )
                 | (Continuous, Some(b"select_effect" | b"cancel_effect" | b"daily_reward")) => {
                     if field.keyword_is("complete_tooltip") {
-                        // CNationalFocus::ReadToken 1402D76A0 passes zero at 1402D7D01.
+                        // Complete-tooltip effects use a zero scope mask.
                         Shape::EffectIn(0)
                     } else {
-                        // 1402D76A0, 140DE1F10 and 1406B67D0 pass country scope.
+                        // Other effects use country scope.
                         Shape::EffectIn(ScopeKind::Country.bit())
                     }
                 }
@@ -290,9 +286,8 @@ pub fn parse(
                         | b"current",
                     ),
                 ) => Shape::One,
-                // ReadIntPoint (140A3D660) reads the value `{` and then seven
-                // tokens, `x = n y = n }`, whatever they are; only that exact
-                // form reads as a list does (checked below).
+                // Point reads consume `{` followed by seven tokens, `x = n y = n }`.
+                // Only that exact form matches list consumption, as checked below.
                 (Inlay, Some(b"position")) => {
                     if !field.opens() {
                         refused.push(format!(
@@ -312,7 +307,7 @@ pub fn parse(
                     Shape::One
                 }
                 (Style, _) => {
-                    // 141362610 spins forever on an unknown token. Refuse it.
+                    // An unknown token would stall the game reader; refuse it by name.
                     refused.push(format!(
                         "focus style field {}: unsupported native nonterminating dispatch",
                         String::from_utf8_lossy(&field.key.text)
@@ -339,9 +334,8 @@ pub fn parse(
     if let Some(cause) = refused.first() {
         return Err((crate::DiagnosticKind::Refused, invalid(cause)));
     }
-    // 1402C7A50 accepts the two-number or x/y forms; ReadIntPoint
-    // (140A3D660, inlay windows) only `x = n y = n`, as it consumes a fixed
-    // seven tokens. Refuse other forms, whose token recovery is not replayed.
+    // Offsets accept two-number or x/y forms. Fixed-length point reads accept
+    // only `x = n y = n`; other recovery forms remain refused.
     fn vectors(items: &[Item], inlay: bool) -> io::Result<()> {
         for item in items {
             if let Some(children) = item.value.items() {
@@ -417,8 +411,7 @@ pub fn parse(
                     FocusDefinition {
                         localisation: localisation.into(),
                         description: format!("{localisation}_desc"),
-                        // ReadFixed5 (1424ABB10 -> 1424B0480) leaves the
-                        // cost as it was when a conversion fails.
+                        // Failed fixed5 scans retain the previous cost.
                         cost: children
                             .iter()
                             .rev()
@@ -482,8 +475,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(Focuses, Vec<crate::Diagnost
     read_databases(layers, true)
 }
 
-/// CNationalFocusDatabase lookup (1402D1D60) never reads the separate
-/// continuous-focus database (1406B6140).
+/// National-focus lookup does not read the separate continuous database.
 pub fn read_national(layers: &ResolvedLayers) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
     read_databases(layers, false)
 }
@@ -545,6 +537,8 @@ mod tests {
 
     #[test]
     fn national_lookup_excludes_continuous_database() -> io::Result<()> {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root =
             std::env::temp_dir().join(format!("national-focus-names-{}", std::process::id()));
         std::fs::create_dir_all(root.join("common/national_focus"))?;
@@ -567,6 +561,8 @@ mod tests {
 
     #[test]
     fn layer_warnings_name_and_count_deferred_effect_readers() -> io::Result<()> {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!("focus-effect-gap-{}", std::process::id()));
         std::fs::create_dir_all(root.join("common/national_focus"))?;
         std::fs::write(
@@ -588,7 +584,10 @@ free_operative = { operative = a } free_operative = { operative = b }
             warning.contains("common/national_focus/gap.txt: line 3:"),
             "{warning}"
         );
-        assert!(warning.contains("key reader 0x1403B3880"), "{warning}");
+        assert!(
+            warning.contains("its value reader is unsupported; by-key reading retained"),
+            "{warning}"
+        );
         assert!(warning.contains("count: 2"), "{warning}");
         assert!(read(&layers)?.1.iter().any(|(kind, message)| *kind
             == crate::DiagnosticKind::Unsupported
@@ -597,7 +596,9 @@ free_operative = { operative = a } free_operative = { operative = b }
         Ok(())
     }
     #[test]
-    fn native_focus_variables_keywords_and_scripted_key_dispatch() {
+    fn focus_variables_keywords_and_scripted_key_dispatch() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let defs = parse(
             br#"@name=A @sprite=GFX_a focus_tree={FOCUS={id=@name "text"=ignored
             icon={@sprite=yes {ignored={}}} unknown={id=hidden} cost=0x2}}
@@ -614,6 +615,8 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn focus_scripted_icons_preserve_repeated_cases_and_refuse_unknown_conditions() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let defs = parse(
             br#"focus_tree={focus={id=A
             icon={CONDITIONAL={always=yes}}
@@ -646,6 +649,8 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn authored_text_shared_and_conditional_icons() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let defs = parse(br#"focus_tree={focus={id=A icon=GFX_goal_a text=TITLE} focus={id=B icon={value=GFX_goal_b}}} shared_focus={id=C icon=GFX_goal_c}"#, Database::National, &KeyNames::default()).unwrap();
         assert_eq!(defs["A"].localisation, "TITLE");
         assert_eq!(defs["A"].description, "TITLE_desc");
@@ -657,7 +662,9 @@ free_operative = { operative = a } free_operative = { operative = b }
     }
 
     #[test]
-    fn unknown_description_is_skipped_by_the_native_focus_reader() {
+    fn unknown_description_is_skipped_by_the_focus_reader() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let defs = parse(
             br#"focus_tree={focus={id=A text=TITLE desc=DESCRIPTION}}"#,
             Database::National,
@@ -669,7 +676,10 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn inlay_positions_take_only_the_read_int_point_form() {
-        // 140A3D660 would consume `} } focus = { id` here: refused, not read.
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        // This malformed point would consume closing braces and the next
+        // focus identifier, so it remains refused.
         assert!(
             parse(
                 br#"focus_tree={inlay_window={id=w position={1 2}} focus={id=A}}"#,
@@ -691,6 +701,8 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn each_database_reads_only_its_own_roots() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let text = br#"focus_tree={focus={id=A}} continuous_focus_palette={focus={id=E}} shared_focus={id=B}"#;
         let national = parse(text, Database::National, &KeyNames::default()).unwrap();
         assert_eq!(national.keys().collect::<Vec<_>>(), ["A", "B"]);
@@ -700,6 +712,8 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn a_failed_repeated_cost_keeps_the_stored_one() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let defs = parse(
             br#"focus_tree={focus={id=A cost=2 cost=bad} focus={id=B cost=bad}}"#,
             Database::National,
@@ -711,6 +725,8 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn authored_costs_and_scripted_costs() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let defs = parse(br#"focus_tree={focus={id=A cost=10} focus={id=B cost=2.5} focus={id=C cost=@scripted} focus={id=D cost=-1}}"#, Database::National, &KeyNames::default()).unwrap();
         let continuous = parse(
             br#"continuous_focus_palette={focus={id=E}}"#,
@@ -745,6 +761,8 @@ mod icon_selection_tests {
 
     #[test]
     fn first_true_case_wins_and_an_earlier_unknown_is_not_skipped() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let definition = focus();
         let mut visited = 0;
         assert_eq!(
@@ -778,7 +796,9 @@ mod icon_selection_tests {
     }
 
     #[test]
-    fn native_fallback_agreement_needs_no_window_mode() {
+    fn fallback_agreement_needs_no_window_mode() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (definitions, _) = parse(
             br#"focus_tree={
                 focus={id=fallback alternate_icon=GFX_goal_unknown}

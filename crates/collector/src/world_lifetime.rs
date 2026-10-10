@@ -37,7 +37,7 @@ impl Signal {
             self.generation.store(u64::MAX, Ordering::SeqCst);
         }
     }
-    // HourlyUpdate@1401DCEF0 entry admits the occurrence read with its clock.
+    // The hourly update entry admits the occurrence read with its clock.
     fn boundary(&self, generation: u64, valid_clock: bool) {
         if !valid_clock {
             self.admitted.store(0, Ordering::SeqCst);
@@ -234,7 +234,7 @@ mod tests {
             if reenter == 0 {
                 return probe;
             }
-            // Like the native deleting destructor@1401C9080, return the
+            // Like the native deleting destructor, return the
             // receiver; its tail-entered body owns no DLL return address.
             unsafe { invoke(probe, 0) }
         }

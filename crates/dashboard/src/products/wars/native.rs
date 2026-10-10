@@ -1,5 +1,4 @@
-//! Pure transcription of the overview, over canonical recorded countries.
-//! See engine/src/cwar_relation/war_overview.md for instruction evidence.
+//! War overview grouping over canonical recorded countries.
 use replay::rows::{WarOverviewCountryRow, WarRelationRow};
 use std::collections::{HashMap, HashSet};
 
@@ -26,13 +25,13 @@ impl World {
         self.relations.contains_key(&pair(a, b))
     }
     fn same_faction(&self, a: u32, b: u32) -> bool {
-        // SameFaction@140D2AC10: null faction pointers never match.
+        // Null faction pointers never match.
         self.factions
             .get(&a)
             .is_some_and(|f| *f != 0 && self.factions.get(&b) == Some(f))
     }
     fn candidate(&self, a: u32, b: u32) -> Vec<u32> {
-        // BuildWarBlobCandidateSide@1419728B0: owned order, retired
+        // Keep owned order, including retired
         // occurrences included; factions/subjects do not add participants.
         let mut side = vec![a];
         for &x in self.owned.get(&b).into_iter().flatten() {
@@ -41,7 +40,7 @@ impl World {
             }
         }
         // Test only existing edges, retaining every candidate occurrence.
-        // This is equivalent to the native i<j checks without absent pairs.
+        // Absent pairs cannot produce a conflict.
         let mut positions: HashMap<u32, Vec<usize>> = HashMap::new();
         for (i, &x) in side.iter().enumerate().skip(1) {
             positions.entry(x).or_default().push(i);
@@ -69,12 +68,12 @@ impl World {
         side
     }
     pub fn blobs(&self, view: u32) -> Vec<Blob> {
-        // BuildWarBlobs@140D27BB0: one call for this viewpoint, seed order.
+        // Group one viewpoint in seed order.
         let mut out = Vec::new();
         let mut seen = HashSet::new();
         // Equivalent seeds have identical owned order, active neighbours and
-        // faction equality. 1419728B0 changes only the leading seed's position
-        // in side two; 140D27BB0 ignores that order and keeps the first arrays.
+        // faction equality. Only the leading seed's position changes in side
+        // two; membership deduplication keeps the first arrays.
         let mut seed_signatures = HashMap::new();
         let mut seed_counts = HashMap::<u32, usize>::new();
         for &enemy in self.owned.get(&view).into_iter().flatten() {
@@ -84,7 +83,7 @@ impl World {
         let mut repeats = HashMap::<(usize, usize), HashSet<(Vec<u32>, Vec<u32>)>>::new();
         let mut covered = HashSet::new();
         for &enemy in self.owned.get(&view).into_iter().flatten() {
-            // BuildWarBlobSides@1419730F0: null or retired matrix war
+            // A null or retired matrix war
             // produces two empty arrays, irrespective of relation dates.
             if covered.contains(&enemy) || !self.active(view, enemy) {
                 continue;
@@ -121,7 +120,7 @@ impl World {
                     .flatten()
                     .map(|x| counts.get(x).copied().unwrap_or(0))
                     .sum::<usize>();
-                // Instructions 1419732BB..14197348E only mark side TWO.
+                // Cross-side pruning removes only opposing-side entries.
                 if active != first.len() - 1 {
                     remove.insert(index);
                 }
@@ -222,7 +221,7 @@ impl World {
         Ok((s.major, s.divisions.wrapping_add(s.factories)))
     }
     pub fn representative(&self, blob: &Blob) -> Result<Pair, String> {
-        // FindWarBlobRepresentativeRelation@1419734F0: smallest signed
+        // Select the smallest signed
         // start, then first occurrence in first-side/second-side order.
         let first_rank: HashMap<_, _> = blob
             .first
@@ -272,7 +271,7 @@ impl World {
         if scores.values().any(|s| s.0 > 1) {
             return Err("Not recorded: unsupported nonboolean native major byte".into());
         }
-        // Stable native sorts 1419720E0/1419722A0: major byte before
+        // Stable sorts compare the major byte before
         // strength; equal comparisons keep the swap-removal array order.
         let compare = |a: &u32, b: &u32| {
             scores[b]
@@ -283,7 +282,7 @@ impl World {
         first.sort_by(compare);
         second.sort_by(compare);
         let (mut i, mut j) = (0, 0);
-        // Cursor search and major pins, instructions 1419737A4..141973B67.
+        // Search in cursor order while preserving major-country pins.
         while i < first.len() && j < second.len() {
             let a = if major_first {
                 original.first_country
@@ -349,7 +348,7 @@ fn membership(side: &[u32]) -> Vec<u32> {
     members
 }
 fn swap_remove(side: &mut Vec<u32>, indices: HashSet<usize>) {
-    // Descending unique removals, never stable retain (1419728B0/1419730F0).
+    // Remove unique indices in descending order by swapping with the last entry.
     let mut indices: Vec<_> = indices.into_iter().collect();
     indices.sort_unstable();
     for index in indices.into_iter().rev() {

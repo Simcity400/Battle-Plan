@@ -148,9 +148,9 @@ impl Cache {
     /// The result never falls below `minimum`; growth stays with the caller.
     pub fn cells_for_countries(slots: usize, minimum: usize) -> usize {
         slots
-            // 140BA6240: each slot reaches its pointer, vtable and identity,
-            // plus links for the object id, physical slot and canonical slot;
-            // the two original array headers are independent observations.
+            // Each slot reaches its pointer, vtable and identity plus links for object
+            // ID, physical slot and canonical slot. The two original headers remain
+            // independent observations.
             .saturating_mul(6)
             .saturating_add(2)
             .max(minimum)

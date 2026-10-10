@@ -5,33 +5,27 @@
 //! # What the recording holds
 //!
 //! `BuildingConstruction` and `RailwayConstruction` are one walk of each
-//! country's `CProductionStatus` construction vector, read once a day in their
-//! slot (and at every full hour: branch start, load, gap, refresh). A line's
-//! `id` is its native handle and stays with it for its life.
+//! country's construction vector, read once a day in their slot (and at every
+//! full hour: branch start, load, gap, refresh). A line's `id` is its native
+//! handle and stays with it for its life.
 //!
-//! - `created_hour` is the game's creation date of the line (`+0x58`), in hours:
-//!   a repair line created by bombing carries the hour the building's healthy
-//!   level fell (part M: 60828749 for state 810's infrastructure, damaged at
-//!   60828749). It is when the project started, exact, even when the line was
-//!   first read days later.
+//! - `created_hour` is the game's creation date of the line, in hours: a repair
+//!   line created by bombing carries the hour the building's healthy level
+//!   fell. It is when the project started, exact, even when first read days later.
 //! - `cost` is fixed5 per level (a whole route for a railway); `produced` is the
 //!   fixed5 progress toward the next level; `speed` is the line's progress per
-//!   daily update as last computed (part M: `produced` grew by the next read's
-//!   `speed` in most stretches, but not all; `construction_spending` gives the
-//!   counts); `active_factories` the factories assigned.
-//! - `amount` is the levels still to build. `CBuildingProductionLine::AdvanceProduction@140f55590`
-//!   adds `speed` to `produced`, and for each whole `cost` it holds takes `cost`
-//!   off, calls `RemoveRemainingCount(1)` (`amount -= 1`) and raises the
-//!   building's level by one (`CBuilding::set_level`). `IsComplete@140f58fe0`
-//!   is `amount == 0` and no repair left, and the queue then drops the line.
-//! - `repair_levels` (`+0x78`) is the levels still to repair. A line with repair
-//!   work runs `CBuilding::AdvanceRepair` instead, keeps `produced` at zero and
-//!   sets `repair_levels` to level − healthy level afterwards. Its speed is
-//!   repair with no factories still progresses: 70 of part M's 73 repair lines
-//!   never had any at a read.
+//!   daily update as last computed; `active_factories` the factories assigned.
+//! - `amount` is the levels still to build. A daily update adds `speed` to
+//!   `produced`, subtracts each whole `cost`, decrements the remaining amount
+//!   and raises the building's level. Completion requires `amount == 0` and
+//!   no repair left, after which the queue drops the line.
+//! - `repair_levels` is the levels still to repair. A line with repair work
+//!   repairs instead, keeps `produced` at zero and sets `repair_levels` to
+//!   level minus healthy level afterwards. Speed combines BASE_FACTORY_REPAIR
+//!   with factory output, so a repair with no factories still progresses.
 //! - For a railway, `amount` is the route segments still to build (a route of n
-//!   provinces starts at n − 1), `cost` the whole route and `produced` =
-//!   `cost` − `remaining_cost`.
+//!   provinces starts at n - 1), `cost` the whole route and `produced` =
+//!   `cost` - `remaining_cost`.
 //!
 //! # How a project's life shows in the recording
 //!
@@ -40,17 +34,13 @@
 //! hour, so the building a line targets is watched hour by hour while the line is
 //! open.
 //!
-//! The daily construction update is the only thing that completes a level or a
-//! repair (`AdvanceProduction@140f55590`, slot 24, called only from
-//! `CProductionStatus::DailyProductionUpdate@140e527a0` under
-//! `CGameState::DailyUpdate@1401d4390`, which runs inside the hourly update entered
-//! at hour 23 of a day). The recorder samples at that update's entry, so a
-//! completion first shows at an hour that is a multiple of 24 (part M: every rise at
-//! a construction target), three hours before the construction slot reads the
-//! queue. Other things raise buildings too: a decision or event choice a player
-//! makes (a command, run between ticks) at any hour, and a focus reward, timed
-//! decision, event or on_action run by the same `CCountry::daily_update@1406daaf0`
-//! at that same hour.
+//! The daily construction update is the only thing that completes a level or
+//! repair. It runs inside the hourly update entered at hour 23 of a day. The
+//! recorder samples at that update's entry, so a completion first shows at an
+//! hour that is a multiple of 24, three hours before the construction slot reads
+//! the queue. Other things raise buildings too: a player's decision or event
+//! choice (a command run between ticks) at any hour, and a focus reward, timed
+//! decision, event or on_action at that same daily-update hour.
 //!
 //! A line repairs while it has levels to repair (the engine takes its repair
 //! branch) and builds its remaining new levels otherwise, one or the other at each
@@ -88,49 +78,37 @@
 //!    *doubtful*.
 //! 3. **New levels.** While listed, as many as its count fell, no more than
 //!    the possible completions in step 2, counting a multi-level rise as its count.
-//!    A progress fall proves no extra completion: native signed factory output
-//!    can lower it, and the qword addition wraps (140F557F5 / 140F55813). Sampled
-//!    speed bounds nothing between reads: factories can be added and taken off
-//!    at any hour (`UpdateProductionSpeed@140f59260`).
+//!    A progress fall proves no extra completion: signed factory output can
+//!    lower it, and the qword addition wraps. Sampled speed bounds nothing
+//!    between reads: factories can be added and taken off at any hour.
 //!    The levels are dated by their rises only when the possible completions are
 //!    exactly as many as the completions; otherwise by the read (`hour` null).
 //! 4. **Repairs.** A repair and damage are the line's while it is open: while
 //!    listed, throughout (every repair is built and every damage `added`, even when
 //!    neither read shows repair work); once gone, until its work was done, which is
 //!    at the repair that left its building fully healthy if it had no new levels
-//!    queued (`IsComplete@140f58fe0` wants none left, and the repair branch sets
-//!    what is left to level − healthy level, so damage undoes rises however many
-//!    they were), else before its last new level. Once gone, what was added is the
-//!    damage before its last claimed rise, or its repairs beyond what it had left
-//!    if more.
+//!    queued. Completion requires none left, and repair sets the remaining
+//!    count to level minus healthy level, so damage undoes rises however many
+//!    they were. Otherwise work ended before its last new level. Once gone,
+//!    what was added is damage before its last claimed rise, or repairs beyond
+//!    what it had left if more.
 //! 5. **Counts.** While listed, a rise in its queued count is `added`. In a
 //!    clear stretch, extra possible completions are `possible`:
 //!    levels it may have both built and had added, dated by the read, widening
 //!    both counts by that many. A fall beyond what it built was dropped, or is
 //!    `unaccounted` when the stretch is doubtful.
-//! 6. **Ending, once gone.** The true daily IsComplete call at 140E52A28,
-//!    or linked partner removal at 140F55C07, proves native queue completion.
-//!    Railway cancellation uses the
-//!    same getter and retains its +0x78 cancel operand. A complete observation
-//!    of an unlinked line with no such result proves another removal path, dated
-//!    only by the read. A linked line with no outcome stays unknown.
-//!    Older prefixes and departures outside observation stay unknown. Final
-//!    between-read level counts remain unaccounted: completion does not prove
-//!    which levels commands may have dropped before that native decision.
+//! 6. **Ending, once gone.** An observed daily completion decision or linked
+//!    partner removal proves queue completion. Railway cancellation uses the same
+//!    decision and retains its cancel operand. A complete observation of an
+//!    unlinked line with no such result proves another removal path, dated only
+//!    by the read. A linked line with no outcome stays unknown. Older prefixes
+//!    and departures outside observation stay unknown. Final between-read level
+//!    counts remain unaccounted: completion does not prove which levels commands
+//!    may have dropped before that decision.
 //!
 //! A railway line's segments built while listed are the fall of its `amount`,
 //! known only by the read that shows it. Building/route changes never establish
 //! its ending; the native completion adapter owns that decision for both types.
-//!
-//! In the PR132 part-M recording (branch 1, hours 60828745..=60829113, 17 reads
-//! of 350 lines) 63 lines left the queue. Of these, 58 building lines (28 new
-//! buildings and 30 repairs) had a target rise at a multiple of 24, three hours
-//! before the read that showed it gone. Two repairs of the bunker in province 5007
-//! left without a healthy rise: PRC's line left when JAP took control (60828774)
-//! and JAP's when PRC took it back (60828923), each followed by the other side's
-//! new line. Three railway lines left with their last province at the target level
-//! (`400428390945385`'s last province 3358 rose from 2 to its target 5 at
-//! 60828912); the other 26 were still in the queue at the end.
 //!
 //! A project started and finished between two reads is never listed, and lines
 //! of a country the links cannot resolve are left out (both counted in the
@@ -180,13 +158,9 @@ pub struct ConstructionLog;
 const ICON_EDGE: u32 = 48;
 /// The fixed5 scale of `cost`.
 pub(crate) const COST_SCALE: u32 = 100_000;
-/// The construction queue's line entry, the element the game gives each
-/// building's `icon_frame` (`picture`) and the repair marker (`repair`). The exe
-/// binds these names: `CProductionLineBuildingItem::CProductionLineBuildingItem@141d347a0`
-/// builds the entry from "production_building_line_entry" (0x142a58060), and its
-/// update `vf19@141d4f7f0` sets "picture" (0x142a34290) to the frame at
-/// `CBuildingTemplate +0x2e4` (`icon_frame`) and shows or hides "repair"
-/// (0x142a5836c). The file holding the entry is content, read through the stack.
+/// The construction queue's line entry gives each building's `icon_frame`
+/// (`picture`) and repair marker (`repair`). It uses production_building_line_entry;
+/// the authored entry supplies the icon and marker declarations through the stack.
 const LINE_ENTRY: &str = "production_building_line_entry";
 const LINE_PICTURE: &str = "picture";
 const LINE_REPAIR: &str = "repair";
@@ -826,24 +800,15 @@ struct Rise {
     count: u32,
 }
 
-/// Hours in a game day. The construction update runs once a day:
-/// `CBuildingProductionLine::AdvanceProduction@140f55590` and
-/// `CRailwayProductionLine::AdvanceProduction@1419eeea0` (vtable slot 24; the
-/// building line's also runs `CBuilding::AdvanceRepair@1410c5c90`) are called only
-/// through the slot-24 call over the construction vector in
-/// `CProductionStatus::DailyProductionUpdate@140e527a0`, from
-/// `CCountry::daily_update@1406daaf0`, from `CGameState::DailyUpdate@1401d4390`, which
-/// `CGameState::HourlyUpdate@1401dcef0` calls after advancing the hour when the day
-/// changes: inside the update entered at hour 23 of a day. The recorder samples at
-/// that update's entry, so a completion or repair first shows at an hour that is a
-/// multiple of 24 (part M: every finish).
+/// Hours in a game day. The daily construction update runs building, repair
+/// and railway progress inside the hourly update entered at hour 23. The recorder
+/// samples at that update's entry, so a completion or repair first shows at an
+/// hour that is a multiple of 24.
 const HOURS_PER_DAY: i32 = 24;
 
 /// Whether a rise at `hour` can be the daily construction update's. A player's
-/// decision or event choice (a command, run between ticks) lands at any hour; a
-/// focus reward, a timed decision or an on_action (`CCountry::daily_update` runs
-/// `CNationalFocusProgress::daily_update@1402cfe40`, `FireEventFromScope@140a026a0`
-/// and `DispatchOnActionList@140a6aae0` too) can land at the same hour.
+/// decision or event choice (a command run between ticks) lands at any hour; a
+/// focus reward, timed decision or on_action can land at the same daily-update hour.
 fn daily(hour: i32) -> bool {
     hour.rem_euclid(HOURS_PER_DAY) == 0
 }
@@ -856,8 +821,8 @@ struct Stretch {
     /// with whether it left the building fully healthy.
     repairs: Vec<(Rise, bool)>,
     /// Daily rises of the level of a building fully healthy just before: a line
-    /// builds only with nothing left to repair (`AdvanceProduction@140f55590` takes
-    /// its repair branch while `repair_levels` is positive).
+    /// builds only with nothing left to repair; a positive repair_levels takes
+    /// the repair branch.
     levels: Vec<Rise>,
     /// Damage: (hour, levels) of each rise of its level less its healthy level.
     damage: Vec<(i32, u32)>,
@@ -1072,8 +1037,8 @@ fn settle(
         leave_unaccounted(project, &end, &left, hour);
         return Some(end);
     }
-    // Native signed output and qword wrapping can lower progress without a
-    // completion (140F557F5 / 140F55813). Bound claims only by the count's fall.
+    // Signed output and qword wrapping can lower progress without a
+    // completion. Bound claims only by the count's fall.
     let fell = u32::try_from(new_left - new_now).unwrap_or(0);
     let completions = fell.min(candidates);
     let built = if completions > 0 {
@@ -1539,7 +1504,7 @@ struct LineSprite {
 
 /// The queue entry's sprite for `element` and its authored icon frame.
 fn line_sprite(content: &ContentView<'_>, element: &str) -> io::Result<LineSprite> {
-    // CGui::FindGuiType@142247660: the registry's later definition wins.
+    // The GUI registry's later definition wins.
     let entry = content
         .guis
         .template(LINE_ENTRY)
@@ -1771,7 +1736,7 @@ fn named_inventory(
     counted(
         &mut warnings,
         Fallback,
-        "building types have icon_frame 0 (none declared: CBuildingTemplate +0x2e4, zeroed by 1414a4470), whose picture is not verified, so they show a placeholder",
+        "building types have icon_frame 0 (none declared), whose picture is not verified, so they show a placeholder",
         &frameless,
     );
     counted(

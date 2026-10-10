@@ -3,8 +3,8 @@
 Full live recording/save/oracle/render smoke and guarded game-driving actions.
 .DESCRIPTION
 Smoke uses receipt-verified final binaries with an explicit save, calibrated UiConfig,
-and a new Out directory. A coordinator-called Checkpoint requires inherited GATE=1
-and runs the workspace gate once before building the three release artifacts.
+and a new Out directory. An explicit Checkpoint runs the workspace checks
+before building the three release artifacts.
 It preserves the input save and restores the isolated user
 profile selection/settings after normal exit. Explicit actions remain available. Baseline verifies the pinned game build,
 then reads only its clock; it sends no input and does not inject.
@@ -20,6 +20,12 @@ handoff and restore the previous foreground window afterward. They never stop
 or minimize that application, including when it is TeamViewer.
 Console opens the console with the supplied key, types one line, presses Enter,
 and closes it. Use Text for an already-open console or a save-name field.
+.PARAMETER GameExe
+Path to the supported installed hoi4.exe, or set BATTLE_PLAN_GAME_DIR.
+.PARAMETER CaptureRoot
+User-selected output root; defaults to LOCALAPPDATA/HOI4Replay/captures.
+.PARAMETER GameLock
+Shared lock directory used to prevent concurrent full smoke runs.
 .PARAMETER UiConfig
 JSON containing width/height, expected_hour/expected_seed and calibrated two-element
 pixel coordinates for menu, speed_up, speed_down, pause, save_menu, save_name,
@@ -42,24 +48,23 @@ sets hook_mask (bit per hook, 0x7f enables all) to bisect what the click path de
 .PARAMETER RecordHours
 Live advance in game hours. The smoke requests a full refresh (recorder refresh) for the last
 hour's sample before comparing it with the save.
-1440 reaches the reference hour 60835691 from the record23 save.
 .PARAMETER BuildReceipt
-Private JSON with the current source_commit and exactly three binaries entries
+JSON with the current source_commit and exactly three binaries entries
 (name, sha256, bytes) for recorder.exe, collector.dll and viewer.exe. A checkpoint
 writes build-receipt.json in Out; existing smoke-result.json has the same fields.
 .PARAMETER BinaryDirectory
 Directory of those binaries; defaults to this checkout's .cargo-target/release.
 All source and copied hashes and the clean current HEAD are verified before launch.
 .PARAMETER Checkpoint
-Use only at an explicitly called workspace checkpoint, with GATE=1 inherited from
-the coordinator. Mutually exclusive with BuildReceipt/BinaryDirectory. Subsequent
-smokes use the receipt and do not repeat the gate. The script never sets GATE.
+Run workspace checks and build the release binaries before the live smoke.
+Mutually exclusive with BuildReceipt/BinaryDirectory. Subsequent smokes use the
+receipt and do not repeat the workspace checks.
 .EXAMPLE
-powershell -NoProfile -File tools/smoke.ps1 -Action Smoke -BuildReceipt captures\checkpoint\build-receipt.json -BinaryDirectory captures\checkpoint\bin -ExpectedSave save.hoi4 -UiConfig captures\smoke_config\ui.json -Out captures\smoke_new -WaitForUiReview
+powershell -NoProfile -File tools/smoke.ps1 -Action Smoke -BuildReceipt "$env:LOCALAPPDATA\HOI4Replay\captures\checkpoint\build-receipt.json" -BinaryDirectory "$env:LOCALAPPDATA\HOI4Replay\captures\checkpoint\bin" -ExpectedSave save.hoi4 -UiConfig "$env:LOCALAPPDATA\HOI4Replay\captures\smoke_config\ui.json" -Out "$env:LOCALAPPDATA\HOI4Replay\captures\smoke_new" -WaitForUiReview
 .EXAMPLE
 powershell -File tools/smoke.ps1 -Action Launch -ContinueLastSave
 .EXAMPLE
-powershell -File tools/smoke.ps1 -Action Screenshot -Out captures\probe\menu.png
+powershell -File tools/smoke.ps1 -Action Screenshot -Out "$env:LOCALAPPDATA\HOI4Replay\captures\probe\menu.png"
 .EXAMPLE
 powershell -File tools/smoke.ps1 -Action Key -Key Space
 .EXAMPLE
@@ -69,7 +74,7 @@ powershell -File tools/smoke.ps1 -Action Move -GameId 1234 -X 1280 -Y 720
 .EXAMPLE
 powershell -File tools/smoke.ps1 -Action Wheel -X 1280 -Y 720 -Delta -3
 .EXAMPLE
-powershell -File tools/smoke.ps1 -Action Baseline -Seconds 120 -Out captures\baseline
+powershell -File tools/smoke.ps1 -Action Baseline -Seconds 120 -Out "$env:LOCALAPPDATA\HOI4Replay\captures\baseline"
 .EXAMPLE
 powershell -File tools/smoke.ps1 -Action ShimStatus
 .EXAMPLE
@@ -80,12 +85,14 @@ param(
     [ValidateSet('Smoke', 'Launch', 'Screenshot', 'Key', 'Click', 'Move', 'Wheel', 'Text', 'Console', 'Baseline', 'Clock',
         'ShimStatus', 'ShimMask')]
     [string]$Action = 'Smoke',
-    [string]$GameExe = 'X:\SteamLibrary\steamapps\common\Hearts of Iron IV\hoi4.exe',
+    [string]$GameExe = '',
     [string]$UserDirectory = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Paradox Interactive\Hearts of Iron IV'),
     [ValidateRange(0, 2147483647)][int]$GameId = 0,
     [switch]$ContinueLastSave,
     [string]$ExpectedSave,
     [string]$Out,
+    [string]$CaptureRoot = (Join-Path $env:LOCALAPPDATA 'HOI4Replay\captures'),
+    [string]$GameLock = (Join-Path $env:TEMP 'HOI4Replay\hoi4_game.lock'),
     [ValidateRange(1, 2147483647)][int]$Seconds = 120,
     [ValidateSet('Space', 'Escape', 'Enter', 'Grave', 'Tab', 'Backspace', 'Delete',
         'Left', 'Right', 'Up', 'Down', 'Home', 'End', '1', '2', '3', '4', '5',
@@ -113,7 +120,7 @@ param(
     [switch]$Posted,   # experimental: post mouse messages instead of borrowing the foreground
     # Directory holding inputshim.dll and inputshim-inject.exe. Launch attaches the shim in
     # background mode, and background clicks then need no foreground borrow at all.
-    [string]$InputShimDir = 'captures\perf_bench_20260917\builds\inputshim',
+    [string]$InputShimDir = '',
     [ValidateRange(-1, 255)][int]$Mask = -1,   # ShimMask: new hook_mask
     [string[]]$ExtraArgs = @()
 )
@@ -135,6 +142,39 @@ $script:ShimCallsOffset = 32
 $script:ShimCursorFlag = 1
 $script:ShimFocusFlag = 2
 $script:ShimLeftFlag = 4
+
+function Read-ExecutableVersionText([string]$Path, [uint32]$VersionTextRva) {
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 64 -or [BitConverter]::ToUInt16($bytes, 0) -ne 0x5A4D) {
+        throw 'Executable version text requires a DOS header.'
+    }
+    $peOffset = [int64][BitConverter]::ToUInt32($bytes, 60)
+    if ($peOffset + 24 -gt $bytes.LongLength -or [BitConverter]::ToUInt32($bytes, [int]$peOffset) -ne 0x00004550) {
+        throw 'Executable version text requires a PE header.'
+    }
+    $sectionCount = [BitConverter]::ToUInt16($bytes, [int]($peOffset + 6))
+    $optionalSize = [BitConverter]::ToUInt16($bytes, [int]($peOffset + 20))
+    $firstSection = $peOffset + 24 + $optionalSize
+    if ($firstSection + [int64]$sectionCount * 40 -gt $bytes.LongLength) {
+        throw 'Executable version text has an incomplete section table.'
+    }
+    for ($index = 0; $index -lt $sectionCount; $index++) {
+        $section = [int]($firstSection + $index * 40)
+        $virtualAddress = [int64][BitConverter]::ToUInt32($bytes, $section + 12)
+        $rawSize = [int64][BitConverter]::ToUInt32($bytes, $section + 16)
+        $rawOffset = [int64][BitConverter]::ToUInt32($bytes, $section + 20)
+        $delta = [int64]$VersionTextRva - $virtualAddress
+        if ($delta -lt 0 -or $delta -ge $rawSize) { continue }
+        $start = $rawOffset + $delta
+        $end = $rawOffset + $rawSize
+        if ($end -gt $bytes.LongLength) { throw 'Executable version text section exceeds the file.' }
+        $cursor = $start
+        while ($cursor -lt $end -and $bytes[$cursor] -ne 0) { $cursor++ }
+        if ($cursor -eq $end -or $cursor -eq $start) { throw 'Executable version text is empty or unterminated.' }
+        return [Text.UTF8Encoding]::new($false, $true).GetString($bytes, [int]$start, [int]($cursor - $start))
+    }
+    throw 'Executable version text has no file-backed section.'
+}
 
 function Open-InputShim {
     # The open control block, or $null when the shim is not attached.
@@ -158,7 +198,8 @@ function Read-ShimCounters($shim) {
 
 function Install-InputShim([int]$processId) {
     # Attach once per launch. Absent binaries are not an error: the driver falls back
-    # to the foreground borrow, which is what every earlier run used.
+    # to the foreground borrow.
+    if (-not $InputShimDir) { return 'absent' }
     $injector = Join-Path $InputShimDir 'inputshim-inject.exe'
     $dll = Join-Path $InputShimDir 'inputshim.dll'
     if (-not (Test-Path -LiteralPath $injector) -or -not (Test-Path -LiteralPath $dll)) { return 'absent' }
@@ -245,7 +286,7 @@ public sealed class Hoi4ClockBaseline : IDisposable {
         if (!Read(idler, 8) || BitConverter.ToUInt64(bytes, 0) != image + 0x2952510) return false;
         if (!Read(idler + 0x6c1, 1) || bytes[0] > 1) return false;
         clock.paused = bytes[0];
-        // The live +0x750 member is a pointer, not the historically assumed inline root.
+        // The live root member is a pointer.
         if (!Read(idler + 0x750, 8)) return false;
         ulong camera = BitConverter.ToUInt64(bytes, 0);
         if (camera == 0 || camera > long.MaxValue - 0x740) return false;
@@ -271,7 +312,7 @@ public sealed class Hoi4ClockBaseline : IDisposable {
         return true;
     }
     Clock Once() {
-        // engine::cgame_state: confirmed CGameState singleton, native-width clock fields and load witness.
+        // Read the game-state singleton, clock fields and load witness.
         if (!Read(image + 0x3316e90, 8)) return null;
         ulong state = BitConverter.ToUInt64(bytes, 0);
         if (state == 0 || state > long.MaxValue - 0x800) return null;
@@ -307,17 +348,16 @@ public sealed class Hoi4ClockBaseline : IDisposable {
 function Invoke-FullSmoke {
     if ($Checkpoint) {
         if ($BuildReceipt -or $BinaryDirectory) { throw 'Checkpoint cannot reuse a BuildReceipt or BinaryDirectory.' }
-        if ($env:GATE -cne '1') { throw 'Checkpoint requires coordinator-provided GATE=1; the script will not set it.' }
     } elseif (-not $BuildReceipt) {
-        throw 'Smoke requires -BuildReceipt, or an explicitly called -Checkpoint with inherited GATE=1.'
+        throw 'Smoke requires -BuildReceipt or an explicitly called -Checkpoint.'
     }
     if (-not $UiConfig -or -not $ExpectedSave -or -not $Out) {
         throw 'Smoke requires -UiConfig (calibrated screenshot pixels), -ExpectedSave and a new -Out directory.'
     }
-    $captureRoot = 'captures\'
+    $captureRoot = [IO.Path]::GetFullPath($CaptureRoot).TrimEnd([char[]]'\/') + [IO.Path]::DirectorySeparatorChar
     $output = [IO.Path]::GetFullPath($Out)
     if (-not $output.StartsWith($captureRoot, [StringComparison]::OrdinalIgnoreCase) -or (Test-Path -LiteralPath $output)) {
-        throw 'Smoke output must be a NEW directory under captures.'
+        throw 'Smoke output must be a NEW directory under CaptureRoot.'
     }
     $repo = Split-Path -Parent $PSScriptRoot
     $driver = $PSCommandPath
@@ -342,7 +382,8 @@ function Invoke-FullSmoke {
         $point = $ui.$name
         if ($point.Count -ne 2 -or $point[0] -lt 0 -or $point[1] -lt 0 -or $point[0] -ge $ui.width -or $point[1] -ge $ui.height) { throw "Invalid calibrated point: $name" }
     }
-    $lock = Join-Path $env:TEMP 'claude\hoi4_game.lock'
+    $lock = [IO.Path]::GetFullPath($GameLock)
+    $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $lock)
     if (Test-Path -LiteralPath $lock) { throw "Shared game lock is held: $lock" }
     $null = New-Item -ItemType Directory -Path $lock -ErrorAction Stop
     $ownerToken = 'full-smoke-' + [Guid]::NewGuid().ToString()
@@ -415,7 +456,7 @@ function Invoke-FullSmoke {
         $binaries
     }
     # Forced menu input keeps the game focused between clicks: refocusing loses the next click.
-    function Drive([string]$action,[hashtable]$extra=@{},[bool]$foregroundInput=$Foreground) { & $driver -Action $action -GameId $game.Id -GameExe $gamePath -UserDirectory $userPath -Foreground:$foregroundInput -KeepForeground:($foregroundInput -and -not $Foreground) @extra }
+    function Drive([string]$action,[hashtable]$extra=@{},[bool]$foregroundInput=$Foreground) { & $driver -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action $action -GameId $game.Id -GameExe $gamePath -UserDirectory $userPath -Foreground:$foregroundInput -KeepForeground:($foregroundInput -and -not $Foreground) @extra }
     function Click-Point([string]$name) {
         $point=$ui.$name
         # Menu widgets require foreground input even when map input uses the shim.
@@ -524,16 +565,16 @@ function Invoke-FullSmoke {
         if ($Checkpoint) {
             Stage 'checkpoint'
             if ($env:CARGO_BUILD_TARGET) { throw 'CARGO_BUILD_TARGET would change the checkpoint release path; use the native target.' }
-            $bash=(Get-Command 'C:\Program Files\Git\bin\bash.exe' -ErrorAction Stop).Source
-            $buildArgs=@('tools/build-slot.sh','smoke')
-            $gate='cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace --no-fail-fast && cargo run -q --profile test -p dashboard --bin export-types -- --check'
-            $tests=Run-Tool $bash ($buildArgs + $gate) 'checkpoint' 2400
+            $cargo=(Get-Command cargo -ErrorAction Stop).Source
+            $null=Run-Tool $cargo @('fmt','--all','--','--check') 'format' 2400
+            $null=Run-Tool $cargo @('clippy','--workspace','--all-targets','--','-D','warnings') 'clippy' 2400
+            $tests=Run-Tool $cargo @('test','--workspace','--no-fail-fast') 'checkpoint' 2400
+            $null=Run-Tool $cargo @('run','-q','--profile','test','-p','dashboard','--bin','export-types','--','--check') 'types' 2400
             $report.tests_passed=([regex]::Matches($tests,'test result: ok\. (\d+) passed') | ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
-            $null=Run-Tool $bash ($buildArgs + 'cargo build -p recorder -p collector -p viewer --release --target-dir .cargo-target') 'release' 600
+            $null=Run-Tool $cargo @('build','-p','recorder','-p','collector','-p','viewer','--release','--target-dir','.cargo-target') 'release' 600
         } else {
             $receiptPath=(Resolve-Path -LiteralPath $BuildReceipt -ErrorAction Stop).ProviderPath
-            if (-not $receiptPath.StartsWith($captureRoot,[StringComparison]::OrdinalIgnoreCase) -or
-                -not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { throw 'BuildReceipt must be a private file under captures.' }
+            if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { throw 'BuildReceipt must identify an existing JSON file.' }
             $receipt=[IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json
             if (-not $receipt.PSObject.Properties['source_commit'] -or $receipt.source_commit -isnot [string] -or
                 $receipt.source_commit -cne $report.source_commit) {
@@ -562,7 +603,7 @@ function Invoke-FullSmoke {
         Stage 'launch-and-attach'
         $script:smokeStatusPath=$null
         $recorderRun=Launch-Tool $recorder @('record','--once','--out',$recordRoot,'--user-dir',$userPath) 'record'
-        $launch=& $driver -Action Launch -GameExe $gamePath -UserDirectory $userPath -ContinueLastSave -ExpectedSave $ExpectedSave -Foreground:$Foreground
+        $launch=& $driver -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action Launch -GameExe $gamePath -UserDirectory $userPath -ContinueLastSave -ExpectedSave $ExpectedSave -Foreground:$Foreground
         $game=Get-Process -Id $launch.GameId
         Initialize-SmokeClock
         $limit=[DateTime]::UtcNow.AddSeconds(300)
@@ -702,7 +743,7 @@ function Invoke-FullSmoke {
         $report.completion=$completed; $report.collector_absence_confirmed=$true
         Stage 'normal-game-exit'
         Stop-OwnedGame
-        $replays=@(Get-ChildItem -LiteralPath $recordRoot -Filter '*.battleplan' -File)
+        $replays=@(Get-ChildItem -LiteralPath $recordRoot -File | Where-Object { $_.Extension -in '.battleplan', '.hoi4replay' })
         if ($replays.Count -ne 1) { throw 'Expected exactly one finalized replay.' }
         $replay=$replays[0].FullName; $report.replay=$replay; $report.replay_bytes=$replays[0].Length
         $stream=[IO.File]::OpenRead($replay)
@@ -790,6 +831,10 @@ function Invoke-FullSmoke {
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if (-not $GameExe) {
+    if ($(if (Test-Path Env:BATTLE_PLAN_GAME_DIR) { $env:BATTLE_PLAN_GAME_DIR } else { $env:HOI4_GAME_DIR })) { $GameExe = Join-Path $(if (Test-Path Env:BATTLE_PLAN_GAME_DIR) { $env:BATTLE_PLAN_GAME_DIR } else { $env:HOI4_GAME_DIR }) 'hoi4.exe' }
+    else { throw 'Supply -GameExe or set BATTLE_PLAN_GAME_DIR to the installed game directory.' }
+}
 if ($Action -eq 'Smoke') { Invoke-FullSmoke; return }
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw 'The game driver requires Windows and an interactive desktop.'
@@ -807,7 +852,7 @@ if ($Action -eq 'Launch') {
     if ($gameProcesses.Count -ne 0) { throw 'the game is already running.' }
     $userPath = (Resolve-Path -LiteralPath $UserDirectory).ProviderPath
     if ($userPath.Contains('"')) { throw 'The user directory contains an invalid quote.' }
-    # This build joins argv then splits on every '-' (FUN_140124b80 -> FUN_1424b8120).
+    # This build joins argv then splits on every hyphen.
     # A split path can fail PHYSFS setup and silently fall back to the owner's Documents directory.
     if ($userPath.Contains('-')) { throw 'This game build splits command-line values at hyphens. Use a user directory whose entire path contains no hyphen.' }
     if ($ExpectedSave -and -not $ContinueLastSave) {
@@ -888,28 +933,29 @@ if ($Action -eq 'Clock') {
 }
 if ($Action -eq 'Baseline') {
     if (-not [Environment]::Is64BitProcess) { throw 'Baseline requires 64-bit PowerShell.' }
-    $captureRoot = 'captures'
+    $captureRoot = [IO.Path]::GetFullPath($CaptureRoot).TrimEnd([char[]]'\/')
     if (-not $Out) { throw 'Baseline requires -Out, an existing capture directory or a new .jsonl file in one.' }
     $capturePath = [IO.Path]::GetFullPath($Out)
     if (Test-Path -LiteralPath $capturePath -PathType Container) {
         $capturePath = Join-Path $capturePath ('baseline-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + $game.Id + '.jsonl')
     }
     if (-not $capturePath.StartsWith($captureRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetExtension($capturePath) -ine '.jsonl') {
-        throw "Baseline output must be a JSONL file under $captureRoot."
+        throw "Baseline output must be a JSONL file under CaptureRoot."
     }
     if (-not (Test-Path -LiteralPath ([IO.Path]::GetDirectoryName($capturePath)) -PathType Container)) {
         throw 'Create the baseline capture directory before starting the measurement.'
     }
     if (Test-Path -LiteralPath $capturePath) { throw "Baseline already exists: $capturePath" }
-    # engine::PINNED_BUILD, verified against the installed executable on 2026-09-09.
-    $wantedVersion = 'Operation Postern v1.19.2.0.a729'
+    # Supported executable identity for clock reading.
     $wantedSize = [int64]55680632
     $wantedHash = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad'
     $actualSize = (Get-Item -LiteralPath $gamePath).Length
     $actualHash = (Get-FileHash -LiteralPath $gamePath -Algorithm SHA256).Hash
     if ($actualSize -ne $wantedSize -or $actualHash -ine $wantedHash) {
-        throw "Unsupported build: wanted $wantedVersion / $wantedSize bytes / $wantedHash; got $actualSize bytes / $actualHash."
+        throw "Unsupported build: wanted $wantedSize bytes / $wantedHash; got $actualSize bytes / $actualHash."
     }
+    $versionTextRva = [uint32]0x02701108
+    $exeVersion = Read-ExecutableVersionText -Path $gamePath -VersionTextRva $versionTextRva
     if (@($game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0) {
         throw 'The free-run baseline requires collector.dll to be detached first.'
     }
@@ -930,7 +976,7 @@ if ($Action -eq 'Baseline') {
         $lastProcessCheck = $qpcStart
         $writer.WriteLine((@{ kind = 'baseline_start'; pid = $game.Id; process_start_time = $processStart;
             qpc = $qpcStart; qpc_frequency = $reader.Frequency; requested_seconds = $Seconds; sample_interval_ms = 125;
-            exe_version = $wantedVersion; exe_size = $actualSize; exe_sha256 = $actualHash.ToLowerInvariant();
+            exe_version = $exeVersion; exe_size = $actualSize; exe_sha256 = $actualHash.ToLowerInvariant();
             limitation = 'External clock observations measure free-run throughput only. Pointer, load timestamp, and seed are identity witnesses; campaign identity and table consistency are not verified. Forward jumps between samples may be normal progress or an undetected reload.' } | ConvertTo-Json -Compress))
         Write-Host "Free-run baseline started for ${Seconds}s; no input is sent. Output: $capturePath"
         $previous = $null
@@ -1257,11 +1303,11 @@ try {
 
     switch ($Action) {
     'Screenshot' {
-        $captureRoot = 'captures'
+        $captureRoot = [IO.Path]::GetFullPath($CaptureRoot).TrimEnd([char[]]'\/')
         if (-not $Out) { $Out = Join-Path $captureRoot ('probe\game-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '.png') }
         $capturePath = [IO.Path]::GetFullPath($Out)
         if (-not $capturePath.StartsWith($captureRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetExtension($capturePath) -ine '.png') {
-            throw "Screenshots must be PNG files under $captureRoot."
+            throw "Screenshots must be PNG files under CaptureRoot."
         }
         if (Test-Path -LiteralPath $capturePath) { throw "Screenshot already exists: $capturePath" }
         Add-Type -AssemblyName System.Drawing

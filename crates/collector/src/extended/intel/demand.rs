@@ -110,7 +110,7 @@ impl Capacities {
         let tokens = ccountry_operation_token_manager::walk(memory, base, state, &mut [], &mut []);
         count!(11, 11, tokens.outcome);
         raise(&mut self.tokens, rows(tokens.required_tokens, 1));
-        // 141502590 retains every original nonnull native index.
+        // Retain every original nonnull native index.
         count!(
             12,
             12,

@@ -1,4 +1,4 @@
-// Authored source-only fixtures. No child compilation or execution performed.
+// Synthetic fixtures for ordered combat-reference capture.
 use super::*;
 use crate::{creference_registry as registry, memory::SliceMemory, reference_bucket};
 use std::cell::RefCell;

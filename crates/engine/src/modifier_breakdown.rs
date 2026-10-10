@@ -1,5 +1,5 @@
-//! Cached modifier trees walked by FormatModifierBreakdown@14054D0F0.
-//! Labels are CModifier+0x58 bytes (14054C770), not original source keys.
+//! Cached modifier trees used for breakdown display.
+//! Labels are stored display strings, distinct from original source keys.
 use crate::{Memory, cpdx_array::Array, modifier_accumulator, msvc_string, read};
 use std::collections::HashSet;
 
@@ -11,7 +11,7 @@ pub struct Node {
     pub name: Vec<u8>,
 }
 
-/// Accumulator children header and display string, 14054D0F0/14054C770.
+/// Accumulator children header and stored display string.
 const CHILDREN: usize = 0x18;
 const DISPLAY: usize = 0x48;
 
@@ -23,8 +23,8 @@ fn text(memory: &impl Memory, address: usize) -> Result<Vec<u8>, &'static str> {
     Ok(bytes)
 }
 
-/// No depth or node limit. Only ancestor cycles are invalid; repeated siblings
-/// are separate native occurrences. Values are the passive 140551820 getter.
+/// No depth or node limit. Only ancestor cycles are invalid; repeated
+/// siblings are separate occurrences. Values use passive effective lookup.
 pub fn tree(
     memory: &impl Memory,
     base: usize,
@@ -96,8 +96,8 @@ pub struct Balance {
     pub weekly: Vec<Node>,
 }
 
-/// Rebuild@140E43FD0 appends one clone per nonempty static modifier, in
-/// +0x50/+0x5C order. CStaticModifier's script identity is +0x1A8.
+/// Rebuilding appends one clone per nonempty static modifier, preserving
+/// the two source-vector orders and each static modifier's script identity.
 pub fn balance(memory: &impl Memory, base: usize, record: usize) -> Result<Balance, &'static str> {
     let sources = record
         .checked_add(0x50)
@@ -121,7 +121,7 @@ pub fn balance(memory: &impl Memory, base: usize, record: usize) -> Result<Balan
                 .checked_add(0x1a8)
                 .ok_or("power balance modifier name address overflow")?,
         )?;
-        // 140600440: children/custom tooltips or any eligible entry keeps a clone.
+        // Children, custom tooltips or any eligible entry keep a clone.
         let accumulator = source
             .checked_add(0x10)
             .ok_or("power balance source accumulator address overflow")?;
@@ -164,7 +164,7 @@ pub fn balance(memory: &impl Memory, base: usize, record: usize) -> Result<Balan
         root,
         crate::modifier_keys::POWER_BALANCE_WEEKLY,
     )?;
-    // Ctor 140E405E0/140549470 sets depth 1; 1405FFDE0 clones at depth 0.
+    // Constructed nodes have depth one; cloned nodes have depth zero.
     for nodes in [&mut output.daily, &mut output.weekly] {
         if nodes[0].children as usize != names.len()
             || nodes.len() != names.len() + 1

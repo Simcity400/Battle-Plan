@@ -24,23 +24,17 @@
 //! blocks through [`Replay::read_block_selected`] and never shares the
 //! playback decoder.
 //!
-//! Whatever the perspective, the pass also folds every kind's flags for the
-//! recording's own player (LocalPlayer's viewing choice), whose history
-//! follows its player changes (each rebuilds every side for the new player
-//! only: 140BA9890 → 1413CEBC0 → 1413CEBE0). A tag switch rebuilds at once
-//! (14113E4B0 → 140BABC00), so the sample that shows it holds the rebuilt
-//! flags; a view set by an `observe` (the client's own or another player's)
-//! or by `CSetCountryControllerCommand::Execute@140CD8720` rebuilds only at
-//! the next tick, so its history takes that change one sample later
-//! ([`Pass::fold_hour`]). The client's combat icons keep their frames from
-//! the same history (`1418B4BD0` and `1418E3E30` read the client's own
-//! `+0xBA`), so they are folded over it too. That history, which is the client's flag itself,
-//! answers any lookup for a viewer who is that player at the hour; the
-//! perspective's own history answers the rest and takes no rebuild from those
-//! changes. The naval part is checked against the recorded bytes
-//! ([`crate::combat::naval_check`]) on the pass thread, which publishes a
-//! small summary ([`EngagedIndex::byte_check`]); [`check_recorded_bytes`]
-//! runs the same fold for a dump.
+//! Whatever the perspective, fold the recording player's own flag history too.
+//! Each player change rebuilds every side only for the new player. Tag switches
+//! rebuild immediately; observer-view changes and controller assignments rebuild
+//! on the next tick, so their history takes that change one sample later
+//! ([`Pass::fold_hour`]). Combat icon frames follow this same player history.
+//!
+//! When the viewed country is the recording player, answer from that history;
+//! otherwise use the perspective history, which does not rebuild for those player
+//! changes. Check the naval history against recorded bytes on the pass thread
+//! ([`crate::combat::naval_check`]), publishing [`EngagedIndex::byte_check`].
+//! [`check_recorded_bytes`] uses the same fold for a dump.
 
 use crate::{
     combat::{
@@ -123,9 +117,8 @@ fn icon_source(kind: usize) -> usize {
     if kind == LAND_ICON { LAND } else { NAVAL }
 }
 
-/// One icon kind's hour. Both read their seen test from the engaged `flag`
-/// of their own kind: land in `1418B4BD0`, naval in `1418E3E30`, which sets
-/// the frame only when `any_side_engaged@1413CD880` holds
+/// One icon kind's hour. Both use their own kind's engaged flag as the seen
+/// test. Naval frames update only when either side is engaged
 /// ([`crate::map::counters::naval_icon_hour`]).
 fn icon_hour(
     kind: usize,
@@ -305,8 +298,8 @@ impl Viewer {
         let Some(slot) = naval_check::recording_player(frame, &links)? else {
             return Ok(None);
         };
-        // `GetViewingCountryTag@140B2D250` takes `CGameState+0x520` when it is
-        // positive, else the observer's `+0x524`.
+        // Use the client's playing-country reference when positive, otherwise
+        // its observer-country reference.
         let observing = frame
             .complete::<tables::LocalPlayer>()
             .is_ok_and(|rows| rows.iter().all(|row| row.country as i32 <= 0));
@@ -462,8 +455,8 @@ impl CombatFlags {
         })
     }
 
-    /// `any_side_engaged@1413CD880` of one entry of a province's combat vector
-    /// (`CProvince+0x170`), by its recorded class; a combat the hour does not
+    /// The engaged state of one province combat entry, by its recorded class;
+    /// a combat the hour does not
     /// hold is unknown.
     pub(crate) fn entry(&self, combat: u64, kind: u8) -> Engaged {
         let flags = if kind == NavalProvinceCombatRow::NAVAL {
@@ -475,8 +468,8 @@ impl CombatFlags {
     }
 
     /// Whether at least `count` entries of a province's combat vector are
-    /// engaged, walking it in order and stopping there, as `1418E3E30` (two,
-    /// the progress size) and `140E69830` (one, the battle picture) do. `row`
+    /// engaged, walking it in order and stopping at the threshold. Progress
+    /// size needs two engaged entries; the battle picture needs one. `row`
     /// is the province's row, `complete` whether an absent row is an empty
     /// vector; `None` when an undecided flag or an unknown vector could
     /// change the answer.
@@ -883,13 +876,10 @@ struct Fold {
     recording_icon_changed: Vec<Vec<(u64, Option<Kept>)>>,
 }
 
-/// Advances one track's icon folds by the hour, reading each kind's seen test
-/// from that track's engaged `histories`; an hour the track did not fold
-/// (`None`) loses every icon. `bytes`, for the recording's own player, are the
-/// hour's recorded naval bytes: the client's `+0xBA` whatever view its flags
-/// were rebuilt for, which settle an undecided naval flag
-/// ([`naval_check::settle`]), since `1418E3E30` sets the frame from that byte
-/// (`1413CD880`) and keeps it after. The byte check keeps the derivation.
+/// Advance one track's icon folds using its engaged histories. An unfolded
+/// hour loses every icon. For the recording player, naval recorded bytes settle
+/// an undecided flag and supply the icon frame, which is then retained.
+/// The byte check continues to compare against the derivation.
 fn advance_icons(
     icons: &mut [IconFold],
     changed: &mut [Vec<(u64, Option<Kept>)>],
@@ -929,14 +919,10 @@ fn continuity(last: Option<(Hour, bool)>, hour: Hour, load: Option<Hour>) -> Con
     }
 }
 
-/// The hour a branch starts with a native load, which rebuilds every side
-/// (1413CEBC0): a load signal whose loaded hour is its first sampled hour.
-/// The collector drops the origin after an unreadable callback while still
-/// seeing the new signal, so a first sample without that origin, or after it,
-/// may follow unobserved hours whose refreshes (1413CEBE0) no current sample
-/// recovers; those sides start unknown. The recorder's fresh-save oracle
-/// (`Report::set_load_hour`) takes the same test. Other starts join a running
-/// game.
+/// A load rebuilds every side when its loaded hour is the first sampled hour.
+/// If the collector loses the load origin, or sampling starts after that origin,
+/// unobserved refreshes leave those sides unknown. The fresh-save comparison
+/// uses the same load-hour test. Other starts join a running game.
 fn native_load(start: &BranchStart) -> Option<Hour> {
     (start.reason == BranchReason::LoadSignal && start.loaded_hour == Some(start.first_hour))
         .then_some(start.first_hour)
@@ -1120,39 +1106,22 @@ impl Pass {
         let viewer = sides
             .as_ref()
             .and_then(|(frame, _)| Viewer::read(frame, &self.country).ok());
-        // The client's stored viewpoint (LocalPlayer). A change of it
-        // is a player change, which rebuilds every side for the new player
-        // only (CCombatManager hourly 140BA9890 through 1413CEBC0 to
-        // 1413CEBE0); its history's viewer change is that rebuild. The
-        // perspective's viewer takes no rebuild from it.
+        // The client's stored viewpoint comes from LocalPlayer. A change rebuilds
+        // all sides for the new player only; its history records that refresh.
+        // The perspective history does not rebuild for it.
         let player = sides
             .as_ref()
             .and_then(|(frame, _)| Viewer::recording(frame).ok().flatten());
-        // The view the client's flags were last rebuilt for, which its history
-        // evaluates at this hour. `CChangeCountryControllerCommand::Execute`
-        // (14113E4B0) refreshes every combat (140BABC00 at 1411405F5) only when
-        // the viewing country (14113FC98: `+0x520` when positive, else `+0x524`)
-        // is the command's target country (`+0x28`, 14113FCB2..14113FCCD), so a
-        // tag switch or a controller given the viewed country rebuilds at once.
-        // A client that observes after the change was set there by an
-        // `observe`, its own (14026D810 refuses "Already observing." while
-        // `+0x520 < 1`, so it starts from a playing client, and runs 14113E4B0
-        // with target none: `+0x520 = 0` at 14113F007, `+0x524` the old country
-        // at 14113F608, or with no states another at 14113F747..14113F9B7) or
-        // another player's (the `+0x524` writes), or by
-        // `CSetCountryControllerCommand::Execute@140CD8720`, which never reaches
-        // 140BABC00. None rebuilds then: the next tick's hourly check
-        // (140BA9890) rebuilds for the new view, which the next hour's sample
-        // shows. So an hour whose client observes is evaluated for the previous
-        // view, and the next hour takes the view change. Not followed: a
-        // controller given the newly viewed country in that same interval,
-        // which would rebuild at once (the rosters are tested against the
-        // evaluated view); and a side's own rebuild from a command after the
-        // view change in that batch (`AddUnit` 1413CC2B0, `RemoveUnit`
-        // 1413CE340, `AddTransferToGroup` 1416084E0, for example through
-        // `CancelMovement` 140BEBF70), which tests the new view because
-        // 1413CEBE0 reads it at each call: the fold evaluates it for the
-        // previous view, a definite value where the samples cannot order the two.
+        // Evaluate the view for which the client's flags were last rebuilt.
+        // A tag switch or controller assigned the viewed country rebuilds at once.
+        // An observer-view change or a controller assignment instead waits for the
+        // next hourly check; evaluate that sample for the previous view, then move
+        // to the new view in the next sample.
+        //
+        // Not recovered from these samples: a controller assigned the newly viewed
+        // country in the same interval, or a side rebuilding after a view change in
+        // the same command batch. Those refreshes can test the new view while this
+        // fold still evaluates the previous one.
         let previous_view = fold
             .client_view
             .filter(|_| recording_continuity == Continuity::Next);

@@ -280,12 +280,9 @@ fn filtered_worker_division_equipment_grows_for_mod_pools_without_roster_growth(
     );
 }
 
-/// Deterministic cost proxy for a division's equipment bank. The previous
-/// shape read each entry's sixteen bytes and then its variant identity in
-/// two separate guarded copies, so the live 15,965-row table cost about
-/// 31,930 crossings for the entries alone. Batching leaves two crossings
-/// per 64 entries; the pool header check is unchanged.
-/// A bank whose entries and variants are contiguous, for batch fault tests.
+/// Synthetic division equipment bank with contiguous entries and variants.
+/// Each 64-entry batch acquires entries and identities in two copies after
+/// the pool header check, allowing precise batch-fault assertions.
 fn bank(entries: usize) -> Vec<u8> {
     const POOL: usize = 0x3000;
     const DATA: usize = 0x4000;

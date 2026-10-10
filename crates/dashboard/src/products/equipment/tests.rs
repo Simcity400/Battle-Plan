@@ -38,7 +38,7 @@ fn equipment_reader_warnings_keep_every_named_refusal() {
 
 #[test]
 fn weekly_units_are_the_game_s_truncated_fixed5() {
-    // Germany's Bf 109 E line in the W3 save: speed 3.60045, cost 22.5 IC.
+    // Speed 3.60045 IC a day and cost 22.5 IC a unit give 1.12014 units a week.
     assert_eq!(weekly_units_raw(360_045, 2_250_000), Some(112_014));
     // Truncated toward zero, and none without a cost.
     assert_eq!(weekly_units_raw(1, 700_001), Some(0));
@@ -77,10 +77,10 @@ impl Texts for Fixture {
 }
 
 #[test]
-fn variant_names_follow_get_display_name() {
+fn variant_names_use_country_localisation_own_names_and_suffixes() {
     let texts = Fixture(&[
-        ("infantry_equipment_1", "Infantry Equipment I"),
-        ("GER_infantry_equipment_1", "Gewehr 98"),
+        ("infantry_equipment_1", "Fixture equipment"),
+        ("GER_infantry_equipment_1", "Country fixture equipment"),
     ]);
     let raw = RawVariant {
         token: "infantry_equipment_1".into(),
@@ -91,19 +91,19 @@ fn variant_names_follow_get_display_name() {
     assert_eq!(
         variant_names(&raw, Some(&texts)),
         (
-            Some("Gewehr 98".into()),
-            Some("Infantry Equipment I".into())
+            Some("Country fixture equipment".into()),
+            Some("Fixture equipment".into())
         )
     );
     let designed = RawVariant {
-        display_name: "Panzer II".into(),
-        suffix: "Ausf. F".into(),
+        display_name: "Custom design".into(),
+        suffix: "Series Q".into(),
         append: true,
         ..raw.clone()
     };
     assert_eq!(
         variant_names(&designed, Some(&texts)).0.as_deref(),
-        Some("Panzer II Ausf. F")
+        Some("Custom design Series Q")
     );
     assert_eq!(variant_names(&designed, None), (None, None));
     assert_eq!(variant_names(&raw, None), (None, None));
@@ -151,7 +151,7 @@ fn cached_variant_names_and_suffixes_require_the_recorded_language() {
             .any(|why| why.contains("equipment variant suffix") && why.contains("17"))
     );
     catalogue.recorded_language = "english".into();
-    // Stored text is copied by GetDisplayName, even when its spelling also names a key.
+    // Stored text is used directly, even when its spelling also names a key.
     assert_eq!(
         variant_names(&own, Some(&catalogue)).0.as_deref(),
         Some("cached_name")

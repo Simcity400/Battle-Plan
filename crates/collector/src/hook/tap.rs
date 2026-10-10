@@ -71,7 +71,7 @@ impl Tap {
             let mut hook = unsafe { Hook::new(site, code as usize, sentinel) }?;
             hook.patch[0] = 0xe8;
             if instructions == 0 {
-                // The two political signal sites (140B9820B / 140B9830E)
+                // The two political signal sites
                 // end ADD RSP,30; POP RDI; JMP rel32, followed by CC padding.
                 // Keep the native epilogue at our CALL return PC. Moving the
                 // final jump into the authenticated padding changes no target.
@@ -234,7 +234,7 @@ fn instruction_span(bytes: &[u8; 16]) -> Result<usize, &'static str> {
             end += 1;
             continue;
         }
-        // Reset's MOV [RBX+968],R13D@1401D09E5 uses REX.R without REX.W.
+        // The reset site's MOV uses REX.R without REX.W.
         let (modrm, rex, sse) = if matches!(bytes[end], 0x44 | 0x48..=0x4f)
             && matches!(bytes[end + 1], 0x8b | 0x89 | 0x03 | 0x01)
         {

@@ -160,7 +160,7 @@ pub(super) fn compare(
                 .fleets
                 .get(&fleet.reference)
                 .ok_or_else(|| invalid("fuel demand fleet absent from save"))?;
-            // 140D4A42B writes even an empty ordinary fleet name. Unlike the
+            // The game writes even an empty ordinary fleet name. Unlike the
             // conditional CUnit task-force name, omission is not empty text.
             text(
                 report,
@@ -211,10 +211,10 @@ pub(super) fn compare(
             "CountryFuel current demand",
             pack.divisions.len() + pack.task_forces.len(),
         );
-        report.limitation("division retained name cache +340/+60 is unsaved; authored generator operands cannot certify these possibly stale language bytes", &label);
+        report.limitation("division retained name cache is unsaved; authored generator operands cannot certify these possibly stale language bytes", &label);
         report.limitation("country instance and raw country-link alias bits are not serialized; cached unit and roster quantities do not prove fresh hover-getter equality", &label);
         report.limitation("command raw parent pointer and discriminator bits beyond saved boolean truthiness need a same-boundary native witness", &label);
-        report.limitation("air-site lists/repeated pool occurrences, selected mission +A4, active count +170, period +A8, live fuel/modifier/ace/capacity/weather operands and daily wrapping projection are unsaved supplying-read state; recording arithmetic is checked, but exact native current-pool/tooltip agreement requires a same-boundary passive witness", label);
+        report.limitation("air-site lists/repeated pool occurrences, selected mission, active count, period, live fuel/modifier/ace/capacity/weather operands and daily wrapping projection are unsaved supplying-read state; recording arithmetic is checked, but exact native current-pool/tooltip agreement requires a same-boundary passive witness", label);
     }
     Ok(())
 }
@@ -240,8 +240,8 @@ fn conditional_name(
     saved: Option<&[u8]>,
 ) -> io::Result<()> {
     let actual = actual.ok_or_else(|| invalid("fuel demand stored-name capture failed"))?;
-    // 140BF7010 (CUnit) / 140BE8100 (COrdersGroup) gate on stored length;
-    // 1424ADF40 emits the first-NUL prefix, including an emitted empty name.
+    // Unit and formation names gate on stored length;
+    // the game emits the first-NUL prefix, including an emitted empty name.
     let prefix = installed_content::parser::c_string(actual);
     if prefix.len() < actual.len() {
         report.limitation(
@@ -261,7 +261,7 @@ fn owners(
     label: &str,
 ) -> io::Result<()> {
     let owners = actual.ok_or_else(|| invalid("fuel demand owner words unavailable"))?;
-    // CUnit words are roster +1D8, expeditionary +1DC, logical +1E0.
+    // Unit country words separately retain roster, expeditionary and logical owners.
     equal(
         report,
         format!("{label}.roster"),
@@ -312,8 +312,8 @@ fn compare_wings(
             let override_country = wing
                 .country_override
                 .ok_or_else(|| invalid("fuel demand wing owner selection unavailable"))?;
-            // 140F4A700's signed-positive override arm; F539B0 saves its tag
-            // through 140BA5C20. The pool's enclosing saved country is fallback.
+            // The signed-positive override supplies the wing's saved tag.
+            // The pool's enclosing saved country is fallback.
             let expected_owner = if override_country > 0 {
                 equal(
                     report,
@@ -333,7 +333,7 @@ fn compare_wings(
                     expected_owner.as_slice(),
                 );
             } else {
-                report.limitation("140BA5C20 saves the raw-zero database tag; its literal is not recorded by CountryLinks and is not assumed", format!("{label}.wing.{:#x}.selected_owner", wing.reference));
+                report.limitation("the game saves the raw-zero database tag; its literal is not recorded by CountryLinks and is not assumed", format!("{label}.wing.{:#x}.selected_owner", wing.reference));
             }
             text(
                 report,

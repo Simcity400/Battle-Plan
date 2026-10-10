@@ -5,7 +5,7 @@ fn fixture(input: &[u8]) -> io::Result<Pack> {
 }
 
 #[test]
-fn scientist_active_preserves_native_boolean_presence() {
+fn scientist_active_preserves_saved_boolean_presence() {
     let pack = fixture(
         br#"character_manager={historical={
         character={id={id=1 type=73} token=a scientist={skills={} is_assigned=yes}}
@@ -105,10 +105,10 @@ fn scientist_roles_keep_trait_lists_ordered_specializations_and_omissions() {
         Some(21_918_000)
     );
     assert_eq!(first.skills[1].level, None);
-    // 14144E480 omits every nonpositive level, so absence is not zero.
+    // The skill writer omits every nonpositive level, so absence is not zero.
     assert_eq!(first.skills[3].name, b"specialization_land");
     assert_eq!(first.skills[3].level, None);
-    // 13F7B60 omits traits only for an empty native vector.
+    // The scientist writer omits traits only for an empty vector.
     let second = manager.characters[&((266 << 32) | 73)]
         .scientist
         .as_ref()
@@ -393,7 +393,7 @@ fn ability_optional_operands_follow_serializer_predicates() {
 }
 
 #[test]
-fn exile_country_save_tag_is_preserved_with_native_leader_omission() {
+fn exile_country_save_tag_is_preserved_with_leader_writer_omission() {
     let pack = fixture(br#"countries={} character_manager={historical={character={id={id=3 type=73} token=synthetic field_marshal={id={id=7 type=4713} skill=1 experience=0 attack_skill=0 defense_skill=0 planning_skill=0 logistics_skill=0 government_in_exile_tag=OTHER}}}}"#).unwrap();
     assert_eq!(
         pack.manager.unwrap().unit_leaders[&((7_u64 << 32) | 4713)]

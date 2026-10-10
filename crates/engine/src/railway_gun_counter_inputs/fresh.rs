@@ -1,12 +1,11 @@
-//! Class13 fresh-route common operands, after every established capture pass.
+//! Class-13 fresh-route common operands after the established capture pass.
 //!
-//! `140E74B20` adds fresh variant stat0x3e (`140BC5E60` -> `141929560` ->
-//! `141927730` -> `140BC6A10`), never the gun's cached +0x2f0 speed. Its land
-//! branch multiplies by `140E75CB0`; eta.rs owns that guarded native port.
-//! A nonnull +0x2f8 transfer selects transport independently of fresh endpoints.
-//! `140C78A80` delegates class13 access to `140DE29C0`, whose member getter
-//! reads the genuine primary+0xc0 group. The +0x440 rail assignee is different.
-//! No game function, map entity, client path cache or duration is acquired.
+//! Speed uses fresh variant stat 0x3e, separate from the gun's cached
+//! +0x2f0 speed. The land branch applies the fresh supply factor acquired
+//! by `eta.rs`. A nonnull +0x2f8 transfer selects transport independently
+//! of fresh endpoints. Orders-group access uses primary +0xc0; the rail
+//! assignee at +0x440 is different. No game function, map entity, client
+//! path cache or duration is acquired.
 
 use super::{FreshEta, FreshEtaObservations, Row, at, eta, pointer_at};
 use crate::{
@@ -44,6 +43,7 @@ pub(super) fn capture(
     named: &mut railway_gun_speed::NamedBonuses<'_>,
     registry: &mut HeaderResolver,
     layout: &OnceCell<Result<fixed_layout::Report, &'static str>>,
+    layout_buffer: &mut [u8],
     observations: &mut FreshEtaObservations,
 ) -> (FreshEta, [Option<&'static str>; 3]) {
     let mut failures = [None; 3];
@@ -60,6 +60,7 @@ pub(super) fn capture(
             named,
             registry,
             layout,
+            layout_buffer,
             observations,
         );
         inputs.maximum_speed = maximum.ok();

@@ -279,6 +279,8 @@ fn checked_allocation_sweep_stops_once_and_preserves_prefix() {
 #[test]
 #[ignore = "launched only by allocation-failure parent tests"]
 fn allocation_safety_child() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mode = std::env::var("BATTLE_PLAN_COLLECTOR_ALLOCATION_TEST").or_else(|_| std::env::var("HOI4_COLLECTOR_ALLOCATION_TEST")).unwrap();
     let phase = Phase::parse(&std::env::var("BATTLE_PLAN_COLLECTOR_ALLOCATION_PHASE").or_else(|_| std::env::var("HOI4_COLLECTOR_ALLOCATION_PHASE")).unwrap()).unwrap();
     let ordinal = std::env::var("BATTLE_PLAN_COLLECTOR_ALLOCATION_ORDINAL").or_else(|_| std::env::var("HOI4_COLLECTOR_ALLOCATION_ORDINAL"))

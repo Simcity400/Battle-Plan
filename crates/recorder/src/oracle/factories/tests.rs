@@ -107,6 +107,8 @@ fn run_with_states(
 
 #[test]
 fn unowned_state_factories_follow_positive_control_and_never_charge_null_control() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut saved = save(CLEAN, CLEAN);
     let state = saved.states.get_mut(&2).unwrap();
     state.owner = None;
@@ -145,6 +147,8 @@ fn unowned_state_factories_follow_positive_control_and_never_charge_null_control
 
 #[test]
 fn an_excluded_state_keeps_all_saved_factory_input_comparisons() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let membership = super::super::state_history_tests::membership(
         "state={id=1 provinces={1}} \
          state={id=2 provinces={2} history={free_operative={operative=a}}} \
@@ -175,6 +179,8 @@ fn an_excluded_state_keeps_all_saved_factory_input_comparisons() {
 
 #[test]
 fn excluded_state_unsaved_control_requires_capture_and_missing_factory_capture_is_reported() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let membership = super::super::state_history_tests::membership(
         "state={id=1 provinces={1}} \
          state={id=2 provinces={2} history={free_operative={operative=a}}} \
@@ -205,6 +211,8 @@ fn excluded_state_unsaved_control_requires_capture_and_missing_factory_capture_i
 
 #[test]
 fn an_excluded_state_without_factory_inputs_does_not_skip_a_country() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let membership = super::super::state_history_tests::membership(
         "state={id=1 provinces={1}} \
          state={id=2 provinces={2} history={free_operative={operative=a}}} \
@@ -231,6 +239,8 @@ fn an_excluded_state_without_factory_inputs_does_not_skip_a_country() {
 
 #[test]
 fn history_building_effects_compare_saved_levels_without_waiving_a_difference() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let membership = super::super::state_history_tests::membership(
         "state={id=1 provinces={1} history={buildings={civ=99} \
          1936.1.1={IF={limit={} remove_building={type=civ level=2} \
@@ -252,6 +262,8 @@ fn history_building_effects_compare_saved_levels_without_waiving_a_difference() 
 
 #[test]
 fn controlled_and_offsite_levels_compare_per_group() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let saved = save(CLEAN, CLEAN);
     // GER: state 1 and occupied state 2 plus two offsite arms levels.
     let rows = vec![row(5, [1 + 2, 3, 5 + 2]), row(6, [1, 0, 1])];
@@ -267,6 +279,8 @@ fn controlled_and_offsite_levels_compare_per_group() {
 
 #[test]
 fn pending_recalculations_and_ambiguous_types_are_listed_not_compared() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let rows = || vec![row(5, [0; 3]), row(6, [0; 3])];
     for ger in [
         "refresh=10 production={ dirty=no }",
@@ -297,6 +311,8 @@ fn pending_recalculations_and_ambiguous_types_are_listed_not_compared() {
 
 #[test]
 fn missing_rows_inputs_or_content_are_not_silently_compared() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let report = run(&save(CLEAN, CLEAN), &content(""), vec![row(5, [3, 3, 7])]).unwrap();
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     let rows = || vec![row(5, [3, 3, 7]), row(6, [1, 0, 1])];

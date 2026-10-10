@@ -11,9 +11,7 @@ pub const NAMES: [&str; 6] = [
     "move_strength_threshold",
     "move_organisation_threshold",
 ];
-// Load140918DD0/140918FE0/1408F5C60/1408F5840 supply the first four
-// addresses to typed14205D560. Exact GetName PE literals authenticate names.
-// C684A0 instructions140C684C3/140C685B6 read the two warning qwords.
+// Loaded globals authenticated by their installed name bytes, with warning operands read as qwords.
 pub const RVAS: [usize; 6] = [
     0x0331_d700,
     0x0331_d798,

@@ -246,11 +246,15 @@ fn assert_faction_names_match_topic(literals: [&str; 2], expected: [&str; 2]) {
 
 #[test]
 fn event_feed_faction_template_names_match_topic_at_join_and_dissolution() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_faction_names_match_topic(["", ""], ["First mod pact", "Second mod pact"]);
 }
 
 #[test]
 fn event_feed_faction_stored_literals_match_topic_without_key_translation() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_faction_names_match_topic(
         ["Stored", "Changed stored name"],
         ["Stored", "Changed stored name"],
@@ -291,11 +295,7 @@ fn event_feed_faction_name_refusal_is_counted_once_for_join_and_leave() {
     )
     .unwrap();
     assert!(topic.warnings.contains(&missing[0].reason));
-    assert!(
-        missing[0]
-            .reason
-            .contains("faction name (140D77360) is not UTF-8")
-    );
+    assert!(missing[0].reason.contains("faction name is not UTF-8"));
     let rows = load(&source, Some(100), Some(102));
     assert_eq!(rows.rows.len(), 2);
     assert!(rows.rows.iter().all(|row| {
@@ -306,6 +306,8 @@ fn event_feed_faction_name_refusal_is_counted_once_for_join_and_leave() {
 
 #[test]
 fn event_feed_mod_focus_and_law_keep_content_artwork_without_technology_events() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/mod.lua",
@@ -438,6 +440,8 @@ fn event_feed_mod_focus_and_law_keep_content_artwork_without_technology_events()
 
 #[test]
 fn event_feed_content_load_failure_retains_the_named_parser_reason() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[(
         "common/defines/mod.lua",
         "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}} NFocus={}}",

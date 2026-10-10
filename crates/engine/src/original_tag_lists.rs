@@ -1,17 +1,13 @@
-//! Stored `_CountriesForOriginalTags`, not a reconstruction from Countries.
-//!
-//! 1401DA010 initially appends each country-array occurrence, including slot
-//! zero, to this cache. SetOriginalTag@1401EE1C0 subsequently removes/appends
-//! members, so current country-array order does not prove current cache order.
-//! GetCountriesForOriginalTag@1401DB900 selects a canonical bucket through
-//! GetIndex@140BA6240; 1413AA900 copies its ordered raw IDs and then appends the
-//! positive original raw reference unconditionally. Never resolve, filter or
-//! deduplicate the stored members here. These vectors have no text-save field.
+//! Stored countries-for-original-tag cache, independent of country-array order.
+//! Initialization includes every country occurrence and slot zero; later original-tag
+//! changes remove and append members. Canonical bucket selection copies ordered raw
+//! IDs, then appends a positive original raw reference unconditionally. Preserve
+//! every stored member without resolution, filtering or deduplication. These vectors
+//! have no text-save field.
 
 use crate::{Memory, cpdx_array::Array, read};
 
-/// CGameState CPdxArray<CPdxArray<CountryTag>>; 1401DA010/1401DB900 index its
-/// data by canonical slot * 0x18. 1401D1BC0 bounds the outer walk with +0x994.
+/// Game-state nested country-reference CPdxArray, indexed by canonical slot.
 pub const BUCKETS: usize = 0x988;
 pub const BUCKET_CAPACITY: &str = "original-tag bucket arena capacity exceeded";
 pub const MEMBER_CAPACITY: &str = "original-tag member arena capacity exceeded";

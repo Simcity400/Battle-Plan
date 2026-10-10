@@ -125,7 +125,7 @@ recorder inspect <campaign.battleplan> --characters <substring> --hour <n> --bra
 
 fn parse_options(command: &str, args: Vec<OsString>) -> Result<Options, String> {
     let mut options = Options {
-        output: PathBuf::from(r"captures"),
+        output: default_capture_directory(),
         user: None,
         once: false,
         game_score: true,
@@ -161,6 +161,15 @@ fn parse_options(command: &str, args: Vec<OsString>) -> Result<Options, String> 
         }
     }
     Ok(options)
+}
+
+pub(crate) fn default_capture_directory() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .filter(|directory| !directory.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("HOI4Replay")
+        .join("captures")
 }
 
 pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
@@ -365,18 +374,22 @@ fn capture(
     #[cfg(feature = "alloc-fault-injection")] alloc_fault: Option<&AllocationFault>,
 ) -> Result<bool, String> {
     let process = Process::open(pid, true)?;
-    let exe = hash_executable(File::open(&process.path).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    let mut executable = File::open(&process.path).map_err(|e| e.to_string())?;
+    let exe = hash_executable(&mut executable).map_err(|e| e.to_string())?;
     if !PINNED_BUILD.matches(&exe) {
         return Err(format!(
-            "unsupported game build; wanted {} / {} bytes / {}; found {} bytes / {}. Nothing recorded.",
-            PINNED_BUILD.version,
+            "unsupported game build; wanted {} bytes / {}; found {} bytes / {}. Nothing recorded.",
             PINNED_BUILD.exe_size,
             hex(&PINNED_BUILD.exe_sha256),
             exe.size,
             hex(&exe.sha256)
         ));
     }
+    engine::executable_tables::initialize_executable(&process.path)
+        .map_err(|error| format!("Cannot prepare game tables: {error}"))?;
+    let game_version = PINNED_BUILD
+        .read_version_banner(&mut executable)
+        .map_err(|e| format!("game version text: {e}"))?;
     if windows::modules(pid)?.iter().any(|module| {
         module
             .path
@@ -452,7 +465,7 @@ fn capture(
     }
     let identity = content
         .identity(
-            PINNED_BUILD.version.into(),
+            game_version,
             exe.sha256,
             exe.size,
             env!("CARGO_PKG_VERSION").into(),

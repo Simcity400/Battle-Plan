@@ -43,16 +43,14 @@ impl Content {
     ) -> Self {
         Self {
             regions: regions.iter().map(|(&id, region)| {
-                // GetTerrainOrOcean@141593150, executable fallback at142962540;
-                // CNavalRegionDominance ctor140FED7F0 stores terrain+0x80.
+                // Resolve the region's naval terrain category, falling back to the content's ocean category.
                 let minimum = terrain.map_err(str::to_owned).and_then(|terrain| {
                     let category = region.naval_terrain.as_ref().and_then(|name| terrain.category(name.as_bytes()))
                         .or_else(|| terrain.category(b"ocean"));
                     category.map(|index| terrain.categories[index].minimum_seazone_dominance)
                         .ok_or_else(|| format!("naval terrain {} and executable ocean fallback absent from recorded content", region.naval_terrain.as_deref().unwrap_or("ocean")))
                 });
-                // AddProvince@140E0F2B0 counts unique valid provinces, then
-                //140E09790 selects constant255 below one percent sea.
+                // Count unique valid provinces; below one percent sea, use constant 255.
                 let kinds = region.provinces.iter().filter_map(|id| map.definitions.get(id)).map(|p| (p.id, p.kind)).collect::<BTreeMap<_,_>>();
                 let sea = kinds.values().filter(|&&kind| kind == ProvinceKind::Sea).count() as u64;
                 let fraction = if kinds.is_empty() { 0 } else { sea * 100_000 / kinds.len() as u64 };
@@ -92,7 +90,7 @@ impl Content {
             let value = (|| {
                 let links = links.as_ref().map_err(Clone::clone)?;
                 let slot = canonical(links, raw)?;
-                //140FEECA0 reads source->viewer family FIRST, then +2e8/+49.
+                // Test the source's family relation toward the viewer before its directed war pointer.
                 if family(frame, links, slot, viewer, &factions, &subjects)? {
                     return Ok(Side::Friendly);
                 }
@@ -109,11 +107,10 @@ impl Content {
             let links = links.as_ref().map_err(Clone::clone)?;
             let source = canonical(links, raw)?;
             if source == 0 || viewer == 0 {
-                return Err("CRelationStatus+0x260 naval blockade pointer for canonical Country0 is not recorded".into());
+                return Err("naval blockade pointer for canonical Country0 is not recorded".into());
             }
-            //14196E4C0 binds type27F8;14196E5B0/14196E520 install/clear first->second +260 (reverse
-            //is +268).140D02890 keeps serializable membership exactly while
-            //installed; no retired/date/cancel test in140DE8B10/140DEBA80.
+            // Installed naval-blockade tuples retain source-to-viewer direction and membership. Retired,
+            // date and cancellation flags do not add another gate here.
             for row in frame
                 .complete::<tables::RelationTuples>()
                 .map_err(|e| e.to_string())?
@@ -190,11 +187,11 @@ fn family(
     subjects: &OnceLock<Fact<Families>>,
 ) -> Fact<bool> {
     // Positive faction membership is authenticated in both directions;
-    // Country0's cached faction may omit itself from the roster (140D0D6B0).
+    // Country0's cached faction may omit itself from the roster.
     if source == viewer && source != 0 {
         return Ok(true);
     }
-    //140D10C10's target roster precedes the cached subject pointer.
+    // Test the target faction roster before the cached subject pointer.
     let zero_faction = if viewer == 0 {
         let [row] = frame
             .complete::<tables::ReservedCountryNaming>()
@@ -251,8 +248,8 @@ fn zero_subject(
     source: u32,
     viewer: u32,
 ) -> Fact<bool> {
-    //140D10C10 reads cached typed +288 endpoints. Positive Subjects
-    //census excludes canonical0; exact hourly packets cover that branch.
+    // The positive Subjects census excludes canonical Country0. Exact hourly visibility packets
+    // supply its cached subject endpoints.
     if source == 0 {
         let rows = frame
             .complete::<tables::ReservedCountryNaming>()
@@ -289,8 +286,8 @@ fn zero_subject(
         .iter()
         .find(|r| r.canonical_slot == source)
         .ok_or("naval family source country missing")?;
-    // RelationLinks' complete-owner certificate excludes target0. The actual
-    // source's hourly forward packet authenticates this reached +288 pointer.
+    // RelationLinks' complete-owner certificate excludes target Country0. The source's hourly forward
+    // visibility packet supplies the subject pointer for this branch.
     let row = frame
         .complete::<tables::CountryCounterInputs>()
         .map_err(|e| e.to_string())?;
@@ -317,9 +314,8 @@ fn zero_subject(
 }
 
 fn cache_epoch(hour: replay::Hour, sampled: Option<replay::Hour>) -> Fact<()> {
-    //1401D4390 ->140FEE9A0 ->140FF0FD0 rebuilds sorted+40 at midnight.
-    //The recorder's daily acquisition can straddle that boundary; retain
-    //certified values within their cache epoch, never interpolate updates.
+    // The sorted supremacy cache rebuilds at midnight. Daily acquisition can straddle that boundary;
+    // retain certified values within their cache epoch, without interpolating updates.
     match sampled {
         Some(sample) if sample <= hour && sample.div_euclid(24) == hour.div_euclid(24) => Ok(()),
         Some(sample) => Err(format!(
@@ -348,7 +344,7 @@ enum Side {
 }
 
 fn quotient(numerator: i64, denominator: i64) -> Fact<i64> {
-    //140FEECA0: fixed5 signed guard, wrapping multiplication, truncation.
+    //fixed5 signed guard, wrapping multiplication, truncation.
     if denominator == 0 {
         return Ok(100_000);
     }
@@ -398,9 +394,9 @@ fn classify(
     } else {
         128
     };
-    //140DEBA80 uses top0 while control0, otherwise top1;1419CAB50 returns
-    //one only for current>previous.140FED360 sorts only current, so ties
-    //are usable only when every possible selected candidate writes alike.
+    // Select the top candidate when control is zero, otherwise the second candidate. A gaining side
+    // requires current supremacy above previous supremacy. Sorting uses only current supremacy, so
+    // ties are usable only when every possible selected candidate writes alike.
     let rank = usize::from(control != 0);
     let Some(selected) = highest[rank] else {
         return Ok([control, 0]);
@@ -867,6 +863,8 @@ mod tests {
 
     #[test]
     fn mod_terrain_and_control_ratio_supply_the_minimum() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let terrain = installed_content::terrain::parse_definitions(b"categories={ ocean={minimum_seazone_dominance=9} crystal_sea={minimum_seazone_dominance=17} }").unwrap();
         let defines = Defines::new().unwrap();
         defines

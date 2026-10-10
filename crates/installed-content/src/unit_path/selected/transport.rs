@@ -1,7 +1,6 @@
-//! Selected transport admission and output law over exact current-hour facts.
-//! Native 140E67D80 / 140BEFC40, supported a729. Inputs below are joined
-//! per viewer-local request from genuine current-hour simulation observations.
-//! The same BEFC40 result serves the separate ordered +88 move-reason lane.
+//! Selected transport admission and output over current-hour facts.
+//! Inputs are joined per viewer-local request from current-hour simulation
+//! observations. The same result serves the separate ordered move-reason lane.
 
 pub type Fact<T> = Result<T, &'static str>;
 const ONE: i64 = 100_000;
@@ -19,10 +18,10 @@ impl Unit {
     }
 }
 
-/// 14100BFA0 divides by 100000 with signed truncation, adds one only for
-/// a positive non-integral input, multiplies back with i64 wrap, divides
-/// again, then its callers consume the low signed 32 bits. The multiply
-/// matters at i64::MAX: this is not plain mathematical ceiling plus a cast.
+/// Divide by fixed5 scale with signed truncation, add one only for a
+/// positive non-integral input, multiply back with i64 wrap, divide again,
+/// then consume the low signed 32 bits. The multiply matters at i64::MAX;
+/// this is not plain mathematical ceiling followed by a cast.
 pub fn unit_convoys(raw_weight: i64) -> i32 {
     let quotient = raw_weight / ONE;
     let rounded_raw = if raw_weight == quotient * ONE {
@@ -35,8 +34,8 @@ pub fn unit_convoys(raw_weight: i64) -> i32 {
     (rounded_raw / ONE) as i32
 }
 
-/// Native inner walk sums EVERY selected class 0/13 in encounter order,
-/// including units whose own admission failed. Unknown weights are not zero.
+/// Sum every selected class-0/13 unit in encounter order, including units
+/// whose own admission failed. Unknown weights are not zero.
 pub fn selected_convoys(
     selection: &[Unit],
     mut weight: impl FnMut(Unit) -> Fact<i64>,
@@ -52,10 +51,10 @@ pub fn selected_convoys(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Transfer {
-    /// Raw signed CNavalUnitTransfer+24. Every nonzero value takes the combat arm.
+    /// Raw signed transfer status. Every nonzero value takes the combat arm.
     pub status: Fact<i32>,
-    /// Exact E11870 source province, after its passive reader is authenticated.
-    /// Its refusal is reached only when status is exactly zero.
+    /// The authenticated transfer source province. Its refusal is reached
+    /// only when status is exactly zero.
     pub source: Fact<u32>,
 }
 
@@ -99,10 +98,9 @@ fn rejected(reason: Reason) -> Admission {
     }
 }
 
-/// Narrow local-world interface: it supplies a fact only when the authentic
-/// native branch reaches it. This is not a captured per-unit/province grid.
-/// The adapter must NOT use a carried slice, dirty convoy cache, inferred
-/// military access, or a recorded actual route for these target-specific calls.
+/// Local-world inputs supply facts only when the reached branch needs
+/// them. Target-specific calls require current operands, rather than carried
+/// slices, dirty convoy caches, inferred access or a recorded actual route.
 pub trait AdmissionInputs {
     fn target_base(&mut self) -> Fact<bool>;
     fn source_land(&mut self) -> Fact<bool>;
@@ -110,8 +108,8 @@ pub trait AdmissionInputs {
     fn coastal_special_template(&mut self) -> Fact<bool>;
     fn transfer(&mut self) -> Fact<Option<Transfer>>;
     fn weight(&mut self) -> Fact<i64>;
-    /// Exact own/aliased-versus-other branch of BEFC40, including dirty-pool
-    /// fallback, native priority, reservation filtering and signed arithmetic.
+    /// Own/aliased versus other convoy-pool selection, with dirty-pool
+    /// fallback, priority, reservation filtering and signed arithmetic.
     fn available_convoys(&mut self) -> Fact<i32>;
     fn military_access(&mut self) -> Fact<bool>;
     fn sea_route(&mut self) -> Fact<bool>;
@@ -123,7 +121,7 @@ pub fn admit(unit: Unit, source: u32, inputs: &mut impl AdmissionInputs) -> Fact
     }
     if inputs.source_land()? && !inputs.source_base()? {
         return if matches!(unit, Unit::Army(_)) && inputs.coastal_special_template()? {
-            // Native early success: no transfer/convoy/access/path branches.
+            // Early success skips transfer, convoy, access and path branches.
             Ok(Admission {
                 allowed: true,
                 reason: None,
@@ -160,7 +158,7 @@ pub fn admit(unit: Unit, source: u32, inputs: &mut impl AdmissionInputs) -> Fact
     })
 }
 
-/// BOTH outputs are independently localised native bytes. Secondary output
+/// Both outputs are independently localised bytes. Secondary output
 /// participates in the first-call length gate but is never appended there.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Outputs {
@@ -168,9 +166,9 @@ pub struct Outputs {
     pub secondary: Vec<u8>,
 }
 
-/// E67D80 over a viewer-local insertion-ordered selection. Sources are
-/// supplied by the chosen actual/planned mode; sea admission separately uses
-/// the unit's ACTUAL location in FA1E90. No UI source cache is recorded.
+/// Transport over a viewer-local insertion-ordered selection. Sources
+/// come from the chosen actual/planned mode; sea admission separately
+/// uses the unit's actual location. No interface source cache is recorded.
 pub trait MessageInputs {
     fn target_base(&mut self, target: u32) -> Result<bool, String>;
     fn source(&mut self, unit: Unit) -> Result<u32, String>;
@@ -254,16 +252,16 @@ pub fn append_first(body: &mut Vec<u8>, outputs: &Outputs) {
     if outputs.primary.is_empty() && outputs.secondary.is_empty() {
         return;
     }
-    // 140DE8E30 transforms PRIMARY. 1401CAA30 then ensures LF on a nonempty
-    // body, even when only secondary was nonempty and primary appends zero bytes.
+    // Transform primary output, then ensure LF on a nonempty body, even
+    // when only secondary was nonempty and primary appended zero bytes.
     if !body.is_empty() && body.last() != Some(&b'\n') {
         body.push(b'\n');
     }
     indent_nonempty_lines(&outputs.primary, body);
 }
 
-/// DF7D20's second invocation: primary length alone, literal ASCII space,
-/// then raw bytes. Empty primary neither appends nor reads secondary.
+/// The second invocation gates on primary length alone, then appends a
+/// literal ASCII space and raw bytes. Empty primary never reads secondary.
 pub fn append_railway_second(body: &mut Vec<u8>, outputs: &Outputs) {
     if !outputs.primary.is_empty() {
         body.push(b' ');

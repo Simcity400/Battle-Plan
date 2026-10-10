@@ -9,11 +9,10 @@
 //! The counter arrival uses [`CounterQueries`], an on-demand native route
 //! query with exact current-hour operands and an explicit viewer route policy.
 //! The stored-route pair remains available for aggregate timing and progress.
-//! The progress is the game's movement-arrow fill target (`+0x28`), and
-//! `141632130` draws that arrow only for a unit of the player's own country
-//! that is selected (`CUnit+0xC`; for a navy also its task force's `+0x24`
-//! word). The viewer's selection drives the movement-arrow layer. Counter
-//! and figure positions use the settled route point in [`super::counter_move`].
+//! The progress is the movement-arrow fill target for a selected unit of the
+//! player's own country; a navy also requires its task force's selection word.
+//! The viewer's selection drives the movement-arrow layer. Counter and figure
+//! positions use the settled route point in [`super::counter_move`].
 //!
 //! The derivation refuses a row it cannot rebuild exactly rather than
 //! substituting a zero: a refused division has no ETA or no progress.
@@ -107,9 +106,8 @@ pub struct Report {
     /// Moving divisions whose route the content map cannot place; they stand
     /// on their province.
     pub routes_unresolved: usize,
-    /// Later hops of placed routes that the movement polyline skips
-    /// (`BuildUnitMovementAnchorPath@1416307F0`): no content neighbour of the
-    /// province before them, or no anchor.
+    /// Later hops of placed routes that the movement polyline skips: no content
+    /// neighbour of the province before them, or no anchor.
     pub route_hops_skipped: usize,
 }
 
@@ -397,12 +395,10 @@ impl Etas {
         self.by_division.get(&division).copied()
     }
 
-    /// Native first-edge movement fraction in signed fixed5, sentinel and all,
-    /// or why the hour cannot rebuild it. Zero for an empty route. In the game
-    /// it drives the movement arrow's fill target (`+0x28`) of a selected own
-    /// unit (see the module docs) and the naval invasion progress in a
-    /// combat's division hover (140BEC9A0 in 1415BF4B0); a counter never reads
-    /// it.
+    /// First-edge movement fraction in signed fixed5, sentinel and all, or why
+    /// the hour cannot rebuild it. Zero for an empty route. It drives the selected
+    /// own unit's movement-arrow fill target (see the module docs) and naval
+    /// invasion progress in a combat division hover; a counter never reads it.
     pub fn progress(&self, division: u64) -> Result<i64, &'static str> {
         match self.progress.get(&division) {
             Some(progress) => Ok(*progress),

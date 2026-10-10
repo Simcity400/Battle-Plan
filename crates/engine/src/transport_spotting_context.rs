@@ -1,32 +1,22 @@
-//! F97BF0 current radar/intel/weather operands from original callback loans.
+//! Current radar, intel and weather operands from original callback loans.
+//! Radar indexes the +0x10 pool array by region +0x60 only when signed +0x1C
+//! is nonzero. Intel reads reciprocal raw navy lanes, resolving each nonzero
+//! owner before testing signed positivity. Saved or displayed cryptology
+//! does not supply those current operands. A null weather selection differs
+//! from an unreadable record; present modifier key 0x2A uses exact lookup.
 //!
-//! 141091B70 indexes CRadarsPool+10 by region+60 only when signed+1C !=0.
-//! CEE3A0 reads reciprocal raw NAVY lanes; it resolves each nonzero intel owner
-//! before checking its signed positivity. No displayed or saved cryptology
-//! value substitutes for those current raw operands. F04E40's null result is
-//! distinct from an unreadable weather record; present key2A uses 551820.
-//!
-//! Country, region and weather roots are borrowed from their original owners.
-//! Array selectors and every failed attempt belong to this callback only.
-//! CCountryIntel ctor CED590 stores owner+8 and initializes vector+10; CF2AE0
-//! writes its complete positional raw vector. ResetCEE9B0 calls CF1D50 to
-//! clear/free +10; daily1D2FA0 commits through CF1F40 (reset+1C, resize via
-//! 1A8420, memcpy stride20), reached from daily1D4390. Load CF1C70 token30EC
-//! calls CEB3B0/CEAD70 positional rows. DestructorCED910 frees +10/count.
-//! Save CF2AE0 is a pure list write, with no lazy mutation. CCountry ctor6BD180 owns its
-//! pointer at+FE8. Radar ctor108DB50 owns the embedded pool and vector+10;
-//! 1091B70 consumes it independently of the coverage-group vector+28. Derived
-//! reset6F1670 calls clear108F360/create1093140; create resizes +10 from live
-//! gamestate+2EC and folds via1093880. That writer clears all stored counts
-//! then accumulates group regional counts by original +60. Its incremental
-//! callers are controller1093AC0 and building1093790. Destructor108DF40
-//! clears/releases the same +10 array. Region
-//! ctor E0B040 initializes +18/+60; AddProvince E0F2B0 appends +18 and sets
-//! the province's region pointer. Region destructor E0B6E0 retires the vector.
-//! Weather F0CF40 clears/folds regional+58 through54B860/54AD00. The outer
-//! 1DEF80 and weather F03940 joins must precede capture. These source laws do
-//! not independently prove exhaustiveness of every native mutator or actual
-//! load/hook quiescence; that requires the coordinator's native witnesses.
+//! Country, region and weather roots come from their original owners.
+//! Selectors and failed attempts belong only to this callback. Intel owns
+//! its stored owner and positional vector; reset and destruction clear the
+//! vector, daily processing replaces its rows, loading fills positional rows
+//! and saving writes without lazy mutation. Radar owns a separate region-
+//! indexed array, independent of coverage groups. Rebuilding resizes from
+//! the live region population, clears counts and folds group counts by
+//! original region index; controller/building updates also change counts.
+//! Regions own province vectors and backlinks. Weather updates fold regional
+//! modifiers. Hourly and weather jobs must join before capture; these field
+//! relationships do not independently establish every writer or load/hook
+//! quiescence at the callback boundary.
 use crate::{
     Memory, ccountry, ccountry_intel, country_intel_row, cprovince, cradars_pool,
     cstrategic_region, cweather_manager, modifier_accumulator, modifier_definition, read,
@@ -154,9 +144,9 @@ impl Owner {
                 address(pool, 8)?,
                 cradars_pool::SECONDARY_VTABLE_RVA,
             )?;
-            // Ctor14108DB50 retains the original tag at +40. Dynamic country
-            // allocation1401DA850/140700330 changes only CCountry+8;
-            // getter141091B70 consumes this embedded array without comparing tags.
+            // The radar constructor retains its original country tag at +0x40.
+            // Dynamic country allocation changes only country +8; radar queries
+            // consume the embedded array without comparing those tags.
             array(memory, pool, RADAR_COUNTS, 4, false)
         })();
         let intel = (|| {
@@ -175,9 +165,9 @@ impl Owner {
                 }
                 match countries.link(raw)? {
                     Some(slot) => Ok(Some(slot)),
-                    // BA6240 returns the original readable translation word.
-                    // CEE3A0 indexes lane0 directly; it does not resolve a
-                    // fallback object through BA56A0 at this inner step.
+                    // Use the original readable country translation word. Intel indexes
+                    // lane zero directly rather than resolving a fallback object at this
+                    // inner step.
                     None => Ok(Some(0)),
                 }
             });

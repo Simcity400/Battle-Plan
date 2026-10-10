@@ -58,8 +58,10 @@ function cdp(endpoint: string, method: string, params: Record<string, unknown> =
 }
 
 export async function canvasPage(code: string, gpu = false) {
-  const edge = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
-  assert.ok(existsSync(edge), 'Headless Edge is required for the synthetic Canvas page');
+  const edge = (process.env.BATTLE_PLAN_CANVAS_BROWSER ?? process.env.HOI4_CANVAS_BROWSER) ?? [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA]
+    .filter((directory): directory is string => Boolean(directory))
+    .map(directory => resolve(directory, 'Microsoft/Edge/Application/msedge.exe')).find(existsSync);
+  assert.ok(edge && existsSync(edge), 'Headless Edge is required; set BATTLE_PLAN_CANVAS_BROWSER to its executable');
   const root = resolve('ui/src');
   const profile = await mkdtemp(resolve(tmpdir(), 'share-canvas-'));
   let finish!: (result: Record<string, unknown>) => void;

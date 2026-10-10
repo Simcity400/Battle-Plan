@@ -54,8 +54,8 @@ impl CharacterContent {
         let mio_traits = installed_content::mio_traits::read(layers)
             .inspect(|db| notes.extend(db.warnings.iter().cloned()))
             .map_err(|why| why.to_string());
-        // 1409B8510 loads all naming families into one database, including codenames.
-        // These four common/units/ naming directories differ from name_lists' common/names/.
+        // Load all naming families into one database, including codenames.
+        // The four common/units/ naming directories differ from name_lists' common/names/.
         let name_groups = installed_content::raids::names::Groups::read(layers)
             .inspect(|db| notes.extend(db.warnings.iter().map(|(_, why)| why.clone())))
             .map_err(|why| why.to_string());

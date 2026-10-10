@@ -991,7 +991,7 @@ fn copy_occupation_walk(
     demand_overflowed: &mut bool,
     equipment_required: &mut usize,
 ) {
-    // 14039D930 / 140FE2FE0: keep the actual database fallback, not a guessed vanilla law.
+    // Keep the actual database fallback instead of guessing a vanilla law.
     if let Some(at) = cspan(
         log,
         memory,
@@ -1379,8 +1379,8 @@ fn copy_garrison_object(
     }
 }
 
-/// Copy the two live-sized native containers and the exact equipment fields
-/// queried by 140B8A4E0/140FF9760/140FF97C0. Decode owns all arithmetic.
+/// Copy the two live-sized containers and exact garrison equipment fields.
+/// Decode owns all arithmetic.
 fn copy_garrison_equipment(
     log: &mut RawLog<10>,
     memory: &impl Memory,

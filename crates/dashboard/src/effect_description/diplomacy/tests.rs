@@ -6,6 +6,8 @@ use replay::{frame::TableView, rows::*};
 
 #[test]
 fn faction_preview_keeps_known_empty_names_in_named_removal_and_join_branches() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -61,7 +63,7 @@ fn faction_preview_keeps_known_empty_names_in_named_removal_and_join_branches() 
                 literal: b"localised_empty".to_vec(),
             },
         ]));
-    // 1404AC450 keeps the named branches even when 140D77360 returns empty.
+    // The description keeps the named branches even when the faction name is empty.
     for template_token in [None, Some(17), Some(18)] {
         *fixture.frame.tables[TableId::Factions.index()] =
             TableView::Complete(TableRows::Factions(
@@ -86,7 +88,9 @@ fn faction_preview_keeps_known_empty_names_in_named_removal_and_join_branches() 
 }
 
 #[test]
-fn same_faction_nonleader_preview_reads_only_reached_subject_operands() {
+fn same_faction_nonleader_preview_reads_only_subject_operands() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::FactionMembers.index()] =
         TableView::Complete(TableRows::FactionMembers(vec![
@@ -112,7 +116,7 @@ fn same_faction_nonleader_preview_reads_only_reached_subject_operands() {
     assert_eq!(out.text, "");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 
-    // 1404AC450 can still describe the target's outside-faction overlord,
+    // The description can still name the target's outside-faction overlord,
     // independently of the unreached removal/join subject loops.
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
@@ -127,6 +131,8 @@ fn same_faction_nonleader_preview_reads_only_reached_subject_operands() {
 
 #[test]
 fn reached_faction_subject_loops_keep_order_aliases_and_refusals() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
@@ -207,6 +213,8 @@ fn reached_faction_subject_loops_keep_order_aliases_and_refusals() {
 
 #[test]
 fn create_wargoal_uses_owned_type_recipient_subjects_and_claim_subset() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -366,6 +374,8 @@ fn create_wargoal_uses_owned_type_recipient_subjects_and_claim_subset() {
 
 #[test]
 fn create_wargoal_keeps_missing_roster_and_subject_inputs_named_and_lazy() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -476,6 +486,8 @@ fn create_wargoal_keeps_missing_roster_and_subject_inputs_named_and_lazy() {
 
 #[test]
 fn create_wargoal_uses_the_complete_roster_at_1500_and_5000_countries() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let names = installed_content::key_names::KeyNames::default();
     let database = installed_content::wargoals::parse(b"wargoal_types={SynGoal={}}", &names).unwrap();
@@ -528,7 +540,9 @@ fn create_wargoal_uses_the_complete_roster_at_1500_and_5000_countries() {
 }
 
 #[test]
-fn purchase_contract_uses_seller_roster_and_native_quantity_pool() {
+fn purchase_contract_uses_seller_roster_and_quantity_pool() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -808,7 +822,9 @@ fn purchase_contract_uses_seller_roster_and_native_quantity_pool() {
 }
 
 #[test]
-fn civil_war_heading_and_selected_party_follow_separate_native_operands() {
+fn civil_war_heading_and_selected_party_follow_separate_operands() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -927,7 +943,7 @@ fn civil_war_heading_and_selected_party_follow_separate_native_operands() {
             "start_civil_war={ideology=syn_new ruling_party=syn_old size=0.9 keep_unit_leaders=yes}",
             3,
             "",
-            Some("FindPartyByIdeology"),
+            Some("party selected by ideology"),
         ),
         (
             "start_civil_war={ideology=unresolved}",
@@ -965,6 +981,8 @@ fn civil_war_heading_and_selected_party_follow_separate_native_operands() {
 
 #[test]
 fn faction_influence_environment_keeps_links_and_scales_to_5000_countries() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for count in [3, 5_000] {
         let mut fixture = Fixture::new();
         let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -1030,7 +1048,7 @@ fn faction_influence_environment_keeps_links_and_scales_to_5000_countries() {
         *fixture.frame.tables[TableId::Factions.index()] =
             TableView::Complete(TableRows::Factions(vec![FactionRow {
                 id: 9,
-                name: b"Union".to_vec(), // CFaction stores the resolved literal name.
+                name: b"Union".to_vec(), // The faction stores the resolved literal name.
                 ..Default::default()
             }]));
         *fixture.frame.tables[TableId::FactionMembers.index()] =
@@ -1108,7 +1126,9 @@ fn faction_influence_environment_keeps_links_and_scales_to_5000_countries() {
 }
 
 #[test]
-fn diplomacy_native_output_branches() {
+fn diplomacy_output_branches() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -1291,7 +1311,7 @@ fn diplomacy_native_output_branches() {
                 },
             ],
         }]));
-    // Synthetic cases cover all 44 assigned vtables and native own-text branches.
+    // Synthetic cases cover all 44 assigned classes and their own-text branches.
     for (body, object, mask, expected, refusal) in [
         (
             "add_autonomy_score={value=9}",
@@ -1697,7 +1717,7 @@ fn diplomacy_native_output_branches() {
             EventObject::Character(14),
             2,
             "",
-            Some("+0xED4"),
+            Some("exile_country"),
         ),
         (
             "create_faction=SYN_NAME",
@@ -1712,10 +1732,10 @@ fn diplomacy_native_output_branches() {
             2,
             "Create Root literal\n",
             None,
-        ), // No selector read by vf6.
+        ), // The reader does not consume a selector.
         ("create_faction=\"\"", C(1), 2, "", None),
         ("create_faction=SYN_NAME", S(0), 2, "", None),
-        ("dismantle_faction=no", C(1), 2, "Dismantle Union\n", None), // Boolean ignored by vf7.
+        ("dismantle_faction=no", C(1), 2, "Dismantle Union\n", None), // The description ignores the boolean.
         ("dismantle_faction=yes", C(2), 2, "", None),
         ("dismantle_faction=yes", C(3), 2, "", None),
         ("leave_faction=ROOT", C(1), 2, "Remove alpha/Union\n", None), // Definite current name.
@@ -1745,7 +1765,7 @@ fn diplomacy_native_output_branches() {
             "Rename Union/Charter AAA\n",
             None,
         ),
-        ("set_faction_name=ROOT", C(1), 2, "Rename Union/\n", None), // vf6 selector clears new name.
+        ("set_faction_name=ROOT", C(1), 2, "Rename Union/\n", None), // selector clears new name.
         ("set_faction_name=SYN_NAME", C(3), 2, "", None),
         ("set_faction_spymaster=no", C(2), 2, "Spy Union\n", None), // Nonleader is allowed; boolean ignored.
         ("set_faction_spymaster=yes", C(3), 2, "", None),
@@ -1884,7 +1904,7 @@ fn diplomacy_native_output_branches() {
             C(1),
             2,
             "",
-            Some("+0x24"),
+            Some("auxiliary reader replay is unavailable"),
         ),
         (
             "add_to_war={enemy=BBB targeted_alliance=CCC}",
@@ -1912,7 +1932,7 @@ fn diplomacy_native_output_branches() {
             C(1),
             2,
             "",
-            Some("1403AD690"),
+            Some("auxiliary reader replay is unavailable"),
         ),
         (
             "add_to_war={enemy=ROOT.owner targeted_alliance=CCC}",
@@ -2062,14 +2082,14 @@ fn diplomacy_native_output_branches() {
             C(1),
             2,
             "",
-            Some("1403B2390"),
+            Some("auxiliary reader replay is unavailable"),
         ),
         (
             "diplomatic_relation={country=BBB relation=boost_party_popularity}",
             C(1),
             2,
             "",
-            Some("140D0F6E0"),
+            Some("null ideology-group identifier"),
         ),
         (
             "create_wargoal={target=BBB type=synthetic}",
@@ -2417,8 +2437,8 @@ fn diplomacy_native_output_branches() {
         ),
         (
             "add_to_war={enemy=ROOT.ROOT targeted_alliance=BBB}",
-            // 14036C350 follows the first ROOT to scope 1. Its terminal ROOT
-            // getter@14052B240 uses scope 1's country when linked scope 2 has
+            // The selector follows the first ROOT to scope 1. Its terminal ROOT
+            // uses scope 1's country when linked scope 2 has
             // neither a country nor a state.
             "War Beta/Beta\n",
         ),
@@ -2444,7 +2464,7 @@ fn diplomacy_native_output_branches() {
         assert_eq!(out.text, expected, "{body}: {:?}", out.refusals);
         assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
     }
-    // 140D77360 returns empty text for a genuine null template. A nonnull
+    // The formatter returns empty text for a genuine null template. A nonnull
     // template still needs its recorded lexer spelling, even with empty text.
     for (template_token, dictionary_gap, expected, refusal) in [
         (None, true, "Spy \n", None),
@@ -2493,6 +2513,8 @@ fn diplomacy_native_output_branches() {
 
 #[test]
 fn diplomacy_ordered_subjects_at_5000_countries() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let countries = synthetic_countries(5_000);
     let mut localisation = "\u{feff}l_english:\n EFFECT_ADD_TO_FACTION:0 \"Join $COUNTRY$\"\n EFFECT_GIVE_GUARANTEE:0 \"Guarantee $COUNTRY$\"\n"

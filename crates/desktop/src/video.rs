@@ -117,16 +117,27 @@ pub struct VideoReply {
     map_ui_scale_choices: &'static [u32],
 }
 fn game_user_folder(window: &WebviewWindow) -> Result<PathBuf, String> {
-    let current = window
-        .state::<NativeHost>()
-        .status()
-        .map_details
-        .map(|details| PathBuf::from(details.user))
-        .filter(|path| !path.as_os_str().is_empty());
-    let user = match current {
-        Some(user) => user,
-        None => installed_content::settings::configured_user_folder().map_err(|e| e.to_string())?,
+    let current = window.state::<NativeHost>().status().map_details;
+    let (game, user) = match current {
+        Some(details) if !details.game.is_empty() && !details.user.is_empty() => {
+            (PathBuf::from(details.game), PathBuf::from(details.user))
+        }
+        _ => {
+            let config = dashboard::Config::load().map_err(|error| error.to_string())?;
+            let mut game = config.game_dir;
+            let mut arguments = std::env::args_os().skip(1);
+            while let Some(argument) = arguments.next() {
+                if argument == "--game-dir" {
+                    game = PathBuf::from(arguments.next().ok_or("Missing --game-dir folder")?);
+                }
+            }
+            let user =
+                installed_content::settings::configured_user_folder().map_err(|error| error.to_string())?;
+            (game, user)
+        }
     };
+    engine::executable_tables::initialize(&game)
+        .map_err(|error| format!("Game tables: {error}"))?;
     Ok(user)
 }
 fn game_settings(window: &WebviewWindow) -> Result<VideoSettings, String> {
@@ -382,6 +393,8 @@ mod tests {
     use super::*;
     #[test]
     fn game_display_defaults_keep_scale_and_vsync_without_resizing() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let keys = installed_content::settings::SettingsKeys::read(b"graphics={size={x=2048 y=1152} gui_scale=1.125 fullScreen=no borderless=yes VSync=no}");
         let settings = parse_game_display(&keys).unwrap();
         assert_eq!(settings.ui_scale, 112.5);

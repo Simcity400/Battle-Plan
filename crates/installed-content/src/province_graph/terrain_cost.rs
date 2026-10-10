@@ -1,4 +1,5 @@
 //! Terrain movement costs (`common/terrain`) and the terrain bitmap's byte
+//! lookup, sampled for province edge distances.
 //!
 //! This deliberately does not use the map renderer's indexed BMP image: native
 //! movement samples file rows and the first byte of each stored pixel. Even the
@@ -240,7 +241,7 @@ impl TerrainCosts {
                             for item in values {
                                 let scalar = scalar_with_vars(&item.value, variables)
                                     .ok_or_else(|| invalid("terrain color is not an integer"))?;
-                                // ReadScriptSignedInt32@1424AB970 uses the CRT %i scanner.
+                                // Signed integer values use the CRT %i scanner.
                                 let index = crate::crt::scan_i32(&scalar)
                                     .stored()
                                     .filter(|index| *index >= 0)
@@ -423,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn authored_cost_uses_native_auto_base_fraction_and_clamp() {
+    fn authored_cost_keeps_radix_prefixes_fraction_and_clamp() {
         let terrain = definitions(&[
             "categories={octal={movement_cost=010} hex={movement_cost=0x10} suffix={movement_cost=1junk.25} signed={movement_cost=1.-2} clamped={movement_cost=08} invalid={movement_cost=bad}} terrain={a={type=octal color={0}} b={type=hex color={1}} c={type=suffix color={2}} d={type=signed color={3}} e={type=clamped color={4}} f={type=invalid color={5}}}",
         ]);

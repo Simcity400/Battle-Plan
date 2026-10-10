@@ -1,5 +1,5 @@
-//! At-sea class-one child contracts of 1418C00D0 (secondary receiver +0x18).
-//! Port items use 14197C410 and do not share these late additions or arrival.
+//! At-sea task-force child tooltips use the secondary receiver.
+//! Port items have separate child and arrival behavior.
 
 use super::task_force::{Control, Hover};
 use super::*;
@@ -71,15 +71,15 @@ pub(super) fn specific(context: &Context<'_>, input: &Hover) -> Option<Tooltip> 
     let mut out = Tooltip::default();
     match input.control {
         Control::NoOrders => {
-            // Primary+80: handled even when no member contributes text. Unlike the
+            // Handled even when no member contributes text. Unlike the
             // glyph updater, this callback does not filter own/intel/repair state.
             let mut missing = Any::default();
             for &id in input.members.iter() {
                 missing.add((|| {
                     let Some(force) = force(context, id)? else {
-                        // Class one: 1418C0E98/EA1/EAC skip failed resolution
-                        // before the +50 adapter or mission read. The land
-                        // callback's null +C0 reach at 1418C0F92 is separate.
+                        // Task-force children skip failed reference resolution
+                        // before reading mission inputs. The land
+                        // callback's null group reference is a separate failure.
                         return Ok(false);
                     };
                     if !counter_inputs::needs_regions(force.mission) {
@@ -111,8 +111,8 @@ pub(super) fn specific(context: &Context<'_>, input: &Hover) -> Option<Tooltip> 
     Some(out)
 }
 
-/// Primary+88 is a late callback addition, including a coarse counter. Its idle
-/// term reads the RAW mission, unlike the glyph updater's detached mission.
+/// Invalid-order text also appears on a coarse counter. Its idle term reads
+/// the raw mission, while the glyph updater uses the detached mission.
 fn invalid_orders<'a>(
     context: &Context<'_>,
     input: &Hover,
@@ -202,7 +202,7 @@ fn invalid_orders<'a>(
     }
 }
 
-/// Primary+130: the first qualifying pride task force supplies both names.
+/// The first qualifying pride task force supplies both names.
 /// A failed native gate falls through to the ordinary summary.
 fn pride(context: &Context<'_>, input: &Hover, out: &mut Tooltip) -> bool {
     for &id in input.members.iter() {
@@ -210,7 +210,7 @@ fn pride(context: &Context<'_>, input: &Hover, out: &mut Tooltip) -> bool {
             let Some(force) = force(context, id)? else {
                 return Ok(None);
             };
-            // 140BA56A0 resolves the country tag before 1406EA580. The
+            // Resolve the country tag before testing relations. The
             // retained country may have a different raw id from this alias.
             let slot = context.slot(force.roster_owner)?;
             let roster = context
@@ -311,7 +311,7 @@ pub(super) fn pride_name(
     )
 }
 
-/// Primary+128: every accessible carrier contributes 140C45850 title text;
+/// Every accessible carrier contributes its air-base title text;
 /// an empty result is still handled. No live air-view/right-click hint is emitted.
 pub(super) fn carrier(context: &Context<'_>, members: &[u64], out: &mut Tooltip) {
     let ships = context
@@ -403,7 +403,7 @@ pub(super) fn append(context: &Context<'_>, input: &Hover, out: &mut Tooltip) {
                 let Some(&first) = input.members.first() else {
                     return Ok(false);
                 };
-                // 1418C280D uses the representative's roster country +1D8.
+                // Use the representative's roster country.
                 let Some(force) = force(context, first)? else {
                     return Ok(false);
                 };
@@ -415,7 +415,7 @@ pub(super) fn append(context: &Context<'_>, input: &Hover, out: &mut Tooltip) {
             })();
             match permitted {
                 Ok(true) => {
-                    // 1418BDBA0 aggregates in item order, including members whose
+                    // The game aggregates in item order, including members whose
                     // intel is low. The final disruption term overwrites earlier ones.
                     let members = input.members.iter().filter_map(|&id| match force(context, id) {
                         Ok(None) => None,

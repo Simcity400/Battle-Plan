@@ -224,8 +224,8 @@ pub(crate) fn status(report: Option<&Report>) -> impl Serialize + '_ {
     status::Choice::Second(status::status!({
         "state": if report.is_verified() { "verified" } else { "refused" },
         "static_token_maximum": report.static_token_maximum,
-        "modifier_keys_checked": engine::modifier_keys::NAMES.len(),
-        "static_tokens_checked": engine::fixed_layout::TOKENS.len(),
+        "modifier_keys_checked": report.modifiers.len(),
+        "static_tokens_checked": engine::fixed_layout::TOKEN_IDS.len(),
         "layout_failures": status::sequence(report.failures().map(DisplayValue)),
         "refusals": status::sequence(FAMILIES.iter().copied().filter_map(move |family| {
             refusal(&Ok(*report), family).map(|reason| status::status!({
@@ -249,7 +249,7 @@ mod tests {
     use super::*;
     use engine::{
         cpdx_lexer, cresearch_slot,
-        fixed_layout::{GAP, TOKENS},
+        fixed_layout::{GAP, TOKEN_IDS},
         modifier_keys,
     };
     use replay::{
@@ -259,11 +259,13 @@ mod tests {
     };
 
     fn valid() -> Report {
+        engine::executable_tables::initialize_for_tests()
+            .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
         Report {
             static_token_maximum: 0x6000,
             gap: Ok(()),
-            modifiers: [Ok(()); modifier_keys::NAMES.len()],
-            tokens: [Ok(()); TOKENS.len()],
+            modifiers: [Ok(()); GAP as usize],
+            tokens: [Ok(()); TOKEN_IDS.len()],
         }
     }
 
@@ -447,13 +449,15 @@ mod tests {
     /// patch moves or renames it, every fixed key is refused by its name.
     #[test]
     fn an_unused_builtin_mismatch_refuses_every_key_family_by_name() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
         for index in [0, GAP as usize - 1] {
             assert!(
-                modifier_keys::ALL
+                modifier_keys::ALL_INDICES
                     .iter()
-                    .all(|key| key.index as usize != index)
+                    .all(|&key| key as usize != index)
             );
-            let name = modifier_keys::NAMES[index];
+            let name = modifier_keys::names()[index];
             let report = mismatched(index);
             let mut input = inputs();
             apply(&mut input, &Ok(report)).unwrap();
@@ -490,8 +494,7 @@ mod tests {
     #[test]
     fn token_mismatch_refuses_its_consumers_by_name() {
         let mut report = valid();
-        report.tokens[TOKENS
-            .iter()
+        report.tokens[engine::fixed_layout::tokens()
             .position(|token| token.id == cresearch_slot::IDLE_HANDLE)
             .unwrap()] = Err("token spells a different name");
         let mut input = inputs();
@@ -507,8 +510,7 @@ mod tests {
 
         // The save oracle alone consumes the fixed15 token: named, nothing refused.
         let mut report = valid();
-        report.tokens[TOKENS
-            .iter()
+        report.tokens[engine::fixed_layout::tokens()
             .position(|token| token.id == cpdx_lexer::FIXED15_TOKEN)
             .unwrap()] = Err("exceeds the static token maximum");
         let mut input = inputs();

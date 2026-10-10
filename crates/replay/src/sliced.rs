@@ -262,9 +262,9 @@ pub fn is_keyed(table: TableId) -> bool {
 }
 
 /// Whether a complete read of this sliced table replaces the held table.
-/// A technology roster covers the whole template database (ECE9E0 creates one
-/// instance per template), so any complete, non-empty definitions read is the
-/// whole table and templates removed by `reloadtechnologies` leave with it.
+/// A technology roster has one instance per template, so a complete,
+/// nonempty definitions read covers the whole table. Templates removed by
+/// `reloadtechnologies` leave with it.
 pub fn replaces_whole(fresh: &TableRows) -> bool {
     matches!(fresh, TableRows::TechnologyDefinitions(rows) if !rows.is_empty())
 }

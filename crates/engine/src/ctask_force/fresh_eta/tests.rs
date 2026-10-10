@@ -1198,8 +1198,8 @@ fn mission_risk_shared_pointer_failure_stops_later_sources_without_retry() {
         (Err(reason), Err(reason))
     );
     assert_eq!(memory.calls(TASK + cunit::LOCATION), 1);
-    // D5AE30's independently observed empty/nonempty SHIPS header remains
-    // available after the common modifier graph's earlier location refusal.
+    // The independently observed empty/nonempty SHIPS header remains available
+    // after the common modifier graph's earlier location refusal.
     assert_eq!(memory.calls(TASK + ctask_force::SHIPS), 1);
     for address in [
         STATE + crate::cgame_state::WEATHER_MANAGER,

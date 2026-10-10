@@ -2,7 +2,7 @@ use replay::rows::{GarrisonEquipment, Recorded, StateGarrisonRow};
 
 const ONE: i64 = 100_000;
 
-/// Display getter 140FE01E0(..., true), not the saved +F0 cache.
+/// Displayed garrison strength, separate from the saved strength cache.
 pub(super) fn displayed(
     row: &StateGarrisonRow,
     assigned: Option<i32>,
@@ -49,8 +49,8 @@ pub(super) fn displayed(
         .min(ONE.wrapping_sub(shortage_power(ONE.wrapping_sub(manpower), manpower_power))))
 }
 
-/// 140B8A4E0: low-64-bit products and sums, signed division toward zero,
-/// the native allocation branch and its unsigned divide sentinel guard.
+/// Low-64-bit products and sums, signed division toward zero,
+/// with the allocation branch and unsigned divide sentinel guard.
 fn equipment_fraction(entries: &[GarrisonEquipment]) -> i64 {
     let (mut allocated, mut required) = (0_i64, 0_i64);
     for entry in entries {
@@ -72,9 +72,9 @@ fn equipment_fraction(entries: &[GarrisonEquipment]) -> i64 {
     }
 }
 
-/// 140FE02AF/140FE02F4 load signed i32 NResistance powers at 143319030
-/// (equipment) and 143318FA8 (manpower). Every step
-/// rounds separately; exponentiation by squaring would change the answer.
+/// NResistance equipment and manpower powers are signed i32 values.
+/// Every step rounds separately; exponentiation by squaring would
+/// change the answer.
 fn shortage_power(shortage: i64, power: i32) -> i64 {
     let mut result = shortage;
     for _ in 1..power {

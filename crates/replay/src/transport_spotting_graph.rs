@@ -1,4 +1,4 @@
-//! F97BF0's numerical strategic spotting graph, with branch-local source demands.
+//! Numerical strategic spotting graph, with branch-local source demands.
 //! Inputs must come from this hour's original physical ledgers and receiver
 //! observations. The air disruption producer and cache/lifetime admission are
 //! separate requirements; unavailable reached inputs remain named refusals.
@@ -20,9 +20,7 @@ pub struct Defines {
 }
 
 impl Defines {
-    /// Native Load registrations: 1409295D0, 14095D6F0, 14094F250,
-    /// 14092A5F0, 14092A940, 14092A2A0, 14088D9A0 and 14088D790.
-    /// Their bounded fixed5 loads apply the shown clamps; visibility and
+    /// Bounded fixed5 define loads apply the shown clamps; visibility and
     /// both NIntel thresholds have no loader clamp. No fallback values.
     pub fn read<E>(
         mut fixed5: impl FnMut(&'static str, &'static str) -> Result<i64, E>,
@@ -47,28 +45,28 @@ impl Defines {
 }
 
 pub trait Inputs {
-    /// Original C740(1) first NONZERO unfiltered convoy-pool variant +1A8.
-    /// None is native no variant; a failed visibility word is a refusal.
+    /// First nonzero unfiltered convoy-pool variant's visibility. None is no
+    /// variant; a failed visibility word is a refusal.
     fn first_convoy_visibility(&mut self) -> Fact<Option<i64>>;
     fn defines(&mut self) -> Fact<Defines>;
-    /// D5AF10 for every original owner navy/region mission occurrence.
-    /// F97BF0 dereferences each mission and backlink; null occurrences are
-    /// reached unsupported forms here, rather than E8B8E0's null skip.
+    /// Detection for every original owner navy/region mission occurrence.
+    /// Each mission and backlink is dereferenced; null occurrences are reached
+    /// unsupported forms here, rather than skipped by a mission census.
     fn navy_detection(&mut self) -> Fact<Vec<i64>>;
-    /// F96470 with secondary visibility zero. Known empty original regional
-    /// registrations supply zero without demanding any wing stat inputs.
+    /// Air contribution with secondary visibility zero. Known empty regional
+    /// registrations supply zero without demanding wing stat inputs.
     fn air_contribution(&mut self, visibility: i64) -> Fact<i64>;
-    /// 141091B70 raw radar count and original strategic region signed +24.
+    /// Raw radar count and strategic region's signed province count.
     fn radar_counts(&mut self) -> Fact<(i32, i32)>;
-    /// CEE3A0 navy lane: own target amount minus reciprocal owner amount.
+    /// Navy intel lane: own target amount minus reciprocal owner amount.
     fn navy_intel_difference(&mut self) -> Fact<i64>;
-    /// F04E40's nullable weather modifier, effective key2A at 551820.
+    /// Nullable weather modifier, effective key 0x2A.
     fn weather_detection(&mut self) -> Fact<Option<i64>>;
 }
 
-/// F97BF0, no tooltip string. Each stage is reached in the native order;
-/// visibility zero still reads navy, air, radar, intel and weather. Only
-/// absence of the first convoy variant returns before those demands.
+/// Numeric query without tooltip text. Stages follow the game's demand
+/// order; zero visibility still reads navy, air, radar, intel and weather.
+/// Only absence of the first convoy variant returns before those demands.
 pub fn query(inputs: &mut impl Inputs) -> Fact<i64> {
     let Some(raw_visibility) = inputs.first_convoy_visibility()? else {
         return Ok(0);
@@ -100,9 +98,10 @@ pub fn query(inputs: &mut impl Inputs) -> Fact<i64> {
     Ok((weather.wrapping_mul(total) / P).max(0))
 }
 
-/// D5AE30 and D5AF10: +138 plus the ordered repeated C23D90 carrier fill
-/// sum times +160, then the full common detection value plus unity. The
-/// original native ship list owns the fill observations; it is not rebuilt.
+/// Task-force detection adds the ordered repeated carrier-fill sum times
+/// its carrier detection stat to its surface detection stat, then multiplies
+/// by the common detection value plus unity. The original ship list owns
+/// fill observations; it is not rebuilt.
 pub fn task_force_detection(
     detection_138: i64,
     carrier_detection_160: i64,
@@ -121,8 +120,8 @@ pub fn task_force_detection(
         .max(0))
 }
 
-/// 1424DAD40(2, raw), then 1 - 1/power. Raw >= 10 skips power. This is
-/// not a floating-point exponential and has no independent lower clamp.
+/// Power of two at the raw value, then 1 - 1/power. Raw >= 10 skips power.
+/// This is not a floating-point exponential and has no independent lower clamp.
 fn falloff(raw: i64) -> Fact<i64> {
     if raw >= 1_000_000 {
         return Ok(P);
@@ -138,8 +137,8 @@ fn falloff(raw: i64) -> Fact<i64> {
     Ok(P.wrapping_sub(inverse))
 }
 
-/// F97BF0@F97E6B..F97EA5. Both counts are signed; the second numerator
-/// multiplication wraps before IDIV. Native zero denominator supplies sentinel.
+/// Both counts are signed; the second numerator multiplication wraps before
+/// division. A zero denominator supplies the sentinel.
 fn radar(covered: i32, provinces: i32) -> Fact<i64> {
     let denominator = i64::from(provinces) * P;
     if denominator == 0 {
@@ -152,8 +151,8 @@ fn radar(covered: i32, provinces: i32) -> Fact<i64> {
         .ok_or("selected transport radar division traps")
 }
 
-/// 141416B30. 1424DA720 is wrapping negate, including i64::MIN. The
-/// native threshold order does not sort or clamp the two content defines.
+/// Negation wraps, including i64::MIN. The threshold order does not sort
+/// or clamp the two content defines.
 pub fn decryption(difference: i64, defines: Defines) -> Fact<i64> {
     let magnitude = if difference < 0 {
         difference.wrapping_neg()
@@ -199,7 +198,7 @@ pub struct DisruptionDefines {
 }
 
 impl DisruptionDefines {
-    /// Unclamped fixed5 loaders1407D2210/1407D2000/1407D2420.
+    /// Unclamped fixed5 content loads.
     pub fn read<E>(
         mut fixed5: impl FnMut(&'static str, &'static str) -> Result<i64, E>,
     ) -> Result<Self, E> {
@@ -211,9 +210,9 @@ impl DisruptionDefines {
     }
 }
 
-/// F62FE0: raw mission+A8, original signed aircraft count and current type.
-/// Normalized attack/defence belong to F49710 at the sampled province and
-/// current mission; normalized speed belongs to F4B6E0. Stored sortie/raid
+/// Raw mission effectiveness, signed aircraft count and current type.
+/// Normalized attack/defence use the sampled province and current mission;
+/// normalized speed is independent. Stored sortie/raid
 /// values never stand in for those independently demanded producers.
 pub fn disruption_factor(
     raw: Fact<i64>,
@@ -234,8 +233,8 @@ pub fn disruption_factor(
     )
 }
 
-/// F62FE0 checks normalized defence before reaching normalized attack and
-/// speed. Independent source failures retain that native early-unity gate.
+/// Normalized defence is checked before normalized attack and speed are
+/// demanded. Independent source failures retain the early-unity gate.
 pub fn disruption_factor_leaves(
     raw: Fact<i64>,
     aircraft: i32,
@@ -265,7 +264,7 @@ pub fn disruption_factor_leaves(
     if (root as u64).wrapping_add(0x7fff_ffff_ffff_fffe) > 0xffff_ffff_ffff_fffc {
         return Ok(100);
     }
-    // F63189..F631A7's signed high multiply implements division by -316200.
+    // Signed high multiplication implements division by -316200.
     Ok(P.wrapping_add(root.wrapping_mul(P) / -316_200)
         .clamp(100, P))
 }
@@ -282,8 +281,8 @@ fn guarded_fraction(numerator: i64, denominator: i64) -> Fact<i64> {
         .ok_or("transport air disruption fixed5 division traps")
 }
 
-/// 1424D8800's scale reduction around the exact 1424DAE00 Newton loop.
-/// The bound refuses nonconvergence, never returns an approximate result.
+/// Scale reduction around the integer Newton loop. The bound refuses
+/// nonconvergence, never returns an approximate result.
 pub fn sqrt(mut raw: i64) -> Fact<i64> {
     if raw < 10_001 {
         return Ok(sqrt_inner(raw.wrapping_mul(100))?.wrapping_mul(10_000) / P);
@@ -325,8 +324,8 @@ fn sqrt_inner(raw: i64) -> Fact<i64> {
 }
 
 impl AirDefines {
-    /// 1409258A0 uses LuaTable_ReadInt32 and clamps to1; 1409255E0
-    /// clamps detection factor at0; 140929F50 clamps base to0..100 fixed5.
+    /// The integer plane scale clamps at 1, detection factor at 0, and
+    /// base spotting at 0..100 fixed5.
     pub fn read<E>(
         mut fixed5: impl FnMut(&'static str, &'static str) -> Result<i64, E>,
         mut int32: impl FnMut(&'static str, &'static str) -> Result<i32, E>,
@@ -342,17 +341,17 @@ impl AirDefines {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AirMission {
     pub current_type: Fact<u32>,
-    /// Stored signed mission+E0; F64880 may leave it stale after a gate.
+    /// Stored signed aircraft count; hourly eligibility gates may leave it stale.
     pub aircraft: Fact<i32>,
-    /// Exact F62FE0 numerical result for this mission and this region's
-    /// hourly sampled province. This has a separate normalization producer;
+    /// Exact numerical combat result for this mission and region's hourly
+    /// sampled province. It has a separate normalization producer;
     /// no stored efficiency, count, weather flag or raid score substitutes.
     pub disruption_factor: Fact<i64>,
-    /// F4B740(13,current_type) and F4B740(14,current_type), in this order.
+    /// Current-type stats 13 and 14, in that order.
     pub detection: Fact<[i64; 2]>,
 }
 
-/// Selects an original physical root and its complete +98 header domain.
+/// Selects an original physical root and its complete regional header domain.
 /// Native root nulls are distinct from an authentic zero regional count.
 /// A positive vector retains nullable occurrences for the native sample-
 /// before-dereference demand order in `air_contribution`.
@@ -414,10 +413,10 @@ pub fn air_region(
     Ok((country, region))
 }
 
-/// F96470. Caller supplies the complete original CStrategicAir+98[region]
-/// occurrence list, including repeats, and the content stack's fixed5 array
-/// AIR_MISSION_SPOTTING_FACTORS (Load@1409253D0). Empty lists and zero
-/// factors retain the native lazy leaf demands.
+/// Caller supplies the complete original regional air-registration
+/// occurrence list, including repeats, and the content stack's fixed5
+/// AIR_MISSION_SPOTTING_FACTORS array. Empty lists and zero factors retain
+/// the game's lazy leaf demands.
 pub fn air_contribution(
     missions: &[AirMission],
     sampled_province: Fact<u32>,
@@ -436,8 +435,8 @@ pub fn air_contribution(
     } else {
         (P * P) / denominator
     };
-    // F96470 samples region+18[(hour-43_800_000)%signed_count]+A4
-    // before the first mission, even when every mission/factor is zero.
+    // Sample the province at `(hour - 43_800_000) % signed_count` before the
+    // first mission, even when every mission or factor is zero.
     let _sampled_province = sampled_province?;
     let mut detection = [0_i64; 2];
     for mission in missions {
@@ -445,8 +444,8 @@ pub fn air_contribution(
         if kind == 0 {
             continue;
         }
-        // FFEC30 arithmetic-right-shifts to the highest set bit. Reached
-        // multibit/sign-bit forms fail its single-bit native assertion.
+        // Arithmetic-right-shift to the highest set bit. Reached multibit or
+        // sign-bit forms fail the single-bit assertion.
         if !kind.is_power_of_two() || kind as i32 <= 0 {
             return Err("selected transport air spotting mission is not one positive bit");
         }
@@ -472,7 +471,7 @@ pub fn air_contribution(
         }
     }
     // Native sums both lanes before deciding whether to reach the manager
-    // region factor, even when secondary visibility is zero (F97BF0).
+    // region factor, even when secondary visibility is zero.
     if detection[0].wrapping_add(detection[1]) == 0 {
         return Ok([0, 0]);
     }

@@ -1,5 +1,4 @@
-//! Add `mod read_only;` to the existing accumulator test module on integration.
-//! Reuse its SnapshotMemory instead of introducing another memory/cache fixture.
+//! Read-only accumulator fixtures reuse the parent module's SnapshotMemory.
 use super::*;
 
 #[test]

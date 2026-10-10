@@ -88,8 +88,8 @@ export function strengthPercent(raw: string): string {
 export function percent(raw: string): string {
   return `${formatAmount(raw, 5, 5)}%`;
 }
-/** P: 14155CC50 -> 14155BE80 rounds with 1424D8760, narrows to i32 and
- * clamps to 0..100. 141554BD0 -> 142259590 writes a zero-decimal percent.
+/** Percentage cells round half away from zero, narrow to i32 and clamp to 0..100.
+ * The result is formatted as a zero-decimal percent.
  * Only cell text follows this rule; tooltip, sort and bar inputs stay exact. */
 export function percentCell(raw: string): string {
   const value = BigInt(raw);
@@ -97,15 +97,15 @@ export function percentCell(raw: string): string {
   const clamped = rounded < 0n ? 0n : rounded > 100n ? 100n : rounded;
   return `${formatNativeFixed5(clamped * 100000n, 0)}%`;
 }
-/** 14155CF70 wraps strength*100, 1424D8760 rounds half away from zero,
- * then 14155CF85 passes its signed i32 percentage to the bar. Tooltip values
+/** Strength times 100 wraps, rounds half away from zero,
+ * then narrows to a signed i32 percentage for the bar. Tooltip values
  * retain the exact fraction; bar geometry follows the native integer percent. */
 export function strengthBar(raw: string): bigint {
   const percent = BigInt.asIntN(64, BigInt(raw) * 100n);
   const biased = BigInt.asIntN(64, percent + (percent < 0n ? -50000n : 50000n));
   return BigInt.asIntN(32, biased / 100000n) * 1000n;
 }
-/** P: 14155CC50 formats +0xF8 with Fixed5ToString@1424B6200(...,2);
+/** Garrison cell text formats the required amount with two fixed decimals;
  * only the bar displays strength. */
 export function garrisonCell(value: OccupiedValues, cellBars: boolean): { text: string; bar: bigint | null; red: boolean } {
   if (value.garrisonRequiredRaw === null || BigInt(value.garrisonRequiredRaw) === 0n) return { text: '-', bar: null, red: false };

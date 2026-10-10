@@ -2,7 +2,9 @@ use super::super::{tests::Fixture, *};
 use crate::scripted_text::{EventObject, EventScope};
 
 #[test]
-fn native_empty_dispatch() {
+fn empty_dispatch() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     for body in [
         "add_ai_strategy={}",
@@ -71,51 +73,57 @@ fn native_empty_dispatch() {
 }
 
 #[test]
-fn native_empty_containers_describe_and_probe_children_once() {
+fn empty_containers_describe_and_probe_children_once() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let names = installed_content::key_names::KeyNames::default();
     let content = Content {
         key_names: Some(&names),
         ..Default::default()
     };
-    // Both inherit BuildDescription@140532780 and vf11@140533D80
-    // (142763228 / 142739BC0); their own text remains empty.
-    for (class, own) in [
+    // Both inherit child descriptions and
+    // their own text remains empty.
+    for (effect_key, own) in [
         ("create_dynamic_country", "original_tag=AAA copy_tag=BBB"),
         (
             "force_disable_resistance",
             "clear=yes occupied=AAA occupier=BBB",
         ),
     ] {
-        let body = format!("{class}={{{own} add_political_power=2 add_political_power=3}}");
+        let body = format!("{effect_key}={{{own} add_political_power=2 add_political_power=3}}");
         let items = installed_content::effect_keys::read_body(body.as_bytes(), &names).unwrap();
         let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
         let out = fixture.render_native(&body, &mut scopes, content);
-        assert_eq!(out.text, "PP2\nPP3\n", "{class}: {:?}", out.refusals);
-        assert!(out.refusals.is_empty(), "{class}: {:?}", out.refusals);
+        assert_eq!(out.text, "PP2\nPP3\n", "{effect_key}: {:?}", out.refusals);
+        assert!(out.refusals.is_empty(), "{effect_key}: {:?}", out.refusals);
         fixture.with_renderer(&mut scopes, content, |renderer| {
             let selected =
                 crate::triggers::event_scopes::project(&renderer.graph.borrow(), 0).unwrap();
-            assert!(renderer.multiple(&items, selected), "{class}");
+            assert!(renderer.multiple(&items, selected), "{effect_key}");
             assert!(renderer.out.refusals.is_empty());
         });
     }
 }
 
 #[test]
-fn native_empty_containers_keep_child_refusals_once() {
+fn empty_containers_keep_child_refusals_once() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
-    for class in ["create_dynamic_country", "force_disable_resistance"] {
+    for effect_key in ["create_dynamic_country", "force_disable_resistance"] {
         let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
         let out = fixture.render(
-            &format!("{class}={{add_political_power=2 every_purchase_contract={{}}}}"),
+            &format!("{effect_key}={{add_political_power=2 every_purchase_contract={{}}}}"),
             &mut scopes,
             Content::default(),
         );
         assert_eq!(out.text, "PP2\n");
         assert_eq!(out.refusals.values().sum::<usize>(), 1);
-        assert!(out.refusals.keys().all(|why| {
-            why.contains("NInternationalMarket::CMultiplePurchaseContractTargetEffect")
-        }));
+        assert!(
+            out.refusals
+                .keys()
+                .all(|why| { why.contains("every_purchase_contract") })
+        );
     }
 }

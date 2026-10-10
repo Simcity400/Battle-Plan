@@ -1,14 +1,11 @@
-//! Ordered raw source operands of ship modifier getter140C29020 and weapon
-//! getter140C25310. No modifier total, doctrine weight, fuel fraction or weapon
-//! damage is evaluated. Source indices preserve native list order.
+//! Ordered raw source operands for ship and weapon modifiers. No modifier
+//! total, doctrine weight, fuel fraction or weapon damage is evaluated.
+//! Source indices preserve stored list order.
 //!
-//! These inputs still require fresh reads. Ship experience rebuild140C2D710
-//! does not cover effective-stat copies140C2D950/140C2E030, medal rebuild141439F00,
-//! task-force doctrine140D51B60, fuel delivery140D4FF10 or HQ membership
-//!140D604F0/140D602A0/140D60200. Leader adjusters140C11D20 and the skill-pointer
-//! setters140C15310/140C16150/140C15E50/140C16CA0 are separate writers too.
-//! Complete source-selection and receiver-lifetime coverage is not certified;
-//! equal source pointers/counts cannot certify unchanged values.
+//! These inputs require fresh reads: effective stats, medals, doctrine, fuel,
+//! headquarters membership, leader adjustment and skill selection have independent
+//! writers. Equal source pointers or counts cannot establish unchanged values or
+//! receiver lifetime.
 use crate::{
     Memory,
     capture_text::{Owned, Value},
@@ -23,7 +20,7 @@ pub struct ContextRow {
     pub commander: u64,
     pub ship_class: u32,
     pub subunit: u32,
-    /// Native getter cases0..4 at ship+1E8,+1F8,+210,+208,+318.
+    /// Five stored ship-base operands in getter-case order.
     pub weapon_bases: [i64; 5],
     pub weather_factor: i64,
     pub fuel: [i64; 2],
@@ -50,14 +47,13 @@ pub struct SourceRow {
     pub selector: u32,
     pub reference: u64,
     pub weights: [i64; 2],
-    /// 140C2B000 adds terrain adjuster +0x20 to the speed modifier.
-    /// Populated only for scopes 20 and 25.
+    /// Terrain speed-adjustment operand, populated only for scopes 20 and 25.
     pub movement: i64,
-    /// Doctrine country modifiers selected by141956CB0/141956D40.
+    /// Selected doctrine country-modifier keys.
     pub dynamic_keys: [u32; 2],
     pub terms: [usize; 2],
-    /// Transient identity for shared term spans and this hour's child-tree
-    /// capture. Never projected to replay. 140C230A0 reads source +0x10.
+    /// Transient source identity for shared term spans and this hour's child-tree
+    /// capture. Never projected to replay.
     pub accumulator: usize,
 }
 
@@ -97,8 +93,8 @@ pub fn capture_influence(
     Ok([start, capture.buffers.lengths[0] - start])
 }
 
-/// 141610780 reaches four skill-definition accumulators for each resolved
-/// naval HQ influence. Count the same visitor's source and term headers only.
+/// A resolved naval headquarters influence reaches four skill-definition
+/// accumulators. Count the shared visitor's source and term headers only.
 pub fn influence_demand(
     memory: &impl Memory,
     base: usize,
@@ -127,8 +123,7 @@ fn add(p: usize, o: usize) -> Result<usize, &'static str> {
         .filter(|_| p != 0)
         .ok_or("naval weapon pointer invalid")
 }
-// 141471D80 concatenates exact std::string segments; 141593150/1403BCA00
-// select the fallback by native name. Neither chooses a name-byte bound.
+// Names use exact string segments and content-based fallback, without a byte cap.
 fn text<const TERMINAL: bool>(
     memory: &impl Memory,
     address: usize,
@@ -178,11 +173,9 @@ impl<M: Memory> Capture<'_, '_, M> {
         self.buffers.required[0] = self.buffers.required[0]
             .checked_add(1)
             .ok_or("naval weapon source demand overflow")?;
-        // 140C29020 passes the accumulator at source+0x10. Adjacent ships
-        // often reach the same country and task-force accumulators. Share a
-        // recent owned term span within this hourly callback, while retaining
-        // every source occurrence in native order. Bound the search because
-        // each ship's own accumulator is unique.
+        // Adjacent ships often select the same country and task-force accumulators.
+        // Share a recent owned term span within this callback, retaining every source
+        // occurrence in order. Bound the search because each ship's accumulator is unique.
         if let Some(accumulator) = accumulator
             && let Some(previous) = self.buffers.sources.get(..source).and_then(|rows| {
                 rows.iter()
@@ -265,8 +258,7 @@ impl<M: Memory> Capture<'_, '_, M> {
     }
 }
 
-/// Native terrain selector14142AF80/14142C0E0; selecting a source is not
-/// composition. Both selected and default records preserve their raw values.
+/// Terrain source selection preserves both selected and default raw values.
 pub(crate) fn terrain_class(
     memory: &impl Memory,
     terrain: usize,
@@ -284,7 +276,7 @@ pub(crate) fn terrain_class(
     hash = (hash >> 16 ^ hash).wrapping_mul(0x45d9f3b);
     hash ^= hash >> 16;
     let mut selected = None;
-    // P: 14142AF80's probe distance and extension are native u8 fields.
+    // Probe distance and extension are stored u8 fields.
     for probe in 1..=u32::from(u8::MAX) {
         let index = (hash & mask)
             .checked_add(probe - 1)
@@ -349,8 +341,7 @@ fn terrain_from_template_with_policy<const TERMINAL: bool>(
         auth(memory, base, terrain, crate::cterrain_type::VTABLE_RVA)?;
         return Ok(terrain);
     }
-    //141593150 falls back to the five-byte terrain key at142962540. Capture
-    // that key from the pinned module instead of assuming English content.
+    // Read the fallback terrain-key bytes from the supported module.
     let key: [u8; 5] = field(memory, base, 0x0296_2540)?;
     let root = ptr(memory, base, crate::cterrain_database::SINGLETON_RVA)?;
     let types = array(memory, root, 0x40, 8)?;
@@ -397,10 +388,9 @@ pub(crate) fn selected_class(
     Ok(found.unwrap_or(add(leader, fallback)?))
 }
 
-/// Select the two native country keys without calculating either modifier.
-///141471D80 constructs prefix+lexer(type)+suffix and maps its lexer id through
-/// the immutable modifier-key dictionary. We compare the raw string segments
-/// while walking that bounded dictionary; no engine lexer method or lock runs.
+/// Select two country keys without calculating their modifiers. Compare raw
+/// prefix, type-token and suffix segments while walking the bounded modifier-key
+/// dictionary; no game lexer method or lock runs.
 pub(crate) fn doctrine_keys<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,
@@ -447,8 +437,7 @@ pub(crate) fn doctrine_keys<const TERMINAL: bool>(
     let mut node = ptr(memory, head, 8)?;
     let mut previous = head;
     let mut result = [0; 2];
-    // P: 141471D80's prev/next links at +0/+8 reject a revisited node:
-    // its stored predecessor cannot match both the first and cyclic visits.
+    // Predecessor/next links reject a revisited node because its predecessor cannot match both visits.
     while node != head {
         if ptr(memory, node, 0)? != previous {
             return Err("naval doctrine modifier dictionary link invalid");
@@ -543,9 +532,8 @@ fn visit_doctrine<const TERMINAL: bool>(
     task: usize,
     emit: &mut impl FnMut(SourceRow, Option<usize>) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    // P: 140D5B220 walks task+640 in successor order; 140D51B60 resets
-    // its u64 size at +648. No native node ceiling is chosen here.
-    // Reuse its count-bounded cursor, including parent/child validation.
+    // Task-force doctrine uses successor order and a stored u64 count, without
+    // a chosen node ceiling. Reuse its count-bounded cursor and link validation.
     let mut tree = crate::msvc_tree_node::Cursor::read(memory, task, 0x640)
         .map_err(|_| "naval doctrine tree header invalid")?;
     let mut previous = None;
@@ -608,8 +596,7 @@ pub(crate) fn read(
     Ok(row)
 }
 
-/// Shared 140C29020 source selection, in native order, without reading
-/// accumulator entries. Capture and off-thread sizing supply separate visitors.
+/// Shared ordered source selection without reading accumulator entries; capture and sizing use separate visitors.
 pub(crate) fn visit_sources<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,
@@ -691,8 +678,7 @@ pub(crate) fn visit_sources<const TERMINAL: bool>(
         visit_modifier(emit, 1, ptr(memory, root, 0xb0)?)?;
     }
     visit_modifier(emit, 2, add(ship, 0x740)?)?;
-    // 140C29020 unwraps the medal store; 141439F00 rebuilds its +0x1B0
-    // accumulator and copied label independently of ship experience.
+    // Medals select their own accumulator and label, rebuilt independently of ship experience.
     let medals = ptr(memory, ship, 0x8f8)?;
     visit_modifier(emit, 3, add(medals, 0x1a0)?)?;
     visit_doctrine::<TERMINAL>(memory, base, task, emit)?;
@@ -700,9 +686,9 @@ pub(crate) fn visit_sources<const TERMINAL: bool>(
     if location != 0 {
         auth(memory, base, location, crate::cprovince::VTABLE_RVA)?;
         let province = field::<u32>(memory, location, crate::cprovince::ID)?;
-        //140C25310 chooses expeditionary owner when positive, then the
-        // relation matrix entry for the location's controller (ordinal0 when
-        // unowned). Keep this separate from roster-country modifier scope0.
+        // Weapon selection uses a positive expeditionary owner, then the relation
+        // cell for the location controller (ordinal zero when unowned). This scope is
+        // independent of the roster-country modifier.
         let expeditionary = field::<i32>(memory, task, crate::cunit::EXPEDITIONARY_OWNER)?;
         let owner_id = if expeditionary > 0 {
             expeditionary as u32
@@ -763,8 +749,7 @@ pub(crate) fn visit_sources<const TERMINAL: bool>(
             },
             None,
         )?;
-        // Negative class delegates to an unweighted average of each task-force
-        // ship's terrain adjuster (140D56980/140D56D60), not an opaque cache.
+        // Negative class selects an unweighted average of every task-force ship's terrain adjustment.
         if (row.ship_class as i32) < 0 {
             let ships = array(memory, task, 0x348, 8)?;
             for index in 0..ships.count {

@@ -1,9 +1,7 @@
-//! Stored operands of the political port tooltip (14197C410/14197A6D0).
-//!
-//! The fleet visitor has already authenticated the primary task-force pointer,
-//! its full handle and its embedded mission. No unit selection, hover cache or
-//! native function call is acquired. Owned ranges survive the callback; the
-//! reference memo's temporary native pointers are cleared on drop.
+//! Stored political port-tooltip operands. The fleet visitor has authenticated
+//! the primary task force, full handle and embedded mission. No selection,
+//! hover cache or game call supplies values. Owned ranges survive callbacks;
+//! reference-memo temporary pointers clear on drop.
 
 use crate::{
     Memory,
@@ -16,14 +14,13 @@ use crate::{
     walk::Buffer,
 };
 
-/// Ordered full searcher CIDs. Add140D50030 appends; remove140D62020 tail-swaps.
-/// Save140D66770 (secondary receiver) writes primary610/count61C, token3BAB.
+/// Ordered full searcher handles. Addition appends; removal tail-swaps.
+/// Serialization uses the secondary receiver to write this primary array.
 const SEARCHING: usize = 0x610;
-/// Mission target+A0. Setter140FA5AE0 and simulation140D48FB0 own it;
-/// serialize140FA9900 writes token3BB1 whenever either raw word is nonzero.
+/// Mission target at +0xa0, owned by commands and simulation. Serialization
+/// writes the full reference whenever either raw word is nonzero.
 const ENGAGEMENT_TARGET: usize = super::NAVAL_MISSION + 0xa0;
-/// Ordered 32-byte strings. Command14133CB20 copies them with14011F6B0;
-/// save/load140D66770/140D60C40 use token2810 (`target_ship_types`).
+/// Ordered 32-byte target-ship-type strings copied by commands and serialized.
 const AVOIDED_SHIP_TYPES: usize = 0x740;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -132,8 +129,7 @@ impl<'a, M: Memory> Collector<'a, M> {
         )
     }
 
-    /// Worker-owned storage grows from the original search/string headers before
-    /// publication (ordered native loops140D66770/14197C410).
+    /// Worker storage grows from original search/string headers before publication.
     pub fn new_growing(
         memory: &'a M,
         base: usize,
@@ -398,7 +394,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         self.reference_required = self.reference_required.saturating_add(count);
         let start = arenas.searching_len;
         let end = start.checked_add(count)?;
-        // 14197C410 visits the complete original +610/+61C searcher list.
+        // Port presentation visits the complete original searcher list.
         arenas.searchers.ensure(end).ok()?;
         self.prepare_answers().ok()?;
         let output = arenas.searchers.get_mut(start..end)?;
@@ -502,7 +498,7 @@ fn avoided(
     arenas.avoided_required = arenas.avoided_required.saturating_add(count);
     let start = arenas.avoided_len;
     let end = start.checked_add(count)?;
-    // Save140D66770 retains every ordered string slot.
+    // Serialization retains every ordered string slot.
     arenas.avoided.ensure(end).ok()?;
     let mut output = arenas.avoided.get_mut(start..end);
     if let Some(output) = output.as_deref_mut() {

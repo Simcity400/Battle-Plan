@@ -1,10 +1,10 @@
 //! Allocation-free notifications from the native writers of the relation
-//! opinion `CRelationStatus+0x300` ([`engine::opinion_mutations`]). A detour
+//! opinion ([`engine::opinion_mutations`]). A detour
 //! only records and calls the original; it never changes game behaviour.
 //!
-//! `RecomputeOpinion` and `Reset` append their status to a bounded log when
-//! the opinion they leave differs from the one they found. `LoadToken` and the
-//! constructor run only while a game state is loaded or rebuilt, so they end
+//! Opinion recomputation and reset append their status to a bounded log when
+//! the opinion they leave differs from the one they found. Token loading and
+//! construction run only while a game state is loaded or rebuilt, so they end
 //! the observation (a new epoch) instead. A relations refresh drains the log
 //! since its last one ([`drain`]); anything unobserved (disabled, poisoned, a
 //! writer running, an overflowed log, a new epoch) makes it read every status.
@@ -24,7 +24,7 @@ use std::{
 /// sweep changes at most every existing pair once a day.
 const LOG: usize = 1 << 18;
 static LOG_SLOTS: [AtomicUsize; LOG] = [const { AtomicUsize::new(0) }; LOG];
-/// Each mark's owning diplomacy (`CRelationStatus+0x1F0`), in the slot of its
+/// Each mark's owning diplomacy, in the slot of its
 /// status: relations are read one owner slice per hour, so a mark waits for
 /// its owner's slice.
 static LOG_OWNERS: [AtomicUsize; LOG] = [const { AtomicUsize::new(0) }; LOG];
@@ -46,7 +46,7 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 static POISONED: AtomicBool = AtomicBool::new(false);
 pub static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
 static ORIGINAL: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
-/// Calls per site, except `RecomputeOpinion`: it runs over every existing
+/// Calls per site, except opinion recomputation: it runs over every existing
 /// pair each day, so only its changes are counted (as marks).
 static EVENTS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 /// Why the hooks are not installed, when they are not.
@@ -363,8 +363,7 @@ fn original(site: usize) -> usize {
     ORIGINAL[site].load(Ordering::Acquire)
 }
 
-// Signatures from the pinned decompiles; every argument is an integer
-// register and each is passed through unchanged.
+// Every argument is an integer register and each is passed through unchanged.
 unsafe extern "system" fn recompute_opinion(status: usize) {
     let mutation = Mutation::enter(0);
     let before = opinion(status);

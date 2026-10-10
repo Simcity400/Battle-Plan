@@ -1,6 +1,6 @@
 //! Live combats and retained results, joined only by NavalResultSources.
-//! create_result@1415B2790 mints persistent results and only merges transient
-//! strikes@1415B291A..2955. Never match by province, hour or members.
+//! Persistent results are created separately; only transient strikes merge.
+//! Never match by province, hour or members.
 
 use super::{
     LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, ReplyWarnings, country_groups::HourSpan,
@@ -422,10 +422,9 @@ impl Scan {
                         .copied()
                         .collect();
                     let mut values = Quantities::default();
-                    // CreateCombatants@1415B0470 binds 0 attacker / 1 defender.
-                    // sink_writer@141961DD0 (store@14196253A) writes 0x20;
-                    // it does not remove the CFEXMember from its group;
-                    // group cleanup@141C580D0 skips terminal state 0x38.
+                    // Combatant sides are 0 attacker / 1 defender. Sinking writes state 0x20
+                    // without removing the member from its group; group cleanup skips
+                    // terminal state 0x38.
                     for member in &members {
                         values.add(member.ship == 0, member.state & 0x20 != 0);
                     }
@@ -435,7 +434,7 @@ impl Scan {
                     let detail = combat_details
                         .get(&row.id)
                         .filter(|d| d.province == row.province);
-                    // 14160FF40 / 1417DA2F0 record both native country lists.
+                    // Both country lists are recorded.
                     self.countries(
                         members
                             .iter()
@@ -463,8 +462,8 @@ impl Scan {
                     .map(|_| hour)
                     .or_else(|| previous.and_then(|p| p.peak_hour));
                 if let Some(previous) = previous {
-                    // Groups can be detached@1415B2120; no cumulative roster
-                    // is promised. Keep maxima as floors, never sum samples.
+                    // Groups can be detached; no cumulative roster is promised.
+                    // Keep maxima as floors, never sum samples.
                     for (side, old) in sides.iter_mut().zip(&previous.sides) {
                         side.sunk = highest(side.sunk, old.sunk);
                         side.convoys_sunk = highest(side.convoys_sunk, old.convoys_sunk);
@@ -679,9 +678,8 @@ impl Scan {
                 side.quantities = input.members.as_ref().and_then(|members| {
                     let classification = classification.as_ref()?;
                     for member in members.iter().filter(|m| usize::from(m.side) == which) {
-                        // 140CD38C0 returns a nonzero convoy reference too.
-                        // 140CD26B0 copies sunk_by: entry+B0 is its length;
-                        // 140CD6C50 tests nonzero, not a ship-count operand.
+                        // Convoys also have nonzero references. The sunk_by vector supplies
+                        // its own length; the presence test checks nonzero, not a ship count.
                         quantities.add(
                             *classification.get(&member.member)? != 0,
                             member.presence_value != 0,
@@ -691,8 +689,8 @@ impl Scan {
                 });
                 side.sunk = side.quantities.map(|q| q.sunk);
                 side.convoys_sunk = side.quantities.map(|q| q.convoys_sunk);
-                // lists 0/1 are sides, 2 is admitted/viewer@140CD69B0.
-                // MergeCombatSide@140CD2A60 appends encounters, no leader rank.
+                // Lists 0/1 are sides, 2 is admitted/viewer.
+                // Merging sides appends encounters without a leader rank.
                 self.countries(
                     input
                         .countries
@@ -709,7 +707,7 @@ impl Scan {
                     .iter()
                     .any(|s| s.quantities.is_none() || s.countries_unknown.is_some()),
             );
-            // update_winner@140CD3B50: read the selector, never recompute it.
+            // Read the recorded winner selector, never recompute it.
             let winner = match row.winning_side {
                 1 => Some(0),
                 2 => Some(1),
@@ -779,8 +777,8 @@ impl Scan {
                 continue;
             }
             self.last_source = Some((row.id, row.game_hour));
-            // Stack-local strikes use an invalid shared reference@140BA8DB0 /
-            // 140BA8F30 / 140BA9130. It cannot identify a recorded live combat.
+            // Transient strikes use an invalid shared reference.
+            // It cannot identify a recorded live combat.
             if row.transient {
                 if row.combat_created_hour != Some(row.game_hour)
                     || self.combats.contains_key(&row.combat)
@@ -947,7 +945,7 @@ impl Scan {
                             count("Convoys", quantities.map(|q| q.convoys), false, roster),
                         ];
                         BattleSide {
-                            // Province merges may reverse alignment@140CD5840.
+                            // Province merges may reverse alignment.
                             label: if active {
                                 if which == 0 { "Attackers" } else { "Defenders" }
                             } else if which == 0 {
@@ -1146,8 +1144,8 @@ impl Scan {
                     .observed
                     .as_ref()
                     .map_or(run.sample.peak, |sample| sample.peak),
-                // ctor@1415AFEB0 ->1413CB400; increments@1415B1210 and
-                // reset@1415B2240 prove no absolute original start.
+                // The counter is incremented and reset, so it cannot establish
+                // an absolute original start.
                 "Length" if episode.kind == Kind::Combat => {
                     Some((i64::from(read) - i64::from(episode.first)) as u64)
                 }

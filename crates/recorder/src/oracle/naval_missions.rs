@@ -13,7 +13,7 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
         presence(frame, save, r)
     });
     report.limitation(
-        "140E9D0C0 saves neither the navy ledger order nor the supply hubs; the save also omits country, fleet-leader, headquarters, task-force and region-weather modifier accumulators and modifier metadata",
+        "the game saves neither the navy ledger order nor the supply hubs; the save also omits country, fleet-leader, headquarters, task-force and region-weather modifier accumulators and modifier metadata",
         "NavalMissionTaskForces.local_*, weather_*; NavalMissionCountries modifiers and hubs; NavalMissionCommanders modifiers",
     );
 }
@@ -60,6 +60,7 @@ fn task_forces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<
             Some(row.underway != 0),
             expected.underway_replenishment,
         );
+        // The game omits fuel and requested at zero.
         eq(
             r,
             &format!("{label}.fuel"),
@@ -72,7 +73,7 @@ fn task_forces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<
             row.fuel_requested,
             expected.requested.as_ref().map_or(0, |fuel| fuel.raw),
         );
-        // CNavalMission::serialize@140FA9900 writes +40 only when signed >0.
+        // The naval-mission writer emits the convoy count only when signed-positive.
         // Omission proves nonpositive, not zero; retain a named limitation
         // for the exact negative value the serializer loses.
         negative_convoys += usize::from(row.convoys < 0);
@@ -96,23 +97,23 @@ fn task_forces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<
     }
     r.compared("NavalMissionTaskForces", rows.len());
     if negative_convoys != 0 {
-        r.limitation("140FA9900 omits every nonpositive convoy count; its exact negative value is not represented by the save",
+        r.limitation("the game omits every nonpositive convoy count; its exact negative value is not represented by the save",
             format!("NavalMissionTaskForces.convoys: {negative_convoys} negative rows"));
     }
     if unsaved_leaders != 0 {
         r.limitation(
-            "CFleet::serialize writes leader only when +0xB0 differs from the runtime invalid reference, whose value the save does not state; a fleet without a saved leader is not compared",
+            "the fleet save writer writes leader only when its reference differs from the runtime invalid reference, whose value the save does not state; a fleet without a saved leader is not compared",
             format!("NavalMissionTaskForces.leader: {unsaved_leaders} rows"),
         );
     }
     r.limitation(
-        "the text save stores no stat-block range or raiding factor, no underway replenishment ratio pair (+0x478/+0x47C), no task-force modifier accumulator, no headquarters commander character (naval_headquarter lists each entry's own reference), no mission region range (+0xF0/+0xF8/+0xFC); only their counts or presence are compared",
+        "the text save stores no stat-block range or raiding factor, no underway replenishment ratio pair, no task-force modifier accumulator, no headquarters commander character (naval_headquarter lists each entry's own reference), no mission region range; only their counts or presence are compared",
         "NavalMissionTaskForces range_base, raiding_factor, replenishment, replenishment_limit, local_*, mission_owner (unsaved), headquarters characters, range_fleet, range_begin, range_end",
     );
     Ok(())
 }
 
-/// 140FA9240 registers fleet regions independently of the narrower accessible
+/// The game registers fleet regions independently of the narrower accessible
 /// list. The save lacks this membership as well as its order. Check reference
 /// integrity only, and state that limitation rather than invent a multiset.
 fn ledger_members(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
@@ -138,7 +139,7 @@ fn ledger_members(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
             );
         }
     }
-    r.limitation("140E9D0C0 saves neither ledger membership nor order; 140FA9240 can register regions outside the accessible list, so TaskForceMissions cannot be used as its oracle",
+    r.limitation("the game saves neither ledger membership nor order; the game can register regions outside the accessible list, so TaskForceMissions cannot be used as its oracle",
         "NavalMissionLedgers.task_forces (reference integrity only)");
     Ok(())
 }

@@ -4,10 +4,9 @@
 
 use crate::crt::{Scanned, scan_i32, scan_i64};
 
-/// `1424b0480`, the script fixed5 conversion: two `%lli` scans
-/// ([`crate::crt::scan_i64`]), the whole part and then up to five fraction
-/// digits after the first `.`, unlike save-file decimal parsing. It fails
-/// only when the first scan returns 0; a scan that returns EOF leaves its
+/// Script fixed5 conversion uses two `%lli` scans ([`crate::crt::scan_i64`]): the whole
+/// part, then up to five fraction digits after the first `.`. This differs from
+/// save-file decimal parsing. Only a no-match first scan fails; EOF leaves its initial
 /// zero.
 pub fn script_fixed5(bytes: &[u8]) -> Option<i64> {
     let bytes = crate::parser::c_string(bytes);
@@ -39,23 +38,20 @@ pub fn script_fixed5(bytes: &[u8]) -> Option<i64> {
     })
 }
 
-/// ParseTokenFixedPoint64 (1424AFF10) -> 1424B8600, the decimal fixed5
-/// reader of a value token, as the game computes it. It never fails:
+/// Decimal fixed5 conversion of a value token never fails:
 ///
-/// - The whole part is `atoll` (14254ADC4 -> 14253D1FC, base 10: leading
-///   white space, a sign, decimal digits, saturating on overflow; no digits
-///   read 0).
-/// - Every byte after the first `.` is a digit to it, `byte - '0'` as a
-///   signed char, accumulated in wrapping 64-bit arithmetic; up to four such
-///   bytes are scaled by ten until they make five places, five or more are
-///   taken as they are (`0.000001` is raw 1).
-/// - The fraction is negated when the whole part is negative, or is zero and
-///   the text starts with `-`.
-/// - A fraction whose `* 100000` wraps below `i64::MIN + 2` is 0xFFFFFFFF;
-///   any other is `fraction * 10^10 / 10^10` in wrapping signed arithmetic.
-/// - The value is `whole * 100000 + fraction`, wrapping.
+/// - The whole part accepts leading white space, a sign and decimal digits, saturating
+///   on overflow; no digits read as 0.
+/// - Every byte after the first `.` is treated as a digit by subtracting `0` as a
+///   signed char, with wrapping 64-bit accumulation. Up to four bytes are scaled to five
+///   places; five or more are taken as they are (`0.000001` is raw 1).
+/// - The fraction is negated when the whole part is negative, or is zero and the text
+///   starts with `-`.
+/// - A fraction whose multiplication by 100000 wraps below `i64::MIN + 2` becomes
+///   0xFFFFFFFF; other fractions pass through the wrapping signed scaling arithmetic.
+/// - The whole part times 100000 plus the fraction wraps.
 ///
-/// The token text ends at its first NUL, as the C string does.
+/// Token text ends at its first NUL.
 pub fn decimal_fixed5(bytes: &[u8]) -> i64 {
     let bytes = crate::parser::c_string(bytes);
     let whole = atoll(bytes);
@@ -86,18 +82,15 @@ pub fn decimal_fixed5(bytes: &[u8]) -> i64 {
     whole.wrapping_mul(100_000).wrapping_add(part)
 }
 
-/// ParseTokenInt32 (1424B0080) -> the UCRT's `atol` (parse_signed_decimal32
-/// 14254AF28 -> parse_integer32_radix 14253C770, base 10, signed): white
-/// space, a sign, decimal digits, clamped to the `i32` range; no digits give
-/// 0. The text ends at its first NUL.
+/// Signed decimal conversion accepts white space, a sign and decimal digits, clamped to
+/// the `i32` range. No digits give 0; text ends at its first NUL.
 pub fn decimal_i32(bytes: &[u8]) -> i32 {
     let bytes = crate::parser::c_string(bytes);
     atoll(bytes).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
-/// The UCRT's `atoll` (14254ADC4 -> parse_integer64_radix 14253D1FC with
-/// base 10, signed): white space, a sign, decimal digits, clamped to the
-/// `i64` range; no digits give 0.
+/// Signed decimal conversion accepts white space, a sign and decimal digits, clamped to
+/// the `i64` range. No digits give 0.
 fn atoll(bytes: &[u8]) -> i64 {
     let mut cursor = 0;
     while bytes
@@ -126,12 +119,10 @@ fn atoll(bytes: &[u8]) -> i64 {
     }
 }
 
-/// `ParseFixed5String` (1424B7050), the console and scoped-variable
-/// conversion, a different function from ParseTokenFixedPoint64's 1424B8600:
-/// the decimal whole part (`atoll`, 14254ADC4) times 100000 plus every byte
-/// after the first `.` taken as a digit without a check, padded to five
-/// places when there are fewer and left as it is when there are more. A
-/// leading `-` negates the fraction of a zero whole part.
+/// Console and scoped-variable fixed5 conversion multiplies the decimal whole part by
+/// 100000 and treats every byte after the first `.` as an unchecked digit. Fewer than
+/// five places are padded; more are kept. A leading `-` negates the fraction of a zero
+/// whole part.
 pub fn parse_fixed5_string(bytes: &[u8]) -> i64 {
     let whole = atoll(bytes);
     let after = bytes
@@ -159,26 +150,21 @@ pub fn parse_fixed5_string(bytes: &[u8]) -> i64 {
     whole.wrapping_mul(100_000).wrapping_add(part)
 }
 
-/// An integer trigger's operand as `CIntTrigger::vf4` (14138D4E0) reads its
-/// value token, after 1424AB540 has resolved a variable (keep the resolved
-/// token's quoted flag: it decides the path).
+/// An integer trigger operand after variable resolution. Keep the resolved token's
+/// quoted flag: it decides the conversion path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IntOperand {
-    /// A number token (id 0xC, [`crate::parser::number_token`]) read by
-    /// `%i` ([`crate::crt::scan_i32`], 1424B02C0 with format 142A24BE8):
-    /// base 8 after a leading `0`, base 16 after `0x`, the low 32 bits of
-    /// the 64-bit scan. Bare `010` is 8. A scan that stores nothing (EOF,
-    /// which 1424B02C0 takes as success) leaves the 0 that 14138D4E0 wrote
-    /// first (+0x60).
+    /// A number token ([`crate::parser::number_token`]) read by `%i`
+    /// ([`crate::crt::scan_i32`]): base 8 after a leading `0`, base 16 after `0x`,
+    /// storing the low 32 bits of the 64-bit scan. Bare `010` is 8. EOF stores nothing
+    /// and leaves the initial zero.
     Integer(i32),
-    /// A number token `%i` matches nothing in: 1424B02C0 returns false.
+    /// A number token for which `%i` matches nothing.
     Unreadable,
-    /// Any other token is a scoped variable (140539370 -> 140539B50). Text
-    /// made only of `-+0123456789.` (1424B77E0 with the set at 1427BED80)
-    /// is a constant through ParseFixed5String (1424B7050), in fixed5:
-    /// quoted `"010"` is 10.
+    /// A scoped-variable token containing only `-+0123456789.` becomes a fixed5
+    /// constant through [`parse_fixed5_string`]: quoted `"010"` is 10.
     Constant(i64),
-    /// Empty text: 140539B50 logs it and sets nothing.
+    /// Empty text is reported and leaves the operand unset.
     Empty,
     /// Any other text names a variable or a scope evaluated at run time.
     Scoped,
@@ -202,12 +188,9 @@ pub fn int_operand(text: &[u8], quoted: bool) -> IntOperand {
     }
 }
 
-/// format_fixed5 (1424B89F0): `trim` is its mode 2, otherwise mode 1. The
-/// whole part is printed as a 32-bit integer (FormatInt32DecimalIntoBuffer
-/// 1424B7A80 takes ECX), and the decimals are the remainder plus 100000
-/// printed with its first digit turned into `.` and cut after `precision`
-/// digits, truncating rather than rounding. Mode 1 keeps the cut; mode 2
-/// trims trailing zeros back from it and drops a bare `.`.
+/// Format the whole part as a 32-bit integer and truncate the fraction after
+/// `precision` digits. `trim` removes trailing zeros from that cut and drops a bare
+/// dot; otherwise the cut is kept.
 pub fn format_fixed5(value: i64, trim: bool, precision: u8) -> String {
     let mut text = String::new();
     let mut magnitude = value;
@@ -236,12 +219,9 @@ pub fn format_fixed5(value: i64, trim: bool, precision: u8) -> String {
     text
 }
 
-/// `Fixed5ToString` (1424B6200 -> [`format_fixed5`]): it passes `precision`
-/// on and `!precision >> 31` as the mode (NOT R8D at 1424B622B, SHR R8D, 0x1F
-/// at 1424B622E). A nonnegative precision is mode 1: exactly that many
-/// truncated digits whenever it is nonzero, and a cut past the fifth digit
-/// leaves all five. A negative one is mode 0: never cut, every trailing zero
-/// trimmed, which is mode 2 cut at the fifth digit.
+/// Format fixed5 at `precision`. A nonnegative precision keeps exactly that many
+/// truncated digits when nonzero, with all five retained for larger cuts. A negative
+/// precision retains up to five digits and trims every trailing zero.
 pub fn fixed5_to_string(value: i64, precision: i32) -> String {
     if precision < 0 {
         format_fixed5(value, true, 5)
@@ -250,9 +230,8 @@ pub fn fixed5_to_string(value: i64, precision: i32) -> String {
     }
 }
 
-/// `FormatFixed5Percent` (142259590): the value, times 100 when `times_hundred`
-/// (`R9B`), through [`fixed5_to_string`] at `precision` (`R8D`, passed on to
-/// 1424B6200), then `%`.
+/// Optionally multiply the value by 100 with wrapping arithmetic, format it through
+/// [`fixed5_to_string`] at `precision`, then append `%`.
 pub fn fixed5_percent(value: i64, precision: i32, times_hundred: bool) -> String {
     let value = if times_hundred {
         value.wrapping_mul(100)
@@ -269,7 +248,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fixed5_text_truncates_or_trims_as_the_native_formatter() {
+    fn fixed5_text_truncates_or_trims_fractional_digits() {
         assert_eq!(fixed5_to_string(12_345, 2), "0.12");
         assert_eq!(fixed5_to_string(-12_345, 2), "-0.12");
         assert_eq!(fixed5_to_string(-1, 2), "-0.00");
@@ -280,12 +259,8 @@ mod tests {
         assert_eq!(fixed5_to_string(1_234_567, -1), "12.34567");
         // Mode 1 cut past the fifth digit keeps all five.
         assert_eq!(fixed5_to_string(150_000, 9), "1.50000");
-        // -(i64::MIN) wraps to itself: `-`, (MIN / 100000) as i32, then
-        // (MIN % 100000) + 100000 = 24192 with its first digit made `.`.
-        assert_eq!(
-            fixed5_to_string(i64::MIN, -1),
-            format!("-{}.4192", (i64::MIN / 100_000) as i32)
-        );
+        // The minimum value keeps its wrapped sign and narrowed whole part.
+        assert_eq!(fixed5_to_string(i64::MIN, -1), "-702313053.4192");
     }
 
     #[test]
@@ -307,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn script_fixed5_matches_the_native_scanner() {
+    fn script_fixed5_scans_whole_and_fraction_parts() {
         assert_eq!(script_fixed5(b"0.05"), Some(5_000));
         assert_eq!(script_fixed5(b"-0.5"), Some(-50_000));
         assert_eq!(script_fixed5(b"-1.5"), Some(-150_000));
@@ -319,15 +294,15 @@ mod tests {
         // The fraction is scanned too: "5e3" reads 5.
         assert_eq!(script_fixed5(b"1.5e3"), Some(100_005));
         assert_eq!(script_fixed5(b"yes"), None);
-        // 1424B0480 fails only when sscanf returns 0; an empty token is
-        // EOF (-1), so the whole part stays 0.
+        // Only a no-match scan fails. An empty token is EOF, so the whole part stays
+        // zero.
         assert_eq!(script_fixed5(b""), Some(0));
     }
 
-    /// 1424B8600's arithmetic: no radix prefixes, no five-digit limit, and
-    /// every byte after the dot counted as a digit.
+    /// Decimal conversion has no radix prefixes or five-digit limit; every byte after
+    /// the dot counts as a digit.
     #[test]
-    fn decimal_fixed5_follows_the_native_arithmetic() {
+    fn decimal_fixed5_keeps_unscaled_long_fractions() {
         assert_eq!(decimal_fixed5(b"-0.05001"), -5_001);
         assert_eq!(decimal_fixed5(b"0.25"), 25_000);
         assert_eq!(decimal_fixed5(b".5"), 50_000);
@@ -342,20 +317,17 @@ mod tests {
         assert_eq!(decimal_fixed5(b"yes"), 0);
         assert_eq!(decimal_fixed5(b""), 0);
         assert_eq!(decimal_fixed5(b"@bonus"), 0);
-        assert_eq!(
-            decimal_fixed5(b"99999999999999999999"),
-            i64::MAX.wrapping_mul(100_000)
-        );
+        assert_eq!(decimal_fixed5(b"99999999999999999999"), -100_000);
     }
 
-    /// `%i` on a number token against ParseFixed5String on any other.
+    /// `%i` scans number tokens; other tokens use scoped-variable fixed5 conversion.
     #[test]
     fn integer_operands_take_the_token_kinds_path() {
         assert_eq!(int_operand(b"010", false), IntOperand::Integer(8));
         assert_eq!(int_operand(b"0x10", false), IntOperand::Integer(16));
         assert_eq!(int_operand(b"-7", false), IntOperand::Integer(-7));
         assert_eq!(int_operand(b"-x", false), IntOperand::Unreadable);
-        // EOF stores nothing; 14138D4E0 zeroed the operand first.
+        // EOF stores nothing; the operand starts at zero.
         assert_eq!(int_operand(b"-", false), IntOperand::Integer(0));
         assert_eq!(int_operand(b"010", true), IntOperand::Constant(1_000_000));
         assert_eq!(int_operand(b"-0.5", true), IntOperand::Constant(-50_000));
@@ -388,7 +360,7 @@ mod tests {
         assert_eq!(decimal_i32(b"-99999999999"), i32::MIN);
     }
 
-    /// `atoi` saturates at 32 bits (`14254AF28` through `14253C770`).
+    /// Decimal integer conversion saturates at 32 bits.
     #[test]
     fn atoi_saturates() {
         assert_eq!(decimal_i32(b"99999999999"), i32::MAX);
@@ -402,7 +374,7 @@ mod tests {
         assert_eq!(decimal_i32(b"px"), 0);
     }
 
-    /// `ReadFixed5`'s digit-by-digit read (`1424ABB10` -> `1424B0480`).
+    /// Script fixed5 reads retain at most five fractional digits.
     #[test]
     fn fixed5_reads_digit_by_digit() {
         for (text, value) in [

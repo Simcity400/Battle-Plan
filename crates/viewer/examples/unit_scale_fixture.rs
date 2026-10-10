@@ -274,11 +274,10 @@ fn main() -> io::Result<()> {
         .iter()
         .map(|combat| combat.attackers.len() + combat.defenders.len())
         .sum();
-    // A side's lists as 1413CC0D0 appends them for each unit in order: the
-    // logical owner (+0x38) unless an equivalent country is listed, and the
-    // roster owner (+0x50) when it is positive, not the logical owner's
-    // country and not yet listed. Equivalence is `same_country` (140BA60A0,
-    // and the list search 1406D7F90): the canonical slot, through CountryLinks.
+    // A side's lists as the game appends them for each unit in order: the
+    // logical owner unless an equivalent country is listed, and the
+    // roster owner when it is positive, not the logical owner's
+    // country and not yet listed. Equivalence uses the canonical slot through CountryLinks.
     let same = |a: u32, b: u32| {
         a == b
             || (a != 0

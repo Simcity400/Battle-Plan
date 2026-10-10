@@ -1,17 +1,14 @@
-//! `NDefines` from `common/defines`, evaluated as the game evaluates it.
+//! `NDefines` from `common/defines`, evaluated in stack load order.
 //!
-//! `LoadGameDefines` (`14073dda0`) runs every define script of the merged
-//! `common/defines` tree in one PUC Lua 5.1.1 state (`14205a590`, banner at
-//! `142b1b87e`; numbers are doubles), then its readers take
-//! `NDefines.<section>.<name>`, requiring a Lua number (`14205d560`). This
-//! runs the same scripts in the same order on vendored PUC Lua 5.1, so mod
-//! arithmetic, locals, functions and loops evaluate natively. A script error
-//! refuses the whole reader, as the game abandons the load.
+//! All scripts in the merged tree run in one Lua 5.1 state, whose numbers
+//! are doubles. Typed readers select `NDefines.<section>.<name>`. Vendored
+//! PUC Lua 5.1 evaluates mod arithmetic, locals, functions and loops. A
+//! script error refuses the reader, as the game abandons the load.
 //!
 //! The sandbox opens `base`, `string`, `table` and `math` only, removes the
-//! file loaders from `base` and bounds the instruction count. The game also
-//! opens `io`, `os`, `package` and `debug`; a script that needs them is refused
-//! rather than run with access to this machine.
+//! file loaders from `base` and bounds the instruction count. Scripts that
+//! need `io`, `os`, `package` or `debug` are refused instead of receiving
+//! access to this machine.
 
 use crate::ResolvedLayers;
 use mlua::{HookTriggers, Lua, LuaOptions, StdLib, Table, Value, VmState};
@@ -93,11 +90,10 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
     Ok(defines)
 }
 
-/// The define scripts in native load order (`1424c5170`, `1424c5ef0`): per
-/// directory, the file names ending in `lua` in byte order (case-sensitive),
-/// then each subdirectory in byte order, depth first. A name repeated across
-/// layers is one entry read from the winning layer; names that differ only in
-/// case are separate entries, as the tree keys them.
+/// Define scripts in recursive load order: each directory's names ending
+/// in `lua`, case-sensitive and in byte order, then its subdirectories in
+/// byte order, depth first. A path repeated across layers uses the winning
+/// layer; paths differing only in case remain separate tree entries.
 pub(crate) fn script_paths(layers: &ResolvedLayers) -> Vec<String> {
     load_order(
         "common/defines/",
@@ -109,9 +105,8 @@ pub(crate) fn script_paths(layers: &ResolvedLayers) -> Vec<String> {
     )
 }
 
-/// `Vfs_EnumerateRecursive@1424C7630` under `root`: the names ending in
-/// `filter`, files before the subdirectories of each directory, each level in
-/// byte order, depth first.
+/// Names under `root` ending in `filter`, with files before subdirectories
+/// and each level in byte order, depth first.
 pub fn load_order<'a>(
     root: &str,
     filter: &str,
@@ -221,10 +216,9 @@ impl Defines {
             .ok_or_else(|| invalid(format!("NDefines.{section}.{name} is not a number")))
     }
 
-    /// `NDefines.<section>.<name>` through the native integer getter
-    /// (`LuaTable_ReadInt32`, `14205b690`): CVTTSD2SI to 64 bits, whose
-    /// out-of-range result is `i64::MIN`, then the low 32 bits. A missing or
-    /// non-number value stores 0, as the getter does for a non-`LUA_TNUMBER`.
+    /// `NDefines.<section>.<name>` as a signed integer: truncate a Lua number
+    /// to 64 bits, using `i64::MIN` for out-of-range values, then take the low
+    /// 32 bits. Missing or non-number values store 0.
     pub fn int32(&self, section: &str, name: &str) -> io::Result<i32> {
         let Some(value) = number(self.value(section, name)?) else {
             return Ok(0);
@@ -258,8 +252,7 @@ impl Defines {
         }
     }
 
-    /// A table define's numbers in `lua_next` order, as the native table
-    /// loaders (`142059cf0`) walk it.
+    /// Table define numbers in Lua iteration order.
     pub fn numbers(&self, section: &str, name: &str) -> io::Result<Vec<f64>> {
         let refuse = |what: &str| invalid(format!("NDefines.{section}.{name} {what}"));
         let Value::Table(table) = self.value(section, name)? else {
@@ -273,8 +266,7 @@ impl Defines {
             .collect()
     }
 
-    /// A string-vector define's strings in `lua_next` order, as its native
-    /// loader (`14205c200`) walks the table.
+    /// String-vector define entries in Lua iteration order.
     pub fn strings(&self, section: &str, name: &str) -> io::Result<Vec<String>> {
         let refuse = |what: &str| invalid(format!("NDefines.{section}.{name} {what}"));
         let Value::Table(table) = self.value(section, name)? else {
@@ -289,7 +281,7 @@ impl Defines {
             .collect()
     }
 
-    /// A table define through the native fixed-point array loader (`142059cf0`).
+    /// A table define converted entry by entry to fixed5.
     pub fn fixed5_array(&self, section: &str, name: &str) -> io::Result<Vec<i64>> {
         self.numbers(section, name)?
             .into_iter()
@@ -319,14 +311,14 @@ fn lua_error(error: mlua::Error) -> io::Error {
     invalid(error.to_string())
 }
 
-/// Native numeric define conversion (`14205d560`): Lua number to f32, then
-/// separate MULSS, ADDSS, SUBSS and CVTTSS2SI. Rounding in f64 or with
-/// `round()` differs at half steps and large values.
+/// Numeric define conversion narrows the Lua number to f32 before separate
+/// multiply, add, subtract and truncating conversion steps. Rounding in
+/// f64 or with `round()` differs at half steps and large values.
 pub fn fixed5(value: f64) -> io::Result<i64> {
     let value = value as f32;
     let sign = if value >= 0.0 { 1.0_f32 } else { 0.0 };
     let rounded = (sign + value * 100_000.0_f32) - 0.5_f32;
-    // CVTTSS2SI would return its indefinite sentinel here.
+    // Truncating conversion would return its indefinite sentinel here.
     if !rounded.is_finite() || rounded < i64::MIN as f32 || rounded >= -(i64::MIN as f32) {
         return Err(invalid("numeric define is outside signed fixed5 range"));
     }
@@ -365,61 +357,69 @@ mod tests {
         Ok(defines)
     }
 
-    const SHIPPED: &str = r#"
-        NDefines = { NGame = { DAYS = 1 } }
-        NDefines_Graphics = { NGraphics = {
-            CUTOFF = 1500, -- trailing comment
-            NAME = "gfx/a#b.tga",
-            COLOR = {140.0/255, 131.0/255, 119.0/255, 1},
+    const SCRIPT_BASE: &str = r#"
+        NDefines = { NSession = { QUANTA = 4 } }
+        ScenarioGroups = { NVisualTest = {
+            THRESHOLD = 72, -- trailing comment
+            ASSET = "gfx/fixtures/stripe#sample.tga",
+            TINT = {3.0/8, 5.0/16, 7.0/32, 0.5},
         } }
-        for k,v in pairs( NDefines_Graphics ) do NDefines[k] = v end"#;
+        local function install_groups(groups)
+            for group_name, group_values in pairs(groups) do
+                NDefines[group_name] = group_values
+            end
+        end
+        install_groups(ScenarioGroups)"#;
 
     #[test]
     fn later_scripts_override_through_shared_tables_and_evaluate_lua() {
         let values = defines(&[
-            SHIPPED,
-            "NDefines.NGraphics.CUTOFF = 1800;",
-            "NDefines_Graphics.NGraphics.CUTOFF = 2e3",
-            "local base = NDefines.NGame.DAYS\nNDefines.NGame.HOURS = (base + 6) * 24",
-            "NDefines.NGame.LEVELS = { 0, 0.6, 1.000015, -2 }",
-            "for i = 1, 3 do NDefines.NGame.DAYS = NDefines.NGame.DAYS + i end",
+            SCRIPT_BASE,
+            "NDefines.NVisualTest.THRESHOLD = 96;",
+            "ScenarioGroups.NVisualTest.THRESHOLD = 1.25e2",
+            "local unit = NDefines.NSession.QUANTA\nNDefines.NSession.SPAN = (unit + 5) * 7",
+            "NDefines.NSession.SAMPLES = { 0.25, 0.8, 2.000015, -3.5 }",
+            "for increment = 1, 4 do NDefines.NSession.QUANTA = NDefines.NSession.QUANTA + increment end",
         ])
         .unwrap();
-        // The copy shares NGraphics, so the second alias's write is visible.
-        assert_eq!(values.number("NGraphics", "CUTOFF").unwrap(), 2000.0);
-        assert_eq!(values.number("NGame", "HOURS").unwrap(), 168.0);
-        assert_eq!(values.number("NGame", "DAYS").unwrap(), 7.0);
-        assert!(values.number("NGraphics", "NAME").is_err());
-        assert_eq!(values.int32("NGame", "HOURS").unwrap(), 168);
+        // The copy shares NVisualTest, so the second alias's write is visible.
+        assert_eq!(values.number("NVisualTest", "THRESHOLD").unwrap(), 125.0);
+        assert_eq!(values.number("NSession", "SPAN").unwrap(), 63.0);
+        assert_eq!(values.number("NSession", "QUANTA").unwrap(), 14.0);
+        assert!(values.number("NVisualTest", "ASSET").is_err());
+        assert_eq!(values.int32("NSession", "SPAN").unwrap(), 63);
         let wide =
             defines(&["NDefines = { N = { A = -2.9, B = 4294967297, C = 1e300 } }"]).unwrap();
         assert_eq!(
             ["A", "B", "C"].map(|name| wide.int32("N", name).unwrap()),
             [-2, 1, 0]
         );
-        assert_eq!(values.text("NGraphics", "NAME").unwrap(), "gfx/a#b.tga");
-        assert!(values.text("NGraphics", "CUTOFF").is_err());
         assert_eq!(
-            values.fixed5_array("NGame", "LEVELS").unwrap(),
-            [0, 60_000, 100_002, -200_000]
+            values.text("NVisualTest", "ASSET").unwrap(),
+            "gfx/fixtures/stripe#sample.tga"
         );
-        assert!(values.fixed5_array("NGraphics", "CUTOFF").is_err());
-        assert!(values.number("NGraphics", "ABSENT").is_err());
-        assert!(values.number("NAbsent", "CUTOFF").is_err());
+        assert!(values.text("NVisualTest", "THRESHOLD").is_err());
+        assert_eq!(
+            values.fixed5_array("NSession", "SAMPLES").unwrap(),
+            [25_000, 80_000, 200_002, -350_000]
+        );
+        assert!(values.fixed5_array("NVisualTest", "THRESHOLD").is_err());
+        assert!(values.number("NVisualTest", "ABSENT").is_err());
+        assert!(values.number("NAbsent", "THRESHOLD").is_err());
     }
 
     #[test]
     fn script_errors_host_access_and_runaway_loops_refuse_the_reader() {
         for source in [
-            "NDefines.NGraphics.CUTOFF = 1 + missing",
-            "NDefines.NGraphics.CUTOFF = os.time()",
-            "NDefines.NGraphics.CUTOFF = io.read()",
+            "NDefines.NVisualTest.THRESHOLD = 1 + missing",
+            "NDefines.NVisualTest.THRESHOLD = os.time()",
+            "NDefines.NVisualTest.THRESHOLD = io.read()",
             "dofile('x.lua')",
             "require('x')",
             "while true do end",
             "local s = string.rep('x', 2^30)",
         ] {
-            assert!(defines(&[SHIPPED, source]).is_err(), "{source}");
+            assert!(defines(&[SCRIPT_BASE, source]).is_err(), "{source}");
         }
     }
 
@@ -454,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed5_keeps_native_float_steps() {
+    fn fixed5_keeps_float_steps() {
         assert_eq!(fixed5(0.000005).unwrap(), 1);
         assert_eq!(fixed5(-0.000005).unwrap(), -1);
         assert_eq!(fixed5(0.0000049).unwrap(), 0);

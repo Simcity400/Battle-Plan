@@ -1,5 +1,5 @@
-//! Selected attack tooltip for 140DE95A0 -> 14129F040.
-//! Selection, hovered target and the single retained +190 route are viewer-local.
+//! Selected attack tooltip. Selection, hovered target and the single retained
+//! route stay viewer-local.
 mod arithmetic;
 #[cfg(test)]
 mod tests;
@@ -295,9 +295,9 @@ fn enemy_air(context: &Context<'_>, division: &rows::DivisionRow) -> Fact<bool> 
     let mut enemy = None;
     let mut present = false;
     for row in rows {
-        // CStrategicAir+90 can be an alias; the authenticated producer checks
-        // its canonical physical slot. Match like existing intel::scores,
-        // without demanding every unrelated country's link in this fragment.
+        // A strategic-air country reference may be an alias; its producer checks
+        // the canonical physical slot. Match existing intel::scores without
+        // demanding unrelated country links in this fragment.
         let row_owner = if row.country == 0 {
             Some(0)
         } else {
@@ -497,16 +497,16 @@ fn fallback_key(bytes: &[u8]) -> Fact<&str> {
         .map_err(|_| "template fallback localisation key is not UTF-8".to_owned())
 }
 
-/// Dashboard preserves the original-byte empty gate before this callback.
-/// BBA780 qualifies even an originally nonempty key whose C string is empty.
+/// Preserve the original-byte empty gate before this callback. An originally
+/// nonempty key whose C string is empty still receives qualification.
 fn localise_template_fallback(
     localisation: &installed_content::localisation::Localisation,
     tag: impl AsRef<[u8]>,
     bytes: &[u8],
 ) -> Fact<String> {
-    // BBA780 concatenates FULL raw bytes, then passes the candidate as a C
-    // string. UTF-8 admission follows that first-NUL cut, independently of the
-    // bare fallback. A defined empty qualified value remains authoritative.
+    // Concatenate the full raw bytes before treating the candidate as a C
+    // string. UTF-8 admission follows the first-NUL cut independently of bare
+    // fallback. A defined empty qualified value stays authoritative.
     let tag = tag.as_ref();
     let length = tag
         .len()
@@ -607,8 +607,8 @@ fn blocked(
 }
 
 /// Raw gates precede canonical and directed-war operands. In particular a
-/// positive raw alias to actual0 preserves positivity, and the direct call
-/// has no F3A00 positive receiver-ID veto.
+/// A positive raw alias to actual zero preserves positivity; this direct
+/// check has no positive receiver-ID veto.
 fn outer_gate(
     source_raw: u32,
     mut target_raw: impl FnMut() -> Fact<u32>,

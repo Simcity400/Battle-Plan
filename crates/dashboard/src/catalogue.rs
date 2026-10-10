@@ -21,8 +21,8 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-/// `CreateGuiObjectBySpriteName@142222AD0` retries the executable's fallback
-/// only when the requested name is absent. A declared but refused sprite stays refused.
+/// Retry the fallback sprite only when the requested name is absent.
+/// A declared but refused sprite stays refused.
 pub(crate) fn created_gui_sprite<'a>(
     sprites: &'a SpriteSet,
     name: &str,
@@ -37,9 +37,9 @@ pub(crate) fn created_gui_sprite<'a>(
         .map_err(|why| invalid(format!("{name} is not declared, and its fallback: {why}")))
 }
 
-/// CGameBitmapFont::text_icon_lookup@14162E880 searches the executable's
-/// GFX_ prefix before the bare authored alias. A declared but unsupported
-/// sprite is a refusal; only an absent declaration takes the second lookup.
+/// Text icons search the GFX_ prefix before the bare authored alias.
+/// A declared but unsupported sprite is a refusal; only an absent declaration
+/// takes the second lookup.
 pub(crate) fn text_icon_sprite<'a>(
     sprites: &'a SpriteSet,
     alias: &str,
@@ -51,29 +51,23 @@ pub(crate) fn text_icon_sprite<'a>(
     sprites.lookup(alias).map_err(invalid)
 }
 
-/// How the game's view of a name treats `[...]` scripted text, settled per
-/// view by tracing it to CTextBase::ProcessString (1412B9CA0), the only
-/// evaluator: a text box itself (`CInstantTextBox::text_setter` 1422B59E0)
-/// stores the string and the text layout (1422894D0) draws `[` and `]` as
-/// glyphs.
+/// How the game's view of a name treats `[...]` scripted text. A text box
+/// stores the string and draws brackets as glyphs; a scripted view evaluates
+/// them before passing the text to the box.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
-    /// The name reaches its text box through the plain localiser (142230F20)
-    /// only: brackets are glyphs. Party names (14118F860), character names
-    /// (140FB5FD0, 14128CDE0), ideology names (140616BC0), technology names
-    /// (140EC9B40 -> 140BBAA50), faction names (140D77360), trait names in
-    /// trait lists (1416B51C0, 1416B40A0), idea slot names (140FBD700),
-    /// character seat names (141D09EF0) and idea category names (1406708A0).
+    /// The name reaches its text box through the plain localiser only:
+    /// brackets are glyphs. Used for party, character, ideology, technology
+    /// and faction names, trait lists, idea slots, character seats and idea
+    /// categories.
     Plain,
-    /// The view runs 1412B9CA0 in a country's event scope. Idea names
-    /// (140FBCF90 -> 1410CF560), idea descriptions (140FBAE40), focus names
-    /// and descriptions (1402D2250, 1402D21E0), the idea tooltip's modifier
-    /// lines with their postfixes and custom tooltips (140FBC770 -> 14054E520
-    /// -> 1410CF560) and every name in the stability breakdown (1406EBBE0 ->
-    /// 1410CF390). With the country ([`localised_in`]) the brackets are
-    /// evaluated ([`crate::scripted_text`]); without it a closed `[...]` is
-    /// refused. A `[` with no `]` after it makes 1412B9CA0 leave (1412B9E55)
-    /// before it appends the text before it, so the text is dropped.
+    /// The view evaluates text in a country's event scope. Used for idea
+    /// and focus names and descriptions, idea tooltip modifier lines and
+    /// their postfixes and custom tooltips, and stability breakdown names.
+    /// With the country ([`localised_in`]) the brackets are evaluated
+    /// ([`crate::scripted_text`]); without it a closed `[...]` is refused.
+    /// An unclosed `[` stops evaluation before the preceding text is
+    /// appended, so that text is dropped.
     Scripted,
 }
 
@@ -82,7 +76,7 @@ pub fn localised(localisation: &Localisation, key: &str, view: View) -> Result<S
     localised_with(localisation, key, &[], view)
 }
 
-/// Saved native byte strings take the C-string path (142230F20 -> 142528F10):
+/// Saved byte strings take the C-string path:
 /// an embedded NUL ends the key before UTF-8 decoding or content lookup.
 pub fn localised_bytes(
     localisation: &Localisation,
@@ -94,9 +88,9 @@ pub fn localised_bytes(
     plain_text(&text)
 }
 
-/// `key` through the game's localiser (`installed_content::localisation`, 142230F20:
-/// its substitution, depth and 0x1800-byte buffer; a key the content lacks is
-/// copied as its own bytes), then read as `view` shows it ([`View`]) and made
+/// `key` through the game's localiser (`installed_content::localisation`), with its
+/// substitution, depth and 0x1800-byte buffer. A key the content lacks is copied
+/// as its own bytes. Then read as `view` shows it ([`View`]) and made
 /// plain text ([`plain_text`]). The error names the key and why.
 pub fn localised_with(
     localisation: &Localisation,
@@ -154,7 +148,7 @@ fn localised_with_renderer(
     render: impl FnOnce(&str) -> Result<(String, Option<&'static str>), Box<Finding>>,
 ) -> (Result<String, Box<Finding>>, Vec<Finding>) {
     let (text, fallbacks) = localisation.localise_with_fallbacks(key.as_bytes(), arguments);
-    // Native substitution recovery: 142230940 / 14223096F / 142230D7B.
+    // Keep substitution recovery findings alongside the recovered text.
     let mut findings: Vec<_> = fallbacks
         .into_iter()
         .map(|reason| Finding::new(Kind::Content, key, reason))
@@ -171,7 +165,7 @@ fn localised_with_renderer(
         .and_then(|text| {
             let (text, fallback) = render(&text)?;
             if let Some(reason) = fallback {
-                // CTextBase::ProcessString 1412B9CA0 / 1412B9E55 drops this in the game.
+                // The game drops this text during scripted evaluation.
                 findings.push(Finding::new(
                     Kind::Content,
                     key,
@@ -829,7 +823,7 @@ pub fn texture_frame_png(
 /// Native GUI texture loading: `resources::stack_texture` (the resolver, its
 /// 16 MiB `load_file` limit, the client decode state and the cube-map refusal),
 /// then RGBA8. Sprite artwork, shields and resource icons all use this path;
-/// decoded edges are bounded only by the native decoder's cited device limit.
+/// decoded edges are bounded only by the decoder's device limit.
 pub(crate) fn gui_texture(
     layers: &ResolvedLayers,
     name: &[u8],
@@ -891,8 +885,8 @@ pub fn sprite_frame_png(
     use installed_content::gui::native::sprites::SpriteKind;
     let (plain, animated) = match &sprite.facts.kind {
         SpriteKind::Plain(plain) => (plain, None),
-        // 142342590 builds the same CSpriteType base; factory@1423426A0
-        // creates CFrameAnimatedSprite@1422F35D0, which draws it via 1422F37F0.
+        // Frame-animated sprites share the plain sprite facts and add
+        // their authored frame animation.
         SpriteKind::FrameAnimated { plain, animation } => (plain, Some(animation)),
         _ => {
             return Err(invalid(format!(
@@ -902,8 +896,8 @@ pub fn sprite_frame_png(
             )));
         }
     };
-    // initialize_animations@14222B5F0 supplies the default effect path;
-    // draw@14222D5A0 still binds that stack-resolved program and its samplers.
+    // Animation initialization supplies the default effect path;
+    // drawing binds that stack-resolved program and its samplers.
     sprite::frame(layers, plain, animated, decode, frame, max_edge)
         .and_then(|image| png_data_url(&image))
         .map_err(|error| invalid(format!("sprite {}: {error}", sprite.name)))
@@ -912,9 +906,8 @@ pub fn sprite_frame_png(
 mod sprite;
 
 /// One frame of a plain sprite's texture, point-sampled down to `max_edge`.
-/// frame_dimensions@14222B4B0 queries the integer extent, while
-/// build_geometry@14222CB90 steps frames by the fractional pitch. Both divide
-/// the padded texture extent (pad_power_of_two@1423F8FA0).
+/// The query uses the integer extent while geometry steps frames by the
+/// fractional pitch. Both divide the padded texture extent.
 fn native_frame(
     image: &Rgba8Image,
     plain: &Plain,
@@ -1005,6 +998,8 @@ pub(crate) mod tests {
 
     #[test]
     fn gui_sprite_binding_uses_native_inheritance_and_kind_local_names() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use installed_content::gui::native;
         let gui = native::read(
             br#"guiTypes = { containerWindowType = {
@@ -1035,6 +1030,8 @@ pub(crate) mod tests {
 
     #[test]
     fn a_missing_gui_sprite_uses_the_native_fallback_but_a_refused_one_does_not() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let facts = installed_content::gui::native::sprites::read_sprites(
             br#"spriteTypes = {
             spriteType = { name = GFX_default_fallback_texture texturefile = fallback.dds }
@@ -1063,6 +1060,8 @@ pub(crate) mod tests {
 
     #[test]
     fn text_icon_sprite_selects_native_prefix_then_bare_and_keeps_named_refusal() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let facts = installed_content::gui::native::sprites::read_sprites(
             br#"spriteTypes = {
                 spriteType = { name = GFX_mod_alias texturefile = prefixed.dds }
@@ -1092,6 +1091,8 @@ pub(crate) mod tests {
 
     #[test]
     fn gui_artwork_uses_the_texture_resolver_and_client_power_of_two_setting() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (_, folder) = folder_catalogue(&[("gfx/interface/present.txt", "")]);
         let mut tga = vec![0; 18];
         tga[2] = 2;
@@ -1112,7 +1113,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert_eq!((image.width, image.height), (4, 1));
-        // pad_power_of_two@1423F8FA0 pads the FreeImage RGB format with opaque black.
+        // Power-of-two padding fills the FreeImage RGB format with opaque black.
         assert_eq!(&image.pixels[12..16], &[0, 0, 0, 255]);
     }
 
@@ -1224,10 +1225,12 @@ pub(crate) mod tests {
 
     #[test]
     fn faction_templates_share_one_cache_and_report_each_warning_once() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder) = folder_catalogue(&[
             (
                 "common/factions/templates/test.txt",
-                "bad={name=token:unported visible=yes}",
+                "bad={name=token:missing_name visible=yes}",
             ),
             (
                 "common/defines/test.lua",
@@ -1258,7 +1261,7 @@ pub(crate) mod tests {
         assert!(
             at.faction_name_by_id(5)
                 .unwrap_err()
-                .contains("token unported")
+                .contains("token missing_name")
         );
         let shared = scripted.layers.layers.faction_templates().unwrap();
         assert!(Arc::ptr_eq(&templates, &shared));
@@ -1298,8 +1301,8 @@ pub(crate) mod tests {
     }
 
     /// The shared localiser's rules, not a private engine's: `$$` is one `$`,
-    /// a nested key the content lacks writes nothing (142230940), a `]` alone
-    /// is a glyph, and the 0x1800-byte buffer (142230F20) cuts a long text.
+    /// a nested key the content lacks writes nothing, a `]` alone is a
+    /// glyph, and the 0x1800-byte buffer cuts a long text.
     #[test]
     fn text_follows_the_games_localiser() {
         let loc = fixture();
@@ -1319,9 +1322,9 @@ pub(crate) mod tests {
         );
     }
 
-    /// 1412B9CA0 is the only evaluator of `[...]`: a plain view shows the
+    /// Scripted views evaluate `[...]`: a plain view shows the
     /// brackets as glyphs; a scripted view needs a scope for a closed
-    /// expression and drops the text at an unclosed `[` (1412B9E55).
+    /// expression and drops the text at an unclosed `[`.
     #[test]
     fn brackets_follow_the_view() {
         let loc = fixture();
@@ -1343,6 +1346,8 @@ pub(crate) mod tests {
 
     #[test]
     fn plain_and_recorded_text_share_recovery_and_refusal_kinds() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder) = folder_catalogue(&[
             (
                 "localisation/mod_l_english.yml",
@@ -1484,6 +1489,8 @@ pub(crate) mod tests {
 
     #[test]
     fn catalogue_refusal_entries_keep_shared_read_warnings_uncounted() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder) =
             folder_catalogue(&[("outside_policy/synthetic.txt", "independent fixture")]);
         let reads = catalogue.content.layers.report_uncovered_reads();
@@ -1567,6 +1574,8 @@ pub(crate) mod tests {
     }
     #[test]
     fn missing_or_unreadable_settings_only_refuse_catalogue_artwork() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::test_fixtures::{CAMPAIGN, records, source};
         use replay::{container::Replay, spool::Record};
         use std::sync::atomic::AtomicBool;

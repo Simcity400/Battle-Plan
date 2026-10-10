@@ -72,8 +72,8 @@ pub fn raise_for_countries(core: &mut [usize; 12], slots: usize) {
     }
 }
 /// Where the collector samples: at the entry of the hooked hourly tick, before
-/// the trampoline runs, so a frame labelled with +468 is the state at the end
-/// of that hour. Recorded in every session so readers know which instant it is.
+/// the trampoline runs, so a frame labelled with the entry hour is the state
+/// at the end of that hour. Recorded in every session so readers know its instant.
 pub const SAMPLE_BOUNDARY: replay::identity::SampleBoundary =
     replay::identity::SampleBoundary::EndOfHour;
 const LOSS_RUNS: usize = 64;
@@ -746,6 +746,8 @@ pub struct Shared {
     pub lexical_max: AtomicI32,
     /// The attachment's first consistent fixed-layout check.
     pub fixed_layout: OnceLock<engine::fixed_layout::Report>,
+    /// Prepared before hook publication and borrowed only by the hourly callback.
+    pub fixed_layout_buffer: UnsafeCell<Vec<u8>>,
     /// The modifier definition table's data pointer and row count at the last
     /// hour; a change means a loader registered keys, and the static
     /// ModifierDefinitions table is walked again. `u64::MAX` before the first
@@ -804,6 +806,15 @@ impl Shared {
         frequency: u64,
         sizing: &crate::country_scale::Sizing,
     ) -> std::io::Result<Self> {
+        #[cfg(test)]
+        let fixed_layout_bytes = if engine::executable_tables::is_initialized() {
+            engine::fixed_layout::longest_name()
+        } else {
+            0
+        };
+        #[cfg(not(test))]
+        let fixed_layout_bytes = engine::fixed_layout::longest_name();
+        let fixed_layout_buffer = engine::allocation::default_vec::<u8>(fixed_layout_bytes)?;
         let roster = engine::allocation::boxed(Roster::with_counts(sizing.content))?;
         let country_cache = Arc::new(Cache::try_with_capacity(sizing.country_cells)?);
         let country_cells = country_cache.capacity();
@@ -823,7 +834,8 @@ impl Shared {
         let pool_bytes = roster.allocated_bytes()
             + country_cache.allocated_bytes()
             + country_intel.allocated_bytes()
-            + raid_air_score_bytes;
+            + raid_air_score_bytes
+            + fixed_layout_buffer.capacity();
         let mut slice_fingerprints = std::array::from_fn(|_| UnsafeCell::new(None));
         for (family, cell) in slice_fingerprints.iter_mut().enumerate() {
             if !matches!(
@@ -900,6 +912,7 @@ impl Shared {
             forget_families: std::sync::atomic::AtomicU32::new(0),
             lexical_max: AtomicI32::new(-1),
             fixed_layout: OnceLock::new(),
+            fixed_layout_buffer: UnsafeCell::new(fixed_layout_buffer),
             modifier_table: [AtomicU64::new(u64::MAX), AtomicU64::new(u64::MAX)],
             division_mark: AtomicU64::new(extended::new_divisions::UNKNOWN),
             country_cache_swap: Mutex::new(CountryCacheSwap::default()),
@@ -1454,9 +1467,9 @@ pub(crate) unsafe fn synthetic_callback(
     complete
 }
 
-/// The hooked hourly boundary, CGameState::HourlyUpdate. Its entry is the
+/// The hooked hourly update boundary. Its entry is the
 /// settled end-of-hour state (every command drained, tick_busy 0, before the
-/// CGameDate increment). The game thread runs the acquisition body here on its
+/// clock increment). The game thread runs the acquisition body here on its
 /// own hot core, driving the reader pool and helping drain it; the trampoline
 /// runs only after every live read has finished, so the recorded frame is that
 /// settled end-of-hour state.
@@ -1472,7 +1485,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
         let _reads = crate::read_accounting::Capture::new();
         let memory = CountedMemory::new(unsafe { LiveMemory::new() });
         let world_generation = crate::world_lifetime::generation();
-        // Read the clock at entry: +468 still the hour just ended, the trampoline
+        // Read the clock at entry: it is still the hour just ended, the trampoline
         // has not run. The frame's identity and the settled state the body reads.
         let clock_start = qpc();
         let mut clock_capture = shared.wait_clock_preparation(&memory);
@@ -1811,8 +1824,11 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
         if let Some(clock) = entry {
             frame.fixed_layout = Some(match shared.fixed_layout.get() {
                 Some(report) => Ok(*report),
-                None => engine::fixed_layout::check(&memory, shared.base)
-                    .inspect(|report| _ = shared.fixed_layout.set(*report)),
+                None => {
+                    let buffer = unsafe { &mut *shared.fixed_layout_buffer.get() };
+                    engine::fixed_layout::check(&memory, shared.base, buffer)
+                        .inspect(|report| _ = shared.fixed_layout.set(*report))
+                }
             });
             let cadence = unsafe { &mut *shared.cadence.get() };
             let continuous = cadence.continuous(&clock);

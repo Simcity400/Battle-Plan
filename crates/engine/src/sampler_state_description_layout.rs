@@ -1,63 +1,58 @@
-//! Anonymous native sampler descriptor, distinct from D3D11_SAMPLER_DESC.
-//!
-//! Archived source: `portable_replay/native/engine_evidence/artifacts/`
-//! `func_142348d70`, `func_142348890`, `func_1423fd550`, `func_1423f7c40`,
-//! `func_1423f7f20`, `func_1424110f0`, and `func_142410ef0` decompiles.
-//! Fields retain the engine's raw integers. LOD limits become float only during
-//! lowering; MaxAnisotropy is parsed but that lowerer supplies its own value.
-//! Presentation knowledge only; native state acquisition is excluded from v1.
+//! Sampler descriptor distinct from D3D11_SAMPLER_DESC. Raw integer LOD
+//! limits become floats during lowering; authored anisotropy is parsed
+//! but the lowerer supplies its own value. Presentation metadata only.
 
-/// Descriptor byte size; FUN1423fd550 copies eight qwords into its native wrapper at +0x10.
+/// Descriptor byte size, copied as eight qwords into wrapper +0x10.
 pub const SIZE: usize = 0x40;
-/// Physical sampler slot u32; FUN142345450 reads descriptor+0 and indexes the output array with it.
+/// Physical sampler slot, u32, selecting the output array entry.
 pub const INDEX: usize = 0;
-/// MipMapLodBias f32; FUN142348890 token 0x212 reads reader+0x44 and FUN1423fd550 copies descriptor+4 bits.
+/// LOD bias, f32 bits, copied unchanged.
 pub const MIP_LOD_BIAS: usize = 0x04;
-/// MipMapMinLod i32; FUN142348890 reads reader+0x48 and FUN1423fd550 converts descriptor+8 to float.
+/// Minimum LOD, i32, converted to float during lowering.
 pub const MIN_LOD: usize = 0x08;
-/// MipMapMaxLod i32; FUN142348890 reads reader+0x4c and FUN1423fd550 converts descriptor+0xc to float.
+/// Maximum LOD, i32, converted to float during lowering.
 pub const MAX_LOD: usize = 0x0c;
-/// Authored MaxAnisotropy i32; FUN142348890 token 0x29b reads reader+0x50; FUN1423fd550 does not consume it.
+/// Authored maximum anisotropy, i32; unused by lowering.
 pub const MAX_ANISOTROPY: usize = 0x10;
-/// Native magnification filter u32; FUN142348890 scans reader+0x54 and FUN1423fd550 uses descriptor+0x14.
+/// Magnification filter, u32.
 pub const MAG_FILTER: usize = 0x14;
-/// Native minification filter u32; FUN142348890 scans reader+0x58 and FUN1423fd550 uses descriptor+0x18.
+/// Minification filter, u32.
 pub const MIN_FILTER: usize = 0x18;
-/// Native mip filter u32; FUN142348890 scans reader+0x5c and FUN1423fd550 uses descriptor+0x1c.
+/// Mip filter, u32.
 pub const MIP_FILTER: usize = 0x1c;
-/// Native U address mode u32; FUN142348890 scans reader+0x60 and FUN1423fd550 translates descriptor+0x20.
+/// U address mode, u32.
 pub const ADDRESS_U: usize = 0x20;
-/// Native V address mode u32; FUN142348890 scans reader+0x64 and FUN1423fd550 translates descriptor+0x24.
+/// V address mode, u32.
 pub const ADDRESS_V: usize = 0x24;
-/// Four f32 border color values; FUN1423fd550 copies descriptor+0x30 and +0x38 into the API descriptor.
+/// Border color, four f32 values.
 pub const BORDER_COLOR: usize = 0x30;
-/// Native none filter encoding; FUN1423f7c40 maps the none token at 14271c2a4 to zero.
+/// None filter encoding.
 pub const FILTER_NONE: u32 = 0;
-/// Native point filter encoding; FUN1423f7c40 assigns one for point.
+/// Point filter encoding.
 pub const FILTER_POINT: u32 = 1;
-/// Native linear filter/default encoding; FUN1423f7c40 assigns two and FUN142348d70 initializes all filters to it.
+/// Linear filter encoding and default.
 pub const FILTER_LINEAR: u32 = 2;
-/// Native anisotropic filter encoding; FUN1423f7c40 assigns three; FUN1424110f0 tests each filter for it.
+/// Anisotropic filter encoding.
 pub const FILTER_ANISOTROPIC: u32 = 3;
-/// Native wrap/default address encoding; FUN1423f7f20 maps the wrap token at 142b1c9f4 to zero.
+/// Wrap address encoding and default.
 pub const ADDRESS_WRAP: u32 = 0;
-/// Native mirror address encoding; FUN1423f7f20 assigns one for mirror.
+/// Mirror address encoding.
 pub const ADDRESS_MIRROR: u32 = 1;
-/// Native clamp address encoding; FUN1423f7f20 assigns two for clamp.
+/// Clamp address encoding.
 pub const ADDRESS_CLAMP: u32 = 2;
-/// Native border address encoding; FUN1423f7f20 assigns three for border.
+/// Border address encoding.
 pub const ADDRESS_BORDER: u32 = 3;
-/// Native mirror-once address encoding; FUN1423f7f20 assigns four for mirror_once.
+/// Mirror-once address encoding.
 pub const ADDRESS_MIRROR_ONCE: u32 = 4;
-/// Native filter token scanner; archived FUN1423f7c40 leaves the destination unchanged on an invalid token.
+/// Filter token scanner; invalid tokens leave the destination unchanged.
 pub const READ_FILTER_RVA: usize = 0x023f_7c40;
-/// Native address token scanner; archived FUN1423f7f20 leaves the destination unchanged on an invalid token.
+/// Address token scanner; invalid tokens leave the destination unchanged.
 pub const READ_ADDRESS_RVA: usize = 0x023f_7f20;
-/// Native sampler to D3D11 wrapper lowerer; FUN1423ef860 installs FUN1423fd550 for this backend.
+/// Sampler lowering into a D3D11 wrapper.
 pub const LOWER_D3D11_RVA: usize = 0x023f_d550;
-/// Native filter lowering; FUN1424110f0 uses any anisotropic operand, otherwise min/mag/mip linear predicates.
+/// Filter lowering selects anisotropic if any operand requests it; otherwise tests min/mag/mip linear filters.
 pub const LOWER_FILTER_RVA: usize = 0x0241_10f0;
-/// Native address lowering; FUN142410ef0 handles zero through four and falls back to wrap.
+/// Address lowering handles zero through four, falling back to wrap.
 pub const LOWER_ADDRESS_RVA: usize = 0x0241_0ef0;
-/// Selected sampler creation function pointer; FUN1423ef860 assigns FUN1423fd550 to 1430a78f8 for D3D11.
+/// Selected sampler creation function pointer for the D3D11 backend.
 pub const CREATE_FUNCTION_POINTER_RVA: usize = 0x030a_78f8;

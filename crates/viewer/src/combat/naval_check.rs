@@ -1,25 +1,21 @@
 //! The recorded naval engaged byte as a check on its derivation.
 //!
-//! `NavalCombatSideDetails.engaged` is each side's `CCombatant+0xBA` as the
-//! recording client held it: `UpdateCombatSharedVisionFlag@1413CEBE0` writes
-//! vtable `+0xA0`). The engaged index ([`crate::engaged_index`]) folds a
-//! history for that player beside the viewing perspective's, serves it
-//! whenever the viewed country is that player, and compares it with the byte
-//! ([`ByteCheck`]). It counts:
+//! NavalCombatSideDetails.engaged holds each side's byte for the recording
+//! client's own player. The engaged index ([`crate::engaged_index`]) folds a
+//! history for that player alongside the selected perspective. It serves this
+//! history when the selected country is that player, and compares it with the
+//! recorded byte ([`ByteCheck`]). It counts:
 //!
-//! - agreements and mismatches, side by side and hour by hour, naming the
-//!   first mismatches' branch, hour, combat and side (a display sample; the
-//!   counts stay exact however long the recording);
-//! - side-hours the derivation leaves ambiguous or unknown: there the byte,
-//!   and only for the recording's player, settles the flag
-//!   ([`settle_recorded`]); no other viewer takes it;
-//! - the coverage: hours folded, hours holding naval combat sides, hours with
-//!   an incomplete naval census, hours whose player the recording does not
-//!   name, unreadable hours and blocks, and sides without a recorded byte.
+//! - Agreements and mismatches per side and hour, naming the first mismatches
+//!   by branch, hour, combat and side while retaining complete counts.
+//! - Ambiguous or unknown side-hours: the recorded byte settles those flags
+//!   only for the recording player ([`settle_recorded`]).
+//! - Coverage: folded hours, hours with naval sides or incomplete censuses,
+//!   unnamed players, unreadable hours and blocks, and missing recorded bytes.
 //!
-//! LocalPlayer records the client's own playing and observer-view references
-//! each hour. The same native choice as 1413CEBE0 resolves through CountryLinks;
-//! multiplayer roster membership cannot identify this client's perspective.
+//! LocalPlayer records the client's playing and observer-view references each
+//! hour. Resolve these through CountryLinks; multiplayer roster membership
+//! cannot identify this client's perspective.
 
 use super::engaged::{self, Engaged, Side};
 use crate::map::tables::rows;
@@ -47,7 +43,7 @@ pub(crate) fn recorded_bytes(frame: &DecodedFrame) -> io::Result<BTreeMap<u64, [
 }
 
 /// For the recording's own player, an undecided naval flag takes the
-/// recorded bytes (`any_side_engaged@1413CD880` tests either side's byte for
+/// recorded bytes (either side's byte is tested for
 /// nonzero); a decided flag and every other viewer keep the derivation.
 pub(crate) fn settle_recorded(
     frame: &DecodedFrame,
@@ -70,7 +66,7 @@ pub(crate) fn settle_recorded(
 }
 
 /// An undecided flag of the recording's own player takes its combat's recorded
-/// bytes (`any_side_engaged@1413CD880` tests either side's byte for nonzero);
+/// bytes (either side's byte is tested for nonzero);
 /// a decided flag, or a combat without bytes, keeps the derivation.
 pub(crate) fn settle(flag: Engaged, bytes: Option<&[u8; 2]>) -> Engaged {
     match (flag, bytes) {

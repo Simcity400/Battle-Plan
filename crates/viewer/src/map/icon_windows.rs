@@ -1,4 +1,4 @@
-//! Persistent map-icon pools, advanced once per presented frame (CMapIconManagerImpl::update@140B2F270).
+//! Persistent map-icon pools, advanced once per presented frame.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -23,13 +23,13 @@ pub(crate) struct Retry {
 impl Retry {
     pub fn warning(&self) -> String {
         format!(
-            "Map icon dump settling: {} {} requests still pending at the native growth-round bound (140B63880/140B64F20/140B626F0)",
+            "Map icon dump settling: {} {} requests still pending at the native growth-round bound",
             self.requests, self.name
         )
     }
 }
 
-/// The allocator's remaining growth rounds, summed because 140B63880 shares
+/// The allocator's remaining growth rounds, summed because shares
 /// one worker handle across types. A frozen dump cannot introduce new demand.
 #[derive(Default)]
 pub(crate) struct DumpFrames {
@@ -331,6 +331,8 @@ mod tests {
 
     #[test]
     fn combat_handles_keep_their_high_bits_in_pool_ownership() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = fixture();
         let windows = windows(GUI);
         let context = Context {
@@ -393,6 +395,8 @@ mod tests {
 
     #[test]
     fn replacement_keeps_the_clock_and_membership_and_cannot_create_a_first_frame() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = fixture();
         let windows = windows(GUI);
         let mut context = Context {
@@ -419,6 +423,8 @@ mod tests {
 
     #[test]
     fn registry_identity_rebuilds_even_when_the_template_bytes_match() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = fixture();
         let first = windows(GUI);
         let second = windows(GUI);
@@ -440,6 +446,8 @@ mod tests {
 
     #[test]
     fn native_draws_nothing_diagnostics_keep_the_part_and_reason() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut resources = fixture();
         let mut sprite = resources.sprite(b"GFX_even").unwrap();
         sprite.texture = [0; 2];
@@ -462,6 +470,8 @@ mod tests {
 
     #[test]
     fn shared_region_linger_retains_slot_then_final_sweep_stops_requests_and_running() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use super::super::province_schedule::Schedule;
         for selected in [false, true] {
             let resources = fixture();

@@ -9,6 +9,8 @@ fn fresh() -> EventScopes {
 
 #[test]
 fn rules_use_registry_order_last_authored_value_and_fulfilled_field() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = super::super::tests::fixture();
     let content = fixture
         .catalogue
@@ -30,6 +32,8 @@ fn rules_use_registry_order_last_authored_value_and_fulfilled_field() {
 
 #[test]
 fn relation_uses_last_rule_and_explicit_target_before_trigger() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(relation("add_relation_rule_override={target=BBB trigger=SYN_TRIGGER usage_desc=SYN_DESC can_send_volunteers=yes can_create_factions=no}").unwrap(), "Relation Alpha->Beta:[no]Factions");
 }
 
@@ -80,7 +84,7 @@ fn render(body: &str, graph: EventScopes, template: Option<&Template>) -> Result
                 " TRIGGER_CAPITAL:0 \"Capital\"\n TRIGGER_IS_ON_CONTINENT:0 \"On $CONTINENT$ [This.GetTag]\"\n TRIGGER_IS_NOT_ON_CONTINENT:0 \"Off $CONTINENT$\"\n",
                 " syn_cont:0 \"Continent\"\n AAA_syn_cont:0 \"Home [This.GetTag]\"\n syn_other_cont:0 \"Other continent\"\n",
                 " TRIGGER_COUNTRY_FLAG_SET:0 \"$COUNTRY$ flag: \"\n TRIGGER_COUNTRY_FLAG_NOT_SET:0 \"$COUNTRY$ no flag: \"\n",
-                " TRIGGER_FLAG_LIST_ENTRY:0 \"$FLAG$\"\n SYN_FLAG:0 \"Flag [This.GetTag]\"\n",
+                " TRIGGER_FLAG_LIST_ENTRY:0 \"flag($FLAG$)\"\n SYN_SIGNAL:0 \"Signal [This.GetTag]\"\n",
                 " SYN_TIP:0 \"Tip [This.GetTag]\"\n SYN_TIP_NOT:0 \"Inverse [This.GetTag]\"\n SYN_OTHER_TIP:0 \"Other\"\n"
             ),
         ),
@@ -137,15 +141,19 @@ fn render(body: &str, graph: EventScopes, template: Option<&Template>) -> Result
 }
 
 #[test]
-fn empty_invalid_and_scope_targets_leave_native_template_precedence() {
+fn empty_invalid_and_scope_targets_leave_template_precedence() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for target in ["\"\"", "SYN_MISSING", "ROOT", "event_target:SYN_TARGET"] {
         assert_eq!(relation(&format!("add_relation_rule_override={{target={target} trigger=SYN_TRIGGER can_send_volunteers=yes}}")).unwrap(), "Relation Alpha->Other\n:[yes]Volunteers");
     }
 }
 
 #[test]
-fn reached_mod_target_capital_continent_uses_perspective_localisation() {
-    // Workshop1521695605 MAF triggers (Mittelafrika).txt:54; three effect uses.
+fn target_capital_continent_uses_perspective_localisation() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    // Targeted rule descriptions share their flag-trigger template.
     let mut scope = EventScope::of(EventObject::Country(1));
     scope.from = Link::Scope(1);
     let graph = EventScopes::new(vec![scope, EventScope::of(EventObject::Country(2))]);
@@ -159,24 +167,28 @@ fn reached_mod_target_capital_continent_uses_perspective_localisation() {
     );
     assert_eq!(
         target("is_on_continent=SYN_MISSING", fresh()).unwrap_err(),
-        "CIsOnContinentTrigger continent SYN_MISSING is absent from recorded content (140AAE420)"
+        "is_on_continent continent SYN_MISSING is absent from recorded content"
     );
 }
 
 #[test]
-fn named_target_from_flag_uses_native_scope_name_and_marked_country() {
-    // common/scripted_triggers/AST_scripted_triggers.txt:120, reached by AST.txt:646.
+fn named_target_from_flag_uses_scope_name_and_marked_country() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    // FROM selects the named country target.
     let mut scope = EventScope::of(EventObject::Country(1));
     scope.from = Link::Scope(1);
     let graph = EventScopes::new(vec![scope, EventScope::of(EventObject::Country(2))]);
     assert_eq!(
-        target("FROM={has_country_flag=SYN_FLAG}", graph).unwrap(),
-        "\u{11}YBeta\u{11}!: \u{12}BBB Beta flag: Flag BBB\n"
+        target("FROM={has_country_flag=SYN_SIGNAL}", graph).unwrap(),
+        "\u{11}YBeta\u{11}!: \u{12}BBB Beta flag: flag(Signal BBB)\n"
     );
 }
 
 #[test]
 fn mode_two_suppresses_status_but_not_resets_it_and_derives_negative_key() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(
         target(
             "custom_trigger_tooltip={tooltip=SYN_TIP always=no}",
@@ -204,7 +216,9 @@ fn mode_two_suppresses_status_but_not_resets_it_and_derives_negative_key() {
 }
 
 #[test]
-fn target_context_and_or_keep_native_three_space_indentation() {
+fn target_context_and_or_keep_three_space_indentation() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(target("BBB={custom_trigger_tooltip={tooltip=SYN_TIP always=yes} custom_trigger_tooltip={tooltip=SYN_OTHER_TIP always=yes}}", fresh()).unwrap(), "\u{11}YBeta\u{11}!:\n   Tip BBB\n   Other\n");
     assert_eq!(target("OR={custom_trigger_tooltip={tooltip=SYN_TIP always=yes} custom_trigger_tooltip={tooltip=SYN_OTHER_TIP always=no}}", fresh()).unwrap(), "Any:\n   Tip AAA\n   Other\n");
     assert_eq!(target("BBB={AND={custom_trigger_tooltip={tooltip=SYN_TIP always=yes} custom_trigger_tooltip={tooltip=SYN_OTHER_TIP always=yes}} custom_trigger_tooltip={tooltip=SYN_OTHER_TIP always=yes}}", fresh()).unwrap(), "\u{11}YBeta\u{11}!:\n   All:\n      Tip BBB\n      Other\n   Other\n");
@@ -212,16 +226,18 @@ fn target_context_and_or_keep_native_three_space_indentation() {
 
 #[test]
 fn unported_target_trigger_fields_are_named() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(
-        target("has_country_flag={flag=SYN_FLAG days=2}", fresh()).unwrap_err(),
-        "CCountryFlagTrigger field days description is not ported (141393260)"
+        target("has_country_flag={flag=SYN_SIGNAL days=2}", fresh()).unwrap_err(),
+        "has_country_flag field days description is unavailable"
     );
     assert_eq!(
-        target("has_country_flag=SYN_FLAG@ROOT", fresh()).unwrap_err(),
-        "CCountryFlagTrigger dynamic flag SYN_FLAG@ROOT description is not ported (141390890)"
+        target("has_country_flag=SYN_SIGNAL@ROOT", fresh()).unwrap_err(),
+        "has_country_flag dynamic flag SYN_SIGNAL@ROOT description is unavailable"
     );
     assert_eq!(
         target("always=yes", fresh()).unwrap_err(),
-        "target trigger always native description is not ported (CTrigger vf21/vf12 14053FCC0)"
+        "target trigger always description is unavailable"
     );
 }

@@ -55,10 +55,10 @@ pub fn check_tree(nodes: &[ModifierBreakdownNode]) -> io::Result<()> {
     Ok(())
 }
 
-/// A native source occurrence. `battle_slot == u32::MAX` is a side source;
-/// otherwise it joins NavalCombatShips by combat/side/slot. Source scope/index
-/// identify the ordered adjuster occurrence selected by 140C230A0/1415B4BB0.
-/// Order restores their traversal order after accumulator/key identity sorting.
+/// A source occurrence. `battle_slot == u32::MAX` is a side source; otherwise
+/// it joins NavalCombatShips by combat/side/slot. Source scope/index identify
+/// the selected adjuster occurrence. Order restores traversal order after
+/// accumulator/key identity sorting.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalModifierUse {
     pub combat: u64,
@@ -81,8 +81,8 @@ opaque_value!(Vec<NavalModifierUse>);
 /// One tree per stable native accumulator identity and key. A repeated
 /// source or combat adds a small use, not another tree. The node field has
 /// its own delta bit, so unchanged trees carry across hours when uses change.
-/// Nodes preserve 14054D0F0's depth -1 preorder after zero-subtree pruning;
-/// the root value survives because convoy escape reads it (1415B4BB0).
+/// Nodes preserve depth -1 preorder after zero-subtree pruning; the root
+/// value survives because convoy escape reads it.
 /// Names are native display bytes and require the recording language when
 /// shown; the viewer formats contributions through its modifier definitions.
 /// The runtime accumulator identity and tree have no text-save counterpart.

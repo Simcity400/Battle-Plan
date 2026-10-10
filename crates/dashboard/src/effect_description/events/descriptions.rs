@@ -1,10 +1,10 @@
 use super::*;
 
 impl Renderer<'_, '_, '_> {
-    // ReadScript 1403A9C20 takes the held scalar; 1403A9EC0 additionally reads
-    // mission, and 1403A92B0 additionally reads desc. No other own key is used.
-    // Activate/remove decision keys@14275DFB0/14275E0A0;
-    // activate/remove mission keys@14275DD78/14275E288.
+    // Decision effects take the held scalar; mission effects additionally read
+    // mission, and activation additionally reads desc. No other own key is used.
+    // Activate/remove decision;
+    // activate/remove mission.
     pub(in crate::effect_description) fn decision_effect(
         &mut self,
         item: &Item,
@@ -33,7 +33,7 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         };
         let mut name = self.decision_title(definition, scopes)?;
-        // 14036F940 appends the authored description to NAME, including LF.
+        // appends the authored description to NAME, including LF.
         if item.keyword_is("activate_mission_tooltip")
             && let Some(desc) = field(children(item), "desc")
                 .and_then(|field| field.value.read_string())
@@ -43,10 +43,10 @@ impl Renderer<'_, '_, '_> {
         }
         self.char_native_line(
             match key(item).to_ascii_lowercase().as_str() {
-                "activate_decision" => b"EFFECT_ACTIVATE_DECISION", // 14036F380.
-                "remove_decision" => b"EFFECT_REMOVE_DECISION",     // 140388CA0.
-                "remove_mission" => b"EFFECT_REMOVE_MISSION",       // 140389C20.
-                _ => b"EFFECT_ACTIVATES_MISSION",                   // 14036F660 / 14036F940.
+                "activate_decision" => b"EFFECT_ACTIVATE_DECISION",
+                "remove_decision" => b"EFFECT_REMOVE_DECISION",
+                "remove_mission" => b"EFFECT_REMOVE_MISSION",
+                _ => b"EFFECT_ACTIVATES_MISSION",
             },
             &[("NAME", Argument::Text(&name))],
             scopes,
@@ -54,9 +54,9 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 140372A90 reads mission at +0x58 and evaluates days at +0x78; its reader
-    // 1403AECE0 consumes exactly mission/days. Zero rounds to native-empty.
-    // ADD_DAYS_TO_MISSION/REMOVE_DAYS_TO_MISSION@14275E7D8/14275E7C0.
+    // The mission timer reads mission and evaluates days; its reader
+    // consumes exactly mission/days. Zero rounds to native-empty.
+
     pub(in crate::effect_description) fn mission_days(
         &self,
         item: &Item,
@@ -79,7 +79,7 @@ impl Renderer<'_, '_, '_> {
             .map(|operand| self.scoped_value(operand, scopes))
             .transpose()?
             .unwrap_or(0);
-        let days = crate::triggers::fixed_round(amount) as i32; // 1424D8760, shared native arithmetic.
+        let days = crate::triggers::fixed_round(amount) as i32; // Shared mission-timer arithmetic.
         if days == 0 {
             return Ok(String::new());
         }
@@ -102,9 +102,9 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 140399060 -> 140720D10: category names use their authored identifier
-    // (140716B20 +0x18), without 140721730's country/ideology ladder.
-    // EFFECT_UNLOCK_DECISION_CATEGORY@14275DE88.
+    // category names use their authored identifier
+    // without the decision title's country/ideology ladder.
+
     pub(in crate::effect_description) fn decision_category(
         &self,
         item: &Item,
@@ -127,10 +127,10 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 140399360; reader 1403ACCD0 owns only decision, show_effect_tooltip,
+    // reader owns only decision, show_effect_tooltip,
     // show_modifiers. Independent detail failures retain the native NAME line.
-    // Unlock/BOP keys@14275DC20/14275DC00; select/remove headers@14275DB68/14275DBB8.
-    // Allocator 140342280 (store 1403422CA) clears +0x78/+0x79: both flags default no.
+    // Unlock/BOP; select/remove.
+    // Both tooltip flags default to no.
     pub(in crate::effect_description) fn unlock_decision(
         &mut self,
         item: &Item,
@@ -148,7 +148,7 @@ impl Renderer<'_, '_, '_> {
             .decisions
             .ok_or_else(|| self.content_gap("decisions"))?;
         let Some(definition) = database.decision(id)? else {
-            // 140399360 still emits the wrapper when +0x118 is the null sentinel.
+            // The wrapper is emitted even for the null decision sentinel.
             return self.char_native_line(
                 b"EFFECT_UNLOCK_DECISION",
                 &[("NAME", Argument::Text("")), ("EFFECT", Argument::Text(""))],
@@ -188,7 +188,7 @@ impl Renderer<'_, '_, '_> {
                             if header == b"EFFECT_UNLOCK_DECISION_SELECT_HEADER" {
                                 match self.decision_removal_delay(definition, scopes) {
                                     Ok(days) if days > 0 => {
-                                        // 140399360 appends this after completion text.
+                                        // appends this after completion text.
                                         effects.push_str(&self.char_native_line(
                                             b"EFFECT_UNLOCK_DECISION_TIMED_HEADER",
                                             &[("DAYS", Argument::Int32(days))],
@@ -198,7 +198,7 @@ impl Renderer<'_, '_, '_> {
                                     }
                                     Ok(_) => {}
                                     Err(why) => self.refuse(
-                                        "CUnlockDecisionTooltipEffect",
+                                        "decision tooltip",
                                         format!("key unlock_decision_tooltip: {why}"),
                                     ),
                                 }
@@ -206,7 +206,7 @@ impl Renderer<'_, '_, '_> {
                         }
                     }
                     Err(why) => self.refuse(
-                        "CUnlockDecisionTooltipEffect",
+                        "decision tooltip",
                         format!("key unlock_decision_tooltip: {why}"),
                     ),
                 }
@@ -220,7 +220,7 @@ impl Renderer<'_, '_, '_> {
         {
             match self.decision_modifier_details(definition, scopes) {
                 Ok(modifiers) if !modifiers.is_empty() => {
-                    // 140399C27/140399C49 adds LF when empty or already LF-terminated.
+                    // adds LF when empty or already LF-terminated.
                     if effects.is_empty() || effects.ends_with('\n') {
                         effects.push('\n');
                     }
@@ -229,13 +229,13 @@ impl Renderer<'_, '_, '_> {
                         &[],
                         scopes,
                         true,
-                    )?); // 14275DBE0.
+                    )?);
                     effects.push('\n');
                     effects.push_str(&modifiers);
                 }
                 Ok(_) => {}
                 Err(why) => self.refuse(
-                    "CUnlockDecisionTooltipEffect",
+                    "decision tooltip",
                     format!("key unlock_decision_tooltip: {why}"),
                 ),
             }
@@ -255,7 +255,7 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 140399821/140399BC9 call raw FormatDescription@14054E050 with all
+    // call raw with all
     // categories and scale 100000. Only the final NAME/EFFECT wrapper expands.
     fn decision_modifier_details(
         &self,
@@ -279,7 +279,7 @@ impl Renderer<'_, '_, '_> {
             else {
                 continue;
             };
-            // 14039988A/1403998A2 resolves the target in the caller's scope.
+            // resolves the target in the caller's scope.
             let Some(country) = self
                 .country_target(target, scopes)?
                 .filter(|country| *country > 0)
@@ -290,21 +290,21 @@ impl Renderer<'_, '_, '_> {
                 text.push('\n');
             }
             let selected = self.fresh_country_scope(country, None)?;
-            // The shared GetNameWithFlag callback reproduces 140BA59E0:
+            // The shared marked-country formatter emits:
             // flag control, tag, space, capitalized definite country name.
             let name = self.expanded("[THIS.GetNameWithFlag]", selected)?;
-            text.push_str("\u{11}H"); // 140399962.
+            text.push_str("\u{11}H");
             text.push_str(&name);
             text.push_str("\u{11}!\n");
             let modifiers = installed_content::modifiers::targeted(fields).modifiers;
-            text.push_str(&self.modifier_description_with(&modifiers, "  ", options)?); // Prefix at 1403997CE.
+            text.push_str(&self.modifier_description_with(&modifiers, "  ", options)?);
         }
         Ok(text)
     }
 
-    // 140370080 uses 14036C6E0's target, then 1407290D0's seed and highlight
+    // Resolve the target, then use its decision seed and highlight
     // scope. It does not require an active targeted decision (unlike removal).
-    // EFFECT_ACTIVATE_TARGETED_DECISION@14275E490.
+
     pub(in crate::effect_description) fn activate_targeted_decision(
         &mut self,
         item: &Item,
@@ -346,8 +346,8 @@ impl Renderer<'_, '_, '_> {
         highlight: bool,
     ) -> Result<Scopes, String> {
         let world = self.context.world()?;
-        // STargetedDecisionTarget::seed_target 140721230 uses canonical_slot
-        // 140BA6240 for a country, otherwise its stored numeric state bits.
+        // uses canonical_slot
+        // for a country, otherwise its stored numeric state bits.
         let target = country.unwrap_or(state) as i32;
         let seed = if definition.fixed_random_seed {
             self.decision_description_seed(definition, None, owner, target)
@@ -394,9 +394,9 @@ impl Renderer<'_, '_, '_> {
         self.evaluator()?.event_scopes(at)
     }
 
-    // 140388F80 resolves its authored decision pointer (+0x148), then the
-    // fresh country/title path 1407209E0, rather than the caller title scope.
-    // EFFECT_REMOVE_DECISION@14275E0A0.
+    // resolves its authored decision pointer, then the
+    // fresh country/title path, rather than the caller title scope.
+
     pub(in crate::effect_description) fn decision_cooldown(
         &self,
         item: &Item,
@@ -421,10 +421,10 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 140318EA0 follows 14037BDC0's draw, but 14137D8C0 sets a state object.
-    // Reader 1413859E0 accepts id/desc/hours/days/random/random_hours/
+    // Event title generation draws the same seed but sets a state object.
+    // accepts id/desc/hours/days/random/random_hours
     // random_days/major/trigger_for; id, desc and trigger_for affect own text.
-    // EFFECT_COUNTRY_EVENT@142729928, EVENT@142729920.
+
     pub(in crate::effect_description) fn state_event(
         &mut self,
         item: &Item,
@@ -440,7 +440,7 @@ impl Renderer<'_, '_, '_> {
             .value
             .scalar()
             .or_else(|| field(children(item), "id").and_then(|field| field.value.scalar()))
-            .ok_or("state_event has no id (140318EA0)")?;
+            .ok_or("state_event has no id")?;
         let event = (self
             .context
             .content
@@ -459,13 +459,13 @@ impl Renderer<'_, '_, '_> {
         };
         let object = if state == 0 {
             match object {
-                // 14137D8C0 resolves the +50 character's unit leader first,
-                // then SetUnitLeader(1), SetCountry(leader+120, 0). Both
+                // resolves the character's unit leader first,
+                // then installs that leader and its country. Both
                 // operands survive, even when the caller carries a country.
                 EventObject::UnitLeader(leader) | EventObject::CountryUnitLeader { leader, .. } => {
                     let world = self.context.world()?;
                     let original = world.unit_leader(leader)?
-                        .ok_or("state_event scope leader is not recorded (1405294F0)")?;
+                        .ok_or("state_event scope leader is not recorded")?;
                     match crate::character_scope::Tables::read(world.frame())
                         .unit_leader(original.character_id)? {
                         Some(crate::character_scope::UnitLeader::Direct(row)) => {
@@ -476,22 +476,22 @@ impl Renderer<'_, '_, '_> {
                             EventObject::CountryUnitLeader { country, leader }
                         }
                         Some(crate::character_scope::UnitLeader::Referenced(_)) => {
-                            return Err("state_event current operative role's CUnitLeader+F48 character reference is not recorded by CharacterOperatives (14137D8C0/1405294F0)".into());
+                            return Err("state_event current operative role's leader character reference is not recorded by CharacterOperatives".into());
                         }
                         None => match object {
                             EventObject::CountryUnitLeader { country, .. } => EventObject::Country(country),
-                            _ => return Err("state_event bare leader with no current role leaves a native null country; that title scope is not projected (14137D8C0)".into()),
+                            _ => return Err("state_event bare leader with no current role leaves a native null country; that title scope is not projected".into()),
                         },
                     }
                 }
-                EventObject::Character(_) => return Err("state_event current character role and its resulting title scope are not projected (14137D8C0/1405294F0)".into()),
+                EventObject::Character(_) => return Err("state_event current character role and its resulting title scope are not projected".into()),
                 EventObject::Country(country) | EventObject::CountryState { country, .. } => {
                     EventObject::Country(country)
                 }
                 _ => EventObject::Country(0),
             }
         } else if let Some(target) = field(children(item), "trigger_for") {
-            // 14137D8C0 accepts these links, else FindCountryIndexByTag;
+            // These links select the scope; otherwise look up the country tag.
             // it does not evaluate scoped variables or THIS.
             let operand = target.value.read_string().unwrap_or_default();
             let lower = operand.to_ascii_lowercase();
@@ -528,7 +528,7 @@ impl Renderer<'_, '_, '_> {
             let mut title = EventScope::of(object);
             title.random_seed = random::scope_seed(seed);
             title.random_counter = random::scope_counter(seed);
-            title.random_seed_refusal = parent.random_seed_refusal; // 14137D8C0 derives lanes.
+            title.random_seed_refusal = parent.random_seed_refusal; // derives lanes.
             title.from = match parent.root {
                 Link::Itself => Link::Scope(cursor),
                 link => link,
@@ -544,7 +544,7 @@ impl Renderer<'_, '_, '_> {
             Some(key) => self.localised(key, &[], selected, true)?,
             None => String::new(),
         };
-        // LocalizeWithMovedStringArgument 1402E30F0 does not expand the wrapper.
+        // does not expand the wrapper.
         self.char_native_text(
             b"EFFECT_COUNTRY_EVENT",
             &[("EVENT", Argument::Text(&title))],
@@ -553,9 +553,9 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 1402FEFE0: ReadValue 141385570/1405345D0 stores one operand. A
+    // value parsing stores one operand. A
     // template pointer wins, then the caller country's first matching instance.
-    // MIO-name/initial-trait keys@142731CD8/142731D00.
+    // MIO-name/initial-trait.
     pub(in crate::effect_description) fn show_mio(
         &self,
         item: &Item,
@@ -606,7 +606,7 @@ impl Renderer<'_, '_, '_> {
             } else {
                 name.as_slice()
             };
-            let key = self.mio_content_name_key(name, country)?; // 140A44730 -> 141399DA0.
+            let key = self.mio_content_name_key(name, country)?;
             (self.localised(&key, &[], scopes, false)?, initial, 0)
         } else {
             (
@@ -623,14 +623,14 @@ impl Renderer<'_, '_, '_> {
         )?;
         if let Some(initial) = initial {
             let base = if initial.is_empty() {
-                [token.as_slice(), b"_initial_trait"].concat() // 140A405B0 -> 141399FE0, token 0x3FE6.
+                [token.as_slice(), b"_initial_trait"].concat()
             } else {
                 initial
             };
             let key = self.mio_content_name_key(&base, trait_country)?;
             let name = self.localised(&key, &[], scopes, false)?;
             if !name.is_empty() {
-                out.push(' '); // 1402FEFE0 adds one space, with no LF.
+                out.push(' '); // adds one space, with no LF.
                 out.push_str(&self.char_native_text(
                     b"EFFECT_SHOW_MIO_TOOLTIP_INITIAL_TRAIT_NAME",
                     &[("NAME", Argument::Text(&name))],
@@ -642,11 +642,11 @@ impl Renderer<'_, '_, '_> {
         Ok(out)
     }
 
-    // ReadValue 141385570 -> 1402F90F0 stores one scoped operand and its
-    // spelling at +0x108; ReadEffect 1405345D0 owns no MIO/name block fields.
-    // 1402FF9D0 uses 140537750's scoped object, else copies +0x108 literally.
-    // A resolved object uses the shared 140DA44C0 name/owner environment.
-    // EFFECT_MIO_UNLOCK_MIO@142731698.
+    // value parsing -> stores one scoped operand and its
+    // spelling; effect parsing owns no MIO/name block fields.
+    // A scoped object supplies the name; otherwise copy the operand literally.
+    // A resolved object uses the shared name/owner environment.
+
     pub(in crate::effect_description) fn unlock_mio(
         &self,
         item: &Item,
@@ -681,14 +681,14 @@ impl Renderer<'_, '_, '_> {
                 return Ok(tagged);
             }
         }
-        Ok(base.to_vec()) // 141399DA0 -> 14146B1D0.
+        Ok(base.to_vec())
     }
 
-    // 1402FFD40 -> 1413970E0; reader thunk 140301210 -> 141398350 owns
+    // The reader owns
     // policy/show_modifiers. Country 0 takes the raw-key localisation fallback.
-    // EFFECT_MIO_UNLOCK_POLICY@142731780.
-    // Allocator 1402F9DB0 sets show_modifiers (+0xA8) yes; the zero-country
-    // fallback never emits the modifier block (1413970E0).
+
+    // sets show_modifiers yes; the zero-country
+    // fallback never emits the modifier block.
     pub(in crate::effect_description) fn unlock_mio_policy(
         &mut self,
         item: &Item,
@@ -703,7 +703,7 @@ impl Renderer<'_, '_, '_> {
         let country = if let Scope::IndustrialOrganisation(reference) = scopes.this {
             world
                 .slot(world.industrial_organisation(reference)?.owner)
-                .ok_or("CountryLinks lacks policy MIO owner (141396FF0)")?
+                .ok_or("CountryLinks lacks policy MIO owner")?
         } else {
             self.current_country(scopes)?
         };
@@ -714,12 +714,12 @@ impl Renderer<'_, '_, '_> {
                 .map_err(|why| why.to_string())?
                 .iter()
                 .find(|row| world.slot(row.country) == Some(country))
-                .ok_or("CountryCounterInputs lacks MIO policy roster (141396FF0)")?;
+                .ok_or("CountryCounterInputs lacks MIO policy roster")?;
             let policies = row
                 .mio_policies
                 .require("CountryCounterInputs.mio_policies")?
                 .as_ref()
-                .ok_or("CountryCounterInputs.mio_policies capture refused (140E487D0)")?;
+                .ok_or("CountryCounterInputs.mio_policies capture refused")?;
             if let Some(token) = world.token_of(operand)?
                 && policies.contains(&token)
             {
@@ -741,7 +741,7 @@ impl Renderer<'_, '_, '_> {
         } else {
             None
         };
-        // 1413970E0 uses the authored raw-key fallback when the stored cache
+        // uses the authored raw-key fallback when the stored cache
         // has no matching policy; it emits no modifier block on this path.
         let name = if let Some(policy) = &definition {
             let base = if policy.name.is_empty() {
@@ -749,7 +749,7 @@ impl Renderer<'_, '_, '_> {
             } else {
                 &policy.name
             };
-            let key = self.mio_content_name_key(base, country)?; // 140A3C9B0 -> 141399DA0.
+            let key = self.mio_content_name_key(base, country)?;
             self.localised(&key, &[], self.fresh_country_scope(country, None)?, true)?
         } else {
             self.localised(operand, &[], scopes, false)?
@@ -764,15 +764,15 @@ impl Renderer<'_, '_, '_> {
             && let Some(policy) = definition
         {
             let body = self.char_mio_policy_modifiers(&policy, scopes);
-            text.push_str(" ("); // 14270C624, appended after the wrapper's LF.
+            text.push_str(" ("); // appended after the wrapper's LF.
             text.push_str(&body);
-            text.push(')'); // 14270BE94; even when no modifiers are visible.
+            text.push(')'); // even when no modifiers are visible.
         }
         Ok(text)
     }
 
-    // 14071E7D0 evaluates in a fresh owner scope and narrows signed /100000;
-    // instant_decisions 143317263 changes only a positive delay to one.
+    // evaluates in a fresh owner scope and narrows signed /100000;
+    // changes only a positive delay to one.
     fn decision_removal_delay(&self, definition: &Decision, scopes: Scopes) -> Result<i32, String> {
         if definition.days_remove.is_empty() {
             return Ok(0);
@@ -791,18 +791,18 @@ impl Renderer<'_, '_, '_> {
             .complete::<tables::SimulationFeatures>()
             .map_err(|why| why.to_string())?
         else {
-            return Err("SimulationFeatures lacks instant_decisions (14071E7D0)".into());
+            return Err("SimulationFeatures lacks instant_decisions".into());
         };
         let instant = features
             .instant_decisions
             .require("SimulationFeatures.instant_decisions")?
-            .ok_or("SimulationFeatures.instant_decisions capture refused (14071E7D0)")?;
+            .ok_or("SimulationFeatures.instant_decisions capture refused")?;
         Ok(if instant != 0 { 1 } else { days })
     }
 
-    // ReadValue@141385570/1405345D0 stores only the option name at +0x58.
-    // 1413832F0 searches manager +0/+0x0C, then option +0x178/+0x188, by
-    // exact bytes; state events live in the other manager array (140A01920).
+    // Value parsing stores only the option name.
+    // searches manager, then option, by
+    // exact bytes; state events live in the other manager array.
     pub(in crate::effect_description) fn event_option(
         &mut self,
         item: &Item,
@@ -831,8 +831,8 @@ impl Renderer<'_, '_, '_> {
                     link => link,
                 };
                 let mut copied = caller;
-                // Copy@1405285F0/1405296C0 preserves object/seeds/PREV and both
-                // target arrays. 14138332E/1413833B1 then swap ROOT and FROM.
+                // preserves object/seeds/PREV and both
+                // target arrays. then swap ROOT and FROM.
                 copied.root = link(caller.from);
                 copied.from = link(caller.root);
                 copied.prev = link(caller.prev);
@@ -847,8 +847,8 @@ impl Renderer<'_, '_, '_> {
                 at
             };
             let selected = self.evaluator()?.event_scopes(at)?;
-            // 141527890 invokes the option's BuildDescription at indent 0 in
-            // the existing description session, then Trim@1424B7400.
+            // invokes the option's description at indent 0 in
+            // the existing description session, then trims the result.
             return Ok(trim_description(&self.group(body, selected, 0)).to_owned());
         }
         Ok(String::new())
@@ -861,8 +861,8 @@ impl Renderer<'_, '_, '_> {
                 let Some(class) = self.effect_class(item) else {
                     continue;
                 };
-                // VisitRecursively@140535120 visits self and native children;
-                // lambda@141387A00 tests the diagnostic token, not the operand.
+                // visits self and native children;
+                // tests the diagnostic token, not the operand.
                 if item
                     .keyword()
                     .and_then(|key| installed_content::effect_keys::registered(&key.folded()))
@@ -872,19 +872,19 @@ impl Renderer<'_, '_, '_> {
                 }
                 pending.push(self.effect_children(item));
                 if class.vtable == 0x1427BE590 {
-                    // CIfEffect@141386F50 also visits all attached alternatives.
+                    // also visits all attached alternatives.
                     for branch in branches {
                         pending.push(self.effect_children(branch));
                     }
                 } else if class.vtable == 0x1429A0260 {
-                    // CRandomListEffect@141386FF0 visits each embedded member
+                    // visits each embedded member
                     // group, without evaluating weights or modifier triggers.
                     for member in installed_content::effect_keys::random_list_members(item)? {
                         pending.push(installed_content::effect_keys::random_member_fields(&member));
                     }
                 }
-                // CScriptedEffect inherits 140535120: the template at +0x60
-                // is expanded only by BuildDescription@141382080, not this scan.
+                // A scripted effect inherits children; its template
+                // is expanded only by description, not this scan.
             }
         }
         Ok(false)

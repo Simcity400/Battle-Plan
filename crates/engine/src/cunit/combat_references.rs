@@ -3,7 +3,7 @@
 //! CUnit owns its CPdxArray at +1A8 (count +1B4); the existing first-combat
 //! paths establish pointer stride eight. map_combat_identity authenticates
 //! native primary/secondary vtables and the full registry reference; this
-//! helper does not broaden that class or lifetime evidence.
+//! helper does not broaden that class or lifetime contract.
 //! Fixed callbacks use prepared storage; workers grow from original headers.
 //! Capture is a field-local optional suffix, never a replacement for existing
 //! country-role, full combat side/member, naval country or province data.
@@ -42,7 +42,7 @@ impl<'a> CombatReferencesCapture<'a> {
         self.required = count as usize;
         self.written = 0;
         self.failure = None;
-        // Unit_GetActionCode@140BEF850 uses the original combat-vector count.
+        // Use the original combat-vector count for the action query.
         if let Err(reason) = self.entries.ensure(self.required) {
             self.refuse(reason);
         }

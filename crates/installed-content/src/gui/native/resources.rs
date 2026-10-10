@@ -15,21 +15,20 @@ use crate::{
     image::{dds, native},
 };
 
-/// The name `CreateGuiObjectBySpriteName@142222AD0` retries an undefined sprite with ("Failed to
-/// create gui object").
+/// The fallback name retried when the requested sprite is undefined.
 pub const FALLBACK_SPRITE: &[u8] = b"GFX_default_fallback_texture";
 
-/// `load_file@1423F2D50`'s limit: a larger file does not load.
+/// The texture loader's file-size limit; larger files do not load.
 const FILE_LIMIT: usize = 16 << 20;
 
-/// What `CreateGuiObjectBySpriteName@142222AD0` makes of a sprite name.
+/// The sprite instance selected from a name.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Lookup<'a> {
     /// The latest declaration of the name.
     Defined(&'a SpriteFacts),
     /// The name is undefined; the fallback sprite's declaration.
     Fallback(&'a SpriteFacts),
-    /// Neither is defined: "Fatal Error!", no drawable.
+    /// Neither requested nor fallback sprite is defined: no drawable.
     Nothing,
 }
 
@@ -46,22 +45,21 @@ pub struct Texture {
 }
 
 /// Why a defined sprite has no drawable texture. Every variant but [`NoTexture::Undefined`] and
-/// [`NoTexture::Device`] is the game's own outcome: `CSpriteType::draw@14222D5A0` then returns
+/// [`NoTexture::Device`] is the game's own outcome: sprite draw then returns
 /// without drawing, and every size it reports divides 0-by-0 extents. Paths are text for
 /// messages.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NoTexture {
     /// No texture name (an empty `textureFile` is never registered).
     Empty,
-    /// A name without a `.`: `texture_extension_resolver@1423F3320` returns null.
+    /// A name without a `.`: texture extension resolver returns null.
     NoExtension(Vec<u8>),
     /// None of the resolver's candidates exists in any layer.
     Missing(Vec<String>),
-    /// The file is past `load_file@1423F2D50`'s 16 MiB ("Failed to load texture larger than
-    /// MAX_TEXTURE_SIZE").
+    /// The file exceeds the texture loader's 16 MiB limit.
     TooLarge { path: String, bytes: usize },
-    /// Every decoder `DecodeTextureImage@1423F9A50` tries refuses the file
-    /// ([`native::Failure::Undecodable`]), with each step's reason.
+    /// Every texture image decoder refuses the file ([`native::Failure::Undecodable`]), with
+    /// each step's reason.
     Undecodable { path: String, reason: String },
     /// What the game draws from the file is not determined by it
     /// ([`native::Failure::Undefined`]: uninitialised or out-of-bounds memory): a consumer must
@@ -92,14 +90,14 @@ impl std::fmt::Display for NoTexture {
             Self::Empty => f.write_str("names no texture"),
             Self::NoExtension(name) => write!(
                 f,
-                "names texture {:?}, which has no extension, so \
-                 texture_extension_resolver@1423F3320 resolves nothing",
+                "names texture {:?}, which has no extension, so the texture extension resolver \
+                 resolves nothing",
                 String::from_utf8_lossy(name)
             ),
             Self::Missing(tried) => write!(f, "names a texture no layer holds (tried {tried:?})"),
             Self::TooLarge { path, bytes } => write!(
                 f,
-                "texture {path} is {bytes} bytes, past load_file@1423F2D50's 16 MiB, so it does \
+                "texture {path} is {bytes} bytes, past texture file loader's 16 MiB, so it does \
                  not load"
             ),
             Self::Undecodable { path, reason } => {
@@ -132,7 +130,7 @@ pub struct Registry {
     sprites: BTreeMap<Vec<u8>, (usize, usize)>,
     /// The registered fonts, overrides applied as read.
     pub fonts: Fonts,
-    /// The global `textcolors` table: the last block read (`143450150`); empty (every code
+    /// The global `textcolors` table: the last block read; empty (every code
     /// looks free) when no file declares one.
     pub text_colors: TextColors,
     /// The global `cursor_offset` and `selection_offset`, the last of each.
@@ -183,14 +181,14 @@ impl Registry {
         }
     }
 
-    /// `sprite_functions::lookup@140A2D0D0`: the latest declaration of `name`, byte for byte.
+    /// The latest sprite declaration of `name`, compared byte for byte.
     pub fn sprite(&self, name: &[u8]) -> Option<&SpriteFacts> {
         self.sprites
             .get(crate::parser::c_string(name))
             .map(|(file, index)| &self.files[*file].1.sprites[*index])
     }
 
-    /// `CreateGuiObjectBySpriteName@142222AD0`: the name, else the fallback sprite, else nothing.
+    /// The requested name, else the fallback sprite, else nothing.
     pub fn create(&self, name: &[u8]) -> Lookup<'_> {
         match (self.sprite(name), self.sprite(FALLBACK_SPRITE)) {
             (Some(sprite), _) => Lookup::Defined(sprite),
@@ -213,8 +211,7 @@ impl Registry {
     }
 }
 
-/// The path the virtual file system opens for a candidate, as bytes: its separators collapsed,
-/// as the shipped `interface/core.gfx`'s `gfx//interface//...` names resolve in the game.
+/// The candidate byte path opened by the virtual file system, with separators collapsed.
 fn vfs_path(candidate: &[u8]) -> Vec<u8> {
     candidate
         .split(|byte| *byte == b'/')
@@ -223,10 +220,10 @@ fn vfs_path(candidate: &[u8]) -> Vec<u8> {
         .join(&b'/')
 }
 
-/// The texture a sprite's texture name loads (`register_path@1423F17E0` through
-/// `texture_extension_resolver@1423F3320`: the first candidate that exists, then
-/// `load_file@1423F2D50` and [`native::decode_texture_image`], which is handed the name, as
-/// through `read`; `Err(io)` only for a read that fails other than by the file's absence.
+/// Load a sprite texture by trying extension candidates and taking the first existing file. The
+/// texture loader passes the authored name and client's `decode` state to
+/// [`native::decode_texture_image`]. Read each candidate's bytes through `read`; return
+/// `Err(io)` only for failures other than a missing file.
 pub fn texture(
     name: &[u8],
     read: &dyn Fn(&[u8]) -> io::Result<Vec<u8>>,
@@ -300,7 +297,7 @@ fn texture_within(
 
 /// [`texture`] for a GUI sprite or font, through the content stack by each candidate's bytes
 /// (uncovered textures unverified, as `ResolvedLayers::read_uncovered` states). A cube map is
-/// refused: `create_texture@1423FB4F0` makes it a cube texture, which a GUI draw samples through
+/// refused: texture creation makes it a cube texture, which a GUI draw samples through
 /// a two-dimensional binding.
 pub fn stack_texture(
     layers: &ResolvedLayers,
@@ -327,24 +324,25 @@ pub fn stack_texture_within(
             }
             Err(NoTexture::Undefined {
                 path: texture.path,
-                reason: "a cube-map DDS: create_texture@1423FB4F0 makes it a cube texture, which \
-                         a GUI draw samples through a two-dimensional binding"
-                    .to_owned(),
+                reason:
+                    "a cube-map DDS: texture creation makes it a cube texture, which a GUI draw \
+                 samples through a two-dimensional binding"
+                        .to_owned(),
             })
         }),
     )
 }
 
-/// `frame_dimensions@14222B4B0`: one frame's queried integer extent,
-/// `cvttss2si((1.0f / columns) * texture width)` and the same down (0 by 0 for a texture that
-/// does not load; `i32::MIN` for zero frames). `CSprite::size_getter@1422E9530` then scales it.
+/// A frame's queried integer extent: `cvttss2si((1.0f / columns) * texture width)`, and the
+/// same vertically. A texture that does not load gives 0 by 0; zero frames give `i32::MIN`. The
+/// sprite size query then scales this extent.
 pub fn frame_extent(plain: &Plain, texture: [u32; 2]) -> [i32; 2] {
     let grid = plain.grid();
     [0, 1].map(|axis| truncate_f32((1.0 / grid[axis] as f32) * texture[axis] as f32))
 }
 
-/// `build_geometry@14222CB90`'s floating frame extent before the world scale: `(1.0f /
-/// columns) * width`, and down the same way times the V scale; nothing truncated.
+/// The floating frame extent before world scaling: `(1.0f / columns) * width`, and the same
+/// vertically times the V scale; no truncation.
 pub fn frame_geometry(plain: &Plain, texture: [u32; 2]) -> [f32; 2] {
     let grid = plain.grid();
     [
@@ -371,6 +369,8 @@ mod tests {
     /// and a defined sprite without a texture is not the fallback.
     #[test]
     fn lookups_distinguish_undefined_from_textureless() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let registry = registry(&[
             (
                 "interface/a.gfx",
@@ -416,10 +416,12 @@ mod tests {
         ));
     }
 
-    /// The registry's refusals hold every registered font's with the sprites': a text colour
-    /// code `ReadBitmapFontTextColors@1422897B0` indexes past its table.
+    /// Registry refusals include every registered font as well as sprites: a text color code
+    /// causes the text color reader to index past its table.
     #[test]
     fn refusals_include_the_fonts() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let registry = registry(&[(
             "interface/fonts.gfx",
             b"bitmapfonts = { bitmapfont = { name = \"f\" path = \"gfx/fonts/f\" \
@@ -427,7 +429,7 @@ mod tests {
         )]);
         let refusals = registry.refusals();
         assert_eq!(refusals.len(), 1, "{refusals:?}");
-        assert!(refusals[0].reason.contains("1422897B0"));
+        assert!(refusals[0].reason.contains("text color reader"));
     }
 
     /// A mod sprite's texture resolves through the stack and decodes in the game's order: a
@@ -437,6 +439,8 @@ mod tests {
     /// every decoder refuses, an absent file and an oversized file are the game's own failures.
     #[test]
     fn mod_textures_decode_in_the_native_order() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let rgba = [1, 2, 3, 4, 5, 6, 7, 8];
         let png = crate::image::native::tests_support::png_rgba(2, 1, &rgba);
         let jpeg = include_bytes!("../../image/native/testdata/baseline_420.jpg").to_vec();
@@ -503,6 +507,8 @@ mod tests {
     /// a vertical strip divides the height.
     #[test]
     fn frames_have_an_integer_extent_and_a_floating_geometry() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let read = read_sprites(
             b"spriteTypes = { spriteType = { name = \"h\" noOfFrames = 3 } \
               spriteType = { name = \"v\" noOfFrames = 3 framedirectiony = yes } \

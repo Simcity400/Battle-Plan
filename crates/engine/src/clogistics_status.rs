@@ -1,57 +1,27 @@
-//! CLogisticsStatus, each country's logistics history, reached through CCountry+0xf98.
+//! Country logistics history, reached through CCountry+0xf98.
 //!
-//! Its constructor (CLogisticsStatus::CLogisticsStatus@14135aa20) builds 19
-//! CLoopHistory series whose records hold one fixed5 value per equipment
-//! archetype, at the archetype's CEquipmentType+0x538: its position in
-//! CEquipmentDatabase+0x80. Once a day CGameState::DailyUpdate@1401d4390 runs
-//! CCountry::PostDailyUpdate@1406f8a10 for every country (its
-//! country.post_daily_parallel phase), and CLogisticsStatus::PostDailyUpdate
-//! @14135ffa0 advances every series to a new record, which
-//! CLoopHistoryContainerQueue::Advance@1415050b0 zeroes, then writes two of them:
+//! Nineteen history series store one signed fixed5 value per equipment
+//! archetype, indexed by the archetype's position in the equipment database.
+//! Daily updates advance and zero every series record, then fill stock
+//! series 15 and, only for non-AI-controlled countries, balance series 16.
 //!
-//! - series 15, the stock: each archetype total of CProductionStatus+0x208;
-//! - series 16, the balance, but only when CGameState::IsCountryAIControlled
-//!   @1401e1fe0 is false for the country (the check the engine names
-//!   `naval_result_country_excluded`@1406f3120): per archetype,
-//!   `Avail − clamp(Demand + PoolDifference)`. Avail is
-//!   Logistics_GetAvailableEquipmentStockpile@14135dbc0: series 15, or for
-//!   archetypes with effective category bit 0 the country's live pool cache
-//!   (GetArchetypeTotal@14135c3f0), plus the supply system's truck and train
-//!   terms, clamped at zero. Demand is ComputeArchetypeDemandAdjustment
-//!   @14135de20 without a training list (training lines' missing equipment,
-//!   the army's reinforcement requests, garrisons, the cached air requirement,
-//!   operations, trucks and trains); PoolDifference is
-//!   GetArchetypePoolDifference@14135c650 (outgoing minus incoming pools of
-//!   owner+0x11f8's +0x758 entries). Both sums saturate at ±0x53e2d620fb40.
+//! Stock uses archetype pool totals. Balance subtracts clamped demand and
+//! outgoing-minus-incoming pool differences from available equipment.
+//! Availability uses recorded stock or the live pool cache for the selected
+//! category, adds supply truck/train adjustments and clamps at zero. Demand
+//! includes deployment shortages, reinforcements, garrisons, cached air
+//! requirements, operations, trucks and trains. The demand and pool-difference
+//! sums saturate at the game's fixed bound.
 //!
-//! Series 16 is the Logistics screen's "Stored" value (LOGISTICS_IN_STOCK,
-//! "Total amount of Equipment surplus/deficit"):
-//! CLogisticsOverviewEquipmentItem::Refresh@141d87030 shows Avail −
-//! GetAdjustedArchetypePoolDifference@14135dda0, which is the same demand
-//! (R9 zeroed at 14135ddaf) plus the same pool difference, clamped the same
-//! way. The screen recomputes it at each refresh, so while the day passes it
-//! can drift from the stored value as demand changes; the record keeps the
-//! value the day's update computed. CLogisticsStatus::RefreshCurrentStockAndBalance
-//! @1413607e0 rewrites both series in the current record, with the same
-//! AI-control check, when equipment leaves or enters the stockpile outside the
-//! daily update (stockpile deletion, send-equipment effects, market transfers
-//! the view adds after each section's archetype rows
-//! (CCountryLogisticsView::vt30_vf9@14171ea90 appends one
-//! CLogisticsOverviewTypeItem per section, grouping the archetypes of its +0x540
-//! list under GetLocalizedEquipmentCategoryName) show, in
-//! CLogisticsOverviewTypeItem::Refresh@141d882d0, the sum of those archetypes'
-//! values plus their incoming lend-lease
-//! (GetIncomingLendLeaseArchetypeQuantity@14135dc90), which is not recorded.
-//! A row's text is LOGISTICS_IN_STOCK with a suffix Logistics_SelectAmountTextKey
-//! @141d81c80 picks by whether the value lies strictly within ±1000 units
-//! (`_LOW_VALUE`, `$AMOUNT|^+=1$`, and `_HIGH_VALUE`, `$AMOUNT|^+=0$`; which
-//! global holds which suffix was not traced).
+//! The logistics view refreshes this balance as demand changes, so its
+//! current display can differ from the stored daily record. Stockpile
+//! changes outside the daily update refresh stock and balance in place,
+//! with the same AI-control gate. Category summaries additionally include
+//! incoming lend-lease; those display totals are not recorded.
 //!
-//! The reader copies the current daily record of both series only for
-//! countries the predicate calls not AI-controlled at the read: for the others
-//! the game never writes series 16, and series 15 repeats the stockpile the
-//! Stockpiles table records. The old garrison-alert reader read the same
-//! series 15 record through this object.
+//! Read current stock and balance only for countries currently outside AI
+//! control. Other countries never receive a balance write, and their stock
+//! duplicates the Stockpiles table.
 
 use crate::{
     Memory, ccountry, cequipment_database as database, cequipment_type, cgame_state, cloop_history,
@@ -62,26 +32,22 @@ use crate::{
     walk::Outcome,
 };
 
-/// CLogisticsStatus primary vtable 0x14299cc88; the constructor@14135aa20 installs it first.
+/// Logistics-status primary vtable.
 pub const VTABLE_RVA: usize = 0x0299_cc88;
-/// CLogisticsStatus series CPdxArray of `CLoopHistory*` (data, capacity +0x10, count +0x14); the
-/// constructor@14135aa20 grows it to 19 and PostDailyUpdate@14135ffa0 advances `count` series.
+/// Logistics history pointer array: capacity +0x10 and count +0x14.
+/// Construction fills 19 series; daily update advances every counted series.
 pub const SERIES: usize = 0x08;
-/// Series the constructor@14135aa20 builds (it stores 0x13 in the count); the save writer
-/// CLogisticsStatus::vf2@1413609d0 loops 0..0x13.
+/// Number of initialized and serialized logistics history series.
 pub const SERIES_COUNT: u32 = 19;
-/// CLogisticsStatus owning `CCountry*`; the constructor@14135aa20 stores its argument here and
-/// every logistics getter reads the country through it.
+/// CLogisticsStatus owning `CCountry*`.
 pub const COUNTRY: usize = 0x20;
-/// The stock series; PostDailyUpdate@14135ffa0 and RefreshCurrentStockAndBalance@1413607e0 write
-/// CProductionStatus+0x208's archetype totals into series array +0x78.
+/// The stock series.
 pub const STOCK_SERIES: u32 = 15;
-/// The balance series; PostDailyUpdate@14135ffa0 and RefreshCurrentStockAndBalance@1413607e0
-/// write `Avail − (Demand + PoolDifference)` into series array +0x80.
+/// The balance series.
 pub const BALANCE_SERIES: u32 = 16;
-/// Roll-up mode the constructor@14135aa20 gives the stock series (`series == 0x10` is false).
+/// Stock-series roll-up mode.
 pub const STOCK_ROLL_UP: i32 = 0;
-/// Roll-up mode the constructor@14135aa20 gives the balance series alone (`series == 0x10`).
+/// Balance-series roll-up mode.
 pub const BALANCE_ROLL_UP: i32 = 1;
 
 /// Bytes of the status copied: vtable, series header and owner.
@@ -185,8 +151,8 @@ pub fn walk_buffer(
     }
 }
 
-/// Live roster and archetype headers bound complete logistics storage before attach.
-/// PostDailyUpdate@14135FFA0 uses this archetype list for each eligible country.
+/// Live roster and archetype headers bound complete logistics storage
+/// before attach, for each eligible country.
 pub fn row_demand(
     memory: &impl Memory,
     base: usize,
@@ -258,7 +224,7 @@ fn walk_inner(
             return Err("logistics record size differs from the equipment archetype count");
         }
         let count = list.count as usize;
-        // PostDailyUpdate@14135FFA0 visits the full live archetype list.
+        // Visit the complete live archetype list.
         rows.ensure(
             len.checked_add(count)
                 .ok_or("logistics row count overflow")?,
@@ -721,12 +687,11 @@ pub fn walk_balance_owners(
     }
 }
 
-/// Actual operands at the two balance SetValue CALLs. PostDailyUpdate's
-/// CALL@141360194 follows available=[caller RSP+88]; Refresh's CALL@141360992
-/// follows available=[caller RSP+78]. Entry RSP includes the return address.
-/// Both pass record/actual balance/index in RCX/RDX/R8. The native available
-/// getter@14135DBC0 already includes the convoy cache and supply adjustments;
-/// no getter or cache refresh is performed by this read.
+/// Operands at the two balance-write calls. Daily update takes available
+/// from caller RSP+0x88; refresh takes it from caller RSP+0x78. Entry RSP
+/// includes the return address. Both pass record, actual balance and index
+/// in RCX/RDX/R8. Availability already includes convoy-cache and supply
+/// adjustments; this read calls no getter and refreshes no cache.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BalanceWrite {
     pub history: usize,
@@ -807,11 +772,9 @@ pub fn balance_write(
     })
 }
 
-/// Advance@141504670 zeroes the reused record via1415050B0. Clear@141504CB0
-/// zeroes existing buffers via141504D60. Only these logistics CALLs reach
-/// series16; ResetCountryAppearance's other direct clear is country+FC8.
-/// Other SetValue helpers141360400/4D0 reach series0/3/6, never16
-/// (callers14135F090/14135FE30).
+/// History advance zeroes reused records; clear zeroes existing buffers.
+/// Only these logistics call sites reach balance series 16. Appearance reset
+/// clears a different country field, and other setters reach series 0/3/6.
 pub const HISTORY_CALLS: [(usize, [u8; 16], usize); 3] = [
     (
         0x0135_ffe8,

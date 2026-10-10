@@ -2,6 +2,11 @@ use super::*;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+pub(crate) fn initialize_runtime_tables() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+}
+
 static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 mod arena;
@@ -34,6 +39,7 @@ fn unknown_constant_bytes_are_distinct_from_out_of_range_reads() {
 #[test]
 #[ignore = "requires the pinned shader compiler"]
 fn constant_reads_exclude_padding_and_include_dynamic_array_components() {
+    crate::tests::initialize_runtime_tables();
     let compile = |body: &str| {
         let source = format!(
             r#"ConstantBuffer(2,0) {{
@@ -91,6 +97,7 @@ Effect Test {{ VertexShader = V PixelShader = P }}
 
 #[test]
 fn blend_defaults_inherit_alpha_and_masks_follow_native_substring_matching() {
+    crate::tests::initialize_runtime_tables();
     let source = b"BlendState BlendState { BlendEnable = yes SourceBlend = src_alpha DestBlend = inv_src_alpha WriteMask = \"RED|BLUE\" } Effect Up { }\n";
     let mut program = installed_content::pdxshader::program::read_with(b"custom.shader", &|path| {
         Some(if path == b"custom.shader" {
@@ -116,6 +123,7 @@ fn blend_defaults_inherit_alpha_and_masks_follow_native_substring_matching() {
 
 #[test]
 fn depth_stencil_and_rasterizer_follow_native_lowering() {
+    crate::tests::initialize_runtime_tables();
     let source = b"DepthStencilState Stencil { DepthEnable = yes DepthWriteMask = depth_write_zero DepthFunction = comparison_greater_equal StencilEnable = yes StencilReadMask = 0x1F0 StencilWriteMask = 3 FrontStencilFailOp = stencil_op_zero FrontStencilDepthFailOp = stencil_op_incr FrontStencilPassOp = stencil_op_replace FrontStencilFunc = comparison_not_equal StencilRef = 5 }
 DepthStencilState Off { DepthEnable = no }
 RasterizerState Lines { FillMode = fill_wireframe CullMode = cull_front FrontCCW = yes DepthBias = -4 SlopeScaleDepthBias = 1.5 DepthBiasClamp = 0.25 Scissor = yes MultiSample = yes }
@@ -180,7 +188,7 @@ Effect Default { }
     assert_eq!(state.depth_write_enabled, Some(false));
     assert_eq!(state.depth_compare, Some(wgpu::CompareFunction::Always));
     assert_eq!(state.stencil, wgpu::StencilState::default());
-    // Reader defaults 1423F7140/1423F7180: depth LESS_EQUAL with writes, solid, back culled, CW.
+    // Reader defaults: depth LESS_EQUAL with writes, solid, back culled, CW.
     let (state, reference) = gpu::depth_stencil(
         &program.depth_stencil(default),
         &program.rasterizer(default),
@@ -212,6 +220,7 @@ Effect Default { }
 #[test]
 #[ignore = "requires installed content, a shader compiler and GPU; set BATTLE_PLAN_GAME_DIR"]
 fn compile_installed_gui_effects() {
+    crate::tests::initialize_runtime_tables();
     let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
     let root = PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("BATTLE_PLAN_GAME_DIR"));
     let compiler = Compiler::discover().unwrap();
@@ -317,7 +326,7 @@ fn compile_installed_gui_effects() {
     assert!(failures.is_empty(), "{} failed techniques", failures.len());
 }
 
-// CSpriteType::initialize_animations@14222B5F0 supplies these native define families.
+// Sprite animation selection uses these define families.
 fn is_gui_effect(name: &str) -> bool {
     name.ends_with(".shader")
         && (name.starts_with("buttonstate")
@@ -385,6 +394,7 @@ pub(crate) fn device() -> (wgpu::Device, wgpu::Queue) {
 #[test]
 #[ignore = "requires a shader compiler"]
 fn unlinkable_signatures_and_undeclared_registers_are_refused() {
+    crate::tests::initialize_runtime_tables();
     let source = r#"
 VertexStruct VS_OUT { float4 p : PDX_POSITION;
 float2 uv : TEXCOORD0;
@@ -466,6 +476,7 @@ const CLOCK_CONSTANTS: &str = "ConstantBuffer( 2, 7 ) { float4x4 Transform;\nflo
 #[test]
 #[ignore = "requires a shader compiler"]
 fn compiled_programs_answer_how_long_they_change() {
+    crate::tests::initialize_runtime_tables();
     let source = format!(
         r#"
 VertexStruct CORNER_IN {{ float3 at : POSITION;
@@ -531,12 +542,12 @@ Effect Rise {{ VertexShader = Plain PixelShader = Rise }}
     }
 }
 
-/// The game's own `buttonstate.shader`, compiled: `Over` shades for a quarter second, `Down` for
-/// a sixteenth (`saturate((Time - AnimationTime) * 4)` and `* 16`), `Up` and `Disable` not at
-/// all, with or without `MASKING`.
+/// The installed button-state effect settles after a quarter second for `Over` and a
+/// sixteenth for `Down`; `Up` and `Disable` do not change with time, with or without `MASKING`.
 #[test]
 #[ignore = "requires installed content and a shader compiler; set BATTLE_PLAN_GAME_DIR"]
 fn vanilla_button_states_settle_as_their_programs_say() {
+    crate::tests::initialize_runtime_tables();
     let root = PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("BATTLE_PLAN_GAME_DIR"));
     let program = installed_content::pdxshader::program::read_with(b"gfx/FX/buttonstate.lua", &|path| {
         std::fs::read(root.join(String::from_utf8_lossy(path).as_ref())).ok()
@@ -560,6 +571,7 @@ fn vanilla_button_states_settle_as_their_programs_say() {
 #[test]
 #[ignore = "requires a shader compiler and GPU"]
 fn executes_custom_vertex_and_pixel_code() {
+    crate::tests::initialize_runtime_tables();
     let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
     let effect = "gfx/FX/arbitrary-mod.lua";
     let source = r#"
@@ -830,6 +842,7 @@ fn render_format(
 #[test]
 #[ignore = "requires DXC and GPU"]
 fn arbitrary_map_pass_layouts_registers_and_volume_texture() {
+    crate::tests::initialize_runtime_tables();
     use wgpu::util::DeviceExt;
     let _serial = GPU_TESTS.lock().unwrap_or_else(|e| e.into_inner());
     let program = installed_content::pdxshader::program::read_with(b"arbitrary.shader", &|p| Some(if p == b"arbitrary.shader" {
@@ -849,7 +862,7 @@ MainCode P [[ float4 main(O v) : SV_TARGET { return FogVolume.SampleLevel(Fog_Sa
 Effect Map { VertexShader = V PixelShader = P }
 "#.to_vec()
     } else { Vec::new() })).unwrap();
-    // 142411AB0 declares `Type = 3d` as Texture2D; a volume is the authored code's own view.
+    // `Type = 3d` declares Texture2D; a volume is the authored code's own view.
     assert!(
         program
             .hlsl(&program.techniques[0], Stage::Pixel, &[])
@@ -940,7 +953,7 @@ Effect Map { VertexShader = V PixelShader = P }
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    // W = 1.25 wraps to the first slice's centre (1423FD550); a clamp would read the second.
+    // W = 1.25 wraps to the first slice's centre; a clamp would read the second.
     queue.write_texture(
         tex.as_image_copy(),
         &[255, 128, 64, 255, 0, 0, 0, 255],
@@ -1148,6 +1161,7 @@ Effect Map { VertexShader = V PixelShader = P }
 #[test]
 #[ignore = "run twice in separate processes with BATTLE_PLAN_CACHE_TEST_DIR and BATTLE_PLAN_EXPECT_COMPILES=1 then 0"]
 fn installed_vanilla_persistent_cache_across_processes() {
+    crate::tests::initialize_runtime_tables();
     let root = PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("BATTLE_PLAN_GAME_DIR"));
     let dir = PathBuf::from(std::env::var_os("BATTLE_PLAN_CACHE_TEST_DIR").or_else(|| std::env::var_os("HOI4_CACHE_TEST_DIR")).expect("BATTLE_PLAN_CACHE_TEST_DIR"));
     let first = std::env::var("BATTLE_PLAN_EXPECT_COMPILES").or_else(|_| std::env::var("HOI4_EXPECT_COMPILES")).unwrap() != "0";
@@ -1225,6 +1239,7 @@ fn installed_vanilla_persistent_cache_across_processes() {
 
 #[test]
 fn authored_samplers_preserve_independent_vertex_and_pixel_slots() {
+    crate::tests::initialize_runtime_tables();
     let program = installed_content::pdxshader::program::read_with(b"stages.shader", &|p| {
         Some(if p == b"stages.shader" {
             br#"VertexShader = { Samplers = { Height { Index = 2 AddressU = Wrap } } }

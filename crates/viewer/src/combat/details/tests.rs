@@ -17,7 +17,7 @@ fn naval_disengage_requires_viewing_country_on_a_primary_side() {
         );
         assert!(!out.values[key].hidden);
     }
-    // A spectator's allied/shared vision is irrelevant to 1417D4650.
+    // Allied/shared vision does not admit a spectator's retreat button.
     bind_naval_disengage(&mut out, 7, naval_disengage_state(&detail, &aliases, 999));
     assert!(out.values[key].hidden);
     assert!(out.refused().is_empty());
@@ -61,7 +61,7 @@ fn naval_disengage_uses_the_matched_sides_retreat_state() {
             assert_eq!(out.values[key].enabled, Some(retreating == 0));
         }
     }
-    // 1417D4650 returns the attacker if both primary lists match.
+    // the game returns the attacker if both primary lists match.
     detail.sides[0].summary.countries.push(56);
     detail.sides[0].retreating = 1;
     detail.sides[1].retreating = 0;
@@ -80,6 +80,8 @@ fn naval_disengage_uses_the_matched_sides_retreat_state() {
 
 #[test]
 fn combat_raster_initiative_border_rasterises_before_display_stretch() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_gui::{
         self,
         lifecycle::Tick,
@@ -94,7 +96,7 @@ fn combat_raster_initiative_border_rasterises_before_display_stretch() {
     let pixels = raster.target(MONITOR.physical);
     let mut resources = fixture();
     let sprite = resources.sprites.get_mut("GFX_even").unwrap();
-    // Synthetic frame strip and land-control placement. No game artwork.
+    // Synthetic frame strip and land-control placement.
     sprite.texture = [174, 118];
     sprite.frames = 2;
     sprite.hit = native_gui::Hit::Through;
@@ -140,7 +142,7 @@ fn combat_raster_initiative_border_rasterises_before_display_stretch() {
     assert_eq!(
         corners,
         [[4., 108.], [91., 108.], [91., 226.], [4., 226.]],
-        "14222CB90 geometry must rasterise in the native frame, before desktop stretch"
+        "control geometry must rasterise in the game frame, before desktop stretch"
     );
     assert_eq!(pixels, [2048, 1152]);
     assert_eq!(raster.screen_scale(), 1.25);
@@ -148,6 +150,8 @@ fn combat_raster_initiative_border_rasterises_before_display_stretch() {
 
 #[test]
 fn combat_raster_active_row_ellipsis_and_thin_glyphs() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_gui::{
         Resources,
         lifecycle::Tick,
@@ -332,7 +336,7 @@ fn executable_modifier_keys_must_exist() {
     .collect();
     let (main, delayed) = global_modifier_tooltip(&NoIcons, &loc, 5, None, None);
     assert_eq!(main, Ok(Some("Stacking".to_owned())));
-    // A missing top-level key shows its own bytes (142230940).
+    // A missing top-level key shows its own bytes.
     assert_eq!(delayed, Some(Ok("BM_STACKING_DESC".to_owned())));
     let (main, _) = global_modifier_tooltip(&NoIcons, &loc, 7, None, None);
     assert_eq!(main, Ok(Some("BM_DECRYPTION".to_owned())));
@@ -383,7 +387,7 @@ fn committed_strength_and_side_attack_use_distinct_native_operands() {
 
 #[test]
 fn missing_parent_keeps_recorded_row_values_and_truncates_live_defence() {
-    // Reference07, hour60828492: 169th 'Madison' Division shows365.
+    // The fractional stat product is truncated to 365.
     let row = LandCombatDivisionRow {
         side: 1,
         strength_combat_factor: 100_000,
@@ -525,6 +529,8 @@ fn committed_names_carry_the_owner_flag_on_the_side_the_native_entry_writes() {
 
 #[test]
 fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut localisation = Localisation::default();
     localisation.language = "english".into();
     let names = installed_content::division_names::parse(
@@ -556,7 +562,7 @@ fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
         Ok("144ya Strelkovaya Diviziya")
     );
     // With a null group the capture records the stored name, which
-    // 1409B5640 shows.
+    // the game shows.
     row.name_group.clear();
     row.name_custom = b"1-ya Strelkovaya".to_vec();
     assert_eq!(
@@ -650,6 +656,8 @@ fn combat_names_use_the_retained_getter_and_never_mask_cache_failures() {
 /// with its group and ordinal.
 #[test]
 fn unnamed_divisions_are_reported_by_cause_with_their_identities() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let names = installed_content::division_names::parse(
         br#"INF = { ordered = { 1 = { "First" } } unordered = { loose = { "Loose" } } }"#,
         &installed_content::key_names::KeyNames::default(),
@@ -727,7 +735,7 @@ fn unnamed_divisions_are_reported_by_cause_with_their_identities() {
 
 #[test]
 fn initiative_adds_the_reconnaissance_define_before_comparing_skills() {
-    // pairL_land_danzig.png at 60828493: the defender glows.
+    // The defender has the higher initiative score.
     assert_eq!(initiative_side([4, 5], [0, 200_000], 5), Some(1));
     // Reconnaissance can carry the lower skill past the higher one.
     assert_eq!(initiative_side([4, 5], [200_000, 0], 5), Some(0));
@@ -757,7 +765,7 @@ fn several_directions_compare_locations_or_the_source_in_the_combat_province() {
     ];
     let mut divisions: BTreeMap<_, _> = rows.iter().map(|r| ((0, r.division), r)).collect();
     let mut movement = BTreeMap::new();
-    // pairJ_land_5.png: 144ya at 9263 and 2-p Morit at 389 show the icon.
+    // Distinct attack directions show the icon.
     assert_eq!(
         several_directions(&combat, false, &divisions, &movement),
         Some(true)
@@ -930,8 +938,8 @@ fn refused(out: &Bindings, fragment: &str) -> bool {
         .any(|refusal| refusal.contains(fragment))
 }
 
-/// 1415C5F10 returns the side's country with or without a commander, and
-/// 1415C9860 binds the flag from it: without a commander the recorded
+/// the game returns the side's country with or without a commander, and
+/// the game binds the flag from it: without a commander the recorded
 /// first primary country (or province controller) replaces the earlier
 /// first-member flag; a country without artwork hides the flag.
 #[test]
@@ -979,7 +987,7 @@ fn a_side_without_a_commander_takes_its_recorded_country_flag() {
     ));
 }
 
-/// 1415C7520 adds `_winter` for positive province snow. A missing winter
+/// the game adds `_winter` for positive province snow. A missing winter
 /// sprite or a missing weather row hides the picture and names the gap,
 /// rather than keeping the earlier summer picture or assuming no snow.
 #[test]
@@ -1001,7 +1009,7 @@ fn the_terrain_picture_is_decided_once_and_hidden_on_refusal() {
     assert_eq!(picture(&out), (None, true));
     assert!(refused(
         &out,
-        "Land combat 62 terrain picture is hidden: the content lacks sprite GFX_terrain_plains_winter (1415C7520)."
+        "Land combat 62 terrain picture is hidden: the content lacks sprite GFX_terrain_plains_winter."
     ));
     // Missing weather is not zero snow, whatever the table's state.
     for (weather, state) in [

@@ -2,11 +2,11 @@
 
 use crate::{Memory, cpdx_array::Array, read};
 
-/// Primary vtable: a729 RTTI; 1414436E0 is slot 0.
+/// Primary vtable.
 pub const VTABLE_RVA: usize = 0x029a_b8c8;
-/// Raw winner country reference; 1414436E0 passes it to CState::SetOwner.
+/// Raw winner country reference used when applying state ownership.
 pub const COUNTRY: usize = 8;
-/// Ordered signed state IDs; 140E344F0 appends them, 1414436E0 consumes them.
+/// Ordered signed state IDs, appended and then consumed during settlement.
 pub const AUTOMATIC_STATES: usize = 0x148;
 
 pub fn copy(

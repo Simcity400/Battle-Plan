@@ -100,7 +100,7 @@ fn check_packet(
             }
         }
     }
-    report.limitation("CUnit::Serialize@140BF7010 does not save its +1A8/+1B4 combat vector. Order, repeats, kind and handle association are checked only within the recording; saved combat-side participants are a separate comparison and cannot certify this unit-owned vector. A matched-hour independent native witness remains required. The railway gun's saved +420/+42C combat list is a different vector",&label);
+    report.limitation("the unit save writer does not save its combat vector. Order, repeats, kind and handle association are checked only within the recording; saved combat-side participants are a separate comparison and cannot certify this unit-owned vector. A matched-hour independent native witness remains required. The railway gun's saved combat list is a different vector",&label);
     // Deliberately no report.compared: consistency is not a saved-field match.
     Ok(())
 }

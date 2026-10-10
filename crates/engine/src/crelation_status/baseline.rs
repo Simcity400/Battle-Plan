@@ -1,44 +1,18 @@
-//! Nonzero opinions kept between relations walks, per owner, so a walk whose
-//! caller observed every opinion write since an owner was last read reads only
-//! that owner's changed statuses.
+//! Nonzero opinions retained per owner between relation walks. Complete write
+//! observation allows rereading only an owner's changed statuses.
+//! Opinion recalculation is reached by modifier changes, expiry, diplomatic
+//! actions, improve relations and the daily sweep. Reset clears opinions during
+//! civil wars, annexation, transfer and country reuse. Loading and construction
+//! end observation. Matrix, vtable and target identities change only at world
+//! reset; diplomacy destruction frees statuses, and whole statuses are never
+//! copied. Unchanged owner controls therefore retain each status.
 //!
-//! Opinion writers (hoi4re, a729; the instruction-level proof is recorded in
-//! `captures/hooks/writers.md`, "Relation opinions"): of every instruction
-//! that stores to `CRelationStatus+0x300..+0x303`, directly, through a derived
-//! pointer or by a bulk copy, only four functions write a status:
-//! - `CRelationStatus::RecomputeOpinion@140D19090` (store at `140D191F5`), the
-//!   only writer at runtime besides `Reset`. Opinion-modifier add and remove
-//!   (`AddOrUpdateOpinionModifier@140D04C70`, `RemoveOpinionModifier@140D17F70`),
-//!   daily expiry (`140D10A00`), diplomatic actions (`1410EE2D0`), improve
-//!   relations (`140D159B0`) and the daily sweep (`1406DB660`, a
-//!   `CGameState::DailyUpdate` TBB task) all reach it.
-//! - `CRelationStatus::Reset@140D09D50` (stores 0 at `140D0A327`), reachable at
-//!   runtime from civil wars, annexation, state transfer and dynamic-country
-//!   reuse.
-//! - `CRelationStatus::LoadToken@140D16AE0`, loading `cached_sum`.
-//! - `CRelationStatus::constructor@140D03410`, only at `CGameState::reset`.
-//!
-//! The matrix and each status's vtable and target are written only by the
-//! constructors at `CGameState::reset` (see [`super::walk`]), statuses are
-//! freed only in `~CDiplomacyStatus`, and no whole status is ever copied. So
-//! an owner whose country, diplomacy and matrix header are unchanged keeps
-//! every status, and its opinions change only where one of those writers ran.
-//! The caller observes the first two (marking a status whose value changed)
-//! and treats the last two as the end of its observation.
-//!
-//! Relations are read once a day, one owner slice per hour
-//! (`replay::cadence::Cadence::Sliced`). Each mark therefore carries its
-//! status's owning diplomacy, `CRelationStatus+0x1F0`, which the writer's
-//! detour reads from the status it is writing. Its only writer is the status
-//! constructor (`140D0356C`, the `CDiplomacyStatus*` argument; proof in
-//! `captures/hooks/writers.md`, "Relation opinions", and
-//! `captures/p6_relations_roles/opinion_owner_0x1f0.md`), and it equals the
-//! owner's `CCountry+0xF88`, the diplomacy the walk authenticates. A mark is
-//! filed under its owner without reading memory and waits for that owner's
-//! slice; only then is it authenticated and its opinion read. Each owner is
-//! valid on its own: a lost observation, an overflowing owner or a changed
-//! owner makes owners invalid, and an invalid owner is read in full at its
-//! next slice and is valid again from then on.
+//! Relations use daily owner slices at hourly cadence. Each mark carries the
+//! status's owning diplomacy pointer, fixed at construction and equal to the
+//! owner country's diplomacy. File it under that owner without memory reads,
+//! then authenticate and read it at the owner slice. Lost observation, overflow
+//! or changed identity invalidates the affected owner; its next slice reads
+//! in full and establishes a new valid baseline.
 
 use super::{
     Array, Counters, MARK_BYTES, MARK_FIELDS, MARK_LAYOUT, OpinionRow, POINTER_LAYOUT, Resolver,
@@ -551,7 +525,7 @@ impl Baseline {
     pub(super) fn visit(&mut self, slot: u32, identity: Identity) {
         self.owner = slot;
         self.visiting = Some(identity);
-        // CDiplomacyStatus::Write@140D32BD0 visits the signed matrix count.
+        // Diplomacy serialization visits the signed matrix count.
         self.required[1] = self.required[1].max(identity.matrix.count as usize);
         if let Some(demand) = self.demand.get_mut(slot as usize)
             && self.pending[slot as usize].capacity() < identity.matrix.count as usize

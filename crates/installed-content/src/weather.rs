@@ -13,12 +13,12 @@ use crate::{
 
 const PATH: &str = "common/weather.txt";
 
-/// `weather_effects` blocks in the region flag order `14166ec50` tests:
+/// `weather_effects` blocks in region flag order:
 /// light rain, heavy rain, snow, blizzard, sandstorm.
 pub const EFFECT_KINDS: [&str; 5] = ["rain_light", "rain_heavy", "snow", "blizzard", "sandstorm"];
 
-/// One `weather_effect`: pair member 0 is `entity`, member 1 `fading_entity`
-/// (`140f0aec0`). Either may be absent.
+/// One `weather_effect`: pair member 0 is `entity`, member 1 `fading_entity`.
+/// Either may be absent.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EffectPair {
     pub entity: Vec<Particle>,
@@ -30,7 +30,7 @@ pub struct EffectPair {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EffectParent {
     pub name: String,
-    ///1423694A0: authored cull radius times the parent's maximum basis length.
+    /// Authored cull radius times the parent's maximum basis length.
     pub radius: f32,
 }
 
@@ -40,8 +40,7 @@ pub type Effects = BTreeMap<(usize, bool), Vec<EffectPair>>;
 
 type Names = BTreeMap<(usize, bool), Vec<[Option<String>; 2]>>;
 
-/// Native weather-manager interval order (140F08970, tokens 0x2F27..0x2F2A),
-/// also the static-modifier slot identifiers (140600CF0/140F04F70).
+/// Weather-manager interval order, also the static-modifier slot identifiers.
 const TEMPERATURE_MODIFIERS: [&str; 4] = [
     "weather_extreme_cold",
     "weather_very_cold",
@@ -66,9 +65,9 @@ pub struct TemperatureRanges {
     pub notes: Vec<String>,
 }
 
-// 140F08970 loads the file to EOF. Unknown settings terminate that loader;
-// the presentation reader refuses them by name, including malformed ranges,
-// instead of returning effects the native loader would never reach.
+// Load the file to EOF. Unknown settings terminate that loader; the
+// presentation reader refuses them by name, including malformed ranges,
+// instead of returning effects the loader would never reach.
 #[derive(Clone, Copy)]
 enum WeatherNode {
     File,
@@ -91,7 +90,7 @@ enum WeatherNode {
 fn parse_weather(bytes: &[u8]) -> io::Result<native::Read> {
     use WeatherNode::*;
     let mut refused = Vec::new();
-    // 140F08970 constructs the lexer in mode 0 (1424A63A0).
+    // Each file constructs the lexer in mode 0.
     let document = native::read(
         bytes,
         native::Mode::KeepMark,
@@ -103,10 +102,10 @@ fn parse_weather(bytes: &[u8]) -> io::Result<native::Read> {
                 (File, Some(b"weather_effects")) => Shape::Object(Effects),
                 (File, Some(b"terrain_modifiers")) => Shape::Object(TerrainKinds),
                 (File, Some(b"settings")) => Shape::Object(Settings),
-                // 1419FBD90 maps an unrecognized kind to slot zero.
+                // Map an unrecognized kind to slot zero.
                 (TerrainKinds, _) => Shape::Object(TerrainList),
                 (TerrainList, Some(b"terrain")) => Shape::Object(Terrain),
-                (Terrain, _) => Shape::One, // 1419FBB70: no unknown-field skip.
+                (Terrain, _) => Shape::One, // No unknown-field skip.
                 (Settings, Some(b"temperature")) => Shape::Object(Temperature),
                 (Settings, Some(b"mud")) => Shape::Object(Mud),
                 (Settings, Some(b"snowing")) => Shape::Object(Snow),
@@ -154,8 +153,8 @@ fn parse_weather(bytes: &[u8]) -> io::Result<native::Read> {
                         | b"texture_refresh_freq",
                     ),
                 ) => Shape::One,
-                // 140F0AD80 -> 140604600: raw fixed5 list; exactly two values
-                // required or the outer loader aborts. Validated below.
+                // Raw fixed5 list; exactly two values required or the outer loader
+                // aborts. Validated below.
                 (
                     Temperature,
                     Some(
@@ -185,12 +184,11 @@ fn parse_weather(bytes: &[u8]) -> io::Result<native::Read> {
                     ),
                 )
                 | (Arctic, Some(b"arctic_water_temperature" | b"arctic_water_end_temperature")) => {
-                    // 140F0AD80 -> 140604600: the lexer's tokens, value slot
-                    // (+0xC0) unchanged.
+                    // Read the lexer's tokens, leaving the value slot unchanged.
                     Shape::RawList
                 }
-                // SWeatherEffectsReader 140F0B0D0, SWeatherEffectListReader
-                // 140F0B050, SWeatherEffectEntityReader 140F0AEC0.
+                // Read effects, their pair lists and each entity through the
+                // corresponding field readers.
                 (
                     Effects,
                     Some(b"rain_light" | b"rain_heavy" | b"snow" | b"blizzard" | b"sandstorm"),
@@ -248,7 +246,7 @@ pub(crate) fn parse_effect_names(bytes: &[u8]) -> io::Result<Names> {
         .iter()
         .filter(|item| item.keyword_is("weather_effects"))
     {
-        // A repeated effects block clears all banks (140F08970).
+        // A repeated effects block clears all banks.
         out.clear();
         for list in block(&effects.value, "weather_effects")? {
             let Some(kind) = EFFECT_KINDS.iter().position(|key| list.keyword_is(key)) else {
@@ -269,8 +267,7 @@ pub(crate) fn parse_effect_names(bytes: &[u8]) -> io::Result<Names> {
                         pair[usize::from(field.keyword_is("fading_entity"))] =
                             (!name.is_empty()).then(|| name.to_owned());
                     } else if field.keyword_is("small") {
-                        // SWeatherEffectEntityReader::vf4@140F0AEC0:
-                        // read_bool_field, byte unchanged on failed scan.
+                        // A failed boolean scan leaves the byte unchanged.
                         small = field
                             .value
                             .scalar()
@@ -289,7 +286,7 @@ pub(crate) fn parse_effect_names(bytes: &[u8]) -> io::Result<Names> {
 
 fn parse_temperature_ranges(bytes: &[u8]) -> io::Result<[[i64; 2]; 4]> {
     let document = parse_weather(bytes)?;
-    // Constructor 140EFE890 zeroes +0x158..+0x190. Repeated settings/groups
+    // Construction zeroes all interval bounds. Repeated settings/groups
     // keep other slots; each encountered pair overwrites its two words.
     let mut ranges = [[0; 2]; 4];
     for settings in document
@@ -315,8 +312,8 @@ fn parse_temperature_ranges(bytes: &[u8]) -> io::Result<[[i64; 2]; 4]> {
                         TEMPERATURE_MODIFIERS[slot]
                     )));
                 };
-                // 140F0AD80 -> 140604600 starts each list entry at zero;
-                // failed ReadFixed5 leaves zero, as the native scanner does.
+                // Start each list entry at zero; failed fixed5 conversion leaves
+                // zero, as the scanner does.
                 let fixed = |value: &crate::parser::Item| {
                     value
                         .value

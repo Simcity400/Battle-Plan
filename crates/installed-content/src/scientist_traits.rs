@@ -1,7 +1,6 @@
 //! Scientist trait names and modifiers through the recorded content stack.
-//! CScientistTraitDatabase::vf6 (14016A540) reads each token once through
-//! 140168F00; repeated tokens in a file or a later file are reported and
-//! skipped. Fields use CScientistTrait::ReadToken (140A92930).
+//! Each token is read once; repeated tokens in the same or a later file
+//! are reported and skipped. Fields retain their individual reader rules.
 
 use crate::{
     ResolvedLayers,
@@ -23,9 +22,9 @@ use std::{
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScientistTrait {
     pub token: String,
-    /// +0x108; 140A92180 uses the token's text (+8) when this is empty.
+    /// Uses the token's text when this is empty.
     pub name: Option<String>,
-    /// +0x48, read by the shared CModifier reader (1406031A0).
+    /// Read by the shared modifier reader.
     pub modifiers: Modifiers,
     /// Name-only consumers do not depend on modifier projection failures.
     pub name_refusal: Option<String>,
@@ -33,7 +32,7 @@ pub struct ScientistTrait {
 }
 
 impl ScientistTrait {
-    /// 140A92180: nonempty custom name, else the definition token's text.
+    /// Nonempty custom name, else the definition token's text.
     /// The caller localizes this key without expanding it.
     pub fn display_key(&self) -> Result<&str, String> {
         if let Some(why) = &self.name_refusal {
@@ -61,8 +60,7 @@ fn key(token: &Token) -> String {
 }
 
 impl ScientistTraits {
-    /// 140495DC0 -> LookupU32PointerAt48Stride56 (14022F320): lexer-token
-    /// identity, folded when registered (1424A65A0), with first definition.
+    /// Lexer-token identity, folded when registered, with first definition.
     pub fn get(&self, token: &str) -> Result<Option<&ScientistTrait>, String> {
         let token = Token::c_str(token.as_bytes());
         if let Some(gap) = self.coverage.before_first(&key(&token)) {
@@ -103,18 +101,17 @@ fn parse(input: &[u8], names: &KeyNames, earlier: &BTreeSet<Token>) -> TraitFile
                         entries += 1;
                         Shape::Object(Node::Trait)
                     } else {
-                        // Duplicate error's block skip (140168F00).
+                        // Duplicate error's block skip.
                         Shape::Skip
                     }
                 }
                 Node::Trait => match field.keyword().as_deref() {
-                    // name 0x1B +0x108 and icon 0xB5 +0x128: ReadStringInto.
+                    // Name and icon each read one string.
                     Some(b"name" | b"icon") => Shape::One,
-                    // specialization 0x271C +0x148: ReadTokenIdList
-                    // (1403B7180), to the closing token whatever the value.
+                    // Specialization reads token IDs to the closing token whatever the value.
                     Some(b"specialization") => Shape::List,
                     Some(b"modifier") => Shape::Object(Node::Modifier(modifiers::Node::Modifier)),
-                    // available 0x2FE8 +0x160: CAndTrigger::LoadBody.
+                    // Available reads a conjunction body.
                     Some(b"available") => Shape::Trigger,
                     _ => Shape::Skip,
                 },
@@ -228,7 +225,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scientist_traits_read_names_modifiers_variables_and_native_skips() {
+    fn scientist_traits_read_names_modifiers_variables_and_skips() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let file = parse(
             br#"@v = 0.2 trait = { name = First NAME = final icon = art
           specialization = { land air } available = { always = yes }
@@ -245,6 +244,8 @@ mod tests {
 
     #[test]
     fn scientist_trait_repeated_tokens_keep_first_and_skip_their_variables() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let file = parse(
             b"trait = { name = first } TRAIT = { @n = wrong name = second } other = { name = @n }",
             &KeyNames::default(),
@@ -267,17 +268,21 @@ mod tests {
 
     #[test]
     fn scientist_trait_uncertain_modifier_consumption_is_named() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut names = KeyNames::default();
         names.effects.modifiers_gap = Some("synthetic registry suffix".into());
         let file = parse(b"known = { name = known } uncertain = { modifier = { unknown = { name = x } } } tail = { name = tail }",
             &names, &BTreeSet::new());
         assert_eq!(file.traits.len(), 2);
         assert!(file.traits[1].refusal.as_ref().unwrap().contains("unknown"));
-        assert!(file.gap.unwrap().contains("1406042A0"));
+        assert!(file.gap.unwrap().contains("modifier value reader"));
     }
 
     #[test]
     fn scientist_trait_name_does_not_depend_on_unheld_modifier_text() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let file = parse(
             b"trait = { name = valid modifier = { research_speed_factor = \xfe } }",
             &KeyNames::default(),
@@ -295,6 +300,8 @@ mod tests {
 
     #[test]
     fn scientist_traits_load_the_winning_files_and_first_registered_tokens() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root =
             std::env::temp_dir().join(format!("installed-content-scientist-traits-{}", std::process::id()));
         let base = root.join("base");

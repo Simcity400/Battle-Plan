@@ -2,7 +2,7 @@
 //!
 //! `legacy` implements the native candidate law. This bridge joins the complete
 //! saved variant census, each country's three recorded rosters (primary,
-//! foreign and the stored best-variant candidates `+0xB8`), upgrade bytes and
+//! foreign and stored best-variant candidates), upgrade bytes and
 //! runtime country references to authored equipment definitions.
 
 use std::collections::BTreeMap;
@@ -377,7 +377,7 @@ fn build_variant<'a>(
         .map_err(|error| format!("variant {}: {error}", row.id))?;
     Ok(legacy::Variant {
         handle: row.id,
-        // CEquipmentVariant's low handle word is the reference type;
+        // A variant handle's low word is the reference type;
         // the persistent object ID lives in its upper 32 bits.
         id: (row.id >> 32) as u32,
         creator_reference,
@@ -420,7 +420,7 @@ fn sum_upgrades(
                 row.variant
             ));
         }
-        // 140BD0D50 sums unsigned level bytes with wrapping i32 arithmetic.
+        // The game sums unsigned level bytes with wrapping i32 arithmetic.
         let sum = sums.entry(row.variant).or_default();
         *sum = sum.wrapping_add(i32::from(row.level));
     }
@@ -473,9 +473,9 @@ fn join_available(
     Ok(result)
 }
 
-/// 140C88540 calls 140F72890 for the active equipment-category mask. The
-/// latter checks three command feature bits in the saved simulation DLC mask
-/// (1401AE640), rather than intersecting raw DLC bits with equipment types.
+/// Equipment categories check three command feature bits in the saved
+/// simulation DLC mask
+/// rather than intersecting raw DLC bits with equipment types.
 fn enabled_module_categories(dlc_mask: u32) -> u64 {
     let mut categories = 0;
     if dlc_mask & 0x10 != 0 {
@@ -570,6 +570,8 @@ mod tests {
 
     #[test]
     fn availability_preserves_native_order_and_duplicate_variant_membership() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let by_handle = BTreeMap::from([(handle(1), 0), (handle(2), 1)]);
         let links = BTreeMap::from([(10, 1), (11, 1)]);
         let rows = vec![
@@ -635,6 +637,8 @@ mod tests {
 
     #[test]
     fn the_recorded_best_candidates_decide_the_conventional_winner() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut bridge = prepared(vec![variant(1, 1), variant(2, 3)]);
         let country = legacy::Country {
             tag: "GER",

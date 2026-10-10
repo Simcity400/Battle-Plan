@@ -52,8 +52,8 @@ pub(crate) struct NumericBalanceDrop {
     pub after: i64,
 }
 
-/// P: AddPoliticalPower 140B98130 and AddCommandPower 1406C3320 write the
-/// recorded signed fixed5 balances. A net drop keeps both exact stored amounts.
+/// Recorded political and command power are signed fixed5 balances.
+/// A net drop keeps both exact stored amounts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BalanceHistory {
     pub runs: Vec<NumericRun>,
@@ -138,9 +138,8 @@ struct HistoriesCache {
 }
 
 /// Countries and country links supply identity and only requested balance fields
-/// in one shared walk. The optional native owned-state roster count excludes empty
-/// state templates exactly as AddOwnedState 1406C52B0 does (+0x478/+0x484).
-/// No player, AI or land-holding status narrows this inventory.
+/// in one shared walk. The optional owned-state roster count excludes empty
+/// state templates. No player, AI or land-holding status narrows this inventory.
 pub(crate) fn branch_histories(
     source: &Source,
     branch: u64,

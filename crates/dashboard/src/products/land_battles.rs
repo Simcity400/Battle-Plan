@@ -1,46 +1,36 @@
 //! Recording-window land census; names resolve only for drawn rows.
 //!
-//! CCombat ctor 0x1413CB400 initializes signed i32 +0x40 day=-1 and
-//! +0x44 duration=0. ResolveCombatRound 0x1412A3110 increments duration;
-//! CheckRoundTermination 0x1412A3E70 advances day on continued rounds.
-//! Save/load 0x1413CEE30/0x1413CDD20 stores these counters, not dates.
-//! Neither establishes an absolute start. Dates below are observation bounds.
+//! Combat day starts at signed i32 -1 and duration at zero. Resolved rounds
+//! increment duration; continued rounds advance day. Save/load stores these
+//! counters, not dates. Neither establishes an absolute start. Dates below
+//! are observation bounds.
 //!
-//! CreateCombatants 0x141299730 creates attacker then defender. AddUnit
-//! 0x1413CC2B0 and RemoveUnit 0x1413CE340 author the complete side roster
-//! (+0x20 pointer, +0x2C signed count), including committed, reserve and
-//! neither-role participants. LandCombats records its full u64 army handles.
-//! Country-set writer 0x1413CC0D0 keeps logical owners (+0x38 primary) and
-//! distinct positive roster owners (+0x50 secondary): both identify recorded
-//! participants, never a winner. Raw u32 references resolve at that read.
+//! Combatants are created attacker then defender. The complete side roster
+//! includes committed, reserve and neither-role participants. LandCombats
+//! records its full u64 army handles. Country sets keep logical owners and
+//! distinct positive roster owners: both identify recorded participants,
+//! never a winner. Raw u32 references resolve at that read.
 //!
-//! RegisterIdentity 0x1422097C0 writes the complete u64 identity (+0x18);
-//! creation 0x140BA8B00 uses 0x1401E3FF0, border combat 0x140BA7920 uses
-//! 0x14220A450. Branch and observed episode keep reused handles separate.
-//! Province setter/getter 0x1413CEA50/0x140F1C390 store/read +0x38;
-//! 0x1413CEE30 saves the pointed province's u32 ID (+0xA4).
+//! The complete u64 identity, branch and observed episode keep reused handles
+//! separate. The combat stores its province, whose u32 ID is recorded.
 //! LandCombats/LandCombatSides are hourly (replay::cadence); slot_read dates
 //! successful reads. LandCombatProgress supplies hourly loss counters and
-//! LandCombatResults supplies the post-flush losses and finalizer verdict.
-//! Finalizer 0x1412A43A0 uses side +0x498 bit 1 and signed qword +0x418.
-//! Disappearance alone never selects a winner or finalizes losses.
+//! LandCombatResults supplies post-flush losses and the finalizer verdict.
+//! The finalizer uses side bit 1 and a signed qword result. Disappearance alone
+//! never selects a winner or finalizes losses.
 
-//! Round dispatch: HourlyGamestate@0x1401DEF80 calls manager@0x140BA9890
-//! once per game hour. Its 0x140BA9B71 call through vtable +0x78 selects
-//! ResolveCombatRound@0x1412A3110, once per valid unfinished combat. +0x44
-//! therefore counts resolved hourly rounds; +0x40 counts continued rounds
-//! (CheckRoundTermination@0x1412A3E70), not elapsed days. Length uses the
-//! recorded duration counter as a minimum; after a gap its baseline resets
-//! at the new segment's first read, so neither counter bridges the gap.
+//! Each valid unfinished combat resolves one round per game hour. Duration
+//! therefore counts resolved hourly rounds; day counts continued rounds, not
+//! elapsed days. Length uses the recorded duration counter as a minimum;
+//! after a gap its baseline resets at the new segment's first read, so neither
+//! counter bridges the gap.
 //!
-//! Participant_lifecycle@0x141299850 passes remaining CArmyManpower::GetTotal@0x140C5A040;
-//! active_damage@0x140C7BFC0 passes removed manpower from 0x140C7FD50 ->
-//! 0x140C5B350. AccumulateCombatLogDamage@0x140CCB010 adds that i32 to
-//! CLandCombatant+0x1B0's observer +0x60. Retained SCombatData stores the two
-//! i32 losses at +0x10/+0x220 (copy 0x140CC96C0), with role selected by
-//! +0x447; it has no stable live-combat reference. The live observer supplies
-//! hourly manpower and fixed5 variant losses; FinalizeCombat's pending-damage
-//! flush supplies terminal counters. War-wide totals cannot attribute them.
+//! Participant lifecycle records remaining manpower, while active damage
+//! records removed manpower. Combat Log damage accumulates that i32 value.
+//! Retained combat data stores two i32 losses with the selected role but no
+//! stable live-combat reference. The live observer supplies hourly manpower
+//! and fixed5 variant losses; the finalizer's pending-damage flush supplies
+//! terminal counters. War-wide totals cannot attribute them.
 use super::{
     LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, ReplyWarnings,
     battles::{

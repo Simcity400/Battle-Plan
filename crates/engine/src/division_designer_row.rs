@@ -1,5 +1,4 @@
-//! Division designer row; exact C++ class name remains unproven.
-//! Excluded presentation knowledge from `design_catalog_context_live/src/selected_designer_identity/a729_hook.rs`.
+//! Division-designer row presentation layout.
 
-/// Row +0x528 template pointer; source:158,1448-1453 validated the pointed-to CDivisionTemplate identity.
+/// Template pointer; its pointed-to identity must be authenticated.
 pub const TEMPLATE: usize = 0x528;

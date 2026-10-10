@@ -72,7 +72,7 @@ export interface MeasureConfig {
   title: string;
   /** The measure in running text, such as "political power". */
   noun: string;
-  /** The unit a single country's end label names, such as "PP" (mock-up politics-1). */
+  /** The unit a single country's end label names, such as "PP". */
   unit: string;
   /** The widget's settings, when it adds to the shared ones. */
   options?: readonly OptionField[];
@@ -424,7 +424,7 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, cou
             const last = lineEndHour(item.runs, frame.x[0], at);
             const raw = last == null ? null : item.valueAt(last);
             if (raw == null) return [];
-            // One country: its value and unit, as signed off; several: each named.
+            // One country: its value and unit; several: each named.
             const text = series.length === 1 ? `${formatFixed(raw, decimals, 1)} ${config.unit}` : `${labels.labelAt(last!)(item.tag).name} ${formatBalance(raw, decimals)}`;
             return [{ id: item.tag, y: frame.toY(Number(raw) / 10 ** decimals), text, color: item.hex }];
           });

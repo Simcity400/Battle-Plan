@@ -1,4 +1,4 @@
-//! Arrow allocation/strip order141255D70 and camera admission14125ACB0.
+//! Arrow allocation, strip order and camera admission.
 use super::{ArrowType, OrderDraw, OrderVertex};
 use crate::map::{
     arrow_shader::{Mode, Vertex},
@@ -23,7 +23,7 @@ pub(super) struct View {
 }
 
 fn offsets(bounds: [[f32; 3]; 2], width: f32, planes: &[[f32; 4]; 4]) -> Vec<f32> {
-    //141256E20..E87 creates at most one seam box, negative-X branch first.
+    // Create at most one seam box, negative-X branch first.
     let seam = if bounds[0][0] < 0. {
         Some(width)
     } else if bounds[1][0] > width {
@@ -51,15 +51,15 @@ pub(super) fn plans<'a>(
             if matches!(mode, Mode::Shadow | Mode::Main) {
                 seen.clear();
             }
-            //14125AD04 resets seen in mode0/2; modes3/1 retain it. View0 never
-            //consults seen; later views skip anything submitted by an earlier view.
+            // Reset seen in modes 0/2; modes 3/1 retain it. View 0 never consults seen;
+            // later views skip anything submitted by an earlier view.
             let views = wraps
                 .iter()
                 .enumerate()
                 .map(|(view, wrap)| {
                     let mut camera = camera;
                     camera.center[0] -= wrap;
-                    //14125B24B/14125B30D read this view's margin-expanded side planes.
+                    // Read this view's margin-expanded side planes.
                     let planes = side_planes(camera, viewport);
                     let mut result = View::default();
                     let mut base = 0;
@@ -83,8 +83,8 @@ pub(super) fn plans<'a>(
                             if inner || outer {
                                 seen.insert(index);
                             }
-                            //14125BAAB: one label per admitted arrow, collected only
-                            //in the inner-mask loop, with native stack capacity0x200.
+                            // Collect one label per admitted arrow, only in the inner-mask loop,
+                            // with stack capacity 0x200.
                             if mode != Mode::Shadow
                                 && inner
                                 && result.labels.len() < 0x200
@@ -130,7 +130,7 @@ pub(super) fn vertices(
     let head_count = if head { 4 } else { 0 };
     let body = source.len() - head_count;
     let actual = controls * 2 + head_count;
-    //141255F80 allocates the next512 boundary, even when already aligned.
+    // Allocate the next 512-byte boundary, even when already aligned.
     let capacity = (actual / 512 + 1) * 512;
     let mut vertices = Vec::with_capacity(capacity);
     let convert = |v: &OrderVertex| Vertex {
@@ -139,13 +139,13 @@ pub(super) fn vertices(
         uv: v.uv_head_variant,
     };
     vertices.extend(source[body..].iter().rev().map(convert));
-    //1412567AE duplicates the head-root pair for the remaining controls.
+    // Duplicate the head-root pair for the remaining controls.
     for _ in body / 2..controls {
         vertices.extend(source[body - 2..body].iter().rev().map(convert));
     }
     vertices.extend(source[..body].iter().rev().map(convert));
-    //141256DD0 pads allocation slack with the last record. A single strip's
-    // draw uses the buffer length; split strips use arrow+40 actual length.
+    // Pad allocation slack with the last record. A single strip's draw uses
+    // the buffer length; split strips use the actual arrow length.
     vertices.resize(capacity, *vertices.last().expect("two controls"));
     let strips = if head {
         vec![0..4, 3..actual as u32]

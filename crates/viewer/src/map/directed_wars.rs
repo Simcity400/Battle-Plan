@@ -142,8 +142,8 @@ impl<'a> Owner<'a> {
             .map(Context::Positive)
     }
 
-    /// Direct +2E8/+49 predicate, no positive-receiver or self veto. Callers
-    /// with a previously resolved exact target use pointer_active_slot.
+    /// Direct relation-byte predicate without positive-receiver or self veto.
+    /// Callers with an already resolved exact target use pointer_active_slot.
     pub(super) fn pointer_active(&self, target_raw: u32) -> Fact<bool> {
         self.pointer_active_slot(canonical(self.frame, target_raw)?)
     }
@@ -155,7 +155,7 @@ impl<'a> Owner<'a> {
         }
     }
 
-    /// Raw identity, then both-nonzero alias identity (1406F3A00/1406F3A90).
+    /// Raw identity, then both-nonzero alias identity.
     pub(super) fn same_country(&self, target_raw: u32) -> Fact<bool> {
         if target_raw as i32 == self.actual_raw_id {
             return Ok(true);
@@ -169,7 +169,7 @@ impl<'a> Owner<'a> {
         self.canonical_slot
     }
 
-    /// 1406F3A00 raw-self, both-nonzero alias-self, signed-positive gate.
+    /// Raw-self, both-nonzero alias-self, then the signed-positive gate.
     /// Those proved false arms cannot acquire unrelated packet admission.
     pub(super) fn at_war(&self, target_raw: u32) -> Fact<bool> {
         if self.same_country(target_raw)? {
@@ -357,7 +357,7 @@ mod owner_tests {
             .into();
         let owner = Owner::new(&frame, 12).unwrap();
         assert_eq!(owner.actual_raw_id, 0);
-        // F3A00's signed gate returns false without unknown target resolution.
+        // The signed receiver gate returns false without resolving an unknown target.
         assert_eq!(owner.at_war(123_456), Ok(false));
         assert!(owner.context.get().is_none());
         assert_eq!(owner.pointer_active_slot(0), Ok(true));

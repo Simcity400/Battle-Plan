@@ -6,9 +6,7 @@ import type { Artwork, HourSpan, IdeaHistoryReply, IdeaSpan } from '../../genera
 
 /** National spirits from the idea history: the ideas whose content category is a
  * national-spirit category (`type = national_spirit` in content, whatever a mod
- * names it). `national_spirit` is the engine's category type keyword:
- * `CIdeaCategory::vf4@140FC0730` maps its token (0x3443) to type 1, beside
- * `army_spirit`, `navy_spirit` and `air_spirit`. */
+ * names it). `national_spirit` is the category type keyword. */
 export const NATIONAL_SPIRIT_TYPE = 'national_spirit';
 
 export type SpiritSort = 'gained' | 'ended' | 'name';

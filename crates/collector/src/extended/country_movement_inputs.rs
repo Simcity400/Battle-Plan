@@ -510,7 +510,7 @@ impl Captured {
             },
         );
         if growing {
-            // 140C70670/141955DF0 consume complete original keyed domains.
+            // Movement inputs consume the complete original keyed domains.
             crate::table_capture::grow_vec(&mut self.river.first, self.river.required);
             crate::table_capture::grow_vec(&mut self.transport.first, self.transport.required);
             let _ = self

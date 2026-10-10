@@ -4,7 +4,7 @@
 use crate::{Memory, allocation, cair_wing_pool, csub_unit_definition as definition, read};
 use std::{io, mem::size_of};
 
-/// `140F520D0` writes the complete reference to primary+0xA2C.
+/// Complete raid reference stored on the primary wing.
 pub const RAID_REFERENCE: usize = 0xa2c;
 const TRANSPORT: u32 = 1 << 20;
 

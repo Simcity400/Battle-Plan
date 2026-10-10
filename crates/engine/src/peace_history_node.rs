@@ -3,9 +3,9 @@
 
 use crate::{Memory, cpdx_array::Array, msvc_tree_node, read};
 
-/// Raw country key; 140E3DED0 serializes it, 140E2CBE0 constructs it.
+/// Serialized raw country history key.
 pub const COUNTRY: usize = 0x20;
-/// Owning ordered turn-pointer array; 140E3DED0 traverses it, 140BAE7C0 frees it.
+/// Ordered owning turn-pointer array, freed with history.
 pub const TURNS: usize = 0x28;
 
 pub struct Node {

@@ -1,4 +1,4 @@
-//! Mesh input assembly:14224BB00 declaration,142250C70 vertices,142250A90 skin.
+//! Mesh input declarations, compact vertices and skin weights.
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
 use installed_content::pdxshader::{
@@ -14,7 +14,7 @@ use std::{collections::BTreeMap, io};
 /// Imported geometry stays in mesh space; actor transforms belong to b1/b2.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Geometry {
-    /// 142250C70's compact native allocation.
+    /// the game's compact native allocation.
     pub vertices: Vec<f32>,
     pub skin: Vec<SkinVertex>,
     pub indices: Vec<u32>,
@@ -26,9 +26,9 @@ impl Geometry {
     pub fn from_mesh(sub: &installed_content::mesh::SubMesh, scale: f32) -> io::Result<Self> {
         let count = sub.vertex_count();
         if count == 0 {
-            return Err(io::Error::other("native mesh has no positions (14224EDD0)"));
+            return Err(io::Error::other("native mesh has no positions"));
         }
-        // 142250C70 packs correctly sized p,n,ta,u0,u1,u2,u3 without holes.
+        // The game packs correctly sized p,n,ta,u0,u1,u2,u3 without holes.
         let normals = (sub.normals.len() == count).then_some(&sub.normals);
         let tangents = (sub.tangents.len() == count).then_some(&sub.tangents);
         let uv0 = (sub.uv0.len() == count).then_some(&sub.uv0);
@@ -40,7 +40,7 @@ impl Geometry {
             + usize::from(uv0.is_some()) * 2
             + coordinates.iter().filter(|v| v.is_some()).count() * 2;
         let mut vertices = Vec::with_capacity(count * width);
-        // 142250C70 writes bit pattern 0x3C23D70A for both repairs, including -0.
+        // The game writes bit pattern 0x3C23D70A for both repairs, including -0.
         let direction = |mut v: [f32; 3]| {
             if v == [0.; 3] {
                 v[1] = 0.01;
@@ -75,13 +75,13 @@ impl Geometry {
             vertices,
             skin,
             indices: sub.indices.clone(),
-            // 14224EDD0 clears the UV1 bit only when u1 is absent, not wrong-sized.
+            // The game clears the UV1 bit only when u1 is absent, not wrong-sized.
             uv1: sub.uv1.is_some(),
             stride: (width * 4) as u64,
         })
     }
 
-    /// 14224BB00's fixed fetches; 141261100 always includes UV1 for trees.
+    /// Fixed vertex fetches, always including UV1 for trees.
     pub fn packed(&self, uv1: bool) -> io::Result<Vec<f32>> {
         let bytes = bytemuck::cast_slice(&self.vertices);
         let known = 0..bytes.len() as u64;
@@ -126,7 +126,7 @@ impl Pass {
         )
     }
 
-    ///142264CC0 applies the shadow material handles; its map callback does not
+    /// The game applies the shadow material handles; its map callback does not
     ///bind the lit map samplers, and the material can update only PS0.
     pub fn caster(
         cache: &mut gpu::Cache,
@@ -157,7 +157,7 @@ impl Pass {
             .compiled(selection.index)
             .map_err(io::Error::other)?;
         let mut state = gpu::State::authored(source, technique).map_err(io::Error::other)?;
-        //1422644C0 binds material samplers only for physicalPS0..2.
+        // The game binds material samplers only for physicalPS0..2.
         state.samplers.retain(|key, _| {
             (0..if caster { 1 } else { 3 }).any(|i| *key == binding(i, Stage::Pixel))
         });
@@ -192,7 +192,7 @@ impl Pass {
     }
 }
 
-///142250A90 copies only three weights. The content vertex shader derives the fourth.
+/// The game copies only three weights. The content vertex shader derives the fourth.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct SkinVertex {
@@ -209,7 +209,7 @@ impl SkinVertex {
     }
 }
 
-// 14224BB00; 141261100 uses the same fields with unconditional UV1.
+// Trees use the same fields with unconditional UV1.
 const MESH_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
     0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x2, 4 => Float32x2
 ];
@@ -224,7 +224,7 @@ fn declaration(uv1: bool, stride: u64) -> gpu::VertexLayout {
     }
 }
 
-/// 14224BB00; omitted UV1/skin inputs fail CreateInputLayout (HRESULT ignored at1423FC6D1).
+/// Omitted UV1 or skin inputs prevent input-layout creation.
 pub fn vertex_layouts(
     inputs: &[VertexInput],
     uv1: bool,
@@ -275,7 +275,7 @@ pub fn vertex_layouts(
     Ok(layouts)
 }
 
-///140B40890 allocates these physical handles;140B47790 binds them independently
+/// Allocate these physical handles and bind them independently
 /// of the material's authored sampler vector, shared by map meshes and particles.
 pub fn map_samplers() -> BTreeMap<u32, Sampler> {
     (4..14)

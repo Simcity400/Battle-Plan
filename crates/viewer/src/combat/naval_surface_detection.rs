@@ -11,11 +11,11 @@ use std::collections::BTreeMap;
 
 const ONE: i64 = 100_000;
 
-/// CarrierAirBonus@140C23CA0. The native carrier predicate includes both the
+/// carrier air bonus. The native carrier predicate includes both the
 /// ship's current formation flags and flags in its positive equipment pool;
 /// ShipModels supplies both current values without a duplicate combat copy.
-/// CountAirBaseAircraft@140C3E1D0 walks dense CAirBase+0x48 containers.
-/// AirBaseRegistrations comes from the separately indexed +0x30 array; a
+/// Air-base aircraft counting walks dense containers. AirBaseRegistrations
+/// comes from the separately indexed registration array; a
 /// duplicate country ordinal can remain in the dense vector after the indexed
 /// slot is overwritten. The caller supplies counts derived from complete dense
 /// occurrence rows and complete AirWings. An absent base key is unknown, whereas
@@ -35,7 +35,7 @@ fn carrier_air_bonus(
     }
     let count = *dense_counts?.get(&member.weapon_context.air_base)?;
     let capacity = i64::from(member.weapon_context.air_base_maximum) * ONE;
-    // 140C23CA0 does signed integer division and clamps the fixed-point fill.
+    // the game does signed integer division and clamps the fixed-point fill.
     // Its preceding count*100000 overflow guard is unreachable for an i32
     // count; the later 64-bit numerator can wrap for anomalously huge counts.
     let fill = i64::from(count)
@@ -45,7 +45,7 @@ fn carrier_air_bonus(
     Some(fill.wrapping_mul(member.weapon_context.air_detection_base) / ONE)
 }
 
-/// CShip::GetSurfaceDetection@140C2B3A0. Its commander=0 modifier call uses
+/// ship surface detection. Its commander=0 modifier call uses
 /// the fleet default leader (scopes 31/32), not the combat side's selected
 /// leader (scopes 9/10).
 fn ship_surface_detection(
@@ -64,6 +64,7 @@ fn ship_surface_detection(
     )
 }
 
+/// the game sums current surface detection from the forward groups'
 /// live ships in one combat side. Source-1 historical/retired members and
 /// paired-only members do not participate, and state bits 2, 4 and 5 veto a
 /// member. `models` is the binding's shared ShipModels lookup, `None` for an

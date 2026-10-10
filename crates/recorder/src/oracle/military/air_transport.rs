@@ -11,9 +11,9 @@ use super::super::{
     ContentRead, Report, Spellings, TokenNames, invalid, required_context, reverse_spellings,
 };
 
-/// CSubUnitDefinition::constructor@141003CB0 calls 1424A9460, initializing
-/// +8 to static token 0x165. The registrar's 140088925/140088938/140088948
-/// sequence binds it to `none`; F53E70 writes that token for a null subtype.
+/// Subunit initialization sets the name to
+/// static token 0x165. Registration
+/// sequence binds it to `none`; the wing-pool writer writes that token for a null subtype.
 const NULL_POOL_TYPE: &[u8] = b"none";
 
 pub(in crate::oracle) fn compare(
@@ -102,8 +102,8 @@ fn pool(
     let pool_type = match content {
         None => NULL_POOL_TYPE,
         Some((_, name)) => {
-            // AddDynamicToken@1424A65A0 can reuse a token registered earlier
-            // under different case. F53E70 writes its native reverse spelling,
+            // Token insertion can reuse a token registered earlier
+            // under different case. The wing-pool writer writes its native reverse spelling,
             // not this database's first authored key spelling.
             let identity = Token::c_str(name.as_bytes());
             if identity.is_rejected() {
@@ -143,7 +143,7 @@ fn pool(
     };
     let mask = sub_units.category(name.as_bytes()).map_err(invalid)?;
     let transport = installed_content::equipment::category_mask("air_transport")
-        .expect("140F731B0 defines the transport category");
+        .expect("the transport category exists");
     Ok(Some(mask & transport != 0))
 }
 
@@ -183,7 +183,7 @@ fn raid(
             }
         }
         None if reference.resolves => report.difference(format!("{label}.raid_reference"), reference.raw, "omitted: the full reference must not resolve"),
-        None => report.limitation("F539B0 omits null and stale raid references; a save certifies non-resolution but not their exact raw bits. A matched independent native read witness is required for those bits", format!("{label}.raid_reference.raw={}", reference.raw)),
+        None => report.limitation("the air-wing writer omits null and stale raid references; a save certifies non-resolution but not their exact raw bits. A matched independent native read witness is required for those bits", format!("{label}.raid_reference.raw={}", reference.raw)),
     }
 }
 

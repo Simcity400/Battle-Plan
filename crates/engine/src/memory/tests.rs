@@ -1220,10 +1220,9 @@ fn native_copy_widths_stop_at_exact_page_boundaries_and_keep_field_prefixes() {
 
 #[test]
 fn canonical_range_rejects_live_crash_vectors_and_keeps_valid_spans() {
-    // Owner-measured crash sources: ASCII "_factor\0" and "ts_facto" bytes
-    // read as pointers. Both are noncanonical (top bits nonzero while bit
-    // 47 is zero) and must fail pre-copy with the same outcome as an
-    // unreadable canonical source.
+    // Synthetic noncanonical pointers have nonzero high bits while bit 47 is
+    // zero. They must fail before copying, with the same outcome as an unreadable
+    // canonical source.
     assert!(!is_canonical_range(0x0072_6f74_6361_665f, 8));
     assert!(!is_canonical_range(0x6f74_6361_665f_7374, 8));
     assert!(!is_canonical_range(0x0000_8000_0000_0000, 8));
@@ -1369,12 +1368,10 @@ fn live_memory_rejects_noncanonical_sources_pre_copy() {
 #[test]
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 fn guarded_copy_handles_noncanonical_fault_address_gracefully() {
-    // Direct C containment proof for `copy_fault`'s `-1` path, bypassing
-    // the Rust gate. Before the fix this crashed with
-    // EXCEPTION_CONTINUE_SEARCH; after the fix it returns graceful
-    // failure (0). The Rust gate makes this path unreachable through
-    // `LiveMemory`/`take_inner`, so this test is the only caller that
-    // exercises the C `-1` branch directly.
+    // Directly exercises C containment for `copy_fault`'s `-1` path, bypassing
+    // the Rust gate. The invalid source returns graceful failure (0). The Rust
+    // gate makes this path unreachable through `LiveMemory`/`take_inner`, so
+    // the test calls the C branch directly.
     unsafe extern "C" {
         fn seh_guarded_copy(dst: *mut u8, src: *const u8, len: usize) -> i32;
         fn seh_guarded_copy4(dst: *mut u8, src: *const u8) -> i32;

@@ -5,8 +5,8 @@ use replay::rows::ModifierDefinitionRow;
 
 impl Renderer<'_, '_, '_> {
     fn occupation_operand(&self, item: &Item, scopes: Scopes) -> Result<i64, String> {
-        // Selector flags do not change generic BuildDescription@140532780's scope.
-        // Its numeric own text reads the unchanged literal-zero operand (14014AAC0).
+        // Selector flags do not change generic description's scope.
+        // Its numeric own text reads the unchanged literal-zero operand.
         if scope_selector(item).is_some() {
             Ok(0)
         } else {
@@ -27,7 +27,7 @@ impl Renderer<'_, '_, '_> {
         positive_good: bool,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // 142257CE0's zero branch keeps '+'@142719C4C and yellow controls.
+        // The zero branch keeps '+' and yellow controls.
         if value == 0 {
             return Ok("\u{11}Y+0.0%\u{11}!".to_owned());
         }
@@ -57,7 +57,7 @@ impl Renderer<'_, '_, '_> {
         key: &[u8],
         positive_good: Option<bool>,
     ) -> Result<String, String> {
-        // Own 140313910/140314310/140318020/140318350; no scope expansion.
+        // no scope expansion.
         let value = self.occupation_operand(item, scopes)?;
         let value = match positive_good {
             Some(good) => self.occupation_value(value, good, scopes)?,
@@ -71,7 +71,7 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // 140313D10: invalid current state is empty; constructor 14030AF00.
+        // An invalid current state gives empty text.
         if self.occupation_state(scopes)?.is_none() {
             return Ok(String::new());
         }
@@ -94,7 +94,7 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // 140314030: rounded zero takes REMOVE; fixed_round@1424D8760.
+        // rounded zero takes REMOVE; fixed-point rounding.
         let value = crate::triggers::fixed_round(self.occupation_operand(item, scopes)?) as i32;
         self.line(
             if value > 0 {
@@ -119,7 +119,7 @@ impl Renderer<'_, '_, '_> {
         &self,
         scopes: Scopes,
     ) -> Result<String, String> {
-        self.localised(b"EFFECT_CANCEL_RESISTANCE", &[], scopes, false) // 140315DE0: no LF.
+        self.localised(b"EFFECT_CANCEL_RESISTANCE", &[], scopes, false) // no LF.
     }
 
     pub(in crate::effect_description) fn force_enable_resistance(
@@ -127,7 +127,7 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // 140316590: operands name no countries in the own text; no LF.
+        // operands name no countries in the own text; no LF.
         let Some(state) = self.occupation_state(scopes)? else {
             return Ok(String::new());
         };
@@ -156,14 +156,14 @@ impl Renderer<'_, '_, '_> {
             .content
             .state_categories
             .ok_or_else(|| self.content_gap("state categories"))?;
-        // vf6@14030A5F0 rejects the database null object (+0x10 == 0).
+        // Reject the undefined database null object.
         if database.find(category)?.is_none() {
             return Err(format!(
-                "invalid state category {} (14030A5F0)",
+                "invalid state category {}",
                 String::from_utf8_lossy(category)
             ));
         }
-        // Own@1403184E0 localises the operand's spelling; no expansion, then LF.
+        // localises the operand's spelling; no expansion, then LF.
         let category = self.localised(category, &[], scopes, false)?;
         self.line(
             b"EFFECT_SET_STATE_CATEGORY",
@@ -178,7 +178,7 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // 140318E00 -> country operand vf25@141384830; no LF.
+        // country operand; no LF.
         let target = self.country_target(item, scopes)?;
         if let Some(target) = target.filter(|target| *target > 0) {
             let country = self.country_name(target, false)?;
@@ -204,7 +204,7 @@ impl Renderer<'_, '_, '_> {
             &[("NUM", Argument::Fixed5(value))],
             scopes,
             false,
-        ) // 1402EDC70: no LF.
+        ) // no LF.
     }
 
     pub(in crate::effect_description) fn resistance_target(
@@ -212,9 +212,9 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // 14030B010 defaults amount=-1; scalar vf25@14031B120 writes amount.
+        // defaults amount=-1; scalar writes amount.
         let fields = children(item);
-        // ReadEffect@14031B3B0 reuses operands whose reader retains prior flags.
+        // effect parsing reuses operands whose reader retains prior flags.
         for name in ["amount", "days", "occupied", "occupier"] {
             if fields
                 .iter()
@@ -223,7 +223,7 @@ impl Renderer<'_, '_, '_> {
                 .is_some()
             {
                 return Err(format!(
-                    "repeated resistance-target operand {name} needs retained CScopedVariable reader flags (140539440/140539B50)",
+                    "repeated resistance-target operand {name} needs retained scoped variable reader flags",
                 ));
             }
         }
@@ -238,12 +238,12 @@ impl Renderer<'_, '_, '_> {
         if amount == 0 {
             return Ok(String::new());
         }
-        // Own@1403144B0 evaluates days and both countries only after nonzero amount.
+        // evaluates days and both countries only after nonzero amount.
         let days = field(fields, "days")
             .map(|item| self.scoped_value(scalar_operand(item)?, scopes))
             .transpose()?
             .unwrap_or(0);
-        let days = crate::triggers::fixed_round(days) as i32; // 1424D8760.
+        let days = crate::triggers::fixed_round(days) as i32;
         let country = |name| -> Result<u32, String> {
             field(fields, name)
                 .map(|item| {
@@ -261,16 +261,16 @@ impl Renderer<'_, '_, '_> {
             (false, true) => b"EFFECT_ADD_RESISTANCE_TARGET_WITH_TARGET",
             (true, true) => b"EFFECT_ADD_RESISTANCE_TARGET_WITH_FROM_AND_TARGET",
         };
-        // 142257CE0 uses wrapping fixed5 multiplication even at scale 1;
-        // positive is bad, precision 1, '%' suffix (142928DD4), no ratio scaling.
+        // uses wrapping fixed5 multiplication even at scale 1;
+        // positive is bad, precision 1, '%' suffix, no ratio scaling.
         let amount = amount.wrapping_mul(100_000) / 100_000;
         let value = if amount == 0 {
-            "\u{11}Y+0.0%\u{11}!".to_owned() // Zero also gets '+' (142719C4C).
+            "\u{11}Y+0.0%\u{11}!".to_owned() // Zero also gets '+'.
         } else {
             self.occupation_value(amount, false, scopes)?
         };
-        // Own@1403144B0 constructs both marked-country arguments in every branch.
-        let occupied = self.context.text.country_marked_name(occupied)?; // 140BA59E0.
+        // constructs both marked-country arguments in every branch.
+        let occupied = self.context.text.country_marked_name(occupied)?;
         let occupier = self.context.text.country_marked_name(occupier)?;
         let mut text = self.localised(
             key,
@@ -278,16 +278,16 @@ impl Renderer<'_, '_, '_> {
                 ("VALUE", Argument::Text(&value)),
                 ("OCCUPIER", Argument::Text(&occupier)),
                 ("OCCUPIED", Argument::Text(&occupied)),
-                ("NUM_DAYS", Argument::Int32(days)), // 1403091F0.
+                ("NUM_DAYS", Argument::Int32(days)),
             ],
             scopes,
             false,
         )?;
         if days > 0 {
-            text.push_str(" ("); // 14270C624.
+            text.push_str(" (");
             text.push_str(&self.localised(
                 b"DURATION_DAYS",
-                &[("NUM", Argument::Int32(days))], // 142727638.
+                &[("NUM", Argument::Int32(days))],
                 scopes,
                 false,
             )?);

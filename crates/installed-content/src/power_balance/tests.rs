@@ -41,11 +41,13 @@ fn description_fields_keep_fixed5_range_bounds_and_template_defaults() {
 }
 
 fn read_file(input: &[u8], registry: modifiers::Registry<'_>) -> Result<native::Read, String> {
+    engine::executable_tables::initialize_for_tests()
+        .expect("balance reader checks require BATTLE_PLAN_GAME_DIR");
     super::read_file(input, registry, &KeyNames::default())
 }
 
 #[test]
-fn native_range_values_and_rule_defaults() {
+fn range_values_and_rule_defaults() {
     let read = read_file(
         br#"@value = 0.25 @tip = TIP balance = { range = { id = @value
         modifier = { first = @value hidden_modifier = { first = 2 } first = 3 }
@@ -71,7 +73,7 @@ fn native_range_values_and_rule_defaults() {
     assert_eq!(range.id, b"@value");
     assert_eq!(range.modifiers.values[0].value, 300_000);
     assert!(range.modifiers.listed().next().is_none());
-    let rule = |name| range.rules[RULES.iter().position(|r| r.0 == name).unwrap()];
+    let rule = |name| range.rules[rules().iter().position(|r| r.0 == name).unwrap()];
     assert!(rule("can_create_factions"));
     assert!(!rule("can_join_factions"));
     assert!(rule("can_puppet"));
@@ -93,13 +95,13 @@ fn native_range_values_and_rule_defaults() {
 }
 
 #[test]
-fn unsettled_modifier_and_native_effect_misreads_are_named() {
+fn unsettled_modifier_and_effect_misreads_are_named() {
     let error = read_file(
         b"balance={range={modifier={unknown={a=1}}}}",
         modifiers::UNKNOWN,
     )
     .unwrap_err();
-    assert!(error.contains("unknown") && error.contains("1406042A0"));
+    assert!(error.contains("unknown") && error.contains("has a block value"));
     let read = read_file(
         b"balance={range={on_activate={x @value=1}}}",
         modifiers::UNKNOWN,
@@ -108,11 +110,13 @@ fn unsettled_modifier_and_native_effect_misreads_are_named() {
     assert!(read.unsettled.is_none());
     assert!(read.misreads.iter().any(|note| note.line == 1
         && note.what.contains("@value")
-        && note.what.contains("1424AC5E0")));
+        && note.what.contains("has no operator")));
 }
 
 #[test]
-fn ranges_keep_full_native_effect_scopes_and_operands() {
+fn ranges_keep_full_effect_scopes_and_operands() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("balance scope checks require BATTLE_PLAN_GAME_DIR");
     let mut names = KeyNames::default();
     names.countries.insert(b"SYN".to_vec());
     let read = super::read_file(b"balance = { range = { id = scope on_activate = {
@@ -148,6 +152,8 @@ fn ranges_keep_full_native_effect_scopes_and_operands() {
 
 #[test]
 fn layered_templates_replace_and_root_ranges_precede_sides() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("layered balance checks require BATTLE_PLAN_GAME_DIR");
     let root = std::env::temp_dir().join(format!(
         "bop-{}-{}",
         std::process::id(),

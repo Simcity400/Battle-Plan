@@ -4,21 +4,21 @@ use replay::rows::CountryCharacterRow;
 #[cfg(test)]
 mod tests;
 
-// 140383E60 / 140395390: CUnitLeader category +0xE7C. The keys and
-// NAME@142727E7C are executable facts; their text comes from the stack.
+// Select the description key from the leader category.
+// Description text comes from the recorded content stack.
 fn creation_key(category: i32) -> Option<&'static [u8]> {
     match category {
-        0 => Some(b"EFFECT_CREATE_FM_LEADER"),        // 142751508
-        1 => Some(b"EFFECT_CREATE_CC_LEADER"),        // 142751520
-        2 => Some(b"EFFECT_CREATE_NAVY_LEADER"),      // 142751538
-        3 => Some(b"EFFECT_CREATE_OPERATIVE_LEADER"), // 142751558
+        0 => Some(b"EFFECT_CREATE_FM_LEADER"),
+        1 => Some(b"EFFECT_CREATE_CC_LEADER"),
+        2 => Some(b"EFFECT_CREATE_NAVY_LEADER"),
+        3 => Some(b"EFFECT_CREATE_OPERATIVE_LEADER"),
         _ => None,
     }
 }
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
-    // 1410D1130 -> 141A883F0: both country rosters are ordered by the
-    // character's name token (+0x18). Equal tokens use the first entry.
+    // Both country rosters are ordered by the character's name token.
+    // Equal tokens use the first entry.
     fn military_roster_character(
         &self,
         roster: &[CountryCharacterRow],
@@ -55,9 +55,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(selected.and_then(|(_, character)| character))
     }
 
-    // Own 14036C790/14036CC50/14036C9F0. ResolveCharacter 140536B10,
-    // current fallback 140529310; GetNameStringAt28 140612C90. Only NAME
-    // is described: skill/traits/legacy_id belong to execution. Expanded, no LF.
+    // Resolve the named character, then fall back to the current character.
+    // Only NAME is described: skill, traits and legacy_id belong to execution.
+    // Expand the description without appending LF.
     pub(in crate::effect_description) fn char_add_military_role(
         &self,
         item: &Item,
@@ -77,10 +77,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 140383E60; ReadEffect 1403B1010 -> CUnitLeaderData 1403B6540.
-    // Nonempty authored name +0x180 is literal. Empty name selects by id
-    // (default 0, constructor 14032CB10), compared to character +0x18,
-    // then exact +0x48 token == tag + '_' (1403B8BF0 / 1410D6860).
+    // A nonempty authored name is literal. An empty name selects by id
+    // (default 0), compared to the character's name token,
+    // then by the exact stored token matching the country tag plus an underscore.
     pub(in crate::effect_description) fn char_create_legacy_military(
         &self,
         item: &Item,
@@ -138,10 +137,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 14037DC50. Reader 1403A9BB0 allocates a country-0 operative;
-    // 1403B14C0 -> 140C0C950 reads name into +0x20. Finalizer 1403A4070
-    // calls 140C0BB50 -> 140C0BC70, plain-localising it into +0x40 before
-    // this NAME substitution. Description expansion follows; no explicit LF.
+    // Read the operative name and localise it without a scope before
+    // substituting NAME. Expand the containing description afterward;
+    // no explicit LF is appended.
     pub(in crate::effect_description) fn char_create_operative(
         &self,
         item: &Item,
@@ -159,10 +157,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 140395390, scalar reader 1403ABD40. 1410D6BF0(...,1) checks
-    // active then retired roster. 140F8FED0 tests +0x58, the length of the
-    // recorded token string at +0x48. A token-bearing character without a
-    // leader discards the whole description. Plain localisation, terminal LF.
+    // Search the active roster before the retired roster.
+    // A token-bearing character without a leader discards the whole description.
+    // Use plain localisation with a terminal LF.
     pub(in crate::effect_description) fn char_show_unit_leaders(
         &self,
         item: &Item,
@@ -208,8 +205,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
-    // Own 1402EC5A0 / 1402EC390: only CC promotion / FM demotion;
-    // no NAME argument or expansion. Each successful line appends LF.
+    // Only corps-commander promotion and field-marshal demotion produce text.
+    // No NAME argument or expansion; each successful line appends LF.
     pub(in crate::effect_description) fn char_change_rank(
         &self,
         scopes: Scopes,
@@ -233,10 +230,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 1402ECF90. Reader 1402F0540 accepts exact yes or a positive
-    // integer. 1402E4180 resolves a positive runtime character ID in the
-    // character manager; otherwise the scope ability caster. +0x40 NAME
-    // is plain. Operatives additionally need CODENAME +0x1030 (140C06040).
+    // Accept exact yes or a positive integer. A positive runtime character ID
+    // is resolved in the character manager; otherwise use the scope ability caster.
+    // The leader name stays plain. Operatives additionally need their codename.
     pub(in crate::effect_description) fn char_remove_unit_leader(
         &self,
         item: &Item,
@@ -273,7 +269,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     ],
                     scopes,
                     false,
-                ); // 1402ECF90: no scope expansion or LF.
+                ); // No scope expansion or LF.
             }
             _ => return Ok(String::new()),
         };
@@ -281,17 +277,16 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.char_native_text(key, &[("NAME", Argument::Text(&name))], scopes, false)
     }
 
-    // Own 140389830. TITLE@142734318 uses GetLocalizedRoleTitle 140C0A7A0:
-    // categories 0/1/2 -> fm_leader/cc_leader/navy_leader; category 3 uses
-    // operative_skill_<stored skill level>, else OPERATIVE when absent.
-    // NAME is the character's +0x28, not the leader's +0x40. Expanded, no LF.
+    // Categories 0/1/2 select fm_leader/cc_leader/navy_leader for TITLE.
+    // Category 3 uses operative_skill_<stored skill level>, else OPERATIVE.
+    // NAME is the character name; expand without appending LF.
     pub(in crate::effect_description) fn char_remove_military_role(
         &self,
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // 1403AAC00: character scope accepts exact yes only; outside it,
-        // scalar and character-key forms both assign the +0x58 selector.
+        // A character scope accepts exact yes only; outside it,
+        // scalar and character-key forms both assign the selector.
         let operand = if matches!(
             scopes.this,
             Scope::Character(_) | Scope::Leader(_) | Scope::CountryLeader { .. }
@@ -340,8 +335,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 14045D5A0: ResolveCharacter 140536B10 then current 140529310;
-    // NAME is +0x28. The describer draws no random trait and reads no unit.
+    // Resolve the named character, then the current character for NAME.
+    // The describer draws no random trait and reads no unit.
     pub(in crate::effect_description) fn char_random_trait_from_unit(
         &self,
         item: &Item,
@@ -360,9 +355,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 14045D0D0: ResolveArmy 140529260 only gates Army existence;
-    // no commander record, current XP or name is read. Evaluate +0x58 then
-    // localise ADD_DIVISIONAL_COMMANDER_XP with Fixed5 VAL@14272F830.
+    // Army resolution only gates existence: no commander record, current XP
+    // or name is read. Evaluate the amount, then localise
+    // ADD_DIVISIONAL_COMMANDER_XP with fixed5 VAL.
     // Neither scope expansion nor a terminal LF is added.
     pub(in crate::effect_description) fn char_divisional_xp(
         &self,
@@ -375,7 +370,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if reference == 0 {
             return Ok(String::new());
         }
-        // Native null is empty (14045D0D0); missing Divisions cannot prove null.
+        // A null Army is empty; missing Divisions cannot prove null.
         self.context.world()?.unit(reference)?;
         let amount = self.scoped_value(item.value.scalar().unwrap_or_default(), scopes)?;
         self.char_native_text(
@@ -386,8 +381,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 14045D2E0: ResolveArmy, slot-13 name, UNIT@142776CA8;
-    // key/subject/allow are execution-only. No expansion or appended LF.
+    // Resolve the Army name for UNIT; key/subject/allow are execution-only.
+    // No expansion or appended LF.
     pub(in crate::effect_description) fn char_history_entry(
         &self,
         scopes: Scopes,
@@ -408,8 +403,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 1404A2FB0 -> 141454480: the raid's +0xC8 assigned Army first,
-    // then +0xD0 air wing. NAME@142727E7C, plain localisation, final LF.
+    // Use the raid's assigned Army first, then its air wing for NAME.
+    // Use plain localisation with a final LF.
     pub(in crate::effect_description) fn char_raid_history_entry(
         &self,
         scopes: Scopes,
@@ -450,8 +445,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 14045D8B0: ResolveArmy then GetName 140C72F00, DIV@142797880.
-    // Null Army returns native empty without reading naming operands.
+    // Resolve the Army name for DIV. A null Army returns empty
+    // without reading naming operands.
     pub(in crate::effect_description) fn char_unit_medal(
         &self,
         scopes: Scopes,
@@ -462,7 +457,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if reference == 0 {
             return Ok(String::new());
         }
-        // Missing Divisions cannot prove ResolveArmy null (140529260/14045D8B0).
+        // Missing Divisions cannot prove that Army resolution is null.
         self.context.world()?.unit(reference)?;
         let name = self.unit_name(reference)?;
         self.char_native_text(
@@ -470,6 +465,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             &[("DIV", Argument::Text(&name))],
             scopes,
             false,
-        ) // DIV@142797880.
+        )
     }
 }

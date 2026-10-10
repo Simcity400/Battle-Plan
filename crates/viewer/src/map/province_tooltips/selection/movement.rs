@@ -1,7 +1,7 @@
-//! Selected rejection demand in 140DE95A0 / 140DF7D20: unit vf17 (+0x88)
-//! runs only while the shared rejection buffer is empty. Its return value
-//! does not gate the next member. Class-wrapper gates run before common
-//! BEADD0; missing route/transport producer operands refuse when reached.
+//! Selected rejection demand. Check each unit only while the shared rejection
+//! buffer is empty; its return value does not gate the next member.
+//! Class-wrapper gates run before common route checks. Missing route or
+//! transport producer operands refuse when reached.
 
 use super::{Class, Tooltip, line, refuse};
 use crate::map::division_eta::{CounterQueries, CounterUnit};
@@ -48,8 +48,8 @@ fn append_queried(
         )
     });
     match message {
-        // 140DE95A0 / 140DF7D20 own the outer red/reset bytes, even when
-        // the effective localisation includes its own colour controls.
+        // The selected text owns the outer red/reset bytes, even when effective
+        // localization includes its own colour controls.
         Ok(text) => {
             let nonempty = !text.is_empty();
             if nonempty {

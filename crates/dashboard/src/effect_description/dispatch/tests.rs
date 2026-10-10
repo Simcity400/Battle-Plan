@@ -3,7 +3,9 @@ use super::*;
 use crate::scripted_text::{EventObject, EventScope};
 
 #[test]
-fn native_aliases_share_one_class_dispatch() {
+fn aliases_share_one_class_dispatch() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let text = ScriptedText::new(
         &fixture.frame,
@@ -31,11 +33,8 @@ fn native_aliases_share_one_class_dispatch() {
         installed_content::parser::parse(b"set_unit_leader_flag=x set_character_flag=x if={} else_if={}")
             .unwrap()
             .items;
-    // Native aliases share 142729218 and empty own text (140176EE0).
-    assert_eq!(
-        renderer.effect_class(&items[0]).map(|class| class.name),
-        Some("CSetCharacterFlagEffect")
-    );
+    // The aliases share a class and empty own text.
+    assert!(renderer.effect_class(&items[0]).is_some());
     assert_eq!(
         renderer.effect_class(&items[0]),
         renderer.effect_class(&items[1])
@@ -45,11 +44,8 @@ fn native_aliases_share_one_class_dispatch() {
         renderer.leaf(&items[1], scopes)
     );
     assert_eq!(renderer.leaf(&items[0], scopes), Some(Ok(String::new())));
-    // Conditional tails alias CIfEffect and reach the same landed own function.
-    assert_eq!(
-        renderer.effect_class(&items[2]).map(|class| class.name),
-        Some("CIfEffect")
-    );
+    // Conditional tails alias the if effect and share its own description.
+    assert!(renderer.effect_class(&items[2]).is_some());
     assert_eq!(
         renderer.effect_class(&items[2]),
         renderer.effect_class(&items[3])
@@ -63,6 +59,8 @@ fn native_aliases_share_one_class_dispatch() {
 
 #[test]
 fn unknown_keys_and_unported_classes_are_named_and_counted() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
     let output = fixture.render(
@@ -76,9 +74,7 @@ fn unknown_keys_and_unported_classes_are_named_and_counted() {
         output
             .refusals
             .iter()
-            .find(|(name, _)| {
-                name.contains("NInternationalMarket::CMultiplePurchaseContractTargetEffect")
-            })
+            .find(|(name, _)| name.contains("every_purchase_contract"))
             .map(|(_, count)| *count),
         Some(2)
     );

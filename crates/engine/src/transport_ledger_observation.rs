@@ -1,10 +1,9 @@
-//! Two consumers of one original CStrategicNavy+0x68 region ledger.
-//!
-//! UpdateMissionDisplay@1418ED090 requires nonnull registrations; transport
-//! E8B8E0 skips null missions and null +8 backlinks. Preserve their independent
-//! results, original occurrence order and the first attempted failure. This
-//! module never walks a navy, derives membership from accessible regions or
-//! publishes native pointers. Its controls live only in the admitted callback.
+//! Two consumers of the original strategic-navy +0x68 region ledger.
+//! Mission display requires nonnull registrations; transport skips null
+//! missions and +8 backlinks. Preserve independent results, occurrence
+//! order and the first attempted failure. No navy walk, inferred regional
+//! membership or pointer publication occurs. Controls live only within
+//! the admitted callback.
 
 use crate::{
     Memory, cnaval_mission,
@@ -19,7 +18,7 @@ pub struct LedgerObservation {
     pub required: usize,
     /// Complete nullable pointer list; zero is a native null occurrence.
     pub nullable: Fact<usize>,
-    /// The old strict ledger's capacity request or first null/read failure.
+    /// The strict ledger's capacity request or first null/read failure.
     pub strict: Fact<usize>,
 }
 
@@ -70,11 +69,11 @@ pub struct Receiver {
     pub full_handle: u64,
 }
 
-/// Consumes the original mission header and original full unit certificate.
-/// E8B8E0's null skips precede the mission/receiver authentication demand. The
-/// certificate is counter_identity's class/vtable/full-handle/registry join,
-/// not the fleet roster's different identity proof. The callback owns world,
-/// hour and quiescent-boundary admission; there is no native generation word.
+/// Consume the original mission header and full unit certificate. Null
+/// mission/backlink skips precede receiver authentication. The certificate
+/// is the counter-identity class/vtable/handle/registry join, separate
+/// from fleet-roster identity. The callback owns world, hour and quiescent
+/// boundary admission; there is no generation word.
 pub fn receiver(
     base: usize,
     mission: usize,
@@ -110,8 +109,8 @@ pub fn receiver(
     }))
 }
 
-/// Off-thread sizing of the same nullable mission receiver. F9D6C0/C296B0
-/// walk its original SHIPS array; the hint records no model or runtime value.
+/// Off-thread sizing of the same nullable mission receiver from its
+/// original ship array; no model or runtime value is recorded.
 pub fn ship_demand(memory: &impl Memory, base: usize, mission: usize) -> Fact<usize> {
     if mission == 0 {
         return Ok(0);
@@ -361,7 +360,7 @@ impl<'a, M: Memory> IdentityReader<'a, M> {
         // Once exhausted, unknown distinct receivers cannot be counted exactly.
         // Keep an explicit floor, without reading or retrying any native input.
         self.required = self.required.max(self.len.saturating_add(1));
-        // 140E8B8E0/140F9EE50 reaches the original receiver certificate once.
+        // Transport queries reach the original receiver certificate once.
         self.entries.ensure(self.required)?;
         let Some(entry) = self.entries.get_mut(self.len) else {
             return Err("transport receiver identity arena exhausted");
@@ -394,9 +393,9 @@ impl<'a, M: Memory> IdentityReader<'a, M> {
     }
 }
 
-/// F9EE50 reaches F9D6C0 only for nonzero mission+30 and signed CUnit+1B4<=0.
-/// Values are borrowed from the original admitted receiver observation. Native
-/// earlier skips do not demand later operands, and failed demand stays failed.
+/// Ship queries are reached only for nonzero mission +0x30 and signed
+/// unit +0x1B4 <= 0. Borrow original receiver observations. Earlier skips
+/// do not demand later operands, and failed demand stays failed.
 pub fn risk_demand(
     ledger_occurrence: Fact<bool>,
     authenticated_backlink: Fact<bool>,

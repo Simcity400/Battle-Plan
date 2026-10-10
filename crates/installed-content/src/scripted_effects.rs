@@ -1,5 +1,4 @@
-//! Scripted-effect names at their own load point in CBuildingDatabase::load
-//! (14018B610, call 14018CF67 -> 140193190), before any effect body.
+//! Scripted-effect names at their own load point, before any effect body.
 
 use crate::{
     ResolvedLayers,
@@ -19,7 +18,7 @@ pub struct ScriptedEffects {
 }
 
 impl ScriptedEffects {
-    /// Body pass 1401765B0: only names registered by 14012B430 bind templates.
+    /// Body pass: only names registered by the name pass bind templates.
     pub fn read_file(&mut self, bytes: &[u8], names: &crate::key_names::KeyNames) {
         let read = native::read(
             bytes,
@@ -33,7 +32,7 @@ impl ScriptedEffects {
                 {
                     Shape::Effect
                 } else {
-                    Shape::One // A mismatch skips no body (14015B610).
+                    Shape::One // A mismatch skips no body.
                 }
             },
         );
@@ -54,7 +53,7 @@ impl ScriptedEffects {
             };
             let existing = self.bodies.entry(name).or_insert_with(|| Ok(Vec::new()));
             match (&mut *existing, body) {
-                (Ok(existing), Ok(body)) => existing.extend(body), // ReadScript@140534280 appends.
+                (Ok(existing), Ok(body)) => existing.extend(body), // Effect bodies append.
                 (_, Err(why)) => *existing = Err(why),
                 (Err(_), Ok(_)) => {}
             }
@@ -90,10 +89,9 @@ pub fn read(
     Ok(result)
 }
 
-/// Name pass (140193190 -> 14013ECE0 -> 14012B430): directory's own
-/// `.txt` files, values skipped without
-/// defining variables. ReadEffect (1405345D0) finds the name by token hash
-/// (FindTokenFromSsoString 1424A7060) and requires the template's +0x58 flag.
+/// Name pass: the directory's own `.txt` files, values skipped without
+/// defining variables. Effect lookup finds the name by token hash and
+/// requires a template registered by this pass.
 pub fn names(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
     let mut names = BTreeSet::new();
     for path in crate::script_files::paths(layers, "common/scripted_effects/", Some(".txt")) {
@@ -102,7 +100,7 @@ pub fn names(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
     Ok(names)
 }
 
-/// The name pass over one file, using the same CReader as the body readers.
+/// The name pass over one file, using the same reader as the body readers.
 pub fn file_names(bytes: &[u8]) -> BTreeSet<Vec<u8>> {
     native::read(
         bytes,

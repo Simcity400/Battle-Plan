@@ -268,11 +268,11 @@ fn state_rows_and_names_grow_before_first_and_later_publication() {
 /// denies the table.
 #[test]
 fn both_display_names_are_copied_exactly_with_off_thread_growth() {
-    let long = b"Sjoelland og Lolland-Falster".to_vec();
+    let long = b"Synthetic State Display Name".to_vec();
     let memory = named_states(3, &|index| match index {
-        1 => (Vec::new(), b"Hovedstaden".to_vec()),
+        1 => (Vec::new(), b"Region Beta".to_vec()),
         2 => (long.clone(), Vec::new()),
-        _ => (b"Nord".to_vec(), b"Nordjylland Amt".to_vec()),
+        _ => (b"Tiny".to_vec(), b"Test Region AAA".to_vec()),
     });
     let mut rows = census_rows(3);
     let mut arena = vec![0_u8; 256];
@@ -280,11 +280,11 @@ fn both_display_names_are_copied_exactly_with_off_thread_growth() {
     assert_eq!(walk.outcome, Outcome::Rows { len: 3 });
     let text = |span: NameSpan| &arena[span.start..span.start + span.len];
     assert_eq!(text(rows[0].custom_name), b"");
-    assert_eq!(text(rows[0].owner_name), b"Hovedstaden");
+    assert_eq!(text(rows[0].owner_name), b"Region Beta");
     assert_eq!(text(rows[1].custom_name), long.as_slice());
     assert_eq!(text(rows[1].owner_name), b"");
-    assert_eq!(text(rows[2].custom_name), b"Nord");
-    assert_eq!(text(rows[2].owner_name), b"Nordjylland Amt");
+    assert_eq!(text(rows[2].custom_name), b"Tiny");
+    assert_eq!(text(rows[2].owner_name), b"Test Region AAA");
     let total = 11 + long.len() + 4 + 15;
     assert_eq!((walk.bytes_len, walk.required_bytes), (total, total));
     // Too small an arena keeps the prefix that fits and asks for the rest.

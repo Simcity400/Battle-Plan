@@ -9,8 +9,8 @@ export const FACTION_APART = 8;
 
 /** Every recorded faction's campaign colour: the user's choice when there is one,
  * otherwise a default. The default is the leader's map colour exactly as recorded,
- * grey included (the user's decision, over spec 2.1's "fixed away from grey"), where
- * the leader is known; else the first categorical palette colour, in order, that
+ * grey included, where the leader is known; else the first categorical palette
+ * colour, in order, that
  * clashes with no colour placed before it. Only a default that clashes (is closer than
  * `FACTION_APART`) with a user's choice or an earlier default is moved, by the smallest
  * change of lightness that tells them apart, its hue and chroma kept, so a grey stays

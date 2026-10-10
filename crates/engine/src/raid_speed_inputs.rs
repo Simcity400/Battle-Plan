@@ -1,33 +1,23 @@
-//! Stored inputs of `CalculateRaidUnitSpeed@141453880`, which
-//! `CRaidInstance::HourlyUpdate@140FDA5A0` adds to the travelled distance
-//! (`+0x50`) every phase-4 hour and the raid arrow divides by. The function
-//! is pure; its branches, as the game takes them:
+//! Stored raid speed inputs. Each phase-4 hour adds speed to travelled
+//! distance at +0x50; the raid arrow also uses speed as its denominator.
 //!
-//! - transport planes (`EssentialNeedsTransportPlanes@140A90AA0`): the largest
-//!   stat 0x3e (`CEquipmentVariant+0x2F0`) over the raid pool's entries with
-//!   a nonzero amount whose variant has the `air_transport` category (bit 20
-//!   of `+0x408`); without one, the same over the owner's stockpile
-//!   (`CCountry+0xF68` -> `CProductionStatus+0x200`); without either, 100000;
-//! - convoys (`EssentialNeedsConvoys@140A90A80`): the NNavy defines only;
-//! - otherwise the wing (the unit's `+8` reference) through
-//!   `CAirWing::GetAceModifiedMaxSpeed@140F4B5E0`, else the army (the `+0`
-//!   reference) stat block's `+0x290`.
+//! - Transport planes: the largest stat 0x3e over nonzero raid-pool entries
+//!   whose variant has the air-transport category bit. If none qualify,
+//!   use the owner's stockpile; if neither pool qualifies, use 100000.
+//! - Convoys: the navy speed defines.
+//! - Otherwise: the wing's ace-modified maximum speed when its reference
+//!   resolves, else the army stat block's maximum speed at +0x290.
 //!
-//! The rest is content: `NMilitary.LAND_SPEED_MODIFIER`,
-//! `NNavy.NAVAL_SPEED_MODIFIER`, `NNavy.NAVAL_TRANSFER_BASE_SPEED`,
-//! `NRaids.RAID_UNIT_SPEED_MULTIPLIER`, `NAir.ACE_WING_SIZE(_MAX_BONUS)` and
-//! the raid type's `speed_multiplier`. `(x * 0x29F16B11C6D1E109 >> 64) >> 14`
-//! with the sign correction is the compiled `x / 100000`.
+//! The remaining operands come from content: land and naval speed modifiers,
+//! naval transfer base speed, raid speed multiplier, ace wing-size limits
+//! and the raid type's speed multiplier. Scaling divides by 100000.
 //!
-//! The transport stats are read here although VariantStats records stat
-//! 0x3e: that table is daily, the game reads the stat every phase-4 hour, and
-//! the stat's writers (`BD0560`/`BD0770`) are not proven daily-only.
+//! Transport stats are read each phase-4 hour. The daily VariantStats table
+//! does not establish that those stats stay unchanged within a day.
 //!
-//! The ace's two country terms, `ace_effectiveness_factor` on its owner and
-//! `air_ace_bonuses_factor` on the wing's country, are country modifier totals
-//! the launch walk records every hour for every country
-//! (`raid_launch_inputs::CommandPowerRow`); a row names the two countries by
-//! canonical slot instead of reading the values again.
+//! The ace owner's effectiveness factor and the wing country's ace-bonus
+//! factor are country modifier totals recorded hourly by the launch walk.
+//! Rows identify both countries by canonical slot instead of rereading totals.
 //!
 //! No engine function is called.
 
@@ -42,12 +32,11 @@ use crate::{
     walk::Outcome,
 };
 
-/// `CAirWing+0x580`, the wing's maximum speed `GetAceModifiedMaxSpeed` scales.
+/// Wing maximum speed at +0x580, before ace scaling.
 pub const WING_MAX_SPEED: usize = 0x580;
 /// The army stat block's maximum speed (`CUnit+0x138` -> `+0x290`).
 pub const ARMY_MAX_SPEED: usize = 0x290;
-/// `CRaidInstance+0x1A0`, the hour `End@140FD7600` stores (`CGameState+0x468`),
-/// valid while `+0x1B0` is set.
+/// Stored raid end hour at +0x1A0, valid while +0x1B0 is set.
 pub const END_HOUR: usize = 0x1a0;
 pub const END_PRESENT: usize = 0x1b0;
 /// `CRaidInstance+0xC8`: the raid unit's army then air wing references.
@@ -55,6 +44,7 @@ pub const ARMY_REFERENCE: usize = craid_instance::UNIT;
 pub const WING_REFERENCE: usize = craid_instance::UNIT + 8;
 /// The air transport category bit of `CEquipmentVariant+0x408`.
 pub const AIR_TRANSPORT: u64 = 0x10_0000;
+/// Variant stat 0x3e at +0x100 + 8 * 0x3e.
 pub const TRANSPORT_SPEED_STAT: usize = cequipment_variant::MAXIMUM_SPEED_CACHE_CANDIDATE;
 /// `CAce+0x170` -> `+0x38` CModifier, whose accumulator is at `+0x10`.
 pub const ACE_TYPE_ACCUMULATOR: usize = 0x38 + 0x10;
@@ -116,8 +106,8 @@ pub struct Walk {
 
 /// Whether a raid's speed inputs are recorded: phase 4, or ended (not
 /// cancelled) at most an hour before `hour`, while its arrow's unit may still
-/// be flying (`CRaidArrow::UpdateForRaid@141CD75A0` shows it until the
-/// displayed progress reaches 0.999, render state that is not stored).
+/// be flying. The arrow remains visible until displayed progress reaches
+/// 0.999; that render state is not stored.
 pub fn live(phase: i32, outcome: i32, end_hour: Option<i32>, hour: i32) -> bool {
     phase == craid_instance::PHASE_IN_PROGRESS
         || (phase == craid_instance::PHASE_ENDED
@@ -797,7 +787,7 @@ mod tests {
         use crate::{allocation_equipment_row as allocation, cequipment_type, raid_equipment};
         const ALLOCATIONS: usize = 0x6200;
         const ARCHETYPES: [usize; 2] = [0x7_0000, 0x7_1000];
-        /// `AddVariantQuantity@140FF7A30`'s clamp: a saturated total.
+        /// A saturated stored variant-quantity total.
         const SATURATED: i64 = 0x53e2_d620_fb40;
         let mut memory = fixture();
         for (variant, id) in [(TRANSPORT, 41_u64), (RIFLE, 42)] {

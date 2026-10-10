@@ -139,8 +139,8 @@ impl Regions {
                 .map_err(|error| error.to_string())
                 .and_then(|text| catalogue::plain_text(&text));
             let (name, missing) = match name {
-                // 1415938B0 stores successful empty localisation too;
-                // GetName@140E0EB10 returns the template's text unchanged.
+                // Successful empty localisation is stored too; the template's name text
+                // is returned unchanged.
                 Ok(name) => (Some(name), None),
                 Err(reason) => (None, Some(reason)),
             };
@@ -182,8 +182,8 @@ impl Regions {
                 result.warnings.extend(
                     crate::scripted_text::live_state_warnings(&content.warnings).map(str::to_owned),
                 );
-                // CStateTemplate::ReadToken@140AAF580 appends each valid province,
-                // repeats included; 140AAD450 keeps the first template for an id.
+                // Each valid province is appended, repeats included;
+                // the first template for an id is kept.
                 for state in content.states.definitions().values() {
                     result
                         .states

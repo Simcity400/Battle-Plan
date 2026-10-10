@@ -144,7 +144,7 @@ fn game_score_shared_content_warnings_leave_typed_score_observations_intact() {
 
 #[test]
 fn game_score_count_arithmetic_keeps_wrapping_scale_and_signed_truncation() {
-    // 1406D8920 retains multiplication by Q before division, even on overflow.
+    // Multiplication by Q is retained before division, even on overflow.
     assert_eq!(count_score(i32::MAX, Q), 30_280_923_962_904);
     assert_ne!(count_score(i32::MAX, Q), i64::from(i32::MAX) * Q);
     assert_eq!(count_score(i32::MIN, i64::MAX), 2_147_483_648);

@@ -1,6 +1,5 @@
 //! Controlled faults in the production Scene, never a runtime fault switch.
-//! Native order: 140B481A0/141268C60; targets/post: 140FF2410/140FF3450;
-//! D24S8: 1423FFAB0/1423FB4F0; shadow clear/blur: 1422C4E30/1422C5D30.
+//! Covers depth/stencil allocation and shadow clearing/blur.
 //! These tests prove viewer refusal/recovery, not native exception policy or depth precision.
 use super::*;
 use std::{
@@ -120,10 +119,9 @@ impl Faults {
     }
 }
 
-/// Supply an external JSON via BATTLE_PLAN_SCENE_FAILURE_INPUT:
-/// replay, game, user, cache, output, branch, hour, camera ([x,z,height]).
-/// Use the runbook's S99 decided hour and an admitted-mesh camera below the shadow cutoff.
-/// `output` is a captures directory; each ignored check creates a new child directory.
+/// Supply an external JSON via BATTLE_PLAN_SCENE_FAILURE_INPUT: replay, game, user, cache, output, branch,
+/// hour and camera ([x,z,height]). Use a decided hour and an admitted-mesh camera below the shadow
+/// cutoff. Each ignored check creates a new child directory under `output`.
 #[derive(serde::Deserialize)]
 pub(crate) struct Input {
     replay: PathBuf,

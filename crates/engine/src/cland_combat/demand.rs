@@ -1,6 +1,6 @@
-//! Off-thread sizing hints, never recorded facts. The mixed combat roster and
-//! side vectors are native array headers (1413CEE30, 1412A8760). The existing
-//! detail reader owns every count and native commander selection (14129E190).
+//! Off-thread sizing hints, never recorded facts. Combat roster and side
+//! vector headers supply demand; the detail reader owns all counts and
+//! commander selection.
 use super::{Commanders, DetailArenas, DetailCounts, Members, Reader, Source, read_details};
 use crate::{Memory, cgame_state, cpdx_array::Array};
 

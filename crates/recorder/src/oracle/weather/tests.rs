@@ -58,7 +58,7 @@ regions={0={region=0 temperature=-90071992547.40993
     assert_eq!(report.scalar_checks, 2);
     assert_eq!(report.limitations.len(), 5);
     assert!(report.limitations.contains_key(
-        "the manager serializer F0D8E0 omits the stored day/night array +0x370; these simulation values require a matched native read witness"
+        "the weather manager writer omits the stored day/night array; these simulation values require a matched native read witness"
     ));
 
     // Historical absence withholds temperature/mud comparisons and identifies

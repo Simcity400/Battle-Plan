@@ -1673,7 +1673,7 @@ fn acquire(
                     .filter(|entry| entry.copied)
                     .map(|entry| entry.row),
             );
-            // 140EBFEF0 identifies templates by their positive database index.
+            // Templates are identified by their positive database index.
             b.definitions.sort_unstable_by_key(|row| row.database_index);
             Outcome::Rows { len: count }
         };

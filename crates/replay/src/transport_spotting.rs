@@ -13,9 +13,8 @@ pub struct Defines {
 }
 
 impl Defines {
-    /// F99BF0 reads 14331BB98/14331C600/14331C688 in this order. Resolve their
-    /// native define names through installed_content::Defines::fixed5 using
-    /// this callback, with the recording's resolved vanilla/DLC/mod stack.
+    /// Resolve define names in order through installed_content::Defines::fixed5 using
+    /// this callback and the recording's resolved vanilla/DLC/mod stack.
     pub fn read<E>(
         mut fixed5: impl FnMut(&'static str, &'static str) -> Result<i64, E>,
     ) -> Result<Self, E> {
@@ -27,11 +26,11 @@ impl Defines {
     }
 }
 
-/// 140F99BF0's numeric term only. Cache[0] is raw mission+20; cache[1]+28.
-/// This does NOT include the later text-only weather lookup in that function.
-/// F9D6C0 separately supplies full combined NAVAL_DETECTION to D5AE30.
+/// Numeric detection multiplier only. Cache entries retain the stored
+/// mission ratio and bonus; the later text-only weather lookup is separate.
+/// Interception independently uses full combined NAVAL_DETECTION.
 /// Supply Ok(None) means authentic null mission backlink; Err is unavailable.
-/// Embedded authenticated TF missions normally supply Ok(Some(raw ratio)).
+/// Embedded authenticated task-force missions normally supply Ok(Some(raw ratio)).
 pub fn detection_multiplier(
     cache: [i64; 2],
     defines: Defines,

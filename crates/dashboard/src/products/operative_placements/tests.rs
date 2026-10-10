@@ -117,7 +117,7 @@ fn load_replay(replay: Replay, branch: u64) -> OperativePlacementReply {
             source_id: "operatives".into(),
             revision: "operative-fixture".into(),
         },
-        r"captures\astra\lead-pol-chord\synthetic.battleplan".into(),
+        r"fixtures/operative-placements.battleplan".into(),
         Arc::new(replay),
         &AtomicBool::new(false),
     )

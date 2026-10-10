@@ -2,17 +2,11 @@
 //!
 //! Dirty province boxes include the search halo (including wrapped cells); changes to a
 //! region's thickness or colour additionally invalidate all its provinces. This is the
-//! conservative equivalent of UpdateDirtyLayers' grown-box overlap rule. The search halo
+//! conservative equivalent of the grown-box dirty-layer overlap rule. The search halo
 //! is necessary even across another shape: the native buckets contain all boundaries.
 //!
-//! Verified 2026-09-25 on RTX 5090/Vulkan: both channels equal the CPU oracle over 27
-//! format-40 frames, 2,307 format-38 frames (reader at f5eea7aff0), and 600 synthetic
-//! comparisons. Six-hour display steps measured median field/stack CPU 114.25 ms versus
-//! update/encode 0.043 ms, plus 2.36 ms region derivation; GPU full 0.957 ms and incremental
-//! median 0.237 ms. Province metadata stays on the CPU because the kernel never reads it.
-//! Evidence: captures\political_gpu\{verify40,verify38,displayed38}.log.
-//! The 2026-09-26 review fixes also pass the WARP/DX12 fallback oracle (including large
-//! fields and shared views), the 600 Vulkan comparisons and a retained format-41 frame.
+//! Province metadata stays on the CPU because the compute kernel never reads it. CPU-oracle and GPU
+//! readback checks cover full and incremental updates, shared views and large fields.
 //!
 //! Sharing: [`Static`] holds what no hour or perspective changes (IDs, kernel, strategic
 //! geometry) per content and device. Each distinct displayed fill is a [`State`] with its own

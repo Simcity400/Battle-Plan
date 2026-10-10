@@ -100,7 +100,7 @@ export function tensionDrillHistory(model: TensionModel, keys: readonly string[]
   return { bands: [...bands, residual], world };
 }
 
-/** FUN_140eeffd0 supplies country aggregates independently of the source list.
+/** Country aggregates are supplied independently of the source list.
  * Keep every recorded identity and the exact difference from their native sum. */
 export function tensionDrillAt(model: TensionModel, hour: number) {
   const read = readAt(model, hour);

@@ -1,7 +1,7 @@
 use super::*;
 
-/// Sites of CStrategicAir's first list (+0x10/count+0x1C), in native order.
-/// Repeated bases remain repeated: 1406D8560 consumes each occurrence.
+/// Sites of the strategic-air subsystem's first list in stored order.
+/// Repeated bases remain repeated: each occurrence contributes to score.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct GameScoreAirSite {
     pub base: u64,
@@ -16,8 +16,8 @@ impl GameScoreAirSite {
 value_struct!(GameScoreAirSite { base: u64, access: u8, error: Vec<u8> });
 opaque_value!(Vec<GameScoreAirSite>);
 
-/// Every country-fleet occurrence, in roster order. 1406D93E0 adds the signed
-/// CFleet+0xC4 counts with i32 wrapping; this is not a ship census.
+/// Every country-fleet occurrence in roster order. Score adds stored
+/// signed task-force counts with i32 wrapping; this is not a ship census.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct GameScoreFleetCount {
     pub fleet: u64,
@@ -27,12 +27,12 @@ pub struct GameScoreFleetCount {
 value_struct!(GameScoreFleetCount { fleet: u64, task_forces: Option<i32>, error: Vec<u8> });
 opaque_value!(Vec<GameScoreFleetCount>);
 
-/// Hourly native operands for every canonical country's raw reference. Army
-/// reads CCountry+0x29C (1406D8920); Land reads +0x434 (1406E4B80), including
-/// a stale/reset header. Navy retains its ordered count witnesses above.
-/// Air (1406D8560) distinguishes an unreadable subsystem, a known null pointer
-/// and a present subsystem whose ordered first-site list may be empty.
-/// Every failed scalar/list read has its own named diagnostic; zero is known.
+/// Hourly score operands for every canonical country's raw reference.
+/// Army and Land retain stored counts, including stale/reset headers. Navy
+/// retains ordered count witnesses above. Air distinguishes an unreadable
+/// subsystem, a known null pointer and a present subsystem whose ordered
+/// first-site list may be empty. Each failed scalar/list read has its own
+/// named diagnostic; zero is known.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CountryGameScoreInputRow {
     pub country: u32,
@@ -90,12 +90,11 @@ row_codec!(CountryGameScoreInputRow, 32, |row| row.country as u128, |key| { coun
   6 => air_state: U8, 7 => air_error: Bytes, 8 => first_sites: Opaque, 9 => fleets: Opaque },
 |row| row.check());
 
-/// Hourly fields for every wing in the shared wing census, without score or
-/// access admission filters. Game score joins its ordered base registrations.
-/// 1406D8560 reads planes at CAirWing+0x7C and stored stat index0x33 through
-/// 140F4B740/140F4B7F0/140F49280, whose signed selector is CAirWing+0x980.
-/// The widened selector retains its native signed-byte range.
-/// Full wing handles are retained. Each failed operand is independently unknown.
+/// Hourly fields for every wing in the shared wing census, without score
+/// or access admission filters. Game score joins ordered base registrations.
+/// It reads stored plane count and stat 0x33 using the signed mission
+/// selector, widened while retaining its signed-byte range. Full wing
+/// handles are retained. Each failed operand is independently unknown.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AirWingGameScoreStatsRow {
     pub id: u64,
@@ -119,11 +118,10 @@ row_codec!(AirWingGameScoreStatsRow, 64, |row| row.id as u128, |key| { id: key a
     Ok(())
 });
 
-/// One hourly singleton with the six effective signed fixed5 NCountry defines.
-/// COUNTRY/ARMY/NAVY/AIR/INDUSTRY/PROVINCE_SCORE_MULTIPLIER live at
-/// 14331EBF8/14331EC90/14331ED28/14331EDB8/14331EE50/14331EEF8.
-/// These are independent reads, not defaults
-/// inferred from vanilla content. Part multipliers precede the total multiplier.
+/// One hourly singleton with six effective signed fixed5 NCountry defines:
+/// COUNTRY/ARMY/NAVY/AIR/INDUSTRY/PROVINCE_SCORE_MULTIPLIER. Each is read
+/// independently; no defaults are inferred from vanilla content. Part
+/// multipliers precede the total multiplier.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct GameScoreMultiplierRow {
     pub id: u32,

@@ -4,8 +4,8 @@ import { factionNameAt, UNNAMED_FACTION } from '../../dashboard/factionNames.ts'
 import type { FactionName } from '../../dashboard/factionNames';
 import { partyBadges } from '../ruling-party/partyData.ts';
 
-/** The event markers along the top of Stability & War support, as signed off
- * (mock-up politics-2): ⚔ wars and capitulations, ⚑ faction changes, ⚙
+/** The event markers along the top of Stability & War support:
+ * ⚔ wars and capitulations, ⚑ faction changes, ⚙
  * government changes (laws, advisors, ruling party) and ★ focuses completed.
  * Every event is dated as recorded; a start or end next to an unrecorded hour
  * is a gap, never an event. */

@@ -1,35 +1,33 @@
 //! Raw country/strategic-region air-efficiency modifier operand.
 //!
-//! CAirMission::CalculateSortieEfficiency 140F63380 passes its effective
-//! country and CAirMission+0x30 CStrategicRegion pointer to 1406E5AC0 with
-//! modifier key 0x11. That getter looks up the region pointer in the country
-//! map and reads the matched object's accumulator at +0x50. This reader only
-//! acquires the raw simulation operand; modifier metadata and the sortie law
-//! belong to the viewer.
+//! Sortie efficiency looks up the mission's region pointer in the effective
+//! country's map and reads key 0x11 from the matched object's accumulator.
+//! This reader acquires the raw simulation operand; modifier metadata and the
+//! sortie calculation belong to the viewer.
 
 use crate::{Memory, ccountry, cstrategic_region, modifier_accumulator, read};
 
-/// Country map start; 1406E5AC0 passes country+0x4D8 to 1406BC8A0.
+/// Country region-map header.
 const COUNTRY_REGION_MAP: usize = 0x4d8;
-/// 1406E5AC0 compares the lookup result to the map's sentinel at +0x08.
+/// Map sentinel used to identify a lookup miss.
 const MAP_SENTINEL: usize = 0x08;
-/// 1406BC500 increments the native unordered-map size at +0x10.
+/// Unordered-map stored size.
 const MAP_SIZE: usize = 0x10;
-/// 1406BC8A0 indexes 16-byte last/first bucket pairs through +0x18.
+/// Array of 16-byte last/first bucket pairs.
 const MAP_BUCKETS: usize = 0x18;
-/// 1406BC8A0 ANDs the FNV-1a key hash with the mask at +0x30.
+/// Mask applied to the FNV-1a pointer-key hash.
 const MAP_MASK: usize = 0x30;
-/// 14070DED0 writes bucket count at +0x38 and mask=count-1 at +0x30.
+/// Bucket count; the stored mask is count minus one.
 const MAP_BUCKET_COUNT: usize = 0x38;
-/// 1406BC8A0 compares each node's key at +0x10 and follows its next at +0x08.
+/// Node key used during lookup; the next pointer advances the chain.
 const NODE_STRIDE: usize = 0x20;
-/// 1406E5AC0 loads the matched node's per-region object pointer at +0x18.
+/// Matched node pointer to its per-region object.
 const NODE_VALUE: usize = 0x18;
-/// 1406E5AC0 passes the per-region object's accumulator at +0x50 to 140551820.
+/// Per-region object's modifier accumulator.
 const REGION_ACCUMULATOR: usize = 0x50;
-/// 1406BE9E0 installs this vtable in the per-region object used by 1406DCC70.
+/// Per-region object primary vtable.
 const REGION_OBJECT_VTABLE_RVA: usize = 0x027d_0c50;
-/// 140F63944 passes this key to the country-region modifier getter.
+/// Modifier key used for country/region sortie efficiency.
 pub const SORTIE_EFFICIENCY_KEY: u32 = 0x11;
 
 /// One country's authenticated region map header, read once for all of that
@@ -121,7 +119,7 @@ impl CountryMap {
         if Some(u64::from_le_bytes(second)) != vtable(cstrategic_region::SECONDARY_VTABLE_RVA) {
             return Err("air modifier region secondary identity invalid");
         }
-        // 1406BC8A0 hashes all eight little-endian pointer bytes with FNV-1a.
+        // Hash all eight little-endian pointer bytes with FNV-1a.
         let index = hash(region as u64) & mask;
         let bucket = buckets
             .checked_add(
@@ -132,8 +130,8 @@ impl CountryMap {
             )
             .ok_or("air modifier bucket address overflow")?;
         let pair = read::<[u8; 16]>(memory, bucket).ok_or("air modifier bucket unreadable")?;
-        // 1406BC500 inserts after bucket[0] and updates it as the last node;
-        // 1406BC8A0 begins at bucket[1] and advances until bucket[0].
+        // Insertion updates bucket[0] as the last node. Lookup starts at
+        // bucket[1] and advances through bucket[0].
         let last = word(&pair, 0)?;
         let first = word(&pair, 8)?;
         if first == sentinel && last == sentinel {

@@ -807,7 +807,7 @@ fn units(
     }
     match &map.terrain {
         Some((definitions, _)) => {
-            // The commander content's terrain lookup (1403BCA00): the
+            // The commander content's terrain lookup: the
             // registered spelling of a type found without case.
             let names: Vec<String> = definitions
                 .categories
@@ -1128,6 +1128,8 @@ mod tests {
 
     #[test]
     fn state_history_uses_kept_state_sources_and_diagnostics_from_the_same_read() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use std::{
             fs,
             time::{SystemTime, UNIX_EPOCH},
@@ -1230,7 +1232,7 @@ mod tests {
 
     #[test]
     fn counted_effect_warnings_reach_the_corpus_report() {
-        let warning = "common/national_focus/gap.txt: line 3: Deferred effect `set_capital`: value reader 0x140534280, key reader 0x1403B4F40; by-key reading retained (count: 2)".to_owned();
+        let warning = "common/national_focus/gap.txt: line 3: Deferred effect `synthetic_effect`: value reading is unavailable; by-key reading retained (count: 2)".to_owned();
         let mut log = Log::default();
         log.typed("focus", [(installed_content::DiagnosticKind::Unsupported, warning)]);
         assert_eq!(log.diagnostics.len(), 1);
@@ -1238,12 +1240,14 @@ mod tests {
         assert_eq!(note.kind, Kind::Unsupported);
         assert_eq!(note.file.as_deref(), Some("common/national_focus/gap.txt"));
         assert_eq!(note.line, Some(3));
-        assert!(note.message.contains("key reader 0x1403B4F40"));
+        assert!(note.message.contains("by-key reading retained"));
         assert!(note.message.contains("count: 2"));
     }
 
     #[test]
     fn raid_reader_notes_reach_the_corpus_once_with_their_producer_kinds() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use std::{
             fs,
             time::{SystemTime, UNIX_EPOCH},
@@ -1411,6 +1415,8 @@ mod tests {
 
     #[test]
     fn raid_tooltip_kinds_follow_their_fields() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut raid = RaidType {
             name: "odd".into(),
             ..Default::default()

@@ -1,0 +1,10 @@
+//! Unit-counter stack update receiver.
+
+/// Stack update entry.
+pub const UPDATE_RVA: usize = 0x018f_fe60;
+/// Exact stack-update entry sentinel.
+pub const UPDATE_SENTINEL: [u8; 16] = [
+    0x44, 0x88, 0x4c, 0x24, 0x20, 0x44, 0x88, 0x44, 0x24, 0x18, 0x55, 0x53, 0x41, 0x55, 0x41, 0x56,
+];
+/// Grid pointer after stack update.
+pub const GRID: usize = 0x88;

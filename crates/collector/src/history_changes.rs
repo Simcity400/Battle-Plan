@@ -2,7 +2,7 @@
 //! histories AirNavalPatrolHistories records ([`engine::air_history_mutations`]).
 //! A detour only notifies the shared watch registry ([`WatchRegistry`]),
 //! counts its writer site and calls the original; it never changes game
-//! behaviour. Receivers are CStrategicAir objects and histories the collector
+//! behaviour. Receivers are strategic air objects and histories the collector
 //! registered; a notification never infers an owner. Anything unobserved
 //! (disabled, poisoned, a refused registration, an epoch change) makes the
 //! collector read afresh.
@@ -318,7 +318,7 @@ unsafe extern "system" fn region_history(air: usize, region: i32) -> usize {
         unsafe { std::mem::transmute(ORIGINAL[0].load(Ordering::Acquire)) };
     unsafe { original(air, region) }
 }
-/// The receiver is `CLoopHistory+8`; the history itself is registered.
+/// The receiver is the embedded history storage; the history itself is registered.
 unsafe extern "system" fn advance(windows: usize) {
     let _notification = WATCHES.notify(windows.wrapping_sub(8), 1);
     let original: unsafe extern "system" fn(usize) =

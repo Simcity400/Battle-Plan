@@ -62,7 +62,9 @@ fn fixture() -> DecodedFrame {
 }
 
 #[test]
-fn named_carriers_use_pool_country_and_native_roster_order() {
+fn named_carriers_use_pool_country_and_roster_order() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let f = fixture();
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
@@ -99,6 +101,8 @@ fn named_carriers_use_pool_country_and_native_roster_order() {
 
 #[test]
 fn named_carriers_resolve_the_last_of_five_thousand_countries() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let tags = (0..5_000)
         .map(|i| {
             String::from_utf8(vec![
@@ -170,6 +174,8 @@ fn named_carriers_resolve_the_last_of_five_thousand_countries() {
 
 #[test]
 fn prefix_misses_clear_but_countryless_prefixes_keep_caller_and_faults_refuse() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = fixture();
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
@@ -184,7 +190,7 @@ fn prefix_misses_clear_but_countryless_prefixes_keep_caller_and_faults_refuse() 
                 Ok(Some(Scope::Unit(UNIT)))
             );
         }
-        // 14146DB00 accepts no raid:/unit: namespace. Native producers are
+        // Scope keys accept no raid:/unit: namespace. Carriers come from
         // carried THIS/ROOT/FROM/PREV, saved targets, and tagged raid variables.
         for key in ["unit:8", "raid:7"] {
             assert_eq!(
@@ -217,6 +223,8 @@ fn prefix_misses_clear_but_countryless_prefixes_keep_caller_and_faults_refuse() 
 
 #[test]
 fn carried_targets_round_trip_links_seeds_and_description_storage() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let f = fixture();
     with_world(&f, "", Err("none"), |world| {
         for (scope, object) in [
@@ -269,7 +277,7 @@ fn carried_targets_round_trip_links_seeds_and_description_storage() {
                 )
                 .unwrap();
             if matches!(scope, Scope::Project { .. }) {
-                assert!(selected.is_none()); // 14052DE40 omits PROJECT.
+                assert!(selected.is_none()); // Saved targets omit PROJECT.
             } else {
                 let selected = selected.unwrap();
                 assert_eq!(selected.this, scope);
@@ -287,6 +295,8 @@ fn carried_targets_round_trip_links_seeds_and_description_storage() {
 
 #[test]
 fn saved_carriers_follow_the_context_and_variable_readers() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let f = fixture();
     with_world(&f, "", Err("none"), |world| {
         let graph = Rc::new(RefCell::new(EventScopes::new(vec![EventScope::of(
@@ -319,13 +329,15 @@ fn saved_carriers_follow_the_context_and_variable_readers() {
             ),
             Ok(Some(Scope::Unit(UNIT)))
         );
-        // ResolveVariableStorage skips UNIT; no invented tagged UNIT value.
+        // Storage resolution skips UNIT; no invented tagged UNIT value.
         assert_eq!(evaluator.scoped_value(b"event_target:unit", caller), Ok(0));
     });
 }
 
 #[test]
 fn tagged_variables_decode_recorded_carriers_without_reading_object_stores() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = fixture();
     *f.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
@@ -368,7 +380,7 @@ fn tagged_variables_decode_recorded_carriers_without_reading_object_stores() {
                 evaluator
                     .scoped_value(b"THIS.progress", Scopes::of(scope))
                     .unwrap_err()
-                    .contains("CVariables")
+                    .contains("variable store")
             );
         }
         assert_eq!(
@@ -403,7 +415,9 @@ fn tagged_variables_decode_recorded_carriers_without_reading_object_stores() {
 }
 
 #[test]
-fn carrier_random_list_identity_uses_native_hash_arms() {
+fn carrier_random_list_identity_uses_object_hash_arms() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let f = fixture();
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
@@ -426,6 +440,8 @@ fn carrier_random_list_identity_uses_native_hash_arms() {
 
 #[test]
 fn persisted_carrier_targets_name_the_missing_reference_and_keep_raid_context() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = fixture();
     *f.tables[TableId::GlobalSavedEventTargets.index()] =
         TableView::Complete(TableRows::GlobalSavedEventTargets(
@@ -450,10 +466,10 @@ fn persisted_carrier_targets_name_the_missing_reference_and_keep_raid_context() 
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
         let caller = Scopes::of(Scope::Country(1));
-        for (name, offset) in [
-            ("project", "0x58"),
-            ("unit", "0x38"),
-            ("industrial_organisation", "0x40"),
+        for (name, reference) in [
+            ("project", "project"),
+            ("unit", "unit"),
+            ("industrial_organisation", "organisation"),
         ] {
             let parsed =
                 installed_content::scope::parse(&format!("event_target:{name}"), false, world.recorded());
@@ -461,7 +477,7 @@ fn persisted_carrier_targets_name_the_missing_reference_and_keep_raid_context() 
                 evaluator
                     .enter(&parsed, caller)
                     .unwrap_err()
-                    .contains(&format!("full CSavedEventTarget+{offset}"))
+                    .contains(&format!("full {reference} reference"))
             );
         }
         let raid = installed_content::scope::parse("event_target:raid_instance", false, world.recorded());
@@ -470,7 +486,7 @@ fn persisted_carrier_targets_name_the_missing_reference_and_keep_raid_context() 
             evaluator
                 .scoped_scope(b"event_target:raid_instance", caller)
                 .unwrap_err()
-                .contains("full CSavedEventTarget+0x50")
+                .contains("full raid reference")
         );
     });
 }

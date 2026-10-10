@@ -44,7 +44,7 @@ export function bands(reply: PartyHistoryReply, palette: readonly string[]): Ban
 }
 
 /** The ruling party's band first (the bottom of the stack and the legend's first
- * entry, as signed off in mock-ups politics-1/2), the others in content order. */
+ * entry), the others in content order. */
 export function rulingFirst(list: readonly Band[], ruling: string | null): Band[] {
   const index = list.findIndex(band => band.token === ruling);
   return index <= 0 ? [...list] : [list[index], ...list.slice(0, index), ...list.slice(index + 1)];

@@ -277,7 +277,7 @@ fn identity_fixture(kind: u32) -> (Fixture, u64, usize, usize) {
 
 #[test]
 fn ship_sizing_borrows_the_native_nullable_receiver_and_authenticated_ship_header() {
-    // E8B8E0 skips null missions/backlinks before F9D6C0/C296B0 reaches SHIPS.
+    // Null missions and backlinks are skipped before ship-array demand.
     for kind in [
         ctask_force::DEFAULT_HANDLE_TYPE,
         ctask_force::OBSERVED_SHIP_SPACE_HANDLE_TYPE,

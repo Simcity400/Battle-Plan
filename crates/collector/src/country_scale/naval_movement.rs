@@ -211,7 +211,7 @@ fn owners<M: Memory>(
                 observed.name_failure.get_or_insert(reason);
             }
         }
-        // The same authenticated primary CUnit owns the supply header. A
+        // The same authenticated primary unit owns the supply header. A
         // failed optional header cannot erase names or moving-owner floors.
         match engine::cunit_supply_inputs::origin_demand(memory, visit.task) {
             Ok(count) => match observed.supply_origins.checked_add(count) {
@@ -615,7 +615,7 @@ mod tests {
                     (id << 32) | ctask_force::DEFAULT_HANDLE_TYPE as usize,
                 );
                 world.pointer(task + ctask_force::FLEET, 0xd000);
-                // Authenticated retained CUnit name: genuine empty inline text.
+                // Authenticated retained unit name: genuine empty inline text.
                 world.pointer(task + 0x258 + 24, 15);
                 world.word(task + cunit::ROSTER_OWNER, 3);
                 world.array(task + cunit::ORDINARY_ROUTE_DATA, 0xf000, 1);
@@ -908,7 +908,7 @@ mod tests {
         let mut world = World::new();
         world.bytes.resize(0x11000, 0);
         // The older movement fixture needed only a short subset of each TF.
-        // Port+740 would alias the second TF's parent at that old spacing.
+        // The port field would alias the second task force's parent at that old spacing.
         // Give the second complete object its own range before adding fields.
         let second = world.bytes[0xdc00..0xe400].to_vec();
         world.bytes[0xe800..0xf000].copy_from_slice(&second);

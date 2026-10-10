@@ -1,37 +1,25 @@
 //! The arrival line a moving unit shows, from its fresh counter query.
 //!
-//! The game words it from one ceiling at two sites. `CArmyDivisionView::idea_tooltip`
-//! (`armiesview.cpp`, `141691B40`) takes `eta_remaining` (`140BECF90`) over the stored route —
-//! what the legacy `DivisionEtaInputs` operands reconstruct — and writes `UNIT_VIEW_MOVE_HOURS` or
-//! `UNIT_VIEW_MOVE_DAYS_HOURS`. `CUnitCounterItem::tooltip_builder` (`1418C00D0`) writes the same
-//! sentence on the **map counter** as `UNIT_MOVING_HOURS` / `UNIT_MOVING_DAYS_HOURS`, and switches
-//! to the `_NONPLAYER` pair over the **next** province for a unit the viewing player does not own
-//! (`ccountry_tag::same_country` against the idler's country). The viewer has no division view, so
-//! its counter hover carries the line, in the counter tooltip's own wording.
+//! Map-counter wording uses the moving-hours or moving-days-and-hours localisation keys.
+//! Foreign units use the nonplayer pair and the next province. Fresh inputs must match
+//! the displayed hour, with independent transport, normal, railway and naval refusals.
+//! First-edge progress is subtracted only when the searched edge matches the stored
+//! ordinary first edge.
 //!
-//! The counter arrival uses 140BED280 → 140BED3A0's cache-miss calculation:
-//! a new native route search followed by 140BECF90 over that searched route.
-//! Fresh inputs must match the displayed frame's hour, with independent
-//! transport, normal, railway and naval refusals. Actual first-edge progress is subtracted
-//! only when the searched first edge matches the stored ordinary first edge.
-//! The native interface's retained duration cache and route option are local
-//! presentation state; the viewer uses its explicit default route policy and
-//! does not read or capture that cache. A retained native cache value may differ
-//! from a fresh query until its five-unit-update lifetime expires.
-//!
-//! Both sites use [`engine::cunit::eta_hours`] (`14047BDE0`), narrowed to i32.
-//! The division view's legacy `arrival` test helper omits nonpositive hours. The map
-//! counter's [`map_arrival`] formats every reached query result: signed days<1
-//! uses total hours, otherwise days and the hours remainder.
+//! The viewer uses its explicit default route policy. A game's retained duration cache
+//! can differ from a fresh query during its five-unit-update lifetime.
+//! [`engine::cunit::eta_hours`] is narrowed to i32. The legacy `arrival` helper omits
+//! nonpositive hours; [`map_arrival`] formats every reached query result. Signed days
+//! below one use total hours; other results use days and the hours remainder.
 
 use engine::cunit::eta_hours;
 
 /// One counter's arrival, in the parts the game's sentence names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Arrival {
-    /// The game's `hours / 24`.
+    /// The `hours / 24`.
     pub days: i32,
-    /// The game's `hours % 24`.
+    /// The `hours % 24`.
     pub hours: i32,
 }
 
@@ -49,8 +37,8 @@ pub fn arrival(remaining: i64) -> Option<Arrival> {
     })
 }
 
-/// CUnitCounterItem@1418C00D0 formats every reached query result. The native
-/// days<1 arm passes the total signed hours, including zero and negative hours.
+/// Format every reached query result. When the whole-day count is below one,
+/// pass the total signed hours, including zero and negative values.
 pub(crate) fn map_arrival(remaining: i64) -> Arrival {
     let total = eta_hours(remaining) as i32;
     let days = total / 24;
@@ -67,13 +55,10 @@ pub(crate) fn map_arrival(remaining: i64) -> Arrival {
     }
 }
 
-/// The game's own sentence in the viewer's language: `UNIT_MOVING_HOURS` or
-/// `UNIT_MOVING_DAYS_HOURS`, with the `_NONPLAYER` pair for a stack the viewing
-/// country does not own, localised with the integer arguments `HOURS`, and
-/// `DAYS` for the days keys, as 1418C00D0 passes them (Localisation_FormatValue
-/// 1402E2E60, LocalizeWithTwoIntegers 1406BABB0). A key the content lacks is
-/// its own bytes (142230940). The counter builder validates the resulting
-/// native colour controls and inline artwork through its shared text reader.
+/// Format counter arrival with the content's moving-hours or moving-days-and-hours
+/// keys and their nonplayer variants. Integer arguments are `HOURS` and, where
+/// needed, `DAYS`. Missing keys retain their bytes. The shared text reader validates
+/// colour controls and inline artwork.
 pub fn sentence(
     localisation: &installed_content::localisation::Localisation,
     arrival: &Arrival,
@@ -183,7 +168,7 @@ mod tests {
             sentence(&localisation, &two, false).as_deref(),
             Ok("Next province in \u{11}Y1\u{11}! \u{11}Yday(s)\u{11}! and 5 h, .")
         );
-        // A key the content lacks is drawn as its bytes (142230940).
+        // A key the content lacks is drawn as its bytes.
         assert_eq!(
             sentence(&localisation, &one, false).as_deref(),
             Ok("UNIT_MOVING_HOURS_NONPLAYER")

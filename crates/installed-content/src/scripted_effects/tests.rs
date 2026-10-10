@@ -1,7 +1,9 @@
 use super::*;
 
 #[test]
-fn body_pass_uses_native_readers_and_appends_duplicate_templates() {
+fn body_pass_uses_readers_and_appends_duplicate_templates() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let names = crate::key_names::KeyNames {
         scripted_effects: [b"one".to_vec()].into(),
         ..Default::default()
@@ -25,7 +27,7 @@ fn body_pass_uses_native_readers_and_appends_duplicate_templates() {
     let unknown =
         crate::effect_keys::read_body(b"unknown_key={army_experience=2}", &names).unwrap();
     assert!(unknown[0].keyword_is("unknown_key"));
-    assert!(unknown[0].value.items().unwrap().is_empty()); // Native skips the invalid key's body; dispatcher names it.
+    assert!(unknown[0].value.items().unwrap().is_empty()); // The game skips the invalid key's body; dispatcher names it.
 }
 
 #[test]
@@ -40,6 +42,8 @@ fn name_pass_skips_bodies_and_folds_tokens() {
 
 #[test]
 fn names_resolve_recorded_stack_and_only_directory_files() -> io::Result<()> {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!("effect-names-{}", std::process::id()));
     let vanilla = root.join("base");
     let modded = root.join("mod");

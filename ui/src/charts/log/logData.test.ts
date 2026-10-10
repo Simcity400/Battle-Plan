@@ -93,7 +93,7 @@ test('a row’s date shows its day and month over its year', () => {
   assert.deepEqual(logDate(12), { day: 'Hour 12', year: '' });
 });
 
-test('log settings default to the signed-off look and fall back on bad values', () => {
+test('log settings use their defaults and fall back on bad values', () => {
   assert.deepEqual(logSettings(resolveOptions(LOG_OPTIONS, {})), { density: 'comfortable', months: false, animate: true, chips: true });
   assert.deepEqual(logSettings(resolveOptions(LOG_OPTIONS, { density: 'compact', months: true, rowAnimation: false, chips: false })),
     { density: 'compact', months: true, animate: false, chips: false });

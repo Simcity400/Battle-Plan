@@ -4,7 +4,7 @@ use replay::{
     rows::{VariantDefinitionRow, WingEquipmentRow, tables},
 };
 
-/// `SelectWingPrimaryEquipment@140F4B590 -> 140FFAC80`: largest signed
+/// Primary equipment is the largest signed
 /// amount in a nonempty bank, first native ordinal on ties; replay key order is unrelated.
 pub fn primary(rows: &[WingEquipmentRow], wing: u64) -> Option<u64> {
     let mut best: Option<&WingEquipmentRow> = None;
@@ -28,7 +28,7 @@ pub fn wing_primary(frame: &DecodedFrame, wing: u64) -> Result<Option<u64>, Stri
     ))
 }
 
-/// `141236ED0 -> 141236950/141237140`. Lookup is declaration-based:
+/// Aircraft model lookup is declaration-based:
 /// a declaration the renderer refuses still stops the native ladder. Read
 /// country/content operands only when the native branch needs them.
 pub fn resolve_lazy(
@@ -87,7 +87,7 @@ pub fn candidates(
     names
 }
 
-/// `141236950/141237140`: each prefix tries type, archetype, then sprite.
+/// Each prefix tries type, archetype, then sprite.
 /// The cosmetic prefix alone is conditional on a nonempty stored string.
 pub fn prefixed(
     cosmetic: &dyn Fn() -> Result<String, String>,

@@ -29,7 +29,7 @@ const NO_ROWS: readonly LogRow<ProjectAt>[] = [];
 /** The cells after a row's date: artwork, the sentence, its status and its factories. */
 const COLUMNS = '24px minmax(0, 1fr) auto 3.4em';
 
-/** Every construction project of the chosen countries as a log (mock-up style-5):
+/** Every construction project of the chosen countries as a log:
  * newest first, each with the game's building art, where it is, its levels, when it
  * started and finished and the factories on it. With Live on it follows playback, and
  * a project enters at the top as its reads show it start, build a level or end. */

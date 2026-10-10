@@ -81,15 +81,15 @@ impl Names {
             if tag.is_empty() || tag.contains('\0') {
                 continue;
             }
-            // snapshot@collector::experience_gains reads native +8/+C for every
-            // current positive country. complete describes awards, not identity.
+            // The gain census reads current positive country references and IDs.
+            // Complete describes awards, not identity.
             tags.insert(slot, (country.id, gain.instance, tag.to_owned()));
         }
         Ok(Self { slots, tags })
     }
     fn tag(&self, country: EventFeedCountry) -> Option<String> {
-        // ResolveCountryReference@140BA56A0's zero object is excluded from the
-        // gain census. Original-tag buckets/physical IDs do not prove its +C.
+        // The zero country object is excluded from the gain census.
+        // Original-tag buckets and physical IDs do not prove its recorded ID.
         if country.reference == 0 {
             return None;
         }

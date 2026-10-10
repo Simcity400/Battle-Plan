@@ -9,7 +9,7 @@ use std::cell::Cell;
 const MODULE: usize = 0x4000_0000;
 const START: usize = 0x10_0000;
 const COUNTRY_SIZE: usize = 0x1500;
-/// `map_air_country_region_modifier`'s country map at CCountry+0x4D8.
+/// Country region modifier map.
 const COUNTRY_REGION_MAP: usize = 0x4d8;
 const REGION_COVERAGE: usize = 0x50;
 const REASSIGNMENT_PENALTY: usize = 0xc0;

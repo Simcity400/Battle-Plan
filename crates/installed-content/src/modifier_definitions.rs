@@ -3,12 +3,9 @@
 //! precision, postfix). Built-in modifiers are defined in the executable, not in
 //! these files; their display comes from the recording, never from a list here.
 //!
-//! LoadScriptModifierDefinitions (1406025E0) gives each file its own CReader
-//! and reads it through the reader replay ([`native`]): keys until the end of
-//! the text, each a definition read by CPersistent::Read with
-//! SModifierDefinitonReader::vf4 (140604040) whatever its value, into a
-//! reader built fresh for the key (14060290B), whose stored values
-//! FindOrRegisterDynamicModifierDefinition (1405FF750) registers.
+//! Each file has its own reader replay ([`native`]): keys until the end
+//! of text each create a fresh definition reader, whatever their value.
+//! The values that reader stores are then registered under the key.
 
 use crate::{
     ResolvedLayers,
@@ -24,27 +21,27 @@ use std::{
     io,
 };
 
-/// A definition as 1405FF750 registers it.
+/// One registered scripted modifier definition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModifierDefinition {
     /// The name as first registered.
     pub token: String,
-    /// The reader's flags word (+0xC), each value ORed in by 140604040:
+    /// The flags word, each value ORed in:
     /// `value_type` percentage 0x1, percentage_in_hundred 0x80, yes_no 0x20
     /// (number adds nothing); `color_type` good 0x2, neutral 0x4 (bad adds
     /// nothing).
     pub flags: u32,
-    /// `precision` (+8), ReadScriptSignedInt32 (1424AB970); 2 as the reader
-    /// is built. Signed: a negative precision writes a value's decimals with
-    /// trailing zeros dropped.
+    /// `precision`, read as a signed integer; initially 2.
+    /// A negative precision writes a value's decimals with trailing zeros
+    /// dropped.
     pub precision: i32,
-    /// `postfix` (+0x10): days 1, hours 2, daily 4, each replacing the last;
-    /// `none` stores nothing; 0 as the reader is built.
+    /// `postfix`: days 1, hours 2, daily 4, each replacing the last;
+    /// `none` stores nothing; initially 0.
     pub postfix: u32,
 }
 
 impl ModifierDefinition {
-    /// The reader 1406025E0 builds for each key (14060290B).
+    /// A fresh definition reader for each key.
     fn new(token: String) -> Self {
         Self {
             token,
@@ -54,7 +51,7 @@ impl ModifierDefinition {
         }
     }
 
-    /// The postfix's localisation key, as 1405FF750 maps the stored value.
+    /// The postfix's localisation key for the stored value.
     pub fn postfix_key(&self) -> Option<&'static str> {
         match self.postfix {
             1 => Some("MOD_DAYS"),
@@ -69,11 +66,11 @@ impl ModifierDefinition {
 /// it with.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ModifierDefinitions {
-    /// By name folded: add_dynamic_token (1424A65A0 -> 1424A5EE0) folds A-Z
-    /// and compares without case (StringView_CompareNoCase 1424B6750).
+    /// By name folded: A-Z folds before hashing and case-insensitive
+    /// comparison.
     by_name: BTreeMap<Vec<u8>, ModifierDefinition>,
-    /// Native token names, including byte names the display projection
-    /// cannot hold as text (1406025E0 -> 1405FF750).
+    /// Registered token names, including byte names the display projection
+    /// cannot hold as text.
     registered: BTreeSet<Vec<u8>>,
     /// An unread suffix may register further modifier names.
     gap: Option<String>,
@@ -98,11 +95,11 @@ impl ModifierDefinitions {
         self.by_name.get(&key.as_bytes().to_ascii_lowercase())
     }
 
-    /// 1405FF750: a name already registered keeps its first definition,
-    /// the later block read only into its own discarded reader.
+    /// A name already registered keeps its first definition;
+    /// the later block reads only into its own discarded reader.
     fn register(&mut self, definition: ModifierDefinition) -> Registered {
-        // add_dynamic_token (1424A65A0) refuses a name starting with a digit
-        // or `-`, logged, and 1405FF750 registers nothing.
+        // A name starting with a digit or `-` is logged and refused,
+        // so nothing is registered.
         if matches!(
             definition.token.as_bytes().first(),
             Some(b'0'..=b'9' | b'-')
@@ -134,8 +131,7 @@ enum Node {
 
 /// One file as its reader reads it.
 fn read_file(input: &[u8]) -> native::Read {
-    // LoadScriptModifierDefinitions (1406025E0) constructs the lexer in mode 0
-    // (CTextLexer::constructor 1424A63A0).
+    // Each file constructs its own mode-0 lexer.
     native::read(
         input,
         native::Mode::KeepMark,
@@ -143,13 +139,10 @@ fn read_file(input: &[u8]) -> native::Read {
         None,
         &mut |node, field| match node {
             Node::Top => Shape::Object(Node::Definition),
-            // SModifierDefinitonReader::vf4 (140604040), keyword ids from
-            // register_authored_keys (140082CB0): `color_type` 0x4A62,
-            // `value_type` 0x4A63 and `postfix` 0x4A69 compare the value token's
-            // id (report_field_error 1424ACEE0, which skips nothing, on any
-            // other), `precision` 0x4A6C ReadScriptSignedInt32; `category` 0x2BE
-            // compares the value token's id, any other ReportUnexpectedToken
-            // (1424AD100), whose skip passes over a block; any other key returns
+            // `color_type`, `value_type` and `postfix` compare the value
+            // keyword; any other value reports an error without skipping.
+            // `precision` reads a signed integer. `category` compares the value
+            // keyword and skips an unexpected block. Any other key returns
             // with only its value token read.
             Node::Definition if field.keyword_is("category") => Shape::Skip,
             Node::Definition => Shape::One,
@@ -168,23 +161,23 @@ fn definitions(items: &[Item]) -> Vec<Result<ModifierDefinition, NotText>> {
                 let keyword = field.keyword().map(|keyword| keyword.folded());
                 let value = field.value_keyword();
                 match (keyword.as_deref(), value.as_deref()) {
-                    // good 0x4A64, neutral 0x3670; bad 0x4A65 adds nothing.
+                    // `good` and `neutral` add colour flags; `bad` adds nothing.
                     (Some(b"color_type"), Some("good")) => definition.flags |= 0x2,
                     (Some(b"color_type"), Some("neutral")) => definition.flags |= 0x4,
-                    // percentage 0x4A66, percentage_in_hundred 0x4A67,
-                    // yes_no 0x4A68; number 0x4A6D adds nothing.
+                    // `percentage`, `percentage_in_hundred` and `yes_no` add value
+                    // flags; `number` adds nothing.
                     (Some(b"value_type"), Some("percentage")) => definition.flags |= 0x1,
                     (Some(b"value_type"), Some("percentage_in_hundred")) => {
                         definition.flags |= 0x80;
                     }
                     (Some(b"value_type"), Some("yes_no")) => definition.flags |= 0x20,
-                    // days 0x296D, hours 0x3170, daily 0x4A6A; none 0x165
+                    // `days`, `hours` and `daily` replace the postfix; `none`
                     // stores nothing.
                     (Some(b"postfix"), Some("days")) => definition.postfix = 1,
                     (Some(b"postfix"), Some("hours")) => definition.postfix = 2,
                     (Some(b"postfix"), Some("daily")) => definition.postfix = 4,
-                    // `%i` (1424B02C0): EOF stores nothing, no match is
-                    // reported; both leave it as it was.
+                    // Integer scan: EOF stores nothing, no match is reported;
+                    // both leave it as it was.
                     (Some(b"precision"), _) => {
                         if let Scanned::Stored(value) =
                             scan_i32(field.value.scalar().unwrap_or_default())
@@ -200,17 +193,17 @@ fn definitions(items: &[Item]) -> Vec<Result<ModifierDefinition, NotText>> {
         .collect()
 }
 
-/// Every scripted modifier definition, the first registration of a name
-/// kept (1405FF750).
+/// Every scripted modifier definition, keeping the first registration
+/// of a name.
 pub fn read(layers: &ResolvedLayers) -> io::Result<(ModifierDefinitions, Vec<crate::Diagnostic>)> {
     let mut warnings = Vec::new();
     let mut scans = crate::modifiers::ScanFailures::default();
     let mut result = ModifierDefinitions::default();
     for path in script_files::paths(layers, "common/modifier_definitions/", Some(".txt")) {
         let read = read_file(&layers.read(&path)?);
-        // The native registrar takes the raw key's C string after its
-        // body returns. Keep that identity even when the display fields
-        // cannot represent its byte spelling as UTF-8.
+        // Registration takes the raw key's C string after its body returns.
+        // Keep that identity even when the display fields cannot represent
+        // its byte spelling as UTF-8.
         let complete = if read.unsettled.is_some() {
             read.items.len().saturating_sub(1)
         } else {
@@ -248,7 +241,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(ModifierDefinitions, Vec<cra
                         Registered::New => {}
                         Registered::Taken => repeated.push(token),
                         Registered::Rejected => warnings.push((crate::DiagnosticKind::Refused, format!(
-                            "Modifier definition {token} in {path} not registered: a name starting with a digit or `-` is refused (1424A65A0)."
+                            "Modifier definition {token} in {path} not registered: a name starting with a digit or `-` is refused."
                         ))),
                     }
                 }
@@ -262,7 +255,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(ModifierDefinitions, Vec<cra
         }
         if !repeated.is_empty() {
             warnings.push((crate::DiagnosticKind::Warning, format!(
-                "Modifier definitions in {path} already registered keep their first definition (1405FF750): {}.",
+                "Modifier definitions in {path} already registered keep their first definition: {}.",
                 repeated.join(", ")
             )));
         }
@@ -299,7 +292,7 @@ mod tests {
         assert_eq!(negative[1].precision, 2);
     }
 
-    /// 140604040 ORs each colour and value spelling into one flags word, so
+    /// Each colour and value spelling is ORed into one flags word, so
     /// a later `bad` or `number` keeps an earlier bit, and `postfix = none`
     /// stores nothing; any other key reads its value token only.
     #[test]
@@ -320,8 +313,8 @@ mod tests {
         );
     }
 
-    /// 1405FF750 keeps a name's first registration, whatever the later
-    /// spelling's case, and a lookup finds it without case.
+    /// A name keeps its first registration, whatever the later spelling's
+    /// case, and a lookup finds it without case.
     #[test]
     fn the_first_registration_of_a_name_is_kept() {
         let mut definitions = ModifierDefinitions::default();
@@ -339,11 +332,10 @@ mod tests {
     }
 
     /// The replay's classes through this reader: a quoted key is no keyword
-    /// and a quoted value no token (1424A7A90), a bare one folds; `%i`
+    /// and a quoted value no keyword, a bare one folds; integer scanning
     /// reads `010` as 8; a variable holds within its file; a block where one
-    /// value is read is read as the definition's fields; a value that is the
-    /// end of the text (0x13) is no keyword, whatever its text; a name that
-    /// is not UTF-8 is refused by name.
+    /// value is read becomes the definition's fields; the end of text is no
+    /// keyword, whatever its text; a name that is not UTF-8 is refused by name.
     #[test]
     fn the_replay_classes_hold_for_modifier_definitions() {
         let found = parse(

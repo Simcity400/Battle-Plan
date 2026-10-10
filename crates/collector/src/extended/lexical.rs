@@ -948,8 +948,8 @@ fn copy_pass(memory: &impl Memory, base: usize, job: &mut LexicalJob) {
     job.has_bulk = true;
     let total = witness.maximum() as usize + 1;
     if job.worker_growth {
-        // RebuildLexerTokenNameLookup@1424A8D20 grows the reverse table and
-        // recomputes its maximum. Retain this original writer-free witness.
+        // Reverse-table growth recomputes its maximum. Retain this original
+        // writer-free witness.
         let chunks = total.div_ceil(TABLE_CHUNK / TOKEN_NAME_STRIDE);
         if engine::allocation::reserve(&mut job.tokens, total).is_err()
             || engine::allocation::reserve(&mut job.chunks, chunks).is_err()

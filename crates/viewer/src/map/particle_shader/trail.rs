@@ -1,4 +1,4 @@
-//! CPU ribbon expansion14227FF00..14228042B; declaration142281B00.
+//! CPU expansion of particle trails into ribbon vertices.
 use super::{Instance, fail};
 use bytemuck::{Pod, Zeroable};
 use std::io;

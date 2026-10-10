@@ -1,4 +1,4 @@
-//! Native river submission: 141264830, registration 141261100.
+//! River submission with resolved effects and retained render state.
 use std::{collections::BTreeMap, io, ops::Range, sync::Arc};
 
 use eframe::wgpu;
@@ -59,7 +59,7 @@ impl River {
         depth: wgpu::TextureFormat,
         high: bool,
     ) -> io::Result<Self> {
-        // 1412648E4..8F4 selects by map-rendering options +0x18.
+        // Select river quality from map-rendering options.
         let technique = if high { "river" } else { "river_low_gfx" };
         let selection = effect
             .select(technique)
@@ -99,7 +99,7 @@ impl River {
             step: wgpu::VertexStepMode::Vertex,
             attributes,
         }];
-        // 141268C60 restores M+58 immediately before rivers; 141264830 forces M+70.
+        // Restore raster state immediately before rivers and force the river depth state.
         let raster = RasterizerState {
             front_ccw: true,
             ..Default::default()
@@ -147,8 +147,8 @@ impl River {
         let mut bound = Vec::new();
         for frame in inputs.frames {
             for run in geometry.runs {
-                // 1412624E8 alloc80; 141264A91..ABC copy matrix. 141264A8C writes
-                // time, AF0..B04 direction, A52 season zero. Tail76..79 is unknown.
+                // The 80-byte constant allocation carries the shadow matrix, time, direction and zero season.
+                // Bytes 76 through 79 remain unknown.
                 let mut constants = bytemuck::bytes_of(inputs.shadow_matrix).to_vec();
                 constants.extend_from_slice(bytemuck::cast_slice(&[
                     inputs.time,

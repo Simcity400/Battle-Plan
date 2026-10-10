@@ -43,9 +43,8 @@ pub(super) struct TrendScan {
     warnings: Vec<String>,
 }
 
-// P: 140FE98F0, ADD at 140FE9A1F/26; IMUL at 140FE9A68/8D;
-// IDIV at 140FE9A71/96. Keep native wrapping and truncation. Non-finite
-// native sums have no displayable mean and are refused instead of charted.
+// Keep wrapping and truncation in the summed mean. Non-finite sums
+// have no displayable mean and are refused instead of charted.
 fn mean(sum: i64, count: u32) -> Option<i64> {
     if count == 0 || !crate::products::finite_fixed64(sum) {
         return None;
@@ -111,9 +110,9 @@ impl TrendScan {
         garrisons: impl Iterator<Item = &'a replay::rows::StateGarrisonRow>,
         complete: bool,
     ) {
-        // P: 140FE9420 adds a state to the group vector and garrison map
-        // together; 140FEA0C0 -> 140FE83C0 removes it from both. Only a matching
-        // supplying inventory read establishes the complete held denominator.
+        // A state is added to or removed from the group vector and garrison map
+        // together. Only a matching supplying inventory read establishes
+        // the complete held denominator.
         self.read_hour = hour;
         self.inventory_complete = complete;
         self.dirty = true;
@@ -254,8 +253,8 @@ impl TrendScan {
                                 format!("slot {}, country {}", occupied.0, occupied.1),
                             );
                         }
-                        // P: StartResistance 140F85ED0 reads the occupied country's
-                        // +0xFD8 relation toward its controller; source is occupied.
+                        // Resistance reads the occupied country's relation toward its
+                        // controller; the source is occupied.
                         let read = self.collaboration.get(&(*occupied, *identity));
                         OccupationCollaboration {
                             tag: tag.cloned(),

@@ -82,6 +82,8 @@ fn descriptor_at(root: &Path) -> io::Result<Option<PathBuf>> {
 #[test]
 #[ignore = "Requires explicit external game/workshop/scratch/language paths; never runs a game"]
 fn operative_content_native_reader_corpus() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let game = required_path("BATTLE_PLAN_OPERATIVE_CORPUS_GAME");
     let workshop = required_path("BATTLE_PLAN_OPERATIVE_CORPUS_WORKSHOP");
     let scratch = required_path("BATTLE_PLAN_OPERATIVE_CORPUS_SCRATCH");
@@ -368,6 +370,8 @@ fn reader_entry(
 #[test]
 #[ignore = "Copies exact installed scripts to explicit external scratch; does not run a game or audit DLC/recording identity"]
 fn operative_content_script_reader_corpus() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let game = required_path("BATTLE_PLAN_OPERATIVE_CORPUS_GAME")
         .canonicalize()
         .unwrap();

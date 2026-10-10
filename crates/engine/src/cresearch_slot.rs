@@ -1,32 +1,26 @@
-//! CResearchSlot fields from the archived a729 active-research walk.
-//!
-//! The vtable's MSVC RTTI names CResearchSlot in the pinned executable.
-//! The slot holds a research-speed multiplier, not technology progress.
-//! Sources at `archive/pre-rewrite-2026-09-09`: collector
-//! `src/attach_log/offsets.rs:330-336` and
-//! `src/attach_log.rs::read_country_active_research_slots`.
+//! Active research-slot operands. The speed multiplier is separate from
+//! technology progress.
 
-/// CResearchSlot vtable; offsets.rs:330, old active-slot identity check, and a729 RTTI agree.
+/// Primary vtable.
 pub const VTABLE_RVA: usize = 0x0295_e328;
-/// CResearchSlot technology definition handle u32; old active-slot reader compares it to CTechnology+0x08.
+/// Technology definition handle, u32, matched against its token identity.
 pub const TECHNOLOGY_HANDLE: usize = 0x08;
-/// CResearchSlot CTechnologyStatus* owner; old active-slot reader validates the parent pointer.
+/// Owning technology-status pointer authenticated by backlink.
 pub const STATUS: usize = 0x10;
-/// CResearchSlot CTechnology*; offsets.rs:333 and old active-slot reader confirm a pointer at +0x18.
+/// Technology-definition pointer.
 pub const TECHNOLOGY: usize = 0x18;
-/// CResearchSlot banked idle days signed i64 fixed5; EC49E0 increments this qword by 100000 each idle day.
+/// Banked idle days, signed i64 fixed5, increased by one fixed5 day per idle day.
 pub const BANKED_DAYS: usize = 0x20;
-/// CResearchSlot applied saved days signed i64 fixed5; ECE4F0 moves the banked amount here on assignment.
+/// Applied saved days, signed i64 fixed5, moved from the bank on assignment.
 pub const APPLIED_DAYS: usize = 0x28;
-/// CResearchSlot signed i64 fixed5 research-speed multiplier; ECE4F0 writes EC1810's qword result and EBDB60 initializes 100000.
+/// Research-speed multiplier, signed i64 fixed5, initialized to one.
 pub const RESEARCH_SPEED: usize = 0x38;
-/// CResearchSlot native i32 ordinal; EBDB60 stores int, and the walker rejects negative/out-of-range bits against the positive array count.
+/// Signed i32 ordinal, validated against the positive array count.
 pub const INDEX: usize = 0x40;
-/// `CResearchSlot::SetTechnology@140ECE4F0` stores this lexer `empty` token
-/// to slot+8 at 140ECE9BC when slot+0x18 has no technology; `fixed_layout`
+/// Empty lexer token stored when no technology is assigned; `fixed_layout`
 /// checks its spelling and static range.
 pub const IDLE_HANDLE: u32 = 0x2a4e;
-/// CResearchSlot multiplier scale; ECE4F0 resets to 100000 and divides the days product by 100000.
+/// Multiplier scale used when resetting and dividing the saved-days product.
 pub const RESEARCH_SPEED_SCALE: i64 = 100_000;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -35,7 +29,7 @@ pub struct Row {
     /// Nonnegative native i32 ordinal; all bits preserved and checked against the array count.
     pub index: u32,
     pub technology_handle: u32,
-    /// Exact selected template occurrence (140EBFEF0 / 140ED02A0). Zero when idle.
+    /// Exact selected technology template occurrence; zero when idle.
     pub database_index: i32,
     /// Native technology pointer presence; the pointer itself is not portable identity.
     pub technology_present: u8,

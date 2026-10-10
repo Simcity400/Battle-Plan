@@ -2,6 +2,8 @@
 
 Passive CLI to verify HOI4, inject/monitor/detach the collector and finalize `.battleplan` files. Offline commands inspect, compare text saves and read metrics.
 
+Attachment prepares the process-wide executable tables from the verified process executable before injection. Offline save and movement comparisons prepare the same tables from their selected installation. Inspection and finalization use recording metadata without loading an installation.
+
 ## Code boundaries
 
 | File | Responsibility |
@@ -16,23 +18,24 @@ Native reads belong in [engine](../engine/README.md) and [collector](../collecto
 
 ## Record a campaign
 
-Run from your worktree root. Build through the wrapper, outside timed measurements:
+Run from the repository root. Build outside timed measurements:
 
 ```powershell
-bash tools/build-slot.sh "dev/recorder" "cargo build -p recorder -p collector --release"
+cargo build -p recorder -p collector --release
 ```
 
 Keep `collector.dll` beside `recorder.exe`. Replace these example paths with your own. A **bare `recorder.exe` attaches to the running game or waits for one**. Use `--help` for options and explicit subcommands for operations; never launch it bare as a probe.
 
 ```powershell
 $recorder = '.\.cargo-target\release\recorder.exe'
-$capture = 'captures\recorder-check-YYYYMMDD'
-$userDirectory = 'captures\smoke-profile'
+$captureRoot = Join-Path $env:LOCALAPPDATA 'HOI4Replay\captures'
+$capture = Join-Path $captureRoot 'recorder-check-YYYYMMDD'
+$userDirectory = Join-Path $captureRoot 'smoke-profile'
 & $recorder --help
 & $recorder record --once --out $capture --user-dir $userDirectory
 ```
 
-Pass paths as separate quoted arguments/variables. `record` discovers the installation from the process, has no `--game-dir` option and prints its selected Paradox user directory.
+Pass paths as separate quoted arguments/variables. `record` discovers the installation from the process, has no `--game-dir` option and prints its selected Paradox user directory. Without `--out`, recording and its control commands use `HOI4Replay\captures` under `LOCALAPPDATA`, or the user's temporary directory when that variable is absent or empty. Movement reports default to its `movement_oracle` subdirectory. Keep captures and reports outside Git.
 
 Coordinate ownership before attaching. Use one game and one recording controller; multiple game processes, unsupported executable hashes and an already-loaded collector are refused. Never detach or stop another owner's session. The recorder never pauses, saves or sends input to the game.
 
@@ -74,7 +77,7 @@ Inspection establishes no save agreement. Set `$oracleHour`/`$branchId` to the r
 
 ### Fresh-save oracle
 
-1. Own the game lock described below. Use one fully loaded game, your attached recorder and the same verified content stack. Set `save_as_binary=no` in the selected user directory before launch; binary saves are refused. Save on the recording client so its viewing choice can be compared.
+1. Use one fully loaded game, your attached recorder and the same verified content stack. Set `save_as_binary=no` in the selected user directory before launch; binary saves are refused. Save on the recording client so its viewing choice can be compared.
 2. Pause at engine hour `H`. Request a full refresh and wait for acknowledgement:
 
    ```powershell
@@ -133,32 +136,23 @@ It opens the single game read-only, requires proved mount order and compares eve
 
 ### Game ownership
 
-The shared lock is the directory at `Join-Path $env:TEMP 'claude\hoi4_game.lock'`, with an `owner` file. Manual checks must acquire it exclusively and record ownership before driving the game. Never remove another owner's lock or take over their game/recorder. Release your lock only after your processes stop safely.
+Use one game and one recorder for a live check. Coordinate with anyone sharing the machine, and never detach or stop another session. The live tools use a configurable `-GameLock`, defaulting to `HOI4Replay\hoi4_game.lock` under the user's temporary directory. An existing lock or running game/recorder is refused. On failure the tools attempt safe detach and keep the game paused for diagnosis; the lock remains while either process survives.
 
-`Smoke` acquires the lock itself and refuses an existing lock or running game/recorder; start with those resources free. On failure it attempts safe detach and keeps its game paused for diagnosis. The lock remains while either process survives. Exit normally after safe collector removal. If an action is denied, stop and report it.
-
-### Smoke artifacts and the checkpoint
+### Smoke artifacts
 
 [smoke.ps1](../../tools/smoke.ps1) drives the game separately from the passive recorder, then checks finalization, fresh-save agreement and matched renders.
 
-1. Read its help. Prepare an isolated text-save user directory, an existing local save and matching `continue_game.json`. `-ExpectedSave` is the local `.hoi4` **filename**, not a path. Supply calibrated `-UiConfig` coordinates, dimensions and expected hour/seed, and a **new** `-Out` directory under `captures`.
-2. Reuse final binaries at the current clean HEAD. `-BuildReceipt` identifies that exact `source_commit` and exactly `recorder.exe`, `collector.dll`, `viewer.exe`, each with `name`, SHA-256 `sha256` and `bytes`. `-BinaryDirectory` defaults to this worktree's `.cargo-target/release`; set it for retained artifacts. The script verifies source/copied hashes and clean HEAD. A receipt links source to artifacts; it makes no live-pass claim.
-3. Run from the worktree root with your prepared paths:
+1. Read its help. Prepare an isolated text-save user directory, an existing local save and matching `continue_game.json`. `-ExpectedSave` is the local `.hoi4` **filename**, not a path. Supply calibrated `-UiConfig` coordinates, dimensions and expected hour/seed, and a **new** `-Out` directory under your selected `-CaptureRoot`.
+2. Reuse final binaries at the current clean HEAD. `-BuildReceipt` identifies that exact `source_commit` and exactly `recorder.exe`, `collector.dll`, `viewer.exe`, each with `name`, SHA-256 `sha256` and `bytes`. `-BinaryDirectory` defaults to this checkout's `.cargo-target/release`; set it for retained artifacts. The script verifies source/copied hashes and clean HEAD. A receipt links source to artifacts; it makes no live-pass claim.
+3. Set `$gameDirectory`, `$buildReceipt`, `$binaryDirectory`, `$uiConfig` and `$smokeOut` to your installation and prepared artifacts, then run from the repository root:
 
    ```powershell
-   powershell -NoProfile -File .\tools\smoke.ps1 -Action Smoke -BuildReceipt 'captures\checkpoint\build-receipt.json' -BinaryDirectory 'captures\checkpoint\bin' -ExpectedSave 'baseline.hoi4' -UserDirectory $userDirectory -UiConfig 'captures\smoke-config\ui.json' -Out 'captures\smoke-YYYYMMDD' -WaitForUiReview
+   powershell -NoProfile -File .\tools\smoke.ps1 -Action Smoke -GameExe (Join-Path $gameDirectory 'hoi4.exe') -CaptureRoot $captureRoot -BuildReceipt $buildReceipt -BinaryDirectory $binaryDirectory -ExpectedSave 'baseline.hoi4' -UserDirectory $userDirectory -UiConfig $uiConfig -Out $smokeOut -WaitForUiReview
    ```
 
+   `BATTLE_PLAN_GAME_DIR` can supply the installation instead of `-GameExe`. `-InputShimDir` is optional; supply it only for checks that require your prepared input helper. `-Checkpoint` runs the workspace checks, builds the three release packages and writes a new receipt; it excludes receipt/binary-directory reuse.
 4. At UI review, inspect the paused screenshot and dismiss notifications through guarded driver actions. Keep the map unobscured and paused; write `ui-review-approved.json` in Out with the exact requested `hour` and `unobscured: true`. This cannot waive correctness. Park the capture cursor over inert UI chrome without a tooltip; avoid edge scrolling during timed advance.
 5. Inspect `smoke-result.json`, tool logs, boundary save/status, completion and image/score outputs. Success requires clean detach/drain, collector absence, normal exit, unchanged input save, no transport loss, zero oracle differences and complete coverage. Review render results and report failures/unverified checks. Smoke advances at top speed and saves at the first hour past the minimum; its timing is not paired performance acceptance.
-
-Only a coordinator-called checkpoint with inherited `GATE=1`, `JOBS=4` and a build window uses:
-
-```powershell
-powershell -NoProfile -File .\tools\smoke.ps1 -Action Smoke -Checkpoint -ExpectedSave 'baseline.hoi4' -UserDirectory $userDirectory -UiConfig 'captures\smoke-config\ui.json' -Out 'captures\checkpoint' -WaitForUiReview
-```
-
-It runs the gate once, builds three release packages and writes `build-receipt.json`. `-Checkpoint` excludes receipt/binary-directory reuse and never sets `GATE`. Later checks reuse the receipt at unchanged clean HEAD without builds/tests; `smoke-result.json` with matching source/binary fields also qualifies.
 
 Cost checks use matched saves/content and baselines. Keep builds/movement-oracle outside timing; separate cold/steady work. Report game-hours/second, callback p95, memory/pools, encoded size and finalization. See [AGENTS.md](../../AGENTS.md) and [collector](../collector/README.md).
 
@@ -191,3 +185,11 @@ Recovery validates [terminal evidence](../replay/src/witness.rs), identity/conte
 Allocation-failure checks require both binaries' `alloc-fault-injection` feature and coordinated `--alloc-fault <phase>:<positive-ordinal>[:<committed-hours>]`; production builds refuse it. Confirm game survival and partial-replay visibility, then run relevant fresh-save/load and smoke checks.
 
 Update affected inspection, metrics, oracle and playback consumers together. New inputs need a save comparison or named limitation. Follow scoped [AGENTS.md checks](../../AGENTS.md), then relevant fresh-save/load, smoke and native observations above. Documentation-only changes need link/diff checks, not live captures.
+
+The optional installed-save parser regression is ignored by default. To run it explicitly, set `BATTLE_PLAN_LAND_SAVE` to your text save and `BATTLE_PLAN_LAND_EXPECTATIONS` to a JSON file with `division_id` and `division_type` (unsigned 32-bit words), `manpower` (ordered `[tag, signed_integer]` pairs), `maximum` and `remaining` (signed fixed5 raw integers), `history_count` (unsigned count), and `first_date`/`last_date` (date strings accepted by the save parser). It checks the exact selected division values, history count and date bounds after parsing all divisions/history. Missing inputs or invalid expectations fail; an ignored test is not live validation.
+
+```powershell
+$env:BATTLE_PLAN_LAND_SAVE = $saveFile
+$env:BATTLE_PLAN_LAND_EXPECTATIONS = Join-Path $capture 'land-expectations.json'
+cargo test -p recorder oracle::land::tests::installed_save_divisions_and_history_match_expectations -- --ignored --exact
+```

@@ -1,8 +1,8 @@
 //! Callback-local authority for the exact signed raw country operand.
-//! BA5C20 indexes live tags with a nonzero raw word; raw zero uses the database.
-//! BA56A0's arithmetic country lookup is independent of that spelling.
-//! Original attempts, including failures and policy-limited string prefixes,
-//! survive family output refusal. No pointer or native control is replay data.
+//! Nonzero raw words index live tags; zero uses the database. Arithmetic
+//! country lookup is independent of tag spelling. Original attempts,
+//! including failures and policy-limited string prefixes, survive family
+//! output refusal. No pointer or live control is replay data.
 
 use crate::{Memory, ccountry, cpdx_array::Array, msvc_string, read, walk::Outcome};
 use std::mem::size_of;
@@ -241,8 +241,8 @@ impl Journal {
         Ok(())
     }
     /// Worker-only acquisitions retain every reached observation and original
-    /// 140BA5C20 tag and 140BA6240 country-link operands before publication.
-    /// Reset keeps the mode; fixed callback journals never opt in.
+    /// tag and country-link operand before publication. Reset keeps the mode;
+    /// fixed callback journals never opt in.
     pub fn enable_growth(&mut self) {
         self.growing = true;
     }

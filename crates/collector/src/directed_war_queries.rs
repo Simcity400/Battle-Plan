@@ -1,5 +1,5 @@
 //! Exact native query demand; values are acquired fresh at the hourly boundary.
-//! No predicate value, CRelation pointer or absence certificate is retained.
+//! No predicate value, relation pointer or absence certificate is retained.
 
 use crate::hook::{Hook, Registers, Tap};
 use engine::{Memory, allocation, directed_war_queries as native};
@@ -220,8 +220,8 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, site: usize) {
     let Some(world) = world else {
         return;
     };
-    // Before the native seven-byte MOV at1406F3B28 /1406F3A52. The
-    // observer stores only authenticated demand, never +2E8 or pointed+49.
+    // Before the native seven-byte MOV. The observer stores only authenticated
+    // demand, never the matrix pointer or a pointed value.
     let frame = match site {
         0 => native::Frame {
             receiver: registers.rsi,

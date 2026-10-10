@@ -370,7 +370,7 @@ pub fn resize(entries: usize) {
 }
 /// Live operation-description demand and rejected-byte pressure prepare every
 /// lane off-thread. The completion callback still copies its original
-/// 1413EEB8B/1413EEBA0 retained descriptor exactly once into admitted storage.
+/// retained descriptor exactly once into admitted storage.
 pub fn presize(entries: usize, bytes: usize) {
     if !RUNTIME_ENABLED.load(Ordering::Relaxed) {
         return;
@@ -552,7 +552,7 @@ unsafe extern "system-unwind" fn completion(instance: usize) -> usize {
     let original: NativeFunction = unsafe { std::mem::transmute(ORIGINAL.load(Ordering::Acquire)) };
     let generation = crate::world_lifetime::generation();
     let result = unsafe { original(instance) };
-    // P: native AL is the new-completion predicate; preserve full RAX.
+    // Native AL is the new-completion predicate; preserve full RAX.
     if result as u8 != 0 && ENABLED.load(Ordering::Acquire) {
         if generation != crate::world_lifetime::generation()
             || crate::world_lifetime::invalidating()
@@ -1182,7 +1182,7 @@ mod tests {
         fixture.identify(42, 701); // Manager creates a new auto-repeat instance.
         complete(&log, &fixture, 1);
         fixture.delete();
-        // Predicate1413EE2C0's invalidation path calls no completion. An
+        // The invalidation path calls no completion. An
         // unsuccessful terminal/completion call returns AL0 and reads nothing.
         complete(&log, &fixture, 0x1234_0000);
         let (events, bytes) = drain(&log).unwrap();

@@ -1,4 +1,4 @@
-/* The sunburst (mock-up style-3): the disc with a breadcrumb over it and a side
+/* The sunburst: the disc with a breadcrumb over it and a side
    legend, which moves under the disc when the widget is narrow. Theme variables
    only; the widget's Size zoom scales everything here. */
 .sunburst-host { container-type: inline-size; display: flex; flex: 1; min-height: 0; height: 100%; }

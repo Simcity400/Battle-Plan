@@ -1,7 +1,7 @@
 //! Retour owns ordinary hook relocation. Verified patches are published while
 //! existing process threads are suspended, without heap use in that interval.
-//! The hooked site is CGameState::HourlyUpdate, the once-per-hour full tick,
-//! confirmed the only statically hookable per-hour boundary on the main thread.
+//! The hooked site is the hourly update, the once-per-hour full tick on the
+//! main thread.
 
 use retour::RawDetour;
 use std::{
@@ -196,8 +196,8 @@ impl Hook {
         unsafe { Self::new_call_span(site, callback, original, original.len()) }
     }
 
-    /// Verify only the owned span: naval CALLs 1415B29C0 / 1415B2AC3 need
-    /// 16 / 13 bytes; 1415B2AD0 starts the next native function.
+    /// Verify only the owned span: the two naval CALLs need 16 / 13 bytes;
+    /// the latter ends at the next native function.
     pub unsafe fn new_call_span(
         site: usize,
         callback: usize,
@@ -227,12 +227,11 @@ impl Hook {
         Ok(hook)
     }
 
-    /// DispatchLeaderOnActions@1412A42E0 calls 1412A42F6 / 1412A4314:
-    /// replace FF 90 disp32 with CALL relay; NOP. The counted stub forwards
-    /// the live RAX-based target and native arguments, then returns to site+5.
-    /// Native returns are 1412A42FC / 1412A431A. Their .pdata range
-    /// [1412A42E0,1412A4342) has no handler/chain; site+5 and site+6 share
-    /// the same body unwind state (info142DE1A3C, prologue ten bytes).
+    /// Replace the leader-action indirect CALLs, FF 90 disp32, with CALL relay;
+    /// NOP. The counted stub forwards the live RAX-based target and native
+    /// arguments, then returns to site+5.
+    /// Their caller has no unwind handler/chain; site+5 and site+6 share
+    /// the same body unwind state, after its ten-byte prologue.
     /// Its counter must cover the target until its return PC is no longer in use,
     /// including unwind. Rust cleanup must not clear it before Windows finishes
     /// traversing the stub. The stub range covers uncounted entry/exit instructions.
@@ -538,8 +537,7 @@ impl Drop for Hook {
     }
 }
 
-// Off-suspension only: kernel32 RVA 4ab50 -> 4a1c0 allocates at 4a255,
-// retries at 4a310, and creates/maps a section at 27070/270c1.
+// Off-suspension only: the snapshot API allocates and maps storage.
 fn visit_threads(
     excluded: &[u32],
     mut visit: impl FnMut(u32) -> Result<(), u32>,
@@ -574,11 +572,10 @@ fn visit_threads(
     result
 }
 
-// Installed ntdll NtQuerySystemInformation@RVA161470 dispatches directly
-// through SYSCALL@161482 (INT 2E fallback@161485), without user-mode allocation.
+// NtQuerySystemInformation fills caller storage without user-mode allocation.
 // SystemProcessInformation (5) writes caller storage; STATUS_INFO_LENGTH_MISMATCH
-// reports the required length. x64 winternl.h: process header 100h, PID@50h;
-// thread record 50h, CLIENT_ID.UniqueThread@30h. No native pointers are followed.
+// reports the required length. The process and thread records are parsed
+// below without following native pointers.
 // https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntquerysysteminformation
 #[link(name = "ntdll")]
 unsafe extern "system" {
@@ -812,9 +809,9 @@ impl Threads {
                 thread.suspended = suspend(thread.handle)?;
             }
             // A thread can be created between the first snapshot and suspension.
-            // Native CreateThreadWrapper@1420F3A50 is an in-process caller; once
-            // all such callers are held and enumeration adds nobody, they cannot
-            // create another thread during the write. No heap use while held.
+            // Game thread creation happens in-process; once all such callers are
+            // held and enumeration adds nobody, they cannot create another
+            // thread during the write. No heap use while held.
             match discover(self) {
                 Ok(false) => return Ok(()),
                 Ok(true) => {}

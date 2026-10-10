@@ -19,7 +19,7 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     });
 }
 
-/// 140C29020 describes these runtime ordered child trees on demand. The save
+/// The game describes these runtime ordered child trees on demand. The save
 /// keeps neither their display labels nor the resulting tree; check the live
 /// combat/member join and key integrity, then state the save limitation.
 fn naval_modifier_breakdowns(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
@@ -51,8 +51,8 @@ fn naval_modifier_breakdowns(frame: &DecodedFrame, r: &mut Report) -> io::Result
             }
             if usage.battle_slot != u32::MAX {
                 match ships.get(&(usage.combat, usage.side, usage.battle_slot)) {
-                    // 14195C7D0's escape roots need state 8; 1417DAA40's
-                    // carrier-air roots (+0x24/+0x1B6) can join any member state.
+                    // Escape roots need state 8; the operation's
+                    // carrier-air roots can join any member state.
                     Some(ship)
                         if matches!(row.key, 0x5b | 0x59 | 0x5c | 0x5d) && ship.state != 8 =>
                     {
@@ -148,8 +148,8 @@ fn air_base_wings(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
 
 /// One row per saved land combat. The save serializes neither country set of a
 /// side, nor the indicator byte or flag words. Beyond the census, each primary
-/// set must hold the logical owner of every saved unit on its side: `1413CC0D0`
-/// appends the joining unit's logical owner to the side's `+0x38` set.
+/// set must hold the logical owner of every saved unit on its side: the game
+/// appends the joining unit's logical owner to the side's set.
 fn sides(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::LandCombatSides>()?;
     let countries = country_context(frame)?;
@@ -225,7 +225,7 @@ fn equal<T: PartialEq + std::fmt::Debug>(
     }
 }
 
-// ADF40/AF5A0 text writing consumes c_str; retain raw suffixes in recording.
+// Text serialization consumes c_str; retain raw suffixes in the recording.
 fn text_projection<'a>(r: &mut Report, label: &str, value: &'a [u8]) -> &'a [u8] {
     let prefix = installed_content::parser::c_string(value);
     if prefix.len() < value.len() {
@@ -265,7 +265,7 @@ struct CommanderSaveView<'a> {
     category: Option<i32>,
     skill: i32,
     experience: Option<i64>,
-    /// The raw name token at leader+20, which the save writes as `name`.
+    /// The leader's stored name token, which the save writes as `name`.
     name_token: Option<&'a [u8]>,
     traits: &'a [replay::rows::LandCombatCommanderTrait],
 }
@@ -309,7 +309,7 @@ fn commander_values(
             optional_text_value(r, &format!("{label} name token"), token, b.name.as_deref())
         }
         None => r.limitation(
-            "the combat display name at leader+40 is distinct from the saved leader name at +20",
+            "the combat display name is distinct from the saved leader name",
             label,
         ),
     }
@@ -372,7 +372,8 @@ fn naval_commander_values(
     Ok(())
 }
 
-/// writes `leader` exactly when the +0x88 pointer is set; army groups carry
+/// Each saved formation's handle, keyed by its leader handle. The game
+/// writes `leader` exactly when the commander pointer is set; army groups carry
 /// no leader and never match a side commander.
 fn formations(save: &Save) -> io::Result<BTreeMap<u64, u64>> {
     let mut formations = BTreeMap::new();
@@ -395,7 +396,7 @@ fn formations(save: &Save) -> io::Result<BTreeMap<u64, u64>> {
     Ok(formations)
 }
 
-/// The commander's forward formation reference (`CArmyLeader+0x1048`) against
+/// The commander's active formation reference against
 /// the saved group that names it as leader, the reverse pointer.
 fn formation(
     r: &mut Report,
@@ -417,8 +418,8 @@ fn formation(
     }
 }
 
-/// Land and naval commanders' timed traits (+0xDE0) against `traits_to_remove`
-/// (0x3969), which C0D920 writes in vector order as each trait's +8 token and
+/// Land and naval commanders' timed traits against `traits_to_remove`
+/// (0x3969), which the unit-leader writer writes in vector order as each trait's token and
 /// signed remaining days, omitting an empty vector. The saved leader's
 /// presence is `commander_values`' comparison.
 fn timed_traits(
@@ -516,9 +517,9 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
             if let Some(border) = border_war {
                 let countries = country_context(frame)?;
                 if border.transfer_state > 1 {
-                    r.limitation("1413DAC80 saves change_state_after_war as boolean; the magnitude of an unusual nonzero byte is unsaved", format!("{label} border transfer byte"));
+                    r.limitation("the game saves change_state_after_war as boolean; the magnitude of an unusual nonzero byte is unsaved", format!("{label} border transfer byte"));
                 }
-                // 1413DAC80 writes primary +0xD8 unconditionally, even at zero.
+                // The save writes combat_width unconditionally, even at zero.
                 if let Some(width) = r.recorded(
                     &border.combat_width,
                     "LandBorderWarInputs.combat_width",
@@ -674,7 +675,7 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
         r.difference(format!("LandCombatDetails {id}"), "absent", "present");
     }
     r.compared("LandCombatDetails", rows.len());
-    r.limitation("Hourly samples cannot reproduce every tick or battles beginning and ending between samples. Ordered committed/reserve handles, air counts, positive damage/anti-air/kill fields, valid tactic ids, commander name tokens, ordered timed traits (tokens and signed days) and formation references, and mature organisation-loss rings are compared; the saved loss-ring index has no recorded counterpart (no window or tooltip reads it: only serialization and 1412A2AA0's count test touch +0x1A8/+0x1AC). A positive-only omitted scalar proves only nonpositive, not its exact raw value. Before 24 organisation-loss observations the window does not consume the ring and the recording leaves its values unsampled; only the count is compared. Saved terrain is compared to its separately captured stored terrain cache, never to the independent province-derived window terrain. Phase, width/bonus inputs, tactic definition metadata, commander runtime modifiers/traits and other presentation caches are not validated by these save matches", "LandCombatDetails");
+    r.limitation("Hourly samples cannot reproduce every tick or battles beginning and ending between samples. Ordered committed/reserve handles, air counts, positive damage/anti-air/kill fields, valid tactic ids, commander name tokens, ordered timed traits (tokens and signed days) and formation references, and mature organisation-loss rings are compared; the saved loss-ring index has no recorded counterpart (no window or tooltip reads it). A positive-only omitted scalar proves only nonpositive, not its exact raw value. Before 24 organisation-loss observations the window does not consume the ring and the recording leaves its values unsampled; only the count is compared. Saved terrain is compared to its separately captured stored terrain cache, never to the independent province-derived window terrain. Phase, width/bonus inputs, tactic definition metadata, commander runtime modifiers/traits and other presentation caches are not validated by these save matches", "LandCombatDetails");
     Ok(())
 }
 
@@ -763,7 +764,7 @@ fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
         }
     }
     r.compared("LandCombatDivisions", rows.len());
-    r.limitation("Only participant order/full handles, province, template, committed/reserve role, division commander name tokens and the naming operands are compared; hit points, organisation and entrenchment are the Divisions and DivisionStatus oracle's. The naming type, order word, ordered and programmatic flags and a player's custom name are compared against the saved division_name block (1409BCC70), and the selected group key against the saved division_names_group of the member's template (140B977F0); a programmatic override is compared where the game shows it (a type-zero member whose group is null, 1409B5640) and is otherwise generated text the game does not show, never recorded. Direction latch words, exile operands and the stat block's equipment category mask (`categories`, *(CUnit+0x138)+0x5A8, read by CEquipmentTypeTrigger 141390370) are live 141298E00/1415CA660/141390370 inputs with no text-save counterpart (the per-unit stat block is rebuilt, not saved) and are never compared here; their viewer replay is verified by render parity instead. Current combat stat block, raw maximum caches, attack/defense composition operands, initiative/reconnaissance and commander selection are not established by those matches. Current division names and combat commander names/skills/traits are hourly inputs; remaining template/icon dictionary joins retain their existing cadence. This table is an hourly input sample, not a per-attack damage event stream", "LandCombatDivisions");
+    r.limitation("Only participant order/full handles, province, template, committed/reserve role, division commander name tokens and the naming operands are compared; hit points, organisation and entrenchment are the Divisions and DivisionStatus oracle's. The naming type, order word, ordered and programmatic flags and a player's custom name are compared against the saved division_name block, and the selected group key against the saved division_names_group of the member's template; a programmatic override is compared where the game shows it (a type-zero member whose group is null) and is otherwise generated text the game does not show, never recorded. Direction latch words, exile operands and the stat block's equipment category mask (`categories`) are live combat inputs with no text-save counterpart (the per-unit stat block is rebuilt, not saved) and are never compared here; their viewer replay is verified by render parity instead. Current combat stat block, raw maximum caches, attack/defense composition operands, initiative/reconnaissance and commander selection are not established by those matches. Current division names and combat commander names/skills/traits are hourly inputs; remaining template/icon dictionary joins retain their existing cadence. This table is an hourly input sample, not a per-attack damage event stream", "LandCombatDivisions");
     Ok(())
 }
 
@@ -803,11 +804,11 @@ impl<'a> From<&'a replay::rows::NameOperands> for Naming<'a> {
     }
 }
 
-/// CArmy C80E00 saves the +0x340 CNameGroupMember as `division_name` through
-/// 1409BCC70, whose emission rules fix what each omitted key proves: `type` is
+/// The army writer saves the name member as `division_name` through
+/// the name writer, whose emission rules fix what each omitted key proves: `type` is
 /// always written, `name_order` only when nonzero, `is_name_ordered` (as `no`)
-/// only when +0xA8 is clear, `override` only for a nonempty +0x88 string and
-/// `override_set_programmatically` only when +0xA9 is set.
+/// only when the ordered flag is clear, `override` only for a nonempty string and
+/// `override_set_programmatically` only when the programmatic flag is set.
 pub(super) fn naming<'a>(
     r: &mut Report,
     label: &str,
@@ -839,10 +840,10 @@ pub(super) fn naming<'a>(
         row.programmatic != 0,
         saved.programmatic.unwrap_or(false),
     );
-    // SetTemplate 140C7EE00 and SelectFakeIntelDivisionTemplate 140C7E8C0
-    // bind the member (1409BBC40) to the fake-intel template when set, else
-    // the standard one; C80E00 saves those as the two template ids, and
-    // 140B977F0 writes a template's division_names_group only for a set
+    // Template selection and fake-intel template selection
+    // bind the member to the fake-intel template when set, else
+    // the standard one; the save writes those as the two template ids, and
+    // the game writes a template's division_names_group only for a set
     // group. `None` when the template has no saved entry.
     let group = match unit.alternate_template.or(unit.template) {
         None => Some(None),
@@ -850,7 +851,7 @@ pub(super) fn naming<'a>(
             .get(&template)
             .map(|saved| saved.names_group.as_deref()),
     };
-    // 1409B5640 shows the stored +0x88 name with +0xA9 clear, or with it set
+    // The game shows the stored name when the programmatic flag is clear, or set
     // for a type-zero member whose group is null.
     if row.programmatic == 0
         || (row.kind == 0 && group == Some(None))
@@ -865,7 +866,7 @@ pub(super) fn naming<'a>(
     } else if row.kind != 0 {
         equal(r, format!("{label} override"), row.custom, b"".as_slice());
         r.limitation(
-            "a programmatic override of a nonzero name type is shown only when its ship, operative or railway-gun group is null (1409B7290), which the capture does not read, so it is not recorded; only its flag is compared",
+            "a programmatic override of a nonzero name type is shown only when its ship, operative or railway-gun group is null, which the capture does not read, so it is not recorded; only its flag is compared",
             label,
         );
     } else if group.is_none() {
@@ -875,7 +876,7 @@ pub(super) fn naming<'a>(
         );
         return;
     } else {
-        // The group is set: 1409B5640 shows its entry, not the stored text.
+        // The group is set: the game shows its entry, not the stored text.
         equal(r, format!("{label} override"), row.custom, b"".as_slice());
     }
     // The capture reads the group of a type-zero member whose stored name
@@ -1082,7 +1083,7 @@ fn naval(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                     true,
                 ),
             }
-            // 1413CC0D0 inserts only positive, canonically distinct roster owners.
+            // The game inserts only positive, canonically distinct roster owners.
             let mut seen = BTreeSet::new();
             if actual
                 .summary
@@ -1097,7 +1098,7 @@ fn naval(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
             if let Some(commander) = &actual.commander_inputs {
                 naval_commander_values(r, &format!("{label} commander"), commander, save, &tokens)?;
             }
-            // 14160FF40 writes every entry of the side's +0x20 unit array, in order.
+            // The game writes every entry of the side's unit array, in order.
             equal(
                 r,
                 format!("{label} units"),
@@ -1170,7 +1171,7 @@ fn naval(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                 }
             }
             if let Some(leader) = saved.details.leaders[side] {
-                // The save holds the last leader (+0x118), which equals the shown
+                // The save holds the last leader, which equals the shown
                 // commander whenever that is nonnull. A load restores only the
                 // last leader (cnaval_combatant::COMMANDER).
                 if r.load_hour && actual.commander == 0 && leader != 0 {
@@ -1191,7 +1192,7 @@ fn naval(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
         }
     }
     r.compared("NavalCombatDetails", rows.len());
-    r.limitation("Compared against the save: the combat census; province, progress, day and duration; per side the ordered task-force `unit` list, the stored positioning and anti-air, the recent-join penalty (absent read as zero) and escort bonus, the commander handle when the save names a leader, the commander's category, skill, experience, traits and component skills from the saved character, and retreat truthiness; per side original health, total damage, the 6x6 damage history and ordered source-token totals; per serialized forward group, the ordered air and airs_to_delete planes with their count, group/index, carrier slot (absent read as -1), air base where saved, both wing lists, initial/current planes, casualties, time duration, country, date, both flags as booleans, ordered naval hits and first air-hit vector. Not compared though the save stores it: each plane's damage multiplier (CFEXAir::vf2@14196A2E0 writes +0xC0), which this table does not record because no replay consumer reads it. Not compared because the save has no counterpart: capital and carrier screening, the engaged byte, the primary country list, the secondary roster-owner list (checked only as positive and distinct), the summary modifier cells, their definition metadata, feature flags and callback, each plane's carrier-member presence (the serializer writes the +0x18 slot, not the +0x10 member pointer), carrier state, variant, wing kills, every sortie-efficiency operand (source, pool flags, mission, container and crowding, night, raw modifiers and the definition metadata of keys 0x22, 0x23, 0x24 and 0x1B6), the second air-hit vector, source-2 planes and planes of paired-only groups outside the serialized forward groups. The save's frozen air-hover name and ordered names are localized presentation caches, so they are not compared with the viewer's new-language derivation. Custom sea grid entries are live-only and have no save counterpart. The serializer omits an unresolved air-base reference, so its raw handle is not compared; a null or invalid leader omission does not prove raw null identity; boolean serialization loses nonzero byte distinctions. Matching fields do not validate tick freshness", "NavalCombatDetails");
+    r.limitation("Compared against the save: the combat census; province, progress, day and duration; per side the ordered task-force `unit` list, the stored positioning and anti-air, the recent-join penalty (absent read as zero) and escort bonus, the commander handle when the save names a leader, the commander's category, skill, experience, traits and component skills from the saved character, and retreat truthiness; per side original health, total damage, the 6x6 damage history and ordered source-token totals; per serialized forward group, the ordered air and airs_to_delete planes with their count, group/index, carrier slot (absent read as -1), air base where saved, both wing lists, initial/current planes, casualties, time duration, country, date, both flags as booleans, ordered naval hits and first air-hit vector. Not compared though the save stores it: each plane's damage multiplier, which this table does not record because no replay consumer reads it. Not compared because the save has no counterpart: capital and carrier screening, the engaged byte, the primary country list, the secondary roster-owner list (checked only as positive and distinct), the summary modifier cells, their definition metadata, feature flags and callback, each plane's carrier-member presence (the serializer writes the slot, not the member pointer), carrier state, variant, wing kills, every sortie-efficiency operand (source, pool flags, mission, container and crowding, night, raw modifiers and the definition metadata of keys 0x22, 0x23, 0x24 and 0x1B6), the second air-hit vector, source-2 planes and planes of paired-only groups outside the serialized forward groups. The save's frozen air-hover name and ordered names are localized presentation caches, so they are not compared with the viewer's new-language derivation. Custom sea grid entries are live-only and have no save counterpart. The serializer omits an unresolved air-base reference, so its raw handle is not compared; a null or invalid leader omission does not prove raw null identity; boolean serialization loses nonzero byte distinctions. Matching fields do not validate tick freshness", "NavalCombatDetails");
     Ok(())
 }
 
@@ -1488,7 +1489,7 @@ fn ships(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
         r.difference(format!("NavalCombatShips {key:?}"), "absent", "present");
     }
     r.compared("NavalCombatShips", saved_seen.len());
-    r.limitation("Cached member presentation survives sunk ships and is distinct from current live ship HP/organisation. This comparison covers present cached name/type/sprite/model/category/variant, arrival, present detection/escape, six damage lanes, ordered naval hits and damage attribution. Writer141962a00 omits exactly zero evacuation/escape and -1 detection; positive-only omitted critical counts prove nonpositive, not exact zero. Writer141962d80 cached index/type, build-cost/strength, strings, variant and pride are also compared with their explicit omission rules. The first ordered air-hit vector is compared; the serializer omits the second vector entirely. Explicit orphan-group rows (group_index=u32::MAX) have no forward-group save entry and are excluded; source/group/member indices are compared for serialized groups. Raw live maximum caches and weapon/modifier context are not covered by these member scalar matches; nested serialized plane histories are compared under NavalCombatDetails. Boolean comparisons lose nonzero-byte distinctions. Naval results and country combat-log views are separate retained history, not a live-combat per-tick transcript", "NavalCombatShips");
+    r.limitation("Cached member presentation survives sunk ships and is distinct from current live ship HP/organisation. This comparison covers present cached name/type/sprite/model/category/variant, arrival, present detection/escape, six damage lanes, ordered naval hits and damage attribution. The cached-member writer omits exactly zero evacuation/escape and -1 detection; positive-only omitted critical counts prove nonpositive, not exact zero. Cached index/type, build-cost/strength, strings, variant and pride are also compared with their explicit omission rules. The first ordered air-hit vector is compared; the serializer omits the second vector entirely. Explicit orphan-group rows (group_index=u32::MAX) have no forward-group save entry and are excluded; source/group/member indices are compared for serialized groups. Raw live maximum caches and weapon/modifier context are not covered by these member scalar matches; nested serialized plane histories are compared under NavalCombatDetails. Boolean comparisons lose nonzero-byte distinctions. Naval results and country combat-log views are separate retained history, not a live-combat per-tick transcript", "NavalCombatShips");
     Ok(())
 }
 
@@ -1557,7 +1558,7 @@ fn plane_values(
     b: &save::combat_details::NavalPlane,
     links: &BTreeMap<u32, &CountryRow>,
 ) -> io::Result<()> {
-    // 1419660C0/141963460 create these two localized presentation caches.
+    // The game creates these two localized presentation caches.
     // The viewer derives them in its language from air-base and wing inputs;
     // the save's frozen recording-language bytes are not a row comparator.
     equal(
@@ -1796,7 +1797,7 @@ fn results(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> 
         }
     }
     r.compared("NavalCombatResultDetails", rows.len());
-    r.limitation("Retained result serializers 140CD7010/140CD7500/140CD6EE0 cover ordered ship and plane snapshots, cached identities/stats/strings, naval hits and first air-hit lists. Omitted positive-only killed counts prove only nonpositive. Invalid/absent leader references cannot validate raw identity. HQ leader/influence inputs and each second air-hit list are omitted by those serializers. These retained terminal results are independent of live combat retired-slot lists and country combat-log aggregates", "NavalCombatResultDetails");
+    r.limitation("Retained result serializers cover ordered ship and plane snapshots, cached identities/stats/strings, naval hits and first air-hit lists. Omitted positive-only killed counts prove only nonpositive. Invalid/absent leader references cannot validate raw identity. HQ leader/influence inputs and each second air-hit list are omitted by those serializers. These retained terminal results are independent of live combat retired-slot lists and country combat-log aggregates", "NavalCombatResultDetails");
     if !missing.is_empty() {
         return Err(invalid(format!(
             "NavalCombatResultDetails: {} retained results have unknown details (missing rows): {missing:?}; readable rows were compared",

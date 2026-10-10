@@ -5,7 +5,7 @@ use installed_content::{
     parser::{self, c_string},
 };
 
-// ReadScriptSignedInt32@1424AB970 retains the member on failed scans.
+// integer parsing retains the member on failed scans.
 fn plain_integer(items: &[Item], name: &str) -> Option<i32> {
     items
         .iter()
@@ -17,7 +17,7 @@ fn plain_integer(items: &[Item], name: &str) -> Option<i32> {
         .next_back()
 }
 
-// ReadFixed5@1424ABB10 uses script_fixed5@1424B0480, not a scoped variable.
+// Parse a fixed-point literal without scoped-variable evaluation.
 fn plain_fixed5(items: &[Item], name: &str) -> i64 {
     items
         .iter()
@@ -27,7 +27,7 @@ fn plain_fixed5(items: &[Item], name: &str) -> i64 {
         .unwrap_or(0)
 }
 
-// 14031BA50 / 14031BFE0 keep plain and scoped slots independently.
+// keep plain and scoped slots independently.
 fn building_selector<'a>(items: &'a [Item], name: &str) -> (i32, Option<&'a Item>) {
     let mut plain = 0;
     let mut scoped = None;
@@ -58,47 +58,53 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // 140313210 / 140317CE0 / 14048EC50 evaluate +80 before naming +58.
+        // Evaluate the amount before naming the building.
         let level = self.building_level(item, scopes, 0)?;
         let type_field = field(children(item), "type").ok_or_else(|| {
             format!(
-                "{} has no building template; native own description dereferences +0x58 (140313210 / 140317CE0 / 14048EC50)",
-                self.building_class(item)
+                "{} has no building template; own description requires that template",
+                self.building_effect_name(item)
             )
         })?;
         let building = self.building_type(type_field)?.ok_or_else(|| {
             format!(
-                "{} unknown type needs the native null-template localisation strings +0x210 (140676C60 / 1414A4470), which content does not define",
-                self.building_class(item)
+                "{} unknown type needs the null-template localisation strings, which content does not define",
+                self.building_effect_name(item)
             )
         })?;
         let building = self.building_label(building, false)?;
         let number = level.to_string();
-        let (key, number_argument, expand): (&[u8], _, _) = match self.effect_class(item).map(|class| class.vtable) {
-            Some(0x142737C30) /* CAddBuildingConstructionEffect */ => {
-                // 140309720 defaults instant_build to true; province blocks retain +60.
-                let province = plain_integer(children(item), "province").unwrap_or(0) != 0;
-                let instant = parser::read_bool_field(children(item), "instant_build", true);
-                let key: &[u8] = match (province, instant) {
-                    (false, false) => b"EFFECT_ADD_BUILDING_CONSTRUCTION",
-                    (false, true) => b"EFFECT_ADD_BUILDING_CONSTRUCTION_INSTANT",
-                    (true, false) => b"EFFECT_ADD_BUILDING_CONSTRUCTION_PROVINCE",
-                    (true, true) => b"EFFECT_ADD_BUILDING_CONSTRUCTION_INSTANT_PROVINCE",
-                };
-                (key, Argument::Int32(level), false)
-            }
-            Some(0x142737E00) /* CSetBuildingConstructionEffect */ => (
-                b"EFFECT_SET_BUILDING_CONSTRUCTION",
-                Argument::Text(&number),
-                false,
-            ),
-            Some(0x1427A75C0) /* CAddOffsiteBuildingEffect@?A0x9cb35315 */ => (
-                b"EFFECT_ADD_OFFSITE_BUILDING",
-                Argument::Text(&number),
-                true,
-            ),
-            _ => return Err(format!("{} has no construction-description port", self.building_class(item))),
-        };
+        let (key, number_argument, expand): (&[u8], _, _) =
+            match self.effect_class(item).map(|class| class.vtable) {
+                Some(0x142737C30) => {
+                    // instant_build defaults to true; province blocks retain the province selector.
+                    let province = plain_integer(children(item), "province").unwrap_or(0) != 0;
+                    let instant = parser::read_bool_field(children(item), "instant_build", true);
+                    let key: &[u8] = match (province, instant) {
+                        (false, false) => b"EFFECT_ADD_BUILDING_CONSTRUCTION",
+                        (false, true) => b"EFFECT_ADD_BUILDING_CONSTRUCTION_INSTANT",
+                        (true, false) => b"EFFECT_ADD_BUILDING_CONSTRUCTION_PROVINCE",
+                        (true, true) => b"EFFECT_ADD_BUILDING_CONSTRUCTION_INSTANT_PROVINCE",
+                    };
+                    (key, Argument::Int32(level), false)
+                }
+                Some(0x142737E00) => (
+                    b"EFFECT_SET_BUILDING_CONSTRUCTION",
+                    Argument::Text(&number),
+                    false,
+                ),
+                Some(0x1427A75C0) => (
+                    b"EFFECT_ADD_OFFSITE_BUILDING",
+                    Argument::Text(&number),
+                    true,
+                ),
+                _ => {
+                    return Err(format!(
+                        "{} has no construction-description port",
+                        self.building_effect_name(item)
+                    ));
+                }
+            };
         self.line(
             key,
             &[
@@ -115,7 +121,7 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // 14031B760 uses raw key text and retains the last provincial template.
+        // uses raw key text and retains the last provincial template.
         let buildings = self.buildings()?;
         let mut selected = None;
         for child in children(item) {
@@ -128,7 +134,7 @@ impl Renderer<'_, '_, '_> {
             }
         }
         let selected = selected.ok_or_else(|| {
-            "CConstructBuildingInRandomProvinceEffect has no provincial building template; native 140315E10 dereferences +0x58".to_string()
+            "construct_building_in_random_province has no provincial building template; own description requires that template".to_string()
         })?;
         let building = self.building_label(selected, false)?;
         let state = match scopes.this {
@@ -137,7 +143,7 @@ impl Renderer<'_, '_, '_> {
         };
         if self.valid_state(state)?.is_none() {
             return Err(
-                "CConstructBuildingInRandomProvinceEffect has no current state; native 140315E10 passes null to state_name@1409CC380, which dereferences +0x48".into(),
+                "construct_building_in_random_province has no current state; state naming requires an existing state".into(),
             );
         }
         let state = self.state_name(state)?;
@@ -149,7 +155,7 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             false,
-        ) // 140315E10: no LF, and the authored amount is not shown.
+        ) // no LF, and the authored amount is not shown.
     }
 
     pub(in crate::effect_description) fn damage_building(
@@ -157,7 +163,7 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // 1403160C0: an explicit type bypasses all target/selector evaluation.
+        // an explicit type bypasses all target/selector evaluation.
         let Some(type_field) = field(children(item), "type") else {
             let province = self.building_province(item, scopes)?;
             if province.is_none() && self.building_state(item, scopes)?.is_none() {
@@ -166,11 +172,11 @@ impl Renderer<'_, '_, '_> {
             return if has_building_tags(item) {
                 Err(self.building_tag_refusal(item))
             } else {
-                Ok(String::new()) // 140312650: no type or tags finds no building.
+                Ok(String::new()) // no type or tags finds no building.
             };
         };
         let building = self.building_type(type_field)?.ok_or_else(|| {
-            "CDamageBuildingEffect unknown type needs the native null-template plural localisation string +0x230 (140676C60 / 1414A4470), which content does not define".to_string()
+            "damage_building unknown type needs the null-template plural localisation string, which content does not define".to_string()
         })?;
         let building = self.building_label(building, true)?;
         let damage = plain_fixed5(children(item), "damage");
@@ -194,7 +200,7 @@ impl Renderer<'_, '_, '_> {
                 scopes,
                 false,
             )?;
-            text.push_str(&indent_nonempty_lines(&repair, 3)); // 1424B7850.
+            text.push_str(&indent_nonempty_lines(&repair, 3));
             text.push('\n');
         }
         Ok(text)
@@ -205,20 +211,20 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // FindBuildingEffectTarget@1403126C0 always resolves province first.
+        // always resolves province first.
         let province = self.building_province(item, scopes)?;
         let kind = field(children(item), "type")
             .map(|type_field| {
                 self.building_type(type_field)?.ok_or_else(|| {
-                    "CRemoveBuildingEffect unknown type needs native null-template province_max +0x2BC (140676C60 / 1403126C0), which content does not expose".to_string()
+                    "remove_building unknown type needs null-template province_max, which content does not expose".to_string()
                 })
             })
             .transpose()?;
         if kind.is_some_and(BuildingType::provincial) {
             return if province.is_none() {
-                Ok(String::new()) // Remove vf25 is ReturnZero@14011CD10.
+                Ok(String::new()) // Remove descriptions retain the zero operand.
             } else {
-                Err("CRemoveBuildingEffect provincial targeting: core content plumbing pending: installed_content::movement::MovementMap::terrain(id).flags for province-definition land flag +0xD2 bit0 (1403126C0)".into())
+                Err("remove_building provincial targeting: core content plumbing pending: installed_content::movement::MovementMap::terrain(id).flags for the province-definition land flag".into())
             };
         }
         if kind.is_none() && province.is_some() {
@@ -248,9 +254,9 @@ impl Renderer<'_, '_, '_> {
             .iter()
             .any(|row| row.location == state && Some(row.building_type) == token)
         {
-            return Ok(String::new()); // 141160CD0: level0/inactive rows still exist.
+            return Ok(String::new()); // level0/inactive rows still exist.
         }
-        // 140316760 names the target's state before evaluating +228.
+        // Name the target's state before evaluating the amount.
         let location = self.state_name(state)?;
         let level = self.building_level(item, scopes, 0)?.to_string();
         let building = self.building_label(kind, false)?;
@@ -271,26 +277,26 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // Factory 14033EAE0 leaves +58/+5C/+60 uninitialised.
+        // Missing assignments leave the construction operands uninitialised.
         let building = field(children(item), "building").ok_or_else(|| {
-            "CModifyBuildingEffect missing building leaves native template pointer +0x60 uninitialised (14033EAE0)".to_string()
+            "modify_building missing building leaves the template pointer uninitialised".to_string()
         })?;
         if building.value.scalar().is_none() {
-            return Ok(String::new()); // RecordError@1424ACF90 skips its invalid block.
+            return Ok(String::new()); // invalid-field reporting skips its invalid block.
         }
         let Some(building) = self.building_type(building)? else {
-            return Ok(String::new()); // 1403851D0 tests the null template's +20.
+            return Ok(String::new()); // Test whether the building template is defined.
         };
         let amount = plain_integer(children(item), "amount").ok_or_else(|| {
-            "CModifyBuildingEffect missing or failed amount assignment leaves native +0x58 uninitialised (14033EAE0 / 1424AB970)".to_string()
+            "modify_building missing or failed amount assignment leaves the amount uninitialised".to_string()
         })?;
         let resource = field(children(item), "resource").ok_or_else(|| {
-            "CModifyBuildingEffect missing resource leaves native resource index +0x5C uninitialised (14033EAE0)".to_string()
+            "modify_building missing resource leaves the resource index uninitialised".to_string()
         })?;
         let resource = resource
             .value
             .c_str()
-            .map_err(|why| format!("CModifyBuildingEffect resource: {why}"))?;
+            .map_err(|why| format!("modify_building resource: {why}"))?;
         let frame = self.resource_index(resource)?;
         let building = self.building_label(building, false)?;
         self.line(
@@ -302,7 +308,7 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             true,
-        ) // 1403851D0: FRAME is the resource +D8 database id, not icon_frame +DC.
+        ) // FRAME is the resource database id, not icon_frame.
     }
 
     pub(in crate::effect_description) fn add_resource(
@@ -310,7 +316,7 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // 140376E70 evaluates amount, builds the icon string, then resolves state.
+        // evaluates amount, builds the icon string, then resolves state.
         let amount = match field(children(item), "amount") {
             Some(amount) => self.scoped_value(scalar_operand(amount)?, scopes)?,
             None => 0,
@@ -328,7 +334,7 @@ impl Renderer<'_, '_, '_> {
             },
         };
         if self.valid_state(state)?.is_none() {
-            return Ok(String::new()); // 14036C450: no days evaluation for invalid state.
+            return Ok(String::new()); // no days evaluation for invalid state.
         }
         let state = self.state_name(state)?;
         let days = match field(children(item), "days") {
@@ -364,7 +370,7 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // 140381910 evaluates receiver before state, without state fallback.
+        // evaluates receiver before state, without state fallback.
         let receiver = match field(children(item), "receiver") {
             Some(receiver) => self
                 .evaluator()?
@@ -380,11 +386,11 @@ impl Renderer<'_, '_, '_> {
         if self.valid_state(state)?.is_none() {
             return Ok(String::new());
         }
-        let receiver = receiver.unwrap_or(0); // 140BA5980.
+        let receiver = receiver.unwrap_or(0);
         let receiver = self.country_name(receiver, true)?;
         let state = self.state_name(state)?;
-        // Factory 14033E180 clears +64. Reader 1403B32D0 writes resources at
-        // +210/+21C, while 140381A9B tests +64: authored resources keep this key.
+        // The resource-distribution flag starts cleared.
+        // Authored resources are stored separately and keep this key.
         self.line(
             b"EFFECT_GIVE_RESOURCE_RIGHTS",
             &[
@@ -401,7 +407,7 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // CStateEffect::vf25 1403A1950 resolves selector flags with default zero.
+        // resolves selector flags with default zero.
         let state = self.state_target(item, scopes)?;
         if self.valid_state(state)?.is_none() {
             return Ok(String::new());
@@ -412,7 +418,7 @@ impl Renderer<'_, '_, '_> {
             &[("STATE", Argument::Text(&state))],
             scopes,
             true,
-        ) // 14038B470.
+        )
     }
 
     pub(in crate::effect_description) fn build_railway(
@@ -430,13 +436,13 @@ impl Renderer<'_, '_, '_> {
             .max_railway_level
             .ok_or_else(|| self.content_gap("MAX_RAILWAY_LEVEL"))?;
         if level > maximum {
-            return Ok(String::new()); // 14037A240.
+            return Ok(String::new());
         }
-        // 1401F91B0 appends repeated paths; each failed %i scan retains new zero.
+        // appends repeated paths; each failed %i scan retains new zero.
         let mut path = Vec::new();
         for part in children(item).iter().filter(|item| item.keyword_is("path")) {
             let items = part.value.items().ok_or_else(|| {
-                "CBuildRailwayEffect path requires the native integer-array projection (1401F91B0)".to_string()
+                "build_railway path requires the native integer-array projection".to_string()
             })?;
             for province in items {
                 let text = scalar_operand(province)?;
@@ -450,7 +456,7 @@ impl Renderer<'_, '_, '_> {
             let start = plain_integer(children(item), "start_province").unwrap_or(0);
             if start <= 0 {
                 let Some(state) = field(children(item), "start_state") else {
-                    return Ok(String::new()); // 140E7F720: unset start node.
+                    return Ok(String::new()); // unset start node.
                 };
                 let state = self
                     .evaluator()?
@@ -461,12 +467,12 @@ impl Renderer<'_, '_, '_> {
                 }
             }
             return Err(
-                "CBuildRailwayEffect endpoint selection/pathfinding is not ported (140E7E560 / 140E7F720 / 140E7F370 / 140E7EF70 / 140E7A700); native state-node selection uses CState province-array order +0x18/+0x24".into(),
+                "build_railway endpoint selection/pathfinding is unavailable; state-node selection needs province-array order".into(),
             );
         }
         if field(children(item), "controller_priority").is_some() {
             return Err(
-                "CBuildRailwayEffect controller_priority needs native eligibility/MTTH evaluation in its controller event scope (140E7EDD0 / 1405455A0); fallback pathfinding 140E7E560 is not ported".into(),
+                "build_railway controller_priority needs eligibility/MTTH evaluation in its controller event scope; fallback pathfinding is unavailable".into(),
             );
         }
         if parser::read_bool_field(children(item), "build_only_on_allied", false) {
@@ -475,13 +481,13 @@ impl Renderer<'_, '_, '_> {
                     if country as i32 > 0 =>
                 {
                     return Err(
-                        "CBuildRailwayEffect build_only_on_allied needs native country/controller eligibility (140E7EDD0 / 1406F3A90); fallback pathfinding 140E7E560 is not ported".into(),
+                        "build_railway build_only_on_allied needs country/controller eligibility; fallback pathfinding is unavailable".into(),
                     );
                 }
-                Scope::Country(_) | Scope::CountryLeader { .. } | Scope::State(_) => {} // 140E7E635: country zero gives no filter.
+                Scope::Country(_) | Scope::CountryLeader { .. } | Scope::State(_) => {} // country zero gives no filter.
                 _ => {
                     return Err(
-                        "CBuildRailwayEffect ally filtering needs the native current-scope country tag +0x08 for this projected scope kind (140E7E635)".into(),
+                        "build_railway ally filtering needs the current-scope country tag for this projected scope kind".into(),
                     );
                 }
             }
@@ -495,11 +501,11 @@ impl Renderer<'_, '_, '_> {
         let endpoint_state = |id: u32| {
             provinces.iter().find(|row| row.id == id).map(|row| row.state).ok_or_else(|| {
                 format!(
-                    "CBuildRailwayEffect endpoint province {id} is absent; native 14037A240 dereferences its state pointer +0xC0"
+                    "build_railway endpoint province {id} is absent; state lookup requires an existing province"
                 )
             })
         };
-        // Unfiltered 140E7EDD0 returns1 without reading intermediate provinces.
+        // returns1 without reading intermediate provinces.
         let first = endpoint_state(path[0])?;
         let last = endpoint_state(*path.last().unwrap())?;
         if first == 0 || last == 0 {
@@ -529,7 +535,7 @@ impl Renderer<'_, '_, '_> {
                 scopes,
                 true,
             )
-        } // 14037A240: no LF.
+        } // no LF.
     }
 
     pub(in crate::effect_description) fn create_railway_gun(
@@ -547,23 +553,23 @@ impl Renderer<'_, '_, '_> {
         let state = match provinces.iter().find(|row| row.id == location) {
             Some(province) if province.state == 0 => {
                 return Err(
-                    "CCreateRailwayGunEffect location has no state; native 14037CDA0 passes null to state_name@1409CC380, which dereferences +0x48".into(),
+                    "create_railway_gun location has no state; state naming requires an existing state".into(),
                 );
             }
             Some(province) => Some(self.state_name(province.state)?),
             None => None,
         };
-        // 14037CDA0 names the found province's state before the country adjective.
+        // names the found province's state before the country adjective.
         let country = match scopes.this {
             Scope::Country(country) | Scope::CountryLeader { country, .. }
                 if country as i32 > 0 =>
             {
                 country
             }
-            Scope::Country(_) | Scope::CountryLeader { .. } | Scope::State(_) => 0, // 140BA5560.
+            Scope::Country(_) | Scope::CountryLeader { .. } | Scope::State(_) => 0,
             _ => {
                 return Err(
-                    "CCreateRailwayGunEffect OWNER needs native current-scope country tag +0x08 for this projected scope kind (14037CDA0 / 140BA5560); the scope projection does not expose it".into(),
+                    "create_railway_gun OWNER needs the current-scope country tag for this projected scope kind; the scope projection does not expose it".into(),
                 );
             }
         };
@@ -584,7 +590,7 @@ impl Renderer<'_, '_, '_> {
                 scopes,
                 true,
             ),
-        } // 14037CDA0: no LF.
+        } // no LF.
     }
 
     pub(in crate::effect_description) fn strategic_state_location(
@@ -603,8 +609,8 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         }
         Err(
-            "CSetStrategicStateLocationBuildingLevel needs cached strategic-location templates (14051BBB0) and their description helper 140AB07D0; content is not exposed to descriptions".into(),
-        ) // 14051B6F0.
+            "set_strategic_state_location_building_level needs cached strategic-location templates and their descriptions; content is not exposed to descriptions".into(),
+        )
     }
 
     fn buildings(&self) -> Result<&installed_content::buildings::Buildings, String> {
@@ -615,7 +621,7 @@ impl Renderer<'_, '_, '_> {
     }
 
     fn building_type(&self, item: &Item) -> Result<Option<&BuildingType>, String> {
-        // FindByToken@140676C60 uses the value token id, not its quoted text.
+        // token lookup uses the value token id, not its quoted text.
         if item.value_keyword().is_none() {
             return Ok(None);
         }
@@ -637,7 +643,7 @@ impl Renderer<'_, '_, '_> {
     }
 
     fn building_label(&self, building: &BuildingType, plural: bool) -> Result<String, String> {
-        // 1414A4470 localises declared spelling and the literal _plural suffix.
+        // localises declared spelling and the literal _plural suffix.
         let key = if plural {
             format!("{}_plural", building.name)
         } else {
@@ -649,9 +655,8 @@ impl Renderer<'_, '_, '_> {
             .map_err(|why| why.to_string())
     }
 
-    fn building_class(&self, item: &Item) -> &'static str {
-        self.effect_class(item)
-            .map_or("building effect", |class| class.name)
+    fn building_effect_name(&self, item: &Item) -> String {
+        key(item)
     }
 
     fn building_level(&self, item: &Item, scopes: Scopes, default: i64) -> Result<i32, String> {
@@ -659,7 +664,7 @@ impl Renderer<'_, '_, '_> {
             Some(level) => self.scoped_value(scalar_operand(level)?, scopes)?,
             None => default,
         };
-        Ok(crate::triggers::fixed_round(value) as i32) // 1424D8760.
+        Ok(crate::triggers::fixed_round(value) as i32)
     }
 
     fn building_province(&self, item: &Item, scopes: Scopes) -> Result<Option<u32>, String> {
@@ -667,7 +672,7 @@ impl Renderer<'_, '_, '_> {
         let province = match scoped {
             Some(scoped) => (self.scoped_value(scalar_operand(scoped)?, scopes)? / 100_000) as u32,
             None => plain as u32,
-        }; // 140319930 truncates division; it does not round.
+        }; // truncates division; it does not round.
         Ok(self
             .context
             .text
@@ -690,7 +695,7 @@ impl Renderer<'_, '_, '_> {
         if self.valid_state(plain as u32)?.is_some() {
             return Ok(Some(plain as u32));
         }
-        // 140319B80: only the plain selector falls back to current state.
+        // only the plain selector falls back to current state.
         let state = match scopes.this {
             Scope::State(state) => state,
             _ => NULL_STATE,
@@ -700,8 +705,8 @@ impl Renderer<'_, '_, '_> {
 
     fn building_tag_refusal(&self, item: &Item) -> String {
         format!(
-            "{} tag-selected building helper is not ported (1403126C0 / 1411620D0); multiple matching targets need CBuildingStatus ordered pointer vector +0x38/+0x44, unrecorded by StateBuildings/ProvinceBuildings (writer GetOrCreateBuilding@14115E150; reset 14115FD70)",
-            self.building_class(item)
+            "{} tag-selected building helper is unavailable; multiple matching targets need the ordered building roster, unrecorded by StateBuildings/ProvinceBuildings",
+            self.building_effect_name(item)
         )
     }
 
@@ -718,7 +723,7 @@ impl Renderer<'_, '_, '_> {
             .iter()
             .any(|resource| resource.token.eq_ignore_ascii_case(name))
         {
-            return Ok(0); // FindByName@140AB2DF0 returns the native null resource.
+            return Ok(0); // name lookup returns the native null resource.
         }
         let token = self.context.world()?.token_of(name.as_bytes())?;
         self.context
@@ -733,36 +738,36 @@ impl Renderer<'_, '_, '_> {
             .map(|id| id as i32)
             .ok_or_else(|| {
                 format!(
-                    "CModifyBuildingEffect resource {name} has no recorded native database index (CStrategicResource +0xD8, constructor 140BBB090; ResourceDefinitions)"
+                    "modify_building resource {name} has no recorded database index in ResourceDefinitions"
                 )
             })
     }
 
     fn resource_icon(&self, item: &Item) -> Result<i32, String> {
         let resource = field(children(item), "type").ok_or_else(|| {
-            "CAddResourceEffect missing type needs the native null resource's signed icon_frame +0xDC (140376E70); content does not expose it".to_string()
+            "add_resource missing type needs the null resource's signed icon_frame; content does not expose it".to_string()
         })?;
         let name = resource
             .value
             .c_str()
-            .map_err(|why| format!("CAddResourceEffect resource type: {why}"))?;
+            .map_err(|why| format!("add_resource resource type: {why}"))?;
         let mut matches = self
             .resources()?
             .iter()
             .filter(|resource| resource.token.eq_ignore_ascii_case(name));
         let first = matches.next().ok_or_else(|| {
             format!(
-                "CAddResourceEffect unknown resource {name} needs the native null resource's signed icon_frame +0xDC (140376E70); content does not expose it"
+                "add_resource unknown resource {name} needs the null resource's signed icon_frame; content does not expose it"
             )
         })?;
         if matches.any(|later| later.icon_frame != first.icon_frame) {
             return Err(format!(
-                "CAddResourceEffect resource {name} has differing repeated icon declarations; native FindByName@140AB2DF0 selects the first database record, whose content identity is unverified"
+                "add_resource resource {name} has differing repeated icon declarations; name lookup selects the first database record, whose content identity is unverified"
             ));
         }
         first.icon_frame.map(|frame| frame as i32).ok_or_else(|| {
             format!(
-                "CAddResourceEffect resource {name} signed/default/nonpositive icon_frame +0xDC is not preserved by installed_content::resources::Resource.icon_frame (140BBB090 / 140BBD150 / 140376E70)"
+                "add_resource resource {name} signed/default/nonpositive icon_frame is not preserved by installed_content::resources::Resource.icon_frame"
             )
         })
     }

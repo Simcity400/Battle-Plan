@@ -126,7 +126,7 @@ struct Country {
     history: ResearchHistory,
     // Active assignments retain the template index, level and researched membership.
     active: BTreeMap<u32, (u32, i32, bool)>,
-    // 140EBFEF0: latest assignment occurrence per slot, including completed entries.
+    // Latest assignment occurrence per slot, including completed entries.
     entry_occurrences: Vec<Option<u32>>,
     samples: BTreeMap<u32, VecDeque<(i32, replay::rows::ResearchInputRow)>>,
     pending: Vec<(u32, usize, u32, i32, i32)>,
@@ -294,7 +294,7 @@ impl Country {
         }
         let mut slots = Vec::with_capacity(inputs.len());
         let mut technologies = BTreeMap::new();
-        // 140EBFEF0: inventory is sorted by (country, template index). Only former/current
+        // Inventory is sorted by (country, template index). Only former/current
         // assignments need completion evidence; never rescan the full catalogue
         // once per country per hour.
         if let (Some(inventory), Some(owner)) = (inventory, inputs.first().map(|r| r.country)) {
@@ -469,7 +469,7 @@ impl Country {
                 e.token.as_bytes() == input.token.as_slice()
                     && e.level == input.level
                     && e.ended_by_hour.is_none_or(|end| end == hour)
-                    // 140EBFEF0: equal names cannot attribute another instance's progress.
+                    // Equal names cannot attribute another instance's progress.
                     && self
                         .active
                         .get(&input.index)

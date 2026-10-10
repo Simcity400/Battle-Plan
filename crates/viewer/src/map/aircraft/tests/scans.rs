@@ -137,12 +137,12 @@ fn predicates_reach_only_the_wings_whose_mask_reads_them() {
     assert_eq!((port.port, port.mine), (Some(true), None));
     let mines = scans.predicates(&wing(AIR_MISSION_LAY_MINES), COUNTRY, 7, &reached);
     assert_eq!((mines.port, mines.mine), (None, Some(true)));
-    // 14122EB00's count gate and the bit-6 bypass read no scan.
+    // the game's count gate and the bit-6 bypass read no scan.
     let empty = scans.predicates(&wing(1 << 8), COUNTRY, 7, &inputs(Vec::new()));
     assert_eq!(empty.port, None);
     let bypass = scans.predicates(&wing((1 << 8) | (1 << 6)), COUNTRY, 7, &reached);
     assert_eq!(bypass.port, None);
-    // Past the bit 9/10 bypass F66100 reads no bit 12..16 scan, but
+    // Past the bit 9/10 bypass, admission reads no bit 12..16 scan, but
     // still the earlier ones.
     let transport = (1 << 10) | (1 << 8) | AIR_MISSION_LAY_MINES;
     let transport = scans.predicates(&wing(transport), COUNTRY, 7, &reached);

@@ -471,8 +471,8 @@ fn air_disruption_uses_native_newton_sqrt_magic_division_and_sentinel_clamp() {
     };
     assert_eq!(sqrt(0), Ok(0));
     assert_eq!(sqrt(-7), Ok(0));
-    // 1424DAE00 stops on the previous error's 1% tolerance after applying
-    // its Newton step; 1424D8800 does not round this result to unity.
+    // The Newton step precedes the previous error's 1% tolerance stop; scale
+    // reduction does not round this result to unity.
     assert_eq!(sqrt(P), Ok(100_001));
     assert_eq!(
         disruption_factor(Ok(P), 1, 2, Ok([0, 1]), Ok(0), Ok(defines)),

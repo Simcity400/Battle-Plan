@@ -1,4 +1,4 @@
-//! Private authored fixtures; execution remains parent-owned.
+//! Synthetic selected-attack fixtures.
 use super::*;
 use std::cell::{Cell, RefCell};
 
@@ -281,9 +281,8 @@ fn original_borrows_retire_while_owned_scalar_spans_survive() {
     assert!(packet.values(Span { start: 0, len: 1 }).is_none());
 }
 
-// Integrated R6 source fixtures; UNRUN.
-// Reuses creference_registry::tests::Fixture and ccountry::synthetic::World.
-// No groups tests: the successor GroupsPacket API is parent-owned.
+// Selected-attack fixtures reuse `creference_registry::tests::Fixture`
+// and `ccountry::synthetic::World`.
 
 struct CaptureFixture {
     source: creference_registry::tests::Fixture,

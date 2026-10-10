@@ -56,7 +56,7 @@ value_struct!(FuelDemandFleet { reference: u64, name: Option<Vec<u8>>, name_reas
 pub struct FuelDemandWing {
     pub reference: u64,
     pub owner: Option<u32>,
-    /// 140F4A700 selects a signed-positive override, otherwise the pool owner.
+    /// Select a signed-positive country override, otherwise the pool owner.
     pub country_override: Option<i32>,
     pub owner_reason: Vec<u8>,
     pub pool_ordinal: u32,

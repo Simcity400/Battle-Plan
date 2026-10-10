@@ -123,7 +123,7 @@ fn registry_keeps_full_handles_and_distinguishes_absence_from_empty() {
 }
 
 #[test]
-fn variant_version_keeps_raw_byte_and_native_zero_omission() {
+fn variant_version_keeps_raw_byte_and_zero_omission() {
     let variant = |text: &str| {
         let document = crate::parser::parse(
             format!("equipments={{synthetic={{id={{id=1 type=70}} {text}}}}}").as_bytes(),
@@ -171,7 +171,7 @@ fn division_bank_wrapper_is_distinct_from_other_country_equipment() {
 }
 
 #[test]
-fn production_base_preserves_native_widths_and_writer_omissions() {
+fn production_base_preserves_saved_widths_and_writer_omissions() {
     let doc = crate::parser::parse(
         b"id={id=4294967295 type=56} cost=92233720368547.75807
           speed=-92233720368547.75808 produced=-0.00001
@@ -218,7 +218,7 @@ fn delivery_progress_exists_only_for_active_status_and_keeps_defaults_absent() {
 }
 
 #[test]
-fn production_country_wrapper_and_variant_children_preserve_native_keys_and_order() {
+fn production_country_wrapper_and_variant_children_preserve_saved_keys_and_order() {
     let doc = crate::parser::parse(
         br#"
         countries={GER={production={

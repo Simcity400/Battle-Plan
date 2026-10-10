@@ -90,9 +90,9 @@ pub struct Capacities {
 }
 
 impl Capacities {
-    /// Pool+0x1c is the live extent walked at 14146F0B0 with stride 0x1c0;
-    /// 140FCF9A0 retains each project's reward-history array. Empty outputs
-    /// count every authenticated pool/header without reading lifecycle children.
+    /// The live pool extent and each project's reward-history array set demand.
+    /// Empty outputs count every authenticated pool/header without reading
+    /// lifecycle children.
     pub(crate) fn presize(
         &mut self,
         memory: &impl Memory,
@@ -108,7 +108,7 @@ impl Capacities {
                 .ok_or("project row demand overflow"),
             Outcome::Unavailable { reason } => Err(reason),
         };
-        // 14187F220/14049FC30 bound the rooted program pointer vectors.
+        // The rooted program pointer vectors bound their own demand.
         let programs = nproject_cprogram::walk(memory, base, state, &mut [], &mut [], &mut []);
         if let Outcome::Unavailable { reason } = programs.outcome
             && reason != "program pointer scratch capacity insufficient"

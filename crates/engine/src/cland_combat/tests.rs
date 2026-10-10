@@ -894,11 +894,8 @@ fn details_preserve_native_order_bytes_damage_and_loss_history() {
     );
 }
 
-/// 1415CA230/1415CA460 append one window entry per element of
-/// `CLandCombatant+0xC8`/`+0xE0` from index 0, so the copy must keep that
-/// index order: neither the +0x20 roster order (B, A) nor pointer or
-/// handle order. pairL_land_danzig.png shows the defender lists in the
-/// recorded order 13, 6, 11, 9 and 4, 1, 8, 3, 7, 10 of those ordinals.
+/// Copy committed and reserve entries in their vector index order from
+/// zero, independently of roster, pointer or handle ordering.
 #[test]
 fn details_copy_committed_and_reserve_arrays_in_native_index_order() {
     const ORDERED: usize = 0x8c00;
@@ -1448,11 +1445,9 @@ fn commander_selection_preserves_equal_skill_category_tie_and_hourly_traits() {
     );
 }
 
-/// 140C16FB0 stores the selected commander's +0x20 name as an ordinary
-/// MSVC string and 142230F20 takes any length, empty included; +0x80 is
-/// the same kind of string. Both keep the game's length in the text
-/// arena, count into its demand when they do not fit, and name their
-/// field when invalid.
+/// Commander name and description retain arbitrary stored MSVC-string
+/// lengths, including empty strings. Short arenas retain full demand;
+/// invalid storage reports the field by name.
 #[test]
 fn selected_commander_texts_keep_native_length_and_name_their_field() {
     use crate::cunit_leader::{DESCRIPTION_TOKEN, TOKEN};
@@ -1568,9 +1563,9 @@ fn selected_commander_texts_keep_native_length_and_name_their_field() {
     );
 }
 
-/// Format-23 live session hour 60830359: LandCombatDetails was unavailable with
-/// "tactic side has no country scope". Combat 113305532235838 had three
-/// attackers the hour before, none at that hour and was gone the hour after.
+/// A combat whose participant list becomes empty can remain present.
+/// Its tactic detail must use the fallback country scope rather than
+/// withholding the detail row.
 #[test]
 fn tactic_context_records_a_side_whose_country_set_emptied() {
     use crate::{ccountry, land_tactic_inputs as tactic};
@@ -1863,9 +1858,8 @@ fn country_sets_refuse_broken_links_and_keep_what_the_game_stored() {
         &|f| f.u64(ATTACK + cland_combatant::COUNTRIES + 8, 0x8400)
     ));
     assert!(refused(&|f| f.u64(0x8418 + 0x10, 0x8400)));
-    // The game keeps a set distinct and a secondary set positive when it
-    // inserts (1413CC0D0); reading one checks only its links, so a repeat
-    // or a nonpositive tag is recorded as stored, no more harshly.
+    // Insertion keeps sets distinct and secondary tags positive. Reads
+    // check only links and retain repeated or nonpositive tags as stored.
     assert!(!refused(&|f| f.u32(0x8418, 7)));
     assert!(!refused(&|f| f.u32(0x8418, 0)));
     assert!(!refused(&|f| f.u32(0x8500, 0x8000_0000)));

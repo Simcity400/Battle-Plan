@@ -50,7 +50,7 @@ pub struct WarOverviewCountryRow {
 typed_codec!(WarOverviewCountryRow, 32, |row| row.country as u128, |key| Self { country: key as u32, ..Default::default() },
  { 0 => (major): U8, 1 => (divisions): I32, 2 => (factories): I32, 3 => (view_subject): U8, 4 => (score_available): U8 }, |_row| Ok(()));
 
-/// The native default naming prefix, copied from the supported image, not a content key catalogue.
+/// The recorded default naming prefix, read from the running game; not a content key catalogue.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct WarNameRuleRow {
     pub index: u32,

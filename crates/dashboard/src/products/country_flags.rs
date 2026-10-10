@@ -53,16 +53,10 @@ impl CountryFlagSize {
     }
 }
 
-/// The window the engine opens as the top bar: `topbar` (`142934CD8`), which
-/// `technology_canvas_owner::constructor@140B52390` passes to
-/// `CTopBar::CTopBar@14187C8D0` (kept at `+0x48`), and
-/// `hud_topbar_controller_layout::setup@14188BA30` opens through
-/// `CGui::container_factory@142246270`.
+/// The top bar opens the topbar window from its authored declaration.
 const TOP_BAR: &str = "topbar";
-/// The flag button setup then asks that window for
-/// (`CContainerWindow::FindButton@1422A4A20`): `player_flag` at `1429FA990`,
-/// also used by `CTopBar::UpdateContent@14188EC80`. The sprite it draws is
-/// content, read from the top bar's own declaration wherever it is.
+/// The flag button uses player_flag. Its sprite is content, read from the
+/// top bar's own declaration wherever it is.
 const PLAYER_FLAG: &str = "player_flag";
 /// Decoded hours kept per source, so a picker and a header following playback
 /// do not evict each other.
@@ -289,12 +283,12 @@ impl ShieldStyle {
 }
 
 /// Whether a recorded flag key names a file this reader can resolve inside a
-/// flag folder. The engine's path is the folder, the key and `.tga` joined as
-/// `variants/red` names `gfx/flags/variants/red.tga`. A key of any length is
-/// accepted when every `/`-separated part is non-empty, not `.` or `..`, and
-/// free of backslashes, NUL and drive colons: so it stays below the folder.
-/// Tags are otherwise opaque (spaces, lower case and other bytes are the
-/// country's own).
+/// flag folder. The game's path joins the folder, key and `.tga` as text, so
+/// a cosmetic tag such as `variants/red` names `gfx/flags/variants/red.tga`.
+/// A key of any length is accepted when every `/`-separated part is non-empty,
+/// not `.` or `..`, and free of backslashes, NUL and drive colons: so it stays
+/// below the folder. Tags are otherwise opaque (spaces, lower case and other
+/// bytes are the country's own).
 fn safe_flag_key(key: &str) -> bool {
     key.split('/').all(|part| {
         !part.is_empty() && part != "." && part != ".." && !part.contains(['\\', '\0', ':'])
@@ -339,11 +333,10 @@ pub(crate) struct FlagCache {
     unresolvable: BTreeSet<String>,
 }
 
-/// Searches `sets` in order, and in each the candidates in order, as
-/// `LoadFirstDecodableCountryFlag` (`14122A730`) does: a missing file or one
-/// the engine's decoder refuses falls through to the next candidate. A
-/// candidate [`safe_flag_key`] refuses stops the search, because falling past
-/// it would draw a flag the game does not.
+/// Searches `sets` in order, and in each the candidates in order: a missing
+/// file or one the game's decoder refuses falls through to the next candidate.
+/// A candidate [`safe_flag_key`] refuses stops the search, because falling
+/// past it would draw a flag the game does not.
 pub(crate) fn find_flag(
     layers: &installed_content::ResolvedLayers,
     sets: &[FlagSet],
@@ -387,9 +380,8 @@ pub(crate) fn find_flag(
                     if !cache.reported.insert(cache_key.clone()) {
                         continue;
                     }
-                    // DecodeFlagTga 14122AB00 rejects these headers, and
-                    // LoadFirstDecodableCountryFlag 14122A730 skips them.
-                    // The port's stricter truncated-read refusal differs.
+                    // The game's decoder rejects these headers and skips the candidate.
+                    // This reader also refuses truncated reads.
                     let mut finding = Finding::new(
                         match reason {
                             installed_content::flags::DecodeFailure::EngineRefused => Kind::Content,
@@ -402,7 +394,7 @@ pub(crate) fn find_flag(
                                 cell[0], cell[1]
                             ),
                             installed_content::flags::DecodeFailure::Truncated => format!(
-                                "flag decoder cannot safely read {asset} at cell {}x{}; the port refuses this input but the engine does not check read status",
+                                "flag decoder cannot safely read {asset} at cell {}x{}; this reader refuses this input but the game does not check read status",
                                 cell[0], cell[1]
                             ),
                         },
@@ -415,7 +407,7 @@ pub(crate) fn find_flag(
                         && set == FlagSet::Normal
                         && cache.substitutions.insert(asset.clone())
                     {
-                        // No traced native medium-to-normal substitution: actionable.
+                        // Medium-to-normal substitution is not established: actionable.
                         let mut finding = Finding::new(
                             Kind::Fallback,
                             key,
@@ -437,7 +429,7 @@ pub(crate) fn find_flag(
             }
         }
     }
-    // Product omission has no cited native display parity.
+    // Product omission has no established game display behavior.
     findings.push(Finding::new(
         Kind::Fallback,
         candidates.first().cloned().unwrap_or_default(),
@@ -535,7 +527,7 @@ impl FlagChoice {
 }
 
 /// The flag's ruling ideology group, retaining a missing or unsupported join
-/// instead of skipping the native group-qualified candidate (14122A730).
+/// instead of skipping the group-qualified candidate.
 pub fn ruling_groups(
     frame: &DecodedFrame,
 ) -> io::Result<BTreeMap<u32, Result<Option<String>, String>>> {
@@ -563,11 +555,10 @@ pub fn ruling_groups(
                 })?;
                 let token = std::str::from_utf8(token)
                     .map_err(|_| format!("country {country} flag ruling group is not UTF-8"))?;
-                // Capture authenticates the ordinary group vtable. Its
-                // constructor14117C030 sets +0x10=1; the authored reader never
-                // changes it. The null group's different vtable is refused.
-                // Even an empty accepted token is an active group:
-                // 14122A2A0 still appends its underscore.
+                // Capture authenticates the ordinary group, whose active flag is
+                // initialized to 1 and never changed by authored content. The null
+                // group is refused. Even an empty accepted token is an active group,
+                // so the qualified candidate still appends its underscore.
                 Ok(Some(token.to_owned()))
             })();
             (country, group)
@@ -594,13 +585,13 @@ pub fn choices(frame: &DecodedFrame) -> io::Result<Vec<FlagChoice>> {
         .into_iter()
         .filter_map(|(raw, slot)| {
             let country = countries.get(&slot)?;
-            // PopulateFlagAtlasPage@141228380 tests the object's own +8.
+            // Atlas population tests the object's own country reference.
             if (country.id as i32) <= 0 {
                 return None;
             }
             let tag = String::from_utf8_lossy(&country.tag).into_owned();
-            // Atlas cells belong to the resolved CCountry object. An alias
-            // link supplies the same object's captured appearance and party.
+            // Atlas cells belong to the resolved country object. An alias link
+            // supplies the same object's captured appearance and party.
             let owner = country.id;
             let appearance = appearances.get(&owner);
             let cosmetic = appearance
@@ -1026,7 +1017,7 @@ mod tests {
                 ..Default::default()
             }]));
         assert_eq!(ruling_groups(&frame).unwrap()[&10], Ok(Some(String::new())));
-        // The ordinary group's capture identity proves +0x10=1 even with
+        // The ordinary group's capture identity proves an active flag even with
         // an empty token, so the qualified candidates keep the underscore.
         assert_eq!(
             choices(&frame).unwrap()[0].candidates,
@@ -1115,6 +1106,8 @@ mod tests {
 
     #[test]
     fn live_flag_reply_warns_only_for_unreproduced_draws() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let image = vec![
             0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 32, 0x28, 30, 20, 10, 255,
         ];
@@ -1141,12 +1134,12 @@ mod tests {
             (
                 vec!["mod_truncated", "mod_good"],
                 Some("gfx/flags/medium/mod_good.tga"),
-                Some("engine does not check read status"),
+                Some("game does not check read status"),
             ),
             (
                 vec!["mod_truncated"],
                 None,
-                Some("engine does not check read status"),
+                Some("game does not check read status"),
             ),
             (
                 vec!["mod_absent"],
@@ -1264,6 +1257,8 @@ mod tests {
 
     #[test]
     fn shield_png_padding_and_every_refusal_use_the_shared_gui_path() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::catalogue::texture_tests::{png_bytes, refusal_textures, texture_catalogue};
         let mask = Rgba8Image {
             width: 3,

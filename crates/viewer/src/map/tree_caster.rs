@@ -1,4 +1,4 @@
-//! Tree caster141269930 ->141265C10, declaration141261100.
+//! Tree caster vertex declaration and submission to the light depth map.
 use eframe::wgpu;
 use installed_content::{
     ResolvedLayers,
@@ -22,8 +22,8 @@ pub fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Resul
         .map_err(refuse)
 }
 
-/// 140223170 initializes the scene block;141269930 replaces just its first matrix.
-/// Unknown constructor padding remains unverified (see map pass inventory).
+/// Initialize scene constants, then replace only the first matrix. Unknown initial padding remains
+/// outside the written ranges.
 pub fn constants(matrix: [[f32; 4]; 4]) -> Vec<u8> {
     let mut bytes = vec![0; 416];
     bytes[..64].copy_from_slice(bytemuck::bytes_of(&matrix));
@@ -32,7 +32,7 @@ pub fn constants(matrix: [[f32; 4]; 4]) -> Vec<u8> {
     bytes
 }
 
-/// Fixed seven-element declaration shared by all tree techniques (141261100).
+/// Fixed seven-element declaration shared by all tree techniques.
 pub fn vertex_layouts(
     inputs: &[shader_pipeline::VertexInput],
 ) -> io::Result<Vec<gpu::VertexLayout>> {
@@ -96,7 +96,7 @@ impl Caster {
         let mut state =
             gpu::State::authored(&effect.source, &effect.source.techniques[selection.index])
                 .map_err(refuse)?;
-        //141265C10 binds t0/s0 per mesh, clears t3..6 and binds t14/s14.
+        // Bind t0/s0 per mesh, clear t3..6 and bind t14/s14.
         state.samplers.retain(|key, _| {
             [0, 3, 4, 5, 6, 14]
                 .iter()
@@ -104,8 +104,8 @@ impl Caster {
         });
         let mut pass = gpu::Pass::packed(&compiled, &state, format, 1);
         pass.vertices = vertex_layouts(&compiled.vertex.inputs)?;
-        //141269930 sets+68, but141265C10 overrides it with CPdxMap+60 (CW/back).
-        //Caller141269930 restores default LESS_EQUAL/write-depth.
+        // Override the tree raster state with clockwise fronts and back-face culling. The caller restores
+        // LESS_EQUAL depth with writes enabled.
         let raster = RasterizerState::default();
         pass.primitive = gpu::primitive(&raster, wgpu::PrimitiveTopology::TriangleList).0;
         pass.depth_stencil =

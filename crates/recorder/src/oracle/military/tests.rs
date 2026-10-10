@@ -200,7 +200,7 @@ fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
         ),
         (
             Recorded::Value(Some(vec![0xff, 0, b'W'])),
-            // 1424AF5A0 stops at the first NUL; the suffix is unsaved.
+            // The game stops at the first NUL; the suffix is unsaved.
             Some(vec![0xff]),
             0,
         ),
@@ -484,6 +484,8 @@ fn land_combats_compare_locations_and_missing_rows_despite_membership_exclusions
 
 #[test]
 fn divisions_compare_locations_strength_and_missing_rows_despite_membership_exclusions() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let membership = membership();
     let (mut frame, mut saved, _, _) = super::super::tests::fixture();
     let owner = saved.countries.keys().next().unwrap().clone();

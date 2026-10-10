@@ -57,7 +57,7 @@ export function stockpileCountryData(replies: readonly EquipmentStockpileReply[]
 }
 
 /** The available operand is the contribution, not a later stockpile read. The
- * wide residual retains SUB@141360174/141360972 wrapping without inventing equipment. */
+ * wide residual retains signed i64 wrapping without inventing equipment. */
 export function stockpilePartsAt(reply: EquipmentStockpileReply, group: StockGroup, hour: number, mode: StockpileMode) {
   if (mode === 'stock') {
     const stock = stockAt(reply, group, hour);

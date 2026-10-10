@@ -32,12 +32,12 @@ import './autonomy.css';
 
 const NO_WARNINGS: string[] = [];
 const NO_SPANS: { firstHour: number; lastHour: number }[] = [];
-/** A lane's height, as signed off (mock-up diplo-1). */
+/** A lane's height. */
 const LANE_HEIGHT = 54;
 /** Room between a lane's edge and its thresholds. */
 const LANE_PAD = 8;
 
-/** One subject's lane (mock-up diplo-1): its level over time as coloured bands,
+/** One subject's lane: its level over time as coloured bands,
  * the move-up and move-down scores as the dashed top and bottom edges, its
  * progress between them as a line, and a dot where the level changed. */
 function paintLane(ctx: CanvasRenderingContext2D, lane: SubjectLane, geometry: LaneGeometry, tokens: ChartTokens, colour: (span: string) => string): void {
@@ -84,7 +84,7 @@ function paintLane(ctx: CanvasRenderingContext2D, lane: SubjectLane, geometry: L
   ctx.restore();
 }
 
-/** Each subject's autonomy over time (mock-up diplo-1): one lane per subject with
+/** Each subject's autonomy over time: one lane per subject with
  * its flag and name, its current level as a coloured pill underneath, and the
  * playhead through every lane. Level names and order come from the recording's
  * content (its autonomy states); level colours are the palette in that order. */

@@ -510,7 +510,7 @@ pub(super) fn compare_relation_tuples(
     Ok(())
 }
 
-/// The four raw lanes compare exactly: record writer 141085bf0 prints each lane
+/// The four raw lanes compare exactly: record writer prints each lane
 /// through the fixed5 path and omits it only when the raw qword is zero, so an
 /// omitted lane is an exact zero rather than an unknown. The save writes the
 /// list positionally and the recorded key is the same native index, so the join
@@ -606,8 +606,8 @@ pub(super) fn compare_factions(
     report: &mut Report,
 ) -> io::Result<()> {
     let links = &countries.links;
-    // CFaction::Serialize@140D7B4D0 spells every stored member through
-    // tag_string@140BA5C20, including the reserved country. Its country block
+    // The faction save writer spells every stored member through
+    // tag_string, including the reserved country. Its country block
     // is omitted unless the physical census contains a positive reserved alias.
     // Its faction membership is saved normally in either case. Demand this exact
     // tag only for a reached zero join.
@@ -709,7 +709,7 @@ pub(super) fn compare_factions(
             continue;
         };
         report.factions += 1;
-        // CFaction::Serialize@140D7B4D0 gates +0x18 on stored length +0x28.
+        // The faction save writer gates on stored length.
         let name_label = format!("{label}.literal_name");
         let name = (!actual.name.is_empty())
             .then(|| super::serialized_text(report, &name_label, &actual.name));
@@ -755,8 +755,8 @@ pub(super) fn compare_factions(
 }
 
 /// A faction's template, colour and colour override against the save.
-/// `CFaction::Serialize@140D7B4D0` writes `template` (the template token's spelling)
-/// only when the faction has one, `color` through `CColor::vf1@142237ad0` (each of r,
+/// The faction save writer writes `template` (the template token's spelling)
+/// only when the faction has one, `color` through the colour writer (each of r,
 /// g, b as `(int)(c * 255.0f)`, and alpha only when it is not 1.0) and
 /// `is_color_overridden` from the raw byte.
 fn compare_faction_presentation(
@@ -822,9 +822,10 @@ fn compare_faction_presentation(
     }
 }
 
-/// The integers `CColor::vf1@142237ad0` writes for four f32 components (raw bits):
+/// The integers the colour writer writes for four f32 components (raw bits):
 /// each of r, g, b as `(int)(c * 255.0f)`, the product in f32 and the conversion a
 /// truncating `cvttss2si` (NaN or out of range gives `i32::MIN`), then alpha the same
+/// way only when it is not 1.0 (compared as f32).
 pub(super) fn saved_colour(components: [u32; 4]) -> Vec<i64> {
     let scale = |bits: u32| {
         let product = f32::from_bits(bits) * 255.0_f32;

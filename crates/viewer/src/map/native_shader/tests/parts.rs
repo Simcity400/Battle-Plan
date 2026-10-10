@@ -1,73 +1,12 @@
-//! Actual GUI submission compared with independent native model draws.
+//! GUI submission compared with independently populated installed-program draws.
 use super::*;
-use crate::map::{native_effects as model, native_gui as gui, sprites};
+use crate::map::{native_gui as gui, sprites};
 use eframe::wgpu;
 use installed_content::image::{Rgba8Image, dds};
 use std::sync::Arc;
 
-struct Sheets([sprites::SpriteSheet; 2]);
-impl gui::Sheets for Sheets {
-    fn sheet(&self, _: &[u8]) -> Option<&sprites::SpriteSheet> {
-        Some(&self.0[0])
-    }
-    fn progress(&self, _: &[u8]) -> Option<[&sprites::SpriteSheet; 2]> {
-        Some([&self.0[0], &self.0[1]])
-    }
-    fn masking(&self, _: &[u8]) -> Option<&sprites::SpriteSheet> {
-        None
-    }
-    fn mask(&self, _: &[u8]) -> Option<&sprites::SpriteSheet> {
-        None
-    }
-}
-fn sheets() -> Sheets {
-    Sheets(std::array::from_fn(|i| sprites::SpriteSheet {
-        name: format!("fixture{i}"),
-        texture: i,
-        frames: 1,
-        size: [16, 16],
-    }))
-}
-fn effect(file: &str) -> Arc<library::Effect> {
-    let root = PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("BATTLE_PLAN_GAME_DIR"));
-    let p = installed_content::pdxshader::program::read_with(
-        format!("gfx/FX/{file}.shader").as_bytes(),
-        &|path| std::fs::read(root.join(String::from_utf8_lossy(path).as_ref())).ok(),
-    )
-    .unwrap();
-    library::Effect::new(Arc::new(p), vec![], Arc::new(cache::Cache::default()))
-}
-fn part(kind: gui::PartKind, asset: Arc<library::Effect>, technique: &str) -> gui::Part {
-    gui::Part {
-        path: "offline GUI fixture".into(),
-        child: None,
-        kind,
-        clip: None,
-        color: [1.; 4],
-        native: None,
-        shading: gui::Shading {
-            compiled: Some(draw::Effect {
-                asset,
-                technique: technique.into(),
-            }),
-            program: None,
-            since: 0.125,
-            animation: 0.,
-            time: 0.125,
-            clocked: true,
-        },
-    }
-}
-fn geometry() -> gui::Geometry {
-    gui::Geometry {
-        rect: [0., 0., 16., 16.],
-        local: [0., 0., 16., 16.],
-        pivot: [0., 16.],
-        rotation: 0.,
-    }
-}
 fn images() -> Vec<dds::Texture> {
-    (0..5)
+    let mut images: Vec<_> = (0..5)
         .map(|seed| {
             dds::Texture::from_rgba8(Rgba8Image {
                 width: 16,
@@ -84,29 +23,15 @@ fn images() -> Vec<dds::Texture> {
                     .collect(),
             })
         })
-        .collect()
-}
-fn views(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    images: &[dds::Texture],
-) -> Vec<wgpu::TextureView> {
+        .collect();
+    images.push(dds::Texture::from_rgba8(Rgba8Image {
+        width: 1,
+        height: 1,
+        pixels: vec![0; 4],
+    }));
     images
-        .iter()
-        .map(|image| {
-            crate::map::textures::upload(
-                device,
-                queue,
-                "fixture",
-                image,
-                crate::map::textures::ColorSpace::Linear,
-            )
-            .unwrap()
-            .texture
-            .create_view(&Default::default())
-        })
-        .collect()
 }
+
 fn render_part(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -114,7 +39,7 @@ fn render_part(
     images: &[dds::Texture],
 ) -> Vec<u8> {
     let mut batch = sprites::Batch::default();
-    draw::emit(part, [0, 0], &sheets(), &mut batch).unwrap();
+    draw::emit(part, [0, 0], &models::Sheets, &mut batch).unwrap();
     if let gui::PartKind::TextSprite { bake, .. } = &part.kind {
         let baked = batch.quads[0]
             .exact
@@ -148,7 +73,9 @@ fn render_part(
     assert!(refused.is_empty(), "{refused:?}");
     pixels
 }
+
 fn equal(label: &str, actual: &[u8], expected: &[u8]) {
+    assert_eq!(actual.len(), expected.len(), "{label}: image sizes");
     let different = actual
         .chunks_exact(4)
         .zip(expected.chunks_exact(4))
@@ -160,7 +87,7 @@ fn equal(label: &str, actual: &[u8], expected: &[u8]) {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(Path::new(&dir).join(format!("{label}-actual.rgba")), actual).unwrap();
         std::fs::write(
-            Path::new(&dir).join(format!("{label}-oracle.rgba")),
+            Path::new(&dir).join(format!("{label}-reference.rgba")),
             expected,
         )
         .unwrap();
@@ -168,47 +95,107 @@ fn equal(label: &str, actual: &[u8], expected: &[u8]) {
     assert_eq!(different, 0, "{label}: pixels differ");
     println!("PASS {label}: 256/256 exact pixels");
 }
-fn clip(mut q: sprites::Quad, size: [f32; 2]) -> sprites::Quad {
-    for p in &mut q.exact.as_mut().unwrap().corners {
-        *p = [p[0] * 2. / size[0] - 1., 1. - p[1] * 2. / size[1]];
-    }
-    q
+
+fn sprite_inputs(
+    effect: &Arc<library::Effect>,
+    technique: &str,
+    views: &[wgpu::TextureView],
+    uv: [f32; 4],
+    offsets: [f32; 4],
+) -> sprites::oracle::Inputs {
+    let mut constants = models::matrix([16, 16], [0., -16., -1.]);
+    constants.extend([1.; 4]);
+    constants.extend(offsets);
+    constants.extend([0.125, 0.]);
+    constants.resize(64, 0.);
+    models::inputs(
+        effect,
+        technique,
+        models::rectangle([0., 0., 16., 16.], uv, &[3, 0, 2, 1], 1., None),
+        vertices::Declaration::Sprite,
+        20,
+        constants,
+        104,
+        true,
+        &[(0, 0)],
+        views,
+        wgpu::PrimitiveTopology::TriangleStrip,
+        wgpu::TextureFormat::Rgba8Unorm,
+    )
 }
-/// `part` drawn by the model of `effect`'s `technique` instead of its installed program, with the
-/// samplers that program declares.
-fn model_part(mut part: gui::Part, effect: model::Effect, technique: &str) -> gui::Part {
-    let model::Technique::Run { pixel, blend } = effect.technique(technique) else {
-        panic!("model technique")
+
+#[allow(clippy::too_many_arguments)]
+fn text_inputs(
+    effect: &Arc<library::Effect>,
+    views: &[wgpu::TextureView],
+    texture: usize,
+    rect: [f32; 4],
+    uv: [f32; 4],
+    color: [f32; 4],
+    size: [u32; 2],
+    z: f32,
+    background: bool,
+    inline: bool,
+) -> sprites::oracle::Inputs {
+    let [x, y, width, height] = rect;
+    let mut constants = models::matrix(size, [0., -(size[1] as f32), 0.]);
+    constants.extend([1.; 4]);
+    let order: &[usize] = if inline {
+        &[0, 1, 3, 2]
+    } else {
+        &[3, 0, 2, 1, 2, 0]
     };
-    let installed = part.shading.compiled.take().expect("an installed program");
-    let samplers = std::array::from_fn(|slot| {
-        installed
-            .asset
-            .source
-            .sampler(slot as u32)
-            .map(models::sampler)
-    });
-    part.shading.program = Some((pixel, blend, samplers));
-    part
+    let mut inputs = models::inputs(
+        effect,
+        "Text",
+        models::rectangle(
+            [x, size[1] as f32 - y - height, width, height],
+            uv,
+            order,
+            z,
+            Some((color, 0)),
+        ),
+        vertices::Declaration::Text,
+        28,
+        constants,
+        80,
+        false,
+        &[(0, texture)],
+        views,
+        if inline {
+            wgpu::PrimitiveTopology::TriangleStrip
+        } else {
+            wgpu::PrimitiveTopology::TriangleList
+        },
+        wgpu::TextureFormat::Bgra8Unorm,
+    );
+    if background {
+        inputs.state.blend = None;
+        inputs.state.write_mask = wgpu::ColorWrites::ALL;
+    }
+    inputs
 }
 
 #[test]
 #[ignore = "requires installed effects, DXC and GPU"]
 fn compiled_parts_fan_animation_and_text_bake() {
+    let (_, mut library) = models::installed();
+    let circular = library
+        .load(b"gfx/FX/circularprogressbar.shader", &[])
+        .unwrap();
+    let button = library.load(b"gfx/FX/buttonstate.shader", &[]).unwrap();
+    let text = library.load(b"gfx/FX/text.shader", &[]).unwrap();
     let (_serial, device, queue) = device();
+    let arena = gpu::Arena::new(&device);
     let images = images();
-    let views = views(&device, &queue, &images);
-    let circular = effect("circularprogressbar");
-    let blend = gpu::blend(&circular.source, &circular.source.techniques[0])
-        .unwrap()
-        .0;
+    let views = models::views(&device, &queue, &images);
     for (n, (weights, rotation)) in [([100, 0], 0.), ([75, 25], 0.4), ([0, 100], -0.7)]
         .into_iter()
         .enumerate()
     {
-        let p = part(
+        let p = models::part(
             gui::PartKind::Fan {
-                sprite: "fan".into(),
+                sprite: b"fan".to_vec(),
                 centre: [8., 8.],
                 radius: [7., 6.],
                 rotation,
@@ -218,34 +205,36 @@ fn compiled_parts_fan_animation_and_text_bake() {
             "CircularProgressBar",
         );
         let actual = render_part(&device, &queue, &p, &images);
-        let batch = gui::oracle_part(
-            &model_part(p, model::synthetic::circular(), "CircularProgressBar"),
-            &sheets(),
+        let inputs = models::inputs(
+            &circular,
+            "CircularProgressBar",
+            models::fan_vertices([7., 6.], rotation, weights),
+            vertices::Declaration::Circular,
+            24,
+            models::matrix([16, 16], [8., -8., 0.]),
+            64,
+            false,
+            &[(0, 0), (1, 1)],
+            &views,
+            wgpu::PrimitiveTopology::TriangleList,
+            wgpu::TextureFormat::Rgba8Unorm,
         );
-        let oracles: Vec<_> = batch
-            .quads
-            .into_iter()
-            .map(|q| {
-                sprites::oracle::Oracle::with_source(
-                    &device,
-                    clip(q, [16., 16.]),
-                    &[&views[0], &views[1], &views[0]],
-                    blend,
-                    wgpu::ColorWrites::ALL,
-                    &sprites::oracle::hardware_source(sprites::EXACT_SHADER),
-                )
-            })
-            .collect();
-        let expected = render_with(&device, &queue, |pass| {
-            for oracle in &oracles {
-                oracle.draw(pass)
-            }
-        });
+        arena.reset();
+        let oracle = sprites::oracle::Oracle::prepare(
+            &device,
+            &arena,
+            &circular,
+            "CircularProgressBar",
+            inputs,
+        )
+        .unwrap();
+        arena.flush(&queue);
+        let expected = render_with(&device, &queue, |pass| oracle.draw(pass));
         equal(&format!("fan-{n}"), &actual, &expected);
     }
-    let button = effect("buttonstate");
-    // The model census covers all animation techniques/types/modes; these draws verify
-    // variant selection, b1 and slot1..4 through the actual sorted upload path.
+
+    // The effect census covers the type, operation and clock cases. These draws exercise
+    // variant selection, animation constants and slots 1 through 4 in sorted submission.
     for count in 1..=2 {
         for technique in ["Up", "Down", "Over", "Disable"] {
             let records: Vec<_> = (0..count)
@@ -262,10 +251,10 @@ fn compiled_parts_fan_animation_and_text_bake() {
                     typed: true,
                 })
                 .collect();
-            let p = part(
+            let p = models::part(
                 gui::PartKind::Animated(Box::new(gui::Animated {
-                    sprite: "sprite".into(),
-                    geometry: geometry(),
+                    sprite: b"sprite".to_vec(),
+                    geometry: models::geometry(),
                     uv: [0., 0., 1., 1.],
                     offsets: [0.; 4],
                     effect: button.source.effect.clone(),
@@ -277,43 +266,38 @@ fn compiled_parts_fan_animation_and_text_bake() {
                 technique,
             );
             let actual = render_part(&device, &queue, &p, &images);
-            let ordinary = part(
-                gui::PartKind::Sprite {
-                    sprite: "sprite".into(),
-                    geometry: geometry(),
-                    uv: [0., 0., 1., 1.],
-                    offsets: [0.; 4],
-                    masked: false,
-                },
-                button.clone(),
-                technique,
-            );
-            let model = model::synthetic::buttonstate();
-            let q = gui::oracle_part(&model_part(ordinary, model, technique), &sheets())
-                .quads
-                .remove(0);
-            let code = sprites::oracle::animated_source(
-                &records.iter().map(|r| r.constants).collect::<Vec<_>>(),
-                true,
-            );
-            let all = [
-                &views[0], &views[1], &views[0], &views[2], &views[3], &views[4],
-            ];
-            let blend = gpu::blend(&button.source, button.source.technique(technique).unwrap())
-                .unwrap()
-                .0;
-            let oracle = sprites::oracle::Oracle::with_source(
-                &device,
-                clip(q, [16., 16.]),
-                &all[..if count == 1 { 4 } else { 6 }],
-                blend,
-                wgpu::ColorWrites::ALL,
-                &code,
-            );
-            let oracle = oracle.animation(
-                &device,
-                &records.iter().map(|r| r.constants).collect::<Vec<_>>(),
-            );
+            let animated =
+                button.variant(vec!["ANIMATED".into(), format!("NUM_ANIMATIONS_{count}")]);
+            let active = models::has_sampler_slots(&animated, technique);
+            let reference = if active { animated } else { button.clone() };
+            let mut inputs =
+                sprite_inputs(&reference, technique, &views, [0., 0., 1., 1.], [0.; 4]);
+            if active {
+                for slot in 1..=4 {
+                    inputs
+                        .textures
+                        .insert(binding(slot, Stage::Pixel), views[5].clone());
+                }
+                for (i, record) in records.iter().enumerate() {
+                    inputs.textures.insert(
+                        binding(1 + i as u32 * 2, Stage::Pixel),
+                        views[record.mask].clone(),
+                    );
+                    inputs.textures.insert(
+                        binding(2 + i as u32 * 2, Stage::Pixel),
+                        views[record.texture].clone(),
+                    );
+                }
+                models::animation_inputs(
+                    &mut inputs,
+                    &records.iter().map(|r| r.constants).collect::<Vec<_>>(),
+                );
+            }
+            arena.reset();
+            let oracle =
+                sprites::oracle::Oracle::prepare(&device, &arena, &reference, technique, inputs)
+                    .unwrap();
+            arena.flush(&queue);
             let expected = render_with(&device, &queue, |pass| oracle.draw(pass));
             equal(
                 &format!("animation-{count}-{technique}"),
@@ -322,16 +306,7 @@ fn compiled_parts_fan_animation_and_text_bake() {
             );
         }
     }
-    let text = effect("text");
-    let mut textblend = gpu::blend(&text.source, text.source.technique("Text").unwrap())
-        .unwrap()
-        .0
-        .unwrap();
-    textblend.alpha = wgpu::BlendComponent {
-        src_factor: wgpu::BlendFactor::One,
-        dst_factor: wgpu::BlendFactor::One,
-        operation: wgpu::BlendOperation::Max,
-    };
+
     for frame in 0..2 {
         let quads = (0..3)
             .flat_map(|y| {
@@ -379,7 +354,7 @@ fn compiled_parts_fan_animation_and_text_bake() {
             border_color: 0,
             inline: inline.clone(),
             frame_ends: vec![[1, 0], [2, 1]],
-            shading: part(
+            shading: models::part(
                 gui::PartKind::Inline {
                     source: gui::InlineSource::Texture(0),
                     rect: [0.; 4],
@@ -393,11 +368,11 @@ fn compiled_parts_fan_animation_and_text_bake() {
             )
             .shading,
         };
-        let p = part(
+        let p = models::part(
             gui::PartKind::TextSprite {
-                sprite: "baked".into(),
+                sprite: b"baked".to_vec(),
                 bake: Box::new(bake),
-                geometry: geometry(),
+                geometry: models::geometry(),
                 uv: [0., 0., 0.5, 1.],
                 offsets: [frame as f32 * 0.5, 0., 0., 0.],
             },
@@ -405,8 +380,9 @@ fn compiled_parts_fan_animation_and_text_bake() {
             "Up",
         );
         let actual = render_part(&device, &queue, &p, &images);
+
         let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("independent model bake"),
+            label: Some("independent reference bake"),
             size: wgpu::Extent3d {
                 width: 32,
                 height: 16,
@@ -420,78 +396,92 @@ fn compiled_parts_fan_animation_and_text_bake() {
             view_formats: &[],
         });
         let target = target.create_view(&Default::default());
-        let mut oracles = Vec::new();
-        let mut add = |kind, blend| {
-            let p = part(kind, text.clone(), "Text");
-            for q in
-                gui::oracle_part(&model_part(p, model::synthetic::text(), "Text"), &sheets()).quads
-            {
-                let view = &views[q.texture];
-                oracles.push(sprites::oracle::Oracle::with_format(
-                    &device,
-                    clip(q, [32., 16.]),
-                    &[view, view, view],
-                    blend,
-                    wgpu::ColorWrites::ALL,
-                    &sprites::oracle::hardware_source(sprites::EXACT_SHADER),
-                    wgpu::TextureFormat::Bgra8Unorm,
-                ));
-            }
-        };
+        arena.reset();
+        let mut reference_draws = Vec::new();
         for (rect, uv) in quads {
-            add(
-                gui::PartKind::Inline {
-                    source: gui::InlineSource::Texture(0),
-                    rect,
-                    uv,
-                    modulate: [1.; 4],
-                    projection: [1.; 2],
-                    font_viewport: None,
-                },
-                None,
+            let inputs = text_inputs(
+                &text,
+                &views,
+                0,
+                rect,
+                uv,
+                [1.; 4],
+                [32, 16],
+                0.5,
+                true,
+                false,
+            );
+            reference_draws.push(
+                sprites::oracle::Oracle::prepare(&device, &arena, &text, "Text", inputs).unwrap(),
             );
         }
-        add(
-            gui::PartKind::Text {
-                font: "fixture".into(),
-                glyphs: vec![glyphs[0]],
-                scale: 1.,
-                modulate: [1.; 4],
-                border_color: 0,
-                projection: [1.; 2],
-                font_viewport: None,
-            },
-            Some(textblend),
+        let glyph = glyphs[0];
+        let inputs = text_inputs(
+            &text,
+            &views,
+            glyph.texture,
+            [
+                glyph.at[0],
+                glyph.at[1],
+                glyph.size[0] as f32,
+                glyph.size[1] as f32,
+            ],
+            glyph.uv,
+            glyph.color,
+            [32, 16],
+            1.,
+            false,
+            false,
+        );
+        reference_draws.push(
+            sprites::oracle::Oracle::prepare(&device, &arena, &text, "Text", inputs).unwrap(),
         );
         for (source, rect, uv) in inline {
-            add(
-                gui::PartKind::Inline {
-                    source,
-                    rect,
-                    uv,
-                    modulate: [1.; 4],
-                    projection: [1.; 2],
-                    font_viewport: None,
-                },
-                Some(textblend),
+            let gui::InlineSource::Texture(texture) = source else {
+                unreachable!()
+            };
+            let inputs = text_inputs(
+                &text,
+                &views,
+                texture,
+                rect,
+                uv,
+                [1.; 4],
+                [32, 16],
+                0.,
+                false,
+                true,
+            );
+            reference_draws.push(
+                sprites::oracle::Oracle::prepare(&device, &arena, &text, "Text", inputs).unwrap(),
             );
         }
-        add(
-            gui::PartKind::Text {
-                font: "fixture".into(),
-                glyphs: vec![glyphs[1]],
-                scale: 1.,
-                modulate: [1.; 4],
-                border_color: 0,
-                projection: [1.; 2],
-                font_viewport: None,
-            },
-            Some(textblend),
+        let glyph = glyphs[1];
+        let inputs = text_inputs(
+            &text,
+            &views,
+            glyph.texture,
+            [
+                glyph.at[0],
+                glyph.at[1],
+                glyph.size[0] as f32,
+                glyph.size[1] as f32,
+            ],
+            glyph.uv,
+            glyph.color,
+            [32, 16],
+            1.,
+            false,
+            false,
         );
+        reference_draws.push(
+            sprites::oracle::Oracle::prepare(&device, &arena, &text, "Text", inputs).unwrap(),
+        );
+        arena.flush(&queue);
         let mut encoder = device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
+                label: Some("reference background, inline and glyph order"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &target,
                     resolve_target: None,
@@ -506,40 +496,79 @@ fn compiled_parts_fan_animation_and_text_bake() {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            for oracle in &oracles {
+            for oracle in &reference_draws {
                 oracle.draw(&mut pass);
             }
         }
         queue.submit([encoder.finish()]);
-        let p = part(
-            gui::PartKind::Sprite {
-                sprite: "baked".into(),
-                geometry: geometry(),
-                uv: [0., 0., 0.5, 1.],
-                offsets: [frame as f32 * 0.5, 0., 0., 0.],
-                masked: false,
-            },
-            button.clone(),
+        arena.reset();
+        let inputs = sprite_inputs(
+            &button,
             "Up",
+            &[target],
+            [0., 0., 0.5, 1.],
+            [frame as f32 * 0.5, 0., 0., 0.],
         );
-        let q = gui::oracle_part(
-            &model_part(p, model::synthetic::buttonstate(), "Up"),
-            &sheets(),
-        )
-        .quads
-        .remove(0);
-        let blend = gpu::blend(&button.source, button.source.technique("Up").unwrap())
-            .unwrap()
-            .0;
-        let oracle = sprites::oracle::Oracle::with_source(
-            &device,
-            clip(q, [16., 16.]),
-            &[&target, &target, &target],
-            blend,
-            wgpu::ColorWrites::ALL,
-            &sprites::oracle::hardware_source(sprites::EXACT_SHADER),
-        );
+        let oracle =
+            sprites::oracle::Oracle::prepare(&device, &arena, &button, "Up", inputs).unwrap();
+        arena.flush(&queue);
         let expected = render_with(&device, &queue, |pass| oracle.draw(pass));
         equal(&format!("text-bake-frame-{frame}"), &actual, &expected);
     }
+
+    // An undeclared selection retains the preceding program and input declaration, while
+    // replacing blend, constants and texture binds independently.
+    let first = models::part(
+        gui::PartKind::Sprite {
+            sprite: b"retained".to_vec(),
+            geometry: models::geometry(),
+            uv: [0., 0., 1., 1.],
+            offsets: [0.; 4],
+            masked: false,
+        },
+        button.clone(),
+        "Up",
+    );
+    let second = models::part(
+        gui::PartKind::Cell {
+            texture: 1,
+            geometry: models::geometry(),
+            uv: [0., 0., 1., 1.],
+        },
+        button.clone(),
+        "FixtureUndeclaredTechnique",
+    );
+    assert!(
+        button
+            .source
+            .technique("FixtureUndeclaredTechnique")
+            .is_none()
+    );
+    let mut batch = sprites::Batch::default();
+    draw::emit(&first, [0, 0], &models::Sheets, &mut batch).unwrap();
+    draw::emit(&second, [0, 0], &models::Sheets, &mut batch).unwrap();
+    let (actual, refused, _) = sprites::oracle::render_images(&device, &queue, &batch, &images);
+    assert!(refused.is_empty(), "{refused:?}");
+    arena.reset();
+    let first = sprites::oracle::Oracle::prepare(
+        &device,
+        &arena,
+        &button,
+        "Up",
+        sprite_inputs(&button, "Up", &views, [0., 0., 1., 1.], [0.; 4]),
+    )
+    .unwrap();
+    let mut inputs = sprite_inputs(&button, "Up", &views, [0., 0., 1., 1.], [0.; 4]);
+    inputs
+        .textures
+        .insert(binding(0, Stage::Pixel), views[1].clone());
+    inputs.state.blend = None;
+    inputs.state.write_mask = wgpu::ColorWrites::ALL;
+    let second = sprites::oracle::Oracle::prepare(&device, &arena, &button, "Up", inputs).unwrap();
+    arena.flush(&queue);
+    let expected = render_with(&device, &queue, |pass| {
+        first.draw(pass);
+        second.draw(pass);
+    });
+    equal("retained-program-new-bindings", &actual, &expected);
 }

@@ -1,4 +1,4 @@
-//! Native names for the additional CEventScope carriers.
+//! Native names for the additional event scope carriers.
 
 use super::*;
 use replay::rows::{RaidScope, tables};
@@ -7,7 +7,7 @@ use replay::rows::{RaidScope, tables};
 mod tests;
 
 impl Renderer<'_, '_, '_> {
-    /// 140FCDDF0 -> 140A81BB0/14146B580: narrative name, then default token;
+    /// narrative name, then default token;
     /// TAG_key when defined, expanded in a fresh owner country environment.
     pub(super) fn project_name(&self, owner: u32, id: u32) -> Result<String, String> {
         let world = self.context.world()?;
@@ -56,8 +56,8 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    /// Single unit-name entry point: CArmy slot 13@140C72F00, or the selected
-    /// wing's stored text (141454480 -> 140F4B8F0).
+    /// Single unit-name entry point: the army name or the selected
+    /// wing's stored text.
     pub(super) fn unit_name(&self, reference: u64) -> Result<String, String> {
         // A positive full wing handle is independent class evidence; it needs
         // no division census. Old formats retain the active-raid projection.
@@ -131,8 +131,8 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    /// Instance description@140FD6260: raid_inst_item_desc(TYPE, TARGET),
-    /// GetLocalizedName@140A8E3B0 and CRaidTarget::GetLocalizedName@140FD1D50.
+    /// Instance: raid_inst_item_desc(TYPE, TARGET),
+    /// Both raid descriptions use the same localised name.
     #[allow(
         dead_code,
         reason = "shared carrier name entry point for raid effect ports"
@@ -149,7 +149,7 @@ impl Renderer<'_, '_, '_> {
             .find(|row| (u64::from(row.id) << 32 | u64::from(row.reference_type)) == reference)
             .ok_or_else(|| format!("RaidTargets lacks raid {reference:#x}"))?;
         let (kind, type_name) = if target.raid_type == 0 {
-            (None, String::new()) // 140FD6260: null type contributes empty TYPE.
+            (None, String::new()) // null type contributes empty TYPE.
         } else {
             let token = self
                 .context
@@ -224,7 +224,7 @@ impl Renderer<'_, '_, '_> {
         let location = if !vp.is_empty() {
             vp.clone()
         } else {
-            // 140FD1BB0: explicit state, province/leader province, building state.
+            // explicit state, province/leader province, building state.
             let state = if scope.state != 0 {
                 scope.state
             } else if province != 0 {
@@ -244,7 +244,7 @@ impl Renderer<'_, '_, '_> {
                 self.state_name(state)?
             } else {
                 "no_target_name".into()
-            } // 14296C780.
+            }
         };
         if let Some(kind) = kind {
             if let Some(why) = &kind.tooltip.refused {

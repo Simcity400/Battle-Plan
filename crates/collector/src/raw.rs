@@ -879,8 +879,8 @@ impl<const N: usize> RawLog<N> {
             self.note_fail(addr, len32, mask);
             return None;
         }
-        // Noncanonical x86-64 sources (e.g. ASCII "_factor" bytes read as a
-        // pointer) fault with ExceptionInformation[1] == -1, which the C
+        // Noncanonical x86-64 sources (e.g. text bytes read as a pointer)
+        // fault with ExceptionInformation[1] == -1, which the C
         // filter cannot attribute and would crash. Record the same graceful
         // fault the typed walk reports for an unreadable source, before any
         // guarded copy runs. Ordering matches the typed walk: null, overflow,

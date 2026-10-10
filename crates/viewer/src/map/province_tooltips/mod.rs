@@ -1,4 +1,4 @@
-//! Political-map location and viewer-selected unit tooltip (140DF0A40).
+//! Political-map location and viewer-selected unit tooltip.
 mod border;
 pub(super) mod clock;
 mod selected_attack;
@@ -60,7 +60,7 @@ impl Content {
         }
     }
 
-    /// Native border power getter for the unit attrition hover (1409C8D50).
+    /// Border power for the unit attrition hover.
     pub(crate) fn border_ratio(
         &self,
         frame: &DecodedFrame,
@@ -139,7 +139,7 @@ fn localise(loc: &Localisation, key: &str, args: &[(&str, Arg<'_>)]) -> Result<S
         .map_err(|e| e.to_string())
 }
 
-/// 140DFF0D0 / 140DE8E30: newline and four spaces per nesting level.
+/// Newline and four spaces per nesting level.
 fn line(out: &mut Tooltip, name: &str, indent: usize, value: Result<String, String>) {
     match value {
         Ok(value) if !value.is_empty() => {
@@ -282,7 +282,7 @@ impl Context<'_> {
         if operands.tag.chars().count() != 3 {
             return Err(format!("country {raw} flag tag is not three codepoints"));
         }
-        // 140BA59E0 -> 1406E63A0 -> 1424B6FE0; native small flag atlas resolves tag.
+        // Resolve the tag through the small flag atlas.
         let name = installed_content::localisation::crt_case_text(
             &self.countries.name_with(slot, "_DEF")?,
             true,
@@ -552,9 +552,8 @@ impl Context<'_> {
                         .frame
                         .complete::<tables::AirBases>()
                         .map_err(|e| e.to_string())?;
-                    // 1406ECA90 selects country air, but +0x88 is the shared manager:
-                    // 140C4A6F0 passes it to every constructor; 140C38740 stores it.
-                    // 140C3B7F0 indexes that manager's +0x90 table by state.
+                    // Country air uses a shared manager passed to each constructor and
+                    // retained by the pool. Index its shared table by state.
                     let mut found = bases
                         .iter()
                         .filter(|b| b.state == Some(p.state) && b.kind == kind);
@@ -595,7 +594,7 @@ impl Context<'_> {
                     let name = tokens
                         .name(building.building_type)
                         .map_err(|e| e.to_string())?;
-                    // 140E6A490 stops at the first specialization-bearing active row.
+                    // Stop at the first specialization-bearing active row.
                     if self.content.map_buildings.is_facility(name)? {
                         facility = true;
                         break;

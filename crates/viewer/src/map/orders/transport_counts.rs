@@ -1,12 +1,12 @@
-//! `140C3D550`'s idle transport-wing count and `140FFDCD0`'s region reach.
-//! The count belongs to the viewer. The source supplies recorded simulation
-//! operands and recorded-content definition categories only when a native
-//! branch reaches them; registration order and repeated slots are retained.
+//! Idle transport-wing count and region reach. The count belongs to the
+//! viewer. The source supplies recorded simulation operands and content
+//! definition categories only when a branch reaches them; registration order
+//! and repeated slots are retained.
 
 use installed_content::province_geometry::{Bounds, ProvinceGeometry};
 use replay::rows::{AirWingRow, ArmyOrderPlanRow};
 
-/// `140721250`: allocated convoys are already stored on the invasion order.
+/// Allocated convoys are already stored on the invasion order.
 pub(super) fn invasion(plan: &ArmyOrderPlanRow) -> Result<i32, String> {
     plan.invasion_transports
         .require("ArmyOrderPlans.invasion_transports")?
@@ -17,11 +17,11 @@ pub(super) trait Sources {
     fn wing(&self, handle: u64) -> Result<&AirWingRow, String>;
     /// The containing pool's content definition. The capture authenticates
     /// the registration's wing backlink before joining this wing's pool.
-    /// Only the authored `air_transport` bit (140F731B0 bit 20) is needed.
+    /// Only the authored `air_transport` bit (bit 20) is needed.
     fn is_transport_pool(&self, wing: &AirWingRow) -> Result<bool, String>;
     fn range(&self, wing: &AirWingRow) -> Result<i64, String>;
     fn transfer_resolves(&self, handle: u64) -> Result<bool, String>;
-    /// `140F6B990`: base/mission restrictions followed by region reach.
+    /// Base/mission restrictions followed by region reach.
     fn region_admits(&self, wing: &AirWingRow) -> Result<bool, String>;
 }
 
@@ -39,9 +39,9 @@ pub(super) fn count(
     Ok(totals(registered, distance, has_target_region, sources)?.plane_count)
 }
 
-/// `14101DC30` consumes the same admitted occurrences for its capacity.
-/// Negative plane counts still affect the signed count, but contribute no
-/// capacity (`140F4B5C0`). No native wing vector or derived total is recorded.
+/// Capacity consumes the same admitted occurrences. Negative plane counts
+/// still affect the signed count but contribute no capacity. No wing vector
+/// or derived total is recorded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct AcceptedTotals {
     pub plane_count: i32,
@@ -75,8 +75,8 @@ pub(super) fn totals(
     Ok(total)
 }
 
-/// `140E67820 -> 140A51B90`: invalid signed province IDs use the reserved
-/// slot-zero centroid. The abs-delta law and fixed5 square root are native.
+/// Invalid signed province IDs use the reserved slot-zero centroid.
+/// Preserve the absolute-delta law and fixed5 square root.
 pub(super) fn distance(map: &ProvinceGeometry, source: u32, destination: u32) -> i64 {
     if source == destination {
         return 0;
@@ -95,9 +95,8 @@ pub(super) fn distance(map: &ProvinceGeometry, source: u32, destination: u32) ->
     ) as u32)
 }
 
-/// The template's `+0xE0/+0xE4` centre and `+0xF0` rectangles, built by
-/// `141591FB0`. The first painted province chooses the primary cluster.
-/// This is distinct from a state's minimum-width wrapped bounding box.
+/// The template centre and rectangles. The first painted province chooses
+/// the primary cluster, separately from a state's minimum-width wrapped box.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct RegionGeometry {
     centre: [i32; 2],
@@ -105,7 +104,7 @@ pub(super) struct RegionGeometry {
     count: usize,
 }
 
-/// FFDCD0 uses different wrapped-distance leaves for the two base anchors.
+/// The two base anchors use different wrapped-distance laws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Origin {
     State([i32; 2]),
@@ -127,8 +126,8 @@ impl RegionGeometry {
         let mut secondary = [0; 4];
         let mut first_x = 0_i32;
         for province in provinces {
-            // Missing/unpainted CMap province records have no valid raster
-            // box. Invalid native IDs resolve to the unpainted slot zero.
+            // Missing or unpainted province records have no valid raster box.
+            // Invalid IDs resolve to the unpainted slot zero.
             let Some(&bounds) = map.bounds.get(province) else {
                 continue;
             };
@@ -167,11 +166,9 @@ impl RegionGeometry {
         }
     }
 
-    /// `140FFDCD0(..., stop_after=1)`: preserve its nonconservative centre
-    /// prefilter and split-box y intersection before testing provinces.
-    /// `origin` is the native state bounding centre or the host ship's task
-    /// force province position (CShip+728 -> TaskForce+1F0), selected by
-    /// the source-base law.
+    /// Preserve the nonconservative centre prefilter and split-box y intersection
+    /// before testing provinces. `origin` is the state bounding centre or the host
+    /// ship's task-force province position, selected by the source-base law.
     pub(super) fn reaches(
         &self,
         map: &ProvinceGeometry,
@@ -202,9 +199,8 @@ impl RegionGeometry {
             return false;
         }
         provinces.iter().any(|id| {
-            // The CProvince lookup uses slot zero for invalid IDs; its
-            // definition centroid is the origin. Unpainted valid records
-            // likewise keep zero coordinates in the content geometry.
+            // Province lookup uses slot zero for invalid IDs, with centroid at the
+            // origin. Unpainted valid records likewise keep zero content coordinates.
             let point = map.centroids.get(id).copied().unwrap_or([0; 2]);
             let distance = match origin {
                 Origin::State(origin) => wrapped_squared(point, origin, map.width),
@@ -232,8 +228,8 @@ fn grow(rectangle: &mut Bounds, [x, y, width, height]: Bounds) {
     }
 }
 
-/// `14117A900` wraps once with strict half-width ties. The native distance
-/// expression is signed i32, including overflow in the squared sum.
+/// Wrap once with strict half-width ties. Distance arithmetic uses signed
+/// i32, including overflow in the squared sum.
 fn wrapped_squared(from: [i32; 2], to: [i32; 2], width: i32) -> i32 {
     let mut dx = from[0].wrapping_sub(to[0]);
     let dy = from[1].wrapping_sub(to[1]);
@@ -245,8 +241,8 @@ fn wrapped_squared(from: [i32; 2], to: [i32; 2], width: i32) -> i32 {
     dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy))
 }
 
-/// Hosted per-province reach uses 140E68830 -> 140A52400, whose absolute
-/// delta differs from 14117A900 at i32::MIN. Preserve that overflow case.
+/// Hosted per-province reach uses an absolute-delta law that differs from
+/// ordinary region reach at i32::MIN. Preserve that overflow case.
 fn province_squared(from: [i32; 2], to: [i32; 2], width: i32) -> i32 {
     let delta = from[0].wrapping_sub(to[0]);
     let absolute = delta.wrapping_abs();

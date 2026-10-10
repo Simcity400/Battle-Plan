@@ -1,23 +1,20 @@
-//! `CLandBorderWarCombat`, the border-war subclass of `CLandCombat`.
-//!
-//! The archived manager walk uses the shared land layout after checking both
-//! class vtables. Its handle's type word is runtime minted, not ordinary land's 62.
+//! CLandBorderWarCombat, the border-war subclass of CLandCombat.
+//! The shared layout requires both vtables to authenticate. Its reference
+//! type is runtime minted, independently of ordinary land-combat type 62.
 
-/// CLandBorderWarCombat primary vtable; archived offsets.rs:758, confirmed by a729 RTTI.
+/// CLandBorderWarCombat primary vtable.
 pub const VTABLE_RVA: usize = 0x029a_56e0;
-/// CLandBorderWarCombat secondary vtable at +0x10; archived offsets.rs:759, confirmed by a729 RTTI COL offset.
+/// CLandBorderWarCombat secondary vtable at +0x10.
 pub const BODY_VTABLE_RVA: usize = 0x029a_57c0;
-/// CLandBorderWarCombat secondary-base displacement; archived land manager walk and a729 RTTI COL offset 16.
+/// CLandBorderWarCombat secondary-base displacement.
 pub const BODY: usize = 0x10;
-/// Signed fixed5 configured base width, consumed by vf26 1413D6800.
-/// Ctor 1413D64B0 clears it; 1403646E0 -> 140BA7920 writes the scoped
-/// operand, loader 1413D9F60 and serializer 1413DAC80 use token 0x2CCF
-/// (`combat_width`) at secondary +0xC8, primary +0xD8.
+/// Signed fixed5 configured base combat width, initially zero.
+/// Save and load use the value at secondary+0xC8, primary+0xD8.
 pub const COMBAT_WIDTH: usize = 0xd8;
-/// Transfer-state byte tested by the border tooltip tail at 1413D69D0.
+/// Transfer-state byte used by the border-war tooltip.
 pub const TRANSFER_STATE: usize = 0xf0;
 
-/// Finalizer 1413D93F0 tests these three u8s at +0xF1..+0xF3 in priority
-/// order: forced attacker victory, forced defender victory, cancellation.
-/// Otherwise it calls both combatants' participation predicate 1413DA800.
+/// Finalization tests three u8 flags in priority order: forced attacker
+/// victory, forced defender victory, cancellation. Otherwise both sides
+/// are tested for participation.
 pub const END_FLAGS: usize = 0xf1;

@@ -1,4 +1,4 @@
-//! The post triangle and retained raster state registered at140FF1410/140FF2E00.
+//! The post triangle and retained raster state.
 use std::{collections::BTreeMap, sync::Arc};
 
 use eframe::wgpu::{self, util::DeviceExt};
@@ -40,9 +40,8 @@ impl Fullscreen {
     ) -> Result<Self, String> {
         let compiled = selection.effect.compiled(selection.index)?;
         let mut pass = gpu::Pass::packed(&compiled, state, format, samples);
-        // 140B48E50 restores CGraphics+c0 before sky/post. 142224600 creates
-        // it from1423F7180: solid, back-cull, FrontCounterClockwise=false,
-        // zero bias, scissor disabled. 140FF3450 forces depth off for post.
+        // Post uses solid fill, clockwise fronts, back-face culling, zero bias and disabled scissoring.
+        // Depth is forced off by the post pass.
         pass.primitive.front_face = wgpu::FrontFace::Cw;
         pass.primitive.cull_mode = Some(wgpu::Face::Back);
         Self::from_pass(device, selection, state, pass)
@@ -72,14 +71,14 @@ impl Fullscreen {
                 shader_location: input.location,
             });
         }
-        // 140FF1410: POSITION0 type3/count4 -> R16G16B16A16_SINT (1424111F0).
+        // POSITION0 uses four signed 16-bit components.
         pass.vertices = vec![gpu::VertexLayout {
             stride: 8,
             step: wgpu::VertexStepMode::Vertex,
             attributes,
         }];
         let pipeline = gpu::Cache::default().get_pass(device, selection, state, &pass)?;
-        // 140FF2E00: first16 bytes at14296E6B0, final8 as immediate stores.
+        // Initialize all 24 bytes of triangle vertices.
         let vertices: [[i16; 4]; 3] = [[3, -1, 0, 0], [-1, -1, 1, 0], [-1, 3, 2, 0]];
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("native post triangle"),

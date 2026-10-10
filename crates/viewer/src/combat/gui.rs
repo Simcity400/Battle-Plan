@@ -101,7 +101,7 @@ fn count(refused: &mut BTreeMap<String, usize>, path: &str, why: impl std::fmt::
 fn template<'a>(windows: &'a NativeWindows, name: &str) -> Result<&'a Element, String> {
     windows
         .gui_type(name.as_bytes())
-        .ok_or_else(|| format!("the content stack declares no {name} template (142247660)"))
+        .ok_or_else(|| format!("the content stack declares no {name} template"))
 }
 
 fn ensure<'a>(
@@ -152,7 +152,7 @@ impl Retained {
     ) -> Option<[i32; 2]> {
         apply(&mut self.instance, root, values, resources, refused);
         let mut size = size?.map(truncate_f32);
-        // Escaping entries grow by the bound escape bar's queried height (1417DBBE0).
+        // Escaping entries grow by the bound escape bar's queried height.
         if ["escape_icon_left", "escape_icon_right"]
             .iter()
             .any(|key| values.get(*key).is_some_and(|widget| !widget.hidden))
@@ -182,7 +182,7 @@ impl Retained {
         let runtime = self.instance.content_size(root, root);
         match (constructed, runtime) {
             (Ok(constructed), Ok(runtime)) => {
-                // The native updater explicitly centres these controls after its flag-0 resize (1417DBBE0).
+                // The native updater explicitly centres these controls after its flag-0 resize.
                 for key in [
                     "bar_str",
                     "bar_org",
@@ -358,8 +358,8 @@ impl Retained {
                                     if placement != Some(GridPlacement::AutomaticNaval) {
                                         return Ok(finalized);
                                     }
-                                    // 1417D05D0 uses automatic slots for sunk entries but
-                                    // 1417DC8D0 resizes each to its sprite before finalize.
+                                    // the game uses automatic slots for sunk entries but
+                                    // the game resizes each to its sprite before finalize.
                                     let rectangles: Vec<_> = finalized
                                         .items
                                         .iter()
@@ -393,7 +393,7 @@ impl Retained {
                                             count(
                                                 refused,
                                                 &group.path,
-                                                "entry exceeds the authored grid slots (1402DE850)",
+                                                "entry exceeds the authored grid slots",
                                             );
                                             None
                                         }
@@ -497,7 +497,7 @@ impl Retained {
                         );
                     }
                 }
-                // Land refill finalizes, then synchronizes including hidden children (1415CA230/1415CA460).
+                // Land refill finalizes, then synchronizes including hidden children.
                 for parent in synchronized {
                     if let Some(container) = root.path_named(&parent)
                         && let Err(why) = self
@@ -562,7 +562,7 @@ impl Retained {
                 gui_windows::count_refused(refused, &self.name, &why);
             }
         }
-        // Input precedes one smoothing tick in ProcessInputEvents@142247750.
+        // Input precedes one smoothing tick in input processing.
         if advance && let Err(why) = self.instance.tick(root, resources, tick) {
             count(refused, &self.name, why);
             return None;
@@ -657,7 +657,7 @@ impl Retained {
             }
         }
         // Collision targets follow graphical attach order, including grid items
-        // before later siblings (142226BD0, 142226CC0, 142225EC0).
+        // before later siblings.
         hovered.sort_by_key(|hit| hit.order);
         Some(Prepared {
             layout,
@@ -689,7 +689,7 @@ fn laid(
     }
 }
 
-/// 141C5EF70 / 141C60E40 select each assigned-trait entry's template.
+/// the game selects each assigned-trait entry's template.
 pub(super) fn entry_template<'a>(
     widget: &'a super::Widget,
     index: usize,
@@ -760,7 +760,7 @@ fn hidden_path(root: &Element, path: &str, values: &Values) -> bool {
     false
 }
 
-// Native name lookup folds ASCII case (tolower@14254F1D0); Values keep their producer keys.
+// Native name lookup folds ASCII case (ASCII case folding); Values keep their producer keys.
 fn bound_values<'r, 'v>(
     root: &'r Element,
     values: &'v Values,
@@ -824,7 +824,7 @@ fn apply(
             .and_then(|widget| widget.sprite.as_deref())
             .map(str::as_bytes)
             .or(authored);
-        // 1415C66C0 -> 141C5DD20 calls replace_drawable@14229A8E0 only
+        // the game calls drawable replacement only
         // after the tactic picture path exists. A native no-op keeps its clocks too.
         if !widget.is_some_and(|widget| widget.retain_sprite)
             && let Some(sprite) = sprite
@@ -983,7 +983,7 @@ fn region_rect(region: &Region, origin: [i32; 2]) -> Option<[f32; 4]> {
     ])
 }
 
-// ReloadGui binds these native templates (1415C5900, 1417D7450, 1417C71F0).
+// GUI reloading binds these native templates.
 pub(super) fn window_name(selection: Selection) -> &'static str {
     match selection {
         Selection::Land(_) => "landcombatview",
@@ -994,11 +994,11 @@ pub(super) fn window_name(selection: Selection) -> &'static str {
 
 fn hover_regions(root: &Element, regions: &[Region], values: &Values) -> Vec<Hover> {
     let indexed = bound_values(root, values);
-    // CStandardGridBoxItem forwards its provider through the entry container
-    // (CTacticsListEntry141C5A870). Children with their own handler keep it.
+    // Grid items forward their provider through the entry container.
+    // Children with their own handler keep it.
     let provider = values.get("").filter(|widget| widget.hover_owned);
-    // CInstantTextObject::HitTest@1422D8240 rejects the constructor's
-    // always-transparent bit (1422B50A0 -> 1422D7A00), even with a handler.
+    // instant-text hit testing rejects the constructor's
+    // always-transparent bit, even with a handler.
     let mut transparent = BTreeSet::new();
     let mut pending = vec![root];
     while let Some(element) = pending.pop() {
@@ -1121,7 +1121,7 @@ impl Windows {
             .map_err(super::invalid)?;
         let mut groups = Vec::new();
         if matches!(selection, Selection::Land(_)) {
-            // SetCombat and list refill preserve producer membership order (1415C7520/1415CA230).
+            // combat selection and list refill preserve producer membership order.
             for side in 0..4 {
                 let path = format!(
                     "{}_window/{}_window/list",
@@ -1215,7 +1215,7 @@ impl Windows {
                 }
             };
             retained.pending.append(&mut self.pending);
-            // The possible-tactics popup sits ten pixels right of the combat window (1415C7D20).
+            // The possible-tactics popup sits ten pixels right of the combat window.
             let position = *tactics_position
                 .get_or_insert([drawn.rect[0] + drawn.rect[2] + 10.0, drawn.rect[1]]);
             let origin = position.map(truncate_f32);
@@ -1295,7 +1295,7 @@ impl Windows {
 fn naval_row(index: usize, row: &super::binding::NavalEntry) -> Row<'_> {
     Row {
         key: index.to_string(),
-        // CSunkShipIcon@1417CEF80 and CFexShipIcon@1417CE2A0 share this template.
+        // Sunk and live ship icons share this template.
         template: "navalcombat_ship_entry",
         values: &row.values,
         explicit: Some((row.offset, row.size)),

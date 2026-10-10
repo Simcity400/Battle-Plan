@@ -349,7 +349,7 @@ mod tests {
         let mut geometry = engine::cprovince::GeometryPacket::vacant();
         for (hour, observed, expected) in [
             (71, Ok(None), Some(None)),
-            (72, Err("direct commander +88 unreadable"), None),
+            (72, Err("direct commander unreadable"), None),
         ] {
             joined_group_fixture(&mut capture, group, observed);
             let allocated = capture.allocated_bytes();

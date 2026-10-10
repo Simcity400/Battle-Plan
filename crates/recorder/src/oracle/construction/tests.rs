@@ -222,7 +222,7 @@ fn garrison_equipment_oracle_compares_requirements_and_names_the_unsaved_allocat
             report
                 .limitations
                 .keys()
-                .any(|reason| reason.contains("140FEB450"))
+                .any(|reason| reason.contains("the garrison save writer"))
         );
     }
 }
@@ -803,6 +803,8 @@ fn dictionary_missing_entry_is_explicit_and_literal_bytes_are_preserved() {
 
 #[test]
 fn missing_dictionary_preserves_scope_checks_without_inventing_named_rows() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let saved = saved_pack(b"countries={} states={} provinces={7={buildings={factory={level=1 healthy_levels=1 partial_health=0}}}}");
     let row = replay::rows::BuildingRow {
         location: 7,
@@ -887,6 +889,8 @@ fn missing_dictionary_preserves_scope_checks_without_inventing_named_rows() {
 
 #[test]
 fn nul_token_mapping_limits_keep_independent_scope_count_and_numeric_checks() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let saved = saved_pack(b"countries={GER={production={general_lines={building={id={id=4 type=59} cost=1 priority=0 amount=1 created_date=1936.1.1.12 building={template=factory location=3}}}}}} states={} provinces={7={buildings={factory={level=1 healthy_levels=1 partial_health=0}}}}");
     let names = BTreeMap::from([
         (11, b"factory\0tail".as_slice()),
@@ -1174,7 +1178,7 @@ fn naval_base_saved_country_lists_compare_order_multiplicity_and_zero_level_base
         b"A={strategic_navy={naval_base={7={disabled_for_repairs=\"A\" disabled_for_repairs=\"B\" disabled_for_repairs=\"A\" disabled_for_repairs=\"\"} 7={disabled_for_repairs=\"A\" disabled_for_repairs=\"B\" disabled_for_repairs=\"A\" disabled_for_repairs=\"\"}}}}",
     ).unwrap().items).unwrap();
     // Raw aliases cannot be projected through the canonical CountryLinks:
-    // 140BA5C20 reads their own tag-table slots; slot zero uses the database.
+    // The game reads their own tag-table slots; slot zero uses the database.
     let tags = [
         b"A\0tail".to_vec(),
         b"B".to_vec(),
@@ -1248,6 +1252,8 @@ fn naval_base_saved_country_lists_compare_order_multiplicity_and_zero_level_base
 
 #[test]
 fn resolved_base_resources_compare_repeated_initial_blocks_and_native_ordinals() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut content = saved::BaseResources::default();
     content.add_state_history(&history_fixture(b"state={id=949 resources={steel=0 oil=-2147483648.9} history={resources={steel=999 aluminium=888}} resources={} resources={aluminium=10.000}}"))
         .unwrap();

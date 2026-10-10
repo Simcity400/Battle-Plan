@@ -210,8 +210,8 @@ fn census_records_saved_database_ids_in_native_order_with_one_copy_per_list() {
     assert_eq!(reads.iter().filter(|(at, _)| *at == TACTIC_B).count(), 1);
 }
 
-/// An unknown `unlock_tactic` name appends the null tactic, which the
-/// save writes as ID 0; it is a recorded unlock, not a fault.
+/// An unknown requested tactic appends the null tactic, which serializes
+/// as ID zero. It remains a recorded unlock.
 #[test]
 fn the_null_tactic_is_database_entry_zero_and_records_id_zero() {
     let mut memory = Fixture::new();
@@ -263,9 +263,8 @@ fn pressure_preserves_exact_demand_and_cannot_hide_an_unknown_tactic() {
             reason: "country tactic unlock names no loaded tactic"
         }
     );
-    // A null pointer is corrupt input, never the null tactic's ID 0 (an
-    // authenticated nonzero singleton, 1406B3BD0), whether or not the
-    // unlock arena fits.
+    // A null pointer is corrupt input, separate from the authenticated nonzero
+    // null tactic with ID 0, regardless of unlock-arena capacity.
     let mut memory = Fixture::new();
     memory.put(LIST + 8, 0u64.to_le_bytes());
     for owned in [Owned::fits(), Owned::new(2, 0, 8, 24)] {

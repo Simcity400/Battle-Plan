@@ -273,7 +273,7 @@ impl Registrations {
             }
         }))
     }
-    /// Original F47350 plane sums use the predecessor's pool ordering without
+    /// Plane sums use the predecessor's pool ordering without
     /// extending the existing opaque carrier payload's historical bytes.
     pub fn planes(
         &self,

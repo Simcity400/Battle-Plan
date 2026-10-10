@@ -29,9 +29,9 @@ struct DefenseTemplate {
 }
 
 impl DefenseTemplate {
-    /// 140F172A0 passes LEVEL through 1402E2DA0; 142232AB0's Text branch
-    /// copies this marker but does not apply numeric precision, sign or suffix.
-    /// Boundaries therefore isolate the Fixed5 branch's complete native number.
+    /// The LEVEL argument's Text branch copies this marker without numeric
+    /// precision, sign or suffix. Boundaries therefore isolate the fixed5 branch's
+    /// complete number.
     fn load(content: &IntelligenceContent) -> Option<Self> {
         const KEY: &str = "AGENCY_DEFENSE_LEVEL";
         const MARKER: &str = "\u{e000}";
@@ -206,7 +206,7 @@ impl IntelligenceContent {
         content
     }
 
-    /// CAgencyUpgrade::id_copy 140616BC0 localises its authored identifier.
+    /// An agency upgrade localises its authored identifier.
     pub fn upgrade_name(&self, branch: &str, token: &str) -> Result<String, String> {
         if let Some(reason) = &self.upgrade_content_error {
             return Err(reason.clone());
@@ -222,7 +222,7 @@ impl IntelligenceContent {
             .ok_or_else(|| format!("agency upgrade {branch}/{token}: localisation refused"))
     }
 
-    /// COperation::vf4 140A70140 stores the authored name; 140A6DF00 localises it.
+    /// An operation stores its authored name and localises it.
     pub fn operation_name(&self, token: &str) -> Result<String, String> {
         let definition = self
             .definitions
@@ -274,14 +274,14 @@ impl IntelligenceContent {
         self.catalogue.refuse(reason, key);
     }
 
-    /// GetAgency's uncreated branch, 141A7B350 case 0x19. The literal is an
-    /// executable fact; the displayed bytes always come from recorded content.
+    /// The uncreated agency's default-name key. Displayed bytes always come
+    /// from recorded content.
     pub fn default_agency_name(&self) -> Option<String> {
         self.agency_text("AGENCY_NAME", &[])
     }
 
-    /// Agency screen 140F172A0 -> LocalizeWithFixedPointArgument 1402E2DA0:
-    /// the content controls the LEVEL argument's precision and suffix.
+    /// The agency screen's fixed5 LEVEL argument: content controls its
+    /// precision and suffix.
     pub fn defense_text(&self, raw: i64) -> Option<String> {
         self.agency_text("AGENCY_DEFENSE_LEVEL", &[("LEVEL", Argument::Fixed5(raw))])
     }
@@ -292,8 +292,8 @@ impl IntelligenceContent {
             .map(|template| template.label.clone())
     }
 
-    /// Keep the full native LEVEL output, including authored precision and
-    /// numeric suffixes (142232AB0); never infer it by parsing rendered digits.
+    /// Keep the full LEVEL output, including authored precision and numeric
+    /// suffixes; never infer it by parsing rendered digits.
     pub fn defense_value(&self, text: &str) -> Option<String> {
         let template = self.defense_template()?;
         let value = text
@@ -314,9 +314,8 @@ impl IntelligenceContent {
             .as_ref()
     }
 
-    /// COperation::vf4 140A70140 stores name/icon (+4D0/+490).
-    /// LocalizeOperationName 140A6DF00 localises the stored name without event
-    /// scope expansion. Missing or refused content remains unknown.
+    /// An operation stores its name/icon. The stored name localises without
+    /// event-scope expansion. Missing or refused content remains unknown.
     pub fn operation_artwork(&self, token: &str) -> (Artwork, Option<String>) {
         let mut cached = self
             .artwork
@@ -539,6 +538,8 @@ mod tests {
 
     #[test]
     fn intelligence_content_modded_operation_name_art_and_uncreated_agency_are_content_resolved() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
             (
                 "common/operations/mod.txt",

@@ -2,6 +2,8 @@
 
 Native map, playback and image-export process. It resolves a recording's content and uses one wgpu renderer for standalone windows, desktop maps and headless exports. The desktop web UI owns embedded controls/timeline and sends bounded commands to this viewer.
 
+Installation-dependent loading initializes `engine::executable_tables` from the configured game folder before reading settings or presentation content. Document workers and corpus runs validate their selected installation before consuming the shared tables. Executable metadata and shipped variable documentation remain in memory; recordings and disk caches contain no copies of these tables.
+
 ## Source map
 
 | Area | Entry points |
@@ -15,14 +17,14 @@ Native map, playback and image-export process. It resolves a recording's content
 | Dynamic hover | [province_tooltips/](src/map/province_tooltips/mod.rs), [counter_tooltips.rs](src/map/counter_tooltips.rs), [raid guide](src/map/raids/tooltips/README.md), [combat guide](src/combat/README.md) |
 | History, diagnostics and checks | [engaged_index.rs](src/engaged_index.rs), [tables.rs](src/map/tables.rs), [profiling.rs](src/profiling.rs), [corpus/](src/corpus/mod.rs) |
 
-[installed-content](../installed-content/README.md) owns content/asset interpretation; [replay](../replay/README.md) owns compatibility; [dashboard](../dashboard/README.md) owns sources/products/protocol; [desktop](../desktop/README.md) owns host/process lifecycle. Native evidence stays beside code. Equipment graphic-pool inputs preserve an absent archetype separately from a real empty equipment name.
+[installed-content](../installed-content/README.md) owns content/asset interpretation; [replay](../replay/README.md) owns compatibility; [dashboard](../dashboard/README.md) owns sources/products/protocol; [desktop](../desktop/README.md) owns host/process lifecycle. Equipment graphic-pool inputs preserve an absent archetype separately from a real empty equipment name.
 
 ## Use and export
 
-From the worktree root, use the [wrapper](../../AGENTS.md):
+From the repository root:
 
 ```powershell
-bash tools/build-slot.sh "dev/viewer" "cargo build -p viewer --release"
+cargo build -p viewer --release
 .\.cargo-target\release\viewer.exe <campaign.battleplan>
 .\.cargo-target\release\viewer.exe --dump <campaign.battleplan> --hour <n> --branch <id> --out <frame.png> --camera <world-x,world-z,height>
 ```
@@ -33,7 +35,7 @@ Choose game/user folders on first run. Standalone settings live in sibling `view
 
 ### Diagnostics
 
-Diagnostics default off. F3/header saves the choice; `--diagnostics` enables one run. The host owns its toggle. Hidden diagnostics build no frame text. Dumps/window captures/`--counters-json`/on-demand `MapDetails` always report limitations, lazy uncovered reads and reachable counter-hover refusals; dump warnings use stderr.
+Diagnostics default off. F3/header saves the choice; `--diagnostics` enables one run. The host owns its toggle. Hidden diagnostics build no frame text. Dumps, window captures, `--counters-json` and on-demand `MapDetails` always report limitations, lazy uncovered reads and reachable counter-hover refusals; dump warnings use stderr.
 
 Partial recordings play verified prefixes with always-visible failure status; only known failed hours become gaps. Readable older recordings distinguish missing fields from zero/empty and refuse only dependent features.
 
@@ -41,7 +43,7 @@ Partial recordings play verified prefixes with always-visible failure status; on
 
 [hours.rs](src/hours.rs) builds simulation layers off frames, with read-ahead standalone/source-shared widget decoding and one bounded pool per native root. Views cancel independently. [parallel.rs](src/parallel.rs) preserves input order at process parallelism; raid batches borrow idle builder turns.
 
-Playback keeps speed when builders lag. Show the playhead hour if ready, otherwise the newest built hour before it, all layers/date together. Finish in-flight hours at/before the playhead. Paused seeks/captures/exports await the exact hour. Coalescing preserves playing state/seek counter; hour distance cannot identify a seek.
+Playback keeps speed when builders lag. Show the playhead hour if ready, otherwise the newest built hour before it, all layers/date together. Finish in-flight hours at/before the playhead. Paused seeks, captures and exports await the exact hour. Coalescing preserves playing state/seek counter; hour distance cannot identify a seek.
 
 [presentation.rs](src/map/presentation.rs) separates continuity from unit recreation:
 
@@ -69,7 +71,7 @@ The scene is HDR: world names precede post-processing; screen labels/counters ar
 
 ### Compiled map shaders
 
-Map/GUI effects compile recorded content through [shader-pipeline](../shader-pipeline/README.md), equally for vanilla/mods. [shader_sources.rs](src/map/shader_sources.rs) owns selection/diagnostics; native effect models are test oracles. Viewer-authored shaders cover political compute, post-off copy and BC unpack only.
+Map/GUI effects compile recorded content through [shader-pipeline](../shader-pipeline/README.md), equally for vanilla/mods. [shader_sources.rs](src/map/shader_sources.rs) owns selection and diagnostics. Viewer-authored shaders handle political compute, atlas quads, post-off copy and BC unpack.
 
 Bind native slots/nulls, stage buffers/physical allocations, byte offsets, layouts/topologies and authored/forced states even when mod declarations change. Retain bindings across refused/missing-technique draws. Unknown in-allocation bytes refuse; reads beyond allocations are zero. Never invent padding.
 
@@ -126,6 +128,8 @@ Widgets keep independent perspective/fog and export by view ID; missing/loading 
 
 ## Compare changes
 
+Tests that read interface grammar, content registries or fixed modifier names initialize runtime metadata through `engine::executable_tables::initialize_for_tests()`. Set `BATTLE_PLAN_GAME_DIR` to the supported installation; those tests fail explicitly when it is unset. Pure geometry and recording metadata fixtures need no installation.
+
 Use [AGENTS.md](../../AGENTS.md) for scoped checks and [recorder](../recorder/README.md) for oracle/smoke integration. Match hour/branch/perspective/camera/resolution/settings; report scores and inspect images. Compilation, identical-input pixels, live fidelity and performance are separate checks.
 
 ```powershell
@@ -134,7 +138,7 @@ Use [AGENTS.md](../../AGENTS.md) for scoped checks and [recorder](../recorder/RE
 
 UI masking supports 2560x1440/3440x1440 only. `--layers trees` omits trees; `--counters-json` exports submitted plates/diagnostics. `--window-dump` checks window loading/rendering with repeatable animation controls. Headless presentation/map clocks are separate/default zero. Dumps settle pool requests at fixed hour/clocks; `--settle` advances the interval. Actor-local failures omit all parts; infrastructure/identity/frame/output errors remain fatal.
 
-Module-local tests include installed effects ([backend checks](../shader-pipeline/README.md#verification)), political full/incremental/multi-map exactness and recording sweeps, plus [content-only scenes](src/map/offline_scene.rs), which prove no recorded unit/political history. Serialize GPU harnesses. `BATTLE_PLAN_VIEWER_CHECK_OVERLAY` verifies raid replacement equality.
+CPU GUI checks use synthetic technique, sampler, blend and clock metadata. Installed effect checks compare compiled submission with independently packed direct draws using resolved shader sources. They use `BATTLE_PLAN_GAME_DIR` and the configured compiler; `BATTLE_PLAN_SHADER_CONTENT_OVERLAY` adds an ordered, platform-separated list of content folders above the game layer. Module-local tests also cover political full/incremental/multi-map exactness and recording sweeps, plus [content-only scenes](src/map/offline_scene.rs), which prove no recorded unit/political history. Serialize GPU harnesses. `BATTLE_PLAN_VIEWER_CHECK_OVERLAY` verifies raid replacement equality.
 
 | Profiling switch | Use |
 |---|---|
@@ -146,7 +150,7 @@ Module-local tests include installed effects ([backend checks](../shader-pipelin
 | `BATTLE_PLAN_VIEWER_BENCH_MODELS`, `BATTLE_PLAN_VIEWER_MODEL_FRAMES` | Live model histories after settled dump. |
 | `BATTLE_PLAN_MAP_SCENE_RGBA16F` | New-path HDR readback before grading, outside benchmark timing. |
 
-Use [reference notes](../../reference/README.md)/matched baselines. [Scale tests](src/unit_scale_tests.rs)/[fixtures](examples/unit_scale_fixture.rs) check volume, not fidelity/frame acceptance. Measure whole views, set affinity before startup and keep builds out of timings. Captures/reports stay outside Git.
+Choose matched game/viewer baselines from your own recording and installation. [Scale tests](src/unit_scale_tests.rs)/[fixtures](examples/unit_scale_fixture.rs) check volume, not fidelity/frame acceptance. Measure whole views, set affinity before startup and keep builds out of timings. Captures and reports stay outside Git.
 
 ## Mod corpus check
 
@@ -157,6 +161,6 @@ Use [reference notes](../../reference/README.md)/matched baselines. [Scale tests
 
 [corpus/readers.rs](src/corpus/readers.rs)/[dashboard::content_check](../dashboard/src/content_check.rs) own coverage. Runs use vanilla/individual mods with dependencies/DLC/language and scratch descriptors, not loose user files. Name missing dependencies/unrun readers; reuse external hash caches and keep installs read-only.
 
-Driver findings never pollute live catalogues. Typed channels decide kinds; `content` is cited parity, `offline` missing recorded context, never a substitution waiver. Keep actionable refusals/fallbacks, occurrence counts/examples and shared notes once. Diff diagnostic multisets from manifests only.
+Driver findings never pollute live catalogues. Typed channels decide kinds; `content` reports content interpretation, while `offline` reports missing recorded context. Preserve those distinctions, actionable refusals/fallbacks, occurrence counts/examples and shared notes once. Diff diagnostic multisets from manifests only.
 
 `--values` hashes normalized values; `--values=text --only <stack>` writes the same stream. Preserve list order; normalize hash containers/exclude timing/caches. This checks interpretation, not pixels/shaders/recorded evaluation. Runs stay under external captures.

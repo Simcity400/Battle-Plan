@@ -1,10 +1,10 @@
-//! Recorded identities for CEventScope's project, raid, MIO and unit arms.
+//! Recorded identities for event scopes' project, raid, MIO and unit arms.
 
 use super::{Evaluator, Scope, World};
 use replay::rows::{DivisionRow, ProjectRow, RaidRow, tables};
 
 impl<'a> World<'a> {
-    /// ResolveProject@140529480; Projects retains the pool owner and +0x0C id.
+    /// Projects retains the pool owner and local id.
     pub(crate) fn project(&self, owner: u32, id: u32) -> Result<&'a ProjectRow, String> {
         self.frame()
             .complete::<tables::Projects>()
@@ -14,7 +14,7 @@ impl<'a> World<'a> {
             .ok_or_else(|| format!("Projects lacks project {owner}:{id}"))
     }
 
-    /// ResolveRaidInstance@140529460 resolves the full reference, not its id alone.
+    /// Raid lookup resolves the full reference, not its id alone.
     pub(crate) fn raid(&self, reference: u64) -> Result<&'a RaidRow, String> {
         self.frame()
             .complete::<tables::Raids>()
@@ -24,17 +24,17 @@ impl<'a> World<'a> {
             .ok_or_else(|| format!("Raids lacks raid {reference:#x}"))
     }
 
-    /// ResolveUnit@1405294C0 subtracts 0x10 from the registry object. Divisions
-    /// records that CArmy's full CUnit+0x18 handle, including its reference type.
+    /// Divisions records each army's full unit handle,
+    /// including its reference type.
     pub(crate) fn unit(&self, reference: u64) -> Result<&'a DivisionRow, String> {
         self.frame().complete::<tables::Divisions>().map_err(|why| why.to_string())?
             .iter().find(|row| row.id == reference)
-            .ok_or_else(|| format!("Divisions lacks UNIT {reference:#x}; non-army unit identities are not recorded here (1405294C0)"))
+            .ok_or_else(|| format!("Divisions lacks UNIT {reference:#x}; non-army unit identities are not recorded here"))
     }
 }
 
 impl Evaluator<'_, '_> {
-    /// 14146BB30's keyword-prefix arms: sp (0x4D38) and mio (0x4D37).
+    /// Named-carrier keyword prefixes: sp and mio.
     /// The caller checks country presence before either lookup.
     pub(super) fn named_carrier(
         &self,
@@ -51,7 +51,7 @@ impl Evaluator<'_, '_> {
         let token = world.token_of(name.as_bytes())?;
         match prefix {
             "mio" => {
-                // 140E48790: first token match in country-status +0x130/+0x13C.
+                // Take the first token match in the country's organisation roster.
                 let rows = world
                     .frame()
                     .complete::<tables::IndustrialOrganisations>()
@@ -65,9 +65,9 @@ impl Evaluator<'_, '_> {
                     .map(|row| Scope::IndustrialOrganisation(row.organisation)))
             }
             "sp" => {
-                // 1414700A0: definition-token index into the country's pool.
-                // 140FCADC0 copies template+8 to project+0x18 (definition_id).
-                // ResyncWithDatabase 14146F470 reuses a matching definition
+                // Index the country's pool by definition token.
+                // Each project's definition_id retains its template token.
+                // Database resynchronisation reuses a matching definition
                 // before appending; reject a recording that cannot identify it.
                 let rows = world
                     .frame()
@@ -79,7 +79,7 @@ impl Evaluator<'_, '_> {
                 let row = found.next();
                 if found.next().is_some() {
                     return Err(format!(
-                        "sp:{name}: Projects has ambiguous duplicate definitions for one country (14146F470/1414700A0)"
+                        "sp:{name}: Projects has ambiguous duplicate definitions for one country"
                     ));
                 }
                 Ok(row.map(|row| Scope::Project {
@@ -91,7 +91,7 @@ impl Evaluator<'_, '_> {
         }
     }
 
-    /// DecodeScopedValueToEventScope@140537A10: type 86, 79 or 84 from
+    /// Decode project, organisation or raid references from
     /// the tagged low-28-bit identifier. Project keys additionally retain owner.
     pub(super) fn decoded_carrier(&self, kind: u32, id: u32) -> Result<Option<Scope>, String> {
         let world = self.world();
@@ -106,7 +106,7 @@ impl Evaluator<'_, '_> {
                 let row = found.next();
                 if found.next().is_some() {
                     return Err(format!(
-                        "project reference id {id} is ambiguous across recorded country pools (140537A10)"
+                        "project reference id {id} is ambiguous across recorded country pools"
                     ));
                 }
                 Ok(row.map(|row| Scope::Project {

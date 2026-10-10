@@ -1,9 +1,9 @@
 //! Conventional equipment models, after authored graphical pools.
 //!
-//! Native `140B88D50 -> 140B88E70 -> 140B880B0 -> 140B884F0` builds a
+//! Best-variant selection builds a
 //! ranked candidate set, rather than taking the first country-prefixed name.
 //! This module receives simulation identities and authored definitions, and
-//! the country's stored best-variant candidates (`CProductionStatus+0xB8`),
+//! the country's stored best-variant candidates,
 //! which the collector records daily beside its rosters.
 
 use super::{Candidate, insert_legacy};
@@ -15,13 +15,13 @@ pub struct Equipment<'a> {
     pub archetype: &'a str,
     pub archetype_ordinal: usize,
     pub sprite: &'a str,
-    /// `visual_level`, native equipment +0x3D4.
+    /// The equipment's visual level.
     pub visual_level: i32,
     /// Sum of authored visual additions along the parent chain, at least one.
     pub model_priority: i32,
-    /// Number of parent links, native equipment +0x3C4.
+    /// Number of parent links.
     pub parent_depth: i32,
-    /// Native 140C88540: authored module slots and the shared DLC category mask.
+    /// Content-defined authored module slots and the shared DLC category mask.
     pub has_enabled_module_slots: bool,
 }
 
@@ -33,7 +33,7 @@ pub struct Variant<'a> {
     pub creator_reference: i32,
     pub creator_slot: i32,
     /// Wrapping signed 32-bit sum of the recorded upgrade-level bytes.
-    /// 140BD0D50 derives this operand; it is not separately recorded.
+    /// The game derives this operand; it is not separately recorded.
     pub upgrade_sum: i32,
     pub equipment: Equipment<'a>,
 }
@@ -52,7 +52,7 @@ pub struct Subunit<'a> {
     pub key: &'a str,
     pub sprite: &'a str,
     pub categories: u64,
-    /// Native first requirement entry at subunit +0x318. None means the
+    /// First sub-unit requirement entry. None means the
     /// authored requirement list is empty, not that content is unavailable.
     pub first_archetype: Option<&'a str>,
 }
@@ -65,8 +65,8 @@ pub struct Context<'a> {
     /// Complete saved country `available_equipments` membership. Creator alone
     /// cannot establish this list: civil wars clear/rebuild it independently.
     pub available: &'a [Variant<'a>],
-    /// The recorded best-variant candidates (`CProductionStatus+0xB8`) of
-    /// the model country, which `FindBestVariantForArchetype` scans.
+    /// The model country's recorded best-variant candidates, scanned
+    /// for the selected archetype.
     pub best_candidates: &'a [Variant<'a>],
 }
 
@@ -81,7 +81,7 @@ pub fn append_candidates(
     append_candidates_with_priority(context, candidates, 0, entity_exists)
 }
 
-/// `141919100` supplies its per-subunit score to the persistent suffix bins.
+/// The game supplies its per-subunit score to the persistent suffix bins.
 pub fn append_candidates_with_priority(
     context: &Context<'_>,
     candidates: &mut Vec<Candidate>,
@@ -96,7 +96,7 @@ pub fn append_candidates_with_priority(
         .iter()
         .filter(|variant| variant.equipment.archetype == archetype)
         .collect();
-    // 140E53870 -> 140E46F30 uses a stable sort with 140BC2F10.
+    // Use a stable sort with the shared variant comparator.
     variants.sort_by(|left, right| compare(context.country, left, right));
     let mut best = context
         .best_candidates
@@ -136,7 +136,7 @@ pub fn append_candidates_with_priority(
     Ok(())
 }
 
-/// 140BC2F10, including archetype registration order for the combined roster.
+/// Variant comparison, including archetype registration order for the combined roster.
 pub(crate) fn compare(owner: Country<'_>, left: &Variant<'_>, right: &Variant<'_>) -> Ordering {
     let order = |variant: &Variant<'_>| dashboard::products::equipment::VariantOrder {
         archetype_ordinal: variant.equipment.archetype_ordinal,
@@ -212,7 +212,7 @@ impl<F: FnMut(&str) -> bool> Producer<'_, '_, F> {
                 .wrapping_add(if self.selected(best) { 30 } else { 0 })
                 .wrapping_add(28);
             self.prefixes(&format!("{stem}_entity"), rank)?;
-            // This unusual extra tag is present in 140B88E70's best-variant
+            // This unusual extra tag is present in the game's best-variant
             // fallback. Its result still passes through the prefix expander.
             self.alternatives(&format!("{}_{stem}", self.context.country.tag), rank)?;
         }

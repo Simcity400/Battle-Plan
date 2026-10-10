@@ -4,10 +4,10 @@ import type { OptionField } from '../../dashboard/options';
 import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
 import { TENSION_BREAKDOWN } from './tensionDrill.ts';
 
-/** Settings as signed off (mock-up diplo-1): Top 5 + Other layers by default or Top
+/** Settings: Top 5 + Other layers by default or Top
  * 8, event markers on, and the values listed beside the chart. What the layers
- * show is a setting too: each country's share of world tension (the look signed
- * off: the layers' top edge is world tension) or its recorded contribution, which
+ * show is a setting too: each country's share of world tension (the layers'
+ * top edge is world tension) or its recorded contribution, which
  * can add up past the game's 100% cap. */
 export const OPTIONS: readonly OptionField[] = [
   breakdownOption([TENSION_BREAKDOWN], 'World tension'),

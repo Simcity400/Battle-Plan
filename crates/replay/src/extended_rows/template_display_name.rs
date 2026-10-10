@@ -1,4 +1,4 @@
-//! Fresh template display operands for GetDisplayName@140B91170.
+//! Fresh template display-name operands.
 //! An equality certificate refers only to DivisionTemplates in the SAME frame,
 //! never to a guessed daily read hour. The writer compared exact demanded bytes.
 use super::*;

@@ -1,4 +1,4 @@
-//! Border 141264420 uses authored program/blend/samplers and forced map depth/raster.
+//! Border uses authored program/blend/samplers and forced map depth/raster.
 use std::{collections::BTreeMap, io, sync::Arc};
 
 use eframe::wgpu;
@@ -107,8 +107,7 @@ impl Border {
             step: wgpu::VertexStepMode::Vertex,
             attributes,
         }];
-        // 1412625C8..601: default raster with FrontCCW=true. 141262640..69F:
-        // default depth with enable=true/write zero. 141268C60/141264420 bind them.
+        // Use counterclockwise fronts and enabled depth testing without depth writes.
         let raster = RasterizerState {
             front_ccw: true,
             ..Default::default()
@@ -144,7 +143,7 @@ impl Border {
         inputs: Inputs<'_>,
         batches: &[Batch<'_>],
     ) -> io::Result<super::shader_constants::WorldPixelConstants> {
-        //1412644CB..562 uploads before the strip-count check, even for no draws.
+        // Uploads before the strip-count check, even for no draws.
         let mut retained =
             super::shader_constants::WorldPixelConstants::border(inputs.time, [0.; 4], 1.);
         if let Some(state) = inputs.retained {

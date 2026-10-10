@@ -2,28 +2,20 @@
 //! Scoreboard through `visit_army_runs`; all views use the same per-source scan.
 //! Missing reads and country identities end runs; they never produce zeros.
 //!
-//! SendExpeditionaryForceAction::Execute@0x1410F4750 keeps the source via
-//! SetExpeditionarySender@0x140BF4F70, then AddArmy@0x1406C6480 sets the target's
-//! roster/logical links through 0x140BF5480 / 0x140BF5290. Owner therefore means
-//! positive signed expeditionary owner, otherwise roster owner; host is roster.
-//! The hourly census uses that same owner rule, adding grouped and ungrouped.
-//! Manpower uses CArmyManpower::GetTotal@0x140C5A040 /
-//! CArmyManpowerValues::GetTotal@0x140C5A0F0: wrapping signed i32 contributor
-//! sum per division, then an exact country sum. Contributor origins never
-//! replace the division owner/host.
+//! An expeditionary transfer retains the source owner while the target receives
+//! the roster/logical links. Owner therefore means positive signed expeditionary
+//! owner, otherwise roster owner; host is roster. The hourly census uses that
+//! same owner rule, adding grouped and ungrouped divisions. Manpower wraps the
+//! signed i32 contributor sum per division, then sums countries exactly.
+//! Contributor origins never replace the division owner/host.
 //! Combined strength is current HP, not a percentage or template maximum:
-//! CArmy::set_hit_points@0x140C7FA80 writes +0x420, clamps it to 0..maximum,
-//! and formats it through FormatFixed5Trimmed@0x1424B60D0 (fixed5).
+//! the game clamps it to 0..maximum and formats it as fixed5.
 //!
-//! Division classification was deferred because the counter
-//! representative (0x140B94FA0: signed wrapping priority * count, largest
-//! positive score, first wins ties; getter 0x140B90370 with brigade (0,0)/null
-//! fallback) differs from the AI representative (same builder, ai_priority *
-//! count). Category getter 0x140B8F7F0 uses the AI representative, counter
-//! fallback, a template override and fixed executable category predicates.
-//! Authored group is a sub-unit's dynamic token (0x141008E80 case 0x3F,
-//! +0x5A4, token reader 0x1424A6500); the designer reads it per regiment at
-//! 0x141678490. The user chose battalions only: grouped template sub-units
+//! The counter representative uses signed wrapping priority * count, selecting
+//! the largest positive score and the first tie, with brigade (0,0)/null fallback.
+//! The AI representative instead uses ai_priority * count. Division categories
+//! use that AI representative, counter fallback, a template override and category
+//! predicates. These differ from the battalion view: grouped template sub-units
 //! (regiments and support companies) use their authored content group, never
 //! either representative. No per-battalion HP is recorded, so HP stays unsplit.
 
@@ -223,7 +215,7 @@ struct Scan {
     invalid_table_reads: BTreeMap<String, usize>,
 }
 
-/// Census owner rule: collector/src/division_census.rs:601, active_damage@140C7BFC0.
+/// Census owner rule: positive signed expeditionary owner, otherwise roster owner.
 fn owner(row: &DivisionRow) -> u32 {
     if row.expeditionary_owner as i32 > 0 {
         row.expeditionary_owner

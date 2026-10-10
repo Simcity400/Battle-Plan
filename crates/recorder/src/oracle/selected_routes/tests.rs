@@ -378,8 +378,9 @@ fn saved_exile_difference_does_not_hide_an_existing_stored_path_difference() {
 }
 
 fn retreat_layout(frame: &mut DecodedFrame) {
-    let keys: Vec<_> = engine::modifier_keys::ALL
-        .iter()
+    engine::executable_tables::initialize_for_tests()
+        .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+    let keys: Vec<_> = engine::modifier_keys::all()
         .filter(|key| replay::fixed_layout::RETREAT_BANS.keys.contains(&key.index))
         .collect();
     *frame.tables[TableId::ModifierDefinitions.index()] =

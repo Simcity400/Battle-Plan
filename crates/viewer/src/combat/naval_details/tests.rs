@@ -219,6 +219,8 @@ fn recorded_air_hover_reaches_the_air_icon_binding() {
 }
 #[test]
 fn organisation_uses_default_leader_and_recorded_hq_terms() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::rows::{NavalShipModifierSource, NavalShipModifierTerm};
     let mut row = NavalCombatShipRow {
         live_ship: 1,
@@ -272,7 +274,7 @@ fn the_left_column_takes_the_second_frame_unless_reversed() {
     assert_eq!(icon_frame(0, true), 0);
     assert_eq!(icon_frame(1, true), 1);
     assert_eq!(icon_frame(1, false), 0);
-    // pairJ_naval_5.png: submarines (48) at +77, convoys (52) at +75.
+    // Right-aligned widths 48 and 52 give offsets 77 and 75.
     assert_eq!(combat_box_x(48.0), 77.0);
     assert_eq!(combat_box_x(52.0), 75.0);
 }

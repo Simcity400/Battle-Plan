@@ -31,7 +31,7 @@ pub(super) fn compare(
         return Ok(());
     }
     report.limitation(
-        "recording self-check only: CNavalCombatResults fill/merge/save (140CD6600, 140CD5840, 140CD73D0) retain no source-combat reference, fleet/task-force identity, start hour or duration. Text saves contain retained results and live combats, but no live reference for an ended combat, so they cannot certify the captured mapping or transient source identity. Complete consecutive branch reads certify observed new-result and result_hour transitions against events; results retired before a read and same-hour merges that leave result_hour unchanged are invisible to those checks. Callback context, hook counters and native probes still require the live run; no save difference is waived",
+        "recording self-check only: naval-result fill/merge/save retain no source-combat reference, fleet/task-force identity, start hour or duration. Text saves contain retained results and live combats, but no live reference for an ended combat, so they cannot certify the captured mapping or transient source identity. Complete consecutive branch reads certify observed new-result and result_hour transitions against events; results retired before a read and same-hour merges that leave result_hour unchanged are invisible to those checks. Callback context, hook counters and native probes still require the live run; no save difference is waived",
         "NavalResultSources",
     );
     let mut check = SourceCheck::default();
@@ -136,8 +136,8 @@ impl SourceCheck {
                         count.0 += 1;
                     }
                 }
-                // Only create_result inserts results (1401CA9C0), and only
-                // fill/merge (140CD6600/140CD5840) write result_hour (+118).
+                // Only result creation inserts results, and only
+                // fill/merge write result_hour.
                 if let (Some(previous), Ok(current)) = (&self.results, &results) {
                     for (&result, &hour) in current {
                         let (new, merged) = counts.get(&result).copied().unwrap_or_default();
@@ -192,7 +192,7 @@ impl SourceCheck {
                         );
                     }
                     self.last_event = Some((row.id, row.game_hour));
-                    // Merge requires +10C/+10D (1415B291A..2955); only the
+                    // Merge requires both source flags; only the
                     // stack-local strike creators set them on this executable.
                     if row.merged && !row.transient {
                         report.difference(
@@ -203,7 +203,7 @@ impl SourceCheck {
                     }
                     if row.transient {
                         // The three stack-strike callers construct, finalize and
-                        // destroy in one call: 140BA8DB0/140BA8F30/140BA9130.
+                        // destroy in one call.
                         if row.combat_created_hour != Some(row.game_hour)
                             || self
                                 .combats
@@ -222,7 +222,7 @@ impl SourceCheck {
                             .combats
                             .as_ref()
                             .is_some_and(|ids| ids.contains(&row.combat));
-                        // The constructor witness (1415AFEB0) proves creation
+                        // The constructor witness proves creation
                         // after the previous read; the result tap proves resolution.
                         let within_hour = self
                             .previous_hour
@@ -271,8 +271,8 @@ impl SourceCheck {
                     }
                     self.pending.insert(row.id, row.clone());
                 }
-                // Fill/merge write +118 from the call's current native hour
-                // (140CD6600/140CD5840), including same-hour merges.
+                // Fill/merge write from the call's current native hour
+                // including same-hour merges.
                 if let Ok(current) = &results {
                     for (result, (event, hour)) in last_emissions {
                         if let Some(&recorded) = current.get(&result)
@@ -348,8 +348,8 @@ impl SourceCheck {
 
     fn finish(self, report: &mut Report) {
         for row in self.pending.values() {
-            // Daily sweep 1401D73B0 can retire a result before the next
-            // entry read; 140CD6CA0 imposes no positive content TTL floor.
+            // The daily sweep can retire a result before the next
+            // entry read; the game imposes no positive content TTL floor.
             report.limitation(
                 "an emitted result was never retained at a later branch read; native pre-read retirement and a missing result reference cannot be distinguished by this recording-only self-check",
                 format!(

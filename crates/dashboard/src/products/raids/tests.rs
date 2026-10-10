@@ -663,6 +663,8 @@ fn mod_content() -> (Scratch, Content) {
 
 #[test]
 fn raids_offline_fallbacks_only_cover_absent_localisation_and_omit_reader_notes() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::content_check::Kind;
     let scratch = Scratch::new();
     scratch.write(
@@ -747,6 +749,8 @@ fn raids_offline_fallbacks_only_cover_absent_localisation_and_omit_reader_notes(
 
 #[test]
 fn raids_live_reply_warns_only_for_unproven_state_reading() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::spool::Record;
     let scratch = Scratch::new();
     for (path, text) in [
@@ -899,6 +903,8 @@ fn raids_live_reply_warns_only_for_unproven_state_reading() {
 
 #[test]
 fn raids_modded_types_use_content_names_and_refused_forms_are_named_and_counted() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_scratch, content) = mod_content();
     assert_eq!(
         content
@@ -947,6 +953,8 @@ fn raids_modded_types_use_content_names_and_refused_forms_are_named_and_counted(
 
 #[test]
 fn raids_native_icon_empty_override_and_target_building_specialisation_use_shared_reader() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_scratch, content) = mod_content();
     let empty = RaidType {
         name: "empty".into(),
@@ -978,6 +986,8 @@ fn raids_native_icon_empty_override_and_target_building_specialisation_use_share
 
 #[test]
 fn raids_renamed_country_and_target_are_resolved_at_the_hour_without_baking_country_names() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_scratch, content) = mod_content();
     let mut before = frame(100, vec![raid(1, 4, 0)]);
     *before.tables[TableId::CountryAppearance.index()] =
@@ -1043,6 +1053,8 @@ fn raids_renamed_country_and_target_are_resolved_at_the_hour_without_baking_coun
 
 #[test]
 fn raids_unsupported_native_enums_are_unknown_with_named_counted_refusal() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_scratch, content) = mod_content();
     let mut scan = Scan::new();
     scan.observe(&frame(100, vec![raid(1, 77, 88)]), Some(&content))
@@ -1555,6 +1567,8 @@ fn raids_ended_victim_freezes_at_first_phase_five_read_including_unknown() {
 
 #[test]
 fn raids_log_artwork_is_lazy_unique_and_limited_to_used_episode_keys() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_scratch, content) = mod_content();
     assert!(content.icons.lock().unwrap().is_empty());
     let mut scan = Scan::new();
@@ -1656,6 +1670,8 @@ fn raids_selection_sizes_from_the_recording_and_reply_refuses_the_transport_budg
 
 #[test]
 fn raids_target_names_use_original_tags_and_empty_qualified_names_mask_bare_keys() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::rows::{Recorded, ReservedCountryNamingRow};
     let (_scratch, mut content) = mod_content();
     let cat = Arc::get_mut(&mut content.catalogue).unwrap();

@@ -1,4 +1,4 @@
-//! Selected transport interception, F9D6C0 -> F9C6E0, pinned a729.
+//! Selected transport interception for the supported build.
 //! Every live leaf comes from the original hourly receiver observation. The
 //! viewer's signed low32 convoy operand remains query-local.
 
@@ -27,9 +27,9 @@ pub trait Inputs {
     fn actual_speed(&mut self) -> Fact<i64>;
     fn coordination(&mut self) -> Fact<i64>;
     fn spotting_modifier(&mut self) -> Fact<i64>;
-    /// F95500: roster owner's relation to the actual location controller.
+    /// Roster owner's relation to the actual location controller.
     fn targeted_spotting_modifier(&mut self) -> Fact<i64>;
-    /// F044D0 at the admitted simulation hour, independent of display mode.
+    /// Night factor at the admitted simulation hour, independent of display mode.
     fn simulation_night_factor(&mut self) -> Fact<i64>;
     fn night_spotting_modifier(&mut self) -> Fact<i64>;
 }
@@ -52,31 +52,30 @@ pub struct Defines {
 }
 
 impl Defines {
-    /// Native NNavy Load/GetName bindings from the referenced runtime globals.
-    /// Resolve through the recording's existing Defines/content stack.
+    /// NNavy defines resolved through the recording's existing content stack.
     pub fn read<E>(
         mut fixed5: impl FnMut(&'static str, &'static str) -> Result<i64, E>,
     ) -> Result<Self, E> {
         Ok(Self {
-            base: fixed5("NNavy", "BASE_UNIT_TRANSFER_SPOTTING_SPEED")?, // CCA0
-            transfer_multiplier: fixed5("NNavy", "UNIT_TRANSFER_SPOTTING_SPEED_MULT")?, // CE58
-            surface_multiplier: fixed5("NNavy", "SPOTTING_MULTIPLIER_FOR_SURFACE")?, // C9E8
-            submarine_multiplier: fixed5("NNavy", "SPOTTING_MULTIPLIER_FOR_SUB")?, // CA78
-            convoy_count_exponent: fixed5("NNavy", "SPOTTING_MOD_FOR_CONVOY_COUNT")?, // C8B8
-            visibility_multiplier: fixed5("NNavy", "VISIBILITY_MULTIPLIER_FOR_SPOTTING")?, // 8CF8
-            detection_base: fixed5("NNavy", "DETECTION_CHANCE_MULT_BASE")?, // BB98
+            base: fixed5("NNavy", "BASE_UNIT_TRANSFER_SPOTTING_SPEED")?,
+            transfer_multiplier: fixed5("NNavy", "UNIT_TRANSFER_SPOTTING_SPEED_MULT")?,
+            surface_multiplier: fixed5("NNavy", "SPOTTING_MULTIPLIER_FOR_SURFACE")?,
+            submarine_multiplier: fixed5("NNavy", "SPOTTING_MULTIPLIER_FOR_SUB")?,
+            convoy_count_exponent: fixed5("NNavy", "SPOTTING_MOD_FOR_CONVOY_COUNT")?,
+            visibility_multiplier: fixed5("NNavy", "VISIBILITY_MULTIPLIER_FOR_SPOTTING")?,
+            detection_base: fixed5("NNavy", "DETECTION_CHANCE_MULT_BASE")?,
             enemy_detection_multiplier: fixed5(
                 "NNavy",
                 "SPOTTING_ENEMY_SPOTTING_MULTIPLIER_FOR_RUNNING_AWAY",
-            )?, // C970
-            transport_speed_scale: fixed5("NNavy", "NAVAL_SPEED_MODIFIER")?, // EFE0
-            catching_up_multiplier: fixed5("NNavy", "SPOTTING_SPEED_MULT_FOR_CATCHING_UP")?, // CB80
-            running_away_multiplier: fixed5("NNavy", "SPOTTING_SPEED_MULT_FOR_RUNNING_AWAY")?, // CAF8
-            coordination_factor: fixed5("NNavy", "COORDINATION_EFFECT_ON_PATROL_SPOTTING")?, // C1A8
+            )?,
+            transport_speed_scale: fixed5("NNavy", "NAVAL_SPEED_MODIFIER")?,
+            catching_up_multiplier: fixed5("NNavy", "SPOTTING_SPEED_MULT_FOR_CATCHING_UP")?,
+            running_away_multiplier: fixed5("NNavy", "SPOTTING_SPEED_MULT_FOR_RUNNING_AWAY")?,
+            coordination_factor: fixed5("NNavy", "COORDINATION_EFFECT_ON_PATROL_SPOTTING")?,
             repair_visibility_multiplier: fixed5(
                 "NNavy",
                 "NAVY_VISIBILITY_BONUS_ON_RETURN_FOR_REPAIR",
-            )?, // 8C58
+            )?,
         })
     }
 }
@@ -85,8 +84,8 @@ fn mul(left: i64, right: i64) -> i64 {
     left.wrapping_mul(right) / ONE
 }
 
-/// D5AE30 and D5AF10 retain the wrapping ordered carrier-fill sum. The two
-/// stat lanes are +138 and +160; a null or refused ship is never omitted.
+/// Detection retains the wrapping ordered carrier-fill sum. Its two stat
+/// lanes are independent; a null or refused ship is never omitted.
 pub fn detection(stats: [i64; 2], carrier_fill_sum: i64, combined: i64) -> i64 {
     mul(
         stats[0].wrapping_add(mul(carrier_fill_sum, stats[1])),
@@ -95,7 +94,7 @@ pub fn detection(stats: [i64; 2], carrier_fill_sum: i64, combined: i64) -> i64 {
     .max(0)
 }
 
-/// D5B000/D5AD50, with their exact intermediate truncations and final clamp.
+/// Visibility with ordered intermediate truncations and the final clamp.
 pub fn visibility(stat: i64, modifier: i64, detached_activity: i32, defines: Defines) -> i64 {
     let repair = if detached_activity == 1 {
         defines.repair_visibility_multiplier
@@ -109,8 +108,8 @@ pub fn visibility(stat: i64, modifier: i64, detached_activity: i32, defines: Def
     .max(0)
 }
 
-/// F9D6C0's flag-zero selected-transfer caller. This is interception speed;
-/// F9EE50 applies its independent weighting/Q15 conversion afterwards.
+/// Flag-zero selected-transfer interception speed, before the mission view's
+/// independent weighting and Q15 conversion.
 pub fn query(inputs: &mut impl Inputs, defines: Defines, convoys: i32) -> Fact<i64> {
     let mission_detection = inputs.detection_multiplier()?;
     let combined = inputs.combined_detection()?;
@@ -122,7 +121,7 @@ pub fn query(inputs: &mut impl Inputs, defines: Defines, convoys: i32) -> Fact<i
     let Some(variant) = inputs.first_variant()? else {
         return Ok(0);
     };
-    // F9C9A4 sign-extends the low32 caller operand before multiplying it.
+    // Sign-extend the low32 caller operand before multiplying it.
     let count = engine::fixed5::power(
         i64::from(convoys).wrapping_mul(ONE),
         defines.convoy_count_exponent,
@@ -148,7 +147,7 @@ pub fn query(inputs: &mut impl Inputs, defines: Defines, convoys: i32) -> Fact<i
     let surface_enemy = enemy_term(variant.surface_detection?, own[0]);
     let submarine_enemy = enemy_term(variant.submarine_detection?, own[1]);
     let surface = mul(target.wrapping_sub(surface_enemy), surface_multiplier);
-    // DA720 is wrapping NEG, including i64::MIN, not absolute value.
+    // Negation wraps, including i64::MIN; it is not absolute value.
     let submarine = mul(submarine_enemy.wrapping_neg(), defines.submarine_multiplier);
     let mut chance = defines
         .base
@@ -164,8 +163,8 @@ pub fn query(inputs: &mut impl Inputs, defines: Defines, convoys: i32) -> Fact<i
     chance = chance.wrapping_add(mul(mul(delta, speed_multiplier), surface_multiplier));
     let coordination = mul(inputs.coordination()?, defines.coordination_factor).wrapping_add(ONE);
     chance = mul(chance, coordination);
-    // F95500's entry gate remains the original positive chance, even if the
-    // first modifier multiplication makes it nonpositive before night.
+    // The entry gate remains the original positive chance, even if the first
+    // modifier multiplication makes it nonpositive before night.
     if chance > 0 {
         let spotting = inputs.spotting_modifier()?;
         let targeted = inputs.targeted_spotting_modifier()?;
@@ -177,8 +176,8 @@ pub fn query(inputs: &mut impl Inputs, defines: Defines, convoys: i32) -> Fact<i
     Ok(chance)
 }
 
-/// C23D90's ratio after the original C2B7E0/base-null gates. C3E1D0 and
-/// F47350 supply the signed32 wrapping plane sum, never effective planes.
+/// Carrier fill ratio after the carrier predicate and base-null gates.
+/// Planes are a signed32 wrapping sum, never effective planes.
 pub fn carrier_fill(capacity: i32, planes: i32) -> i64 {
     let denominator = i64::from(capacity) * ONE;
     if denominator == 0 {

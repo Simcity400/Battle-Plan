@@ -649,6 +649,8 @@ fn air_force_run_visitor_reuses_scan_and_keeps_zero_unknown_gap_and_replacement(
 
 #[test]
 fn air_force_recorded_variants_use_mod_archetypes_and_keep_unresolved_designs() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::rows::{LexicalTokenRow, VariantDefinitionRow};
     let root = std::env::temp_dir().join(format!("hoi4_air_force_mod_{}", uuid::Uuid::new_v4()));
     let base = root.join("base");

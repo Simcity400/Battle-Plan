@@ -128,7 +128,7 @@ fn null_province_preserves_exposure_but_clears_the_next_distance_source() {
 }
 
 #[test]
-fn zero_speed_and_zero_survival_return_native_full_risk() {
+fn zero_speed_and_zero_survival_return_full_risk() {
     let mut world = World {
         speed: 0,
         ..Default::default()

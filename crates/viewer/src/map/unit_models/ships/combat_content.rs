@@ -1,8 +1,8 @@
-//! CShipCombatReader@1416526B0 and combat-template attachment selection.
+//! Combat-template content and attachment selection.
 //!
-//! 141652270 starts both names empty, both scales and random start time at
+//! The game starts both names empty, both scales and random start time at
 //! 1.0, death time at 10.0, and four empty effect arrays. Strings/floats
-//! overwrite in reader order; ReadStringList@1401426E0 appends. Keeping the
+//! overwrite in reader order; effect lists append. Keeping the
 //! stored bytes until a caller projects them lets an unsupported combat-only
 //! field refuse combat without changing the ordinary formation reader.
 //!
@@ -126,8 +126,8 @@ impl Config {
             else {
                 continue;
             };
-            // Shape::List stores resolved raw tokens; native ReadStringList
-            // then invokes ReadStringInto for every appended entry.
+            // Shape::List stores resolved raw tokens; appended entries then
+            // pass through the ordinary string reader.
             for entry in item.value.items().into_iter().flatten() {
                 if let Some(raw) = entry.value.scalar() {
                     if parser::c_string(raw).contains(&b'\n') {
@@ -222,7 +222,7 @@ impl CombatAssets {
         ] {
             finite(value, field)?;
         }
-        // Entity-definition lookup@14227E5F0 accepts registered entities,
+        // Entity-definition lookup accepts registered entities,
         // including meshless rigs; a bare pdxmesh is not that lookup.
         if !descriptors.entities.contains_key(&template_entity) {
             return Err(invalid(format!(
@@ -258,7 +258,7 @@ pub(super) struct SideLocators {
 }
 
 impl SideLocators {
-    /// 141650360 copies the capital position, then samples three supports
+    /// The game copies the capital position, then samples three supports
     /// without replacement, removing each by swapping in the final index.
     /// The renderer supplies its viewer-owned native mixer draws.
     pub(super) fn choose(
@@ -267,7 +267,7 @@ impl SideLocators {
     ) -> io::Result<[Option<Attachment>; 4]> {
         if self.small.len() < 3 {
             return Err(invalid(format!(
-                "naval_combat_formation: 1 refused support selection: {} positions; native selection requires three (141650360)",
+                "naval_combat_formation: 1 refused support selection: {} positions; native selection requires three",
                 self.small.len()
             )));
         }
@@ -282,7 +282,7 @@ impl SideLocators {
     }
 }
 
-/// 141651BB0: defending side first, attacking side second. Only the first
+/// Defending side first, attacking side second. Only the first
 /// existing big 1..9 is retained; all existing small 1..9 survive holes.
 pub(super) fn select_locators(rig: &Rig) -> io::Result<[SideLocators; 2]> {
     let root = rig.nodes.first().ok_or_else(|| {
@@ -292,7 +292,7 @@ pub(super) fn select_locators(rig: &Rig) -> io::Result<[SideLocators; 2]> {
         invalid("naval_combat_formation: 1 refused template: root actor source is unavailable")
     })?;
     let attachment = |name: &str| -> io::Result<Option<Attachment>> {
-        // 14227AB70 first resolves an entity-file locator; 1422F5340 then
+        // First resolve an entity-file locator, then
         // resolves a binary-mesh locator before its skeleton joint.
         let binding = mesh_pose::lookup(source, name, mesh_pose::LookupMode::Naval);
         if let Some(mesh_pose::Binding::Locator(locator)) = binding
@@ -320,7 +320,7 @@ pub(super) fn select_locators(rig: &Rig) -> io::Result<[SideLocators; 2]> {
         }
         if small.len() < 3 {
             return Err(invalid(format!(
-                "naval_combat_formation: 1 refused {prefix}: {} support positions; native three-slot selection would read out of bounds (141650360)",
+                "naval_combat_formation: 1 refused {prefix}: {} support positions; native three-slot selection would read out of bounds",
                 small.len()
             )));
         }

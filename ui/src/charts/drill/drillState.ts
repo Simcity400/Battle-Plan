@@ -9,8 +9,7 @@ export interface Breakdown { id: string; label: string }
 export interface DrillState { breakdown: string | null; follow: boolean; hour: number | null }
 export const CLOSED: DrillState = { breakdown: null, follow: true, hour: null };
 
-/** Opening within this many hours of the playhead follows playback (the signed-off
- * mock-up used 45 days). */
+/** Opening within this many hours (45 days) of the playhead follows playback. */
 export const FOLLOW_NEAR_HOURS = 45 * 24;
 
 export type DrillAction =

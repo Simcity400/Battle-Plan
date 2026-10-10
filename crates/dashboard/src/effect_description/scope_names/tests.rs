@@ -126,7 +126,9 @@ fn fixture() -> (Fixture, Folder) {
 }
 
 #[test]
-fn project_and_mio_names_use_native_keys_and_fresh_environments() {
+fn project_and_mio_names_use_keys_and_fresh_environments() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (f, _folder) = fixture();
     let mut graph = EventScopes::new(vec![
         EventScope {
@@ -168,6 +170,8 @@ fn project_and_mio_names_use_native_keys_and_fresh_environments() {
 
 #[test]
 fn raid_name_joins_instance_target_type_and_content_and_refuses_unknown_identity() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut f, _folder) = fixture();
     f.with_renderer(&mut fresh(), Content::default(), |renderer| {
         assert_eq!(renderer.raid_name(RAID).as_deref(), Ok("Strike/Hit Two"));
@@ -176,7 +180,7 @@ fn raid_name_joins_instance_target_type_and_content_and_refuses_unknown_identity
             renderer
                 .unit_name(UNIT)
                 .unwrap_err()
-                .contains("CNameGroupMember+0x60")
+                .contains("cached army name is not recorded")
         );
         assert!(
             renderer
@@ -208,6 +212,8 @@ fn raid_name_joins_instance_target_type_and_content_and_refuses_unknown_identity
 
 #[test]
 fn unit_and_raid_contexts_have_no_invented_header_and_still_walk_children() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (f, _folder) = fixture();
     for object in [EventObject::Raid(RAID), EventObject::Unit(UNIT)] {
         let mut graph = EventScopes::new(vec![EventScope::of(object)]);
@@ -219,6 +225,8 @@ fn unit_and_raid_contexts_have_no_invented_header_and_still_walk_children() {
 
 #[test]
 fn carried_saved_targets_do_not_invent_country_or_state_members() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (f, _folder) = fixture();
     let mut graph = fresh();
     graph.saved_targets.insert(
@@ -245,6 +253,8 @@ fn carried_saved_targets_do_not_invent_country_or_state_members() {
 
 #[test]
 fn unit_name_programmatic_overrides_follow_recorded_group_and_language() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let names = installed_content::division_names::parse(
         br#"G={ordered={2={"Generated %d"}}}"#,
         &Default::default(),
@@ -317,6 +327,8 @@ fn unit_name_programmatic_overrides_follow_recorded_group_and_language() {
 
 #[test]
 fn unit_carrier_uses_retained_army_names_without_generator_content() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (name, expected) in [
         (
             Recorded::Value(Some(b"Retained legacy name".to_vec())),
@@ -399,6 +411,8 @@ fn wing_fixture(bytes: &[u8]) -> (Fixture, Folder) {
 
 #[test]
 fn stored_air_wing_names_cover_non_raids_and_do_not_mask_capture_failures() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (name, language, expected) in [
         (
             Recorded::Value(Some(b"Wing %d [Root.GetTag]".to_vec())),
@@ -455,6 +469,8 @@ fn stored_air_wing_names_cover_non_raids_and_do_not_mask_capture_failures() {
 
 #[test]
 fn old_raid_wing_names_do_not_need_the_division_census() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for missing_wing_table in [false, true] {
         let (mut f, _folder) = wing_fixture(b"Older raid fallback");
         *f.frame.tables[TableId::Divisions.index()] = TableView::Unavailable {
@@ -476,6 +492,8 @@ fn old_raid_wing_names_do_not_need_the_division_census() {
 
 #[test]
 fn unit_name_dispatches_raid_divisions_and_selected_wings() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut f, _folder) = wing_fixture(b"Wing %d [Root.GetTag]");
     *f.frame.tables[TableId::DivisionStatus.index()] =
         TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
@@ -512,6 +530,8 @@ fn unit_name_dispatches_raid_divisions_and_selected_wings() {
 
 #[test]
 fn active_raid_wing_names_share_stored_text_language_and_utf8_rules() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (bytes, language, expected) in [
         (&b"Stored wing"[..], "english", Ok("Stored wing")),
         (
@@ -537,6 +557,8 @@ fn active_raid_wing_names_share_stored_text_language_and_utf8_rules() {
 
 #[test]
 fn active_raid_wing_name_table_refuses_capture_and_join_faults() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use engine::raid_tooltip_operands::{
         ARMY_RESOLVED, NAME, REFERENCES, UNREADABLE, WING_NAME, WING_RESOLVED,
     };
@@ -621,6 +643,8 @@ fn active_raid_wing_name_table_refuses_capture_and_join_faults() {
 
 #[test]
 fn unit_name_refuses_other_wings_ended_raids_and_unread_tables() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut f, _folder) = wing_fixture(b"Stored wing");
     f.with_renderer(&mut fresh(), Content::default(), |renderer| {
         assert!(
@@ -661,6 +685,8 @@ fn unit_name_refuses_other_wings_ended_raids_and_unread_tables() {
 
 #[test]
 fn active_raids_must_agree_on_one_wing_name() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for same in [true, false] {
         let (mut f, _folder) = wing_fixture(b"Wing");
         let other = RAID + (1 << 32);
@@ -705,6 +731,8 @@ fn active_raids_must_agree_on_one_wing_name() {
 
 #[test]
 fn active_raid_wing_names_have_no_country_or_wing_cap() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for count in [1_500, 5_000] {
         let (mut f, _folder) = wing_fixture(b"Wing");
         let countries = crate::effect_description::tests::synthetic_countries(count);

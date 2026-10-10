@@ -530,7 +530,6 @@ pub trait Memory {
     /// Own/parent first-match traversal, dirty/clean cache checks and read-lazy
     /// prefixes must be preserved. Retained metadata, vector headers and chunks
     /// belong to the current acquisition and are cleared between passes.
-    /// This is not has_order.
     /// Observation-recording wrappers must not forward this capability.
     fn movement_primary_root(
         &self,

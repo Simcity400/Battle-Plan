@@ -1,5 +1,5 @@
 //! AirNavalPatrolHistories: every country's nonzero window-zero entries in
-//! registered mission and naval-combat regions (`14122EFD0`, `141237D20`).
+//! registered mission and naval-combat regions.
 //!
 //! The histories' native writers are observed ([`crate::history_changes`]).
 //! The AirMissions job, which captures the combats, opens the hour
@@ -8,10 +8,10 @@
 //! pool jobs, each owning every [`PARTS`]th slot, only copy ([`stage`]): a
 //! quiet hour with the same regions and country air objects copies nothing.
 //! Otherwise a country whose air object a writer touched, or whose object
-//! changed, is copied afresh. Every add and every new history goes through
-//! `140C40870`, which marks the country, so a history of an unmarked country
-//! changed only by the advances its own hook counted: those are staged as
-//! counts, without a read. A history whose count is unobserved is copied on
+//! changed, is copied afresh. Every add and every new history marks the
+//! country, so a history of an unmarked country changed only by the advances
+//! its own hook counted: those are staged as counts, without a read.
+//! A history whose count is unobserved is copied on
 //! its own, and a newly wanted region is copied for every country. A writer
 //! site with no calls since skips its receivers' checks. All reads are
 //! gathers batched across countries and histories.
@@ -19,9 +19,9 @@
 //! An hour is certified only when every part completed; the game thread
 //! then settles it ([`Captured::settle`]), and a failed part withdraws every
 //! part's certificates. The decode thread applies all of an hour's copies
-//! and advances to the held histories in hour order, or none of them, as
-//! `1415050B0` advances (move the current slot, wrapping, and zero the
-//! record it moves to), and emits the table by slice and on change
+//! and advances to the held histories in hour order, or none of them. Each
+//! advance moves the current slot, wrapping, and zeroes the record it moves
+//! to. The table is emitted by slice and on change
 //! ([`crate::slicing`]). An advance shifts every summation index, so a
 //! country holding histories is emitted again on the day they advance.
 //! `history_verify` also copies everything and disables reuse on a
@@ -1166,7 +1166,7 @@ impl History {
         })
     }
 
-    /// Apply `advances` calls of `1415050B0`: each moves the current slot
+    /// Apply `advances` steps: each moves the current slot
     /// by one, wrapping to zero and setting the wrap flag, and zeroes the
     /// record at the new current slot.
     fn advance(&mut self, advances: u64) {

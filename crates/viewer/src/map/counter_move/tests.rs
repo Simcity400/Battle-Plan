@@ -6,7 +6,7 @@ const W: f32 = 5632.0;
 const FLOOR: f32 = crate::map::borders::WATER_HEIGHT;
 
 #[test]
-fn l4e9_scale_interpolates_over_the_next_anchor_arc_not_the_current_segment() {
+fn scale_interpolates_over_the_next_anchor_arc_not_the_current_segment() {
     let samples = [
         Sample {
             at: [0.0; 3],
@@ -58,7 +58,7 @@ fn l4e9_scale_interpolates_over_the_next_anchor_arc_not_the_current_segment() {
 }
 
 #[test]
-fn l4e9_a_nonempty_route_can_initialize_no_animator_samples() {
+fn a_nonempty_route_can_initialize_no_animator_samples() {
     let map = line_map();
     let values = flat(100);
     let world = RouteWorld {
@@ -66,8 +66,8 @@ fn l4e9_a_nonempty_route_can_initialize_no_animator_samples() {
         heights: field(&values),
         width: W,
     };
-    // The skipped final hop leaves three controls. The native initializer
-    // clears +0x14 even though CUnit's ordinary route remains nonempty.
+    // The skipped final hop leaves three controls. Initialization clears the
+    // animator's count even though the unit's ordinary route remains nonempty.
     let sample = Motion::route_sample(1, &[2, 3, 9], &line_anchor, &world).unwrap();
     assert_eq!(sample.sample_count, 0);
     assert!(sample.motion.is_none());
@@ -79,7 +79,7 @@ fn l4e9_a_nonempty_route_can_initialize_no_animator_samples() {
         ..Default::default()
     };
     // Main used route length and returned kind 20 here; native admits a
-    // docked plate without any ordinary formation (141279110).
+    // docked plate without any ordinary formation.
     assert_eq!(
         route.stack_kind_from_animator(1, &map, sample.sample_count),
         Some(19)
@@ -87,7 +87,7 @@ fn l4e9_a_nonempty_route_can_initialize_no_animator_samples() {
 }
 
 #[test]
-fn l4e9_cleared_animator_uses_the_ordinary_route_for_direction() {
+fn cleared_animator_uses_the_ordinary_route_for_direction() {
     let sea = ProvinceTerrain { flags: 0, index: 1 };
     let map = MovementMap::from_parts(&[(1, sea, land(&[2, 3]))]);
     let route = UnitRoute {
@@ -98,7 +98,7 @@ fn l4e9_cleared_animator_uses_the_ordinary_route_for_direction() {
         alternate_path: &[3],
         ..Default::default()
     };
-    // 141631210 fails after initializer clears the route; 140BEDEC0 reads
+    // An empty animator route falls back to
     // ordinary[0]. With samples, the animator supplies display[0] instead.
     assert_eq!(route.stack_kind_from_animator(1, &map, 0), Some(1));
     assert_eq!(route.stack_kind_from_animator(1, &map, 8), Some(2));
@@ -223,7 +223,7 @@ fn a_skipped_end_hop_leaves_its_end_of_the_polyline_without_a_handle() {
     assert_eq!(points[0], [10.0, 0.0, 5.0]);
     assert_eq!(points.len(), 4);
     // The last hop skipped: 3's anchor is never appended, and three
-    // controls are no movement at all (`1416317D0`).
+    // controls are no movement at all.
     let walk = walk_route(&map, 1, &[2, 3, 9], &line_anchor);
     assert_eq!(walk.skipped, 1);
     assert_eq!(route_control_points(W, &walk.hops).len(), 3);

@@ -154,8 +154,8 @@ fn fleet_names(
     for (side, input) in out.iter_mut().zip(&detail.sides) {
         let mut seen = BTreeSet::new();
         let mut missing = 0;
-        // CCombatant+0x20 units@14160FF40 are task-force handles. The recorded
-        // TaskForce.fleet resolves CFleet+0xE0, saved by Serialize@140D4A390.
+        // Combatant units are task-force handles. The recorded
+        // TaskForce.fleet resolves the fleet reference.
         for reference in &input.units {
             let fleet = tasks
                 .binary_search_by_key(reference, |row| row.id)

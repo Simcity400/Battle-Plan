@@ -13,7 +13,7 @@ pub(super) struct Screening {
     pub capital: i64,
     /// Capitals protecting carriers and convoys (the carrier GUI percentage).
     pub carrier: i64,
-    /// The zero-screen country correction was positive. 14160A7B0 appends
+    /// The zero-screen country correction was positive. the game appends
     /// its 0x1B3 breakdown even when this is false and the branch ran.
     pub country_bonus_applied: bool,
 }
@@ -27,7 +27,7 @@ pub(super) struct Census {
     pub eligible_submarines: i64,
 }
 
-// 140551820: absent or feature-ineligible modifiers contribute zero. Metadata
+// absent or feature-ineligible modifiers contribute zero. Metadata
 // bit 4 clamps the individual value, before the four source values are added.
 fn modifier(summary: &NavalCombatSummaryInputs, source: usize, key: usize) -> Option<i64> {
     let value = &summary.modifiers[source][key];
@@ -50,7 +50,7 @@ fn modifier(summary: &NavalCombatSummaryInputs, source: usize, key: usize) -> Op
     })
 }
 
-// 14047BDE0 divides signed fixed5 by ONE and rounds upward only when a
+// the game divides signed fixed5 by ONE and rounds upward only when a
 // positive remainder was truncated. Thus negative fractional demand rounds
 // toward zero, as the native routine does.
 pub(super) fn ceil_fixed(value: i64) -> i64 {
@@ -81,7 +81,7 @@ fn efficiency(count: i64, demand: i64, factor: i64) -> i64 {
     if count == 0 && demand == 0 {
         return ONE;
     }
-    // 14160A7B0 first divides count by the rounded demand, then multiplies
+    // the game first divides count by the rounded demand, then multiplies
     // by the positioning factor; the truncation between those stages matters.
     fixed_ratio(count, demand)
         .wrapping_mul(factor)
@@ -89,9 +89,9 @@ fn efficiency(count: i64, demand: i64, factor: i64) -> i64 {
         .clamp(0, ONE)
 }
 
-/// 14160A7B0 calls 141C55600 with state mask 0xB and detection parameter 1.
-/// Parameter 1 bypasses the detection filter. Only registered forward groups
-/// enter either census; a live ship and convoy reference are tested separately.
+/// Count categories using state mask 0xB, bypassing detection filtering.
+/// Only registered forward groups enter either census. Live ship and convoy
+/// references are tested separately.
 pub(super) fn census(
     combat: u64,
     side: u8,
@@ -107,6 +107,7 @@ pub(super) fn census(
     }) {
         if row.live_ship != 0 {
             let flags = row.formation_flags;
+            // the game uses the whole forward list, including states
             // outside the category census. It excludes 4, 16 and 32.
             if row.state & 0x34 == 0 && flags & (1 << 7) != 0 {
                 counts.eligible_submarines = counts.eligible_submarines.wrapping_add(1);
@@ -141,9 +142,8 @@ pub(super) fn census(
     Ok(counts)
 }
 
-/// Reconstruct the values refreshed by 1417D9C60. That caller computes these
-/// before its fresh positioning header, so the input is stored +0x138, never
-/// the later displayed positioning calculation or stored screening +0x128/130.
+/// Recompute screening before the fresh positioning header, using stored
+/// positioning rather than later displayed positioning or stored screening.
 pub(super) fn calculate(
     combat: u64,
     side: u8,

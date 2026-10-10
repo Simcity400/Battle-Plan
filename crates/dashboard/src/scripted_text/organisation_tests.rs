@@ -3,6 +3,8 @@ use replay::rows::{IndustrialOrganisationRow, LexicalTokenRow, TableId, TableRow
 
 #[test]
 fn organisation_name_uses_event_read_override_owner_scope_and_exact_missing_key() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "",
         " GER_mod_override:0 \"Owner [From.GetTag]\"\n mod_token:0 \"Token\"\n",
@@ -37,7 +39,7 @@ fn organisation_name_uses_event_read_override_owner_scope_and_exact_missing_key(
         rows[0].name = name.to_vec();
     };
     change_name(&mut frame, b"mod_missing");
-    // 142230940 copies a missing localisation key; it does not select a later name.
+    // Localisation copies a missing key; it does not select a later name.
     assert_eq!(show(&frame), Ok("mod_missing".into()));
     change_name(&mut frame, b"");
     assert!(show(&frame).unwrap_err().contains("token read refused"));

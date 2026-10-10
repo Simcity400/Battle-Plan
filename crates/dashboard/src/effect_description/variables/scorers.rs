@@ -38,9 +38,9 @@ impl Renderer<'_, '_, '_> {
             .context
             .content
             .country_scorers
-            .ok_or("country scorer content is unavailable (143316C48)")?;
-        // An invalid scorer leaves +0x110/+0x1E0 null: no destination write
-        // (14047C500/14047C6C0 -> 14047AC40/14047AD60).
+            .ok_or("country scorer content is unavailable")?;
+        // An invalid scorer leaves null: no destination write
+
         let Some(entries) = database.get(name)? else {
             return Ok(());
         };
@@ -54,10 +54,10 @@ impl Renderer<'_, '_, '_> {
                 b"highest_scored_country",
                 caller,
                 None,
-            )?) // 14047C500.
+            )?)
         };
         // One fresh scope is reused across targets, FROM a copy of the caller;
-        // clearing THIS retains its links and RNG words (14047BB20/140481090).
+        // clearing THIS retains its links and RNG words.
         let scope = evaluator.fresh_country_scope(None, Some(caller))?;
         let mut best = None;
         let mut best_score = -0x53e2_d620_fb40_i64;
@@ -84,7 +84,7 @@ impl Renderer<'_, '_, '_> {
         }
         // Sorted builder writes both lengths only after all scores, then each
         // indexed country/score; later entries replace a country's score
-        // (140481090/14047AD60). Equal scores keep native hash bucket order.
+        // Equal scores keep native hash bucket order.
         let values = scores.sorted();
         let count = (values.len() as i64).wrapping_mul(100_000);
         let num = installed_content::scoped_variable::ScopedVariable {
@@ -139,8 +139,8 @@ struct Score {
     value: i64,
 }
 
-/// The scorer's U32Qword Robin Hood table determines ties before the stable
-/// descending sort (140481090/14047C1F0/14047C050/1404798A0).
+/// The scorer's Robin Hood hash table determines ties before the stable
+/// descending sort.
 #[derive(Default)]
 struct ScoreMap {
     slots: Vec<Option<Score>>,
@@ -162,7 +162,7 @@ impl ScoreMap {
         });
     }
 
-    // 1403256B0; linear probing extends past the mask, never wraps.
+    // linear probing extends past the mask, never wraps.
     fn insert_score(&mut self, mut new: Score) {
         if self.slots.is_empty() {
             self.grow();
@@ -201,7 +201,7 @@ impl ScoreMap {
             new.distance += 1;
             if new.distance > self.max_probe {
                 // Native rollback preserves all occupants for rehash and then
-                // inserts the displaced original/new key (1403256B0 tail).
+                // inserts the displaced original/new key.
                 std::mem::swap(self.slots[inserted_at].as_mut().unwrap(), &mut new);
                 self.grow();
                 self.insert_score(new);
@@ -210,7 +210,7 @@ impl ScoreMap {
         }
     }
 
-    // 1403A2D50: minimum eight buckets, doubling, max distance log2+2;
+    // minimum eight buckets, doubling, max distance log2;
     // rehash visits old physical slots in order with the same insertion helper.
     fn grow(&mut self) {
         let buckets = if self.slots.is_empty() {

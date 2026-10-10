@@ -4,23 +4,23 @@ use super::*;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DivisionAttackInputs {
     pub sample_hour: i32,
-    /// Some(0): null CArmy+3B8. Nonzero requires type52 registry->same wrapper.
+    /// Some(0): null template. Nonzero requires type52 registry identity to match the wrapper.
     pub template: Option<u64>,
     /// Authenticated stat block. Entries fail separately; do not zero-fill.
     pub stats: AttackStats,
-    /// Live terrain database domain, NOT province domain. Native one-based
-    /// terrain identity; each value is the narrow 141004CE0 attack operand.
-    /// None refuses the whole domain; an entry None refuses that terrain only.
+    /// Live terrain database domain, not province domain. One-based terrain
+    /// identity; each value is the narrow attack operand. None refuses the
+    /// whole domain; an entry None refuses only that terrain.
     pub terrain: Option<Vec<AttackTerrain>>,
-    /// Fresh140607FA0 factor, independent of current-region attrition demand.
+    /// Fresh acclimatization factor, independent of current-region attrition demand.
     pub acclimatization: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AttackStats {
-    /// [CArmy+138]+390/+398, same cached block, independently observed.
+    /// River attack and defense from the same cached block, independently observed.
     pub river: [Option<i64>; 2],
-    /// [CArmy+138]+368/+370, NOT movement378.
+    /// Fort attack and defense, distinct from movement's fort operand.
     pub fort: [Option<i64>; 2],
     /// +3E0, NOT movement3F0.
     pub snow: Option<i64>,
@@ -37,8 +37,8 @@ pub struct AttackTerrain {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OrdersGroupAttackInputs {
     pub sample_hour: i32,
-    /// None: selector/authentication refusal. Some(None): actual null +88.
-    /// 1403336A0 only; no parent/field-marshal inference.
+    /// None: selector/authentication refusal. Some(None): actual null
+    /// commander. No parent or field-marshal inference.
     pub commander: Option<Option<CommanderAttackInputs>>,
 }
 
@@ -60,8 +60,8 @@ pub struct CommanderAttackInputs {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WeatherRegionAttackInputs {
     pub sample_hour: i32,
-    /// Same-hour effective140551820 values from SWeatherPerRegion+58.
-    /// None means failure; zero is an authenticated absent/default modifier.
+    /// Same-hour effective region-weather values. None means failure; zero
+    /// is an authenticated absent/default modifier.
     pub attack: Option<i64>, // built-in0xAD
     pub breakthrough: Option<i64>, // built-in0x1DD
 }

@@ -175,7 +175,7 @@ impl Storage {
         true
     }
     /// Resident bids run on the acquisition worker; finalizer callbacks keep
-    /// their fixed output above. Continue each original 140E245D0 history walk
+    /// their fixed output above. Continue each original history walk
     /// after its acquired headers size the cumulative owned arenas.
     pub(crate) fn observe_bids_growing(
         &mut self,

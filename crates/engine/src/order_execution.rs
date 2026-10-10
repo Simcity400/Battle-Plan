@@ -1,26 +1,21 @@
-//! Scalar simulation operands of CheckExecutionConditionsRecursive141023710.
-//! GfxCommonArrowUpdateCallback14123FF10 computes/stores conditions unconditionally.
-//! Draw14125ACB0 gates prerequisite texture speed only for active arrows, so the
-//! replay's inactive draw bypass needs no execution operands. Recursive ordinary
-//! successors have no active/virtual gate. The viewer owns
-//! selection and animation time; neither is a native recording field.
+//! Scalar simulation operands for recursive order-execution conditions.
+//! Arrow updates store conditions unconditionally; inactive drawing bypasses
+//! execution operands. Ordinary recursive successors have no active/virtual gate.
+//! The viewer owns selection and animation time.
 //!
-//! Order+11A is the stored route_is_ok byte (save token3937), not can_execute.
-//! Type4 takes that byte before progress+D8 and GetRequiredPreparation141016930's
-//! country/relation/ordinary leader/days terms. Progress is saved; modifier/stat
-//! terms are runtime-only. DTO nested absence preserves each independent prefix.
-//! Naval1410186E0 reads raw stat+2B8 only for class0 non-transferred members.
-//! Para14101DC30 uses exact own/immediate-parent primary membership, stat+5B5,
-//! current province and roster-owner171 with the actual selected commander171.
+//! The stored route-valid byte precedes type-four progress and preparation terms.
+//! Progress is serialized; country, relation, leader, modifier and stat terms are
+//! runtime operands. Nested absence preserves independent acquired prefixes.
+//! Naval selection reaches raw stats only for non-transferred class-zero members.
+//! Paratrooper selection retains exact own/immediate-parent membership, current
+//! province, roster owner and selected commander.
 //!
-//! SnapshotArena acquires whole raw accumulators: a bounded acquisition superset,
-//! not the native getter's probe/fault order. A disabled key with an unreadable
-//! raw snapshot remains unavailable, without claiming a demanded native value.
-//! Metadata errors alone enter the separate three-key failure latch.
+//! SnapshotArena acquires complete raw accumulators, a superset of requested-key
+//! lookup reach. A disabled key with an unreadable snapshot remains unavailable;
+//! only metadata errors enter the separate three-key failure latch.
 //!
-//! All source pointers, success/failure observations and indexes belong to ONE
-//! held capture pass. Opted-in acquisition workers grow from that pass. Capacity
-//! refusal never invokes a native fallback or changes existing core plans.
+//! Pointers, observations and indices belong to one held capture pass. Opted-in
+//! workers may grow from that pass. Capacity refusal preserves existing core plans.
 
 use crate::{
     Memory, carmy, carmy_leader, ccountry, cdiplomacy_status,
@@ -41,7 +36,7 @@ use std::{
 mod demand;
 pub use demand::{Demand, demand};
 
-/// Cached stat fields read by1410186E0 and14101DC30. They are not derived demand.
+/// Cached stat operands for naval and paratrooper execution, distinct from derived demand.
 const NAVAL_WEIGHT: usize = 0x2b8;
 const PARADROP_ELIGIBLE: usize = 0x5b5;
 
@@ -93,7 +88,7 @@ pub struct Orders<'a> {
     pub geometry: &'a [u32],
 }
 /// Each source has its own verdict; a healthy geometry prefix cannot certify
-/// missing assigned host provenance or a truncated primary list.
+/// missing assigned host ownership or a truncated primary list.
 #[derive(Clone, Copy)]
 pub struct SourceView<'a> {
     pub plans: &'a [PlanRow],
@@ -437,9 +432,9 @@ impl Prepared {
             ..self.capacity
         }
     }
-    /// Only Orders/Late acquisition workers may enable this. The native
-    /// 141016930/1410186E0/14101DC30 graph keeps exact-span success and failure
-    /// observations while its memo grows; no input is read a second time.
+    /// Only Orders/Late acquisition workers may enable growth. The execution
+    /// graph retains exact-span success and failure observations while its memo grows;
+    /// no input is read twice.
     pub fn enable_worker_growth(&mut self) {
         self.enabled = true;
         self.scalars.0.get_mut().worker_growth = true;
@@ -616,9 +611,7 @@ impl Prepared {
                 continue;
             };
             self.count(|work| work.route_demand += 1);
-            // This scalar is retained in the plan itself and reused below.
-            // Read it once even at mid-game attach with an empty terms memo:
-            // 141023710 consumes +11A; the serializer saves it as token3937.
+            // Read this serialized route-valid byte once and retain it in the plan, including at mid-game attach.
             let route_is_ok = field::<u8>(memory, visit.pointer, order::CONDITION_CACHE).ok();
             if route_is_ok.is_some() {
                 self.count(|work| work.route_available += 1);
@@ -912,7 +905,7 @@ impl Prepared {
                     let seed = &seeds[index];
                     if naval && attempted[index] & 1 == 0 {
                         attempted[index] |= 1;
-                        // Native1410186E0 skips transferred class0 hosts.
+                        // Naval execution skips transferred class-zero hosts.
                         if seed.naval_transfer_membership == Some(0) {
                             self.count(|work| work.naval_demand += 1);
                             inputs.naval_weight = observed.stat::<i64>(seed, NAVAL_WEIGHT).ok();
@@ -966,10 +959,9 @@ impl Prepared {
                     }
                     attempted[index] |= 4;
                     self.count(|work| work.modifiers_demand += 1);
-                    // Native computes weight before eligibility/current
-                    // province. Reviewed capture policy acquires modifiers
-                    // only for contributing units: bounded acquisition, not
-                    // a claim of identical native probe/fault order.
+                    // The game computes weight before eligibility and current province.
+                    // Capture acquires modifiers only for contributing units, bounding acquisition;
+                    // its probe and fault order therefore differs from the getter's.
                     inputs.paradrop_modifiers = (|| {
                         let owner = seed
                             .roster_owner
@@ -1309,9 +1301,8 @@ impl<M: Memory> UnitMemory<'_, M> {
                 .stat_block
                 .filter(|&pointer| pointer != 0)
                 .ok_or(STAT_REFUSALS[0])?;
-            // 140BEFA60 / 14100BFA0 / 14101DC30 follow CArmy+138's
-            // CSubUnitDefinition (vtable142773BA8). The capture-pass memo retains its
-            // first identity read for both leaves and aliased stat sources.
+            // The unit stat selects its sub-unit definition. The capture-pass memo
+            // retains the first identity read for both leaves and aliased stat sources.
             let vtable = field::<u64>(self, pointer, 0).map_err(|_| STAT_REFUSALS[1])?;
             if Some(vtable)
                 != self
@@ -1417,8 +1408,8 @@ impl<M: Memory> Memory for UnitMemory<'_, M> {
                 let own = self.seeds[index]
                     .orders_group
                     .ok_or("execution member group unavailable")?;
-                // Native clean-cache assertion is private validation, never
-                // the expected-root source and never a recorded DTO field.
+                // The clean-cache assertion validates cache state; it supplies no expected
+                // root or recorded DTO field.
                 let dirty = field::<u8>(self, member_pointer, member::ORDER_CACHE_DIRTY)?;
                 let cached = pointer(self, member_pointer, member::ROOT_ORDER)?;
                 let mut expected = 0;

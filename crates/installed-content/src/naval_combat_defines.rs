@@ -9,12 +9,10 @@
 use crate::{ResolvedLayers, defines::Defines as NumericDefines};
 use std::io;
 
-/// The authored operands the viewer's ports of the native positioning
-/// (141609460), screening (14160A7B0/14160C430), carrier-air (14160C940) and
-/// anti-air (141608FF0) binders read, in those binders' order. The names are
-/// from each global's pinned define-loader xref. A define joins these lists
-/// only with its consumer: every read is mandatory, so an unconsumed define
-/// that failed to parse would make all of these binders unavailable.
+/// Authored operands for positioning, screening, carrier-air and anti-air
+/// presentation, in each consumer's order. A define joins these lists only
+/// with its consumer: every read is mandatory, so an unconsumed define that
+/// failed to parse would otherwise make all consumers unavailable.
 const SUMMARY_FIXED_KEYS: [(&str, &str); 14] = [
     ("NNavy", "BASE_POSITIONING"),
     ("NNavy", "RELATIVE_SURFACE_DETECTION_TO_POSITIONING_FACTOR"),
@@ -41,15 +39,15 @@ const SUMMARY_INTEGER_KEYS: [(&str, &str); 3] = [
     ("NNavy", "NAVAL_COMBAT_PLANE_MIN_STACKING_PENALTY"),
 ];
 
-/// 141C557D0 reads these six integer weights in category order. Each is
-/// loaded from NNavy by the matching content stack, never from vanilla values.
+/// Six integer silhouette weights in category order, loaded from NNavy
+/// through the matching content stack.
 const SILHOUETTE_PLANE_KEYS: [&str; 6] = [
-    "SHIP_SILHOUETTE_VALUE_PLANES_CAPITAL",   // 14331D884
-    "SHIP_SILHOUETTE_VALUE_PLANES_SCREEN",    // 14331D90C
-    "SHIP_SILHOUETTE_VALUE_PLANES_CARRIER",   // 14331D9B0
-    "SHIP_SILHOUETTE_VALUE_PLANES_SUPPORT",   // 14331DA30
-    "SHIP_SILHOUETTE_VALUE_PLANES_CONVOY",    // 14331DAAC
-    "SHIP_SILHOUETTE_VALUE_PLANES_SUBMARINE", // 14331DB3C
+    "SHIP_SILHOUETTE_VALUE_PLANES_CAPITAL",
+    "SHIP_SILHOUETTE_VALUE_PLANES_SCREEN",
+    "SHIP_SILHOUETTE_VALUE_PLANES_CARRIER",
+    "SHIP_SILHOUETTE_VALUE_PLANES_SUPPORT",
+    "SHIP_SILHOUETTE_VALUE_PLANES_CONVOY",
+    "SHIP_SILHOUETTE_VALUE_PLANES_SUBMARINE",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,7 +55,7 @@ pub struct Defines {
     pub summary_fixed: [i64; 14],
     pub summary_integer: [i32; 3],
     pub silhouette_planes: [i32; 6],
-    /// 141C557D0 and 14160C430 respectively, from the pinned NNavy globals.
+    /// Silhouette weights and screen reduction from NNavy.
     pub screen_cap_reduction_factor: i64,
     pub plane_stacking_penalty_effect: i64,
     /// Native `CARRIER_OFFENSIVE_STANCE_SORTIE_RATIO`, indexed by the live
@@ -65,12 +63,12 @@ pub struct Defines {
     pub sortie_stance_ratios: Vec<i64>,
     pub base_carrier_sortie_efficiency: i64,
     pub selected_sortie_initial_time: i32,
-    /// 1417D1A90's optional light/heavy-gun piercing explanation, in the
-    /// mutable NNavy arrays the matching content stack loads.
+    /// Optional light/heavy-gun piercing explanations from the mutable
+    /// NNavy arrays loaded through the matching content stack.
     pub piercing_thresholds: Vec<i64>,
     pub piercing_critical_values: Vec<i64>,
-    /// 141609460's three on-hover consequences of low positioning, in
-    /// attack, anti-air and submarine-reveal order.
+    /// Three consequences of low positioning, in attack, anti-air and
+    /// submarine-reveal order.
     pub positioning_impacts: [i64; 3],
 }
 
@@ -100,8 +98,7 @@ pub fn from_numbers(numbers: &NumericDefines) -> io::Result<Defines> {
     for (index, (out, (section, key))) in
         summary_fixed.iter_mut().zip(SUMMARY_FIXED_KEYS).enumerate()
     {
-        // 14205D560 converts the number; each define registry helper applies
-        // its own lower bound after conversion.
+        // Convert the number before applying this define's lower bound.
         *out = native_summary_fixed(index, numbers.fixed5(section, key)?);
     }
     let mut summary_integer = [0; 3];
@@ -110,8 +107,7 @@ pub fn from_numbers(numbers: &NumericDefines) -> io::Result<Defines> {
         .zip(SUMMARY_INTEGER_KEYS)
         .enumerate()
     {
-        // The integer loader is 14205B690 -> 1421978C0. It truncates the
-        // Lua double to i64, then stores the low signed 32 bits.
+        // Truncate the Lua double to i64, then store the low signed 32 bits.
         let value = integer(numbers, section, key)?;
         *out = if index == 0 { value.max(0) } else { value };
     }
@@ -120,8 +116,8 @@ pub fn from_numbers(numbers: &NumericDefines) -> io::Result<Defines> {
         *out = integer(numbers, "NNavy", key)?;
     }
 
-    // 14092C600 -> 142059CF0 converts each array member to signed fixed5.
-    // Native 141963700 uses the live task force's mission as this array index.
+    // Convert each array member to signed fixed5. The live task force's
+    // mission selects the array index.
     let sortie_stance_ratios =
         numbers.fixed5_array("NNavy", "CARRIER_OFFENSIVE_STANCE_SORTIE_RATIO")?;
     if sortie_stance_ratios.is_empty() {
@@ -132,9 +128,9 @@ pub fn from_numbers(numbers: &NumericDefines) -> io::Result<Defines> {
         summary_fixed,
         summary_integer,
         silhouette_planes,
-        screen_cap_reduction_factor: numbers.fixed5("NNavy", "SCREEN_CAP_REDUCTION_FACTOR")?, // 14331CC30
+        screen_cap_reduction_factor: numbers.fixed5("NNavy", "SCREEN_CAP_REDUCTION_FACTOR")?,
         plane_stacking_penalty_effect: numbers
-            .fixed5("NNavy", "NAVAL_COMBAT_PLANE_STACKING_PENALTY_EFFECT")?, // 143318F68
+            .fixed5("NNavy", "NAVAL_COMBAT_PLANE_STACKING_PENALTY_EFFECT")?,
         base_carrier_sortie_efficiency: numbers
             .fixed5("NNavy", "BASE_CARRIER_SORTIE_EFFICIENCY")?,
         selected_sortie_initial_time: integer(numbers, "NNavy", "SELECTED_SORTIE_INITIAL_TIME")?
@@ -142,19 +138,18 @@ pub fn from_numbers(numbers: &NumericDefines) -> io::Result<Defines> {
         piercing_thresholds,
         piercing_critical_values,
         positioning_impacts: [
-            numbers.fixed5("NNavy", "DAMAGE_PENALTY_ON_MINIMUM_POSITIONING")?, // 143319930
-            numbers.fixed5("NNavy", "AA_EFFICIENCY_PENALTY_ON_MINIMUM_POSITIONING")?, // 143319B08
-            numbers.fixed5("NNavy", "SUBMARINE_REVEAL_ON_MINIMUM_POSITIONING")?, // 143319BC8
+            numbers.fixed5("NNavy", "DAMAGE_PENALTY_ON_MINIMUM_POSITIONING")?,
+            numbers.fixed5("NNavy", "AA_EFFICIENCY_PENALTY_ON_MINIMUM_POSITIONING")?,
+            numbers.fixed5("NNavy", "SUBMARINE_REVEAL_ON_MINIMUM_POSITIONING")?,
         ],
         sortie_stance_ratios,
     })
 }
 
 fn native_summary_fixed(index: usize, value: i64) -> i64 {
-    // 1409516C0..140958840 clamp the positioning factors; 140953D40,
-    // 140954000, 14092BBB0 and 14092BE70 clamp four screening ratios to
-    // 0.01; 140955530 clamps the fleet antiair ratio. Other loaders in this
-    // ordered set leave the signed fixed5 result unchanged.
+    // Clamp positioning factors and the fleet antiair ratio at zero,
+    // and four screening ratios at 0.01. Other loaders in this ordered set
+    // leave the signed fixed5 result unchanged.
     match index {
         1..=7 | 13 => value.max(0),
         8..=11 => value.max(1_000),
@@ -162,7 +157,7 @@ fn native_summary_fixed(index: usize, value: i64) -> i64 {
     }
 }
 
-/// The native integer loader (`14205B690` -> `1421978C0`) through [`NumericDefines::int32`].
+/// Integer define conversion through [`NumericDefines::int32`].
 fn integer(numbers: &NumericDefines, section: &str, key: &str) -> io::Result<i32> {
     numbers.int32(section, key)
 }

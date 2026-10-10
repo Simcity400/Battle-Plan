@@ -18,10 +18,13 @@ fn caller() -> EventScopes {
     ])
 }
 
-macro_rules! ported {
+macro_rules! description_case {
     ($name:ident, $body:expr, $expected:expr) => {
         #[test]
         fn $name() {
+            engine::executable_tables::initialize_for_tests().expect(
+                "BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests",
+            );
             let (fixture, _folder) = fixture();
             let content = fixture
                 .catalogue
@@ -36,48 +39,47 @@ macro_rules! ported {
     };
 }
 
-// Witness forms: BUL.txt:3985, baltic.txt:101, generic.txt:455/459,
-// on_actions/07_nsb_on_actions.txt:763, afghanistan.txt:1926,
-// operations/00_operations.txt:248/1965 and czechoslovakia_mu.txt:21424.
-ported!(
+description_case!(
     complete_national_focus,
     "complete_national_focus=SYN_FOCUS",
     "Complete Alpha:Focus AAA/AAA/AAA/AAA"
 );
-ported!(
+description_case!(
     unlock_national_focus,
     "unlock_national_focus=SYN_FOCUS",
     "Unlock Alpha:Focus AAA/AAA/AAA/AAA"
 );
-ported!(
+description_case!(
     uncomplete_national_focus,
-    "uncomplete_national_focus={focus=SYN_FOCUS uncomplete_children=yes}",
+    "uncomplete_national_focus={uncomplete_children=yes focus=SYN_FOCUS}",
     "Uncomplete Alpha:Focus AAA/AAA/AAA/AAA"
 );
-ported!(
+description_case!(
     add_to_tech_sharing_group,
     "add_to_tech_sharing_group=SYN_GROUP",
     "Join AAA/Alpha:Group BBB [Root.GetTag]\n"
 );
-ported!(
+description_case!(
     remove_from_tech_sharing_group,
     "remove_from_tech_sharing_group=SYN_GROUP",
     "Leave AAA/Alpha:Group BBB [Root.GetTag]\n"
 );
-// Witness: common/national_focus/australia.txt:3225 (reach 136).
-ported!(
+
+description_case!(
     modify_tech_sharing_bonus,
-    "modify_tech_sharing_bonus={id=SYN_GROUP bonus=0.03}",
-    "Sharing Alpha/Group BBB:3.00% [Root.GetTag]\n"
+    "modify_tech_sharing_bonus={bonus=0.07 id=SYN_GROUP}",
+    "Sharing Alpha/Group BBB:7.00% [Root.GetTag]\n"
 );
-ported!(
+description_case!(
     sharing_bonus_uses_token_fold_and_fixed5_reader,
-    "modify_tech_sharing_bonus={id=syn_group bonus=-0.030009}",
-    "Sharing Alpha/Group BBB:-3.00% [Root.GetTag]\n"
+    "modify_tech_sharing_bonus={bonus=-0.070009 id=syn_group}",
+    "Sharing Alpha/Group BBB:-7.00% [Root.GetTag]\n"
 );
 
 #[test]
-fn sharing_bonus_keeps_native_empty_gates() {
+fn sharing_bonus_keeps_empty_gates() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -94,7 +96,7 @@ fn sharing_bonus_keeps_native_empty_gates() {
             Description::default()
         );
     }
-    let body = "modify_tech_sharing_bonus={id=SYN_GROUP bonus=0.03}";
+    let body = "modify_tech_sharing_bonus={bonus=0.07 id=SYN_GROUP}";
     for object in [
         EventObject::Country(0),
         EventObject::Country(2),
@@ -128,6 +130,8 @@ fn sharing_bonus_keeps_native_empty_gates() {
 
 #[test]
 fn sharing_bonus_counts_missing_recorded_membership() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::TechSharingMembers.index()] = TableView::Unavailable {
         reason: "missing sharing members".into(),
@@ -139,7 +143,7 @@ fn sharing_bonus_counts_missing_recorded_membership() {
         .effects()
         .unwrap();
     let output = fixture.render(
-        "modify_tech_sharing_bonus={id=SYN_GROUP bonus=0.03}",
+        "modify_tech_sharing_bonus={bonus=0.07 id=SYN_GROUP}",
         &mut caller(),
         content.view(None),
     );
@@ -147,52 +151,53 @@ fn sharing_bonus_counts_missing_recorded_membership() {
     assert_eq!(output.refusals.values().sum::<usize>(), 1);
     assert!(
         output.refusals.keys().all(|why| {
-            why.contains("CModifyTechnologySharingBonusEffect")
-                && why.contains("missing sharing members")
+            why.contains("modify_tech_sharing_bonus") && why.contains("missing sharing members")
         }),
         "{:?}",
         output.refusals
     );
 }
 
-ported!(
+description_case!(
     upgrade_intelligence_agency,
     "upgrade_intelligence_agency=SYN_UPGRADE",
     "Agency Upgrade BBB\n"
 );
-ported!(
+description_case!(
     add_operation_token,
     "add_operation_token={tag=FROM token=SYN_TOKEN}",
     "Receive \u{13}SYN_ICON Token CCC/\u{12}BBB Beta\n"
 );
-ported!(
+description_case!(
     remove_operation_token,
     "remove_operation_token={tag=FROM token=SYN_TOKEN}",
     "Remove \u{13}SYN_ICON Token CCC/\u{12}BBB Beta\n"
 );
-ported!(
+description_case!(
     unlock_tactic,
     "unlock_tactic=SYN_TACTIC",
     "Unlock tactic Tactic [Root.GetTag]"
 );
-ported!(
+description_case!(
     set_popularities,
     "set_popularities={SYN_IDEOLOGY=SYN_SUPPORT}",
     "Set popularities CCC:\nIdeology [Root.GetTag]: 30.00%\nOther: 0.00%\n"
 );
-ported!(
+description_case!(
     named_relation_rule_override,
     "add_relation_rule_override={can_send_volunteers=yes trigger=SYN_TRIGGER usage_desc=SYN_IGNORED}",
     "Relation Alpha->Eligible BBB\n:[yes]Volunteers"
 );
 
-ported!(
+description_case!(
     focus_custom_tooltip,
     "complete_national_focus={focus=SYN_FOCUS originator_name=SYN_FOCUS_TOOLTIP}",
     "Complete for BBB/Alpha:Focus AAA/AAA/AAA/AAA"
 );
 #[test]
-fn focus_non_native_tooltip_key_uses_core_child_projection() {
+fn focus_unknown_tooltip_key_uses_core_child_projection() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -206,20 +211,25 @@ fn focus_non_native_tooltip_key_uses_core_child_projection() {
         content.view(None),
     );
     assert_eq!(output.text, "Complete Alpha:Focus AAA/AAA/AAA/AAA");
-    assert_eq!(output.refusals, BTreeMap::from([(
-        "synthetic effect unknown key: key tooltip: unknown effect key tooltip (ReadEffect 1405345D0)".to_owned(),
-        1,
-    )]));
+    assert_eq!(
+        output.refusals,
+        BTreeMap::from([(
+            "synthetic effect tooltip: key tooltip: unknown effect key tooltip".to_owned(),
+            1,
+        )])
+    );
 }
-// Scalar empty still constructs one bound node (142390E40); +0x94 is its count.
-ported!(
-    focus_empty_originator_keeps_native_bound_node,
+// Scalar empty still constructs one bound node.
+description_case!(
+    focus_empty_originator_keeps_bound_node,
     "complete_national_focus={focus=SYN_FOCUS originator_name=\"\"}",
     "Complete /Alpha:Focus AAA/AAA/AAA/AAA"
 );
 
 #[test]
 fn focus_bound_originator_is_named_and_counted() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -235,15 +245,15 @@ fn focus_bound_originator_is_named_and_counted() {
     assert_eq!(output.text, "");
     assert_eq!(output.refusals.values().sum::<usize>(), 1);
     assert!(output.refusals.keys().all(|why| {
-        why.contains("CCompleteNationalFocusEffect")
-            && why.contains(
-                "originator_name bound localisation block requires core formatter (1402F19A0)",
-            )
+        why.contains("complete_national_focus")
+            && why.contains("originator_name bound localisation block requires core formatter")
     }));
 }
 
 #[test]
-fn focus_operands_keep_each_native_reader_shape() {
+fn focus_operands_keep_each_reader_shape() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -258,19 +268,24 @@ fn focus_operands_keep_each_native_reader_shape() {
         let output = fixture.render(body, &mut caller(), content.view(None));
         assert_eq!(output.text, "");
         assert_eq!(output.refusals.values().sum::<usize>(), 1);
-        assert!(output.refusals.keys().all(|why| {
-            why.contains("national focus  is absent from recorded content (1402D1D60)")
-        }));
+        assert!(
+            output
+                .refusals
+                .keys()
+                .all(|why| { why.contains("national focus  is absent from recorded content") })
+        );
     }
 }
-ported!(
+description_case!(
     party_first_match_and_database_order,
-    "set_popularities={SYN_OTHER=70 SYN_IDEOLOGY=20 SYN_IDEOLOGY=90}",
-    "Set popularities CCC:\nIdeology [Root.GetTag]: 20.00%\nOther: 70.00%\n"
+    "set_popularities={SYN_OTHER=61 SYN_IDEOLOGY=23 SYN_IDEOLOGY=84}",
+    "Set popularities CCC:\nIdeology [Root.GetTag]: 23.00%\nOther: 61.00%\n"
 );
 
 #[test]
 fn focus_uses_state_owner_and_fresh_seeded_country_scope() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -296,7 +311,9 @@ fn focus_uses_state_owner_and_fresh_seeded_country_scope() {
 }
 
 #[test]
-fn absent_catalogue_entries_keep_native_empty_gates_and_count_missing_names() {
+fn absent_catalogue_entries_keep_empty_gates_and_count_missing_names() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue

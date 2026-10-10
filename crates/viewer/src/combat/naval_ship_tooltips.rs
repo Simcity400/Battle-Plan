@@ -1,4 +1,4 @@
-//! Naval combat box hovers. CFEXMember's cached labels are stored text and
+//! Naval combat box hovers. Combat members' cached labels are stored text and
 //! can be drawn only in the recording language.
 use super::{
     INLINE_FLAG,
@@ -46,13 +46,12 @@ fn member_trees(rows: &[replay::rows::NavalModifierBreakdownRow], combat: u64) -
     indexed
 }
 
-// Executable localisation keys used by 1417D3220, 1417DBBE0, 1415B3FB0,
-// 14195F760 (descriptor table 142A0A460) and 1415B43F0.
+// Localisation keys for naval ship and damage hovers.
 super::text::tooltip_keys! {
     NAVAL_COMBAT_INCOMING_UNKNOWN = "NAVAL_COMBAT_INCOMING_UNKNOWN",
-    // 1417DBBE0 calls 1419947D0 between members.
+    // Append separators between members.
     SEPARATION_LINE = "SEPARATION_LINE",
-    // CFexShipIcon::vt18_vf0@1417D5260 prepends this for the hidden box.
+    // ship icon hover prepends this for the hidden box.
     NAVAL_COMBAT_HIDDEN_SUBS = "NAVAL_COMBAT_HIDDEN_SUBS",
     SHIP_AND_TYPE = "SHIP_AND_TYPE",
     SHIP_SUNK_BY = "SHIP_SUNK_BY",
@@ -88,9 +87,8 @@ super::text::tooltip_keys! {
     NAVAL_COMBAT_AIRWING_TOOLTIP_SHOT_DOWN_ENTRY = "NAVAL_COMBAT_AIRWING_TOOLTIP_SHOT_DOWN_ENTRY",
 }
 
-/// 1417DBBE0 builds the group icon hover from its members in native order,
-/// appending a newline after each 1417D3220 member string. An incoming box
-/// whose owner is hidden gets the single executable key instead.
+/// Build group hover text in member order, adding a newline after each
+/// member string. An incoming box whose owner is hidden shows one warning key.
 pub(super) fn bind(
     out: &mut Bindings,
     document: &Document,
@@ -156,7 +154,7 @@ pub(super) fn bind(
         let side = entry.side;
         let anchor = group_anchor(&entry.battle_slots, side, &by_slot);
         let built = if entry.unknown {
-            // Executable key at 1417DBBE0, resolved through the content stack.
+            // Localisation key, resolved through the content stack.
             builtin(icons, loc, NAVAL_COMBAT_INCOMING_UNKNOWN, &[]).map_err(|reason| vec![reason])
         } else {
             group_tooltip(
@@ -199,18 +197,16 @@ fn group_anchor(
         .and_then(|slot| ships.get(&(side, *slot)))
         .is_some_and(|row| row.state == 32)
     {
-        // CSunkShipIcon@1417DC8D0 has no 141994D20 call.
+        // Sunk entries use default tooltip placement.
         super::TooltipAnchor::Pointer
     } else {
-        super::TooltipAnchor::NavalWindow // CFexShipIcon@1417D5260.
+        super::TooltipAnchor::NavalWindow // Group anchor.
     }
 }
 
-/// 1417CE2A0 installs the same CFexShipIcon observer on the hull, labels,
-/// hidden marker, condition bars, escape progress and both chevrons;
-/// 1417D5260 returns the group text (pride has its separate branch).
-/// Owning each hover prevents a chevron from falling through to its grid's
-/// authored formation explanation.
+/// The hull, labels, hidden marker, condition bars, escape progress and
+/// chevrons share the group hover, with a separate pride branch. Each owns its
+/// hit target so chevrons cannot fall through to the grid's formation text.
 fn group_hovers(
     values: &mut super::Values,
     text: Option<super::HoverText>,
@@ -244,13 +240,13 @@ fn group_tooltip(
     context: Option<&VariantContext<'_>>,
     recorded_language: Option<&str>,
 ) -> Result<String, Vec<String>> {
-    // 1417D0380 passes column 4 as the hidden-submarine bit; 1417DBBE0
-    // retains it for known boxes. 1417D5260 prepends the warning but still
+    // Column 4 supplies the hidden-submarine bit; the entry
+    // retains it for known boxes. the game prepends the warning but still
     // appends every member's details, for either viewing side.
     let mut text = if slots
         .first()
         .and_then(|slot| ships.get(&(side, *slot)))
-        // Submarine boxes override every carrier equipment flag (14195ED00).
+        // Submarine boxes override every carrier equipment flag.
         .is_some_and(|row| super::naval_details::column(row, 0) == Some("hidden"))
     {
         builtin(icons, loc, NAVAL_COMBAT_HIDDEN_SUBS, &[]).map_err(|reason| vec![reason])?
@@ -273,10 +269,9 @@ fn group_tooltip(
         match part {
             Ok(part) => {
                 if index != 0 {
-                    // Both 1417DBBE0 and sunk builder 1417DC8D0 call 1419947D0.
-                    // It scans backwards over spaces and adds a newline
-                    // only if the preceding non-space byte is not '\n'. It then
-                    // appends the stacked SEPARATION_LINE verbatim.
+                    // Both live and sunk entries scan backwards over spaces, adding a newline
+                    // only when the preceding non-space byte is not a newline. Then append the
+                    // stacked SEPARATION_LINE verbatim.
                     if !text.trim_end_matches(' ').ends_with('\n') {
                         text.push('\n');
                     }
@@ -307,8 +302,8 @@ fn variant_name(
     super::naval_variants::name(row, icons, loc, context.map(|context| &context.names))
 }
 
-/// 1417D3220 calls 14195FAC0 on CFEXMember's cached +0x48 name and +0x68
-/// type. The strings can be rendered under PLAN #164's stored-text rule.
+/// Member name and type labels are cached text, rendered only in the
+/// recording language.
 fn member_tooltip(
     row: &NavalCombatShipRow,
     tag: &str,
@@ -331,15 +326,12 @@ fn member_tooltip(
                 language,
                 bytes,
                 &format!(
-                    "side {} slot {} CFEXMember {field}",
+                    "side {} slot {} combat member {field}",
                     row.side, row.battle_slot
                 ),
             )
         };
-        (
-            label(&row.name, "name +0x48")?,
-            label(&row.type_name, "type +0x68")?,
-        )
+        (label(&row.name, "name")?, label(&row.type_name, "type")?)
     } else {
         let variant = variants.get(&row.variant).ok_or_else(|| {
             format!(
@@ -360,7 +352,7 @@ fn member_tooltip(
     )?;
     let flag = format!("{INLINE_FLAG}{tag}");
     if row.state == 32 && row.live_ship == 0 && row.live_convoy == 0 {
-        // 1417D3220 starts a sunk member with flag, one space, green
+        // the game starts a sunk member with flag, one space, green
         // SHIP_AND_TYPE, reset, then a newline before sinking status.
         let mut text = format!("{flag} \u{11}G{title}\u{11}!\n");
         if row.sunk_by.is_empty() {
@@ -377,11 +369,11 @@ fn member_tooltip(
                 language,
                 &row.sunk_by,
                 &format!(
-                    "side {} slot {} CFEXMember sinking attribution +0xA8",
+                    "side {} slot {} combat member sinking attribution",
                     row.side, row.battle_slot
                 ),
             )?;
-            // 1417D3220 uses SHIP_SUNK_BY with its executable NAME argument.
+            // the game uses SHIP_SUNK_BY with its executable NAME argument.
             text.push_str(&builtin(
                 icons,
                 loc,
@@ -432,7 +424,7 @@ fn member_tooltip(
             row.side, row.battle_slot, row.state
         ));
     }
-    // 1415B3FB0's enum dispatch. State 0 also has a native string, although
+    // enum dispatch. State 0 also has a native string, although
     // the combat-box binder presently draws only 1/2/4/8/16/32.
     let state_key = match row.state {
         0 => FEX_STATE_UNINITIALIZED,
@@ -505,10 +497,9 @@ fn member_tooltip(
     Ok(text)
 }
 
-/// 1417D3220 appends the stored escape progress, the on-demand 14195C7D0
-/// chance, then its source-order description. Numeric defines come from the
-/// matching content stack; source labels are stored text and only render in
-/// the recording language (PLAN #164).
+/// Append stored escape progress, the current escape chance and its source-
+/// order description. Defines come from resolved content; source labels are
+/// stored text rendered only in the recording language.
 fn escape_description(
     row: &NavalCombatShipRow,
     icons: &dyn TextIcons,
@@ -600,7 +591,7 @@ fn escape_description(
     )
 }
 
-/// 14195C7D0's complete appended state-8 section, in source occurrence order.
+/// complete appended state-8 section, in source occurrence order.
 #[allow(
     clippy::too_many_arguments,
     reason = "Keep captured ship state, escape terms and modifier trees separate from text resources"
@@ -715,9 +706,8 @@ fn escape_text(
     Ok(out)
 }
 
-/// 1417D3220 resolves evacuation state +0x128, then reads its
-/// CState::display_name@1409CC380 and the current owner-country name through
-/// 140BA5960. Both have reader-language paths elsewhere in the viewer.
+/// Resolve the evacuation state, then its display name and current owner
+/// name. Both use the shared language-aware readers.
 fn evacuation_names(
     document: &Document,
     frame: &DecodedFrame,
@@ -758,8 +748,8 @@ fn evacuation_names(
     ))
 }
 
-/// 141AC37A0/141AC3510 and 140C2B520 divide the current amount by the
-/// native maximum (minimum 100). The recorded row already has those operands.
+/// Divide the current amount by its maximum, floored at 100.
+/// The recorded row already contains both operands.
 fn ratio(value: i64, maximum: i64) -> i64 {
     if maximum == 0 || value == i64::MAX {
         return 0xffff_ffff;
@@ -767,8 +757,8 @@ fn ratio(value: i64, maximum: i64) -> i64 {
     value.wrapping_mul(100_000) / maximum
 }
 
-/// 14195F760's six fixed5 received-damage lanes. Only five have detailed
-/// descriptor keys (static table 142A0A460); the sixth contributes to total.
+/// six fixed5 received-damage lanes. Only five have detailed
+/// descriptor keys (static table); the sixth contributes to total.
 fn criticals_and_damage(
     text: &mut String,
     row: &NavalCombatShipRow,
@@ -826,7 +816,7 @@ fn criticals_and_damage(
     Ok(())
 }
 
-/// 1415B43F0 appends each of the two ordered air-hit vectors separately.
+/// the game appends each of the two ordered air-hit vectors separately.
 fn air_hits(
     text: &mut String,
     row: &NavalCombatShipRow,

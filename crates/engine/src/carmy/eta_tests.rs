@@ -1168,10 +1168,9 @@ const GOLDEN_PACKETS: [u64; 24] = [
     1263167948750048186,
 ];
 
-// The political integration routes ETA river terms through MovementRelations:
-// 140D1E540 establishes the diplomacy owner, and 140D03410 the status owner
-// and target. Those guarded identities add refusal paths without changing the
-// clean packets above. Fault digests are from claude-validation/test-r1.log.
+// ETA river terms use MovementRelations. Guarding diplomacy and relation
+// owner and target identities adds refusal paths while preserving successful
+// packets.
 const GOLDEN_FAULTS: (usize, [u64; 2]) = (4181, [8159933298070585749, 10581983527932471709]);
 
 #[test]

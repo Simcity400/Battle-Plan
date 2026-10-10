@@ -1,10 +1,9 @@
-//! Physical CGameState country-array occurrences for alias `checks_all`.
-//!
-//! Resolve@1407141F0 walks +0x310 in physical order through count +0x31C,
-//! considers a pointer's own positive raw ID (+8), and retains the first
-//! passing candidate (or the first tied score). Canonical Countries rows do
-//! not preserve this order or repeated pointer occurrences. Reserved slot
-//! zero follows the same pointer/vtable/ID-zero identity as reserved naming.
+//! Physical game-state country-array occurrences for alias `checks_all`.
+//! Resolution walks physical order through the live count, considers each
+//! pointer's own positive raw ID, and retains the first passing candidate or
+//! first tied score. Canonical Countries rows do not retain order or repeated
+//! pointers. Reserved slot zero uses reserved naming's pointer/vtable/ID-zero
+//! identity.
 
 use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, read};
 

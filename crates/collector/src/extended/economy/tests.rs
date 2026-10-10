@@ -1656,8 +1656,8 @@ fn economy_foreign_homebases_copy_matches_direct_walk() {
 
 #[test]
 fn economy_resource_definitions_copy_matches_direct_walk() {
-    // The resource DB singleton at base+0x3316cb8 lies outside this
-    // fixture. Both paths preserve its initial source failure.
+    // The resource database singleton lies outside this fixture.
+    // Both paths preserve its initial source failure.
     use engine::memory::SliceMemory;
     let mut bytes = vec![0; 0x8000];
     e_census(&mut bytes);

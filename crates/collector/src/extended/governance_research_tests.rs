@@ -36,7 +36,7 @@ const LINK_TABLE: usize = 0x2100;
 /// Modifier-definition rows. Key 0xcd's row sits at +0xcd*STRIDE, inside the heap.
 const METADATA: usize = 0x3000;
 /// The module data window. It is placed from a public engine RVA, and
-/// `World::new` checks that it also covers the private research modifier
+/// `World::new` checks that it also covers the research modifier
 /// defines by requiring `research_modifiers::Context::read` to succeed.
 const IMAGE_START: usize = modifier_definition::TABLE_RVA & !0xffff;
 const IMAGE_LEN: usize = 0x1_0000;
@@ -54,9 +54,9 @@ struct Tech {
     progress: i64,
     cost: i64,
     applied_speed: i64,
-    /// CTechnology +0x190, the category-speed sum in the modifier walk.
+    /// The technology category-speed sum in the modifier walk.
     category_speed: i64,
-    /// CTechnology +0x1e8 flag; when set, the template's +0x538 XP modifier.
+    /// The template's XP modifier, present when the technology uses experience.
     experience: Option<i64>,
     bonus_ids: &'static [i32],
 }
@@ -407,8 +407,7 @@ impl World {
         let accumulator = o + ccountry::MODIFIER_ACCUMULATOR;
         self.modifier(accumulator, o + STORAGE, 0xcd, spec.country_speed);
         if let Some((name, raw)) = spec.source {
-            // accumulator+0x18 children -> wrapper; wrapper+0x10 is the child
-            // accumulator, whose +0x48 string names the source.
+            // The child wrapper holds an accumulator whose string names the source.
             self.array(accumulator + 0x18, o + CHILDREN, 1);
             self.pointer(o + CHILDREN, o + WRAPPER);
             let child = o + WRAPPER + 0x10;

@@ -399,6 +399,8 @@ fn unknown_caller_is_its_own_cause_and_full_design_handles_are_validated() {
 
 #[test]
 fn unknown_callers_keep_proven_land_and_air_and_refuse_unsupported_domains() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4_losses_unknown_domain_{}_{:?}",
         std::process::id(),

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn l4e9_shared_animator_clock_preserves_empty_routes_and_names_missing_speed() {
+fn shared_animator_clock_preserves_empty_routes_and_names_missing_speed() {
     let mut report = ModelReport::default();
     assert_eq!(animator_min_arc(&[], None, &mut report), Some(0.0));
     assert!(report.selection_errors.is_empty());
@@ -39,7 +39,7 @@ fn formation_reader_keeps_native_defaults_and_last_stored_values() {
         ),
         ("last".into(), 0.6)
     );
-    // A failed numeric block is skipped by RecordError, including its fields.
+    // A failed numeric block is skipped, including its fields.
     assert_eq!(
         formation(b"naval_formation_scale = { naval_formation_scale = 7 } naval_formation = kept"),
         ("kept".into(), 1.0)
@@ -201,6 +201,7 @@ fn a_recorded_roster_puts_its_first_capital_in_slot_zero_and_supports_after_it()
             .collect::<Vec<_>>(),
         vec![(0, 3), (1, 4), (2, 1), (3, 2)]
     );
+    // A first roster ship without bits 6/22 leaves the capital slot empty.
     let ships = [row(1, 0, 1 << 8), row(2, 1, 1 << 22)];
     let slots = formation_slots(&ships.iter().collect::<Vec<_>>());
     assert_eq!(
@@ -549,14 +550,14 @@ fn kotka_hulls(
 }
 
 #[test]
-fn l4e9_capital_uses_root_and_authored_animator_scale() {
+fn capital_uses_root_and_authored_animator_scale() {
     let (frame, assets) = kotka_formation(0);
     // The supplied C/E heights both pass the native raw ship cutoff. The
     // transformation under test belongs to the hour, before popup scaling.
     for height in [163.710_05, 162.928_39] {
         assert!(assets.gates.ships(height));
         let (placed, report) = kotka_hulls(&frame, &assets, false, 0.22);
-        assert_eq!(placed.len(), 4); // 141653F00 permits a capital and three supports.
+        assert_eq!(placed.len(), 4); // A formation permits a capital and three supports.
         let capital = placed.iter().find(|hull| hull.part == 0).unwrap();
         assert_eq!(capital.instance.position, capital.origin);
         assert_eq!(capital.instance.scale, 0.6 * 0.22);
@@ -574,9 +575,9 @@ fn l4e9_capital_uses_root_and_authored_animator_scale() {
 }
 
 #[test]
-fn l4e9_ordinary_formations_exclude_both_combat_slots() {
+fn ordinary_formations_exclude_both_combat_slots() {
     // A below-cutoff camera must not turn the ordinary formation path into
-    // the separate combat graphics path (14127F000).
+    // the separate combat graphics path.
     for role in [1, 2] {
         // POL's recorded eight-submarine force at province 2333.
         let (frame, assets) = formation_fixture((3197 << 32) | 61, 2333, [1 << 39; 8], role);
@@ -599,7 +600,7 @@ fn l4e9_ordinary_formations_exclude_both_combat_slots() {
 }
 
 #[test]
-fn l4e9_missing_capital_root_is_named_and_counted_without_losing_supports() {
+fn missing_capital_root_is_named_and_counted_without_losing_supports() {
     let (frame, mut assets) = kotka_formation(0);
     assets.ships.root = None;
     let (placed, report) = kotka_hulls(&frame, &assets, false, 1.0);
@@ -617,7 +618,7 @@ fn l4e9_missing_capital_root_is_named_and_counted_without_losing_supports() {
 }
 
 #[test]
-fn l4e9_capital_attach_point_can_be_a_skeleton_joint_without_a_locator() {
+fn capital_attach_point_can_be_a_skeleton_joint_without_a_locator() {
     let mesh = mesh::Mesh {
         skeleton: vec![mesh::Joint {
             name: "root".into(),
@@ -637,15 +638,14 @@ fn replace_table(frame: &mut DecodedFrame, table: replay::rows::TableRows) {
 }
 
 #[test]
-fn l4e9_kotka_plate_only_when_another_task_force_holds_the_native_visual_slot() {
+fn carrier_plate_only_when_another_task_force_holds_the_visual_slot() {
     use replay::rows::{
         ProvinceUnitOrderRow, TableRows, TaskForceCounterInputRow, TaskForceMapMotionRow,
     };
     let (mut frame, assets) = kotka_formation(0);
     let force = (944 << 32) | 61;
     let escort = (7 << 32) | 61;
-    // The captured camera/TF composition is real; this competing task force is
-    // synthetic, isolating 141277A00's shared slot from the hourly endpoint
+    // The competing task force isolates the shared visual slot from the hourly endpoint
     // routes (which cannot establish the intervening client's frame history).
     let mut forces = rows::<tables::TaskForces>(&frame).unwrap().rows().to_vec();
     let mut other = forces[0].clone();
@@ -729,7 +729,7 @@ fn l4e9_kotka_plate_only_when_another_task_force_holds_the_native_visual_slot() 
 }
 
 #[test]
-fn l4e9_malmo_rosters_hide_port_hulls_and_at_sea_share_one_native_slot() {
+fn rosters_hide_port_hulls_and_share_one_slot_at_sea() {
     use replay::rows::{
         ProvinceUnitOrderRow, TableRows, TaskForceCounterInputRow, TaskForceMapMotionRow,
     };

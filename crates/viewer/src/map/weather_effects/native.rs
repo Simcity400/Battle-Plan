@@ -53,7 +53,7 @@ impl DrawPacket {
                 1.
             };
         if e.local_space {
-            //1423E8B90 normalizes each column separately; a zero column stays zero.
+            // Normalize each column separately; a zero column stays zero.
             for column in &mut world.basis {
                 let length =
                     (column[0] * column[0] + column[1] * column[1] + column[2] * column[2]).sqrt();
@@ -122,7 +122,7 @@ impl DrawPacket {
     }
 
     pub fn entity(e: &Emitter, scale: f32, event: &crate::map::entity_animation::Event) -> Self {
-        //1423E8B90 copies the runtime's world matrix, independent of view.
+        // Copy the runtime's world matrix, independent of view.
         Self::new(e, scale, event.transform, event.age - e.start.base)
     }
 }
@@ -139,9 +139,8 @@ impl EntitySimulations {
         self.0.clear();
     }
 
-    /// Advance once before scene lights and draws, through the same path for
-    /// every entity producer. 14226EB10 retains a kept event's light only
-    /// until its finished particle runtime has no living subsystem.
+    /// Advance once before scene lights and draws through the same path for every entity producer.
+    /// Retain a kept event's light until its finished particle runtime has no living subsystem.
     pub fn prepare(
         &mut self,
         entities: &BTreeMap<String, (f32, Vec<Emitter>)>,
@@ -248,7 +247,7 @@ fn submission_order(packets: &[DrawPacket], view: usize) -> Vec<&DrawPacket> {
         .iter()
         .filter(|packet| packet.views & (1 << view) != 0)
         .collect();
-    //14227F420 submits each actor's ordinary packets before that actor's trails.
+    // Submit each actor's ordinary packets before that actor's trails.
     ordered.sort_by_key(|packet| (packet.registration, packet.actor, packet.descriptor.trail));
     ordered
 }
@@ -270,9 +269,8 @@ fn allocation(size: u64) -> Arc<Mutex<Partial>> {
     }))
 }
 
-///14227F815: enabled byte1430A5E7D=1; D3D11 renderer kind1 is outside
-///1423EF840's 2..=4 exclusion.14227FBDA..FC1B discards at >= capacity,
-///otherwise NO_OVERWRITE appends to the same allocation. Cursor starts at zero for each view.
+/// Enabled D3D11 particle rings discard at or beyond capacity; otherwise append with NO_OVERWRITE to
+/// the same allocation. Reset the cursor for each view.
 struct InstanceRing {
     allocation: Arc<Mutex<Partial>>,
     size: u64,
@@ -288,9 +286,9 @@ impl InstanceRing {
         }
     }
 
-    ///14227FC41 uploads every nonempty ordinary packet of an actor at once and
-    ///14227FCED binds each packet's offset into it. The final 12 instance bytes
-    ///have no established writer and stay unknown. Returns the upload's offset.
+    /// Upload every nonempty ordinary packet of an actor at once and
+    /// binds each packet's offset into it. The final 12 instance bytes
+    /// have no established writer and stay unknown. Returns the upload's offset.
     fn append<'a>(&mut self, instances: impl Iterator<Item = &'a Instance>) -> io::Result<u64> {
         let instances: Vec<_> = instances.collect();
         let length = (instances.len() as u64)
@@ -392,9 +390,9 @@ impl Renderer {
             depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),
             ..Default::default()
         });
-        //14227F420 walks registered type buckets, then each actor's packets.
-        //Stable grouping preserves this viewer's actor/packet enqueue order;
-        //historical cross-producer actor order remains unrecorded.
+        // Walk registered type buckets, then each actor's packets.
+        // Stable grouping preserves this viewer's actor/packet enqueue order;
+        // historical cross-producer actor order remains unrecorded.
         let ordered = submission_order(packets, view);
         let mut actor = None;
         let mut ordinary_offset = 0;
@@ -430,15 +428,14 @@ impl Renderer {
             template(wgpu::PrimitiveTopology::TriangleList),
             template(wgpu::PrimitiveTopology::TriangleStrip),
         ];
-        //14227F6D7's map callback, then F84D/F879/F889, bind these even
-        //with no actors. The next seam inherits the empty view's native state.
+        // Bind these resources even with no actors. The next seam inherits the empty view's render state.
         {
             let stream = &mut self.retained.stream;
             for stage in [Stage::Vertex, Stage::Pixel] {
                 stream.bind_partial_constants(0, stage, Some(inputs.frame), &[0..348, 352..408]);
                 stream.bind_constants(1, stage, Some(bytemuck::bytes_of(&projection)));
             }
-            //141269E90 restores the complete sixteen-byte light grid at PS b2.
+            // Restore the complete sixteen-byte light grid at PS b2.
             stream.bind_constants(2, Stage::Pixel, Some(inputs.grid));
             stream.bind_depth_stencil(depth.clone());
             let map_samplers = crate::map::mesh_shader::map_samplers();
@@ -459,7 +456,7 @@ impl Renderer {
             let key_actor = (packet.registration, packet.actor);
             if actor != Some(key_actor) {
                 actor = Some(key_actor);
-                //14227FA05/FA73 bind an enabled actor's scale and quad even
+                // Bind an enabled actor's scale and quad even
                 //when all of its subsystem packet counts are zero.
                 let scale = [packet.constants.scale[0], packet.constants.scale[1], 0., 0.];
                 for stage in [Stage::Vertex, Stage::Pixel] {
@@ -562,8 +559,8 @@ impl Renderer {
                     .and_then(|program| program.state.samplers.get(&binding(0, Stage::Pixel))),
             );
             if let Some(vertices) = &trail {
-                //14227EEB0/14227F230 allocate count=max*56, stride28, not
-                //just this upload.142401210 maps/discards then writes its prefix.
+                // Allocate maximum count times 56 bytes at stride 28, independently of this upload's size.
+                // Discard the allocation before writing its initialized prefix.
                 let upload: &[u8] = bytemuck::cast_slice(vertices);
                 if upload.len() as u64 > trail_size {
                     return Err(io::Error::other(
@@ -709,7 +706,7 @@ mod tests {
 
     #[test]
     fn fire_packet_passes_one_atlas_tile_and_neutral_tint_to_native_shader() {
-        // 1423E5CD0 keeps a birth tile; 14227F420 uploads it with the atlas
+        // Keep a birth tile; uploads it with the atlas
         // dimensions.
         let mut emitter = super::super::tests::activation_test_emitter();
         emitter.render.tiles = [2, 2];
@@ -745,7 +742,7 @@ mod tests {
             let mut emitter = super::super::tests::activation_test_emitter();
             emitter.local_space = local;
             let mut simulation = Simulation::cold(&emitter, 7, anchor, 0.);
-            // Use the production birth space (1423DDAA0/1423E5CD0), so
+            // Use the production birth space, so
             // nonlocal particles already hold canonical world positions.
             simulation.advance_space(
                 &emitter,

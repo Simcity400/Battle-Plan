@@ -9,7 +9,7 @@ pub mod legacy;
 use installed_content::parser::Item;
 use std::collections::BTreeMap;
 
-/// Per-hour memo view; native selects anew on every lookup (1409F1540).
+/// Per-hour memo view; native selects anew on every lookup.
 #[derive(Clone, Copy)]
 pub struct Limits<'a> {
     evaluate: &'a dyn Fn(&[Item], dashboard::triggers::Scopes) -> dashboard::triggers::Eval,
@@ -36,8 +36,8 @@ impl PoolLimits for Limits<'_> {
             .borrow_mut()
             .entry(pool)
             .or_insert_with(|| {
-                // CTrigger::Check starts a fresh temp context even for
-                // the empty scope (140540570 -> 1405354A0 -> 140544190).
+                // Each evaluation starts a fresh temporary context even for
+                // the empty scope.
                 (self.evaluate)(items, dashboard::triggers::Scopes::empty())
             })
             .clone()

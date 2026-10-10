@@ -1,7 +1,6 @@
-//! Stored simulation inputs of the map visibility laws that the game computes
-//! per viewer on demand: `GetUnitIntelLevel@1416068C0` and the province fog
-//! rebuild `radar_group::fog_consumer@141606390`. No viewpoint, fog switch or
-//! presentation buffer is read, and no engine function is called.
+//! Stored simulation inputs for on-demand unit intel and province fog
+//! queries. No viewpoint, fog switch or presentation buffer is read,
+//! and no engine function is called.
 
 use crate::{
     Memory, ccountry, cgame_state,
@@ -12,11 +11,11 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// `GetUnitIntelLevel@1416068C0` scales a foreign unit's byte by the viewer's
-/// own modifier 0x24B (`modifier_accumulator::value@140551820` on `CCountry+0x5B8`).
+/// Foreign-unit visibility scales its stored byte by the viewer's
+/// modifier 0x24B from country +0x5B8.
 pub const UNIT_MODIFIER: u32 = crate::modifier_keys::INTEL_FROM_COMBAT_FACTOR;
-/// `fog_consumer@141606390` asks `CState::GetModifierForCountry@1409CC140`
-/// for key 0x4B on each owned state another country controls.
+/// Province fog uses country-scoped state modifier key 0x4B for owned
+/// states controlled by another country.
 pub const NETWORK_MODIFIER: u32 = crate::modifier_keys::LOCAL_INTEL_TO_ENEMIES;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -73,7 +72,7 @@ pub fn countries_buffer(
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         slots = countries.count() as usize;
-        // GetUnitIntelLevel@1416068C0 visits one modifier per live country.
+        // Unit-intel queries visit one modifier per live country.
         output.ensure(slots)?;
         let (mut len, mut unread) = (0, 0);
         for slot in 1..countries.count() {
@@ -173,7 +172,7 @@ pub fn states_buffer(
             .and_then(|address| Array::read(memory, address, 8))
             .filter(|array| array.count > 1)
             .ok_or("state array unreadable or empty")?;
-        // Fog rebuild@141606390 visits the native state registry.
+        // Fog rebuild visits the state registry.
         output.ensure(array.count as usize)?;
         let vtable = base
             .checked_add(cstate::VTABLE_RVA)
@@ -250,11 +249,11 @@ pub fn states_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// The `human_ai` debug byte `CCountry::IsAIControlledOrOverride@1406F3240`
-/// ORs into every country's AI verdict; the console and debug UI toggle it.
+/// Human-AI debug byte ORed into every country AI verdict; console and
+/// debug UI actions toggle it.
 pub const HUMAN_AI_RVA: usize = 0x0331_7269;
 
-/// Removal delay@14071E7D0 reads this byte; console@1402928D0 toggles it.
+/// Debug byte used by removal delay and toggled by the console.
 pub const INSTANT_DECISIONS_RVA: usize = 0x0331_7263;
 
 pub fn instant_decisions(memory: &impl Memory, base: usize) -> Result<u8, &'static str> {

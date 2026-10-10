@@ -1,62 +1,34 @@
 //! Country-wide simulation doctrine unlocks for possible-tactic presentation.
+//! The doctrine array uses canonical country slots with 0xA0-byte rows. Its
+//! ordered tactic-pointer vector appends an unlock only without a matching
+//! unlock token. Serialization writes database IDs in vector order and omits
+//! empty lists. Missing authored names select the authenticated null tactic
+//! at database entry 0, recorded as ID 0.
 //!
-//! 140D6A7B0 indexes game+400's doctrine array at +8 by canonical country
-//! slot (stride A0), each row an `NDoctrines::CCountryDoctrineStatus`. Its
-//! +28 vector holds combat-tactic pointers: 1413BA2E0
-//! (CUnlockCombatTacticEffect) appends a tactic unless one with the same +94
-//! unlock token is present, and 1413B8CF0 tests membership by +94. The row
-//! writer 1413BA360 saves the list under 0x3357 (`enable_tactic`) as each
-//! pointer's +98 database ID, in vector order, and omits an empty list.
+//! Pointers authenticate against the loaded tactic database read once into an
+//! address-keyed table. Each country costs one 0x30-byte row copy covering its
+//! identity and vector header, then a bulk copy for a nonempty list. The
+//! callback supplies the authenticated roster; content and the lexical
+//! dictionary supply the authored-name token.
 //!
-//! An `unlock_tactic` name absent from the database appends the
-//! `CNullCombatTactic` singleton: FindCombatTacticByNameOrNullTactic
-//! (1406B11F0) falls back to 1406B3BD0, which 1406B3690 also inserts as
-//! database entry 0 with +98 ID 0. The save writes it as `enable_tactic={ 0 }`,
-//! so entry 0 is authenticated as the null tactic and recorded as ID 0.
-//!
-//! The recording keeps that saved identity. Every pointer is authenticated
-//! against the loaded tactic database (1406B0FC0) rather than dereferenced:
-//! the database is read once into an address-keyed table. A country costs one
-//! 0x30-byte copy of its row (+8 CCountryTag through the +28 vector header,
-//! which authenticates the row's own country) and one bulk copy of a nonempty
-//! list; the country itself comes from the callback's authenticated roster.
-//! The +94 token is a property of the tactic's authored name, which the viewer
-//! derives from content and the lexical dictionary.
-//!
-//! Every hour reads the whole census (0.31 ms at 5,000 countries x 32 unlocks,
-//! synthetic, release). No list is reused on a hook's word, because the
-//! vector's writer set is not proven. Known writers of +0x28/+0x30/+0x34:
-//! - 1413BA2E0, the unlock effect's appender (only caller 14051D2E0);
-//! - 1413B8130, the doctrine reward applier, an inlined PushBack through the
-//!   row's +0x38 allocator, from CTrackStatus::AddMastery (14146A7F0,
-//!   140FB3500) and SetGrandDoctrine (140FB1770, 14146A590);
-//! - 1413B9CF0, the reward revoker, which erases entries (from 140FB1770,
-//!   14146A590, 14146A2F0, 14146A340, 140FB3A30);
-//! - 1413B4200, the save-load append (from vf4 1413B9C60);
-//! - the row's constructors, mover and destructor (140D66F10, 140D66CC0,
-//!   140D67C70, 140D68EA0).
-//!
-//! The reward paths reach the row through back-pointers other objects store
-//! (folder +0x30 and track +0x50, set by 140FB32E0), which a call-graph walk
-//! from the row's owners does not find, so an instruction-level proof over
-//! every holder of those pointers would be needed before any hour could be
-//! skipped.
-//!
-//! Capture every country once, including explicit empty lists. No local
-//! viewing country, combat side, locked background or trigger result is read.
+//! Every hour reads the full census. Unlock effects, reward application and
+//! revocation, save loading and construction/move/destruction write lists.
+//! Reward paths reach rows through back-pointers in other objects, so observing
+//! only the row owner does not justify skipping an hour.
+//! Capture each country once, including explicit empty lists. No viewing
+//! country, combat side, locked background or trigger result is read.
 
 use crate::{
     Memory, ccombat_tactic, ccountry, cgame_state, cnull_combat_tactic, cpdx_array::Array, read,
     read_slice, walk::Outcome,
 };
 
-/// CGameState doctrine-system pointer (140D6A7B0's first argument).
+/// Game-state doctrine-system pointer.
 pub const DOCTRINE_SYSTEM: usize = 0x400;
-/// CDoctrineSystem country-status array; vf2 (140D6C880) saves it as 0x2D49.
+/// Doctrine-system country-status array, serialized as the country-status table.
 pub const DOCTRINE_ROWS: usize = 8;
 pub const DOCTRINE_STRIDE: usize = 0xa0;
-/// CCountryDoctrineStatus CCountryTag, set by the emplacing 140D66F10 /
-/// 140D66CC0 and saved by 1413BA360 under 0x289A.
+/// Country-status raw country reference initialized on emplacement and serialized.
 pub const ROW_TAG: usize = 8;
 /// CCountryDoctrineStatus tactic-pointer vector.
 pub const TACTICS: usize = 0x28;
@@ -184,9 +156,8 @@ fn home(pointer: usize, mask: usize) -> usize {
     ((pointer as u64 >> 4).wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 32) as usize & mask
 }
 
-/// The database ID of a loaded tactic object. A null pointer names none: the
-/// native null tactic is an authenticated nonzero singleton (1406B3BD0), and
-/// a zero pointer would otherwise match an empty slot.
+/// Database ID of a loaded tactic. Null pointer names no tactic; the null
+/// tactic is an authenticated nonzero singleton, separate from an empty slot.
 fn lookup(table: &[RegistryEntry], pointer: usize) -> Option<u32> {
     if pointer == 0 {
         return None;
@@ -261,8 +232,7 @@ fn registry(
         vtable(ccombat_tactic::VTABLE_RVA)?,
     );
     for (index, object) in decode(&list[..bytes]).enumerate() {
-        // The database's own ordinal is the ID 1406B3690 assigned; a
-        // mismatch is not the database the save and content describe.
+        // Database ordinal is the assigned ID; mismatch refuses identity.
         let expected = if index == 0 { null } else { tactic };
         if object == 0
             || field::<u64>(memory, object, 0)? != expected
@@ -345,8 +315,8 @@ fn capture_buffer(
         prove_ends(memory, observed.entries)?;
         capture.required_registry = registry_slots(observed.entries.count);
         capture.required_list = list_bytes(observed.entries.count)?;
-        // 1406B0FC0's live database and 1413BA360's list extents
-        // authorize complete storage before interpreting any captured list.
+        // The live database and acquired list extents authorize complete storage
+        // before interpreting captured lists.
         table.ensure(capture.required_registry)?;
         list.ensure(capture.required_list)?;
         let database = registry(memory, base, observed.entries, &mut table, &mut list)?

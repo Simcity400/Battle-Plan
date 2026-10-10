@@ -1,4 +1,4 @@
-//! Registration snapshots from 14227CEF0 copy the parent's ordered array.
+//! Registration snapshots copy the parent's ordered locator array.
 
 use super::*;
 

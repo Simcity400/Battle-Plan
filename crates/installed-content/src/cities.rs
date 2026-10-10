@@ -2,16 +2,14 @@
 //!
 //! The file names a bitmap of *styles*, not of footprints. `cities.bmp` is the
 //! map's own size and its palette index at a pixel selects a `city_group`;
-//! where the sprawl actually stands comes from `map/terrain.bmp`, whose one
-//! `spawn_city = yes` palette entry marks the urban blobs (research report R3
-//! section 4.1). Inside a blob, `distance` is the pixel's distance to the edge
-//! of the blob in map pixels, and each `building` block claims one distance
-//! ring with a set of entity names to pick from at random.
+//! where the sprawl actually stands comes from `map/terrain.bmp`, whose
+//! `spawn_city = yes` palette entry marks the urban blobs. Inside a blob,
+//! `distance` is the pixel's distance to the edge in map pixels, and each
+//! `building` block claims one distance ring with entity names to choose
+//! from at random.
 //!
-//! When the reader recorded any error (`CReader+0x20`, set by `RecordError`
-//! 1424ACF90 and `TryHandleOrRecordError` 1424ACD40) `build_city_population`
-//! (14163F450) logs "Errors while reading cities.txt" and builds no sprawl, so
-//! such a file is refused by name.
+//! Any recorded reader error prevents city-sprawl construction, so a file
+//! with such an error is refused by name.
 
 use std::io;
 
@@ -39,13 +37,14 @@ pub struct CityGroup {
     pub color_index: u8,
     /// Signed displacement strength toward the ring-weighted neighbouring houses.
     pub density: f64,
-    /// The `building` blocks in declaration order (14163E950 appends).
+    /// The `building` blocks in declaration order.
     pub buildings: Vec<CityBuilding>,
 }
 
 impl CityGroup {
     /// The ring a pixel at this distance from the blob edge belongs to:
-    /// takes the first whose `distance` the pixel reaches, meshes or none.
+    /// scan the rings from the last declared backwards and take the first
+    /// whose `distance` the pixel reaches, meshes or none.
     pub fn building_for(&self, distance: u32) -> Option<&CityBuilding> {
         self.buildings
             .iter()
@@ -74,8 +73,8 @@ impl Cities {
     }
 }
 
-/// `%i` of a field (ReadScriptSignedInt32 1424AB970); a scan that reads no
-/// digit where there is text is reported (1424ACEE0), a recorded error.
+/// Scan a field as an integer prefix; text with no digit records a reader
+/// error, while an empty input keeps its separate end-of-input outcome.
 fn integer(field: &crate::parser::Item, errors: &mut Vec<String>) -> Scanned<i32> {
     let text = field.value.scalar().unwrap_or_default();
     let scanned = crt::scan_i32(text);
@@ -89,9 +88,8 @@ fn integer(field: &crate::parser::Item, errors: &mut Vec<String>) -> Scanned<i32
     scanned
 }
 
-/// Replays CCitySettings (141640CF0), SGroup (1416411B0), and
-/// SDistanceMesh (141640F50). Their vtables inherit CPersistent::Read.
-/// Both pixel steps start at 1 (14163F450).
+/// Reads city settings, groups and distance-ring meshes with persistent
+/// field consumption. Both pixel steps start at 1.
 pub fn parse(input: &[u8]) -> io::Result<Cities> {
     #[derive(Clone, Copy)]
     enum Node {
@@ -100,7 +98,7 @@ pub fn parse(input: &[u8]) -> io::Result<Cities> {
         Building,
     }
     let mut errors = Vec::new();
-    // build_city_population (14163F450) constructs the lexer in mode 0.
+    // The lexer keeps the leading mark for this map reader.
     let document = native::read(
         input,
         native::Mode::KeepMark,
@@ -113,7 +111,7 @@ pub fn parse(input: &[u8]) -> io::Result<Cities> {
             (Node::File, Some(b"types_source" | b"pixel_step_x" | b"pixel_step_y"))
             | (Node::Group, Some(b"color_index" | b"density"))
             | (Node::Building, Some(b"distance")) => Shape::One,
-            // ReportUnexpectedToken (1424AD100 -> RecordError 1424ACF90).
+            // Unexpected fields record a reader error before their value is skipped.
             _ => {
                 errors.push(format!(
                     "line {}: key {} is reported",
@@ -159,7 +157,7 @@ pub fn parse(input: &[u8]) -> io::Result<Cities> {
                 }
             }
             Some(b"city_group") => {
-                // 141640CF0 initializes the index and density to zero.
+                // The group index and density start at zero.
                 let mut group = CityGroup::default();
                 for field in block(&field.value, "city_group")? {
                     match field.keyword().map(|key| key.folded()).as_deref() {
@@ -179,7 +177,7 @@ pub fn parse(input: &[u8]) -> io::Result<Cities> {
                             let text = field.value.scalar().unwrap_or_default();
                             let scanned = crt::scan_f32(text);
                             if scanned.is_none() && !text.trim_ascii().is_empty() {
-                                // CReader::ReadFloat 1424AB9D0 reports it (1424ACEE0).
+                                // A failed float conversion records a reader error.
                                 errors.push(format!(
                                     "density = {} does not scan as a float",
                                     String::from_utf8_lossy(text)
@@ -226,7 +224,7 @@ pub fn parse(input: &[u8]) -> io::Result<Cities> {
     }
     if let Some(error) = errors.first() {
         return Err(invalid(format!(
-            "{error}: the game records an error and builds no city sprawl (\"Errors while reading cities.txt\", 14163F450)"
+            "{error}: city settings contain a reader error; no city sprawl is built"
         )));
     }
     if cities.types_source.is_empty() {
@@ -269,14 +267,14 @@ city_group = {
 "#;
 
     #[test]
-    fn native_tokens_defaults_and_repeated_meshes() {
+    fn tokens_defaults_and_repeated_meshes() {
         let cities = parse(
             br#"@step=02 TYPES_SOURCE=x pixel_step_x=@step
             city_group={color_index=0x10F building={distance=03 mesh={a} mesh={b}}}
             } city_group={color_index=7}"#,
         )
         .unwrap();
-        // The first `}` ends CPersistent::Read; an absent step keeps its 1.
+        // The first `}` ends the persistent read; an absent step keeps its 1.
         assert_eq!((cities.pixel_step_x, cities.pixel_step_y), (2, 1));
         assert_eq!(cities.groups.len(), 1);
         assert_eq!(cities.groups[0].color_index, 15);
@@ -306,7 +304,10 @@ city_group = {
             b"types_source = x city_group = { density = high }",
         ] {
             let error = parse(input).unwrap_err().to_string();
-            assert!(error.contains("builds no city sprawl"), "{error}");
+            assert!(
+                error.contains("city settings contain a reader error; no city sprawl is built"),
+                "{error}"
+            );
         }
     }
 
@@ -328,8 +329,8 @@ city_group = {
         assert!(cities.group_for(0).unwrap().building_for(4).is_none());
     }
 
-    /// 14163F450 scans the rings from the last declared: with SAMPLE's
-    /// descending rings the last, distance 1, answers every distance from 1.
+    /// Rings are scanned from the last declared: with SAMPLE's descending
+    /// rings the last, distance 1, answers every distance from 1.
     #[test]
     fn the_ring_is_the_last_declared_one_the_distance_reaches() {
         let cities = parse(SAMPLE).unwrap();

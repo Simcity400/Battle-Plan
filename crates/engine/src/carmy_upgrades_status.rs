@@ -1,21 +1,21 @@
-//! CArmyUpgradesStatus constants and the complete army-owned upgrade graph.
-//!
-//! The country's active-request registry omits delivery-only groups after
-//! each army's requests object, matching the CArmy save serializer instead.
+//! Army upgrade status and complete army-owned upgrade graph. The country
+//! active-request registry omits delivery-only groups after unregistration.
+//! Walk the supplied division census through each army's requests object to
+//! retain the serialized graph.
 
-/// CArmyUpgradesStatus primary vtable; pinned-exe RTTI matches old country_army_upgrade_requests_live/src/lib.rs:12.
+/// Primary upgrade-status vtable.
 pub const VTABLE_RVA: usize = 0x29bb408;
-/// CArmyUpgradesStatus persistent subobject displacement; pinned-exe RTTI confirms old D93 lib.rs:13.
+/// Persistent subobject displacement.
 pub const PERSISTENT_SUBOBJECT: usize = 0x18;
-/// CArmyUpgradesStatus persistent vtable; pinned-exe RTTI confirms the +0x18 subobject in old D93 lib.rs:14.
+/// Persistent subobject vtable.
 pub const PERSISTENT_VTABLE_RVA: usize = 0x29bb440;
-/// CArmyUpgradesStatus group pointer-array data; old D93 read_country_groups reads this vector at +0x20.
+/// CArmyUpgradesRequests pointer-array data.
 pub const GROUPS_DATA: usize = 0x20;
-/// CArmyUpgradesStatus group vector capacity, i32; old D93 lib.rs:16 and vector_header_at confirm the width.
+/// Group-vector capacity, i32.
 pub const GROUPS_CAPACITY: usize = 0x28;
-/// CArmyUpgradesStatus group vector count, i32; old D93 lib.rs:17 and vector_header_at confirm the width.
+/// Group-vector count, i32.
 pub const GROUPS_COUNT: usize = 0x2c;
-/// CArmyUpgradesStatus group-vector entry width; old D93 read_country_groups walks 8-byte CArmyUpgradesRequests pointers.
+/// Group-vector entry width; entries are CArmyUpgradesRequests pointers.
 pub const GROUP_ENTRY_STRIDE: usize = 0x08;
 
 use crate::{
@@ -70,9 +70,9 @@ pub fn walk(
     )
 }
 
-/// Worker-only graph capture. Write@1414FE120 traverses +30 request rows and
-/// +48 delivery pointers; delivery serializer@1414FE370 owns the produced
-/// pool. Grow each lane from those same acquired headers, without a retry.
+/// Worker graph capture follows request rows and delivery pointers; each
+/// delivery owns its produced pool. Grow each lane from the same acquired
+/// headers without retrying.
 pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
@@ -730,7 +730,7 @@ mod tests {
     #[test]
     fn delivery_only_group_remains_after_unregistering_and_empty_owned_group_is_retained() {
         let mut bytes = fixture();
-        // FD430 removes a group when requests empty, even with deliveries left.
+        // Empty requests unregister a group, even when deliveries remain.
         array(&mut bytes, STATUS + GROUPS_DATA, 0, 0);
         array(
             &mut bytes,

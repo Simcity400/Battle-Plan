@@ -1,4 +1,4 @@
-//! Native cipher arithmetic shared by the dashboard and raid tooltips.
+//! Cipher arithmetic shared by the dashboard and raid tooltips.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Defines {
@@ -8,7 +8,7 @@ pub struct Defines {
 
 impl Defines {
     pub fn read(defines: &installed_content::defines::Defines) -> Result<Self, String> {
-        // Native globals 14331A960 and 14331AA10, read by the threshold below.
+        // Cipher-level defines read by the threshold below.
         let read = |name| {
             defines
                 .fixed5("NOperatives", name)
@@ -21,7 +21,7 @@ impl Defines {
     }
 }
 
-/// 1413E2FA0 (also used by the game's progress display through 1413E3010).
+/// Cipher threshold also used by the game's progress display.
 pub fn threshold(strength: i64, defines: Defines) -> i64 {
     (i64::from(crate::triggers::fixed_round(strength) as i32)
         .wrapping_mul(100_000)
@@ -30,7 +30,7 @@ pub fn threshold(strength: i64, defines: Defines) -> i64 {
         .wrapping_add(defines.base)
 }
 
-/// IsFullyDecrypted@1413E3350: the active bonus short-circuits a missing threshold.
+/// The active bonus short-circuits a missing threshold.
 pub fn fully_decrypted(amount: i64, active: u8, threshold: Option<i64>) -> Option<bool> {
     if active != 0 {
         Some(true)
@@ -39,7 +39,7 @@ pub fn fully_decrypted(amount: i64, active: u8, threshold: Option<i64>) -> Optio
     }
 }
 
-/// cipher_row_bind@141A0EC20: fixed5 divide (including its native invalid sentinel),
+/// Fixed5 divide (including its invalid sentinel),
 /// bonus override, round to percent, then clamp to the meter's 1..=100 frames.
 pub fn progress_percent(amount: i64, active: u8, threshold: i64) -> Option<u8> {
     let ratio = if threshold == 0
@@ -58,7 +58,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_threshold_rounds_narrows_and_bonus_short_circuits() {
+    fn threshold_rounds_narrows_and_bonus_short_circuits() {
         let d = Defines {
             base: 200_000,
             upgrade: 300_000,
@@ -83,8 +83,8 @@ mod tests {
     }
 
     #[test]
-    fn native_decryption_meter_has_a_minimum_frame_and_uses_wrapping_fixed5() {
-        // Synthetic native edge cases shared with the frontend port. Decimal
+    fn decryption_meter_has_a_minimum_frame_and_uses_wrapping_fixed5() {
+        // Synthetic arithmetic edge cases shared with the frontend. Decimal
         // strings preserve i64 precision; overflow remains a named unknown.
         let values: Vec<(String, u8, String, Option<u8>)> =
             serde_json::from_str(include_str!("cryptology/test-values.json")).unwrap();

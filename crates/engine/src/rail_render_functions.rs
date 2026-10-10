@@ -1,23 +1,24 @@
-//! Rail rendering function and immutable datum metadata in a729.
-//! Receiver types for these helpers have not been established; these addresses
-//! do not combine the helpers into an engine object layout.
+//! Rail-rendering routines and immutable datum metadata.
+//! Receiver types are not established; these helpers do not define a shared
+//! object layout.
 
-/// Railroad DDS resource loader; rail_files.rs:2021 identifies the load/consume pair. Receiver class is unproven.
+/// Railroad DDS resource loader.
 pub const LOAD_RAIL_TEXTURE_RVA: usize = 0x0124_9190;
-/// Directed province-pair connector selector; rail_files.rs:2057 and va_rail_z_frame/RAIL_Z_FRAME_LAW.json identify gfx_railway_manager.cpp and its nearest-border-pixel selection.
+/// Directed province-pair connector selector using the nearest border pixel.
 pub const SELECT_DIRECTED_CONNECTOR_RVA: usize = 0x0159_9160;
-/// Rail bridge connector geometry; rail_files.rs:2057 confirms effective bridge width/gap defines feed this helper.
+/// Rail bridge connector geometry, using effective bridge width and gap defines.
 pub const BUILD_BRIDGE_CONNECTOR_RVA: usize = 0x01c5_1a40;
-/// Rail ribbon edge builder; rail_files.rs:2068 identifies the normalized perpendicular and positive/negative half-width operands.
+/// Rail ribbon edges from a normalized perpendicular and signed half-widths.
 pub const BUILD_RIBBON_EDGES_RVA: usize = 0x01c5_1790;
-/// Native f32 -0.5 immutable datum; rail_files.rs:2068 identifies the read at VA 0x141c51914 in the ribbon edge builder.
+/// Immutable f32 -0.5 datum used by ribbon edges.
 pub const NEGATIVE_HALF_WIDTH_RVA: usize = 0x0298_43a8;
+/// Cubic Bezier evaluator with four Bernstein basis terms.
 pub const EVALUATE_CUBIC_BEZIER_RVA: usize = 0x01c5_0df0;
-/// Native f32 3.0 immutable datum; rail_files.rs:2075 identifies the cubic-basis coefficient read at VA 0x141c50e35.
+/// Immutable f32 3.0 cubic-basis coefficient.
 pub const BEZIER_COEFFICIENT_THREE_RVA: usize = 0x0293_4a80;
-/// Rail Bezier control-handle builder; rail_files.rs:2075 confirms tangent times min(half chord, 3.0).
+/// Bezier control handles use tangent times the smaller of half chord and 3.0.
 pub const BUILD_BEZIER_HANDLES_RVA: usize = 0x01c5_1100;
-/// Native f32 0.0625 immutable datum; rail_files.rs:2075 identifies the 16-sample arc-length step read at VA 0x141c51636.
+/// Immutable f32 0.0625 step for 16-sample arc-length evaluation.
 pub const ARC_LENGTH_SAMPLE_STEP_RVA: usize = 0x02a4_2a7c;
-/// Rail texture-repeat integer-rounding helper; rail_files.rs:2082 identifies the native call, but its general runtime symbol is unproven.
+/// Rail texture-repeat integer-rounding helper.
 pub const ROUND_TEXTURE_REPEAT_RVA: usize = 0x0254_e288;

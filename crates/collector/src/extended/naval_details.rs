@@ -179,7 +179,7 @@ pub struct Captured {
     dense_bases: CaptureRows<naval_combat_air_base_wings::Row>,
     dense_wings: Arena<u64>,
     base_handles: naval_combat_air_base_wings::UniqueHandles,
-    /// Each side's task-force handles, grown from original +0x20 headers.
+    /// Each side's task-force handles, grown from their original headers.
     side_units: Arena<u64>,
     custom_sea: Arena<i16>,
     damage_sources: Arena<(u32, i64)>,
@@ -904,8 +904,8 @@ impl Captured {
                     return Err("naval modifier tree has extra nodes");
                 }
                 // A childless projected interior root must stay interior for
-                // 14054D0F0's formatting gate, while 1415B4BB0 still reads
-                // its native value for the convoy escape sum.
+                // the formatting gate, while the convoy escape sum still reads
+                // its native value.
                 if raw[0].children != 0 && projected[0].children == 0 {
                     projected[0].children = 1;
                     projected.push(rows::ModifierBreakdownNode::default());

@@ -1,5 +1,4 @@
-//! Raid source distances, `CalculateRaidTargetDistance@141581090`, from the
-//! content graph and the recorded session memo.
+//! Raid source distances from the content graph and recorded session memo.
 //!
 //! Air, rocket, carrier and submarine sources measure the wrapped centroid
 //! distance; naval bases and buildings run the raid path search
@@ -9,12 +8,10 @@
 //! hour's evaluation reads that memo and adds its own results in the order
 //! it asks, as the game's rebuild does.
 //!
-//! The game asks a distance only once every earlier gate of the target has
-//! passed and no earlier source was usable (`EvaluateTarget@14199A190`'s
-//! `&&` chain, `IsUnitUsableFromSource@140E6FDF0`). When an earlier input is
-//! undecided here, whether the game asked is unknown: such a pair is kept as
-//! maybe asked, and a later query of it is decided only when every kind that
-//! may have been asked first gives the same answer.
+//! Ask distance only after every earlier target gate passes and no earlier
+//! source is usable. If an earlier input is undecided, whether the pair was
+//! asked is unknown. Keep it as maybe asked; decide a later query only when
+//! every kind that might have been asked first gives the same answer.
 //!
 //! Those asked pairs are the only state a target's evaluation leaves for the
 //! next. A batch split across threads ([`PartPaths`]) gives each part the
@@ -29,8 +26,8 @@ use std::{
     sync::{Mutex, MutexGuard, OnceLock},
 };
 
-/// The `CRaidSource` kinds (`engine::craid_source`) whose sources measure a
-/// path: a naval base measures to the target's naval path target, a building
+/// Source kinds (`engine::craid_source`) whose distance uses a path:
+/// a naval base measures to the target's naval path target, a building
 /// to its province.
 pub(crate) const NAVAL_BASE: u8 = engine::craid_source::KIND_NAVAL_BASE as u8;
 pub(crate) const BUILDING: u8 = engine::craid_source::KIND_BUILDING as u8;
@@ -306,9 +303,9 @@ impl<'a> Distances<'a> {
             .map_err(Clone::clone)
     }
 
-    /// `CalculateRaidTargetDistance@141581090` for a naval-base (kind 2) or
-    /// building (kind 5) source: `Ok(None)` is its `ok = 0`. A null source
-    /// province measures zero and passes, as natively.
+    /// Distance for a naval-base (kind 2) or building (kind 5) source:
+    /// `Ok(None)` is an unsuccessful search. A null source province measures
+    /// zero and passes.
     pub fn distance(&self, kind: u8, from: u32, scope: &RaidScope, asked: Asked) -> Search {
         self.distance_in(&self.asked(), kind, from, scope, asked)
     }
@@ -379,9 +376,8 @@ impl<'a> Distances<'a> {
         target
     }
 
-    /// `ResolveNavalRaidTargetProvince@140FD1800`: the target province when
-    /// it has a naval base, else the first province of its state that has
-    /// one (the `CGameState + 0x698` keys, which `NavalBases` records).
+    /// Use the target province when it has a naval base, else the first province
+    /// of its state with one, through the recorded `NavalBases` keys.
     fn naval_target(&self, scope: &RaidScope) -> Result<Option<u32>, String> {
         let Some(province) = self.assets.province(scope) else {
             return Ok(None);

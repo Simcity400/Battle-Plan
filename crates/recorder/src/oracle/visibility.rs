@@ -54,19 +54,14 @@ pub(super) fn compare(
     }
 }
 
-/// `CAttacheRelation::apply_link@140D12DA0` sets the second country's status
-/// toward the first at `+0x210`; `CAirBaseAccessRelation` and
-/// `COfferAirBaseAccessRelation` (`14196DE50`, `14196DF30`) set the first
-/// country's status toward the second at `+0x2C0` through `140D18680`;
-/// `CMilitaryAccessRelation::apply_link@140D143F0` sets the first country's
-/// status toward the second at `+0x2A0` and `COfferMilitaryAccessRelation`
-/// (`140D14970`) the second's toward the first;
-/// `CDockingRightsRelation::apply_link@14196E2C0` sets the first's toward the
-/// second at `+0x2B0` and `COfferDockingRightsRelation` (`14196E3C0`) the
-/// second's toward the first; `clear_link` removes them, so
+/// The attache relation sets the second country's status toward the first.
+/// Air-base access and its offer set the first country's status toward the
+/// second. Military access and docking rights set the first country's status
+/// toward the second, while their offers set the second's toward the first.
+/// Removing a link clears its status, so
 /// each saved relation of those types is one set slot. A relation is saved
 /// under both endpoints; the slot is counted once. The co-belligerent byte
-/// (`+0x310`) is rebuilt at load by `RebuildWartimeAllies@140D31E20` and never
+/// is rebuilt at load by wartime-ally rebuilding and never
 /// saved, so it is excluded here and named as a limitation.
 pub(super) fn compare_links(
     frame: &DecodedFrame,
@@ -164,7 +159,7 @@ pub(super) fn compare_links(
     Ok(())
 }
 
-/// The save serializes relation objects, never the current +288 association
+/// The save serializes relation objects, never the current association
 /// or the sparse owner-coverage certificate. Check current suffix admission
 /// independently while keeping the saved link-byte comparison unchanged.
 fn compare_transport_subject_access(
@@ -217,7 +212,7 @@ fn compare_transport_subject_access(
         }
         admitted += 1;
         report.limitation(
-            "current subject status +288 pointer/type, ordered endpoint admission and sparse owner coverage are unsaved runtime witnesses; historical Subjects dates are not independent acceptance",
+            "current subject status pointer/type, ordered endpoint admission and sparse owner coverage are unsaved runtime witnesses; historical Subjects dates are not independent acceptance",
             label,
         );
     }
@@ -293,7 +288,7 @@ mod transport_subject_tests {
     }
 }
 
-/// E9D0C0 saves only signed-positive CHAR access modes. The table retains
+/// The navy writer saves only signed-positive CHAR access modes. The table retains
 /// every nonzero raw byte; omitted high-bit values have no exact save witness.
 pub(super) fn compare_naval_access(
     frame: &DecodedFrame,
@@ -328,7 +323,7 @@ pub(super) fn compare_naval_access(
             Some(saved) if saved == row.mode => {}
             Some(saved) => report.difference(label, row.mode, saved),
             None if (row.mode as i8) < 0 => report.limitation(
-                "native navy access serializer E9D0C0 omission proves signed nonpositive; exact high-bit raw mode is not saved",
+                "navy access writer omission proves signed nonpositive; exact high-bit raw mode is not saved",
                 label),
             None => report.difference(label, row.mode, "no saved mode"),
         }
@@ -349,10 +344,9 @@ pub(super) fn compare_naval_access(
 
 /// `AceRangeInputs` against the saved ace rosters (`countries.<tag>.ace`, in
 /// roster order) and the saved wings' `ace` references. The ace block carries
-/// `alive` but not its assigned wing `CAce+0xE8`; the save names that wing
-/// only from the wing side, the wing's `+0x2E8` reference, which the setter
-/// `14060F130` keeps paired with it (assignment, deployment, deletion and
-/// disband; `CAce::MarkDead@14060F060` clears neither). The table is sliced
+/// `alive` but not its assigned-wing reference; the save names that wing
+/// only through the wing's ace reference, which the game keeps paired with it (assignment, deployment, deletion and
+/// disband; the ace-death update clears neither). The table is sliced
 /// with `RaidCountryInputs`, its family's hour source: only owners read at
 /// the frame's hour are compared.
 pub(super) fn compare_ace_inputs(
@@ -431,7 +425,7 @@ pub(super) fn compare_ace_inputs(
                 "that saved wing does not name this ace",
             ),
             None => report.limitation(
-                "no saved wing names this ace, and its wing reference names no saved wing: the ace block does not carry CAce+0xE8, so an unassigned reference's bits (the runtime creference_registry::invalid_reference@143324598 the setter 14060F130 stores) are not saved",
+                "no saved wing names this ace, and its wing reference names no saved wing: the ace block does not carry the ace wing reference, so an unassigned reference's bits (the runtime invalid reference the setter stores) are not saved",
                 format!("{label}.wing"),
             ),
         }
@@ -461,11 +455,11 @@ pub(super) fn compare_ace_inputs(
 }
 
 /// `StockpileArchetypes` against the saved stockpile. The table is the first
-/// array of each country's `CProductionStatus+0x200` pool; the save writes
-/// only its variant rows (`equipments`, `FFDB00`). Every quantity reaches both
-/// through `CEquipmentVariantPool::AddVariantQuantity@140FF7A30`, which adds
-/// it to the variant and to its archetype's total (the definition's
-/// `+0x4D8`), so each total is the sum of its variants' saved amounts. A
+/// array of each country's stockpile pool; the save writes
+/// only its variant rows (`equipments`). Every quantity reaches both
+/// through the variant-pool update, which adds
+/// it to the variant and to its archetype's total, so each total is the sum of
+/// its variants' saved amounts. A
 /// variant's archetype is its `VariantDefinitions.archetype_token`. The
 /// table is sliced with `RaidCountryInputs`, its family's hour source: only
 /// owners read at the frame's hour are compared.
@@ -475,7 +469,7 @@ pub(super) fn compare_stockpile_archetypes(
     countries: &CountryContext<'_>,
     report: &mut Report,
 ) -> io::Result<()> {
-    /// `AddVariantQuantity` clamps each running sum to this bound.
+    /// `variant addition` clamps each running sum to this bound.
     const LIMIT: i128 = 0x53e2_d620_fb40;
     let rows = complete::<tables::StockpileArchetypes>(frame)?;
     let reads = complete::<tables::SliceReads>(frame)?;
@@ -554,7 +548,7 @@ pub(super) fn compare_stockpile_archetypes(
         }
         match expected.remove(&(tag, row.archetype)) {
             Some(sum) if sum.abs() > LIMIT => report.limitation(
-                "the saved variant amounts of this archetype sum past the bound AddVariantQuantity@140FF7A30 clamps each running total to; the clamped total depends on the unsaved order of additions",
+                "the saved variant amounts of this archetype sum past the bound variant addition clamps each running total to; the clamped total depends on the unsaved order of additions",
                 label,
             ),
             Some(sum) => {
@@ -599,7 +593,7 @@ pub(super) fn compare_stockpile_archetypes(
     }
     if zero_only != 0 {
         report.limitation(
-            "a zero archetype total with no saved variant is kept by AddVariantQuantity, which never removes an entry, while the saved pool may omit its zero variants (allow_zero_entries=no); its membership is not certified",
+            "a zero archetype total with no saved variant is kept by variant addition, which never removes an entry, while the saved pool may omit its zero variants (allow_zero_entries=no); its membership is not certified",
             format!("StockpileArchetypes: {zero_only} zero totals"),
         );
     }
@@ -616,8 +610,8 @@ pub(super) fn compare_stockpile_archetypes(
     Ok(())
 }
 
-/// `CGameState::Serialize@1401F2580` writes the saving client's `player` tag
-/// through 140BB31F0: CGameState+0x520 when signed-positive, else +0x524, the
+/// The game state save writer writes the saving client's `player` tag
+/// using the signed-positive local tag, else the fallback tag, the
 /// choice `LocalPlayerRow::viewing_country` makes. Only that choice is saved,
 /// so the other reference decodes uncertified.
 fn compare_local_player(
@@ -666,13 +660,13 @@ fn record_inputs(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
             "instant decisions console byte",
         ) {
             match instant {
-                Some(_) => report.limitation("instant_decisions is the session console byte at 143317263 (reader 14071E7D0, writer 1402928D0); no established text-save field certifies it", "SimulationFeatures.instant_decisions"),
+                Some(_) => report.limitation("instant_decisions is the session console byte; no established text-save field certifies it", "SimulationFeatures.instant_decisions"),
                 None => report.limitation("instant decisions console byte capture refused", "SimulationFeatures.instant_decisions: other simulation features remain available"),
             }
         }
     }
     report.limitation(
-        "CWeatherManager+0x349/+0x34A gate the hourly weather/day-night update (140F07550); the manager serializer 140F0D8E0 does not write these bytes or the held local-hour/night outputs, so a text save cannot certify suspension or recover their held history",
+        "the weather and day-night switches gate the hourly weather/day-night update; the manager serializer does not write these bytes or the held local-hour/night outputs, so a text save cannot certify suspension or recover their held history",
         "SimulationFeatures.weather_suspend: runtime-only census, no exact text-save comparison",
     );
     for (table, rows, why) in [
@@ -714,7 +708,7 @@ fn record_inputs(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
         (
             "CountryWars",
             complete::<tables::CountryWars>(frame)?.len(),
-            "the CAN_OCCUPY_NON_WAR rule byte (CCountry+0x6B8) is recomputed from rule sources and the directly read enemy vectors (CDiplomacyStatus+0x98) are rebuilt at load; neither is saved",
+            "the CAN_OCCUPY_NON_WAR rule byte is recomputed from rule sources and the directly read enemy vectors are rebuilt at load; neither is saved",
         ),
         (
             "CountryLocalSubunits",

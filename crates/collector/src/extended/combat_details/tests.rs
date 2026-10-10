@@ -335,7 +335,7 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
 
 /// The viewer builds the land window's lists straight from these spans, so
 /// each combat's committed and reserve arrays keep their native index
-/// order (1415CA230/1415CA460) after the arena offset is applied.
+/// order after the arena offset is applied.
 #[test]
 fn roster_spans_project_committed_and_reserve_lists_in_arena_order() {
     let c = Capacities {
@@ -603,7 +603,7 @@ fn exile_arena_grows_off_the_pass_from_its_counted_demand() {
 }
 
 /// Exile spans index the shared tag arena; a division whose template is
-/// not exiled (140C79AC0) carries no exile operands.
+/// not exiled carries no exile operands.
 #[test]
 fn naming_direction_and_exile_operands_project_onto_division_rows() {
     let c = Capacities {

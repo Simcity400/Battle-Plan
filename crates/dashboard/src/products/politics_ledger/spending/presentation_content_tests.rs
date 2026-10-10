@@ -45,7 +45,7 @@ impl Stack {
         let path = layer.join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let bytes = bytes.as_ref();
-        // 142388A20 requires the file BOM before its language header.
+        // The file BOM is required before its language header.
         if path.extension().is_some_and(|extension| extension == "yml")
             && !bytes.starts_with(b"\xef\xbb\xbf")
         {
@@ -172,6 +172,8 @@ fn expected_png(pixel: [u8; 4]) -> String {
 
 #[test]
 fn stacked_mod_law_advisor_decision_ability_and_trait_use_content_names_and_png_art() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     let base = stack.base();
     let addon = stack.addon();
@@ -374,8 +376,7 @@ fn stacked_mod_law_advisor_decision_ability_and_trait_use_content_names_and_png_
             .find(|item| item.id == row.item_id)
             .unwrap();
         if sequence == "8" {
-            // 141A81250 selects country context; 1410CD900/1410CDDF0
-            // then bind a fresh scope with the proven 424242 seed.
+            // Selecting country context binds a fresh scope with seed 424242.
             assert_eq!(item.name.as_deref(), Some("Second choice"));
         }
         assert_eq!(
@@ -579,6 +580,8 @@ fn stacked_mod_law_advisor_decision_ability_and_trait_use_content_names_and_png_
 
 #[test]
 fn renamed_target_is_named_at_each_spend_hour_and_old_rows_are_not_relabelled() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     stack.write(&stack.addon(), "localisation/english/targets_l_english.yml", "l_english:\n C1:0 \"Owner\"\n C2:0 \"Old target\"\n RENAMED:0 \"New target\"\n DIPLOMACY_IMPROVERELATION:0 \"Improve relations\"\n");
     let content = stack.content();
@@ -615,6 +618,8 @@ fn renamed_target_is_named_at_each_spend_hour_and_old_rows_are_not_relabelled() 
 
 #[test]
 fn daily_cost_modifier_and_mios_use_recorded_identity_and_stack_localisation() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     stack.write(
         &stack.base(),
@@ -739,6 +744,8 @@ fn daily_cost_modifier_and_mios_use_recorded_identity_and_stack_localisation() {
 
 #[test]
 fn mio_scripted_names_are_frozen_at_the_read_and_missing_identity_is_counted() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     stack.write(&stack.addon(), "localisation/english/mio_l_english.yml", "l_english:\n C1:0 \"First owner\"\n C2:0 \"Second owner\"\n mod_mio:0 \"[FROM.ReadPrefix] organisation\"\n prefix:0 \"[THIS.GetTag]\"\n");
     stack.write(
@@ -838,6 +845,8 @@ fn mio_scripted_names_are_frozen_at_the_read_and_missing_identity_is_counted() {
 
 #[test]
 fn mio_explicit_name_and_icon_survive_missing_lexical_token() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     let addon = stack.addon();
     stack.write(
@@ -940,6 +949,8 @@ fn mio_explicit_name_and_icon_survive_missing_lexical_token() {
 
 #[test]
 fn military_and_scientist_actions_select_native_recorded_portrait_roles() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     let addon = stack.addon();
     stack.write(&addon, "localisation/english/people_l_english.yml", "l_english:\n C1:0 \"Owner\"\n C2:0 \"Target\"\n mod_general:0 \"Mod general\"\n mod_admiral:0 \"Mod admiral\"\n mod_scientist:0 \"Mod scientist\"\n");
@@ -1048,6 +1059,8 @@ fn military_and_scientist_actions_select_native_recorded_portrait_roles() {
 
 #[test]
 fn decision_icons_use_native_default_links_and_keep_known_art_when_name_is_unknown() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     let addon = stack.addon();
     stack.write(
@@ -1136,6 +1149,8 @@ fn decision_icons_use_native_default_links_and_keep_known_art_when_name_is_unkno
 
 #[test]
 fn daily_relation_title_and_missing_direct_charge_do_not_borrow_action_token_branches() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     stack.write(&stack.addon(), "localisation/english/relation_l_english.yml", "l_english:\n C1:0 \"Owner\"\n C2:0 \"Target\"\n DIPLOMACY_IMPROVERELATION:0 \"Improve relations action\"\n DIPLOMACY_IMPROVERELATION_TITLE:0 \"Improve relations upkeep\"\n");
     let content = stack.content();
@@ -1171,7 +1186,7 @@ fn daily_relation_title_and_missing_direct_charge_do_not_borrow_action_token_bra
         cause: PowerCause::Diplomacy,
         ..Default::default()
     };
-    // A recorded CRelation type ID is independent of the diplomatic action token.
+    // A recorded relation type ID is independent of the diplomatic action token.
     relation.identity.item_token = Some(7);
     relation.identity.target_country = Some(2);
     put(
@@ -1208,6 +1223,8 @@ fn daily_relation_title_and_missing_direct_charge_do_not_borrow_action_token_bra
 
 #[test]
 fn decision_scripted_names_use_known_scopes_and_native_random_fast_paths_without_guessing_seed() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     let addon = stack.addon();
     stack.write(
@@ -1261,8 +1278,8 @@ fn decision_scripted_names_use_known_scopes_and_native_random_fast_paths_without
     assert_eq!(item_at("1").name.as_deref(), Some("Owner/Owner"));
     assert_eq!(item_at("2").name.as_deref(), Some("Owner/Target/Target"));
     assert_eq!(item_at("3").name.as_deref(), Some("Only choice"));
-    // Explicit country promotion gets 1410CDDF0's fresh seed, while the
-    // unpromoted member below retains the caller's unrecorded native seed.
+    // Explicit country promotion gets a fresh seed, while the unpromoted
+    // member below retains the caller's unrecorded seed.
     assert_eq!(item_at("5").name.as_deref(), Some("Second choice"));
     let unknown = item_at("4");
     assert_eq!(unknown.name, None);
@@ -1278,6 +1295,8 @@ fn decision_scripted_names_use_known_scopes_and_native_random_fast_paths_without
 
 #[test]
 fn decision_name_from_uses_native_added_trigger_children_and_targets_presence() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     let addon = stack.addon();
     stack.write(
@@ -1349,6 +1368,8 @@ fn decision_name_from_uses_native_added_trigger_children_and_targets_presence() 
 
 #[test]
 fn targeted_decision_state_selector_uses_recorded_state_and_fresh_nested_seed() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     let addon = stack.addon();
     stack.write(
@@ -1395,6 +1416,8 @@ fn targeted_decision_state_selector_uses_recorded_state_and_fresh_nested_seed() 
 #[test]
 #[ignore = "requires installed game and Workshop corpus paths"]
 fn spending_native_content_corpus_audit() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let game =
         PathBuf::from(std::env::var_os("BATTLE_PLAN_POL_SPENDING_GAME").or_else(|| std::env::var_os("HOI4_POL_SPENDING_GAME")).expect("BATTLE_PLAN_POL_SPENDING_GAME"));
     let workshop =
@@ -1527,6 +1550,8 @@ fn spending_native_content_corpus_audit() {
 
 #[test]
 fn power_content_reader_notes_reach_counted_ledger_diagnostics() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new();
     let addon = stack.addon();
     stack.write(

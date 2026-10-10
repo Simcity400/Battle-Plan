@@ -1,4 +1,4 @@
-//! Country traversal for native flying-aircraft admission (`140c43b30`).
+//! Country traversal for native flying-aircraft admission.
 //!
 //! The input vectors are simulation state in native order. The viewer owns
 //! the two presentation rosters and preserves the first raw reference for
@@ -88,7 +88,7 @@ fn append_country_and_donors(
     Ok(())
 }
 
-/// Rebuild the ordered arrays used by `140c43b30` for a viewing country.
+/// Rebuild the ordered arrays used by for a viewing country.
 ///
 /// `ours` is the viewing country's canonical slot, not a raw country
 /// reference. It may not itself appear as a key in `CountryLinks`.

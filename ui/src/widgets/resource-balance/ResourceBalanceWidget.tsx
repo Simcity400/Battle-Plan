@@ -243,7 +243,7 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
 }
 
 /** Per resource, a supply bar above a demand bar on a shared scale, with the net at
- * the right (mock-up economy-1). Rows are focusable: hover or focus shows the
+ * the right. Rows are focusable: hover or focus shows the
  * breakdown, right-click or the context-menu key jumps to the hour shown. */
 function BalanceBars({ data, tokens, hour, order, scale, hideEmpty, owner, breakdown, onPartners, active, hoursPerSecond, onMenu, onPick }: {
   data: ResourceBalanceReply; tokens: ChartTokens; hour: number; order: RowOrder; scale: 'campaign' | 'moment'; hideEmpty: boolean; owner: string;
@@ -380,7 +380,7 @@ function OverTime({ data, numbers, within, tokens, viewport, options, runtime, t
     return list;
   }, [lines, shade, data.decimals, until]);
   // Only the clicked resource changes: saved resources this campaign lacks are kept,
-  // and one this campaign shows always stays chosen, as in the mock-up. A chip whose
+  // and one this campaign shows always stays chosen. A chip whose
   // click cannot act is disabled and says why, pressed or not.
   // One chip per token: a repeated declaration is chosen with its token.
   const chips = data.resources.filter(item => item.ordinal === 1);

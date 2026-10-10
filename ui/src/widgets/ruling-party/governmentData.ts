@@ -21,9 +21,7 @@ export function validateGovernmentLedger(data: unknown, expected?: Pick<Politics
   return reply;
 }
 
-/** SetPolitics@140B98B30 provenance: election on-action 140B992D9,
- * coup 140ACB850, civil war 1410C8CA0 and set_politics 140363980.
- * Neither a census change nor an election date supplies an execution cause. */
+/** Neither a census change nor an election date supplies an execution cause. */
 export function governmentCause(cause: string): string {
   switch (cause) {
     case 'ElectionOnAction': return 'Election';

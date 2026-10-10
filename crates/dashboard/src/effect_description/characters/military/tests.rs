@@ -27,7 +27,7 @@ fn fixture(category: i32) -> (Fixture, Folder) {
                 " EFFECT_REMOVE_OPERATIVE_LEADER:0 \"Remove operative $NAME$/$CODENAME$ [Root.GetTag]\"\n",
                 " EFFECT_REMOVE_UNIT_LEADER_ROLE:0 \"Remove role $NAME$/$TITLE$ [Root.GetTag]\"\n",
                 " EFFECT_ADD_RANDOM_UNIT_TRAIT:0 \"Random trait for $NAME$\"\n",
-                " fm_leader:0 \"Field Marshal\"\n cc_leader:0 \"General\"\n navy_leader:0 \"Admiral\"\n",
+                " fm_leader:0 \"Strategic commander\"\n cc_leader:0 \"Ground commander\"\n navy_leader:0 \"Fleet commander\"\n",
                 " operative_skill_3:0 \"Expert Agent\"\n OPERATIVE:0 \"Agent\"\n",
                 " synthetic_operative:0 \"Authored agent\"\n",
                 " ADD_DIVISIONAL_COMMANDER_XP:0 \"Commander XP $VAL|2$ [Root.GetTag]\"\n",
@@ -124,73 +124,85 @@ fn rendered(fixture: &Fixture, body: &str, expected: &str, character: bool) {
     assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
 }
 
-// common/decisions/chi_decisions.txt:2435, optional character plus template fields.
+// Optional character selection and execution-only template fields.
 #[test]
 fn add_corps_commander_role() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     rendered(
         &fixture,
-        "add_corps_commander_role={character=synthetic_character traits={} skill=3 attack_skill=3 defense_skill=3 planning_skill=2 logistics_skill=2}",
+        "add_corps_commander_role={logistics_skill=4 character=synthetic_character defense_skill=2 traits={} attack_skill=5 skill=6 planning_skill=3}",
         "Corps Character name AAA",
         false,
     );
 }
 
-// common/decisions/tur.txt:26.
+// Explicit character with a field-marshal template.
 #[test]
 fn add_field_marshal_role() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     rendered(
         &fixture,
-        "add_field_marshal_role={character=synthetic_character traits={} skill=4 attack_skill=4 defense_skill=3 planning_skill=3 logistics_skill=3 legacy_id=59}",
+        "add_field_marshal_role={legacy_id=173 planning_skill=5 traits={} character=synthetic_character skill=2 logistics_skill=6 defense_skill=4 attack_skill=3}",
         "Marshal Character name AAA",
         false,
     );
 }
 
-// common/national_focus/australia_taog.txt:1054, no explicit character.
+// A naval template without an explicit character.
 #[test]
 fn add_naval_commander_role() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     rendered(
         &fixture,
-        "add_naval_commander_role={traits={} skill=4 attack_skill=2 defense_skill=3 coordination_skill=6 maneuvering_skill=2 legacy_id=-1}",
+        "add_naval_commander_role={coordination_skill=3 legacy_id=-1 skill=5 maneuvering_skill=4 traits={} defense_skill=2 attack_skill=6}",
         "Navy Character name AAA",
         true,
     );
 }
 
-// common/decisions/hol.txt:2081. Authored names stay literal, even defined keys.
+// Authored names remain literal even when they are defined keys.
 #[test]
 fn create_corps_commander() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     rendered(
         &fixture,
-        "create_corps_commander={name=synthetic_operative gfx=GFX_synthetic_portrait traits={} id=982 skill=2 attack_skill=2 defense_skill=1 planning_skill=1 logistics_skill=2}",
+        "create_corps_commander={id=451 logistics_skill=3 name=synthetic_operative planning_skill=5 traits={} gfx=GFX_synthetic_portrait defense_skill=4 attack_skill=2 skill=6}",
         "Corps synthetic_operative AAA",
         false,
     );
 }
 
-// common/national_focus/spain.txt:5705.
+// A literal marshal name with an authored trait.
 #[test]
 fn create_field_marshal() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     rendered(
         &fixture,
-        "create_field_marshal={name=\"Synthetic Marshal\" gfx=GFX_synthetic_portrait traits={synthetic_trait} skill=3 attack_skill=2 defense_skill=3 planning_skill=3 logistics_skill=2}",
+        "create_field_marshal={defense_skill=5 traits={synthetic_trait} name=\"Synthetic Marshal\" logistics_skill=4 skill=2 gfx=GFX_synthetic_portrait planning_skill=6 attack_skill=3}",
         "Marshal Synthetic Marshal AAA",
         false,
     );
 }
 
-// common/national_focus/free_france.txt:505.
+// A literal navy name with execution-only skills.
 #[test]
 fn create_navy_leader() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     rendered(
         &fixture,
-        "create_navy_leader={name=\"Synthetic Admiral\" gfx=GFX_synthetic_portrait skill=3 traits={} attack_skill=1 defense_skill=2 maneuvering_skill=3 coordination_skill=4}",
+        "create_navy_leader={maneuvering_skill=5 name=\"Synthetic Admiral\" defense_skill=4 gfx=GFX_synthetic_portrait traits={} coordination_skill=2 skill=6 attack_skill=3}",
         "Navy Synthetic Admiral AAA",
         false,
     );
@@ -198,6 +210,8 @@ fn create_navy_leader() {
 
 #[test]
 fn legacy_empty_name_uses_recorded_name_token_then_exact_stored_token() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     rendered(
         &fixture,
@@ -213,9 +227,11 @@ fn legacy_empty_name_uses_recorded_name_token_then_exact_stored_token() {
     );
 }
 
-// common/decisions/_debug_decisions.txt:544.
+// Operative creation with a recruitment bypass.
 #[test]
 fn create_operative_leader() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     rendered(
         &fixture,
@@ -225,15 +241,17 @@ fn create_operative_leader() {
     );
     rendered(
         &fixture,
-        "create_operative_leader={name=synthetic_operative bypass_recruitment=yes traits={}}",
+        "create_operative_leader={traits={} bypass_recruitment=yes name=synthetic_operative}",
         "Operative Authored agent AAA",
         false,
     );
 }
 
-// common/decisions/cze.txt:1023, held scalar token and plain outer localisation.
+// A held scalar token uses plain outer localisation.
 #[test]
 fn show_unit_leaders_tooltip() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(1);
     rendered(
         &fixture,
@@ -270,9 +288,11 @@ fn show_unit_leaders_tooltip() {
     );
 }
 
-// common/decisions/ins.txt:1541. Boolean is execution-only.
+// The boolean is execution-only.
 #[test]
 fn promote_leader() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     rendered(
         &fixture,
@@ -283,9 +303,11 @@ fn promote_leader() {
     rendered(&fixture, "demote_leader=yes", "", true);
 }
 
-// events/aat_finland.txt:750.
+// Only the matching leader category produces a demotion line.
 #[test]
 fn demote_leader() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(0);
     rendered(
         &fixture,
@@ -296,9 +318,11 @@ fn demote_leader() {
     rendered(&fixture, "promote_leader=yes", "", true);
 }
 
-// Workshop 1137372539 common/national_focus/hungary.txt:7240; runtime character id.
+// Select a runtime character ID or the current character.
 #[test]
 fn remove_unit_leader() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     rendered(
         &fixture,
@@ -317,6 +341,8 @@ fn remove_unit_leader() {
 
 #[test]
 fn remove_operative_refuses_codename_by_class_and_field() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(3);
     let out = fixture.render(
         "remove_unit_leader=yes",
@@ -325,13 +351,15 @@ fn remove_operative_refuses_codename_by_class_and_field() {
     );
     assert_eq!(out.text, "");
     assert_eq!(out.refusals, BTreeMap::from([(
-        "synthetic effect CRemoveUnitLeaderEffect: key remove_unit_leader: operative codename (COperativeLeader+0x1030, 140C06040) not recorded".to_owned(), 1
+        "synthetic effect remove_unit_leader: key remove_unit_leader: operative codename not recorded".to_owned(), 1
     )]));
 }
 
-// 1402ECF90 uses both stored names, without scope expansion or LF.
+// Use both stored operative names without scope expansion or LF.
 #[test]
 fn remove_operative_uses_format98_codename() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(3);
     if let TableView::Complete(TableRows::UnitLeaders(rows)) =
         &mut *fixture.frame.tables[TableId::UnitLeaders.index()]
@@ -355,9 +383,11 @@ fn remove_operative_uses_format98_codename() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// 140395390 takes NAME from the referenced leader +0x40 and appends LF.
+// Use the referenced leader name and append LF.
 #[test]
 fn show_unit_leaders_uses_format98_referenced_name() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(3);
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
         TableView::Complete(TableRows::UnitLeaders(vec![]));
@@ -390,47 +420,53 @@ fn show_unit_leaders_uses_format98_referenced_name() {
         Content::default(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect CShowUnitLeadersTooltipEffect: key show_unit_leaders_tooltip: character 7 referenced unit leader name (+0x40, 140C16FB0) not recorded".into(), 1)]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect show_unit_leaders_tooltip: key show_unit_leaders_tooltip: character 7 referenced unit leader name not recorded".into(), 1)]));
 }
 
-// common/decisions/ger.txt:16991, character-scope exact yes.
+// Exact yes selects the character-scope role.
 #[test]
 fn remove_unit_leader_role() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     rendered(
         &fixture,
         "remove_unit_leader_role=yes",
-        "Remove role Character name/General AAA",
+        "Remove role Character name/Ground commander AAA",
         true,
     );
     rendered(
         &fixture,
         "remove_unit_leader_role={character=synthetic_character}",
-        "Remove role Character name/General AAA",
+        "Remove role Character name/Ground commander AAA",
         false,
     );
 }
 
-// 1403AAC00 reads a character selector only outside scope-kind 8.
+// Read a character selector only outside character scopes.
 #[test]
 fn remove_military_role_respects_its_scope_dependent_reader() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(0);
     rendered(
         &fixture,
         "remove_unit_leader_role=synthetic_character",
-        "Remove role Character name/Field Marshal AAA",
+        "Remove role Character name/Strategic commander AAA",
         false,
     );
     rendered(
         &fixture,
         "remove_unit_leader_role={character=synthetic_other}",
-        "Remove role Character name/Field Marshal AAA",
+        "Remove role Character name/Strategic commander AAA",
         true,
     );
 }
 
 #[test]
-fn remove_operative_role_uses_skill_specific_title_then_native_fallback() {
+fn remove_operative_role_uses_skill_specific_title_then_fallback() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(3);
     rendered(
         &fixture,
@@ -451,9 +487,11 @@ fn remove_operative_role_uses_skill_specific_title_then_native_fallback() {
     );
 }
 
-// common/decisions/phi.txt:1481. The describer gates only on Army existence.
+// The describer gates only on Army existence.
 #[test]
 fn add_divisional_commander_xp() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(1);
     let reference = 44 | 2 << 32;
     *fixture.frame.tables[TableId::Divisions.index()] =
@@ -462,15 +500,15 @@ fn add_divisional_commander_xp() {
             ..Default::default()
         }]));
     let out = fixture.render(
-        "add_divisional_commander_xp=200",
+        "add_divisional_commander_xp=137.5",
         &mut EventScopes::new(vec![EventScope::of(EventObject::Unit(reference))]),
         Content::default(),
     );
-    assert_eq!(out.text, "Commander XP 200.00 [Root.GetTag]");
+    assert_eq!(out.text, "Commander XP 137.50 [Root.GetTag]");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     for object in [EventObject::Unit(0), EventObject::Country(1)] {
         let out = fixture.render(
-            "add_divisional_commander_xp=200",
+            "add_divisional_commander_xp=137.5",
             &mut EventScopes::new(vec![EventScope::of(object)]),
             Content::default(),
         );
@@ -479,9 +517,11 @@ fn add_divisional_commander_xp() {
     }
 }
 
-// Workshop 1137372539 common/national_focus/soviet.txt:12453.
+// A medal description reads the Army name.
 #[test]
 fn add_unit_medal_to_latest_entry() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(1);
     let reference = 44 | 2 << 32;
     *fixture.frame.tables[TableId::Divisions.index()] =
@@ -515,10 +555,12 @@ fn add_unit_medal_to_latest_entry() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// All three Army consumers use the shared formatter and distinguish old
-// fields from failed captures (14045D2E0, 14045D8B0, 1404A2FB0 -> 141454480).
+// All three Army consumers share the formatter and distinguish old fields
+// from failed captures.
 #[test]
 fn army_name_consumers_share_names_and_field_level_compatibility() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(1);
     let unit = 44 | 2 << 32;
     let raid = 9 | 3 << 32;
@@ -551,22 +593,22 @@ fn army_name_consumers_share_names_and_field_level_compatibility() {
                 naming,
                 ..Default::default()
             }]));
-        for (source, class, scope, expected) in [
+        for (source, effect_key, scope, expected) in [
             (
-                "add_history_entry={key=synthetic_history subject=\"Custom String\" allow=yes}",
-                "CAddHistoryEntryEffect",
+                "add_history_entry={key=synthetic_history subject=\"Training record\" allow=yes}",
+                "add_history_entry",
                 EventObject::Unit(unit),
                 "History Recorded army [Root.GetTag]",
             ),
             (
                 "add_unit_medal_to_latest_entry={unit_medals=synthetic_medal}",
-                "CAddUnitMedalEffect",
+                "add_unit_medal_to_latest_entry",
                 EventObject::Unit(unit),
                 "Medal Recorded army [Root.GetTag]",
             ),
             (
                 "add_raid_history_entry=yes",
-                "CAddRaidHistoryEntryEffect@?A0x8a0aef5d@NRaids",
+                "add_raid_history_entry",
                 EventObject::Raid(raid),
                 "Raid history Recorded army [Root.GetTag]\n",
             ),
@@ -584,27 +626,31 @@ fn army_name_consumers_share_names_and_field_level_compatibility() {
             assert!(out.text.is_empty());
             let reason = if unavailable {
                 format!(
-                    "DivisionStatus.naming unavailable for UNIT {unit:#x}: guarded read or arena shortage (1409B5640)"
+                    "DivisionStatus.naming unavailable for UNIT {unit:#x}: guarded read or arena shortage"
                 )
             } else {
                 "DivisionStatus.naming not recorded".to_owned()
             };
-            assert_eq!(
-                out.refusals,
-                BTreeMap::from([(
-                    format!(
-                        "synthetic effect {class}: key {}: {reason}",
-                        source.split('=').next().unwrap()
-                    ),
-                    1
-                )])
+            assert_eq!(out.refusals.len(), 1);
+            let (why, count) = out.refusals.iter().next().unwrap();
+            assert_eq!(*count, 1);
+            let expected = format!(
+                "synthetic effect {effect_key}: key {}: {reason}",
+                source.split('=').next().unwrap()
             );
+            if unavailable {
+                assert!(why.starts_with(expected.as_str()), "{why}");
+            } else {
+                assert_eq!(why, &expected);
+            }
         }
     }
 }
 
 #[test]
-fn raid_history_without_assigned_army_or_wing_keeps_native_empty_name_line() {
+fn raid_history_without_assigned_army_or_wing_keeps_empty_name_line() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(1);
     let reference = 9 | 3 << 32;
     *fixture.frame.tables[TableId::Raids.index()] =
@@ -624,6 +670,8 @@ fn raid_history_without_assigned_army_or_wing_keeps_native_empty_name_line() {
 
 #[test]
 fn raid_history_wing_falls_back_from_stale_army_and_preserves_language_refusal() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use engine::raid_tooltip_operands::{
         ARMY_RESOLVED, NAME, REFERENCES, WING_NAME, WING_RESOLVED,
     };
@@ -730,13 +778,15 @@ fn raid_history_wing_falls_back_from_stale_army_and_preserves_language_refusal()
     );
     assert!(out.text.is_empty());
     assert_eq!(out.refusals, BTreeMap::from([(
-        "synthetic effect CAddRaidHistoryEntryEffect@?A0x8a0aef5d@NRaids: key add_raid_history_entry: raid wing name is text the game stored in english without its key, and the viewer's language is french".into(), 1
+        "synthetic effect add_raid_history_entry: key add_raid_history_entry: raid wing name is text the game stored in english without its key, and the viewer's language is french".into(), 1
     )]));
 }
 
-// Workshop 1521695605 common/on_actions/00_on_actions_global.txt:3104.
+// Resolve the selected character without drawing a trait.
 #[test]
 fn add_random_valid_trait_from_unit() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(1);
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Character(7))]);
     rendered(
@@ -755,7 +805,9 @@ fn add_random_valid_trait_from_unit() {
 }
 
 #[test]
-fn absent_characters_and_missing_roles_keep_native_empty_descriptions() {
+fn absent_characters_and_missing_roles_keep_empty_descriptions() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(1);
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
         TableView::Complete(TableRows::UnitLeaders(vec![]));

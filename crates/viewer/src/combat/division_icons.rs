@@ -1,13 +1,13 @@
-//! A committed land combat entry's modifier icons (1415CA660), frames of
+//! A committed land combat entry's modifier icons, frames of
 //! `GFX_battle_div_modifier_strip`, in the order the native grid receives them:
 //!
 //! 1. frames 0-7 for the unit's recorded modifier kinds 2, 7, 10, 13, 27, 8,
-//!    17 and 16 (`CUnit+0x170`, stride 24), in recorded order;
+//!    17 and 16, in recorded order;
 //! 2. frame 11 or 10, our piercing against the opposing committed armour;
 //! 3. frame 9 or 8, the opposing committed piercing against our armour;
 //! 4. frame 12, the division's own leader is not the side's selected commander;
-//! 5. frame 16, fuel below full (140C6F960);
-//! 6. frame 13, anti-air above 0.01 (141297FD0) on a side with flag 0x4000;
+//! 5. frame 16, fuel below full;
+//! 6. frame 13, anti-air above 0.01 on a side with flag 0x4000;
 //! 7. frame 14, an opposing committed owner occupies our exile country;
 //! 8. frame 15, our exile country cores the location state.
 //!
@@ -21,7 +21,7 @@ use replay::rows::{LandCombatDetailsRow, LandCombatDivisionRow};
 
 const SCALE: i64 = 100_000;
 
-/// The recorded kinds 1415CA660 turns into frames 0 to 7, in frame order.
+/// The recorded kinds the game turns into frames 0 to 7, in frame order.
 const RECORDED_KINDS: [u32; 8] = [2, 7, 10, 13, 27, 8, 17, 16];
 
 /// The native fixed-point division guard: an extreme numerator gives
@@ -34,7 +34,7 @@ fn guarded(numerator: i64, denominator: i64) -> i64 {
     }
 }
 
-/// 141298790: the piercing bucket of `piercing` against `armour`, the first
+/// the piercing bucket of `piercing` against `armour`, the first
 /// threshold not above the ratio (zero armour is ratio 100), else bucket 0.
 pub(super) fn pierce_bucket(thresholds: &[i64], armour: i64, piercing: i64) -> usize {
     let ratio = if armour == 0 {
@@ -48,8 +48,7 @@ pub(super) fn pierce_bucket(thresholds: &[i64], armour: i64, piercing: i64) -> u
         .unwrap_or(0)
 }
 
-/// `(i64)(define * 100000 + (define >= 0 ? 0.5 : -0.5))` in single precision,
-/// as 1415CA660 turns a float define into a fixed-point limit.
+/// Convert a single-precision define to fixed5, rounding half away from zero.
 fn fixed_limit(define: f32) -> i64 {
     ((if define >= 0.0 { 1.0_f32 } else { 0.0 } + define * 100_000.0_f32) - 0.5_f32) as i64
 }
@@ -118,7 +117,7 @@ fn armour_frames(
     [piercing, armour]
 }
 
-/// 140C6F960: fuel over `capacity * define`, clamped to [0, 1]; full when the
+/// fuel over `capacity * define`, clamped to [0, 1]; full when the
 /// scaled capacity is not positive or the fuel is extreme.
 pub(super) fn fuel_ratio([fuel, capacity, define]: [i64; 3]) -> i64 {
     let capacity = capacity.wrapping_mul(define) / SCALE;
@@ -128,7 +127,7 @@ pub(super) fn fuel_ratio([fuel, capacity, define]: [i64; 3]) -> i64 {
     guarded(fuel, capacity).clamp(0, SCALE)
 }
 
-/// Why a committed entry's list ends before 1415CA660's last frames: the
+/// Why a committed entry's list ends before its last frames: the
 /// undecidable step and every frame after it are omitted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Omitted {
@@ -141,7 +140,7 @@ pub(super) enum Omitted {
     /// The content's land defines are unavailable: the armour, fuel and
     /// anti-air frames read them.
     Defines,
-    /// 141297FD0's anti-air value cannot be computed, for this reason.
+    /// anti-air value cannot be computed, for this reason.
     AirDefense(&'static str),
     /// The anti-air value passes but the side's flags (`LandCombatSides`)
     /// are missing, so frame 13's 0x4000 test is undecided.
@@ -168,7 +167,7 @@ impl Omitted {
                 "the content's land combat defines are unavailable, so every derived icon after the recorded kinds is omitted: {FROM_ARMOUR}"
             ),
             Self::AirDefense(cause) => format!(
-                "the anti-air value (141297FD0) cannot be computed ({cause}), so {FROM_AIR} are omitted"
+                "the anti-air value cannot be computed ({cause}), so {FROM_AIR} are omitted"
             ),
             Self::SideFlags => format!(
                 "the combat has no LandCombatSides row, so the side flag 0x4000 that decides the anti-air icon is unknown and {FROM_AIR} are omitted"
@@ -265,7 +264,7 @@ mod tests {
 
     const THRESHOLDS: [i64; 4] = [100_000, 75_000, 50_000, 0];
 
-    // The pinned vanilla defines at pairL.
+    // Thresholds and scales exercised by these fixtures.
     fn content() -> LandDefines {
         LandDefines {
             armour_icons: [0.6, 0.25, 0.6, 0.25],
@@ -327,7 +326,7 @@ mod tests {
     #[test]
     fn armour_frames_follow_the_opposing_committed_array() {
         let content = content();
-        // pairL: no armour on either side gives no armour icon.
+        // No armour on either side gives no armour icon.
         let infantry = unit(0, 4_861_568);
         let enemy = unit(0, 481_327);
         assert_eq!(
@@ -379,8 +378,8 @@ mod tests {
         let detail = detail();
         let enemy = unit(0, 0);
         let decided = [Some(false); 2];
-        // pairL 169th: its own leader, anti-air 21.27 (0.10176 > 0.01), side
-        // flags 0x80200C9 without 0x4000: only the general.
+        // Its own leader and anti-air above the limit, but no side flag
+        // 0x4000: only the general icon.
         let mut madison = unit(0, 4_861_568);
         madison.commander = 4_140_348_478_057;
         madison.air_attack = 2_127_473;
@@ -443,7 +442,7 @@ mod tests {
             ),
             (vec![12, 16], Some(Omitted::SideFlags))
         );
-        madison.air_attack = 158_327; // 0.00237 after 141297FD0: below 1000.
+        madison.air_attack = 158_327; // Resulting anti-air is below 1000.
         madison.commander = detail.sides[1].commander;
         assert_eq!(
             icons(

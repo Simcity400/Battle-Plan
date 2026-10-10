@@ -403,9 +403,9 @@ fn plates_take_the_type_icons_relation_through_sent_volunteers() {
     assert_eq!(plate(false, None), Allegiance::Other);
 }
 
-/// Port items and combat tiles (`14197B4F0`) test enemy before friend over the first task
+/// Port items and combat tiles test enemy before friend over the first task
 /// force's roster and logical owners, with no sent-volunteer loop and no bypass for a
-/// signed-nonpositive roster owner; the at-sea counter's relation (`1418C4B50`) differs on
+/// signed-nonpositive roster owner; the at-sea counter's relation differs on
 /// each of these.
 #[test]
 fn mission_items_test_enemy_first_without_the_volunteer_loop() {
@@ -493,8 +493,7 @@ fn attache_and_air_access_do_not_tint_an_unrelated_country() {
             links: RelationLinkRow::ATTACHE | RelationLinkRow::AIR_BASE_ACCESS,
             transport_subject: Default::default(),
         }]));
-    // Native type 2934 = military access (140D0A6D0 factory). The
-    // counter's flags 0,0 exclude the +2A0 access arm of 1406F3B00.
+    // Counter friendship excludes the access-only relation arm.
     *frame.tables[TableId::RelationTuples.index()] =
         TableView::Complete(TableRows::RelationTuples(vec![
             replay::rows::RelationTupleRow {

@@ -1,14 +1,10 @@
 //! The scale of the screen-space map interface: counters, map icons, VP and
 //! city labels, combat bubbles, the combat window and the map's tooltips.
 //!
-//! The game lays its interface out in logical pixels, the frame's pixels
-//! divided by its effective `gui_scale` (`CGraphics` `1422206c0`, see
-//! [`installed_content::settings::Display`] for the order `settings.txt` and
-//! `pdx_settings.txt` are applied in), and the frame is then shown on its
-//! monitor, stretched by Windows' display scale since the game is not DPI
-//! aware. [`Setting::MatchGame`] preserves those two raster stages. A dump
-//! renders at the game's frame size, where the verified comparison pipeline
-//! has always used 1.0.
+//! The game lays out its interface in logical pixels: frame pixels divided by effective
+//! `gui_scale`. [`installed_content::settings::Display`] defines settings-file precedence. Windows then
+//! stretches the rasterized frame by display scale. [`Setting::MatchGame`] preserves both stages;
+//! dumps use the game's frame size and interface scale 1.0.
 //!
 //! Every screen-space layout runs in interface pixels, the device pixels
 //! divided by the frame's GUI scale: projected anchors are divided and the
@@ -38,11 +34,9 @@ pub enum Setting {
 /// features. Nearest selection can omit a whole stroke when resized.
 pub const PRESENTATION_FILTER: eframe::wgpu::FilterMode = eframe::wgpu::FilterMode::Linear;
 
-/// Keep GUI rasterisation separate from desktop presentation. `142224600`
-/// creates the device at the native window size; `1422206C0` projects GUI into
-/// that frame. Windows subsequently stretches the DPI-unaware window (see
-/// `Display::stretch`). Scaling translucent artwork before blending changes
-/// one-texel borders and glyph strokes, even at the same final screen size.
+/// Keep GUI rasterisation separate from desktop presentation. Project the interface into the native
+/// window-size frame, then apply Windows display stretch (`Display::stretch`). Scaling translucent
+/// artwork before blending changes one-texel borders and glyph strokes at the same final size.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Raster {
     pub ui_scale: f32,
@@ -76,7 +70,7 @@ impl Setting {
         let raster = match (self, display, monitors, &note) {
             (Self::MatchGame, Ok(display), Ok(monitors), None) => {
                 // Resolve each native stage directly, without a multiply/divide
-                // round trip through the screen scale (1422206C0, 142224600).
+                // round trip through the screen scale.
                 let frame = display.frame(monitors).expect("validated display frame");
                 Raster {
                     ui_scale: display

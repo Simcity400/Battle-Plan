@@ -3,12 +3,12 @@ use installed_content::pdxshader::program::Stage;
 use shader_pipeline::{binding, gpu};
 use std::ops::Range;
 
-/// 140223170/140FF3BB0/140FF3FC0 leave AmbientPosZ.w and the final zw unwritten.
+/// Scene constants leave AmbientPosZ.w and the final zw components unwritten.
 pub fn scene(pipeline: &gpu::Pipeline) -> Result<(), String> {
     both(pipeline, 0, 416, &[0..348, 352..408])
 }
 
-/// 141269930 only copies the light matrix after constructor140223170.
+/// Validate the initialized constant ranges retained by a tree caster's light-matrix update.
 pub fn tree_caster(pipeline: &gpu::Pipeline) -> Result<(), String> {
     both(
         pipeline,
@@ -43,8 +43,8 @@ pub fn both(
     Ok(())
 }
 
-/// PS b2 is replaced by the light grid at each world-wrap entry (141268D6B),
-/// then by the border selection/time/alpha block (141264562). The unknown
+/// PS b2 is replaced by the light grid at each world-wrap entry,
+/// then by the border selection/time/alpha block. The unknown
 /// border tail is inside its allocation, not a native out-of-bounds zero read.
 #[derive(Clone, Copy)]
 pub enum WorldPixelConstants {

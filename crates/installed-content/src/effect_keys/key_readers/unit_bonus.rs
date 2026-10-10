@@ -1,5 +1,4 @@
-//! CAddUnitBonusEffect's nested readers, extracted by
-//! captures/astra/effect-key-readers-2/readers_tail/forms.py from hoi4re.
+//! Unit bonus bodies use recorded subunits, categories, equipment and terrain.
 
 use crate::{
     key_names::KeyNames,
@@ -17,29 +16,18 @@ pub(crate) enum Node {
     SupportMultiplier,
 }
 
-// CUnitAdjuster::vf4 (141001740): own Fixed5 keys, then
-// ReportUnexpectedToken (1424AD100) with its block skip.
-const ADJUSTER_KEYS: &[&str] = &["attack", "defence", "movement"];
-
-fn contains(keys: &[&str], key: Option<&[u8]>) -> bool {
-    keys.iter().any(|name| key == Some(name.as_bytes()))
-}
-
 pub(super) fn shape(names: Option<&KeyNames>, node: Node, field: &Field<'_>) -> Shape<Node> {
     let keyword = field.keyword();
     let key = keyword.as_deref();
     match node {
         Node::Bonus if key == Some(b"name") => Shape::One,
         Node::Bonus => {
-            // CSubUnitStatBonus (140636660 -> 140636690) tries the
-            // real subunit (140AB5EE0), then category (140AB5BB0).
             let Some(key) = key else {
                 return Shape::Skip;
             };
             let Some(names) = names else {
                 return Shape::Unsettled(
-                    "CAddUnitBonusEffect 140636690: subunit and category names were not supplied"
-                        .into(),
+                    "unit bonus: subunit and category names were not supplied".into(),
                 );
             };
             let Some(sub_units) = &names.sub_units else {
@@ -53,7 +41,7 @@ pub(super) fn shape(names: Option<&KeyNames>, node: Node, field: &Field<'_>) -> 
                 Shape::Object(Node::Stats)
             } else if let Some(why) = sub_units.gap() {
                 Shape::Unsettled(format!(
-                    "CAddUnitBonusEffect 140636690: whether `{}` names a subunit or category is unknown: {why}",
+                    "unit bonus: whether `{}` names a subunit or category is unknown: {why}",
                     String::from_utf8_lossy(key)
                 ))
             } else {
@@ -61,16 +49,19 @@ pub(super) fn shape(names: Option<&KeyNames>, node: Node, field: &Field<'_>) -> 
             }
         }
         Node::Stats => {
-            // Shared SSubUnitStats dispatch; the terrain roster is the
-            // remaining dynamic lookup (141415B80 -> 14022F8F0).
             let empty = Default::default();
             match stat_key(key, names.map_or(&empty, |names| &names.effects.terrains)) {
                 StatKey::Scalar => return Shape::One,
                 StatKey::Transport if field.skips_block() => {
                     return Shape::Reported {
                         kind: crate::DiagnosticKind::Unsupported,
-                        report: "Deferred effect SSubUnitStats transport (141415B80): block-valued equipment lookup".into(),
-                        read: Box::new(Shape::Unsettled("SSubUnitStats transport block needs the equipment lookup's error path".into())),
+                        report:
+                            "Deferred effect unit stats transport: block-valued equipment lookup"
+                                .into(),
+                        read: Box::new(Shape::Unsettled(
+                            "unit stats transport block needs the equipment lookup's error path"
+                                .into(),
+                        )),
                     };
                 }
                 StatKey::Transport => return Shape::Current,
@@ -79,8 +70,7 @@ pub(super) fn shape(names: Option<&KeyNames>, node: Node, field: &Field<'_>) -> 
                 StatKey::Battalion => return Shape::Object(Node::SupportMultiplier),
                 StatKey::Unknown => {}
             }
-            // 141415B80's last lookup: real terrain (14022F8F0),
-            // then its CUnitAdjuster; a miss reaches 141415770's skip.
+
             let Some(key) = key else {
                 return Shape::Skip;
             };
@@ -88,13 +78,11 @@ pub(super) fn shape(names: Option<&KeyNames>, node: Node, field: &Field<'_>) -> 
                 return Shape::Skip;
             }
             let Some(names) = names else {
-                return Shape::Unsettled(
-                    "SSubUnitStats 141415B80: terrain names were not supplied".into(),
-                );
+                return Shape::Unsettled("unit stats: terrain names were not supplied".into());
             };
             if let Some(why) = &names.effects.terrains_gap {
                 Shape::Unsettled(format!(
-                    "SSubUnitStats 141415B80: whether `{}` names a terrain is unknown: {why}",
+                    "unit stats: whether `{}` names a terrain is unknown: {why}",
                     String::from_utf8_lossy(key)
                 ))
             } else {
@@ -102,7 +90,7 @@ pub(super) fn shape(names: Option<&KeyNames>, node: Node, field: &Field<'_>) -> 
             }
         }
         Node::Adjuster => {
-            if contains(ADJUSTER_KEYS, key) {
+            if matches!(key, Some(b"attack" | b"defence" | b"movement")) {
                 Shape::One
             } else {
                 Shape::Skip
@@ -118,9 +106,8 @@ pub(super) fn shape(names: Option<&KeyNames>, node: Node, field: &Field<'_>) -> 
             }),
         )
         .map(|()| Node::EquipmentPool),
-        // SSupportCategoryStatMultiplier::vf4 (1414157A0): category,
-        // display_as_percentage and add are scalar. Other fields use
-        // 1413D22A0 and ignore its return, so unknown fields skip nothing.
+
+        // Unknown support multiplier fields report without skipping their value.
         Node::SupportMultiplier => Shape::One,
     }
 }

@@ -369,7 +369,7 @@ fn supply_joins_fail_for_bad_censuses_but_do_not_compare_distinct_save_caches() 
     compare(&frame, &save, &Ok(&membership), &mut report);
     assert!(report.differences.is_empty());
     assert!(report.failed_comparisons.is_empty());
-    // The serializer's CCountry+484 filter omits an authenticated supply
+    // The serializer's owned-state count filter omits an authenticated supply
     // system. A parent province need not be a simulation node, but it must
     // still have a recorded vertex in the country's graph.
     save.economy.supply.as_mut().unwrap().clear();

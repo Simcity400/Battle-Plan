@@ -1,6 +1,6 @@
 //! Stored operands of the flying-aircraft map's count and admission.
 //!
-//! The game draws a count it recomputes on demand (140F63330), so its stored
+//! The game draws a count it recomputes on demand, so its stored
 //! inputs are recorded for the registered missions only: each mission's own
 //! operands, its base's containers for the wing's effective country and that
 //! country's volunteer hosts, the regional and country modifiers, and the
@@ -478,7 +478,8 @@ impl Sorties {
                 let Some(output) = self.reached.rows.get_mut(start..start + ids) else {
                     continue;
                 };
-                // in roster order, and the scenario draws index into it.
+                // The region's provinces are appended in roster order,
+                // and the scenario draws index into that order.
                 native::read_reached(memory, mission.operands.reached, output)?;
                 self.reached.len += ids;
                 (mission.reached_start, mission.reached_len) = (start, ids);
@@ -596,7 +597,7 @@ impl Sorties {
                 })?;
                 let region = mission.region.unwrap_or(0);
                 if mission.region.is_some() {
-                    // 140F04E40 would index weather record 0, which is unsupported.
+                    // Region zero would select unsupported weather record zero.
                     if region == 0 {
                         return Err("air mission region 0 has no supported weather record");
                     }
@@ -606,7 +607,7 @@ impl Sorties {
                         ..Key::default()
                     })?;
                 }
-                // 140F63380 adds the country terms only for a positive effective tag.
+                // Country terms apply only for a positive effective tag.
                 if (effective as i32) > 0 {
                     self.keys.push(Key {
                         scope: Scope::Country,

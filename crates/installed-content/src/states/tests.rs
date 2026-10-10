@@ -1,7 +1,7 @@
 use super::*;
 
-/// 140AAD450's nonpositive and duplicate IDs are registration skips. Other
-/// reading diagnostics must retain their own kinds for live consumers.
+/// Nonpositive and duplicate IDs are registration skips. Other reading
+/// diagnostics retain their own kinds for live consumers.
 #[test]
 fn loader_warnings_are_only_nonpositive_and_duplicate_id_skips() {
     use crate::DiagnosticKind;
@@ -77,6 +77,8 @@ fn loader_warnings_are_only_nonpositive_and_duplicate_id_skips() {
 
 #[test]
 fn state_reading_note_keeps_misread_kind() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let names = KeyNames::default();
     let context = Context {
         resource: &|_| Resource::Null,
@@ -95,6 +97,8 @@ fn state_reading_note_keeps_misread_kind() {
 
 #[test]
 fn state_field_recovery_causes_keep_offline_notes() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let input = b"@bad nope orphan=yes state={id=1 impassable=yes impassable=maybe provinces={1 100} resources={unknown=2} history={victory_points={1} buildings=4}}";
     let parsed = attributed(input);
     let state = &parsed.states[0].0;
@@ -159,6 +163,8 @@ fn attributed(input: &[u8]) -> ParsedStates {
 
 #[test]
 fn states_deferred_readers_affect_their_template_and_every_later_template() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let parsed = attributed(b"state = { id = 1 provinces = { 1 } } state = { id = 2 state_startup_effect = { free_operative = { operative = authored } } } state = { id = 3 }");
     assert_eq!(parsed.states.len(), 3);
     assert!(parsed.states[0].1.is_empty());
@@ -181,6 +187,8 @@ fn states_deferred_readers_affect_their_template_and_every_later_template() {
 
 #[test]
 fn states_settled_diagnostics_inside_one_template_affect_only_that_state() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let parsed = attributed(b"state = { id = 1 impassable = maybe } state = { id = 2 }");
     assert!(parsed.states[0].1[0].contains("not yes or no"));
     assert!(parsed.states[1].1.is_empty());
@@ -188,6 +196,8 @@ fn states_settled_diagnostics_inside_one_template_affect_only_that_state() {
 
 #[test]
 fn states_repeated_deferred_diagnostics_keep_each_templates_count() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let parsed = attributed(b"state = { id = 1 state_startup_effect = { free_operative = { operative = first } free_operative = { operative = second } } } state = { id = 2 history = { free_operative = { operative = third } } } state = { id = 3 }");
     assert_eq!(parsed.states[0].1.len(), 1, "{:?}", parsed.states[0].1);
     assert!(parsed.states[0].1[0].contains("count: 2"));
@@ -210,6 +220,8 @@ fn states_repeated_deferred_diagnostics_keep_each_templates_count() {
 
 #[test]
 fn states_unattributable_diagnostics_affect_every_template_in_the_file() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let parsed = attributed(b"state = { id = 1 } orphan tail state = { id = 2 }");
     assert_eq!(parsed.states.len(), 2);
     for (_, notes) in parsed.states {
@@ -223,6 +235,8 @@ fn states_unattributable_diagnostics_affect_every_template_in_the_file() {
 
 #[test]
 fn states_variable_definition_diagnostics_affect_every_template() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for input in [
         b"@a bad state = { id = 1 } state = { id = 2 }".as_slice(),
         b"@a = 1 @a = 2 state = { id = 1 } state = { id = 2 }".as_slice(),
@@ -273,6 +287,8 @@ fn states_variable_definition_diagnostics_affect_every_template() {
 
 #[test]
 fn states_file_diagnostics_without_kept_templates_remain_notes() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // A valid non-state item follows the failed definition, so recovery
     // consumes that item without reusing the key slot at end of text.
     let parsed = attributed(b"@a bad orphan = yes");
@@ -288,14 +304,11 @@ fn states_file_diagnostics_without_kept_templates_remain_notes() {
     assert_eq!(parsed.diagnostics.len(), 2);
 }
 
-const RESOURCES: [&str; 2] = ["chromium", "steel"];
+const RESOURCES: [&str; 3] = ["chromium", "steel", "sparkstone"];
 
-/// CStrategicResource::vf4 (140BBD150) through load_file (140AB2ED0):
-/// its three fields take one value, any other key skips its block
-/// (1424A9CE0), so a block there reads no name; `modifier` goes to the
-/// resource's CModifier, which 1406042A0 reads by the registry: a block
-/// there leaves the names after it unknown, which a lookup of a name no
-/// resource registered then answers with.
+/// Resource scalar fields take one value; unknown fields skip blocks
+/// without registering their contents. A modifier block depends on its
+/// registry, leaving later resource names unknown for unresolved lookups.
 #[test]
 fn resource_definitions_read_their_own_fields() {
     let mut resources = Resources::default();
@@ -325,20 +338,20 @@ fn resource_definitions_read_their_own_fields() {
         panic!("{:?}", resources.find(b"missing"));
     };
     assert!(
-            why.starts_with("`missing` names no strategic resource read, and b.txt line 1: modifier has a block value, which 1406042A0 reads"),
+            why.starts_with("`missing` names no strategic resource read, and b.txt line 1: modifier has a block value, which modifier value reader reads"),
             "{why}"
         );
 }
 
-/// load_file (140AB2ED0) registers every key as a C string (1424A6500):
-/// an empty name or one starting with a digit or `-` is token 0, which
-/// FindByName (140AB2DF0) finds for any name the lexer holds no token
-/// for. So a key no resource registered is known only while no resource
-/// holds token 0; then its amount is refused by name, and a block after
-/// it (read as the amount when found, skipped otherwise) leaves the
-/// state and the rest of the file unknown.
+/// Every resource key registers its C-string prefix. Empty names or those
+/// starting with a digit or minus sign have token 0, also used by names
+/// the lexer does not hold. An unregistered name is therefore known only
+/// without a token-zero resource; otherwise its amount is refused, and a
+/// following block leaves the current state and later file content unknown.
 #[test]
 fn resources_resolve_by_token() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut resources = Resources::default();
     read_resources(
         b"resources = { 1st = { } Steel = { } }",
@@ -364,9 +377,10 @@ fn resources_resolve_by_token() {
         states[0].resources,
         Ok(vec![("steel".to_owned(), 2), ("9".to_owned(), 3)])
     );
-    assert!(states[1].resources.as_ref().unwrap_err().starts_with(
-        "state 2: `bogus` is no strategic resource's name, and a resource holds token 0"
-    ));
+    assert_eq!(
+        states[1].resources.as_ref().unwrap_err(),
+        "state 2: `bogus` is no strategic resource's name, and a resource holds token 0 (a name empty or starting with a digit or `-`): token lookup finds that resource unless the lexer holds a token for `bogus`, which depends on every name the game registered"
+    );
     // A block there is the amount when found and skipped otherwise: the
     // file is refused by line, like any reading the port cannot follow.
     let error = parse_states(
@@ -413,73 +427,77 @@ fn parse(input: &[u8]) -> io::Result<(Vec<StateDefinition>, Vec<String>)> {
     })
 }
 
-const SAMPLE: &[u8] = br#"
+const ORIGINAL_STATE: &[u8] = br#"
 state = {
-    id = 1027
-    name = "STATE_1027" # Bataan
-    manpower = 2371662
-    resources = { chromium = 23.000 }
-    state_category = rural
-    state_category = town
+    id = 29
+    name = "ORIGINAL_RIDGE"
+    manpower = 4207
+    resources = { sparkstone = 7.000 }
+    state_category = test_hamlet
+    state_category = test_market
     history = {
-        owner = PHI
+        owner = MOD_A
         buildings = {
-            infrastructure = 2
-            air_base = 3
-            7351 = {
-                naval_base = 1
-                naval_headquarters = { level = 2 allowed = { has_dlc = "x" } }
+            workshop = 4
+            landing_strip = 2
+            18 = {
+                pier = 3
+                control_room = { level = 5 allowed = { always = yes } }
             }
         }
-        1939.1.1 = { buildings = { industrial_complex = 4 } }
+        1942.6.3 = { buildings = { storage = 6 } }
         if = { limit = { } }
-        victory_points = { 7351 2 }
-        victory_points = { 1415 1 }
+        victory_points = { 18 6 }
+        victory_points = { 11 4 }
     }
-    provinces = { 1415 4423 7351 }
-    local_supplies = 0.0
+    provinces = { 11 16 18 }
+    local_supplies = 1.25
 }
 "#;
 
 #[test]
 fn a_state_keeps_its_provinces_points_buildings_and_repeated_category() {
-    // `if` is CIfEffect's own key reader (141385BA0): read, not deferred.
-    let (mut states, misreads) = parse(SAMPLE).unwrap();
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    // Conditional effects consume their own body without deferral.
+    let (mut states, misreads) = parse(ORIGINAL_STATE).unwrap();
     assert!(misreads.is_empty(), "{misreads:?}");
     let state = states.remove(0);
-    assert_eq!(state.id, 1027);
-    assert_eq!(state.name_key.as_deref(), Ok("STATE_1027"));
-    // The engine's own files assign state_category twice; the later wins.
-    assert_eq!(state.category.as_deref(), Some("town"));
-    assert_eq!(state.manpower, Some(2_371_662));
-    assert_eq!(state.provinces, vec![1415, 4423, 7351]);
-    assert_eq!(state.resources, Ok(vec![("chromium".to_owned(), 23)]));
-    assert_eq!(state.victory_points, vec![(7351, 2), (1415, 1)]);
+    assert_eq!(state.id, 29);
+    assert_eq!(state.name_key.as_deref(), Ok("ORIGINAL_RIDGE"));
+    // A repeated state_category takes the later value.
+    assert_eq!(state.category.as_deref(), Some("test_market"));
+    assert_eq!(state.manpower, Some(4_207));
+    assert_eq!(state.provinces, vec![11, 16, 18]);
+    assert_eq!(state.resources, Ok(vec![("sparkstone".to_owned(), 7)]));
+    assert_eq!(state.victory_points, vec![(18, 6), (11, 4)]);
     assert_eq!(
-        state.buildings["infrastructure"],
+        state.buildings["workshop"],
         BuildingLevel {
-            level: 2,
+            level: 4,
             conditional: false
         }
     );
-    assert_eq!(state.buildings["air_base"].level, 3);
-    let province = &state.province_buildings[&7351];
-    assert_eq!(province["naval_base"].level, 1);
+    assert_eq!(state.buildings["landing_strip"].level, 2);
+    let province = &state.province_buildings[&18];
+    assert_eq!(province["pier"].level, 3);
     assert_eq!(
-        province["naval_headquarters"],
+        province["control_room"],
         BuildingLevel {
-            level: 2,
+            level: 5,
             conditional: true
         }
     );
     assert!(!state.impassable);
     // The dated and conditional blocks are listed, never applied.
-    assert_eq!(state.skipped_history, vec!["1939.1.1", "if"]);
-    assert!(!state.buildings.contains_key("industrial_complex"));
+    assert_eq!(state.skipped_history, vec!["1942.6.3", "if"]);
+    assert!(!state.buildings.contains_key("storage"));
 }
 
 #[test]
 fn an_impassable_state_without_history_buildings_still_parses() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let state = parse(
         br#"state = { id = 1022 name = "STATE_1022" impassable = yes
                  resources = { } history = { owner = INS } provinces = { 1230 } }"#,
@@ -495,10 +513,12 @@ fn an_impassable_state_without_history_buildings_still_parses() {
     assert!(state.skipped_history.is_empty());
 }
 
-/// 140AAD450 reads every `state` of a file; 140AAF580 appends every
-/// `provinces` block, repeats included, in order.
+/// Every state and provinces block is read, with province repeats retained
+/// in source order.
 #[test]
 fn every_state_and_every_provinces_block_is_read_in_order() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, _) = parse(
         br#"state = { id = 1 name = "A" provinces = { 3 1 } PROVINCES = { 2 1 } }
                 STATE = { id = 2 name = "B" provinces = { 9 } }"#,
@@ -509,12 +529,13 @@ fn every_state_and_every_provinces_block_is_read_in_order() {
     assert_eq!(states[1].id, 2);
 }
 
-/// 140AAF580 reads `name` by keyword in order (the last wins, `NAME`
-/// folds, a quoted `"name"` is no keyword) and through the file's
-/// variables (1424AB540); a quoted `"state"` is no state (140AAD450
-/// reports it, 1424AD100, and its skip 1424AD270 passes the block).
+/// Names read in keyword order: last wins, bare spellings fold, quoted
+/// keys reach no case, and variables resolve through the shared file.
+/// A quoted state key reports and skips its block.
 #[test]
-fn names_read_in_native_order_through_the_files_variables() {
+fn names_read_in_keyword_order_through_the_files_variables() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, misreads) = parse(
         br#"@n = "STATE_KEY"
                 @p = 5
@@ -549,6 +570,8 @@ fn names_read_in_native_order_through_the_files_variables() {
 /// `}` is a top-level key consuming the next `state`.
 #[test]
 fn names_follow_the_games_reading_when_the_text_leaves_the_tree() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, misreads) = parse(b"@a = 1 @a = 2 state = { id = 1 name = A }").unwrap();
     assert_eq!(states[0].name_key.as_deref(), Ok("A"));
     assert!(misreads[0].contains("variable `@a` is already taken"));
@@ -561,43 +584,47 @@ fn names_follow_the_games_reading_when_the_text_leaves_the_tree() {
     assert!(misreads[1].contains("key `}` has no operator"));
 }
 
-/// Vanilla's `history/states/1032 - Yanan.txt`: a dated entry's
-/// `IF` (any case) goes through CIfEffect (141385BA0), its `limit` a
-/// trigger, with no diagnostic, so the oracle's state history, which
-/// refuses any, reads it.
+/// Dated conditionals accept keywords in any case, read their limits as
+/// triggers and preserve the following start-state fields without notes.
 #[test]
 fn a_dated_conditional_in_history_reads_without_diagnostics() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, misreads) = parse(
         br#"state = {
-                id = 1032
-                name = "STATE_1032"
-                manpower = 4670800
-                state_category = town
+                id = 31
+                name = "ORIGINAL_PLAIN"
+                manpower = 6103
+                state_category = test_market
                 history = {
-                    owner = PRC
-                    add_core_of = PRC
-                    1936.1.1 = {
+                    owner = MOD_A
+                    add_core_of = MOD_A
+                    1944.2.5 = {
                         IF = {
-                            limit = { has_dlc = "No Compromise, No Surrender" }
-                            transfer_state_to = XIC
-                            add_core_of = XIC
+                            limit = { always = yes }
+                            if = {
+                                limit = { always = no }
+                                transfer_state_to = MOD_B
+                            }
                         }
                     }
-                    victory_points = { 8049 3 }
-                    buildings = { infrastructure = 1 10733 = { bunker = 2 } }
+                    victory_points = { 24 5 }
+                    buildings = { workshop = 3 26 = { tower = 1 } }
                 }
-                provinces = { 1062 1588 8049 }
+                provinces = { 23 24 26 }
             }"#,
     )
     .unwrap();
     assert!(misreads.is_empty(), "{misreads:?}");
-    assert_eq!(states[0].id, 1032);
-    assert_eq!(states[0].provinces, vec![1062, 1588, 8049]);
-    assert_eq!(states[0].victory_points, vec![(8049, 3)]);
+    assert_eq!(states[0].id, 31);
+    assert_eq!(states[0].provinces, vec![23, 24, 26]);
+    assert_eq!(states[0].victory_points, vec![(24, 5)]);
 }
 
 #[test]
 fn conditional_history_bodies_preserve_following_fields_and_next_state() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, misreads) = parse(
         br#"state = {
             id = 7 name = "SYNTHETIC_FIRST"
@@ -647,13 +674,13 @@ fn conditional_history_bodies_preserve_following_fields_and_next_state() {
     assert_eq!(second.province_buildings[&22]["bunker"].level, 1);
 }
 
-/// 140AAF580's own readers: `color` skipped only on `{` (1424AD1A0);
-/// `provinces` counts nested braces and keeps only number tokens
-/// (1424A7A90 kind 0xC) through ParseTokenInt32; `impassable_ignored_links`
-/// a list (1401F91B0); `state_startup_effect` an effect; a resource
-/// amount by ParseTokenInt32 and an unknown resource reported.
+/// Color skips only a current block; provinces count braces and retain
+/// number tokens; ignored links read a list, and startup effects read a
+/// body. Resource amounts convert to signed integers; unknown names report.
 #[test]
 fn a_templates_own_readers_consume_what_the_game_consumes() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, misreads) = parse(
         br#"state = {
                 color = { 1 2 3 }
@@ -684,13 +711,13 @@ fn a_templates_own_readers_consume_what_the_game_consumes() {
     );
 }
 
-/// load_dated_block (14158F190) takes any key whose ParseTokenInt32 is
-/// not 0 as a dated entry; 14158F3B0 keeps a victory_points list of
-/// exactly two `%i` values; 14158DFC0 reads a positive key as a
-/// province, caps levels at the define, and reads nothing from a
-/// buildings value that is no block.
+/// Nonzero integer history keys open dated entries. Victory points keep
+/// exactly two integer values; positive building keys open province
+/// entries, levels cap at the define, and non-block buildings read no entries.
 #[test]
 fn history_commands_keep_what_the_game_keeps() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, misreads) = parse(
         br#"state = { id = 1 name = N history = {
                 5 = { owner = X } -1 = { } 0 = { }
@@ -730,16 +757,15 @@ fn history_commands_keep_what_the_game_keeps() {
     assert_eq!(states[0].buildings["infrastructure"].level, 15);
 }
 
-/// ReportUnexpectedToken (1424AD100) calls RecordError (1424ACF90),
-/// whose SkipBlockResolvingVariables (1424AD270) passes a block on the
-/// current token. So 140AAD450 skips a top-level block that is no
-/// `state`, a state inside it included; 140AAF580's resource loop skips
-/// an unknown resource's block, so its contents are no fields of the
-/// after a `buildings` value that is no block only when the current token
-/// is `{` (a key without an operator consumes it in the operator's
-/// place, 1424AC5E0).
+/// Unexpected keys skip a current block: top-level non-state blocks and
+/// unknown resources cannot expose their contents as state fields.
+/// Unknown building-entry fields also skip their blocks. After a non-block
+/// buildings value, skipping occurs only if the current token is `{`;
+/// a key without an operator can consume that brace as its operator.
 #[test]
 fn reported_keys_skip_their_blocks() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, misreads) = parse(
         b"wrapper = { state = { id = 5 name = X } } state = { id = 6 name = Y
                 resources = { bogus = { name = Z provinces = { 7 } } steel = 2 }
@@ -770,6 +796,8 @@ fn reported_keys_skip_their_blocks() {
 /// definition of a repeated id can be determined from the prefix.
 #[test]
 fn an_unsettled_state_is_not_published() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let error = parse(
             b"state = { id = 1 name = A }
               state = { id = 2 name = B state_startup_effect = { free_operative = { x @y = 1 } } provinces = { 3 } }
@@ -778,7 +806,9 @@ fn an_unsettled_state_is_not_published() {
         .unwrap_err()
         .to_string();
     assert!(
-        error.starts_with("line 2: variable @y is in a block read by a trigger"),
+        error.starts_with(
+            "line 2: variable @y is in a trigger or effect block that also holds anonymous values"
+        ),
         "{error}"
     );
     assert!(
@@ -795,10 +825,12 @@ fn an_unsettled_state_is_not_published() {
     assert!(error.contains("(no id read yet)"), "{error}");
 }
 
-/// `id` by `%i`, -1 when it stores nothing (140AAF580) or is absent
-/// (140AACE20 -> 140AAC7D0). 140AAD450 discards nonpositive ids.
+/// IDs scan as signed integers, default to -1 when absent or unconverted,
+/// and discard nonpositive templates.
 #[test]
 fn only_positive_signed_ids_enter_the_state_database() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, notes) = parse(
         br#"
             state = { id = x name = bad provinces = { 1 } }
@@ -825,11 +857,12 @@ fn only_positive_signed_ids_enter_the_state_database() {
     assert!(parse(b"# no templates\n").unwrap().0.is_empty());
 }
 
-/// 140AAF580 passes state names through ReadStringInto (1424ABB50),
-/// including variables and later assignments. Only stored bytes need
-/// to be representable as UTF-8 (1424B05E0 stops at the first NUL).
+/// State names resolve variables and retain later assignments. Only the
+/// stored C-string prefix before the first NUL must be representable as UTF-8.
 #[test]
-fn state_names_use_the_native_string_conversion() {
+fn state_names_keep_c_string_prefixes_and_line_feed_replacement() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, _) = parse(
         b"@n = \"cut\0\xfe\"
             state = { id = 1 name = \"line\nfeed\" }
@@ -853,11 +886,12 @@ fn state_names_use_the_native_string_conversion() {
     assert_eq!(states[4].name_key.as_deref(), Ok("last"));
 }
 
-/// State fields dispatch by keyword (140AAF580, lexer 1424A7A90).
-/// Impassability follows 1424ABCA0/1424B06E0: invalid values leave the
-/// previous byte intact. The category's name is a C string (0x3618).
+/// State fields dispatch by keyword. Invalid impassability values retain
+/// the previous value; category lookup uses its C-string prefix.
 #[test]
 fn state_fields_keep_keyword_dispatch_and_failed_boolean_values() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, notes) = parse(b"state = { id = 1 name = N
             state_category = \"\xfe\" STATE_CATEGORY = \"Town\0suffix\" \"state_category\" = ignored
             IMPASSABLE = yes impassable = maybe \"impassable\" = no
@@ -877,11 +911,9 @@ fn state_fields_keep_keyword_dispatch_and_failed_boolean_values() {
     assert!(notes.iter().all(|note| note.contains("not yes or no")));
 }
 
-/// The loader's path: resources from `common/resources` (140AB2ED0, a
-/// name found without case), the level cap from the defines, and the
-/// provinces checked against the map `map/default.map` names (140AAF580
-/// against CMap +0x274): a three-row `definition.csv` holds provinces 1
-/// and 2, so province 3 stays out of the state.
+/// The loader resolves resource names without case, reads the level cap
+/// from defines and checks membership against map definitions. Three rows
+/// hold provinces 1 and 2 plus the null record, so province 3 is excluded.
 #[cfg(feature = "test-support")]
 #[test]
 fn the_loader_reads_resources_and_the_building_cap_from_content() {

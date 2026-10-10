@@ -1,4 +1,4 @@
-//! Source inventories consumed by CountryDoctrineState's tactic lookup (1413B3560).
+//! Source inventories consumed by the country-doctrine tactic lookup.
 
 use super::*;
 use crate::{gui::native::BoundLocalization, parser::Item};
@@ -18,14 +18,14 @@ pub struct DefinitionSources {
 #[derive(Clone, Debug, Default)]
 pub struct RewardSource {
     pub tactics: Vec<Vec<u8>>,
-    /// Zero selects NDoctrines.DEFAULT_REWARD_MASTERY (1409D7F50).
+    /// Zero selects NDoctrines.DEFAULT_REWARD_MASTERY.
     pub mastery: i64,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct TacticSources {
     /// The loaders append the reused pointer even for duplicate tokens
-    /// (14012F900/1401310E0). Each occurrence observes the final object.
+    /// Each occurrence observes the final object.
     pub grand_order: Vec<Token>,
     pub sub_order: Vec<Token>,
     pub grand: BTreeMap<Token, DefinitionSources>,
@@ -39,7 +39,7 @@ pub struct TacticSources {
 }
 
 fn tactics(fields: &[Item]) -> Vec<Vec<u8>> {
-    // 141517770 copies the value slot's C string, without ReadStringInto.
+    // Copy first-NUL value text directly without a string-field read.
     fields
         .iter()
         .filter(|field| field.keyword_is("enable_tactic"))
@@ -68,14 +68,12 @@ pub(super) fn append(sources: &mut TacticSources, item: &Item, kind: u8) {
     definition.tactics.extend(tactics(fields));
     for field in fields {
         if field.keyword_is("available") {
-            // CDoctrineBaseTemplate+208 owns this conjunction; repeated
-            // ReadObjectFromParser calls append children (1409BF8C0).
+            // Repeated unlock conjunctions append children to the same object.
             definition
                 .available
                 .extend(field.value.items().unwrap_or_default().iter().cloned());
         } else if kind == 0 && field.keyword_is("tracks") {
-            // Uniform statement reader 1409BFE50 keeps unassigned scalar
-            // entries; its native dispatch skipped assigned/nested forms.
+            // Statement reads retain unassigned scalars; assigned and nested forms skip.
             let requested = field
                 .value
                 .items()
@@ -92,7 +90,7 @@ pub(super) fn append(sources: &mut TacticSources, item: &Item, kind: u8) {
                     .filter(|token| sources.tracks.contains_key(token)),
             );
         } else if kind == 1 && field.keyword_is("track") {
-            // 1409D89D0 appends only resolved non-null track pointers.
+            // Append only resolved, non-null track references.
             let values: Vec<_> = if let Some(items) = field.value.items() {
                 items
                     .iter()
@@ -109,8 +107,7 @@ pub(super) fn append(sources: &mut TacticSources, item: &Item, kind: u8) {
                     .filter(|token| sources.tracks.contains_key(token)),
             );
         } else if kind == 0 && field.keyword_is("milestones") {
-            // 1409C06E0 appends fresh records. GetMilestoneForTrackIndex
-            // 1409C0BD0 pairs this array by the resolved track index.
+            // Append fresh milestone records, paired by resolved track index.
             definition.milestones.extend(
                 field
                     .value
@@ -120,7 +117,7 @@ pub(super) fn append(sources: &mut TacticSources, item: &Item, kind: u8) {
                     .map(|milestone| tactics(milestone.value.items().unwrap_or_default())),
             );
         } else if kind == 1 && field.keyword_is("rewards") {
-            // 1409D9920 appends every reward, including repeated keys.
+            // Append every reward, including repeated keys.
             for reward in field.value.items().unwrap_or_default() {
                 let fields = reward.value.items().unwrap_or_default();
                 let mut source = RewardSource {
@@ -130,7 +127,7 @@ pub(super) fn append(sources: &mut TacticSources, item: &Item, kind: u8) {
                 for field in fields.iter().filter(|field| field.keyword_is("mastery")) {
                     if let Some(value) = field.value.scalar().and_then(crate::fixed5::script_fixed5)
                     {
-                        source.mastery = value; // ReadFixed5 retains the old value on failure.
+                        source.mastery = value; // Failed fixed5 scans retain the old value.
                     }
                 }
                 definition.rewards.push(source);

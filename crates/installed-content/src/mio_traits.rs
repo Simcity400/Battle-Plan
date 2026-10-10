@@ -1,4 +1,4 @@
-//! MIO trait names and bonuses held by the native template reader and include pass.
+//! MIO trait names and bonuses held by the template reader and include pass.
 
 use crate::{
     ResolvedLayers,
@@ -17,12 +17,12 @@ use std::io;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TraitName {
     pub token: String,
-    /// CTraitTemplate +0x18, optional replacement for `<organisation>_<trait>`.
+    /// Optional replacement for `<organisation>_<trait>`.
     pub name: String,
     deleted: Vec<Token>,
-    /// CTraitTemplate+0x130, equipment and production bonuses in stored order.
+    /// Equipment and production bonuses in stored order.
     pub bonuses: Vec<Bonus>,
-    /// CTraitTemplate+0x160, read through the shared CModifier reader.
+    /// Organisation modifiers read through the shared modifier reader.
     pub organisation_modifiers: modifiers::Modifiers,
     /// Shared modifier-copy/effective-emptiness API needed only by inheritance.
     pub modifier_inheritance_refusal: Option<String>,
@@ -34,7 +34,7 @@ pub struct Bonus {
     pub value: i64,
 }
 
-// 140634A50's seven production tokens. Equipment uses its shared registry.
+// Seven production tokens. Equipment uses its shared registry.
 pub fn is_production_stat(name: &str) -> bool {
     matches!(
         name,
@@ -53,7 +53,7 @@ fn equipment_bonus(bonus: &Bonus) -> bool {
 }
 
 fn combine(destination: &mut Vec<Bonus>, source: impl IntoIterator<Item = Bonus>) {
-    // 140632880 combines in first-insertion order with wrapping fixed5 addition.
+    // Combine in first-insertion order with wrapping fixed5 addition.
     for bonus in source {
         if let Some(old) = destination.iter_mut().find(|old| old.name == bonus.name) {
             old.value = old.value.wrapping_add(bonus.value);
@@ -64,7 +64,6 @@ fn combine(destination: &mut Vec<Bonus>, source: impl IntoIterator<Item = Bonus>
 }
 
 impl TraitName {
-    // GetLocalizedName 140A405B0 -> 141399FE0/14146B580/14146B1D0.
     // The caller supplies recorded lexer spellings and picks the first key
     // that its localisation catalogue defines; this is not scope expansion.
     pub fn name_candidates(
@@ -86,14 +85,14 @@ impl TraitName {
         result
     }
 
-    // 140A417D0 -> 140A41DE0: nonempty local values win; deletion suppresses
-    // only copying an unset name. The inherited record's parent is the child.
+    // Nonempty local values win; deletion suppresses only copying an unset
+    // name. The inherited record's parent is the child.
     fn inherit(&mut self, parent: &Self) {
         if self.name.is_empty() && !self.deleted.contains(&Token::c_str(b"name")) {
             self.name.clone_from(&parent.name);
         }
-        // 140A417D0: a local bonus in a category replaces that whole inherited
-        // category; deletion removes it too. The remaining parent values add.
+        // A local bonus in a category replaces that whole inherited category;
+        // deletion removes it too. The remaining parent values add.
         let equipment = self.bonuses.iter().any(equipment_bonus)
             || self.deleted.contains(&Token::c_str(b"equipment_bonus"));
         let production = self.bonuses.iter().any(|bonus| !equipment_bonus(bonus))
@@ -123,7 +122,7 @@ impl TraitName {
                 .clone_from(&parent.organisation_modifiers);
             if parent.organisation_modifiers != modifiers::Modifiers::default() {
                 self.modifier_inheritance_refusal = Some(
-                    "MIO organization_modifier inheritance needs shared ModifierAccumulator_CopyAssign tooltip-table copying (140A417D0/14054A5B0)".into(),
+                    "MIO organization_modifier inheritance needs shared modifier tooltip-table copying".into(),
                 );
             }
         } else if !self
@@ -134,7 +133,7 @@ impl TraitName {
             && parent.organisation_modifiers != modifiers::Modifiers::default()
         {
             self.modifier_inheritance_refusal = Some(
-                "MIO organization_modifier inheritance needs shared IsEffectivelyEmpty eligibility gate (140A417D0/140600440)".into(),
+                "MIO organization_modifier inheritance needs shared modifier effective-emptiness eligibility gate".into(),
             );
         }
     }
@@ -157,7 +156,7 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// 140A44680 scans the prepared ordinary-trait array from its first row.
+    /// Scan the prepared ordinary-trait array from its first row.
     /// The separately stored initial trait is not in that lookup.
     pub fn trait_definition(
         &self,
@@ -183,8 +182,8 @@ impl Catalog {
             }))
     }
 
-    // 140167C50 resets a repeated template in place and does not append its
-    // pointer to database +0x60 twice: retain first creation order.
+    // A repeated template resets in place without appending its pointer
+    // twice: retain first creation order.
     fn insert(&mut self, row: Organisation) {
         let token = Token::c_str(row.token.as_bytes());
         if let Some(old) = self
@@ -198,8 +197,8 @@ impl Catalog {
         }
     }
 
-    // Database finalizer 140A44470 walks creation order once, without a
-    // recursive include walk. 140A45170 merges each parent's ordinary traits.
+    // Database finalization walks creation order once, without a recursive
+    // include walk, merging each parent's ordinary traits.
     fn finalize(&mut self) {
         for index in 0..self.organisations.len() {
             let Some(include) = self.organisations[index].include.as_deref() else {
@@ -212,15 +211,14 @@ impl Catalog {
                 .position(|row| Token::c_str(row.token.as_bytes()) == token)
             else {
                 self.warnings.push(format!(
-                    "MIO {} includes missing {include} (140A42D80)",
+                    "MIO {} includes missing {include}",
                     self.organisations[index].token
                 ));
                 continue;
             };
             if parent == index {
-                self.refusals.push(format!(
-                    "MIO {include} includes itself (140A45170, count: 1)"
-                ));
+                self.refusals
+                    .push(format!("MIO {include} includes itself (count: 1)"));
                 continue;
             }
             let traits = self.organisations[parent].traits.clone();
@@ -249,11 +247,11 @@ impl Catalog {
                 } else {
                     let mut row = inherited;
                     // Copying into a fresh child never copies the parent's
-                    // delete_included_values list (140A417D0).
+                    // `delete_included_values` list.
                     row.deleted.clear();
                     if row.organisation_modifiers != modifiers::Modifiers::default() {
                         row.modifier_inheritance_refusal = Some(
-                            "MIO organization_modifier inheritance needs shared ModifierAccumulator_CopyAssign tooltip-table copying (140A417D0/14054A5B0)".into(),
+                            "MIO organization_modifier inheritance needs shared modifier tooltip-table copying".into(),
                         );
                     }
                     child.traits.push(row);
@@ -308,8 +306,8 @@ fn trait_name(items: &[Item]) -> io::Result<TraitName> {
                 .organisation_modifiers
                 .read_all(field.value.items().unwrap_or_default());
         } else if field.keyword_is("equipment_bonus") || field.keyword_is("production_bonus") {
-            // 140634B70 rejects a repeated stat in one block. 140A41020 then
-            // rejects the entire block if any stored stat has the wrong category.
+            // Reject a repeated stat in one block, then reject the entire
+            // block if any stored stat has the wrong category.
             let mut bonuses = Vec::new();
             for item in field.value.items().unwrap_or_default() {
                 let Some(name) = item.keyword().map(|name| name.folded()) else {
@@ -337,9 +335,9 @@ fn trait_name(items: &[Item]) -> io::Result<TraitName> {
                 combine(&mut result.bonuses, bonuses);
             }
         } else if field.keyword_is("position") {
-            // 140A3D660 always consumes seven raw tokens, x = n y = n }.
-            // As in focus::parse, the shared raw-list reader is exact only
-            // for that reached form; refuse malformed token recovery.
+            // A position consumes seven raw tokens: x = n y = n }. As in
+            // focus::parse, the shared raw-list reader is exact only for that
+            // reached form; refuse malformed token recovery.
             let parts = field.value.items().unwrap_or_default();
             let valid = parts.len() == 6
                 && parts[0]
@@ -356,7 +354,7 @@ fn trait_name(items: &[Item]) -> io::Result<TraitName> {
                 && parts[5].number();
             if !valid {
                 return Err(invalid(
-                    "MIO trait position: unsupported ReadIntPoint token recovery (140A3D660, count: 1)",
+                    "MIO trait position: unsupported integer-point token recovery (count: 1)",
                 ));
             }
         }
@@ -370,13 +368,13 @@ fn parse(input: &[u8], names: &KeyNames) -> io::Result<(Vec<Organisation>, Vec<S
     let read = native::read(
         input,
         native::Mode::KeepMark,
-        // 140167C50 stops the file loop on either close or end.
+        // The file loop stops on either a closing brace or the end of text.
         native::Top::Persistent(Node::File),
         Some(names),
         &mut |node, field| match node {
             Node::File => Shape::Object(Node::Organisation),
-            // Organisation 140A44C00, trait 140A41020; consumed fields that do
-            // not affect names still use their native readers, including @names.
+            // Consumed organisation and trait fields that do not affect names
+            // still use their field readers, including variable references.
             Node::Organisation => match field.keyword().as_deref() {
                 Some(
                     b"name" | b"background" | b"icon" | b"include" | b"research_bonus"
@@ -431,11 +429,11 @@ fn parse(input: &[u8], names: &KeyNames) -> io::Result<(Vec<Organisation>, Vec<S
                 Some(b"num_parents_needed") => Shape::One,
                 _ => Shape::Skip,
             },
-            // STreeFlavorText 140A3D3C0 ignores unknown keys without error skip.
+            // Tree flavour text ignores unknown keys without an error skip.
             Node::Flavor => Shape::One,
             Node::Mtth => native::mean_time_to_happen(field),
-            // CTraitBonus 140634B70 consumes known stats with ReadFixed5;
-            // ReportUnexpectedToken skips every other field's block.
+            // Bonus fields consume known stats as fixed5;
+            // unexpected fields have their blocks skipped.
             Node::Bonus => {
                 if field.keyword().is_some_and(|name| {
                     crate::equipment::stat_index(&name).is_some()
@@ -478,8 +476,8 @@ fn parse(input: &[u8], names: &KeyNames) -> io::Result<(Vec<Organisation>, Vec<S
                 row.overrides
                     .push(trait_name(field.value.items().unwrap_or_default())?);
             } else if field.keyword_is("initial_trait") {
-                // Native 140A44C00 assigns fixed token initial_trait (0x3FE6)
-                // and stores it separately. Validate its consumed fields too.
+                // Assign the fixed `initial_trait` token and store it separately.
+                // Validate its consumed fields too.
                 let _ = trait_name(field.value.items().unwrap_or_default())?;
             } else if field.keyword_is("remove_trait") {
                 row.removed.extend(

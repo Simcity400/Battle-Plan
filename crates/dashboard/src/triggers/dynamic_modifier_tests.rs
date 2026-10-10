@@ -24,6 +24,8 @@ fn fixture() -> DecodedFrame {
 
 #[test]
 fn dynamic_modifier_synthetic_channel_scope() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // Independently authored channel-style rules exercise a direct state
     // condition and a state condition inside an OR with absent flag branches.
     let mut f = frame(&[(701, 17, "QXZ", 1, "QXZ", "")], &[]);
@@ -61,7 +63,9 @@ fn dynamic_modifier_synthetic_channel_scope() {
 }
 
 #[test]
-fn dynamic_modifier_state_container_scans_targets_in_native_order() {
+fn dynamic_modifier_state_container_scans_targets_in_container_order() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = fixture();
     let TableView::Complete(TableRows::CountryLinks(links)) =
         &mut *f.tables[TableId::CountryLinks.index()]
@@ -74,7 +78,7 @@ fn dynamic_modifier_state_container_scans_targets_in_native_order() {
     });
     *f.tables[TableId::StateDynamicModifiers.index()] =
         TableView::Complete(TableRows::StateDynamicModifiers(vec![
-            // Deliberately out of wire order: ordinal is native container order.
+            // Deliberately out of wire order: ordinal is stored container order.
             StateDynamicModifierRow {
                 state: 58,
                 ordinal: 2,
@@ -110,7 +114,7 @@ fn dynamic_modifier_state_container_scans_targets_in_native_order() {
     }
     // No target: stop at the first definition match, even though a later
     // entry has no target. Country targets ignore scope_state; state targets
-    // ignore scope_country (HasModifierForScope@140552A60).
+    // ignore scope_country.
     assert_eq!(
         check(&f, "", 11, "58 = { has_dynamic_modifier = custom }"),
         Eval::False
@@ -128,6 +132,8 @@ fn dynamic_modifier_state_container_scans_targets_in_native_order() {
 
 #[test]
 fn dynamic_modifier_country_container_uses_aliases_and_variable_targets() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = with_variables(
         fixture(),
         &[
@@ -233,6 +239,8 @@ fn dynamic_modifier_country_container_uses_aliases_and_variable_targets() {
 
 #[test]
 fn dynamic_modifier_reader_defaults_and_exact_definition_names() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = with_variables(fixture(), &[(1, 100, &[])]);
     *f.tables[TableId::Characters.index()] =
         TableView::Complete(TableRows::Characters(vec![CharacterRow {
@@ -246,7 +254,7 @@ fn dynamic_modifier_reader_defaults_and_exact_definition_names() {
             scope_country: u32::MAX,
             ..Default::default()
         }]));
-    // 140434790 accepts a scalar. 1404381A0 reads just modifier and scope;
+    // Accept a scalar or read just modifier and scope from a block;
     // later modifier strings replace earlier ones; no scope defaults to 0.
     for trigger in [
         "has_dynamic_modifier = custom",
@@ -257,7 +265,7 @@ fn dynamic_modifier_reader_defaults_and_exact_definition_names() {
         "has_dynamic_modifier = { modifier = custom scope = absent_variable }",
         "has_dynamic_modifier = { modifier = custom scope = 1.5 }",
         "has_dynamic_modifier = { modifier = custom scope = ROOT scope = 0 }",
-        // 0x20000014 decoded as a character (140537A10 -> 14052DAF0):
+        // Decode the tagged value as a character:
         // the fresh auxiliary scope carries neither country nor state.
         "has_dynamic_modifier = { modifier = custom scope = 5368.70932 }",
     ] {
@@ -271,7 +279,7 @@ fn dynamic_modifier_reader_defaults_and_exact_definition_names() {
     ] {
         assert_eq!(check(&f, "", 11, trigger), Eval::False, "{trigger}");
     }
-    // A repeated nonliteral CScopedVariable read retains native fields;
+    // A repeated nonliteral scoped-variable read retains earlier fields;
     // this zero-reach form stays a named refusal, rather than last-wins.
     let why = check(
         &f,
@@ -282,13 +290,15 @@ fn dynamic_modifier_reader_defaults_and_exact_definition_names() {
     .decided()
     .unwrap_err();
     assert!(
-        why.contains("scope is assigned 2 times") && why.contains("140539B50"),
+        why.contains("scope is assigned 2 times") && why.contains("keeps fields"),
         "{why}"
     );
 }
 
 #[test]
 fn dynamic_modifier_missing_tables_and_owner_links_remain_named() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = fixture();
     for (id, table_name, trigger) in [
         (
@@ -339,6 +349,8 @@ fn dynamic_modifier_missing_tables_and_owner_links_remain_named() {
 
 #[test]
 fn dynamic_modifier_country_index_at_5000_countries() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let tags: Vec<_> = (0..5000)
         .map(|id| {
             format!(

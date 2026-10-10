@@ -15,7 +15,7 @@ fn trailing(text: &mut String, count: usize) {
 }
 
 impl Renderer<'_, '_, '_> {
-    // CCompleteProjectEffect@140494060 -> 14144AC10. Template output only;
+    // Template output only;
     // iteration_output belongs to execution. Native outer indent is 2 spaces.
     pub(in crate::effect_description::technology) fn complete_project_output(
         &mut self,
@@ -60,7 +60,7 @@ impl Renderer<'_, '_, '_> {
             self.char_native_text(b"SPECIAL_PROJECT_RESEARCH_OUTPUT", &[], scopes, false)?;
         trailing(&mut text, 1);
 
-        // 141A26100: country, scientist, facility state, with two trailing
+        // country, scientist, facility state, with two trailing
         // LFs per nonempty body. ROOT/PREV are THIS; FROM is the project.
         if !output.country_effects.is_empty() {
             let selected = self
@@ -79,7 +79,7 @@ impl Renderer<'_, '_, '_> {
                         .repoint_this(selected, Scope::Character(character))?;
                     self.project_effect_output(&mut text, &output.scientist_effects, selected)?;
                 }
-                Ok(None) => {} // 141A26270 omits the body for a null scientist.
+                Ok(None) => {} // omits the body for a null scientist.
                 Err(why) => self.project_output_refusal(why),
             }
         }
@@ -92,8 +92,8 @@ impl Renderer<'_, '_, '_> {
                     let selected = self
                         .evaluator()?
                         .repoint_this(selected, Scope::State(state))?;
-                    // 141A26900 stores the already-held province id in TLS,
-                    // facility_province_id@142A198C8, then describes the body.
+                    // stores the already-held province id in TLS,
+                    // then describes the body.
                     self.evaluator()?.store_description_temp(
                         b"facility_province_id".to_vec(),
                         i64::from(province) * 100_000,
@@ -104,7 +104,7 @@ impl Renderer<'_, '_, '_> {
                         selected,
                     )?;
                 }
-                Ok(None) => {} // 141A25EC0 omits a null province.
+                Ok(None) => {} // omits a null province.
                 Err(why) => self.project_output_refusal(why),
             }
         }
@@ -164,7 +164,7 @@ impl Renderer<'_, '_, '_> {
 
     fn project_output_refusal(&mut self, why: String) {
         self.refuse(
-            "CCompleteProjectEffect@?A0x9898cfbe@NProject",
+            "project completion",
             format!("key complete_special_project: {why}"),
         );
     }
@@ -183,8 +183,8 @@ impl Renderer<'_, '_, '_> {
         Ok(())
     }
 
-    // 1404926B0: ResolveCharacter scientist first; otherwise first native
-    // scientist-roster entry with specialization level >=1 (14144DDB0).
+    // Resolve the scientist first; otherwise select the first
+    // scientist-roster entry with specialization level >=1.
     fn project_output_scientist(
         &self,
         item: &Item,
@@ -198,7 +198,7 @@ impl Renderer<'_, '_, '_> {
             .and_then(|field| field.value.scalar())
             && let Some(character) = self.effect_character_target(Some(operand), scopes)?
         {
-            // The shared family helper proves the same CCharacter+0xC0 gate.
+            // The shared family helper proves the same character gate.
             return Ok(self
                 .char_scientist(Scopes::of(Scope::Character(character.id)))?
                 .map(|row| row.id));
@@ -239,7 +239,7 @@ impl Renderer<'_, '_, '_> {
             .map(|row| row.character))
     }
 
-    // 140492510: native program order, explicit state first, then matching
+    // native program order, explicit state first, then matching
     // specialization. RaidFacilities holds that exact hourly roster/order.
     fn project_output_program(
         &self,
@@ -359,7 +359,7 @@ impl Renderer<'_, '_, '_> {
         }
         let mut names = Vec::new();
         for list in lists {
-            // NDlcLocked readers attach the final limit to the entire block.
+            // DLC-gated readers attach the final limit to the entire block.
             let fields = children(list);
             if let Some(limit) = fields.iter().rfind(|item| item.keyword_is("limit"))
                 && !self.project_output_condition(children(limit), Scopes::empty())?
@@ -406,7 +406,7 @@ impl Renderer<'_, '_, '_> {
                         name
                     }
                 };
-                // 140BBA630 -> 140BBA780 uses current viewing country,
+                // uses current viewing country,
                 // not the project's owner; neither name undergoes expansion.
                 names.push(self.technology_country_name(
                     name,

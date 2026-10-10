@@ -213,7 +213,7 @@ fn merging_a_shard_rebases_every_palette_slot() {
 
 #[test]
 fn a_mesh_setting_overrides_one_shape_and_one_material_index() {
-    // `buildings.gfx:357-384` gives facility_landShape three texture sets,
+    // This synthetic facility model uses three texture sets,
     // one per material index; applying them all would repaint the model.
     let setting = |name: &str, index: i32| mesh::MeshSetting {
         name: name.to_owned(),
@@ -248,7 +248,7 @@ fn the_sprawl_gate_is_water_relative_and_independent_of_transient_map_objects() 
     camera.defines.map_objects_cutoff = 1.0;
     assert!(
         draws_city_sprawl(&camera),
-        "14127B3F0 does not gate city-sprawl actors"
+        "The building update cutoff does not gate city-sprawl actors"
     );
 }
 
@@ -559,10 +559,10 @@ fn aircraft_callbacks_with_geometry(meshed: bool) {
         assert_eq!(drops.len(), 2);
         assert_eq!(drops[0].definition.particle.as_deref(), Some("drop"));
         assert_eq!(drops[0].definition.light.as_deref(), Some("lamp"));
-        // 14226EF30 asks the mesh before entity locators. The meshed
-        // actor's matching joint has no played palette, so 1422621F0
+        // The game asks the mesh before entity locators. The meshed
+        // actor's matching joint has no played palette, so lookup
         // leaves this event at the root; the dummy child still attaches
-        // through the authored entity locator (14226E490).
+        // through the authored entity locator.
         let drop_position = if meshed {
             [10., 20., 30.]
         } else {

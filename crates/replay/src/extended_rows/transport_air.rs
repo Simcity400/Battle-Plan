@@ -1,4 +1,4 @@
-//! F96470's original strategic-air root/region domain and stored mission leaves.
+//! Original strategic-air root/region domain and stored mission leaves.
 //! No pointer, calculated sortie count or historical mission type is recorded.
 use super::*;
 
@@ -18,8 +18,8 @@ pub struct TransportAirCountry {
     /// Every +98 region header, indexed by its original physical ID. None
     /// refuses the original domain. Each failed header is independently None.
     pub regions: Option<Vec<TransportAirRegion>>,
-    /// Original +E0 records, strideA0, raw signed +80 values. F96470 uses
-    /// the original region runtime slot, separately from its region ID.
+    /// Stored factor records, stride 0xA0, retaining raw signed values.
+    /// Lookup uses the region runtime slot, separately from its region ID.
     pub factors: Option<Vec<Option<i64>>>,
 }
 value_struct!(TransportAirCountry {
@@ -31,8 +31,8 @@ value_struct!(TransportAirCountry {
 pub struct TransportAirRegion {
     pub region: u32,
     pub count: Option<i32>,
-    /// Original order, including repeated wings and native null pointers.
-    /// Native nulls refuse a reached F96470 dereference; no entry is dropped.
+    /// Stored order, including repeated wings and null pointers. A reached
+    /// null dereference refuses the query; no entry is dropped.
     pub missions: Option<Vec<Option<TransportAirMission>>>,
 }
 value_struct!(TransportAirRegion {
@@ -47,7 +47,7 @@ pub struct TransportAirMission {
     pub disruption: Option<i64>,
     pub detection_13: Option<i64>,
     pub detection_14: Option<i64>,
-    /// F49710/F4B6E0's raw producer graph. None refuses a reached producer.
+    /// Raw air-normalization producer graph. None refuses a reached producer.
     pub normalization: Option<TransportAirNormalization>,
 }
 value_struct!(TransportAirMission {

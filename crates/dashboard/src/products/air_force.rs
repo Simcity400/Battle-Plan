@@ -1,7 +1,6 @@
 //! Planes in wings, and wings, over recorded hourly censuses. Stockpiled planes
-//! are outside this measure. `CAirWing::AddEquipmentPool@140F45AD0` and
-//! `AddAirplanes@140F45C50` set +0x7C to SumEquipmentQuantities / 100000;
-//! the pool fuel reader `140F46340` consumes that signed whole-plane count.
+//! are outside this measure. The wing's whole-plane count truncates its fixed5
+//! equipment-pool sum divided by 100000; fuel use reads that signed count.
 //!
 //! A single source/branch scan serves both ownership modes, both widget measures
 //! and the Scoreboard count APIs. Content resolution happens after that scan,

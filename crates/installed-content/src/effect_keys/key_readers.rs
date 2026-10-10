@@ -1,17 +1,15 @@
-//! ReadScript's slot-4 readers. Static own-key lists and their fallback
-//! come from captures/astra/effect-key-readers-2/extract_tables.py and
-//! its cited per-range extraction scripts, using hoi4re dumps and the
-//! factory/vtable inventory in
-//! captures/astra/key-validity/classes.py. Addresses accompany the rows.
+//! Effect operands, child effects and nested body grammars.
 
 use super::{READ_EFFECT, READ_SCRIPT};
 
-/// The `else` and `else_if` keyword tokens ReadEffect (1405345D0) tests
-/// before the registry; both read with CIfEffect's key reader.
+const STRATEGIC_LOCATION_VALUE: u64 = 0x14051BBB0;
+const TARGETED_RESISTANCE_VALUE: u64 = 0x14031B0A0;
+const COLLECTION_KEYS: u64 = 0x140A0FC90;
+
+/// Conditional tails share the registered conditional body grammar.
 pub(super) const ELSE_TOKEN: u32 = 0x36D3;
 pub(super) const ELSE_IF_TOKEN: u32 = 0x38ED;
-/// CPoliticalPartyEffect child constructed at 14032CA40 and dispatched by
-/// ReadScript (140534280) with this token.
+
 const POLITICAL_PARTY_TOKEN: u32 = 0x3009;
 #[cfg(test)]
 mod tests;
@@ -78,7 +76,7 @@ enum Fallback {
 
 #[derive(Clone, Copy)]
 enum KeyReader {
-    Keys(&'static [(&'static str, ValueReader)], Fallback),
+    Keys(fn(Option<&[u8]>) -> Option<ValueReader>, Fallback),
     Variable,
     DivideVariable,
     Conditional,
@@ -86,19 +84,33 @@ enum KeyReader {
 }
 
 mod ai_strategy;
-mod data;
+mod grammar;
 mod registries;
 mod unit_bonus;
-use data::{Helper, KEY_READERS};
+use grammar::Helper;
 
 fn reader(token: u32) -> Option<KeyReader> {
-    KEY_READERS
-        .binary_search_by_key(&token, |(id, _)| *id)
-        .ok()
-        .map(|index| KEY_READERS[index].1)
+    let token = if matches!(token, ELSE_TOKEN | ELSE_IF_TOKEN) {
+        super::IF_TOKEN
+    } else {
+        token
+    };
+    let (value, key) = super::class(token)?;
+    // These value forms enter the body grammar; other forms read their own operands.
+    if !matches!(
+        value,
+        READ_SCRIPT | STRATEGIC_LOCATION_VALUE | TARGETED_RESISTANCE_VALUE
+    ) {
+        return None;
+    }
+    let address = if value == STRATEGIC_LOCATION_VALUE {
+        value
+    } else {
+        key
+    };
+    grammar::reader(address, super::class_vtable(token)?)
 }
 
-// Slot 4 separates stored operands, child effects and random-list members.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DescriptionField {
     Own,
@@ -115,12 +127,13 @@ fn description_field(reader: KeyReader, item: &crate::parser::Item) -> Descripti
         | KeyReader::DivideVariable
         | KeyReader::GenerateCharacter => Own,
         KeyReader::Keys(keys, fallback) => {
-            if keys.iter().any(|(name, _)| item.keyword_is(name)) {
+            let keyword = item.keyword().map(|keyword| keyword.folded());
+            if keys(keyword.as_deref()).is_some() {
                 return Own;
             }
             match fallback {
                 Fallback::Effect => Effect,
-                Fallback::Reader(helper) => description_field(data::helper(helper), item),
+                Fallback::Reader(helper) => description_field(grammar::helper(helper), item),
                 Fallback::RandomListMember
                     if !c_string(item.key.as_deref().unwrap_or_default()).is_empty() =>
                 {
@@ -137,9 +150,8 @@ fn description_projection(
     items: &[crate::parser::Item],
     field: DescriptionField,
 ) -> Result<Vec<crate::parser::Item>, String> {
-    let reader = reader(token).ok_or_else(|| {
-        format!("effect own-key projection is not ported for token {token:X} (140534280)")
-    })?;
+    let reader = reader(token)
+        .ok_or_else(|| format!("effect own-key projection is not ported for token {token:X}"))?;
     Ok(items
         .iter()
         .filter(|item| description_field(reader, item) == field)
@@ -162,7 +174,7 @@ pub(super) fn random_list_members(
 }
 
 pub(super) fn random_member_fields(items: &[crate::parser::Item]) -> Vec<crate::parser::Item> {
-    let reader = data::helper(Helper::RandomListMember);
+    let reader = grammar::helper(Helper::RandomListMember);
     items
         .iter()
         .filter(|item| description_field(reader, item) == DescriptionField::Effect)
@@ -170,24 +182,19 @@ pub(super) fn random_member_fields(items: &[crate::parser::Item]) -> Vec<crate::
         .collect()
 }
 
-/// Whether the token's static key reader handles this bare key before fallback.
 pub fn is_own_field(token: u32, key: &[u8]) -> bool {
     match reader(token) {
-        Some(KeyReader::Keys(keys, _)) => keys
-            .iter()
-            .any(|(name, _)| name.as_bytes().eq_ignore_ascii_case(key)),
+        Some(KeyReader::Keys(keys, _)) => keys(Some(&key.to_ascii_lowercase())).is_some(),
         _ => false,
     }
 }
 
-/// The inline loop at 14051BBB0 reads on after any value; ReadScript
-/// (140534280) instead requires the value slot to hold `{`.
 pub(crate) fn requires_block(token: u32) -> bool {
     super::class(token).is_none_or(|(value, _)| value == READ_SCRIPT)
 }
 
 pub(super) fn value_shape(address: u64, field: &Field<'_>) -> Option<Shape<()>> {
-    if address != 0x14051BBB0 {
+    if address != STRATEGIC_LOCATION_VALUE {
         return None;
     }
     field
@@ -215,7 +222,7 @@ pub(super) fn shape(address: u64, field: &Field<'_>) -> Shape<()> {
     Shape::Reported {
         kind: crate::DiagnosticKind::Unsupported,
         report: format!(
-            "Deferred effect `{}`: value reader {READ_SCRIPT:#X}, key reader {address:#X}; by-key reading retained",
+            "Deferred effect `{}`: unsupported key grammar; by-key reading retained",
             String::from_utf8_lossy(&keyword)
         ),
         read: Box::new(Shape::EffectByKey {
@@ -284,7 +291,7 @@ impl<'n> Shaper<'n> {
             Node::Registry(node) => registries::shape(self.names, node, field).map(Node::Registry),
             Node::AI(node) => self.ai.shape(node, field).map(Node::AI),
             Node::Limit => {
-                // CAndTrigger +0x14: LoadKey adds a child as dispatch decides.
+                // Later limits read only while the conjunction contains no child.
                 let load = key_names::load_key(self.names, field);
                 if !matches!(self.limit, Limit::Children) {
                     match load {
@@ -299,7 +306,7 @@ impl<'n> Shaper<'n> {
                     .shape(combat_tactics::Node::Trigger, field)
                     .map(Node::Trigger)
             }
-            // CBuildingConstructionEffect@14031D4D0's own-only province loop.
+
             Node::Province => match key {
                 Some(b"level") if !matches!(field.operator, Operator::Less | Operator::Greater) => {
                     Shape::Skip
@@ -320,7 +327,7 @@ impl<'n> Shaper<'n> {
                 ) => Shape::One,
                 _ => Shape::Skip,
             },
-            Node::Helper(helper) => self.keys(data::helper(helper), field),
+            Node::Helper(helper) => self.keys(grammar::helper(helper), field),
             Node::Keys => self.keys(reader(self.token).expect("ported effect key reader"), field),
         }
     }
@@ -334,7 +341,7 @@ impl<'n> Shaper<'n> {
                 Some(b"limit") => self.limit(),
                 _ => self.effect(field),
             },
-            // CVariableEffect@1403B6640; divide-temp@1403B2580.
+
             KeyReader::Variable | KeyReader::DivideVariable => {
                 if matches!(key, Some(b"var" | b"tooltip"))
                     || (matches!(reader, KeyReader::DivideVariable) && key == Some(b"if_zero"))
@@ -345,16 +352,16 @@ impl<'n> Shaper<'n> {
                     self.expression = true;
                     Shape::Expression
                 } else if self.expression {
-                    Shape::Unsettled("CVariableEffect 1403B6640: scalar value after an expression calls std::_Throw_bad_variant_access (1403BA3C0)".into())
+                    // A scalar cannot replace an operand already stored as an expression.
+                    Shape::Unsettled("variable effect: scalar value after an expression cannot use the stored expression".into())
                 } else {
                     Shape::One
                 }
             }
             KeyReader::GenerateCharacter => self.generate(field),
             KeyReader::Keys(keys, fallback) => {
-                if let Some((_, value)) = keys.iter().find(|(name, _)| key == Some(name.as_bytes()))
-                {
-                    return self.value(*value, field);
+                if let Some(value) = keys(key) {
+                    return self.value(value, field);
                 }
                 match fallback {
                     Fallback::Effect => self.effect(field),
@@ -448,9 +455,9 @@ impl<'n> Shaper<'n> {
             ObjectIfOpen(helper) => Shape::ObjectIfOpen(Node::Helper(helper)),
             ObjectOrSkip(helper) => Shape::ObjectOrSkip(Node::Helper(helper)),
             MtthModifier => Shape::MtthModifier,
-            Collection => {
-                Shape::ObjectIfOpen(Node::Trigger(combat_tactics::Node::KeyReader(0x140A0FC90)))
-            }
+            Collection => Shape::ObjectIfOpen(Node::Trigger(combat_tactics::Node::KeyReader(
+                COLLECTION_KEYS,
+            ))),
             Comparison => {
                 use crate::parser::native::Kind;
                 if matches!(field.value.kind, Kind::Less | Kind::Greater)
@@ -474,7 +481,7 @@ impl<'n> Shaper<'n> {
             }
             Resource if !field.skips_block() => Shape::Skip,
             Resource => match self.names {
-                None => named_refusal("add_resource", "1403AF090: no resource database names"),
+                None => named_refusal("add_resource", "no resource database names"),
                 Some(names) => {
                     if names
                         .counts
@@ -489,10 +496,7 @@ impl<'n> Shaper<'n> {
             },
             Building if !field.skips_block() => Shape::Skip,
             Building => match self.names {
-                None => named_refusal(
-                    "construct_building",
-                    "1403B3640: no building database names",
-                ),
+                None => named_refusal("construct_building", "no building database names"),
                 Some(names) => {
                     if field
                         .value
@@ -506,7 +510,7 @@ impl<'n> Shaper<'n> {
                 }
             },
             Specialization => self.specialization(field),
-            // ParseScopeSelector (1403AD690) accepts only these segments when dotted.
+
             ScopeSelectorChain => {
                 let text = c_string(&field.value.text).to_ascii_lowercase();
                 if !text.contains(&b'.')
@@ -519,7 +523,7 @@ impl<'n> Shaper<'n> {
                     Shape::Skip
                 }
             }
-            // Gender (1413DAFA0) reads CURRENT IDs: male/female/undefined.
+
             Gender => {
                 if ["male", "female", "undefined"]
                     .iter()
@@ -559,10 +563,7 @@ impl<'n> Shaper<'n> {
             return Shape::Skip;
         };
         let Some(names) = self.names else {
-            return named_refusal(
-                "equipment upgrades",
-                "140F79C80: no equipment database names",
-            );
+            return named_refusal("equipment upgrades", "no equipment database names");
         };
         if names
             .effects
@@ -571,7 +572,7 @@ impl<'n> Shaper<'n> {
         {
             Shape::One
         } else if let Some(gap) = &names.effects.equipment_upgrades_gap {
-            named_refusal("equipment upgrades", &format!("140F79C80: {gap}"))
+            named_refusal("equipment upgrades", &gap.to_string())
         } else {
             Shape::Skip
         }
@@ -590,7 +591,7 @@ impl<'n> Shaper<'n> {
         Shape::Reported {
             kind: crate::DiagnosticKind::Unsupported,
             report: format!(
-                "Deferred effect specialization `{}` (140496280/140496160): block consumption needs the specialization registry",
+                "Deferred effect specialization `{}`: block consumption needs the specialization registry",
                 String::from_utf8_lossy(name)
             ),
             read: Box::new(Shape::Unsettled(
@@ -599,8 +600,7 @@ impl<'n> Shaper<'n> {
         }
     }
 
-    // CGenerateCharacterEffect@1403B2F70 registers token_base immediately
-    // in the generated map (+0x60), distinct from authored characters (+0x40).
+    // Generated claims are immediate and separate from authored character names.
     fn generate(&mut self, field: &Field<'_>) -> Shape<Node> {
         if matches!(self.generated, Generated::Collision) {
             return Shape::SkipIfOpen;
@@ -611,7 +611,7 @@ impl<'n> Shaper<'n> {
             if claim.is_rejected() {
                 return Shape::Reported {
                     kind: crate::DiagnosticKind::Unsupported,
-                    report: "Deferred effect generate_character token_base (1403B2F70): dynamic token 0 may already be claimed outside this effect read".into(),
+                    report: "Deferred effect generate_character token_base: dynamic token 0 may already be claimed outside this effect read".into(),
                     read: Box::new(Shape::Unsettled("generate_character token_base 0 needs claims from other reads to choose template reading or skipping".into())),
                 };
             }
@@ -633,7 +633,7 @@ impl<'n> Shaper<'n> {
             Limit::Empty => Shape::Body(Node::Limit),
             Limit::Children => Shape::Skip,
             Limit::Unknown(why) => Shape::Unsettled(format!(
-                "effect limit: native key reader reads a later limit only into an empty CAndTrigger; whether the first holds a child is unknown: {why}"
+                "effect limit: a later limit reads only into an empty trigger conjunction; whether the first holds a child is unknown: {why}"
             )),
         }
     }

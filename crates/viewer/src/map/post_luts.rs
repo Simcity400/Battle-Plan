@@ -1,7 +1,5 @@
-//! The native `lut_blender.shader` draws. `14126f930` allocates three 1024x32
-//! BGRA8 UNORM targets; `141270d90`/`141271150` decide which blends run. Each
-//! blend stores UNORM8 before the next reads it, and Restore samples the result,
-//! so the rounding matches the game's rather than a blend of sampled colours.
+//! Compiled LUT blends use three 1024-by-32 BGRA8 UNORM targets. Every blend stores bytes before the
+//! next reads them, preserving intermediate rounding before final restore sampling.
 
 use std::io;
 

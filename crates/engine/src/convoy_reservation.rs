@@ -1,6 +1,6 @@
-//! A CConvoys reservation-vector pointee; its concrete C++ class remains unproved.
+//! Convoy reservation-vector pointee; concrete class unresolved.
 
-/// Reservation priority; old read_country_convoys reads signed i32 at the pointee's +0.
+/// Reservation priority, signed i32.
 pub const PRIORITY: usize = 0;
-/// Reservation count; old read_country_convoys reads signed i32 at the pointee's +4 and then applies nonnegative admission policy.
+/// Reservation count, signed i32, admitted only when nonnegative.
 pub const COUNT: usize = 4;

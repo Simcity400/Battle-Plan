@@ -11,13 +11,10 @@ macro_rules! tooltip_keys {
 }
 pub(crate) use tooltip_keys;
 
-/// CState::display_name (1409CC380): the custom name (+0x38), else the owner
-/// name (+0xE8), else the template's. set_state_name (140310B50) stores the
-/// localised text of its argument as the custom name; SetOwner (1409D1710,
-/// also on load) has 1409D3770 store the localised `<owner original tag or
-/// tag>_<template name key>` as the owner name, or clear it when the key is
-/// missing. Both are [`stored_text`]: never localised again, nor rebuilt from
-/// today's owner.
+/// State display naming uses the stored custom name, else owner name, else
+/// template name. A name change stores localised text. Owner changes, including
+/// load, store the owner-tag-qualified template name or clear it if absent.
+/// Both are [`stored_text`], never localised again or rebuilt from the current owner.
 pub(crate) fn state_name(
     loc: &Localisation,
     recorded: &str,
@@ -26,10 +23,7 @@ pub(crate) fn state_name(
     owner: &[u8],
     template: impl FnOnce() -> Result<String, String>,
 ) -> Result<String, String> {
-    for (bytes, what) in [
-        (custom, "the custom name (CState+0x38)"),
-        (owner, "the owner name (CState+0xE8)"),
-    ] {
+    for (bytes, what) in [(custom, "the custom name"), (owner, "the owner name")] {
         if !bytes.is_empty() {
             return stored_text(loc, recorded, bytes, &format!("state {id}: {what}"));
         }
@@ -46,7 +40,7 @@ pub(crate) fn localise(
         .map_err(|e| e.to_string())
 }
 
-/// EnsureTrailingNewlines@1424B6660 adds only missing trailing newlines.
+/// trailing-newline padding adds only missing trailing newlines.
 pub(crate) fn ensure_newlines(text: &mut String, count: usize) {
     if !text.is_empty() {
         let have = text.bytes().rev().take_while(|&b| b == b'\n').count();
@@ -56,7 +50,7 @@ pub(crate) fn ensure_newlines(text: &mut String, count: usize) {
     }
 }
 
-/// 140BBA780: qualify with the simulation tag before trying the plain key.
+/// qualify with the simulation tag before trying the plain key.
 pub(crate) fn country_localised(
     loc: &Localisation,
     tag: Result<&str, &str>,
@@ -78,7 +72,7 @@ pub(crate) fn country_localised(
 }
 
 /// The raw simulation tag for the viewing canonical slot. Combat text uses
-/// this tag for LocalizeForCurrentCountry@140BBA630, never a cosmetic alias.
+/// this tag for viewing-country localisation, never a cosmetic alias.
 pub(super) fn viewing_tag<'a>(
     countries: &'a [CountryRow],
     vision: &crate::map::perspective::Vision,
@@ -92,7 +86,7 @@ pub(super) fn viewing_tag<'a>(
         })
 }
 
-/// 141580360 preserves signed integer limits, including an invalid interval.
+/// the game preserves signed integer limits, including an invalid interval.
 pub(crate) fn value_limit(
     loc: &Localisation,
     min: Option<i32>,
@@ -137,16 +131,16 @@ mod tests {
         assert_eq!(name(b"", b"", "german").as_deref(), Ok("template"));
         assert_eq!(
             name(b"", b"Bohmen", "german"),
-            Err("state 7: the owner name (CState+0xE8) is text the game stored in german without its key, and the viewer's language is english".into())
+            Err("state 7: the owner name is text the game stored in german without its key, and the viewer's language is english".into())
         );
         assert!(
             name(b"Sudetenland", b"", "german")
                 .unwrap_err()
-                .contains("custom name (CState+0x38)")
+                .contains("custom name")
         );
         assert_eq!(
             name(&[255], b"owner", "english"),
-            Err("state 7: the custom name (CState+0x38) is not UTF-8".into())
+            Err("state 7: the custom name is not UTF-8".into())
         );
     }
 }

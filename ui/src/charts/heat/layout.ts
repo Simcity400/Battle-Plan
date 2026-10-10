@@ -37,7 +37,7 @@ export function cellRuns(row: HeatRow, periods: readonly HeatPeriod[], until: nu
   return result;
 }
 
-/** Same signed-off ramp as style-6-heat: ties are grey, a 50-point lead
+/** Colour ramp: ties are grey, a 50-point lead
  * reaches the side's full colour. Single-side cells have a zero runner-up. */
 export function marginColor(parts: readonly HeatPart[], grey: string): string | null {
   let first: HeatPart | undefined, second = 0;

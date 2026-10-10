@@ -23,7 +23,7 @@
 .career-note { margin: var(--space-2) var(--space-4); color: var(--muted); font-size: var(--type-xs); }
 .general-career .timeline-chart { min-height: calc(var(--space-6) * 8); }
 
-/* The four tracks match the mock-up without changing shared table cells. */
+/* The four attribute tracks use a local grid without changing shared table cells. */
 .leader-attributes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: calc(var(--space-1) + var(--space-2)); width: 100%; font-size: var(--type-xs); font-variant-numeric: tabular-nums; }
 .leader-attributes > span { display: flex; flex-direction: column; text-align: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .leader-attribute-bar { display: block; height: var(--space-2); margin-top: var(--space-1); border-radius: var(--space-1); background: var(--line-soft); overflow: hidden; }

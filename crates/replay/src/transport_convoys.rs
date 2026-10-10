@@ -14,7 +14,7 @@ pub fn current(input: &Recorded<Option<TransportConvoys>>, hour: i32) -> Fact<&T
     Ok(value)
 }
 
-/// C970 truncates the held/dirty i64 total then consumes low signed32. Each
+/// Truncate the held/dirty i64 total, then consume low signed32. Each
 /// reached priority<=requested reservation subtracts in signed32 with wrap.
 pub fn available(value: &TransportConvoys, priority: i32) -> Fact<i32> {
     let cache = value

@@ -1,6 +1,6 @@
-//! Combat tactic requirements: CTactic::BuildTooltip@1406B2E30 calls the
-//! embedded CAndTrigger at +E0 with inversion=false, indent=0, mode=1.
-//! Its caller supplies the heading and IndentNonEmptyLines(..., 2).
+//! Combat tactic requirements: describe the embedded conjunction
+//! with inversion=false, indent=0, mode=1.
+//! The caller supplies the heading and two-level line indentation.
 
 use installed_content::{
     localisation::{Argument, Localisation},
@@ -27,7 +27,7 @@ pub type TacticName<'a> = dyn Fn(&[u8]) -> Result<Vec<u8>, String> + 'a;
 /// since its native reader has already replaced phase operands with IDs.
 #[allow(
     clippy::too_many_arguments,
-    reason = "Keeps the evaluator, scripted text and tactic metadata borrowed separately at the native description entrypoint"
+    reason = "Keeps the evaluator, scripted text and tactic metadata borrowed separately at the description entrypoint"
 )]
 pub fn describe<'a>(
     items: &[Item],
@@ -94,8 +94,8 @@ impl<'a> Formatter<'_, '_, 'a> {
             .expand_in_session(&text, &graph, 0, self.evaluator)
     }
 
-    // The bare combat event has no carried country (SetCombatContext(reset=1)
-    // @14052DC80); a promoted country clears Combat, retaining linked scopes.
+    // The bare combat event has no carried country;
+    // a promoted country clears Combat, retaining linked scopes.
     fn graph(&self, scopes: Scopes) -> Result<EventScopes, String> {
         let mut graph = EventScopes::new(vec![EventScope::of(event_object(scopes.this)?)]);
         for (index, (value, unknown)) in [
@@ -139,7 +139,7 @@ impl<'a> Formatter<'_, '_, 'a> {
         indent: usize,
         mode: u8,
     ) -> Result<String, String> {
-        let mut text = "   ".repeat(indent); // 142773CD8.
+        let mut text = "   ".repeat(indent);
         if (indent == 0 || mode == 1) && mode != 2 {
             let fulfilled = self.evaluator.unit(unit, scopes).decided()? != inverted;
             text.push_str(&self.localised(
@@ -154,8 +154,8 @@ impl<'a> Formatter<'_, '_, 'a> {
         Ok(text)
     }
 
-    // CAndTrigger::vf12@14053EA10 flattens at indent0 or fewer than two
-    // loaded children; otherwise its header precedes BuildChildTooltips.
+    // A conjunction flattens at indent0 or fewer than two
+    // loaded children; otherwise its header precedes child tooltips.
     fn and(
         &self,
         units: &[Unit<'_, 'a>],
@@ -188,8 +188,8 @@ impl<'a> Formatter<'_, '_, 'a> {
         Ok(text)
     }
 
-    // CTrigger::BuildChildTooltips@14053FCC0 obtains own text before Check,
-    // skips Check when own text is empty, then visits descendants in mode0.
+    // Obtain own text before checking,
+    // skip checking when own text is empty, then visit descendants in mode0.
     fn body(
         &self,
         units: &[Unit<'_, 'a>],
@@ -205,8 +205,8 @@ impl<'a> Formatter<'_, '_, 'a> {
                 match unit {
                     Unit::Unknown(why) => return Err(why.clone()),
                     Unit::Chain(chain) => {
-                        // CIfTrigger::vf12@14138E100 checks each limit and only
-                        // describes the first selected branch, through CAndTrigger.
+                        // Check each limit and only
+                        // describe the first selected branch, as a conjunction.
                         for branch in chain {
                             if let Some(why) = &branch.refused {
                                 return Err(why.clone());
@@ -227,13 +227,10 @@ impl<'a> Formatter<'_, '_, 'a> {
                     Unit::One(item, child) => {
                         match child {
                             Child::Keyless => {
-                                return Err(
-                                    "keyless trigger description is not reproduced (14053FCC0)"
-                                        .into(),
-                                );
+                                return Err("keyless trigger description is not reproduced".into());
                             }
                             Child::Scripted(template) => {
-                                // CScriptedTrigger::vf12@14138E230: own text is
+                                // A scripted trigger's own text is
                                 // empty, the template receives inversion == operand.
                                 let frame = installed_content::trigger_keys::frame(template);
                                 if let Some(why) = self.evaluator.enter_frame(&frame) {
@@ -272,9 +269,9 @@ impl<'a> Formatter<'_, '_, 'a> {
                                 !inverted,
                                 indent,
                                 if mode == 2 { 2 } else { 0 },
-                            )?), // 14053F060.
+                            )?),
                             Child::Coded(_, name) if name == "or" => {
-                                // COrTrigger::vf12@14053F450 includes its own Check.
+                                // A disjunction includes its own check.
                                 text.push_str(&self.prefix(
                                     unit,
                                     scopes,
@@ -311,7 +308,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                                     }
                                 }
                                 // Custom tooltip classes suppress descendant text
-                                // (vf12@140176EE0), while Check still sees it.
+                                // while checking still sees it.
                                 if !item.keyword_is("custom_trigger_tooltip")
                                     && !item.keyword_is("custom_override_tooltip")
                                 {
@@ -344,7 +341,7 @@ impl<'a> Formatter<'_, '_, 'a> {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "Mirrors native scope tooltip inputs and their independent inversion, indentation and display mode"
+        reason = "Scope tooltip inputs keep independent inversion, indentation and display mode"
     )]
     fn scope(
         &self,
@@ -356,13 +353,11 @@ impl<'a> Formatter<'_, '_, 'a> {
         indent: usize,
         mode: u8,
     ) -> Result<String, String> {
-        // CContextTrigger::vf12@14138D980 and FormatEventTargetTooltip@141390A70.
-        let entered = self.evaluator.enter_scope(parsed, scopes)?.ok_or_else(|| {
-            format!(
-                "trigger scope {} resolves no target (14146BB30)",
-                key_text(item)
-            )
-        })?;
+        // Enter the context scope and format its target heading.
+        let entered = self
+            .evaluator
+            .enter_scope(parsed, scopes)?
+            .ok_or_else(|| format!("trigger scope {} resolves no target", key_text(item)))?;
         let heading = match parsed {
             Parsed::Keyword(
                 keyword @ (Keyword::Owner
@@ -383,7 +378,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                 },
                 &[],
             )?,
-            _ if entered.this == Scope::Combat => String::new(), // 141390A70 fallback: neither state+0xA8 nor country+8.
+            _ if entered.this == Scope::Combat => String::new(), // The fallback carries neither state nor country.
             _ => {
                 let name = match entered.this {
                     Scope::Country(country) | Scope::CountryLeader { country, .. } => {
@@ -392,7 +387,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                     Scope::State(state) => self.text.state_name(state)?,
                     _ => {
                         return Err(format!(
-                            "trigger scope {} native name is not reproduced (141390A70)",
+                            "trigger scope {} name is not reproduced",
                             key_text(item)
                         ));
                     }
@@ -434,7 +429,7 @@ impl<'a> Formatter<'_, '_, 'a> {
     ) -> Result<String, String> {
         let Child::Coded(_, name) = child else {
             return Err(format!(
-                "trigger {} native description is not reproduced (14053FCC0)",
+                "trigger {} description is not reproduced",
                 key_text(item)
             ));
         };
@@ -444,17 +439,17 @@ impl<'a> Formatter<'_, '_, 'a> {
                 b"IS_ATTACKER".as_slice()
             } else {
                 b"IS_NOT_ATTACKER"
-            }), // 140476B30.
+            }),
             "frontage_full" => Some(if trigger_boolean(item)? != inverted {
                 b"TRIGGER_IS_FRONTAGE_FULL".as_slice()
             } else {
                 b"TRIGGER_IS_NOT_FRONTAGE_FULL"
-            }), // 1404756C0.
+            }),
             "has_reserves" => Some(if trigger_boolean(item)? != inverted {
                 b"TRIGGER_HAS_RESERVES".as_slice()
             } else {
                 b"TRIGGER_DOES_NOT_HAVE_RESERVES"
-            }), // 140476500.
+            }),
             _ => None,
         };
         if let Some(key) = key {
@@ -462,12 +457,14 @@ impl<'a> Formatter<'_, '_, 'a> {
         }
         match name.as_str() {
             "phase" => {
-                // 1404753E0: stored ID, not authored spelling.
+                // Use the stored ID, not authored spelling.
                 let id = installed_content::fixed5::decimal_i32(operand);
                 let key = if id < 0 {
                     b"PHASE_DEFAULT".as_slice()
                 } else {
-                    self.phases.get(id as usize).ok_or_else(|| format!("phase ID {id} is outside the recorded-content tactic phases (1404753E0)"))?
+                    self.phases.get(id as usize).ok_or_else(|| {
+                        format!("phase ID {id} is outside the recorded-content tactic phases")
+                    })?
                 };
                 let phase = self.localised(key, &[])?;
                 self.localised(
@@ -500,7 +497,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                             b"TRIGGER_SKILL_ADVANTAGE_LESS_THEN"
                         },
                         ("VALUE", Argument::Int32((value / 100_000) as i32)),
-                    ), // 140477A70.
+                    ),
                     "hardness" => (
                         if greater {
                             b"TRIGGER_HARDNESS_GREATER_THAN".as_slice()
@@ -508,7 +505,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                             b"TRIGGER_HARDNESS_LESS_THAN"
                         },
                         ("VALUE", Argument::Fixed5(value)),
-                    ), // 1404757E0.
+                    ),
                     _ => (
                         if greater {
                             b"TRIGGER_MORE_THAN_ARTILLERY_RATIO".as_slice()
@@ -516,12 +513,12 @@ impl<'a> Formatter<'_, '_, 'a> {
                             b"TRIGGER_LESS_THAN_ARTILLERY_RATIO"
                         },
                         ("NUM", Argument::Fixed5(value)),
-                    ), // 140475B40; NUM@142727638.
+                    ),
                 };
                 self.localised(key, &[argument])
             }
             "skill" => {
-                // 140477DC0 -> FormatTriggerComparisonTooltip@14138F640 mode1.
+                // Format the comparison with its evaluated prefix in mode1.
                 let value = self
                     .evaluator
                     .required(operand, item.quoted(), false, scopes)?;
@@ -545,7 +542,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
             }
             "has_trait" => {
-                // 140418430: first unit trait, then country trait.
+                // Try unit traits before country traits.
                 let (unit, country) = self
                     .evaluator
                     .world
@@ -553,7 +550,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                     .map_err(str::to_owned)?;
                 let name =
                     std::str::from_utf8(operand).map_err(|_| "trait operand is not UTF-8")?;
-                // LocalizeForCurrentCountry@140BBA630 uses the GUI's local
+                // Country localisation uses the GUI's local
                 // country, not the side currently being described.
                 let label = if let Some(spelling) = unit
                     .spellings()
@@ -576,7 +573,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                     self.localised(found.token.as_bytes(), &[])?
                 } else {
                     return Err(format!(
-                        "trait {name} native scientist fallback description is not reproduced (140418430)"
+                        "trait {name} scientist fallback description is not reproduced"
                     ));
                 };
                 self.scoped(
@@ -590,11 +587,11 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
             }
             "is_fighting_in_terrain" => {
-                // 140476D70 -> CGameItem::id_copy.
+                // Localise the terrain's stored identifier.
                 let terrain = self.text.content().environment()?.terrain()?;
                 let index = terrain.category(operand).ok_or_else(|| {
                     format!(
-                        "terrain {} is absent from recorded content (1403BCA00)",
+                        "terrain {} is absent from recorded content",
                         String::from_utf8_lossy(operand)
                     )
                 })?;
@@ -609,7 +606,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
             }
             "has_unit_type" => {
-                // 140476620: localises its stored string before scope expansion.
+                // Localise the stored string before scope expansion.
                 let label = self.localised(operand, &[])?;
                 self.scoped(
                     if inverted {
@@ -622,10 +619,10 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
             }
             "has_combat_modifier" => {
-                // 140476120 -> 1414406D0/141440750.
+                // Resolve the combat modifier's display token.
                 if !operand.eq_ignore_ascii_case(b"river_crossing") {
                     return Err(format!(
-                        "combat modifier {} native display token is not reproduced (141440750)",
+                        "combat modifier {} display token is not reproduced",
                         String::from_utf8_lossy(operand)
                     ));
                 }
@@ -640,18 +637,18 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
             }
             "has_tactic" => {
-                // 140520040: virtual +48 is CGameItem's localised ID.
+                // Tactic text uses its localised identifier.
                 let token = self
                     .evaluator
                     .world
                     .token_of(operand)?
-                    .ok_or("tactic operand is absent from LexicalTokens (1424A7300)")?;
+                    .ok_or("tactic operand is absent from LexicalTokens")?;
                 let stored = self
                     .evaluator
                     .world
                     .token(token)?
-                    .ok_or("tactic token has no LexicalTokens literal (1424A7300)")?;
-                let resolved = (self.tactic_name)(stored)?; // FindCombatTacticByNameOrNullTactic@1406B11F0.
+                    .ok_or("tactic token has no LexicalTokens literal")?;
+                let resolved = (self.tactic_name)(stored)?; // Resolve a named tactic or the null tactic.
                 let label = self.localised(&resolved, &[])?;
                 self.localised(
                     if inverted {
@@ -663,17 +660,17 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
             }
             "tag" => {
-                // 14042EDA0: combat carries country, no unit leader.
+                // Combat carries country, no unit leader.
                 if matches!(
                     scopes.this,
                     Scope::Leader(_) | Scope::CountryLeader { .. } | Scope::Character(_)
                 ) {
-                    return Err("tag native unit-leader adjective description is not reproduced (14042EDA0)".into());
+                    return Err("tag unit-leader adjective description is not reproduced".into());
                 }
                 let country = self
                     .evaluator
                     .country_operand(item, scopes)?
-                    .ok_or("tag description resolves native null country (14042EDA0)")?;
+                    .ok_or("tag description resolves null country")?;
                 let label = self.text.country_marked_name(country)?;
                 self.scoped(
                     if inverted {
@@ -686,7 +683,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
             }
             "custom_trigger_tooltip" | "custom_override_tooltip" => {
-                // Own1413931A0; empty descendants140176EE0.
+                // Render own text with empty descendants.
                 let fields = children(item);
                 let positive = field(fields, "tooltip");
                 let negative = field(fields, "not_tooltip");
@@ -697,10 +694,11 @@ impl<'a> Formatter<'_, '_, 'a> {
                 };
                 let Some(selected) = selected else {
                     return Ok(String::new());
-                }; // Empty native CBoundLocalization.
-                let key = selected.value.scalar().ok_or(
-                    "custom trigger bound-localisation arguments are not reproduced (141395B30)",
-                )?;
+                }; // Empty bound localisation.
+                let key = selected
+                    .value
+                    .scalar()
+                    .ok_or("custom trigger bound-localisation arguments are not reproduced")?;
                 let negative_default;
                 let key = if inverted && negative.is_none() {
                     negative_default = [key, b"_NOT"].concat();
@@ -710,9 +708,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                 };
                 self.scoped(key, &[], scopes)
             }
-            _ => Err(format!(
-                "trigger {name} native description is not reproduced (CTrigger vf21/vf12 14053FCC0)"
-            )),
+            _ => Err(format!("trigger {name} description is not reproduced")),
         }
     }
 }

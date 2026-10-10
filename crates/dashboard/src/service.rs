@@ -116,7 +116,29 @@ impl Service {
     }
 
     /// Game and user folders for products that read artwork or localisation.
-    pub fn configure_content(&self, config: &Config, allow_unverified: bool) {
+    pub fn configure_content(&self, config: &Config, allow_unverified: bool) -> io::Result<()> {
+        let options = match config.resolve_options() {
+            Ok(options) => options,
+            Err(_) => {
+                *self
+                    .inner
+                    .content
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = None;
+                return Ok(());
+            }
+        };
+        if let Err(error) = engine::executable_tables::initialize(&options.game_dir) {
+            *self
+                .inner
+                .content
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = None;
+            return Err(io::Error::new(
+                error.kind(),
+                format!("Game tables unavailable: {error}"),
+            ));
+        }
         self.inner
             .map_settings
             .lock()
@@ -126,11 +148,11 @@ impl Service {
             .inner
             .content
             .lock()
-            .unwrap_or_else(|error| error.into_inner()) =
-            config.resolve_options().ok().map(|options| ContentOptions {
-                options,
-                allow_unverified,
-            });
+            .unwrap_or_else(|error| error.into_inner()) = Some(ContentOptions {
+            options,
+            allow_unverified,
+        });
+        Ok(())
     }
 
     pub fn map_settings(&self, replay: &replay::container::Replay) -> CampaignMapSettings {

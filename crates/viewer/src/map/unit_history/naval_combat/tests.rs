@@ -1,5 +1,4 @@
-//! Lifecycle witnesses for the full-reference manager in 141651130 and the
-//! deactivation-only release in 1416527B0. No model renderer is constructed.
+//! Lifecycle checks for the full-reference manager and deactivation-only release. No model renderer is constructed.
 
 use super::*;
 use crate::map::{

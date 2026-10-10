@@ -1,5 +1,5 @@
-//! CCountryCollaborationStatus, confirmed by the pinned executable's RTTI.
-//! The old reader required each outgoing relation to have a reciprocal incoming country link.
+//! Country collaboration status. Each outgoing relation requires a reciprocal
+//! incoming country link.
 
 use crate::{
     Memory, ccountry,
@@ -10,17 +10,17 @@ use crate::{
     walk::Outcome,
 };
 
-/// CCountryCollaborationStatus vtable; old D52 collector_module.rs:44 and pinned RTTI agree.
+/// Collaboration-status vtable.
 pub const VTABLE_RVA: usize = 0x029a_5d58;
-/// CCountryCollaborationStatus outgoing CCountryCollaborationData pointer array; old read_country_collaboration_relations at collector_module.rs:641.
+/// Outgoing CCountryCollaborationData pointer array.
 pub const RELATIONS: usize = 0x28;
-/// CCountryCollaborationStatus outgoing array count, u32; old collector_module.rs:642.
+/// Outgoing array count, u32.
 pub const RELATION_COUNT: usize = 0x34;
-/// CCountryCollaborationStatus owning CCountry pointer; old collector_module.rs:643 checks this exact back-reference.
+/// Owning CCountry pointer requiring an exact back-reference match.
 pub const OWNER: usize = 0x40;
-/// CCountryCollaborationStatus incoming u32 country-link array; old collector_module.rs:680-700 validates reciprocal membership.
+/// Incoming u32 country-link array requiring reciprocal membership.
 pub const INCOMING_COUNTRIES: usize = 0x48;
-/// CCountryCollaborationStatus incoming country-link count, u32; old collector_module.rs:681-685.
+/// Incoming country-link count, u32.
 pub const INCOMING_COUNT: usize = 0x54;
 
 #[derive(Clone, Copy)]

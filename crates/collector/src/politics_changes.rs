@@ -1,4 +1,4 @@
-//! Native power mutations and government commits. Pinned writer/caller facts
+//! Native power mutations and government commits. Writer/caller descriptors
 //! live in engine::politics_sites. No balance fall is turned into a spend.
 //! Hooks never select countries by player/human/AI status.
 use crate::hook::{Hook, Registers, Tap};
@@ -328,7 +328,7 @@ struct Log {
     registered: AtomicUsize,
     entries: usize,
     key_stride: usize,
-    // Power writes at 140B98130/140707F90 are interval facts. A closed
+    // Observed power writes are interval facts. A closed
     // generation has no publishers; stale callback pointers follow
     // next. Cursor/consumed stay local, with a stable native sequence offset.
     publishers: AtomicUsize,
@@ -522,7 +522,7 @@ fn read<T: engine::memory::Raw>(address: usize) -> Option<T> {
     engine::read::<T>(&memory(), address)
 }
 fn operand_memory() -> native::NativeOperands {
-    // SAFETY: callers below read only the cited synchronous native operands.
+    // SAFETY: callers below read only the supported synchronous native operands.
     unsafe { native::NativeOperands::new() }
 }
 #[inline(always)]
@@ -1239,7 +1239,7 @@ fn observed_owner(value: Result<native::Owner, &'static str>) -> Option<native::
 fn balance(owner: native::Owner, currency: PowerCurrency) -> Option<i64> {
     observed_balance(&memory(), owner, currency)
 }
-/// 140B98130/140B98220 and the CP writers consume these exact stored balances.
+/// Political and command power writers consume these exact stored balances.
 #[inline(always)]
 fn operand_balance(owner: native::Owner, currency: PowerCurrency) -> Option<i64> {
     observed_balance(&operand_memory(), owner, currency)
@@ -1559,8 +1559,8 @@ fn context_identity(name: &str, a: usize, b: usize, c: usize, mut context: Conte
     };
     identity.keys[2] = context.identity.keys[2];
     match name {
-        // P: command idea pointer +30 (replace's new idea +38), definition key
-        // +18. Both payment operations of a replace retain Replace provenance.
+        // The command retains its idea definition and key. Both payment
+        // operations of a replacement retain the replacement origin.
         "AddIdea" | "RemoveIdea" | "ReplaceIdea" => {
             let offset = if name == "ReplaceIdea" { 0x38 } else { 0x30 };
             if let Some(idea) = at(a, offset).and_then(item_read::<u64>) {
@@ -1572,7 +1572,7 @@ fn context_identity(name: &str, a: usize, b: usize, c: usize, mut context: Conte
                 _ => PowerAction::Replace,
             };
         }
-        // P: 14113BB40 / 141144BB0, native CReference {type,id} and slot.
+        // The advisor command retains a typed character reference and slot.
         "HireAdvisor" | "ReplaceAdvisor" => {
             let offset = if name == "HireAdvisor" { 0x28 } else { 0x30 };
             identity.set(
@@ -1586,9 +1586,8 @@ fn context_identity(name: &str, a: usize, b: usize, c: usize, mut context: Conte
                 PowerAction::Replace
             };
         }
-        // P: targeted_taken 140728CE0 receives status, selector, definition;
-        // 141146380 passes command+2C/+30 selector and +38 definition.
-        // 14071AEB0 / 14071C130 retain their original definition/selector args.
+        // Decision commands retain their original definition and selector
+        // arguments; targeted decisions also supply the receiving status.
         "Decision" | "TargetedDecision" | "DecisionTimeout" => {
             let decision = if name == "TargetedDecision" { c } else { a };
             identity.keys[0] = key(decision, engine::cdecision::TOKEN);
@@ -1601,7 +1600,7 @@ fn context_identity(name: &str, a: usize, b: usize, c: usize, mut context: Conte
             identity.keys[2] = identity.keys[0];
             if name != "Decision" {
                 let selector = if name == "TargetedDecision" { b } else { c };
-                // 14071C730 matches selector+8/+C against instance+20/+24.
+                // The selector identifies the target country or target instance.
                 let target = at(selector, 8).and_then(item_read::<i32>);
                 if let Some(target) = target {
                     if target > 0 {
@@ -1617,12 +1616,12 @@ fn context_identity(name: &str, a: usize, b: usize, c: usize, mut context: Conte
                 }
             }
         }
-        // P: base action type +08; subclass target layouts differ, so no
-        // unproved generic target offset. Scripted template/key +78/+10.
+        // Subclass target layouts differ, so there is no generic target
+        // offset. Scripted actions retain their template and key.
         "Diplomacy" | "ScriptedDiplomacy" => {
             identity.set(0, at(a, 8).and_then(item_read::<u32>));
             identity.action = PowerAction::Execute;
-            // P: 1410EE2D0 resolves the receiver's raw +1C target itself.
+            // The receiver resolves its own raw target.
             identity.set(
                 2,
                 at(a, 0x1c).and_then(item_read::<u32>).filter(|id| *id != 0),
@@ -1688,8 +1687,8 @@ fn government_context(name: &str, caller: usize, mut context: Context) -> Contex
         "PeaceForceGovernment" => GovernmentCause::PeaceForceGovernment,
         "SubjectGovernment" => GovernmentCause::SubjectGovernment,
         "ConsoleGovernment" | "ConsoleSubject" => GovernmentCause::Console,
-        // P: 140B992D9 invokes on_election synchronously. Other notifications
-        // are new scopes and inherit no election/coup provenance.
+        // Election notification runs synchronously. Other notifications
+        // are new scopes and inherit no election/coup origin.
         "OnAction" => {
             context.government = if caller == 0xb992de {
                 GovernmentCause::ElectionOnAction
@@ -1861,7 +1860,7 @@ unsafe extern "system-unwind" fn entry_body(
             _ => {}
         }
     }
-    // CALL 1406DD973 / return 1406DD978 supplies the activation charge.
+    // The ability activation caller supplies the activation charge.
     // Availability, AI and UI callers of the same getter are unrelated.
     if name == "AbilityCost"
         && caller == 0x6dd978
@@ -1887,7 +1886,6 @@ fn mio_component(
     };
     component(owner, kind, cost, mio_identity(organisation));
 }
-// P: 140B9A913's relation return and 140DA1380/140DA12E0's receiver.
 #[inline(always)]
 fn relation_identity(relation: usize) -> Identity {
     relation_identity_with(&operand_memory(), relation)
@@ -1936,7 +1934,7 @@ fn mio_identity_with(memory: &impl Memory, organisation: usize) -> Identity {
     );
     identity
 }
-// P: 1406EFC6D's active record is alive at the native anniversary payment.
+// The active record is alive at the native anniversary payment.
 #[inline(always)]
 fn upkeep_identity(record: usize) -> Identity {
     upkeep_identity_with(&operand_memory(), record)
@@ -2039,8 +2037,8 @@ unsafe fn writer(original: NativeFunction, args: [usize; 5], index: usize, calle
         }
     });
     let mut identity = CONTEXT.get().identity;
-    // P: the nested ability allocator (1406DDCE2) and release refund
-    // (1406DE4CA) belong to their observed parent, not an outer command.
+    // The nested ability allocator and release refund belong to their
+    // observed parent, not an outer command.
     if matches!(caller, 0x6c6d75 | 0x6c7319 | 0x6ddce7 | 0x6de4cf)
         && let Some(parent) = previous.filter(|parent| Some(parent.owner) == owner)
     {
@@ -2050,8 +2048,8 @@ unsafe fn writer(original: NativeFunction, args: [usize; 5], index: usize, calle
     let requested = match index {
         0 | 1 => Some(b as i64),
         2 => before.map(i64::wrapping_neg),
-        // 1406D649A / 1406D64A1 assigns NCountry.STARTING_COMMAND_POWER
-        // from 14331C6F8; only the observed effective reset is known here.
+        // Reset assigns the configured starting command power; only the
+        // observed effective reset is known here.
         3 => None,
         4 => {
             if native_daily {
@@ -2068,7 +2066,7 @@ unsafe fn writer(original: NativeFunction, args: [usize; 5], index: usize, calle
         9 if fifth as u8 != 0 && d as i64 > 0 => Some((d as i64).wrapping_neg()),
         _ => None,
     };
-    // P: 140C0BD10 passes leader+1078 as the deployment allocator.
+    // The leader's embedded allocator receives the deployment charge.
     if caller == 0xc0bd82
         && let Some(leader) = b.checked_sub(0x1078)
     {
@@ -2272,8 +2270,8 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             Some(GovernmentCause::ResetSetup),
         ),
         5 => {
-            // P: 140B9DA3B bypasses the loop with ZF clear. Exhaustion/empty
-            // at 140B9DA71/140B9DA4F has ZF set and started from a null party.
+            // Bypassing the party loop leaves ZF clear. Exhaustion/empty
+            // leaves ZF set and started from a null party.
             if registers.flags & (1 << 6) != 0 {
                 if let Some(party) =
                     at(registers.r14, engine::cpolitical_status::RULING_PARTY).and_then(read::<u64>)
@@ -2293,7 +2291,7 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             }
         }
         6 => {
-            // Restrict this on-demand getter observation to its proven daily
+            // Restrict this on-demand getter observation to its daily
             // caller. Tooltip/trigger evaluations are not income applications.
             let caller = at(registers.rbp, 0x358)
                 .and_then(operand::<u64>)
@@ -2328,7 +2326,7 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             }
         }
         7 => {
-            // P: only 140B9935D's daily call is an applied income observation.
+            // Only the daily caller supplies an applied income observation.
             if at(registers.rbp, 0x358).and_then(operand::<u64>) != Some((base() + 0xb99362) as u64)
             {
                 return;

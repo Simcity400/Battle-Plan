@@ -817,7 +817,7 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         &templates,
     );
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    // A programmatic override with a set group is not shown (1409B5640)
+    // A programmatic override with a set group is not shown
     // and not recorded: the group is compared instead.
     let programmatic = replay::rows::LandCombatDivisionRow {
         name_programmatic: 1,

@@ -1,4 +1,4 @@
-//! CDF3F0/CDF190: insertion-visited area search and native heap ties.
+//! Area connectivity search, visited on insertion, with exact heap ties.
 use super::super::Fact;
 use std::collections::BTreeSet;
 
@@ -6,16 +6,16 @@ use std::collections::BTreeSet;
 pub struct AreaNode {
     pub label: u32,
     pub first_land_province: Fact<u32>,
-    /// CGameMap+238[first-land-province+ A4], not a dense viewer index.
+    /// The recorded first-land nonsea index, independent of viewer indexing.
     pub nonsea_index: Fact<i32>,
-    /// Native area+3C; the callback tests nonzero, including a negative word.
+    /// The land count; the cost callback accepts nonzero, including negative.
     pub land_count: Fact<i32>,
-    /// Native area+90 linked-list order; repeats survive.
+    /// Area neighbours in linked-list order, retaining repeats.
     pub neighbors: Fact<Vec<u32>>,
 }
 
-/// Exact CDF190 callback. Resolve first-land state owner only for nonzero3C.
-/// F09D0 mode0 is reused; no localise/path query output is captured.
+/// Resolve the first-land state owner only for a nonzero land count.
+/// Reuse mode-0 country access; localisation or path outputs are not captured.
 pub fn area_cost(
     land_count: Fact<i32>,
     owner_raw: i32,
@@ -44,7 +44,7 @@ pub fn area_cost(
 
 fn valid_index(index: i32, count: u32) -> Fact<i32> {
     if index < 0 || index as u32 >= count {
-        Err("native area nonsea index outside snapshot domain".into())
+        Err("area nonsea index outside snapshot domain".into())
     } else {
         Ok(index)
     }
@@ -60,10 +60,10 @@ fn before_or_equal(a: QueueEntry, b: QueueEntry) -> bool {
     (a.cost, a.province) <= (b.cost, b.province)
 }
 
-/// Native heap uses cost then first-land province, with NO label tie-break.
-/// Equal children pick the right child; pop uses the native hole-then-push
-/// algorithm rather than an early-stop sift. Distinct orphan pointers can
-/// share a first-land province, so stable/invented third-key sorting is unsafe.
+/// The heap uses cost then first-land province, with no label tie-break.
+/// Equal children pick the right child; pop moves the hole down before
+/// pushing the last entry up. Distinct orphan areas can share a first-land
+/// province, so an additional stable or label ordering changes ties.
 #[derive(Default)]
 struct AreaQueue(Vec<QueueEntry>);
 impl AreaQueue {
@@ -117,12 +117,12 @@ impl AreaQueue {
         Some(result)
     }
 }
-/// CDF3F0 boolean consumer. Native visited identity is first-land's nonsea
-/// index and is set ON INSERTION. This is not a conventional shortest path:
-/// no relaxation replaces a visited node. Initial neighbors require cost>=0,
-/// even the target. Later target neighbors replace their callback cost with0.
-/// Equal heap costs compare first-land province ID. Initial repeats remain.
-/// Capture faults stop the reached query; no inferred topology substitutes.
+/// Boolean area connectivity. Visit identity is the first-land nonsea
+/// index, marked on insertion; relaxation never replaces a visited node.
+/// Initial neighbours require nonnegative cost, including the target.
+/// Later target neighbours replace their callback cost with 0. Equal heap
+/// costs compare first-land province IDs; initial repeats remain.
+/// Capture faults stop the reached query; topology is never inferred.
 pub fn areas_connect(
     start: u32,
     target: u32,
@@ -135,8 +135,8 @@ pub fn areas_connect(
     }
     let start_node = node(start)?;
     let start_index = start_node.nonsea_index.clone()?;
-    // CDF3F0 returns native false for a known negative START identity before
-    // demanding its neighbors. Reached neighbors still require valid indices.
+    // A known negative start identity returns false before demanding
+    // its neighbours. Reached neighbours still require valid indices.
     if start_index < 0 {
         return Ok(false);
     }
@@ -315,7 +315,7 @@ mod tests {
         assert!(areas_connect(1, 2, 8, |_| Ok(outside_start.clone()), |_| panic!()).is_err());
     }
     #[test]
-    fn equal_heap_keys_keep_native_hole_order_without_area_label_tiebreak() {
+    fn equal_heap_keys_keep_hole_order_without_area_label_tiebreak() {
         let mut queue = AreaQueue::default();
         for label in [9, 2, 8, 1] {
             queue.push(QueueEntry {

@@ -328,7 +328,7 @@ fn empty_provinces_demand_controller_doctrine_and_aliases_do_not_repeat_it() {
 #[test]
 fn demanded_stats_and_unread_skill_refuse_but_native_invalid_skill_is_read() {
     let (content, mut frame, links) = fixture();
-    assert!(render(&content, &frame, &links).is_ok()); // +0x18 valid byte is zero.
+    assert!(render(&content, &frame, &links).is_ok()); // Skill validity byte is zero.
     let statuses = frame.complete::<tables::DivisionStatus>().unwrap().to_vec();
     let mut missing = statuses.clone();
     missing

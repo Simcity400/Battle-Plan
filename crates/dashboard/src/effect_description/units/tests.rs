@@ -229,7 +229,9 @@ fn bonus_names() -> installed_content::key_names::KeyNames {
 }
 
 #[test]
-fn unit_bonus_preserves_native_rosters_stat_and_terrain_order_and_nato_frame() {
+fn unit_bonus_preserves_rosters_stat_and_terrain_order_and_nato_frame() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     let (mut catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -267,6 +269,8 @@ fn unit_bonus_preserves_native_rosters_stat_and_terrain_order_and_nato_frame() {
 
 #[test]
 fn unit_bonus_battalion_mult_keeps_authored_stats_flags_and_adjacent_category_header() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let names = bonus_names();
     let out = render(
@@ -288,6 +292,8 @@ fn unit_bonus_battalion_mult_keeps_authored_stats_flags_and_adjacent_category_he
 
 #[test]
 fn unit_bonus_refused_adjuster_keeps_known_stats_and_later_selectors() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     fixture.catalogue.localisation = fixture
         .catalogue
@@ -389,7 +395,7 @@ fn unit_fixture() -> Fixture {
 }
 
 #[test]
-fn unit_carrier_native_empty_and_organization_table() {
+fn unit_carrier_empty_and_organization_table() {
     let fixture = unit_fixture();
     for object in [
         C(1),
@@ -482,15 +488,15 @@ fn unit_carrier_shared_name_and_recording_gap_table() {
     for (body, class) in [
         (
             "change_division_template={division_template=\"Raw [This.GetName]\"}",
-            "CArmyChangeTemplateEffect",
+            "change_division_template",
         ),
         (
             "change_division_template={division_template=missing division_template=alpha}",
-            "CArmyChangeTemplateEffect",
+            "change_division_template",
         ),
-        ("destroy_unit=yes", "CDestroyUnitEffect"),
-        ("destroy_unit=THIS", "CDestroyUnitEffect"),
-        ("destroy_unit=var:unrecorded^random", "CDestroyUnitEffect"),
+        ("destroy_unit=yes", "destroy_unit"),
+        ("destroy_unit=THIS", "destroy_unit"),
+        ("destroy_unit=var:unrecorded^random", "destroy_unit"),
     ] {
         let out = render(
             &fixture,
@@ -502,7 +508,7 @@ fn unit_carrier_shared_name_and_recording_gap_table() {
         assert!(out.text.is_empty(), "{body}: {}", out.text);
         let expected = format!(
             "synthetic effect {class}: key {}: DivisionStatus.naming not recorded",
-            if class == "CDestroyUnitEffect" {
+            if class == "destroy_unit" {
                 "destroy_unit"
             } else {
                 "change_division_template"
@@ -533,7 +539,7 @@ fn unit_carrier_shared_name_and_recording_gap_table() {
         out.refusals
     );
     for (owner, reason) in [
-        (0, "reserved CCountry[0] division-template roster"),
+        (0, "reserved country-zero division-template roster"),
         (
             999,
             "CountryLinks lacks change-division-template logical owner 999",
@@ -562,12 +568,12 @@ fn unit_carrier_shared_name_and_recording_gap_table() {
     for (body, class) in [
         (
             "change_division_template={division_template=missing}",
-            "CArmyChangeTemplateEffect",
+            "change_division_template",
         ),
-        ("destroy_unit=yes", "CDestroyUnitEffect"),
+        ("destroy_unit=yes", "destroy_unit"),
         (
             "set_unit_organization=var:unrecorded^random",
-            "CSetUnitOrganization",
+            "set_unit_organization",
         ),
     ] {
         let missing = UNIT + (1_u64 << 32);
@@ -772,7 +778,7 @@ fn unit_carrier_format98_naming_table() {
             &[],
         );
         assert_eq!(out.text, "SetOrg 0.25 [This.GetName]");
-        assert!(out.refusals.is_empty()); // 14045E6D0 reads no name.
+        assert!(out.refusals.is_empty()); // Do not read a name for this description.
     }
 }
 
@@ -893,7 +899,9 @@ fn unit_carrier_naming_has_no_country_or_division_cap() {
 }
 
 #[test]
-fn native_units_output_branches() {
+fn units_output_branches() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let equipment = equipment();
     let mut sub_units = installed_content::unit_leader::SubUnits::default();
@@ -939,7 +947,7 @@ fn native_units_output_branches() {
         (
             "delete_unit_template_and_units={division_template=Raw air_experience=1}",
             C(1),
-            // 1403B2220 reports unknown own fields instead of loading child effects.
+            // Report unknown own fields rather than loading child effects.
             "Delete Raw\n",
         ),
         (
@@ -1127,7 +1135,7 @@ fn native_units_output_branches() {
         (
             "BBB={transfer_units_fraction={target=AAA} set_equipment_fraction=2}",
             C(1),
-            // 140398970 adds no LF; context builder 141381200 concatenates children.
+            // The transfer wrapper adds no LF; concatenate its children.
             "\u{12}BBBBeta:\n   UnitsTo alpha   Adjust 1.00\n",
         ),
     ] {
@@ -1165,7 +1173,9 @@ fn native_units_output_branches() {
 }
 
 #[test]
-fn native_navy_unknown_target_uses_reserved_country_name() {
+fn navy_unknown_target_uses_reserved_country_name() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     fixture.catalogue.localisation = fixture
         .catalogue
@@ -1176,8 +1186,8 @@ fn native_navy_unknown_target_uses_reserved_country_name() {
         .collect::<Localisation>()
         .into();
     Arc::make_mut(&mut fixture.catalogue.localisation).language = "english".into();
-    // 1403983B0 calls the definite-name getter even when vf25 selects slot zero.
-    // Its recorded cache witness decides whether to rebuild or retain empty text.
+    // Read the definite name even when the country selector chooses slot zero.
+    // The recorded cache decides whether to rebuild or retain empty text.
     for (built, expected) in [(2, "NavyTo reserved navy target\n"), (0, "NavyTo \n")] {
         *fixture.frame.tables[TableId::ReservedCountryNaming.index()] =
             TableView::Complete(TableRows::ReservedCountryNaming(vec![
@@ -1200,7 +1210,7 @@ fn native_navy_unknown_target_uses_reserved_country_name() {
 }
 
 #[test]
-fn native_units_admission_and_named_refusals() {
+fn units_admission_and_named_refusals() {
     let mut fixture = fixture();
     if let TableView::Complete(TableRows::Provinces(rows)) =
         &mut *fixture.frame.tables[TableId::Provinces.index()]
@@ -1357,53 +1367,49 @@ fn native_units_admission_and_named_refusals() {
     for (body, class, reason) in [
         (
             "add_equipment_production={equipment={type=missing}}",
-            "CAddEquipmentProduction",
+            "add_equipment_production",
             "equipment content unavailable",
         ),
         (
             "add_equipment_to_stockpile={type=missing amount=1}",
-            "CAddEquipmentToStockpileEffect",
+            "add_equipment_to_stockpile",
             "equipment content unavailable",
         ),
         (
             "add_equipment_subsidy={equipment_type=missing}",
-            "CAddEquipmentSubsidyEffect",
+            "add_equipment_subsidy",
             "equipment content unavailable",
         ),
         (
             "create_equipment_variant={type=missing}",
-            "CCreateEquipmentVariantEffect",
+            "create_equipment_variant",
             "equipment content unavailable",
         ),
         (
             "destroy_ships={type=missing count=all}",
-            "CDestroyShipsEffect",
+            "destroy_ships",
             "equipment content unavailable",
         ),
         (
             "send_equipment={type=missing target=BBB}",
-            "CSendEquipmentEffect",
+            "send_equipment",
             "equipment content unavailable",
         ),
         (
             "unlock_subunit=undefined",
-            "CUnlockSubUnitEffect",
+            "unlock_subunit",
             "content unavailable",
         ),
         (
             "transfer_navy={target=ZZZ}",
-            "CTransferNavyEffect",
+            "transfer_navy",
             "ReservedCountryNaming",
         ),
-        (
-            "create_unit={}",
-            "CCreateUnitEffect",
-            "reserved CCountry[0]",
-        ),
+        ("create_unit={}", "create_unit", "reserved country zero"),
         (
             "create_unit=THIS",
-            "CCreateUnitEffect",
-            "rejects the scalar",
+            "create_unit",
+            "the scalar create_unit body is rejected and retains constructor defaults",
         ),
     ] {
         let out = render(
@@ -1459,7 +1465,7 @@ fn native_units_admission_and_named_refusals() {
 }
 
 #[test]
-fn native_units_have_no_country_count_cap() {
+fn units_have_no_country_count_cap() {
     let mut fixture = equipment_fixture();
     let countries = crate::effect_description::tests::synthetic_countries(5000);
     *fixture.frame.tables[TableId::CountryLinks.index()] =
@@ -1750,7 +1756,9 @@ fn equipment_fixture() -> Fixture {
 }
 
 #[test]
-fn native_units_equipment_branches() {
+fn units_equipment_branches() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = equipment_fixture();
     let equipment = equipment();
     let names = installed_content::key_names::KeyNames::default();
@@ -2057,7 +2065,9 @@ fn native_units_equipment_branches() {
 }
 
 #[test]
-fn native_units_equipment_named_refusals() {
+fn units_equipment_named_refusals() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = equipment_fixture();
     let equipment = equipment();
     let content = Content {
@@ -2075,7 +2085,7 @@ fn native_units_equipment_named_refusals() {
         ),
         (
             "add_equipment_subsidy={equipment_type=syn_arch seller_tags={ZZZ} seller_trigger=syn_trigger}",
-            "trigger-template vf12",
+            "trigger-template description",
         ),
     ] {
         let out = render(&fixture, &format!("{body} {body}"), C(1), content, &[]);
@@ -2105,7 +2115,7 @@ fn native_units_equipment_named_refusals() {
         assert!(
             out.refusals
                 .keys()
-                .all(|why| why.contains("direct country0 production roster")),
+                .all(|why| why.contains("direct country-zero production roster")),
             "{:?}",
             out.refusals,
         );
@@ -2143,7 +2153,7 @@ fn native_units_equipment_named_refusals() {
     assert!(
         out.refusals
             .keys()
-            .all(|why| why.contains("version u8 +0x41C")),
+            .all(|why| why.contains("VariantDefinitions.version")),
         "{:?}",
         out.refusals,
     );
@@ -2179,7 +2189,9 @@ fn native_units_equipment_named_refusals() {
 }
 
 #[test]
-fn native_units_recorded_variant_no_tech_probe() {
+fn units_recorded_variant_no_tech_probe() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let equipment = equipment();
     let content = Content {
         equipment: Some(&equipment),
@@ -2285,7 +2297,9 @@ fn native_units_recorded_variant_no_tech_probe() {
 }
 
 #[test]
-fn native_units_recorded_variant_pool_order_and_equality() {
+fn units_recorded_variant_pool_order_and_equality() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let equipment = equipment();
     let content = Content {
         equipment: Some(&equipment),
@@ -2405,7 +2419,9 @@ fn native_units_recorded_variant_pool_order_and_equality() {
 }
 
 #[test]
-fn native_units_equipment_role_branches() {
+fn units_equipment_role_branches() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let cases = [
         ("capital_ship", "ship_designer_capital_ship"),
         ("submarine", "ship_designer_submarine"),

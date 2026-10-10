@@ -1,8 +1,8 @@
-//! `141632130`'s selected-own-unit arrow operands, without recorded UI state.
+//! Selected-own-unit arrow operands, without recorded UI state.
 //!
 //! Admission reads the roster owner; style reads the logical owner and the
 //! ordinary route's last province. Geometry independently prefers the alternate
-//! route (`141633050`). Missing fields refuse only a reached native branch.
+//! route. Missing fields refuse only a reached branch.
 
 use std::{
     cell::RefCell,
@@ -34,7 +34,7 @@ pub(super) struct Route {
     pub free_arc: f32,
 }
 
-/// Selected province force counters (`CProvinceGraphics+1764`) are viewer-owned too.
+/// Selected province force counters are viewer-owned too.
 pub(in crate::map) fn selected_provinces(
     frame: &DecodedFrame,
     selected: &BTreeSet<Unit>,
@@ -359,8 +359,8 @@ impl<'a> Context<'a> {
     }
 }
 
-/// 141632E0C..E53 receives the logical owner, targeting the destination
-/// controller. This is the reverse of action-tail140BF0EF0, not symmetric.
+/// The logical owner targets the destination controller.
+/// This is the reverse of the action-tail relation direction, not symmetric.
 fn route_hostile<'a>(
     frame: &'a DecodedFrame,
     ordinary: &[u32],

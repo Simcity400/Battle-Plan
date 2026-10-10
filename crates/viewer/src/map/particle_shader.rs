@@ -1,4 +1,4 @@
-//! Particle submission14227F420 and declaration142281B00.
+//! Particle submission and declaration.
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
 use installed_content::{ResolvedLayers, image::native::Decode, pdxshader::program::Stage};
@@ -31,12 +31,12 @@ pub struct Packet {
 impl Packet {
     /// Per-actor scale and world/atlas/time; scene and projection bind once per view.
     pub fn buffers(&self) -> BTreeMap<u32, Vec<u8>> {
-        //14227EEB0 requests8 bytes;142400A40 copies only that count. The
-        //CPU zeros at14227F9B7 are outside the upload; physical tail8..16 is unknown.
+        // Upload eight scale bytes. CPU zeros beyond that prefix do not initialize the physical bytes
+        // 8 through 15.
         let scale = [self.scale[0], self.scale[1], 0., 0.];
         let mut object = vec![0_u8; 96];
         object[..64].copy_from_slice(bytemuck::bytes_of(&self.world));
-        //142281B00 uses zero half-pixels on DX11 and signed authored tile counts.
+        // Use zero half-pixels on DX11 and signed authored tile counts.
         let atlas = [
             0_f32,
             0.,
@@ -59,7 +59,7 @@ impl Packet {
     }
 }
 
-///1424E85D0: ordered MAXSS of world-column squared lengths, then SQRTSS.
+/// Compute world-column squared lengths in order, take their ordered maximum, then its square root.
 pub fn world_scale(basis: [[f32; 3]; 3]) -> f32 {
     let [a, b, c] = basis.map(|v| v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
     let maxss = |a, b| if a > b { a } else { b };

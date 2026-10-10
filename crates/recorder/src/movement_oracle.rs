@@ -73,14 +73,16 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     if !PINNED_BUILD.matches(&exe) {
         return Err(format!(
-            "unsupported game build {} bytes; wanted {}",
-            exe.size, PINNED_BUILD.version
+            "unsupported game build {} bytes; wanted {} bytes",
+            exe.size, PINNED_BUILD.exe_size
         ));
     }
     let name = process
         .path
         .file_name()
         .ok_or("game executable has no name")?;
+    engine::executable_tables::initialize_executable(&process.path)
+        .map_err(|error| format!("Cannot prepare game tables: {error}"))?;
     let base = windows::modules(pid)?
         .into_iter()
         .find(|module| module.path.file_name() == Some(name))
@@ -130,13 +132,15 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
     report.print(show);
     let report_path = match report_path {
         Some(path) => path,
-        None => PathBuf::from(r"captures\movement_oracle").join(format!(
-            "movement-oracle-{}.json",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|e| e.to_string())?
-                .as_secs()
-        )),
+        None => crate::recording::default_capture_directory()
+            .join("movement_oracle")
+            .join(format!(
+                "movement-oracle-{}.json",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| e.to_string())?
+                    .as_secs()
+            )),
     };
     if let Some(parent) = report_path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;

@@ -1,102 +1,102 @@
-//! CEffect::BuildDescription (140532780), shared by event and balance tooltips.
-//!
-//! Stable domain entry points (core changes go through lead I):
-//! - `Renderer::{line, localised, expanded}` localise keys/arguments and expand in
-//!   the caller's scope/session (1410CF560); `line` appends LF.
-//! - `Renderer::expanded_with_faction_environment` selects the copied scope's
-//!   kind-0 environment and optional faction (+0xC8, 1410CF4A0).
-//! - `Renderer::{country_target, state_target}` resolve native effect selectors
-//!   (141384830/1405336C0/1405302E0 and 1403A1950/140533BE0/14052FA10),
+//! Effect descriptions, shared by event and balance tooltips.
+
+//! Shared domain entry points:
+//! `Renderer::{line, localised, expanded}` localise keys/arguments and expand in
+//!   the caller's scope/session; `line` appends LF.
+//! `Renderer::expanded_with_faction_environment` selects the copied scope's
+//!   kind-0 environment and optional faction.
+//! `Renderer::{country_target, state_target}` resolve native effect selectors
+
 //!   sharing `evaluator` for scoped variables. State zero stays zero.
-//! - `Renderer::{current_country, country_name, tag, state_name}` resolve names;
-//!   `state_name` uses GetStateName (1409CC380).
-//! - `Renderer::selected_party_name` shares selected-ideology party lookup
-//!   and `ScriptedText::party_name` (140B980C0/14118F860).
-//! - `ScriptedText::country_marked_name` shares `GetNameWithFlag` (140BA59E0).
-//! - `Renderer::equipment_list_description` resolves seller-scoped entries and
-//!   formats the quantity pool (140306B70/1413A8A20), reusing equipment names.
-//! - `Scope` / `EventObject` carry `Project { owner, id }`, `Raid(u64)` and
+//! `Renderer::{current_country, country_name, tag, state_name}` resolve names;
+//!   `state_name` shares the state-name formatter.
+//! `Renderer::selected_party_name` shares selected-ideology party lookup
+//!   and `ScriptedText::party_name`.
+//! `ScriptedText::country_marked_name` shares marked country-name formatting.
+//! `Renderer::equipment_list_description` resolves seller-scoped entries and
+//!   formats the quantity pool, reusing equipment names.
+//! `Scope` `EventObject` carry `Project { owner, id }`, `Raid(u64)` and
 //!   `Unit(u64)`; `Evaluator::{enter_scope, with_this, event_scopes}` keeps their
-//!   graph links (14146BB30/1405296C0). `sp:` and `mio:` use that selector path.
-//! - `World::{project(owner, id), raid(reference), unit(reference)}` joins those
+//!   graph links. `sp:` and `mio:` use that selector path.
+//! `World::{project(owner, id), raid(reference), unit(reference)}` joins those
 //!   recorded identities. `Renderer::{project_name(owner, id), raid_name(reference),
 //!   unit_name(reference), organisation_name(reference)}` returns native names
-//!   or a named missing-input error (140FCDDF0/140FD6260/140C72F00/140DA44C0).
-//! - `World::unit_status(reference)` supplies the retained `DivisionStatus.name`
+//!   or a named missing-input error.
+//! `World::unit_status(reference)` supplies the retained `DivisionStatus.name`
 //!   and historical generator operands. `unit_names::army_name` shares the
-//!   native cached getter (140C72F00), exact literal provenance and stored-text
+//!   cached getter, exact literal identity and stored-text
 //!   language guard with the viewer and recorded-unit products. Only historical
-//!   cache absence uses group/ordinal selection (1409B5640/1409B57C0), retaining
-//!   named legacy-allocation refusals (1409B4CE0/140AE3750).
+//!   cache absence uses group/ordinal selection, retaining
+//!   named legacy-allocation refusals.
 //!   `Content::division_names` caches the recorded stack's name groups.
-//! - `Renderer::unit_name(&self, reference: u64) -> Result<String, String>` is
+//! `Renderer::unit_name(&self, reference: u64) -> Result<String, String>` is
 //!   `pub(super)`, the single entry point for all effect domains, including raid
 //!   divisions (pass `RaidRow.unit`) and full wing handles. Recorded AirWings
 //!   stored names use `scripted_text::stored_text`'s recording-language rule
-//!   (141454480/140F4B8F0/140F51FB0). An old format's absent name retains
+//!   An old format's absent name retains
 //!   `World::raid_wing_name`'s active-raid WING_NAME projection.
-//! - `World::has_template(country, name)` shares the exact recorded template
-//!   display-name comparison and content fallback (1406C29B0/140B91170).
-//! - `Content::{buildings, resources, max_railway_level}` supplies cached declared
-//!   building labels (1414A4470), resource frames (140BBD150), and NSupply's
-//!   MAX_RAILWAY_LEVEL (14037A240), read once per stack by `CachedContent`.
-//! - `Content::{equipment, autonomy_states}` supplies the complete equipment
-//!   database (1409EB8B0/14139B350) and declared autonomy states (140669480),
+//! `World::has_template(country, name)` shares the exact recorded template
+//!   display-name comparison and content fallback.
+//! `Content::{buildings, resources, max_railway_level}` supplies cached declared
+//!   building labels, resource frames, and NSupply's
+//!   MAX_RAILWAY_LEVEL, read once per stack by `CachedContent`.
+//! `Content::{equipment, autonomy_states}` supplies the complete equipment
+//!   database and declared autonomy states,
 //!   each read once per stack by `CachedContent`, with reader notes retained.
-//! - `Content::state_categories` supplies declared category identities
-//!   (1413AFB60/1413AF3B0/1413AFAC0), cached once with reader notes retained.
-//! - `Content::wargoals` supplies declared wargoal-type identities
-//!   (140A2C690/140A2C5D0), cached once with reader notes retained.
-//! - `ScriptedText::{province_display_name, country_adjective}` shares effect
-//!   province naming (140E69320) and country adjective naming (140BA5560).
-//! - `Renderer::evaluator` is the shared trigger/variable/saved-target evaluator;
-//!   `scoped_value` evaluates fixed5 operands (1405382B0).
-//! - `Renderer::modifier_description_with` formats raw modifier text (14054E050);
-//!   `modifier_list_with` expands it in the supplied scope (14054E520/1410CF560).
+//! `Content::state_categories` supplies declared category identities
+//!   cached once with reader notes retained.
+//! `Content::wargoals` supplies declared wargoal-type identities
+//!   cached once with reader notes retained.
+//! `ScriptedText::{province_display_name, country_adjective}` shares effect
+//!   province naming and country adjective naming.
+//! `Renderer::evaluator` is the shared trigger/variable/saved-target evaluator;
+//!   `scoped_value` evaluates fixed5 operands.
+//! `Renderer::modifier_description_with` formats raw modifier text;
+//!   `modifier_list_with` expands it in the supplied scope.
 //!   `ModifierListOptions` maps the native formatting arguments; `modifier_list`
 //!   uses its defaults. The numeric prefix is a separate `&str` argument.
 //!   `cached_modifier_description_with(entries: &[CachedModifier], prefix: &str,
 //!   options: ModifierListOptions) -> Result<String, String>` takes recorded
-//!   definition IDs in native cache order, sharing that formatter (14128C8E0).
-//! - `Content::{static_modifiers, dynamic_modifiers, opinion_modifiers,
+//!   definition IDs in native cache order, sharing that formatter.
+//! `Content::{static_modifiers, dynamic_modifiers, opinion_modifiers,
 //!   power_balances}` supplies description catalogues from the same stack;
-//!   static descriptions resolve each requested name once (140550940).
-//! - `Renderer::units_equipment_reference_name(&self, fields: &[Item],
-//!   scopes: Scopes) -> Result<String, String>` shares CEquipmentReference naming
-//!   for production and licences (141411150). `character_content().catalogue`
+//!   static descriptions resolve each requested name once.
+//! `Renderer::units_equipment_reference_name(&self, fields: &[Item],
+//!   scopes: Scopes) -> Result<String, String>` shares equipment reference naming
+//!   for production and licences. `character_content.catalogue`
 //!   `char_country_traits` and `char_equipment_bonuses` are shared inside effect_description for
-//!   advisor-backed idea lookup and equipment fragments (1410D69C0/140FBB140).
-//! - Numeric leaves share `numeric_leaf(&self, item: &Item, scopes: Scopes,
+//!   advisor-backed idea lookup and equipment fragments.
+//! Numeric leaves share `numeric_leaf(&self, item: &Item, scopes: Scopes,
 //!   key: &[u8], format: numeric::NumericFormat) -> Result<String, String>`;
-//!   `numeric_value` keeps its existing fixed5 signature (1405382B0).
-//!   The native modifier/number formatters below remain unchanged.
-//!   `crate::modifier_text::value_text`, localisation
-//!   `Argument`, and `installed_content::fixed5::{fixed5_to_string, fixed5_percent}` retain
-//!   native modifier/number formatting (14054FE50, 142230F20).
-//! - `Renderer::group`, `append_description`, `indent_nonempty_lines`,
+//!   `numeric_value` keeps its existing fixed5 signature.
+//!   The modifier/number formatters share localisation arguments
+//!   and `crate::modifier_text::value_text`.
+//!   `Argument` and `installed_content::fixed5::{fixed5_to_string, fixed5_percent}` retain
+//!   native modifier/number formatting.
+//! `Renderer::group`, `append_description`, `indent_nonempty_lines`,
 //!   `trim_description`, and `Context::{with_variable_session,
 //!   with_expansion_scopes, variable_session}` retain indentation/session rules.
-//! - `Renderer::refuse(class, reason)` counts a named failure; the class-keyed
-//!   dispatch is in `dispatch.rs`. Each lead edits only its own domain and rows.
-//! - `Renderer::effect_children(item)` projects slot-4 own fields out of the
-//!   child array, shared by builders and probes (140534280/1405345D0).
-//! - `Renderer::fresh_country_state_scope(country, state)` creates a localisation
-//!   environment without caller ROOT/FROM/PREV (1404A5070/1404A5160).
-//! - Variable descriptions use `Evaluator::description_variable` for shared
-//!   operands/arithmetic (14039A7D0/140379020); builder writes use
+//! `Renderer::refuse(key, reason)` counts a named failure; the class-keyed
+//!   dispatch is in `dispatch.rs`.
+//! `Renderer::effect_children(item)` projects each reader's own fields out of the
+//!   child array, shared by builders and probes.
+//! `Renderer::fresh_country_state_scope(country, state)` creates a localisation
+//!   environment without caller ROOT/FROM/PREV.
+//! Variable descriptions use `Evaluator::description_variable` for shared
+//!   operands/arithmetic; builder writes use
 //!   `description_temp_destination_fields` and `store_description_temp`
-//!   for repeated fields/defaults and index overrides (140535A10/14047AD60);
-//!   `encode_description_scope` retains shared object encoding (140537310).
+//!   for repeated fields/defaults and index overrides;
+//!   `encode_description_scope` retains shared object encoding.
 //!   `refuse_description_writer` invalidates unknown TLS mutations.
 //!   `Evaluator::begin_description_in(scopes)` initializes the outer TLS seed
-//!   from the recorded store and immediate THIS/FROM (1405354A0); nested calls
-//!   retain it. `description_random_temp(item, scopes)` consumes 140537810 RNG;
+//!   from the recorded store and immediate THIS/FROM; nested calls
+//!   retain it. `description_random_temp(item, scopes)` consumes RNG;
 //!   `description_supply_temp(item, scopes, minimum_trains)` lazily reads the
-//!   content minimum only for required trains (14047B0B0).
-//! - `Evaluator::{script_target_candidates, fresh_country_scope}` share native
-//!   CScriptTargets selection and fresh FROM-linked scorer scopes
-//!   (140C1C820/14047BB20); saved global tooltip targets use
-//!   `save_global_tooltip_target` (14038D6B0/1401ED290).
+//!   content minimum only for required trains.
+//! `Evaluator::{script_target_candidates, fresh_country_scope}` share native
+//!   script targets selection and fresh FROM-linked scorer scopes;
+//!   saved global tooltip targets use
+//!   `save_global_tooltip_target`.
 use std::{
     cell::{OnceCell, RefCell},
     collections::BTreeMap,
@@ -138,78 +138,29 @@ mod tests;
 mod units;
 mod variables;
 
-/// Native formatter arguments, at the caller's RSP before CALL. 14054E050
-/// has 11 arguments; 14054E520 has 12, inserting an event scope at arg 3
-/// (14054E53A forwards arg 12; 14054E59F/14054E5AE format then expand).
+/// Modifier list formatting controls shared by raw and scoped descriptions.
 ///
-/// | 14054E050 | 14054E520 | Meaning / port argument |
-/// |---|---|---|
-/// | 1 RCX | 1 RCX | Accumulator / `modifiers`; wrapper adds receiver +0x10 |
-/// | 2 RDX | 2 RDX | Output MSVC string / returned `String` |
-/// | — | 3 R8 | Event scope / `scopes` on `modifier_list_with` |
-/// | 3 R8D | 4 R9D | Signed requested `precision`, capped by definition +0x74 |
-/// | 4 R9B | 5 [rsp+20] byte | `outer_colour`; zero omits the outer controls |
-/// | 5 [rsp+20] | 6 [rsp+28] | C-string `separator`; null means LF (142702E68) |
-/// | 6 [rsp+28] u32 | 7 [rsp+30] u32 | Include `category_mask` |
-/// | 7 [rsp+30] u32 | 8 [rsp+38] u32 | `excluded_category_mask` |
-/// | 8 [rsp+38] i64 | 9 [rsp+40] i64 | Fixed5 `scale`, not a pointer |
-/// | 9 [rsp+40] | 10 [rsp+48] | Nullable MSVC-string numeric `prefix`; null is empty |
-/// | 10 [rsp+48] byte | 11 [rsp+50] byte | `force_plus` (nonzero) |
-/// | 11 [rsp+50] i32 | 12 [rsp+58] i32 | `invert` colour polarity (nonzero) |
-///
-/// Verified callers; omitted fields have the defaults below. Direct 14054E050
-/// callers use `modifier_description_with`, expanding only when their caller does.
-///
-/// Unit-leader trait helper 140AD9060:
-///
-/// | Call | Port value |
-/// |---|---|
-/// | 140AD929B and 140AD9346 | `modifier_description_with` |
-/// | Options | `ModifierListOptions { category_mask: u32::MAX, scale: trait_scale, ..Default::default() }` |
-/// | Prefix | `""` |
-/// | Scale source | Helper R9 copied to RBX at 140AD9089; both calls write inversion 0 (140AD926C/140AD9310) |
-///
-/// Targeted trait helper 140712850:
-///
-/// | Call | Port value |
-/// |---|---|
-/// | 140712BE0 | `modifier_description_with` |
-/// | Options | `ModifierListOptions { separator: caller_separator, ..Default::default() }` |
-/// | Prefix | Localised `EFFECT_CONTEXT_COUNTRY` at [rbp-70], passed by address at 140712BAF |
-/// | Separator source | Helper R8's MSVC string (R14); its SSO/heap bytes become RAX at 140712B99/140712BA3 |
-///
-/// Advisor helper 14036F000:
-///
-/// | Call | Port value |
-/// |---|---|
-/// | 14036F0A2 | `modifier_description_with` |
-/// | Options | `ModifierListOptions { category_mask: u32::MAX, ..Default::default() }` |
-/// | Prefix | `""`; expand the eventual `EFFECT_ASSIGN_ADVISOR` wrapper (1410CF560) |
-///
-/// Scientist helper 1404938C0:
-///
-/// | Call | Port value |
-/// |---|---|
-/// | 140493BF5 | `modifier_list_with` |
-/// | Options | `ModifierListOptions { category_mask: u32::MAX, ..Default::default() }` |
-/// | Prefix / scope | `""` / caller R15; 140493BB9 also writes arg 12 (inversion 0) |
+/// Precision is capped by each definition. Category masks use separate include
+/// and exclude intersections. Scale multiplies the value before fixed-point
+/// division. A null separator selects LF; an empty prefix adds no numeric text.
+/// Colour, plus signs and inversion apply independently of scope expansion.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ModifierListOptions<'a> {
-    /// 14054E050 arg 3 -> 14054F6D0 arg 6 -> 14054FE50 arg 5.
+    /// Requested numeric precision, capped by each definition.
     pub(super) precision: i32,
-    /// 14054E050 arg 4 wraps the entire list (14054E0CC/14054E3DE).
+    /// Colour marker surrounding the entire list.
     pub(super) outer_colour: u8,
-    /// Include mask: 14054E520 arg 7 -> 14054E050 arg 6 -> 14054F6D0 arg 9 (+0x64).
+    /// A definition must include a category in this mask.
     pub(super) category_mask: u32,
-    /// 14054E050 arg 7 -> 14054F6D0 arg 10; an independent intersection (+0x64).
+    /// A definition must include a category outside this mask.
     pub(super) excluded_category_mask: u32,
-    /// Numeric separator: 14054E520 arg 6 -> 14054E050 arg 5 -> 14054F6D0 arg 8.
+    /// Separator appended to numeric modifier text.
     pub(super) separator: &'a str,
-    /// 14054E050 arg 8: effective value times scale / 100000 (14054E195–1B4).
+    /// Fixed-point multiplier applied before division by 100_000.
     pub(super) scale: i64,
-    /// 14054E050 arg 10 -> 14054FE50 arg 6, overriding definition NO_PLUS.
+    /// Print a plus sign even when a definition disables it.
     pub(super) force_plus: bool,
-    /// 14054E050 arg 11 -> 14054FE50 arg 7; zero/nonzero changes good/bad polarity.
+    /// Reverse good/bad numeric colour polarity.
     pub(super) invert: bool,
 }
 
@@ -276,7 +227,7 @@ pub struct CachedContent {
     dynamic_modifiers: Option<installed_content::dynamic_modifiers::Database>,
     opinion_modifiers: Option<installed_content::opinion_modifiers::Database>,
     power_balances: Option<installed_content::power_balance::Database>,
-    /// Advisor templates from the same ideas read (140FC0B30 -> 1406B0490).
+    /// Advisor templates from the same ideas read.
     pub advisor_templates: Option<installed_content::characters::Characters>,
     name_lists: Option<installed_content::names::NameLists>,
     key_names: Option<installed_content::key_names::KeyNames>,
@@ -625,7 +576,7 @@ impl<'c, 'f> Context<'c, 'f> {
 }
 
 /// Each call is its own native variable/description session. Cleanup follows FROM;
-/// targets on a distinct ROOT endpoint may survive into the next call (140529520).
+/// targets on a distinct ROOT endpoint may survive into the next call.
 pub fn describe(
     items: &[Item],
     context: &Context<'_, '_>,
@@ -676,12 +627,12 @@ struct Renderer<'r, 'c, 'f> {
     scripted_stack: Vec<(Vec<u8>, Scope)>,
 }
 
-/// 1424B7400 trims exactly these four ASCII bytes.
+/// trims exactly these four ASCII bytes.
 pub fn trim_description(text: &str) -> &str {
     text.trim_matches(['\n', '\t', '\r', ' '])
 }
 
-/// 1424B7850 prefixes one space per level, leaving empty lines untouched.
+/// prefixes one space per level, leaving empty lines untouched.
 pub(super) fn indent_nonempty_lines(text: &str, indent: usize) -> String {
     let prefix = " ".repeat(indent);
     let mut out = String::new();
@@ -714,7 +665,7 @@ pub(super) fn fixed_field(items: &[Item], name: &str, default: i64) -> i64 {
         .filter(|item| item.keyword_is(name))
         .filter_map(|item| installed_content::fixed5::script_fixed5(item.value.scalar()?))
         .next_back()
-        .unwrap_or(default) // ReadFixed5@1424ABB10 retains the previous value on failure.
+        .unwrap_or(default) // fixed-point parsing retains the previous value on failure.
 }
 
 fn integer(text: &[u8]) -> i32 {
@@ -755,12 +706,9 @@ enum EffectSavedTarget<'a> {
 }
 
 fn scalar_operand(item: &Item) -> Result<&[u8], String> {
-    item.value.scalar().ok_or_else(|| {
-        format!(
-            "{} requires a scalar operand (ReadValue 141385570 / CScopedVariable reader 140539440)",
-            key(item)
-        )
-    })
+    item.value
+        .scalar()
+        .ok_or_else(|| format!("{} requires a scalar operand", key(item)))
 }
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
@@ -775,7 +723,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     pub(super) fn current_country(&self, scopes: Scopes) -> Result<u32, String> {
         match scopes.this {
             Scope::Country(country) | Scope::CountryLeader { country, .. } => Ok(country),
-            _ => Err("current scope has no country (1405336C0)".into()),
+            _ => Err("current scope has no country".into()),
         }
     }
 
@@ -795,7 +743,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 self.context.text.recorded().slot(row.country) == Some(country)
                     && row.token.eq_ignore_ascii_case(ideology)
             })
-            .ok_or("PoliticalParties lacks FindPartyByIdeology result (140B980C0)")?;
+            .ok_or("PoliticalParties lacks the party selected by ideology")?;
         self.context
             .text
             .party_name(party, self.tag(country)?, false)
@@ -806,8 +754,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<Option<u32>, String> {
-        // vf25@141384830 evaluates parsed operands through 140536ED0;
-        // otherwise vf15@1405336C0 / 1405302E0 resolves the selector.
+        // Evaluate parsed scoped operands;
+        // otherwise resolves the selector.
         // Block target fields belong only to the class's own native reader.
         let item = if item.value.scalar().is_some() {
             item
@@ -852,26 +800,33 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 let state = match scopes.this {
                     Scope::State(state) => state,
                     Scope::Country(_) | Scope::CountryLeader { .. } => return Ok(None),
-                    _ => return Err("occupied selector needs native CEventScope.state_id +0xA8 (1405336C0); this projected scope does not expose that field".into()),
+                    _ => return Err("occupied selector needs the event scope's state ID; this projected scope does not expose that field".into()),
                 };
                 if self.valid_state(state)?.is_none() {
                     return Ok(None);
                 }
-                // CState+268 / CResistance+50 is recorded unchanged, even inactive.
+                // state resistance is recorded unchanged, even inactive.
                 let rows = self
                     .context
                     .text
                     .frame()
                     .complete::<tables::StateResistance>()
                     .map_err(|why| why.to_string())?;
-                let raw = rows.iter().find(|row| row.state == state)
-                    .ok_or_else(|| format!("StateResistance lacks country for state {state} (CResistance+0x50; 1405336C0)"))?.country;
+                let raw = rows
+                    .iter()
+                    .find(|row| row.state == state)
+                    .ok_or_else(|| format!("StateResistance lacks country for state {state}"))?
+                    .country;
                 if raw == 0 {
                     None
                 } else {
-                    Some(self.context.text.recorded().slot(raw).ok_or_else(|| {
-                        format!("CountryLinks lacks occupied country {raw} (140BA6240)")
-                    })?)
+                    Some(
+                        self.context
+                            .text
+                            .recorded()
+                            .slot(raw)
+                            .ok_or_else(|| format!("CountryLinks lacks occupied country {raw}"))?,
+                    )
                 }
             }
             Some(Selected::Keyword(selector)) => {
@@ -881,22 +836,27 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                             Some(country)
                         }
                         Some(Scope::State(id)) if id != NULL_STATE => {
-                            // 14052B6A0 returns the selected state's owner tag (+0xC8).
+                            // returns the selected state's owner tag.
                             let state = self.valid_state(id)?.ok_or_else(|| {
-                                format!("invalid nonzero state {id}: native GetCountryTagOrStateOwner@14052B6A0 dereferences the missing state's owner (+0xC8)")
+                                format!("invalid nonzero state {id}: country selection needs the missing state's owner")
                             })?;
                             if state.owner == 0 {
                                 None
                             } else {
-                                Some(self.context.text.recorded().slot(state.owner).ok_or_else(|| {
-                                    format!("CountryLinks lacks state {id} owner {} (14052B6A0, state+0xC8)", state.owner)
-                                })?)
+                                Some(self.context.text.recorded().slot(state.owner).ok_or_else(
+                                    || {
+                                        format!(
+                                            "CountryLinks lacks state {id} owner {}",
+                                            state.owner
+                                        )
+                                    },
+                                )?)
                             }
                         }
                         _ => None,
                     }
                 } else {
-                    None // ResolveCountryScope does not test capital/random.
+                    None // Country-scope resolution does not test capital/random.
                 }
             }
             Some(Selected::EventTarget(name)) => match self.effect_saved_target(name, scopes)? {
@@ -937,7 +897,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             })
         {
             return Err(format!(
-                "repeated {name} fields retain CEffect +0x24 flags or appended scope-link selectors (140530BB0/1403B2390/1403AD690); auxiliary reader replay is unavailable"
+                "repeated {name} fields retain selector flags or appended scope links; auxiliary reader replay is unavailable"
             ));
         }
         Ok(fields.next_back())
@@ -949,13 +909,13 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         scopes: Scopes,
     ) -> Result<Option<u32>, String> {
         match scopes.this {
-            // 1405336C0 falls back to zero when no current state exists.
+            // falls back to zero when no current state exists.
             Scope::Country(_) | Scope::CountryLeader { .. } | Scope::State(NULL_STATE) => Ok(None),
             Scope::State(_) => Ok(match self.evaluator()?.enter(&Parsed::Keyword(keyword), scopes)? {
                 Some(Scope::Country(country) | Scope::CountryLeader { country, .. }) => Some(country),
                 _ => None,
             }),
-            _ => Err("state owner/controller selector needs native CEventScope.state_id +0xA8 (1405336C0); this projected scope does not expose that field".into()),
+            _ => Err("state owner/controller selector needs the event scope's state ID; this projected scope does not expose that field".into()),
         }
     }
 
@@ -967,14 +927,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let name = installed_content::parser::c_string(name);
         if let Some(mut at) = scopes.cursor {
             let graph = self.graph.borrow();
-            // 14052B3B0/14052B410 use terminal FROM storage (14052AED0).
+            // use terminal FROM storage.
             let mut steps = 0;
             loop {
                 if steps == graph.scopes.len() {
-                    return Err(
-                        "effect saved-target FROM storage cycle has no native terminal (14052AED0)"
-                            .into(),
-                    );
+                    return Err("effect saved-target FROM storage cycle has no terminal".into());
                 }
                 steps += 1;
                 let scope = graph
@@ -985,9 +942,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     Link::Itself => at,
                     Link::Scope(to) if to < graph.scopes.len() => to,
                     _ => {
-                        return Err(
-                            "effect saved-target FROM storage link is not known (14052AED0)".into(),
-                        );
+                        return Err("effect saved-target FROM storage link is not known".into());
                     }
                 };
                 if next == at {
@@ -1000,7 +955,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     .find(|(key, _)| key == name)
                     .map(|(_, object)| *object)
             };
-            // 1405302E0/14052FA10: Find first, then vf9@14052BE50; an invalid first
+            // Find the first name match, then test its validity; an invalid first
             // duplicate tries the next store, never another duplicate.
             for target in [
                 graph.tooltip_targets.get(&at).and_then(|rows| lookup(rows)),
@@ -1017,8 +972,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     EventObject::Country(0)
                     | EventObject::State(0)
                     | EventObject::UnitLeader(0) => continue,
-                    // 14052DE40 clears both members before storing a state;
-                    // its nonzero state is live, while country +0x0C stays zero.
+                    // clears both members before storing a state;
+                    // its nonzero state is live, while country stays zero.
                     EventObject::Country(_) | EventObject::State(_) => {
                         return Ok(Some(EffectSavedTarget::Graph(target)));
                     }
@@ -1042,15 +997,15 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     | EventObject::IndustrialOrganisation(_)
                     | EventObject::Combat => {
                         return Err(format!(
-                            "saved effect target {}: projected {target:?} lacks CSavedEventTarget vf9 liveness for the state +0x08 / country +0x0C probe (14052FA10/1405302E0/14052BE50); core target projection plumbing pending",
+                            "saved effect target {}: projected {target:?} lacks liveness for the independent state/country probe; target projection support is unavailable",
                             String::from_utf8_lossy(name)
                         ));
                     }
                 }
             }
         }
-        // Read only the requested member: +0x08 state and +0x0C country are
-        // independent, unlike a context projection (14052FA10/1405302E0).
+        // Read only the requested member: state and country are
+        // independent, unlike a context projection.
         let recorded = self.context.text.recorded();
         match recorded.saved_target(name)? {
             Some(row) if crate::scope::valid_saved_target(row) => {
@@ -1061,8 +1016,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 
     pub(super) fn state_target(&self, item: &Item, scopes: Scopes) -> Result<u32, String> {
-        // vf6@14137DCD0 parses selectors before assigning the scoped value;
-        // vf25@1403A1950 falls back to vf16@140533BE0 with state zero.
+        // parses selectors before assigning the scoped value;
+        // falls back to the carried country with state zero.
         let target = match scope_selector(item) {
             Some(Selected::Keyword(selector)) => {
                 if let Some(target) = selector_scope(selector) {
@@ -1071,23 +1026,23 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     match scopes.this {
                         Scope::State(id) if id != NULL_STATE => {
                             let state = self.valid_state(id)?.ok_or_else(|| {
-                                "capital selector has an invalid state; native 140533D1E dereferences the missing state owner".to_string()
+                                "capital selector has an invalid state; country selection needs the missing state owner".to_string()
                             })?;
                             if state.owner == 0 {
-                                return Err("capital selector needs reserved CCountry[0].capital_state at +0x1018 (140533BE0/1406E02D0); no recording writer captures it".into());
+                                return Err("capital selector needs the reserved country zero's capital state; no recording writer captures it".into());
                             }
                             Parsed::Chain {
                                 head: Keyword::Owner,
                                 then: Box::new(Parsed::Keyword(Keyword::CapitalScope)),
                             }
                         }
-                        // 140533D3C calls the capital getter, then falls through
-                        // to 14052FA10 with zero; only the state branch returns it.
+                        // calls the capital getter, then falls through
+                        // to the country branch with zero; only the state branch returns it.
                         Scope::Country(_) | Scope::CountryLeader { .. } | Scope::State(NULL_STATE) => return Ok(0),
-                        _ => return Err("capital selector needs the native event scope's state/country fields (140533BE0); the projected scope does not expose them".into()),
+                        _ => return Err("capital selector needs the event scope's state/country fields; the projected scope does not expose them".into()),
                     }
                 } else {
-                    return Ok(0); // 14052FA10 does not test these selector bits.
+                    return Ok(0); // does not test these selector bits.
                 }
             }
             Some(Selected::EventTarget(name)) => {
@@ -1135,11 +1090,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 
     pub(super) fn state_name(&self, state: u32) -> Result<String, String> {
-        self.context.text.state_name(state) // GetStateName@1409CC380.
+        self.context.text.state_name(state)
     }
 
     pub(super) fn scoped_value(&self, operand: &[u8], scopes: Scopes) -> Result<i64, String> {
-        self.evaluator()?.scoped_value(operand, scopes) // CScopedVariable::Evaluate@1405382B0.
+        self.evaluator()?.scoped_value(operand, scopes)
     }
 
     pub(super) fn evaluator(&self) -> Result<&Evaluator<'c, 'f>, String> {
@@ -1234,19 +1189,17 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         match self.leaf(item, scopes) {
             Some(Ok(text)) => Some(text),
             result => {
-                let class = self
-                    .effect_class(item)
-                    .map(|class| class.name)
-                    .unwrap_or("unknown key");
+                let effect_key = key(item);
                 let why = match &result {
                     Some(Err(why)) => why.clone(),
-                    _ => self.effect_class(item).map(|class| format!(
-                        "{}@{:X} description is not ported (CEffect::BuildDescription 140532780)", class.name, class.vtable
-                    )).unwrap_or_else(|| format!("unknown effect key {} (ReadEffect 1405345D0)", key(item))),
+                    _ => self
+                        .effect_class(item)
+                        .map(|_| format!("effect key {effect_key} description is unsupported"))
+                        .unwrap_or_else(|| format!("unknown effect key {effect_key}")),
                 };
-                self.refuse(class, format!("key {}: {why}", key(item)));
+                self.refuse(&effect_key, format!("key {effect_key}: {why}"));
                 // Known builders can still describe their independent children.
-                // An unported class may override vf8, so do not assume base traversal.
+                // An unsupported class may override traversal, so do not assume the base projection.
                 result.map(|_| String::new())
             }
         }
@@ -1260,15 +1213,15 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return text;
         }
         match self.effect_class(item).map(|class| class.vtable) {
-            Some(0x14299F6F8) /* CContextEffect */ => return self.context_effect(item, scopes, indent),
-            Some(0x14299FD88) /* CEffectTooltipEffect */ => return self.tooltip_group(item, scopes, indent),
-            Some(0x14299FCB8) /* CHiddenEffect */ => return self.hidden_group(item, scopes, indent),
+            Some(0x14299F6F8) => return self.context_effect(item, scopes, indent),
+            Some(0x14299FD88) => return self.tooltip_group(item, scopes, indent),
+            Some(0x14299FCB8) => return self.hidden_group(item, scopes, indent),
             _ => {}
         }
         let Some(own) = self.own(item, scopes) else {
             return String::new();
         };
-        // vf14 and generic own-line prefix, 140532780. Custom event desc differs.
+        // Prefix the generic own line with LF. Custom event descriptions differ.
         let mut text = if own.len() as i32 <= 1 {
             String::new()
         } else if self.indents(item) {
@@ -1276,7 +1229,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         } else {
             own
         };
-        // 140532780 always walks +8/count +0x14, even when own length <= 1.
+        // Always traverse the children, even when own length <= 1.
         if !self.empty_build_override(item) {
             let body = self.effect_children(item);
             append_description(&mut text, &self.group(&body, scopes, indent));
@@ -1288,34 +1241,26 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         match installed_content::effect_keys::description_fields(item) {
             Ok(body) => body,
             Err(why) => {
-                let class = self
-                    .effect_class(item)
-                    .map(|class| class.name)
-                    .unwrap_or("unknown key");
-                self.refuse(class, why);
+                self.refuse(&key(item), why);
                 Vec::new()
             }
         }
     }
 
     fn empty_build_override(&self, item: &Item) -> bool {
-        // These classes override vf8 with 1402E9B40, discarding all children.
+        // These builders discard their children.
         self.effect_class(item).is_some_and(|class| {
             matches!(
-                class.name,
-                "CForEachEffect"
-                    | "CForEffect"
-                    | "CWhileEffect"
-                    | "CSetPoliticalPartyEffect"
-                    | "CFindHighestLowestInArrayEffect<>"
+                class.vtable,
+                0x14275fe70 | 0x142760200 | 0x142760108 | 0x142750cd8 | 0x142768480 | 0x1427683b0
             )
         })
     }
 
     fn indents(&self, item: &Item) -> bool {
-        // Context vf14 is needed here for its parent's first-child header clear.
+        // Context is needed here for its parent's first-child header clear.
         // The builder returns context descriptions before its own-line prefix.
-        // CIfEffect vf14 is ReturnTrue@1401802A0 (1427BE590 + 0x70).
+        // The if effect tests its embedded condition.
         !(self.is_context(item)
             || item.keyword_is("country_event")
                 && field(children(item), "desc")

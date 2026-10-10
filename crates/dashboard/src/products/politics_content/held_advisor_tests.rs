@@ -11,13 +11,13 @@ use replay::rows::{CharacterRow, LexicalTokenRow};
 use std::sync::Arc;
 
 /// An advisor role the character's instances disagree on is the role
-/// of the template its recorded holder was built from
-/// (character_definition_build 140F8DF60 builds the advisors of the
-/// template it stores at CCharacter+0x20): the Characters row's file,
-/// line and tag token, read through the Politics content loader. Keys
-/// fold (1424A7A90); the tag folds as a dynamic token (1424A65A0).
+/// of the template its recorded holder was built from: the Characters row's
+/// file, line and tag token, read through the Politics content loader.
+/// Both keys and dynamic tag tokens use folded lookup.
 #[test]
 fn a_disagreeing_advisor_is_its_holders_template() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/00_defines.lua",
@@ -94,7 +94,7 @@ fn a_disagreeing_advisor_is_its_holders_template() {
         Some(&lexical),
     )
     .unwrap_err();
-    assert!(absent.contains("CCharacter+0x20 is null"), "{absent}");
+    assert!(absent.contains("recorded template is null"), "{absent}");
     let (found, findings) = prepare_info(
         &joined,
         "MOD_split_idea",

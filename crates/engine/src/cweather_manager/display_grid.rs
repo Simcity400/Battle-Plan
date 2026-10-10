@@ -1,14 +1,13 @@
-//! Live SnowMudData boundary, including an attachment made after a full rebuild.
-//! 140F0A240 excludes the last row/column; 140F0C710 queues every cell and
-//! 140F0D6F0/140F00200 publish the next full rebuild. No load history is needed.
-//! 140F0D6F0 stores +340 before any plane copying/rebuilding and clears +3B4
-//! only after its TBB jobs join. Read token, require zero work, select/copy,
-//! require zero work, then compare token. Pending work is conservatively refused;
-//! equality alone admits an already running rebuild. Never retry or wait.
+//! Live snow/mud display-grid boundary, including attachment after a full rebuild.
+//! Incremental display writes exclude the last row and column; full rebuilds
+//! publish every cell. No load history is needed. The refresh token is stored
+//! before copying and rebuilding; outstanding work clears only after job joins.
+//! Read the token, require zero work, select and copy, require zero work again,
+//! then compare the token. Equality alone can admit a running rebuild. Never retry or wait.
 
 use super::*;
 
-/// Native positive CMap dimensions quartered as 140F07A00/140F0D6F0 do.
+/// Positive live map dimensions quartered for the display grid.
 pub fn display_grid_size(memory: &impl Memory, base: usize) -> Result<[u32; 2], &'static str> {
     let map = base
         .checked_add(crate::cmap::SINGLETON_RVA)

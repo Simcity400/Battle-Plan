@@ -1,36 +1,28 @@
 //! Named static modifiers from `common/modifiers`, read as the engine loads them.
 //!
-//! `1406007E0` enumerates the directory with `Vfs_EnumerateRecursive@1424C7630`
-//! and passes zero as its recursion argument (`14060085B`-`14060086F`, filter
-//! `.txt` at `142700814`); `1424C5170` enters subdirectories only when that
-//! argument is nonzero. This is [`ResolvedLayers::directory_files`]: the merged
-//! directory of the content stack, `replace_path` honoured, files in byte order
-//! of their names, no nested files.
+//! The loader enumerates `.txt` files without recursion through
+//! [`ResolvedLayers::directory_files`]: the merged directory of the content
+//! stack, `replace_path` honoured, files in byte order of their names,
+//! no nested files.
 //!
-//! Each file gets its own lexer in mode 0 (`CTextLexer::constructor@1424A63A0`
-//! with `R8D` zeroed at `140600944`, called at `140600950`) and its own CReader
-//! (`1424A9D30`), read through the reader replay ([`native`]), so `@name`
-//! definitions are the file's own and a reference resolves through the
-//! reader's table (`1424AC830`, `1424AB540`). `BindStaticModifierSlots@140600CF0`
-//! reads the file until its end: every top-level key (`ReadKeyOperatorValue@1424AC5E0`)
-//! constructs a new `CStaticModifier` named by the key's text up to its NUL
-//! (`140549860`), pushed to the front of its hash bucket ("Duplicate modifier
-//! ID" for a repeat), and reads it through `CPersistent::Read@1424A9730` (vtable
-//! `+0x18`) with `CStaticModifier::vf4@1406039B0` ([`modifiers::Node::Targeted`]).
-//! `FindStaticModifierOrNullObject@140550940` compares the name bytes exactly and
-//! returns the first bucket match, so the last definition wins. An absent name
-//! binds the null object, whose accumulator is empty.
+//! Each file gets its own lexer in mode 0 and its own reader through
+//! [`native`], so `@name` definitions are the file's own and a reference
+//! resolves through the reader's table. Files are read until their end:
+//! every top-level key constructs a new static modifier named by the key's
+//! text up to its NUL, pushed to the front of its hash bucket. Repeats
+//! are reported. Definitions use [`modifiers::Node::Targeted`]. Lookup
+//! compares name bytes exactly and returns the first bucket match, so the
+//! last definition wins. An absent name binds the null object, whose
+//! accumulator is empty.
 //!
-//! Inside a definition, CModifier's dispatch (`1406031A0`) hands every other
-//! key to `1406042A0`, which [`modifiers`] models: the modifier is found by the
-//! key's token without case (the lexer folds a bare key, `1424A7A90`; a quoted
-//! one goes through `FindTokenFromSsoString@1424A7060`), its destination is
-//! zeroed and `CReader::ReadFixed5@1424ABB10` (`read_fixed5@1424B0480`) converts
-//! the value, so a value it cannot convert stores 0; a repeated key replaces
-//! the earlier value. `hidden_modifier` entries are stored in the same
-//! accumulator. The consumer (`14195EEC0`) reads the definition's own
-//! accumulator (`+0x10`, `modifier_accumulator::value@140551820`), so an
-//! `added_modifier` child is not read, and an absent key is zero.
+//! Inside a definition, [`modifiers`] handles remaining keys: the modifier
+//! is found by the key's token without case (the lexer folds a bare key
+//! and looks up a quoted one), its destination is zeroed, then fixed5
+//! conversion reads the value. A value it cannot convert stores 0; a
+//! repeated key replaces the earlier value. `hidden_modifier` entries are
+//! stored in the same accumulator. Descriptions read the definition's own
+//! accumulator, so an `added_modifier` child is not read, and an absent key
+//! is zero.
 //!
 //! Refused by file, modifier and key, never read as zero or replaced with the
 //! shipped value:
@@ -39,10 +31,10 @@
 //!   reads as a value or skips; or [`native::Read::unsettled`]): the rest of
 //!   that file could define any name, so a request stays refused unless a
 //!   later file defines its modifier;
-//! - a definition with a `key` or `tag` field: `1406039B0` renames the static
-//!   modifier (`+0x1A8`) after `140600CF0` bucketed it under its first name, so
-//!   which lookup finds it depends on the database's bucket layout, which the
-//!   port does not model. The requests for either name are refused;
+//! - a definition with a `key` or `tag` field: the field renames the static
+//!   modifier after it was bucketed under its first name, so which lookup
+//!   finds it depends on the database's bucket layout, which the port does
+//!   not model. The requests for either name are refused;
 //! - a requested definition holding text the port cannot keep
 //!   ([`modifiers::Modifiers::unheld`]).
 
@@ -85,7 +77,7 @@ impl Descriptions {
         }
     }
 
-    /// 140550940 returns the last exact-name definition, or the empty null object.
+    /// Returns the last exact-name definition, or the empty null object.
     pub fn get(&self, layers: &ResolvedLayers, name: &str) -> DescriptionValue {
         if let Some(value) = self
             .values
@@ -103,7 +95,7 @@ impl Descriptions {
                         .key_names()
                         .map_err(|why| why.to_string())?
                         .at(Point::StaticModifiers);
-                    // Static load 14018F06D precedes sub-unit modifier registration.
+                    // Static load precedes sub-unit modifier registration.
                     names.effects.modifiers = names.effects.early_modifiers.clone();
                     names.effects.modifiers_gap = names.effects.early_modifiers_gap.clone();
                     let registry = |key: &[u8]| modifiers::registered(key, Some(&names));
@@ -154,12 +146,12 @@ impl Descriptions {
     }
 }
 
-// 1406042A0/14054FDB0: an unknown token never inserts an accumulator value.
+// An unknown token never inserts an accumulator value.
 fn description_values(block: &mut modifiers::Modifiers, names: &KeyNames) -> Result<(), String> {
     for value in &block.values {
         if modifiers::registered(value.name.as_bytes(), Some(names)).is_none() {
             return Err(format!(
-                "modifier {} registry is unavailable at static load (1406042A0)",
+                "modifier {} registry is unavailable at static load",
                 value.key
             ));
         }
@@ -173,7 +165,7 @@ fn description_values(block: &mut modifiers::Modifiers, names: &KeyNames) -> Res
     Ok(())
 }
 
-/// The native directory `1406007E0` is called with.
+/// The directory used for static-modifier loading.
 pub const DIRECTORY: &str = "common/modifiers";
 
 /// One requested modifier value of one named static modifier.
@@ -209,16 +201,16 @@ pub struct Values {
 }
 
 /// Full accumulators of named static modifiers, in request order. An absent
-/// name is the native null object's empty accumulator (140550940).
+/// name is the null object's empty accumulator.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Blocks {
     pub blocks: Vec<Result<modifiers::Modifiers, Refusal>>,
     pub notes: Vec<String>,
 }
 
-/// Script identifiers whose localisations initialise CStaticModifier+0x58
-/// (140549860 -> 140604F10). An absent modifier has the null object's empty
-/// display name. Renamed or unresolvable definitions retain named refusals.
+/// Script identifiers whose localisations initialise static-modifier names.
+/// An absent modifier has the null object's empty display name. Renamed
+/// or unresolvable definitions retain named refusals.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Identifiers {
     pub identifiers: Vec<Result<Option<String>, Refusal>>,
@@ -258,9 +250,9 @@ pub fn read(layers: &ResolvedLayers, requests: &[Request<'_>]) -> io::Result<Val
     ))
 }
 
-/// Reads full CStaticModifier+0x10 accumulators (1406039B0) for native
-/// description formatting (14054E050). Definitions and stopped files follow
-/// the same precedence and refusal rules as [`read`].
+/// Reads full static-modifier accumulators for description formatting.
+/// Definitions and stopped files follow the same precedence and refusal
+/// rules as [`read`].
 pub fn read_blocks(layers: &ResolvedLayers, names: &[&str]) -> io::Result<Blocks> {
     let files = layer_files(layers)?;
     let key_names = layers.key_names()?.at(Point::StaticModifiers);
@@ -282,8 +274,7 @@ fn layer_files(layers: &ResolvedLayers) -> io::Result<Vec<(String, Vec<u8>)>> {
     Ok(files)
 }
 
-/// One file as `140600CF0` reads it: its definitions up to the stop, and the
-/// stop.
+/// One file: its definitions up to the stop, and the stop.
 struct File {
     definitions: Vec<Item>,
     stop: Option<String>,
@@ -292,7 +283,7 @@ struct File {
 
 #[derive(Clone, Copy)]
 enum Node {
-    /// `140600CF0`'s file loop.
+    /// The file loop.
     Top,
     Modifier(modifiers::Node),
 }
@@ -314,12 +305,12 @@ fn read_file_with_registry(
         bytes,
         native::Mode::KeepMark,
         native::Top::File(Node::Top),
-        // 1406039B0 reads valid_relation_trigger through LoadBody@1405431C0;
-        // LoadKey@1405434F0 needs the rosters already loaded at 14018F06D.
+        // valid_relation_trigger reads a conjunction body; trigger dispatch
+        // needs the rosters already loaded at static load.
         key_names,
         &mut |node, field| {
             let shape = match node {
-                // Every key is a CStaticModifier read by CPersistent::Read,
+                // Every key is a static modifier read by the persistent reader,
                 // whatever its value.
                 Node::Top => {
                     entries += 1;
@@ -356,8 +347,8 @@ fn resolve<'a>(
     requests: &[Request<'_>],
     key_names: Option<&KeyNames>,
 ) -> Values {
-    // 140600CF0/140550940: one block lookup establishes the native file and
-    // bucket precedence; scalar callers select their key from that block.
+    // One block lookup establishes the file and bucket precedence;
+    // scalar callers select their key from that block.
     let names: Vec<_> = requests.iter().map(|request| request.modifier).collect();
     let Blocks { blocks, notes } = resolve_blocks(files, &names, key_names);
     let values = blocks
@@ -382,9 +373,9 @@ fn resolve<'a>(
     Values { values, notes }
 }
 
-/// `140600CF0` inserts each definition at the front of its hash bucket;
-/// `140550940` finds the first exact name. A later file can replace a stopped
-/// file's unknown definition, while a stop shadows every earlier candidate.
+/// Each definition is inserted at the front of its hash bucket; lookup
+/// finds the first exact name. A later file can replace a stopped file's
+/// unknown definition, while a stop shadows every earlier candidate.
 fn resolve_blocks<'a>(
     files: impl IntoIterator<Item = (&'a str, &'a [u8])>,
     names: &[&str],
@@ -448,7 +439,7 @@ fn resolve_parsed<'a, T: Clone>(
                     *block = Err(refuse(
                         requested,
                         format!(
-                            "definition {} has a key or tag field, which renames it after it is bucketed under its first name (1406039B0, 140600CF0); the bucket layout that decides the lookup is not modelled",
+                            "definition {} has a key or tag field, which renames it after it is bucketed under its first name; the bucket layout that decides the lookup is not modelled",
                             String::from_utf8_lossy(name)
                         ),
                     ));

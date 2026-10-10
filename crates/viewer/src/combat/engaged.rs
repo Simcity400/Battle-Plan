@@ -1,32 +1,22 @@
-//! The combat "engaged" flag (`CCombatant+0xBA`) for any viewing country.
+//! The combat "engaged" flag for any viewing country.
 //! The core is common to land and naval combatants; each kind feeds it its
 //! sides (land in [`super::progress::LandSides`], naval in
 //! [`super::naval_sides::NavalSides`]).
 //!
-//! `UpdateCombatSharedVisionFlag@1413CEBE0` is its only writer. A side is
-//! engaged when a country in its `+0x38` list is the viewer or shares vision
-//! with it (`HasFullCountryVisibility`: war veto, then faction, then subject or
-//! overlord either way), or else when a `+0x50` roster owner is the viewer.
-//! The flag is refreshed, never on a diplomacy change, by:
+//! A side is engaged when a primary country is the viewer or shares vision
+//! with it (war veto, then faction, then subject or overlord either way), or
+//! when a roster owner is the viewer. Diplomacy changes alone never refresh it.
+//! Refresh events are:
 //!
-//! - `CCombatant::AddUnit` (1413CC2B0) on the side a unit joins, a present unit
-//!   re-added included: it appends the unit's owners to the lists (1413CC0D0);
-//! - `RemoveUnitFromCombat` (1413CE250) on **both** sides: it calls `RemoveUnit`
-//!   (vtable +0x80, 1413CE340) on side `+0x28` then `+0x30`, and each rebuilds
-//!   its lists from its remaining units alone, whether or not the unit was on
-//!   it. Its callers are `CUnit::CancelMovement` (140BEBF70), the check when a
-//!   unit enters a province (140BA9FD0) and the remove-from-every-combat path
-//!   (140BF4C40: deletion, ship transfer, exile transfer, teleport, route
-//!   assignment);
-//! - the land round retreat, the one removal of one side only: 14129DB50 and
-//!   `CLandCombat::CheckRoundTermination` through 1413CE640 reach 1413CE670,
-//!   which calls `RemoveUnit` on the retreating side alone;
-//! - `AddTransferToGroup` (naval) and border-war creation on their side;
-//! - every side (1413CEBC0) at load; when the local player's country moves,
-//!   which `CCombatManager`'s hourly check (140BA9890) compares against its
-//!   cached one; and whenever `CChangeCountryControllerCommand::Execute`
-//!   (14113E4B0) gives a controller the local player's country, the local
-//!   player or another one, through 140BABC00.
+//! - A unit joining or being re-added: append its owners and refresh that side.
+//! - Combat unit removal: rebuild both sides, attacker then defender, from
+//!   remaining units, even if the removed unit was absent from a side. Movement
+//!   cancellation, province entry, deletion, transfer, teleport and route
+//!   assignment can trigger this removal.
+//! - Land round retreat: rebuild only the retreating side.
+//! - A naval transfer joining or a border war starting: refresh that side.
+//! - Load, an hourly local-player country change, or assigning a controller
+//!   the local player's country: refresh every side.
 //!
 //! The recording keeps each side's hourly units and lists, not the flag, so it
 //! is replayed from them with its lag. [`Previous::refresh`] alone classifies
@@ -73,7 +63,7 @@ pub(crate) enum Engaged {
 pub(crate) enum Ambiguity {
     /// A refresh the samples allow but cannot prove disagrees with the held
     /// flag: an other-side removal that may have been a one-sided round
-    /// retreat (1413CE670) or is unrecorded, or a controller change the
+    /// retreat or is unrecorded, or a controller change the
     /// rosters cannot place.
     Scope,
     /// Refreshes between two samples tested different lists or relations,
@@ -163,12 +153,12 @@ pub(crate) fn test(
 /// How a kind's unit removal refreshes the other side of the combat.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Removal {
-    /// Land: `RemoveUnitFromCombat` rebuilds both sides from their remaining
-    /// units, but a round retreat (1413CE670) rebuilds only the retreating
+    /// Land: removing a combat unit rebuilds both sides from their remaining
+    /// units, but a round retreat rebuilds only the retreating
     /// side, and the recording cannot tell the two apart, so the other side
     /// may have rebuilt.
     BothSidesUnlessRoundRetreat,
-    /// Naval: every removal is `RemoveUnitFromCombat` (1413CE250), which
+    /// Naval: every removal is `combat unit removal`, which
     /// rebuilds both sides, so a unit leaving one side proves the other's
     /// rebuild from its remaining units.
     BothSides,
@@ -177,9 +167,9 @@ pub(crate) enum Removal {
 /// Which lists a rebuild in the hour tested.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Lists {
-    /// The recorded lists: a join appends to them (1413CC0D0).
+    /// The recorded lists: a join appends to them.
     pub(crate) recorded: bool,
-    /// Rebuilt from the remaining units (1413CE340): a removal.
+    /// Rebuilt from the remaining units: a removal.
     pub(crate) units: bool,
 }
 
@@ -203,7 +193,7 @@ pub(crate) enum Refresh {
 /// The lists a rebuild tested.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Tested {
-    /// The recorded `+0x38` and `+0x50` lists.
+    /// The recorded primary country and roster-owner lists.
     Recorded,
     /// The lists rebuilt from the side's remaining units.
     Units,
@@ -212,7 +202,7 @@ pub(crate) enum Tested {
 /// Advances one side's flag by one sampled hour. `evaluate(lists, when)` is
 /// `test` of the side's `lists` under this hour's links and relations
 /// (`when` 0) or the previous sample's (1). As the game refreshes the byte only on its
-/// refresh events (1413CEBE0) and a side keeps it otherwise, only the
+/// refresh events and a side keeps it otherwise, only the
 /// candidates the refresh allows are evaluated, and a held side none.
 pub(crate) fn step(
     held: Engaged,
@@ -247,9 +237,9 @@ pub(crate) fn step(
 
 /// A kind's rebuild trigger beyond its unit joins and removals, for one side
 /// and hour: ids whose appearance proves a rebuild that tested the recorded
-/// lists. Only naval has one: `CNavalCombatant::AddTransferToGroup@1416084E0`
-/// gives each joining convoy member a fresh combat-wide battle slot
-/// (`++CNavalCombat+0x108`) and refreshes the flag (1413CEBE0).
+/// lists. Only naval has one: `transfer joining`
+/// gives each joining convoy member a fresh combat-wide battle slot and
+/// refreshes the flag.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Added {
     /// The kind has no such trigger (land).
@@ -272,18 +262,17 @@ pub(crate) struct Side {
     /// The side's unit handles, sorted; `None` when the hour cannot tell.
     pub(crate) units: Option<Vec<u64>>,
     pub(crate) added: Added,
-    /// Raw references of the `+0x38` and `+0x50` lists; `None` when unrecorded.
+    /// Raw primary-country and roster-owner references; `None` when unrecorded.
     pub(crate) lists: Option<(Vec<u32>, Vec<u32>)>,
     /// The lists a removal rebuild tests, built from the remaining units'
-    /// owners (1413CE340); `None` when unrecorded. A kind whose lists come
+    /// owners; `None` when unrecorded. A kind whose lists come
     /// from its units alone passes the recorded lists.
     pub(crate) unit_lists: Option<(Vec<u32>, Vec<u32>)>,
 }
 
 /// The hour's controller rosters, the recorded evidence of a controller
-/// change: `CChangeCountryControllerCommand::Execute` (14113E4B0) writes the
-/// player's country (`CHuman+0x70`, the `Players` row's) and refreshes every
-/// combat when that country is the local player's.
+/// change. Assigning a controller writes its player's country and refreshes
+/// every combat when that country is the local player's.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Controllers {
     /// Per player key: its raw country and that country's canonical slot
@@ -371,7 +360,7 @@ struct Previous {
     viewer: u32,
     /// The sample's raw reference to canonical slot links, with its
     /// relations: a refresh under these relations resolved its list
-    /// references at that instant (140BA56A0/140BA6240 from 1413CEBE0), and a
+    /// references at that instant, and a
     /// reference may have changed country since.
     links: BTreeMap<u32, u32>,
     relations: Result<Relations, &'static str>,
@@ -385,7 +374,7 @@ fn gained(before: &[u64], now: &[u64]) -> bool {
     now.iter().any(|id| before.binary_search(id).is_err())
 }
 
-/// An every-side refresh (1413CEBC0) between two samples. It tests each
+/// An every-side refresh between two samples. It tests each
 /// side's recorded lists.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct EverySide {
@@ -395,8 +384,8 @@ struct EverySide {
 
 impl Previous {
     /// The every-side refresh between this sample and `sample`. A viewer
-    /// change proves one: 140BA9890 refreshes when the local player's country
-    /// differs from its cached one, and 14113E4B0 already does when it moves
+    /// change proves one: the game refreshes when the local player's country
+    /// differs from its cached one, and the game already does when it moves
     /// the local player. The rosters allow one when a controller may have
     /// been given the viewer's country, or when they cannot rule that out.
     fn every_side(&self, sample: &Sample<'_>) -> EverySide {

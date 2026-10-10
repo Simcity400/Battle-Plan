@@ -43,15 +43,14 @@ export function raidLogRows(data: RaidsReply, hour: number, types: readonly stri
 export function raidStatus(data: RaidsReply, at: RaidAt): string {
   const value = at.current ?? at.latest;
   const phase = value.phaseName ?? `Unknown phase ${value.phase}`;
-  // CRaidInstanceView::Update@141B1A610 selects outcome text only once ended;
-  // End@140FD7600 identifies the no-outcome sentinel. The product carries both.
+  // Outcome text is shown only once ended and excludes the no-outcome sentinel.
+  // The product carries both the phase and outcome classifications.
   const outcome = value.phase === data.phaseEnded && value.outcome !== data.outcomeNone ? value.outcomeName ?? `Unknown outcome ${value.outcome}` : null;
   const status = outcome === null ? phase : `${phase} · ${outcome}`;
   return at.current ? status : `Last observed: ${status}; not recorded at this time`;
 }
 export function raidPreparation(data: RaidsReply, at: RaidAt): string | null {
-  // GetPhaseElapsedHours@140FD53C0 reads +44 only in phase 2, used by the raid
-  // tooltip@141612820 -> phase/progress text@140FD5730 and view@141B1A610.
+  // Preparation hours are shown only during the preparation phase.
   if ((at.current ?? at.latest).phase !== data.phasePreparing) return null;
   const read = raidPreparationRead(at);
   return read ? `${read.hours.toLocaleString('en-US')} h prepared` : 'Preparation not known';

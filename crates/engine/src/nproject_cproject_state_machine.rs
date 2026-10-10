@@ -1,4 +1,4 @@
-//! `NProject::CProjectStateMachine`; archived collector `read_project_state_row`.
+//! Project state machine.
 
 #[cfg(test)]
 use crate::Memory;
@@ -7,21 +7,21 @@ use crate::{
     nproject_cprototype_project_state as prototype, nproject_csimple_project_state as simple,
 };
 
-/// NProject::CProjectStateMachine primary vtable; confirmed by pinned executable RTTI.
+/// Project-state-machine primary vtable.
 pub const VTABLE_RVA: usize = 0x02a1_9358;
-/// CProjectStateMachine +0x08 current state pointer; old reader requires one of the four inline states.
+/// Current-state pointer required to name one of four inline states.
 pub const CURRENT_STATE: usize = 0x08;
-/// CProjectStateMachine +0x10 not-completed flag u8; old reader checks 0 or 1.
+/// Not-completed u8 flag, restricted to zero or one.
 pub const NOT_COMPLETED: usize = 0x10;
-/// CProjectStateMachine +0x18 inline CPrototypeProjectState; vtable-checked by archived state walker.
+/// Inline prototype-project state.
 pub const PROTOTYPE_STATE: usize = 0x18;
-/// CProjectStateMachine +0xe8 first inline CSimpleProjectState; vtable-checked by archived state walker.
+/// First inline simple-project state.
 pub const SIMPLE_STATE_1: usize = 0xe8;
-/// CProjectStateMachine +0x168 second inline CSimpleProjectState; vtable-checked by archived state walker.
+/// Second inline simple-project state.
 pub const SIMPLE_STATE_2: usize = 0x168;
-/// CProjectStateMachine +0x1e8 third inline CSimpleProjectState; vtable-checked by archived state walker.
+/// Third inline simple-project state.
 pub const SIMPLE_STATE_3: usize = 0x1e8;
-/// CProjectStateMachine allocated extent; FCADC0 allocates 0x268 bytes before constructor 1A218A0 initializes all four states.
+/// State-machine allocated extent, including all four states.
 pub const SIZE: usize = 0x268;
 
 const STATES: [usize; 4] = [
@@ -275,6 +275,7 @@ mod tests {
 
     #[test]
     fn current_phase_and_inactive_prototype_fields_keep_their_distinct_native_widths() {
+        // These prototype fields are initialized even when a simple state is current.
         let bytes = machine();
         let state = read_state(
             &SliceMemory {

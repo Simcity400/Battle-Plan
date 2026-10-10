@@ -79,9 +79,8 @@ impl<'a> Scan<'a> {
                 },
             },
         };
-        // P: occupied-state row 14155CC50 compares the displayed strength fraction
-        // with NInterface.GARRISON_STRENGTH_TO_SHOW_RED at 14331F240.
-        // 14155CE88/14155CE9C load and compare signed fixed5 qwords.
+        // The occupied-state row compares the displayed strength fraction
+        // with NInterface.GARRISON_STRENGTH_TO_SHOW_RED as signed fixed5 values.
         let red_threshold = defines.and_then(|defines| {
             match defines.fixed5("NInterface", "GARRISON_STRENGTH_TO_SHOW_RED") {
                 Ok(value) => Some(value),
@@ -317,7 +316,7 @@ impl<'a> Scan<'a> {
         let mut unresolved_assigned = HashSet::new();
         for row in recorded_rows::<tables::StateAssignedManpower>(frame)? {
             if let Some(key) = key(row.controller, row.occupied, row.state) {
-                // P: manpower total 140C5A0F0 sums the container with i32 wrapping.
+                // The manpower total sums the container with i32 wrapping.
                 let total = assigned.entry(key).or_default();
                 *total = total.wrapping_add(row.amount);
             } else {
@@ -430,9 +429,14 @@ impl<'a> Scan<'a> {
                     if definition.visible.is_empty() && definition.available.is_empty() {
                         return Ok(true);
                     }
-                    let occupied = group_laws.get(&(controller, occupied_key)).and_then(|group| group.1)
-                    .and_then(|raw| link_slot(links, raw))
-                    .ok_or_else(|| "The native occupied-country scope (+0x18) is not captured or its link is unresolved".to_owned())?;
+                    let occupied = group_laws
+                        .get(&(controller, occupied_key))
+                        .and_then(|group| group.1)
+                        .and_then(|raw| link_slot(links, raw))
+                        .ok_or_else(|| {
+                            "The occupied-country scope is not captured or its link is unresolved"
+                                .to_owned()
+                        })?;
                     if definition.visible.is_empty() && controller == occupied {
                         return Ok(true);
                     }
@@ -463,8 +467,8 @@ impl<'a> Scan<'a> {
                 );
             }
             let (name, name_missing) = self.name(state);
-            // P: 140FE01E0(...,true) returns zero for +0x60, or a complete
-            // assigned-manpower total of zero, before any equipment/define use.
+            // Requirement failure or a complete assigned-manpower total of zero
+            // returns zero before any equipment/define use.
             let garrison_alert = garrison.is_some_and(|row| row.serialized_flag != 0);
             let mut garrison_missing = if state_key.is_none() {
                 Some("The read's controller or occupied-country link is unresolved; the garrison key cannot be established".into())
@@ -1006,6 +1010,8 @@ mod tests {
 
     #[test]
     fn occupied_states_state_name_failure_keeps_exact_text_and_one_diagnostic() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[]);
         let mut scan = Scan::new(1, Some(&cat));
         let state = StateRow {

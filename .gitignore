@@ -53,11 +53,7 @@ desktop.ini
 .DS_Store
 *.swp
 
-# hoi4re data: decompiled game code and working databases (tools/re/README.md)
-/tools/re/data/
-
-# Private game-derived screenshot and shader comparison fixtures
-/reference/*.png
+# Local probe examples
 /crates/viewer/examples/map_shader_probe.rs
 /crates/viewer/examples/map_shader_probe/
 

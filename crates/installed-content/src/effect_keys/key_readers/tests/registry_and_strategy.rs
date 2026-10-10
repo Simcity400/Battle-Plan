@@ -15,6 +15,8 @@ fn no_deferred(result: &crate::parser::native::Read) {
 
 #[test]
 fn hash_keys_read_the_current_lexer_token() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for (effect, key) in [
         ("add_trait", "slot"),
         ("remove_trait", "slot"),
@@ -34,6 +36,8 @@ fn hash_keys_read_the_current_lexer_token() {
 
 #[test]
 fn legacy_leader_traits_are_values_and_expire_is_scalar() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { create_country_leader = { traits = { @lost = 8 native_trait } expire = 1939.1.1 hidden_effect = { @kept = 3 add_stability = 0 } } } lost = @lost kept = @kept",
         &KeyNames::default(),
@@ -50,6 +54,8 @@ fn legacy_leader_traits_are_values_and_expire_is_scalar() {
 
 #[test]
 fn country_leader_role_uses_its_own_nested_reader() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"@ideology = 7 body = { add_country_leader_role = { country_leader = { ideology = @ideology traits = { @lost = 8 native_trait } invalid = { @hidden = 9 } @kept = 3 desc = @kept } } } kept = @kept lost = @lost hidden = @hidden",
         &KeyNames::default(),
@@ -68,6 +74,8 @@ fn country_leader_role_uses_its_own_nested_reader() {
 
 #[test]
 fn equipment_production_embeds_the_variant_reference() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { add_equipment_production = { equipment = { type = native_type invalid = { @lost = 8 } @kept = 3 version_name = @kept } } } kept = @kept lost = @lost",
         &KeyNames::default(),
@@ -80,6 +88,8 @@ fn equipment_production_embeds_the_variant_reference() {
 
 #[test]
 fn resource_types_lookup_the_recorded_roster_before_skipping() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { add_resource = { type = { @lost = 8 } @kept = 3 amount = @kept } } lost = @lost kept = @kept",
         &KeyNames::default(),
@@ -89,9 +99,6 @@ fn resource_types_lookup_the_recorded_roster_before_skipping() {
     assert!(result.unsettled.is_none(), "{result:?}");
     no_deferred(&result);
 
-    // FindByName (140AB2DF0 -> 1424A6FF0) looks up the value text,
-    // including quoted values. A stale known value with CURRENT at an
-    // opening skips nothing, unlike an unknown value's RecordError.
     let mut names = KeyNames::default();
     names.counts.resources.insert(b"native_resource".to_vec());
     let result = read(
@@ -108,6 +115,8 @@ fn resource_types_lookup_the_recorded_roster_before_skipping() {
 
 #[test]
 fn random_list_members_read_weight_modifiers_then_effects() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { random_list = { seed = 1 log = yes 1 = { modifier = { factor = 1 invalid = { @lost = 8 } @kept = 3 always = yes } hidden_effect = { @nested = 5 add_stability = 0 } invalid_effect = { @hidden = 9 } } } } kept = @kept nested = @nested lost = @lost hidden = @hidden",
         &KeyNames::default(),
@@ -122,6 +131,8 @@ fn random_list_members_read_weight_modifiers_then_effects() {
 
 #[test]
 fn building_tags_are_lists_and_railway_priorities_are_mtth() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { damage_building = { tags = { @lost = 8 native_tag } damage = 1 } build_railway = { path = { @path = 9 1 } controller_priority = { modifier = { invalid = { @hidden = 10 } @kept = 3 factor = 1 always = yes } } } } kept = @kept lost = @lost path = @path hidden = @hidden",
         &KeyNames::default(),
@@ -136,6 +147,8 @@ fn building_tags_are_lists_and_railway_priorities_are_mtth() {
 
 #[test]
 fn meta_text_reads_raw_characters_without_defining_tokens() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { meta_effect = { text = { @lost = 8 } @kept = 3 debug = yes } } lost = @lost kept = @kept",
         &KeyNames::default(),
@@ -148,6 +161,8 @@ fn meta_text_reads_raw_characters_without_defining_tokens() {
 
 #[test]
 fn remaining_scalar_forms_no_longer_defer() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for (effect, key) in [
         ("activate_targeted_decision", "decision"),
         ("remove_targeted_decision", "decision"),
@@ -175,6 +190,8 @@ fn remaining_scalar_forms_no_longer_defer() {
 
 #[test]
 fn ai_strategy_helpers_follow_type_and_read_lists_as_values() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { add_ai_strategy = { type = put_unit_buffers states = { @lost = 8 1 } ratio = 1 order_id = 1 subtract_fronts_from_need = yes subtract_invasions_from_need = no invalid = { @hidden = 9 } @kept = 3 value = @kept } } kept = @kept lost = @lost hidden = @hidden",
         &KeyNames::default(),
@@ -203,8 +220,9 @@ fn ai_strategy_helpers_follow_type_and_read_lists_as_values() {
 
 #[test]
 fn ai_strategy_trigger_helpers_accept_repeated_children() {
-    // ReadKeyOperatorValue (1424AC5E0) continues after a definition,
-    // so leave a real final child before the country trigger's close.
+    engine::executable_tables::initialize_for_tests()
+        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+
     let result = read(
         b"body = { add_ai_strategy = { type = front_control execution_type = balanced ordertype = front country_trigger = { always = yes always = no invalid = { @lost = 8 } @kept = 3 always = yes } state_trigger = { @nested = 5 always = yes } } } kept = @kept nested = @nested lost = @lost",
         &KeyNames::default(),
@@ -218,6 +236,8 @@ fn ai_strategy_trigger_helpers_accept_repeated_children() {
 
 #[test]
 fn ai_strategy_invalid_operative_mission_id_skips_the_block() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { add_ai_strategy = { type = operative_mission id = { @lost = 8 } @kept = 3 priority = @kept mission = build_intel_network state = 1 num_operatives = 1 } } kept = @kept lost = @lost",
         &KeyNames::default(),
@@ -230,6 +250,8 @@ fn ai_strategy_invalid_operative_mission_id_skips_the_block() {
 
 #[test]
 fn ai_strategy_errors_skip_current_openings_with_stale_values() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for (strategy_type, previous, rejected) in [
         ("front_control", "execution_type", "execution_type"),
         ("operative_mission", "priority", "id"),
@@ -247,6 +269,8 @@ fn ai_strategy_errors_skip_current_openings_with_stale_values() {
 
 #[test]
 fn ai_strategy_numeric_type_preserves_the_allocated_helper() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for changes in ["type = 75", "type = conquer type = 75", "type = not_a_type"] {
         let text = format!(
             "body = {{ add_ai_strategy = {{ type = put_unit_buffers {changes} states = {{ @lost = 8 1 }} @kept = 3 value = @kept }} }} kept = @kept lost = @lost"
@@ -267,6 +291,8 @@ fn ai_strategy_numeric_type_preserves_the_allocated_helper() {
 
 #[test]
 fn ai_strategy_names_unknown_global_helper_context() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { add_ai_strategy = { type = 70 states = { 1 } } }",
         &KeyNames::default(),
@@ -275,8 +301,7 @@ fn ai_strategy_names_unknown_global_helper_context() {
         result
             .unsettled
             .as_ref()
-            .is_some_and(|note| note.what.contains("CAddAIStrategyEffect 1406543E0")
-                && note.what.contains("global")),
+            .is_some_and(|note| note.what.contains("AI strategy ") && note.what.contains("global")),
         "{result:?}"
     );
     no_deferred(&result);
@@ -284,6 +309,8 @@ fn ai_strategy_names_unknown_global_helper_context() {
 
 #[test]
 fn ai_strategy_scalar_lookups_consume_without_catalogues() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let mut names = KeyNames::default();
     names.countries.insert(b"ZZZ".to_vec());
     for (key, valid) in [
@@ -310,6 +337,8 @@ fn ai_strategy_scalar_lookups_consume_without_catalogues() {
 
 #[test]
 fn ai_strategy_block_catalogue_lookup_is_a_counted_refusal() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { add_ai_strategy = { type = front_unit_request area = { name = missing } } }",
         &KeyNames::default(),
@@ -323,9 +352,7 @@ fn ai_strategy_block_catalogue_lookup_is_a_counted_refusal() {
     );
     assert!(
         result.misreads.iter().any(|note| note.count == Some(1)
-            && note
-                .what
-                .contains("Deferred effect CAddAIStrategyEffect AI area")),
+            && note.what.contains("Deferred effect AI strategy AI area")),
         "{result:?}"
     );
 }

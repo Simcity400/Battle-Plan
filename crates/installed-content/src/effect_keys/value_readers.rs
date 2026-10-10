@@ -1,5 +1,4 @@
-//! Slot-3 readers outside the default ReadScript and one-value paths.
-//! Addresses name executable grammar, never content from a vanilla roster.
+//! Effect values and their nested field grammars.
 
 use crate::{
     key_names::KeyNames,
@@ -14,6 +13,104 @@ use super::{
     IF_TOKEN,
     key_readers::{ELSE_IF_TOKEN, ELSE_TOKEN},
 };
+
+// Reader identities select grammar; authored data still comes from the content stack.
+mod reader_identity {
+    pub(super) const RANDOM_TRAIT_VALUE: u64 = 0x1402F0520;
+    pub(super) const REMOVE_UNIT_LEADER_VALUE: u64 = 0x1402F0540;
+    pub(super) const SWAP_COUNTRY_TRAITS: u64 = 0x1402F0810;
+    pub(super) const CAPTURE_GENERAL_KEYS: u64 = 0x1402F8640;
+    pub(super) const RELEASE_GENERAL_KEYS: u64 = 0x1402F8680;
+    pub(super) const TRAIT_TOOLTIP_KEYS: u64 = 0x140301200;
+    pub(super) const POLICY_TOOLTIP_KEYS: u64 = 0x140301210;
+    pub(super) const RESISTANCE_VALUE: u64 = 0x14031B0A0;
+    pub(super) const RESISTANCE_KEYS: u64 = 0x14031B3B0;
+    pub(super) const REMOVE_RESISTANCE_KEYS: u64 = 0x14031BA90;
+    pub(super) const RANDOMIZE_VALUE: u64 = 0x1403A89E0;
+    pub(super) const ADVISOR_VALUE: u64 = 0x1403A91F0;
+    pub(super) const MISSION_TOOLTIP: u64 = 0x1403A92B0;
+    pub(super) const COUNTRY_TRAIT: u64 = 0x1403A9510;
+    pub(super) const DIVISION_TEMPLATE_VALUE: u64 = 0x1403A97C0;
+    pub(super) const IDEAS_VALUE: u64 = 0x1403A9810;
+    pub(super) const SCRIPT_VALUE: u64 = 0x1403A9B40;
+    pub(super) const FOCUS_VALUE: u64 = 0x1403A9B50;
+    pub(super) const AGENCY_VALUE: u64 = 0x1403A9BA0;
+    pub(super) const CREATE_OPERATIVE_VALUE: u64 = 0x1403A9BB0;
+    pub(super) const DECISION_VALUE: u64 = 0x1403A9C20;
+    pub(super) const PUPPET: u64 = 0x1403A9C70;
+    pub(super) const MISSION: u64 = 0x1403A9EC0;
+    pub(super) const OPERATIVE_VALUE: u64 = 0x1403AA100;
+    pub(super) const PROMOTION: u64 = 0x1403AA3C0;
+    pub(super) const RECRUIT_CHARACTER_VALUE: u64 = 0x1403AAA50;
+    pub(super) const REMOVE_ROLE: u64 = 0x1403AAC00;
+    pub(super) const RETIRE_CHARACTER_VALUE: u64 = 0x1403AAFA0;
+    pub(super) const OOB_VALUE: u64 = 0x1403AB040;
+    pub(super) const FOCUS_TREE_VALUE: u64 = 0x1403AB080;
+    pub(super) const CHARACTER_NAME: u64 = 0x1403AB2C0;
+    pub(super) const CHARACTER_NATIONALITY: u64 = 0x1403AB590;
+    pub(super) const IDEAS_TOOLTIP_VALUE: u64 = 0x1403AB900;
+    pub(super) const LEADERS_TOOLTIP_VALUE: u64 = 0x1403ABD40;
+    pub(super) const PEACE_CONFERENCE: u64 = 0x1403ABDF0;
+    pub(super) const SWAP_IDEAS: u64 = 0x1403AC0D0;
+    pub(super) const SWAP_RULER_TRAITS: u64 = 0x1403AC650;
+    pub(super) const DECISION_CATEGORY_VALUE: u64 = 0x1403ACC80;
+    pub(super) const DECISION_TOOLTIP: u64 = 0x1403ACCD0;
+    pub(super) const WHITE_PEACE: u64 = 0x1403ACF40;
+    pub(super) const RANDOMIZE_KEYS: u64 = 0x1403ADE70;
+    pub(super) const POPULARITY_KEYS: u64 = 0x1403AF020;
+    pub(super) const ADD_TEMPLATE_UNITS_KEYS: u64 = 0x1403AF6B0;
+    pub(super) const CAPTURE_OPERATIVE_KEYS: u64 = 0x1403B0B20;
+    pub(super) const COMPLETE_FOCUS_KEYS: u64 = 0x1403B1040;
+    pub(super) const COLONIAL_TEMPLATE_KEYS: u64 = 0x1403B1090;
+    pub(super) const AGENCY_KEYS: u64 = 0x1403B1480;
+    pub(super) const CREATE_OPERATIVE_KEYS: u64 = 0x1403B14C0;
+    pub(super) const CREATE_WARGOAL_KEYS: u64 = 0x1403B1C60;
+    pub(super) const DECLARE_WAR_KEYS: u64 = 0x1403B1FE0;
+    pub(super) const TEMPLATE_LOCK_KEYS: u64 = 0x1403B34B0;
+    pub(super) const OPERATIVE_COUNTRY_KEYS: u64 = 0x1403B3880;
+    pub(super) const RELEASE_COUNTRY_KEYS: u64 = 0x1403B4480;
+    pub(super) const SCIENTIST_ROLE_KEYS: u64 = 0x1403B49C0;
+    pub(super) const REMOVE_WARGOAL_KEYS: u64 = 0x1403B4B00;
+    pub(super) const AUTONOMY_KEYS: u64 = 0x1403B4CC0;
+    pub(super) const FOCUS_TREE_KEYS: u64 = 0x1403B4F80;
+    pub(super) const TRANSFER_LEADERS_KEYS: u64 = 0x1403B6280;
+    pub(super) const HIGHEST_TEMP_VALUE: u64 = 0x14047CCE0;
+    pub(super) const HIGHEST_VALUE: u64 = 0x14047D130;
+    pub(super) const SORTED_TEMP_VALUE: u64 = 0x14047D580;
+    pub(super) const SORTED_VALUE: u64 = 0x14047D9D0;
+    pub(super) const SUPPLY_VALUE: u64 = 0x14047DE20;
+    pub(super) const MODULO_TEMP_VALUE: u64 = 0x14047E6C0;
+    pub(super) const MODULO_VALUE: u64 = 0x14047EB10;
+    pub(super) const RANDOM_TEMP_VALUE: u64 = 0x14047EF60;
+    pub(super) const RANDOM_VARIABLE_VALUE: u64 = 0x14047F3E0;
+    pub(super) const SCORED_VARIABLE_KEYS: u64 = 0x140480F40;
+    pub(super) const SCORED_ARRAY_KEYS: u64 = 0x140480F80;
+    pub(super) const SUPPLY_KEYS: u64 = 0x140480FD0;
+    pub(super) const MODULO_KEYS: u64 = 0x140481020;
+    pub(super) const RANDOM_VARIABLE_KEYS: u64 = 0x140481030;
+    pub(super) const SCIENTIST_TRAIT_VALUE: u64 = 0x140495DC0;
+    pub(super) const INJURE_SCIENTIST_VALUE: u64 = 0x140496070;
+    pub(super) const PROJECT_COMPLETION_KEYS: u64 = 0x1404964D0;
+    pub(super) const EQUIPMENT_AMOUNT_KEYS: u64 = 0x14049E600;
+    pub(super) const TARGET_VALUE_KEYS: u64 = 0x14049E7D0;
+    pub(super) const FACTION_COLOR_KEYS: u64 = 0x1404B1340;
+    pub(super) const STRATEGIC_LOCATION: u64 = 0x14051BBB0;
+    pub(super) const DOCTRINE_KEYS: u64 = 0x14051ECD0;
+    pub(super) const DIVISION_TEMPLATE_KEYS: u64 = 0x140B937A0;
+    pub(super) const LOCALIZATION_VALUE: u64 = 0x141384F50;
+    pub(super) const EVENT_VALUE: u64 = 0x141384F60;
+    pub(super) const FLAG_VALUE: u64 = 0x141384F80;
+    pub(super) const MODIFY_FLAG_VALUE: u64 = 0x141385260;
+    pub(super) const ASSIGNMENT_VALUE: u64 = 0x141385770;
+    pub(super) const OPERATIVE_EVENT_KEYS: u64 = 0x141385790;
+    pub(super) const EVENT_KEYS: u64 = 0x1413859E0;
+    pub(super) const FLAG_KEYS: u64 = 0x141385A10;
+    pub(super) const MODIFY_FLAG_KEYS: u64 = 0x141385E80;
+    pub(super) const EQUIPMENT_VARIANT_KEYS: u64 = 0x141411210;
+    pub(super) const BOUND_LOCALIZATION_READ: u64 = 0x1423912A0;
+}
+
+use reader_identity::*;
 
 #[derive(Clone, Copy)]
 enum LoopSource {
@@ -54,76 +151,55 @@ enum ScalarRead {
     Deferred,
 }
 
-// The embedded CBoundLocalization has its own Read, independent of the
-// containing effect's slot-4 reader (141384F50 -> 142390E40).
-const BOUND_LOCALIZATION_READ: u64 = 0x1423912A0;
-const DIVISION_TEMPLATE_KEYS: u64 = 0x140B937A0;
-const EQUIPMENT_VARIANT_KEYS: u64 = 0x141411210;
-
-// A loop uses either the value reader itself or the class's slot-4 reader.
-const VALUE_READERS: &[(u64, Form)] = &[
-    // Slot-3 readers below use the already-held scalar token. Only the
-    // tooltip/mission readers enter a loop when that token is `{`.
-    (0x1402F0540, Form::SkipIfOpen), // remove unit leader: RecordError on `{`
-    (0x1403AB040, Form::One),        // set land/naval/air OOB: value text, no advance
-    (0x140495DC0, Form::One),        // add scientist trait: registry lookup of held token
-    (0x1403A91F0, Form::One),        // activate/deactivate advisor: value text
-    (0x1403A92B0, Form::CurrentOrKeys(LoopSource::Inline)), // mission tooltip
-    (0x1403A9C20, Form::Current),    // activate/remove decision
-    (0x1403A9EC0, Form::CurrentOrKeys(LoopSource::Inline)), // activate/remove mission
-    (0x1403AAA50, Form::One),        // recruit character: retained token
-    (0x1403AAFA0, Form::One),        // retire character: retained token
-    (0x1403AB900, Form::CurrentOrRaw), // show ideas tooltip
-    (0x1403ABD40, Form::Current),    // show unit leaders tooltip
-    (0x1403ACC80, Form::Current),    // unlock decision category tooltip
-    (0x140496070, Form::One),        // injure scientist: integer from retained token
-    (0x1403A89E0, Form::ScalarOrKeys(LoopSource::ClassKey)), // randomize
-    (0x1403A9810, Form::Ideas),      // raw resolved tokens, not ReadKeyOperatorValue
-    (0x1403A9B40, Form::Keys(LoopSource::ClassKey)), // ReadScript thunk
-    (0x1403A9C70, Form::ScalarOrKeys(LoopSource::Inline)), // puppet
-    (0x1403AB080, Form::ScalarOrKeys(LoopSource::ClassKey)), // focus tree
-    (0x1403AB2C0, Form::ScalarOrKeys(LoopSource::Inline)), // character name
-    (0x1403AB590, Form::ScalarOrKeys(LoopSource::Inline)), // nationality
-    (0x1403AC0D0, Form::Keys(LoopSource::Inline)), // swap ideas
-    (0x1403ACCD0, Form::ScalarOrKeys(LoopSource::Inline)), // decision tooltip
-    (0x1403ACF40, Form::ScalarOrKeys(LoopSource::Inline)), // white peace
-    (0x14047CCE0, Form::Keys(LoopSource::ClassKey)), // highest scored temp
-    (0x14047D130, Form::Keys(LoopSource::ClassKey)), // highest scored
-    (0x14047D580, Form::Keys(LoopSource::ClassKey)), // sorted scored temp
-    (0x14047D9D0, Form::Keys(LoopSource::ClassKey)), // sorted scored
-    (0x14047DE20, Form::Keys(LoopSource::ClassKey)), // supply vehicles temp
-    (0x14047E6C0, Form::Keys(LoopSource::ClassKey)), // modulo temp
-    (0x14047EB10, Form::Keys(LoopSource::ClassKey)), // modulo
-    (0x14047EF60, Form::StringOrKeys(LoopSource::ClassKey)), // random temp
-    (0x14047F3E0, Form::StringOrKeys(LoopSource::ClassKey)), // random variable
-    (0x141384F50, Form::Localization), // embedded CBoundLocalization
-    (0x141384F60, Form::ScalarOrKeys(LoopSource::ClassKey)), // event
-    (0x141384F80, Form::ScalarOrKeys(LoopSource::ClassKey)), // flag
-    (0x141385260, Form::Keys(LoopSource::ClassKey)), // modify flag
-    (0x141385770, Form::ScalarOrKeys(LoopSource::ClassKey)), // assignment
-    (0x1403A97C0, Form::Persistent(DIVISION_TEMPLATE_KEYS)),
-    (0x1403AA3C0, Form::ScalarOrKeys(LoopSource::Inline)),
-    (0x1403AAC00, Form::RoleKeys(LoopSource::Inline)),
-    // Round 2 value forms.
-    (0x1402F0520, Form::List), // add random trait -> ReadStringList 1401426E0
-    (0x1402F0810, Form::Keys(LoopSource::Inline)), // swap country leader traits
-    (0x14031B0A0, Form::ScalarOrKeys(LoopSource::ClassKey)), // targeted resistance
-    (0x1403A9510, Form::ScalarOrKeys(LoopSource::Inline)), // country leader trait
-    (0x1403A9B50, Form::ScalarOrKeys(LoopSource::ClassKey)), // complete focus
-    (0x1403A9BA0, Form::ScalarOrKeys(LoopSource::ClassKey)), // create agency
-    (0x1403A9BB0, Form::Keys(LoopSource::ClassKey)), // create operative leader
-    (0x1403AA100, Form::ScalarOrKeys(LoopSource::ClassKey)), // operative operands
-    (0x1403ABDF0, Form::ScalarOrKeys(LoopSource::Inline)), // peace conference
-    (0x1403AC650, Form::Keys(LoopSource::Inline)), // swap ruler traits
-    (0x14051BBB0, Form::AlwaysKeys(LoopSource::Inline)), // strategic location
-];
+fn value_form(reader: u64) -> Option<Form> {
+    use LoopSource::{ClassKey, Inline};
+    Some(match reader {
+        REMOVE_UNIT_LEADER_VALUE => Form::SkipIfOpen,
+        OOB_VALUE
+        | SCIENTIST_TRAIT_VALUE
+        | ADVISOR_VALUE
+        | RECRUIT_CHARACTER_VALUE
+        | RETIRE_CHARACTER_VALUE
+        | INJURE_SCIENTIST_VALUE => Form::One,
+        DECISION_VALUE | LEADERS_TOOLTIP_VALUE | DECISION_CATEGORY_VALUE => Form::Current,
+        IDEAS_TOOLTIP_VALUE => Form::CurrentOrRaw,
+        MISSION_TOOLTIP | MISSION => Form::CurrentOrKeys(Inline),
+        RANDOMIZE_VALUE | FOCUS_TREE_VALUE | EVENT_VALUE | FLAG_VALUE | ASSIGNMENT_VALUE
+        | RESISTANCE_VALUE | FOCUS_VALUE | AGENCY_VALUE | OPERATIVE_VALUE => {
+            Form::ScalarOrKeys(ClassKey)
+        }
+        PUPPET
+        | CHARACTER_NAME
+        | CHARACTER_NATIONALITY
+        | DECISION_TOOLTIP
+        | WHITE_PEACE
+        | PROMOTION
+        | COUNTRY_TRAIT
+        | PEACE_CONFERENCE => Form::ScalarOrKeys(Inline),
+        SCRIPT_VALUE
+        | HIGHEST_TEMP_VALUE
+        | HIGHEST_VALUE
+        | SORTED_TEMP_VALUE
+        | SORTED_VALUE
+        | SUPPLY_VALUE
+        | MODULO_TEMP_VALUE
+        | MODULO_VALUE
+        | MODIFY_FLAG_VALUE
+        | CREATE_OPERATIVE_VALUE => Form::Keys(ClassKey),
+        SWAP_IDEAS | SWAP_COUNTRY_TRAITS | SWAP_RULER_TRAITS => Form::Keys(Inline),
+        RANDOM_TEMP_VALUE | RANDOM_VARIABLE_VALUE => Form::StringOrKeys(ClassKey),
+        LOCALIZATION_VALUE => Form::Localization,
+        DIVISION_TEMPLATE_VALUE => Form::Persistent(DIVISION_TEMPLATE_KEYS),
+        REMOVE_ROLE => Form::RoleKeys(Inline),
+        RANDOM_TRAIT_VALUE => Form::List,
+        IDEAS_VALUE => Form::Ideas,
+        STRATEGIC_LOCATION => Form::AlwaysKeys(Inline),
+        _ => return None,
+    })
+}
 
 pub(super) fn shape(value: u64, key: u64, field: &Field<'_>) -> Option<Shape<()>> {
-    let form = VALUE_READERS
-        .iter()
-        .find(|(address, _)| *address == value)?
-        .1;
-    let (source, scalar) = match form {
+    let (source, scalar) = match value_form(value)? {
         Form::One => return Some(Shape::One),
         Form::SkipIfOpen => return Some(Shape::SkipIfOpen),
         Form::Current => return Some(Shape::Current),
@@ -147,7 +223,7 @@ pub(super) fn shape(value: u64, key: u64, field: &Field<'_>) -> Option<Shape<()>
         Form::AlwaysKeys(source) => {
             let reader = source.address(value, key);
             own_reader(reader, |name| field.key.is_keyword(name))?;
-            // 14051BBB0 begins its loop even when the value is scalar or stale.
+            // This grammar enters its field loop even after a scalar or stale value.
             return Some(Shape::EffectValueKeys(reader));
         }
         Form::List => {
@@ -158,17 +234,14 @@ pub(super) fn shape(value: u64, key: u64, field: &Field<'_>) -> Option<Shape<()>
             });
         }
         Form::Ideas => {
-            // The scalar takes the current lexer token; the raw array
-            // resolves tokens without writing the retained value slot.
+            // Raw lists resolve tokens without replacing the retained value slot.
             return Some(if field.opens() {
                 Shape::RawList
             } else {
                 Shape::Current
             });
         }
-        Form::Localization => {
-            return Some(super::bound_localization_shape(field));
-        }
+        Form::Localization => return Some(super::bound_localization_shape(field)),
         Form::RoleKeys(source) => match field.effect_scope {
             Some(scope) if scope == ScopeKind::Character.bit() => {
                 return Some(if field.value.c_str() == b"yes" {
@@ -176,7 +249,8 @@ pub(super) fn shape(value: u64, key: u64, field: &Field<'_>) -> Option<Shape<()>
                 } else {
                     Shape::Reported {
                         kind: crate::DiagnosticKind::Misread,
-                        report: "remove_unit_leader_role in character scope requires exact yes; native ReportUnexpectedToken (1403AAC00 -> 1424AD100)".into(),
+                        report: "remove_unit_leader_role in character scope requires exact yes"
+                            .into(),
                         read: Box::new(Shape::Skip),
                     }
                 });
@@ -191,8 +265,6 @@ pub(super) fn shape(value: u64, key: u64, field: &Field<'_>) -> Option<Shape<()>
         Form::Keys(source) => (source, ScalarRead::Block),
     };
     let reader = source.address(value, key);
-    // Shared slots retain named, counted refusals for class grammars
-    // absent from the own-key table, on both scalar and block forms.
     own_reader(reader, |name| field.key.is_keyword(name))?;
     if field.opens() {
         return Some(Shape::EffectValueKeys(reader));
@@ -203,7 +275,8 @@ pub(super) fn shape(value: u64, key: u64, field: &Field<'_>) -> Option<Shape<()>
         ScalarRead::Block => Some(Shape::Reported {
             kind: crate::DiagnosticKind::Misread,
             report: format!(
-                "effect value reader {value:#X} requires a block; native RecordError (1424ACF90)"
+                "effect `{}` requires a block",
+                String::from_utf8_lossy(field.key.c_str())
             ),
             read: Box::new(Shape::Skip),
         }),
@@ -211,25 +284,18 @@ pub(super) fn shape(value: u64, key: u64, field: &Field<'_>) -> Option<Shape<()>
 }
 
 fn string_scalar(field: &Field<'_>) -> ScalarRead {
-    use crate::parser::native::Kind;
-    use std::{collections::BTreeSet, sync::LazyLock};
-    static KEYWORDS: LazyLock<BTreeSet<Vec<u8>>> = LazyLock::new(|| {
-        include_str!("../gui/native/keywords.tsv")
-            .lines()
-            .filter_map(|line| line.split_once('\t'))
-            .map(|(_, key)| key.to_ascii_lowercase().into_bytes())
-            .collect()
-    });
-    // Token 0xF selects scalar assignment. Bare names may already be
-    // dynamically interned by the recorded content stack; the static
-    // catalogue cannot settle that distinction or a stale scalar route.
+    // Bare names can already be dynamically interned by the content stack.
+    // The executable vocabulary cannot settle that distinction or stale input.
     if !field.fresh {
         ScalarRead::Deferred
     } else if field.value.kind == Kind::Quoted {
         ScalarRead::One
     } else if field.value.kind == Kind::Bare
         && !field.value.is_number()
-        && !KEYWORDS.contains(&field.value.c_str().to_ascii_lowercase())
+        && engine::executable_tables::get()
+            .keywords
+            .static_keyword(field.value.c_str())
+            .is_none()
     {
         ScalarRead::Deferred
     } else {
@@ -248,18 +314,6 @@ pub(crate) enum Node {
 }
 
 #[derive(Clone, Copy)]
-enum Unknown {
-    Skip,
-    Effect,
-}
-
-#[derive(Clone, Copy)]
-enum TokenSource {
-    Current,
-    Value,
-}
-
-#[derive(Clone, Copy)]
 enum OwnValue {
     One,
     Object(Node),
@@ -273,478 +327,367 @@ enum OwnValue {
     Trigger,
     BoundLocalization,
     Statements(Node),
-    Keywords {
-        source: TokenSource,
-        accepted: &'static [&'static str],
-        report: &'static str,
-    },
-    Deferred(u64),
+    Gender,
+    OperativeState,
+    Deferred,
 }
 
 #[derive(Clone, Copy)]
 enum OwnReader {
-    Keys(&'static [&'static str]),
-    EffectFallback(&'static [&'static str]),
-    One,
-    Color,
-    Localization,
-    Randomize,
-    Event(&'static [&'static str]),
-    Fields(&'static [(&'static str, OwnValue)], Unknown),
-    // A shared slot's accepted operand is selected by the class constructor.
-    ClassKeys(&'static [(&'static str, &'static [&'static str])]),
-    Wargoal { expire: bool },
+    CaptureGeneral,
+    ReleaseGeneral,
+    ScientistRole,
+    Mission,
+    MissionTooltip,
     Promotion,
     RemoveRole,
+    DivisionTemplate,
+    AddTemplateUnits,
+    ColonialTemplate,
+    EquipmentVariant,
+    TraitTooltip,
+    PolicyTooltip,
+    Puppet,
+    CharacterName,
+    CharacterNationality,
+    SwapIdeas,
+    DecisionTooltip,
+    WhitePeace,
+    Randomize,
+    Popularity,
+    One,
+    ReleaseCountry,
+    Autonomy,
+    FocusTree,
+    ScoredVariable,
+    ScoredArray,
+    Supply,
+    RandomVariable,
+    TargetValue,
+    Color,
+    OperativeEvent,
+    Event,
+    Flag,
+    Localization,
+    SwapCountryTraits,
+    CountryTrait,
+    SwapRulerTraits,
+    CaptureOperative,
+    KillOperative,
+    TurnOperative,
+    CreateOperative,
+    Wargoal { expire: bool },
+    RemoveWargoal,
+    EquipmentAmount,
+    TransferLeaders,
+    Resistance,
+    RemoveResistance,
+    ProjectCompletion,
+    CompleteFocus,
+    Agency,
+    PeaceConference,
+    Doctrine,
 }
 
-// Ordinary accepted fields take one string/bool/scoped-variable token;
-// unknowns use ReportUnexpectedToken/RecordError, including its skip.
-const OWN_KEYS: &[(u64, OwnReader)] = &[
-    // 1402F8640/680 ReadObjectFromParser 1424ABB40 on these tokens;
-    // 1403B49C0 reads character as a scoped variable. Other keys report.
-    (0x1402F8640, OwnReader::Keys(&["province", "country"])),
-    (0x1402F8680, OwnReader::Keys(&["target", "province"])),
-    (0x1403B49C0, OwnReader::Keys(&["character"])),
-    // 1403A9EC0 accepts mission (0x2CBA); 1403A92B0 also accepts
-    // desc (0x2994). Each accepted entry calls ReadStringInto 1424ABB50;
-    // an unknown entry calls ReportUnexpectedToken 1424AD100.
-    (0x1403A9EC0, OwnReader::Keys(&["mission"])),
-    (0x1403A92B0, OwnReader::Keys(&["mission", "desc"])),
-    (0x1403AA3C0, OwnReader::Promotion),
-    (0x1403AAC00, OwnReader::RemoveRole),
-    (
-        DIVISION_TEMPLATE_KEYS,
-        OwnReader::Fields(
-            &[
-                ("name", OwnValue::One),
-                ("localization_key", OwnValue::One),
-                ("parent", OwnValue::ObjectIfOpen(Node::One)),
-                ("priority", OwnValue::One),
-                ("inherit", OwnValue::RawSkipIfOpen),
-                ("country", OwnValue::One),
-                ("obsolete_change_date", OwnValue::One),
-                ("colonial", OwnValue::One),
-                (
-                    "support",
-                    OwnValue::Object(Node::Units(UnitGroup::Support, Placement::Point)),
-                ),
-                (
-                    "regiments",
-                    OwnValue::Object(Node::Units(UnitGroup::Regiments, Placement::Point)),
-                ),
-                ("force_allow_recruiting", OwnValue::One),
-                ("obsolete", OwnValue::One),
-                ("template_counter", OwnValue::One),
-                ("ingame_set_template_counter", OwnValue::One),
-                ("original_tag", OwnValue::One),
-                ("allow_new_equipment", OwnValue::One),
-                (
-                    "not_allowed_equipment",
-                    OwnValue::Object(Node::EquipmentRestrictions),
-                ),
-                ("role", OwnValue::One),
-                ("division_names_group", OwnValue::One),
-                ("is_locked", OwnValue::One),
-                ("foreign_template_tag", OwnValue::One),
-                ("origin_type", OwnValue::One),
-                ("override_model", OwnValue::One),
-                (
-                    "regimental_support",
-                    OwnValue::Object(Node::Units(UnitGroup::RegimentalSupport, Placement::Point)),
-                ),
-                (
-                    "override_model_equipment_category_filter",
-                    OwnValue::CurrentOrRaw,
-                ),
-                ("is_army_hq", OwnValue::One),
-                ("is_fake_intel_division", OwnValue::One),
-                ("equipment_niche", OwnValue::One),
-                ("allow_foreign_equipment", OwnValue::One),
-                ("forbidden_equipment_types", OwnValue::Object(Node::One)),
-                ("division_limit", OwnValue::One),
-            ],
-            Unknown::Skip,
-        ),
-    ),
-    (
-        0x1403AF6B0,
-        OwnReader::Fields(
-            &[
-                ("template_name", OwnValue::One),
-                (
-                    "regiments",
-                    OwnValue::Object(Node::Units(UnitGroup::Regiments, Placement::Column)),
-                ),
-                (
-                    "support",
-                    OwnValue::Object(Node::Units(UnitGroup::Support, Placement::Column)),
-                ),
-                (
-                    "regimental_support",
-                    OwnValue::Object(Node::Units(UnitGroup::RegimentalSupport, Placement::Column)),
-                ),
-            ],
-            Unknown::Skip,
-        ),
-    ),
-    (
-        0x1403B1090,
-        OwnReader::Fields(
-            &[
-                ("subject", OwnValue::One),
-                (
-                    "division_template",
-                    OwnValue::Object(Node::Keys(DIVISION_TEMPLATE_KEYS)),
-                ),
-            ],
-            Unknown::Skip,
-        ),
-    ),
-    (
-        EQUIPMENT_VARIANT_KEYS,
-        OwnReader::Keys(&[
-            "type",
-            "version",
-            "creator",
-            "create_if_missing",
-            "version_name",
-            "license_creator",
-        ]),
-    ),
-    // Thunks -> 141398390 / 141398350.
-    (0x140301200, OwnReader::Keys(&["trait", "show_modifiers"])),
-    (0x140301210, OwnReader::Keys(&["policy", "show_modifiers"])),
-    (
-        0x1403A9C70,
-        OwnReader::Keys(&["target", "end_civil_wars", "end_wars"]),
-    ),
-    (0x1403AB2C0, OwnReader::Keys(&["name", "character"])),
-    (
-        0x1403AB590,
-        OwnReader::Keys(&["target_country", "character"]),
-    ),
-    (
-        0x1403AC0D0,
-        OwnReader::Keys(&["days", "remove_idea", "add_idea", "add_days"]),
-    ),
-    (
-        0x1403ACCD0,
-        OwnReader::Keys(&["decision", "show_effect_tooltip", "show_modifiers"]),
-    ),
-    (0x1403ACF40, OwnReader::Keys(&["tooltip", "message", "tag"])),
-    // Case-sensitive distribution with mutable allowed fields. Factories
-    // 14033A5D0 / 14033A660 choose uniform (+0x130 = 0).
-    (0x1403ADE70, OwnReader::Randomize),
-    // Remaining keys tail-call CEffect::ReadEffect (1405345D0).
-    (
-        0x1403AF020,
-        OwnReader::EffectFallback(&["ideology", "popularity"]),
-    ),
-    // Unknown keys return without reporting or skipping.
-    (0x1403B34B0, OwnReader::One),
-    (
-        0x1403B4480,
-        OwnReader::Keys(&[
-            "target",
-            "autonomous_state",
-            "autonomy_state",
-            "freedom_level",
-            "release_non_owned_controlled",
-            "force_change_controller_for_non_ally_controlled",
-        ]),
-    ),
-    (
-        0x1403B4CC0,
-        OwnReader::Keys(&[
-            "target",
-            "autonomous_state",
-            "autonomy_state",
-            "freedom_level",
-            "end_civil_wars",
-            "end_wars",
-        ]),
-    ),
-    (
-        0x1403B4F80,
-        OwnReader::Keys(&["tree", "keep_completed", "copy_completed_from"]),
-    ),
-    (0x140480F40, OwnReader::Keys(&["var", "scorer"])),
-    (0x140480F80, OwnReader::Keys(&["array", "scores", "scorer"])),
-    (0x140480FD0, OwnReader::Keys(&["var", "type", "need"])),
-    // -> 140480E00: every field is an operand pair, including shorthand.
-    (0x140481020, OwnReader::One),
-    (
-        0x140481030,
-        OwnReader::Keys(&["min", "max", "var", "integer"]),
-    ),
-    (0x14049E7D0, OwnReader::Keys(&["target", "value"])),
-    // Scalar fields or CColor; unknown keys return without an error skip.
-    (0x1404B1340, OwnReader::Color),
-    // random blocks read a CRandomEffect through the enclosing names.
-    (
-        0x141385790,
-        OwnReader::Event(&[
-            "id",
-            "tooltip",
-            "trigger_for",
-            "recipient",
-            "months",
-            "days",
-            "hours",
-            "random_hours",
-            "random_days",
-            "random",
-            "set_from",
-            "set_root",
-            "set_from_from",
-            "originator",
-        ]),
-    ),
-    (
-        0x1413859E0,
-        OwnReader::Event(&[
-            "id",
-            "tooltip",
-            "trigger_for",
-            "months",
-            "days",
-            "hours",
-            "random_hours",
-            "random_days",
-            "random",
-            "set_from_from",
-            "originator",
-        ]),
-    ),
-    (0x141385A10, OwnReader::Keys(&["flag", "value", "days"])),
-    (0x141385E80, OwnReader::Keys(&["flag", "value", "days"])),
-    (BOUND_LOCALIZATION_READ, OwnReader::Localization),
-    // Ordinary character loops; 140539440 and reference failures take one token.
-    (0x1402F0810, OwnReader::Keys(&["ideology", "remove", "add"])),
-    (0x1403A9510, OwnReader::Keys(&["ideology", "trait"])),
-    (0x1403AC650, OwnReader::Keys(&["remove", "add"])),
-    (
-        0x1403B0B20,
-        OwnReader::Keys(&["captured_by", "operative", "ignore_death_chance"]),
-    ),
-    (
-        0x1403B3880,
-        // Constructors 14033E4B0 / 140342130 supply killed_by / turned_by.
-        // free_operative shares this slot but has zero reach and is absent.
-        OwnReader::ClassKeys(&[
-            ("kill_operative", &["killed_by", "operative"]),
-            ("turn_operative", &["turned_by", "operative"]),
-        ]),
-    ),
-    (
-        0x1403B14C0,
-        // Local effect fields, then COperativeLeader::load 140C11620 and
-        // CUnitLeader::ReadToken 140C0C950. No runtime execution is inferred.
-        OwnReader::Fields(
-            &[
-                ("gfx", OwnValue::One),
-                ("bypass_recruitment", OwnValue::One),
-                ("available_to_spy_master", OwnValue::One),
-                ("portrait_tag_override", OwnValue::One),
-                ("id", OwnValue::One),
-                ("nationalities", OwnValue::RawListRequired),
-                // Inherited traits is unconditional and leaves the value slot intact.
-                ("traits", OwnValue::RawList),
-                (
-                    "gender",
-                    // 1413DAFA0 tests the CURRENT token, including stale fields.
-                    OwnValue::Keywords {
-                        source: TokenSource::Current,
-                        accepted: &["female", "male", "undefined"],
-                        report: "invalid gender; native RecordError (1413DAFA0 -> 1424ACF90)",
-                    },
-                ),
-                ("name", OwnValue::One),
-                ("female", OwnValue::One),
-                ("skill", OwnValue::One),
-                ("picture", OwnValue::One),
-                ("portrait_path", OwnValue::One),
-                ("rank", OwnValue::One),
-                ("desc", OwnValue::One),
-                ("experience", OwnValue::One),
-                ("max_traits", OwnValue::One),
-                ("custom_cost_text", OwnValue::One),
-                ("link", OwnValue::One),
-                ("government_in_exile_tag", OwnValue::One),
-                ("promoted_from_unit", OwnValue::One),
-                ("cooldown_reason", OwnValue::One),
-                ("script_id", OwnValue::One),
-                ("legacy_id", OwnValue::One),
-                ("leader_modifier_enable_date", OwnValue::One),
-                ("leader_cooldown_start_date", OwnValue::One),
-                ("capture_date", OwnValue::One),
-                ("captured", OwnValue::One),
-                (
-                    "state",
-                    // 140C11620 tests retained token IDs 336C/394C/4A50..4A53.
-                    OwnValue::Keywords {
-                        source: TokenSource::Value,
-                        accepted: &[
-                            "killed",
-                            "on_mission",
-                            "on_operation",
-                            "on_capture",
-                            "on_cooldown",
-                            "on_disband",
-                        ],
-                        report: "invalid operative state; native RecordError (140C11620 -> 1424ACF90)",
-                    },
-                ),
-                ("flags", OwnValue::RawSkipIfOpen),
-                // These inherited nested grammars have zero immediate corpus reach.
-                // Retain a named, counted refusal rather than inventing their readers.
-                ("traits_to_remove", OwnValue::Deferred(0x140C0C950)),
-                ("in_progress", OwnValue::Deferred(0x140C0C950)),
-                ("trait_xp_factor", OwnValue::Deferred(0x140C0C950)),
-                ("operation", OwnValue::ObjectIfOpen(Node::One)),
-                ("codename", OwnValue::Deferred(0x1409BB290)),
-                ("mission", OwnValue::Deferred(0x140FAF520)),
-                ("sub_unit_modifiers", OwnValue::Deferred(0x1410079E0)),
-                ("dynamic_modifier", OwnValue::Deferred(0x140603920)),
-            ],
-            Unknown::Skip,
-        ),
-    ),
-    // Wargoal constructors zero generator kind; 140A2C820 writes it on every first route.
-    (0x1403B1C60, OwnReader::Wargoal { expire: true }),
-    (0x1403B1FE0, OwnReader::Wargoal { expire: false }),
-    (
-        0x1403B4B00,
-        OwnReader::Fields(
-            &[("target", OwnValue::One), ("type", OwnValue::InvalidBlock)],
-            Unknown::Skip,
-        ),
-    ),
-    (
-        0x14049E600,
-        OwnReader::Fields(
-            &[
-                ("target", OwnValue::One),
-                ("type", OwnValue::One),
-                ("equipment", OwnValue::One),
-                ("amount", OwnValue::One),
-                ("new_prioritised", OwnValue::One),
-                ("old_prioritised", OwnValue::RawSkipIfOpen),
-            ],
-            Unknown::Skip,
-        ),
-    ),
-    (
-        0x1403B6280,
-        OwnReader::Fields(
-            &[
-                ("target", OwnValue::One),
-                ("size", OwnValue::One),
-                ("source_organization", OwnValue::One),
-                ("target_organization", OwnValue::One),
-                ("stockpile_ratio", OwnValue::One),
-                ("army_ratio", OwnValue::One),
-                ("navy_ratio", OwnValue::One),
-                ("air_ratio", OwnValue::One),
-                ("keep_unit_leaders", OwnValue::ValueListRequired),
-                ("keep_unit_leaders_trigger", OwnValue::Trigger),
-            ],
-            Unknown::Skip,
-        ),
-    ),
-    (
-        0x14031B3B0,
-        OwnReader::EffectFallback(&["id", "tooltip", "amount", "days", "occupied", "occupier"]),
-    ),
-    (
-        0x14031BA90,
-        OwnReader::EffectFallback(&["clear", "occupied", "occupier"]),
-    ),
-    (
-        0x1404964D0,
-        // 140490F40 constructs project/scientist/state scoped-variable fields.
-        OwnReader::Fields(
-            &[
-                ("state", OwnValue::One),
-                ("project", OwnValue::One),
-                (
-                    "iteration_output",
-                    OwnValue::Statements(Node::IterationOutput),
-                ),
-                ("show_modifiers", OwnValue::One),
-                ("scientist", OwnValue::One),
-            ],
-            Unknown::Skip,
-        ),
-    ),
-    (
-        0x1403B1040,
-        // 1403B1040 accepts exactly these three tokens; tooltip (0x92)
-        // takes the ReadEffect tail at 1403B105C, rather than an own field.
-        OwnReader::Fields(
-            &[
-                ("focus", OwnValue::One),
-                ("use_side_message", OwnValue::One),
-                // 14033C850 constructs CBoundLocalization at effect+0x80.
-                ("originator_name", OwnValue::BoundLocalization),
-            ],
-            Unknown::Effect,
-        ),
-    ),
-    (
-        0x1403B1480,
-        OwnReader::Fields(
-            &[("name", OwnValue::One), ("icon", OwnValue::One)],
-            Unknown::Effect,
-        ),
-    ),
-    (
-        0x1403ABDF0,
-        OwnReader::Keys(&[
-            "tooltip",
-            "message",
-            "tag",
-            "winner_scope",
-            "loser_scope",
-            "score_factor",
-        ]),
-    ),
-    (0x14051BBB0, OwnReader::One),
-    (
-        0x14051ECD0,
-        OwnReader::EffectFallback(&["track", "folder", "sub_doctrine"]),
-    ),
-];
+impl OwnReader {
+    fn falls_back_to_effect(self) -> bool {
+        matches!(
+            self,
+            Self::Popularity
+                | Self::Resistance
+                | Self::RemoveResistance
+                | Self::CompleteFocus
+                | Self::Agency
+                | Self::Doctrine
+        )
+    }
 
-fn own_reader(address: u64, is_class: impl Fn(&str) -> bool) -> Option<OwnReader> {
-    let reader = OWN_KEYS
-        .iter()
-        .find(|(reader, _)| *reader == address)
-        .map(|(_, reader)| *reader)?;
-    match reader {
-        OwnReader::ClassKeys(classes) => classes
-            .iter()
-            .find(|(name, _)| is_class(name))
-            .map(|(_, keys)| OwnReader::Keys(keys)),
-        _ => Some(reader),
+    fn is_event(self) -> bool {
+        matches!(self, Self::OperativeEvent | Self::Event)
+    }
+
+    fn token_value(self, key: &Token) -> Option<OwnValue> {
+        self.value(&key.lookup()?.to_ascii_lowercase())
+    }
+
+    fn item_value(self, item: &Item) -> Option<OwnValue> {
+        self.value(&item.keyword()?.folded())
+    }
+
+    fn value(self, key: &[u8]) -> Option<OwnValue> {
+        use OwnValue::{Object, ObjectIfOpen, One};
+        use UnitGroup::{RegimentalSupport, Regiments, Support};
+        Some(match (self, key) {
+            (Self::CaptureGeneral, b"province" | b"country")
+            | (Self::ReleaseGeneral, b"target" | b"province")
+            | (Self::ScientistRole, b"character")
+            | (Self::Mission, b"mission")
+            | (Self::MissionTooltip, b"mission" | b"desc") => One,
+            (
+                Self::DivisionTemplate,
+                b"name"
+                | b"localization_key"
+                | b"priority"
+                | b"country"
+                | b"obsolete_change_date"
+                | b"colonial"
+                | b"force_allow_recruiting"
+                | b"obsolete"
+                | b"template_counter"
+                | b"ingame_set_template_counter"
+                | b"original_tag"
+                | b"allow_new_equipment"
+                | b"role"
+                | b"division_names_group"
+                | b"is_locked"
+                | b"foreign_template_tag"
+                | b"origin_type"
+                | b"override_model"
+                | b"is_army_hq"
+                | b"is_fake_intel_division"
+                | b"equipment_niche"
+                | b"allow_foreign_equipment"
+                | b"division_limit",
+            ) => One,
+            (Self::DivisionTemplate, b"parent") => ObjectIfOpen(Node::One),
+            (Self::DivisionTemplate, b"inherit") => OwnValue::RawSkipIfOpen,
+            (Self::DivisionTemplate, b"support") => Object(Node::Units(Support, Placement::Point)),
+            (Self::DivisionTemplate, b"regiments") => {
+                Object(Node::Units(Regiments, Placement::Point))
+            }
+            (Self::DivisionTemplate, b"regimental_support") => {
+                Object(Node::Units(RegimentalSupport, Placement::Point))
+            }
+            (Self::DivisionTemplate, b"not_allowed_equipment") => {
+                Object(Node::EquipmentRestrictions)
+            }
+            (Self::DivisionTemplate, b"override_model_equipment_category_filter") => {
+                OwnValue::CurrentOrRaw
+            }
+            (Self::DivisionTemplate, b"forbidden_equipment_types") => Object(Node::One),
+            (Self::AddTemplateUnits, b"template_name") => One,
+            (Self::AddTemplateUnits, b"regiments") => {
+                Object(Node::Units(Regiments, Placement::Column))
+            }
+            (Self::AddTemplateUnits, b"support") => Object(Node::Units(Support, Placement::Column)),
+            (Self::AddTemplateUnits, b"regimental_support") => {
+                Object(Node::Units(RegimentalSupport, Placement::Column))
+            }
+            (Self::ColonialTemplate, b"subject") => One,
+            (Self::ColonialTemplate, b"division_template") => {
+                Object(Node::Keys(DIVISION_TEMPLATE_KEYS))
+            }
+            (
+                Self::EquipmentVariant,
+                b"type" | b"version" | b"creator" | b"create_if_missing" | b"version_name"
+                | b"license_creator",
+            )
+            | (Self::TraitTooltip, b"trait" | b"show_modifiers")
+            | (Self::PolicyTooltip, b"policy" | b"show_modifiers")
+            | (Self::Puppet, b"target" | b"end_civil_wars" | b"end_wars")
+            | (Self::CharacterName, b"name" | b"character")
+            | (Self::CharacterNationality, b"target_country" | b"character")
+            | (Self::SwapIdeas, b"days" | b"remove_idea" | b"add_idea" | b"add_days")
+            | (Self::DecisionTooltip, b"decision" | b"show_effect_tooltip" | b"show_modifiers")
+            | (Self::WhitePeace, b"tooltip" | b"message" | b"tag")
+            | (Self::Popularity, b"ideology" | b"popularity") => One,
+            (
+                Self::ReleaseCountry,
+                b"target"
+                | b"autonomous_state"
+                | b"autonomy_state"
+                | b"freedom_level"
+                | b"release_non_owned_controlled"
+                | b"force_change_controller_for_non_ally_controlled",
+            )
+            | (
+                Self::Autonomy,
+                b"target" | b"autonomous_state" | b"autonomy_state" | b"freedom_level"
+                | b"end_civil_wars" | b"end_wars",
+            )
+            | (Self::FocusTree, b"tree" | b"keep_completed" | b"copy_completed_from")
+            | (Self::ScoredVariable, b"var" | b"scorer")
+            | (Self::ScoredArray, b"array" | b"scores" | b"scorer")
+            | (Self::Supply, b"var" | b"type" | b"need")
+            | (Self::RandomVariable, b"min" | b"max" | b"var" | b"integer")
+            | (Self::TargetValue, b"target" | b"value") => One,
+            (
+                Self::OperativeEvent | Self::Event,
+                b"id" | b"tooltip" | b"trigger_for" | b"months" | b"days" | b"hours"
+                | b"random_hours" | b"random_days" | b"random" | b"set_from_from" | b"originator",
+            )
+            | (Self::OperativeEvent, b"recipient" | b"set_from" | b"set_root")
+            | (Self::Flag, b"flag" | b"value" | b"days")
+            | (Self::SwapCountryTraits, b"ideology" | b"remove" | b"add")
+            | (Self::CountryTrait, b"ideology" | b"trait")
+            | (Self::SwapRulerTraits, b"remove" | b"add")
+            | (Self::CaptureOperative, b"captured_by" | b"operative" | b"ignore_death_chance")
+            | (Self::KillOperative, b"killed_by" | b"operative")
+            | (Self::TurnOperative, b"turned_by" | b"operative") => One,
+            (
+                Self::CreateOperative,
+                b"gfx"
+                | b"bypass_recruitment"
+                | b"available_to_spy_master"
+                | b"portrait_tag_override"
+                | b"id"
+                | b"name"
+                | b"female"
+                | b"skill"
+                | b"picture"
+                | b"portrait_path"
+                | b"rank"
+                | b"desc"
+                | b"experience"
+                | b"max_traits"
+                | b"custom_cost_text"
+                | b"link"
+                | b"government_in_exile_tag"
+                | b"promoted_from_unit"
+                | b"cooldown_reason"
+                | b"script_id"
+                | b"legacy_id"
+                | b"leader_modifier_enable_date"
+                | b"leader_cooldown_start_date"
+                | b"capture_date"
+                | b"captured",
+            ) => One,
+            (Self::CreateOperative, b"nationalities") => OwnValue::RawListRequired,
+            // Traits enter the raw loop even after a scalar; flags skip only an opening block.
+            (Self::CreateOperative, b"traits") => OwnValue::RawList,
+            (Self::CreateOperative, b"gender") => OwnValue::Gender,
+            (Self::CreateOperative, b"state") => OwnValue::OperativeState,
+            (Self::CreateOperative, b"flags") => OwnValue::RawSkipIfOpen,
+            (Self::CreateOperative, b"operation") => ObjectIfOpen(Node::One),
+            (
+                Self::CreateOperative,
+                b"traits_to_remove"
+                | b"in_progress"
+                | b"trait_xp_factor"
+                | b"codename"
+                | b"mission"
+                | b"sub_unit_modifiers"
+                | b"dynamic_modifier",
+            ) => OwnValue::Deferred,
+            (Self::RemoveWargoal, b"target") => One,
+            (Self::RemoveWargoal, b"type") => OwnValue::InvalidBlock,
+            (
+                Self::EquipmentAmount,
+                b"target" | b"type" | b"equipment" | b"amount" | b"new_prioritised",
+            ) => One,
+            (Self::EquipmentAmount, b"old_prioritised") => OwnValue::RawSkipIfOpen,
+            (
+                Self::TransferLeaders,
+                b"target"
+                | b"size"
+                | b"source_organization"
+                | b"target_organization"
+                | b"stockpile_ratio"
+                | b"army_ratio"
+                | b"navy_ratio"
+                | b"air_ratio",
+            ) => One,
+            (Self::TransferLeaders, b"keep_unit_leaders") => OwnValue::ValueListRequired,
+            (Self::TransferLeaders, b"keep_unit_leaders_trigger") => OwnValue::Trigger,
+            (
+                Self::Resistance,
+                b"id" | b"tooltip" | b"amount" | b"days" | b"occupied" | b"occupier",
+            )
+            | (Self::RemoveResistance, b"clear" | b"occupied" | b"occupier")
+            | (Self::ProjectCompletion, b"state" | b"project" | b"show_modifiers" | b"scientist") => {
+                One
+            }
+            (Self::ProjectCompletion, b"iteration_output") => {
+                OwnValue::Statements(Node::IterationOutput)
+            }
+            (Self::CompleteFocus, b"focus" | b"use_side_message") => One,
+            (Self::CompleteFocus, b"originator_name") => OwnValue::BoundLocalization,
+            (Self::Agency, b"name" | b"icon")
+            | (
+                Self::PeaceConference,
+                b"tooltip" | b"message" | b"tag" | b"winner_scope" | b"loser_scope"
+                | b"score_factor",
+            )
+            | (Self::Doctrine, b"track" | b"folder" | b"sub_doctrine") => One,
+            _ => return None,
+        })
     }
 }
 
-/// Inline value loops use the same own-field metadata as the reader replay.
+fn own_reader(address: u64, is_class: impl Fn(&str) -> bool) -> Option<OwnReader> {
+    use OwnReader as Grammar;
+    Some(match address {
+        CAPTURE_GENERAL_KEYS => Grammar::CaptureGeneral,
+        RELEASE_GENERAL_KEYS => Grammar::ReleaseGeneral,
+        SCIENTIST_ROLE_KEYS => Grammar::ScientistRole,
+        MISSION => Grammar::Mission,
+        MISSION_TOOLTIP => Grammar::MissionTooltip,
+        PROMOTION => Grammar::Promotion,
+        REMOVE_ROLE => Grammar::RemoveRole,
+        DIVISION_TEMPLATE_KEYS => Grammar::DivisionTemplate,
+        ADD_TEMPLATE_UNITS_KEYS => Grammar::AddTemplateUnits,
+        COLONIAL_TEMPLATE_KEYS => Grammar::ColonialTemplate,
+        EQUIPMENT_VARIANT_KEYS => Grammar::EquipmentVariant,
+        TRAIT_TOOLTIP_KEYS => Grammar::TraitTooltip,
+        POLICY_TOOLTIP_KEYS => Grammar::PolicyTooltip,
+        PUPPET => Grammar::Puppet,
+        CHARACTER_NAME => Grammar::CharacterName,
+        CHARACTER_NATIONALITY => Grammar::CharacterNationality,
+        SWAP_IDEAS => Grammar::SwapIdeas,
+        DECISION_TOOLTIP => Grammar::DecisionTooltip,
+        WHITE_PEACE => Grammar::WhitePeace,
+        RANDOMIZE_KEYS => Grammar::Randomize,
+        POPULARITY_KEYS => Grammar::Popularity,
+        TEMPLATE_LOCK_KEYS | MODULO_KEYS | STRATEGIC_LOCATION => Grammar::One,
+        RELEASE_COUNTRY_KEYS => Grammar::ReleaseCountry,
+        AUTONOMY_KEYS => Grammar::Autonomy,
+        FOCUS_TREE_KEYS => Grammar::FocusTree,
+        SCORED_VARIABLE_KEYS => Grammar::ScoredVariable,
+        SCORED_ARRAY_KEYS => Grammar::ScoredArray,
+        SUPPLY_KEYS => Grammar::Supply,
+        RANDOM_VARIABLE_KEYS => Grammar::RandomVariable,
+        TARGET_VALUE_KEYS => Grammar::TargetValue,
+        FACTION_COLOR_KEYS => Grammar::Color,
+        OPERATIVE_EVENT_KEYS => Grammar::OperativeEvent,
+        EVENT_KEYS => Grammar::Event,
+        FLAG_KEYS | MODIFY_FLAG_KEYS => Grammar::Flag,
+        BOUND_LOCALIZATION_READ => Grammar::Localization,
+        SWAP_COUNTRY_TRAITS => Grammar::SwapCountryTraits,
+        COUNTRY_TRAIT => Grammar::CountryTrait,
+        SWAP_RULER_TRAITS => Grammar::SwapRulerTraits,
+        CAPTURE_OPERATIVE_KEYS => Grammar::CaptureOperative,
+        OPERATIVE_COUNTRY_KEYS if is_class("kill_operative") => Grammar::KillOperative,
+        OPERATIVE_COUNTRY_KEYS if is_class("turn_operative") => Grammar::TurnOperative,
+        CREATE_OPERATIVE_KEYS => Grammar::CreateOperative,
+        CREATE_WARGOAL_KEYS => Grammar::Wargoal { expire: true },
+        DECLARE_WAR_KEYS => Grammar::Wargoal { expire: false },
+        REMOVE_WARGOAL_KEYS => Grammar::RemoveWargoal,
+        EQUIPMENT_AMOUNT_KEYS => Grammar::EquipmentAmount,
+        TRANSFER_LEADERS_KEYS => Grammar::TransferLeaders,
+        RESISTANCE_KEYS => Grammar::Resistance,
+        REMOVE_RESISTANCE_KEYS => Grammar::RemoveResistance,
+        PROJECT_COMPLETION_KEYS => Grammar::ProjectCompletion,
+        COMPLETE_FOCUS_KEYS => Grammar::CompleteFocus,
+        AGENCY_KEYS => Grammar::Agency,
+        PEACE_CONFERENCE => Grammar::PeaceConference,
+        DOCTRINE_KEYS => Grammar::Doctrine,
+        _ => return None,
+    })
+}
+
+/// Project nested effects using the same field grammar as parsing.
 pub(super) fn description_fields(
     value: u64,
     key: u64,
     token: u32,
     item: &Item,
 ) -> Result<Vec<Item>, String> {
-    let form = VALUE_READERS
-        .iter()
-        .find(|(address, _)| *address == value)
-        .map(|(_, form)| *form)
-        .ok_or_else(|| {
-            format!("effect own-key projection is not ported for value reader {value:X}")
-        })?;
+    let form = value_form(value).ok_or_else(|| {
+        format!(
+            "effect `{}` has no supported value projection",
+            String::from_utf8_lossy(item.key.as_deref().unwrap_or_default())
+        )
+    })?;
     let items = item.value.items().unwrap_or_default();
     let source = match form {
         Form::CurrentOrKeys(source)
@@ -776,19 +719,19 @@ fn inline_description_fields(
     items: &[Item],
 ) -> Result<Vec<Item>, String> {
     let reader = own_reader(address, |name| class.keyword_is(name)).ok_or_else(|| {
-        format!("effect own-key projection is not ported for inline reader {address:X}")
+        format!(
+            "effect `{}` has no supported field projection",
+            String::from_utf8_lossy(class.key.as_deref().unwrap_or_default())
+        )
     })?;
     Ok(items
         .iter()
-        .filter(|item| match reader {
-            // 1413859E0 -> 141385790: scalar random is the delay operand;
-            // a block takes ReadEffect at 1413857F5 and adds a child.
-            OwnReader::Event(_) => item.keyword_is("random") && item.value.items().is_some(),
-            OwnReader::EffectFallback(keys) => !keys.iter().any(|key| item.keyword_is(key)),
-            OwnReader::Fields(fields, Unknown::Effect) => {
-                !fields.iter().any(|(name, _)| item.keyword_is(name))
+        .filter(|item| {
+            if reader.is_event() {
+                item.keyword_is("random") && item.value.items().is_some()
+            } else {
+                reader.falls_back_to_effect() && reader.item_value(item).is_none()
             }
-            _ => false,
         })
         .cloned()
         .collect())
@@ -808,7 +751,7 @@ impl<'n, 'c> Shaper<'n, 'c> {
         Self {
             address,
             reader: own_reader(address, |name| class.is_keyword(name))
-                .expect("ported effect value key loop"),
+                .expect("supported effect value field loop"),
             class,
             names,
             distribution: 0,
@@ -832,13 +775,11 @@ impl<'n, 'c> Shaper<'n, 'c> {
             Node::Root => self.field(self.address, self.reader, field),
             Node::Keys(address) => {
                 let reader = own_reader(address, |name| self.class.is_keyword(name))
-                    .expect("ported nested value key loop");
+                    .expect("supported nested value field loop");
                 self.field(address, reader, field)
             }
             Node::IterationOutput => {
-                // 140496850 / 140496090 / 140496970: an anonymous opening
-                // block is skipped; an assigned opening brace takes one value.
-                // fresh distinguishes the callbacks, even for an empty quoted key.
+                // Anonymous blocks skip; assignments retain one token, including an empty key.
                 if !field.fresh && field.opens() {
                     Shape::Skip
                 } else {
@@ -859,8 +800,8 @@ impl<'n, 'c> Shaper<'n, 'c> {
                         Some(_) => Shape::One,
                         None if field.skips_block() => Shape::Reported {
                             kind: crate::DiagnosticKind::Unsupported,
-                            report: format!("Deferred effect `promote_character.character`: value reader {address:#X}; parse scope unavailable"),
-                            read: Box::new(Shape::Unsettled("promote_character.character: character scope skips the current block; other scopes read one value (1403AA3C0)".into())),
+                            report: "Deferred effect `promote_character.character`: parse scope unavailable".into(),
+                            read: Box::new(Shape::Unsettled("promote_character.character: character scope skips the current block; other scopes read one value".into())),
                         },
                         None => Shape::One,
                     }
@@ -891,35 +832,19 @@ impl<'n, 'c> Shaper<'n, 'c> {
                 }
             }
             OwnReader::Randomize => self.randomize(field).map(|()| unreachable!()),
-            OwnReader::Event(_) if field.keyword_is("random") && field.opens() => {
+            OwnReader::Wargoal { expire } => self.wargoal(expire, field),
+            _ if reader.is_event() && field.keyword_is("random") && field.opens() => {
                 super::shape(self.names, field).map(|()| unreachable!())
             }
-            OwnReader::Keys(keys) | OwnReader::Event(keys) => {
-                if keys.iter().any(|key| field.keyword_is(key)) {
-                    Shape::One
+            _ => {
+                if let Some(value) = reader.token_value(field.key) {
+                    self.value(value, field)
+                } else if reader.falls_back_to_effect() {
+                    super::shape(self.names, field).map(|()| unreachable!())
                 } else {
                     Shape::Skip
                 }
             }
-            OwnReader::EffectFallback(keys) => {
-                if keys.iter().any(|key| field.keyword_is(key)) {
-                    Shape::One
-                } else {
-                    super::shape(self.names, field).map(|()| unreachable!())
-                }
-            }
-            OwnReader::Fields(fields, unknown) => {
-                if let Some((_, value)) = fields.iter().find(|(name, _)| field.keyword_is(name)) {
-                    self.value(*value, field)
-                } else {
-                    match unknown {
-                        Unknown::Skip => Shape::Skip,
-                        Unknown::Effect => super::shape(self.names, field).map(|()| unreachable!()),
-                    }
-                }
-            }
-            OwnReader::Wargoal { expire } => self.wargoal(expire, field),
-            OwnReader::ClassKeys(_) => unreachable!("constructor class selection"),
         }
     }
 
@@ -952,9 +877,7 @@ impl<'n, 'c> Shaper<'n, 'c> {
             OwnValue::RawListRequired if field.opens() => Shape::RawList,
             OwnValue::RawListRequired => Shape::Reported {
                 kind: crate::DiagnosticKind::Misread,
-                report:
-                    "nationalities requires a block; native RecordError (1403B14C0 -> 1424ACF90)"
-                        .into(),
+                report: "nationalities requires a block".into(),
                 read: Box::new(Shape::Skip),
             },
             OwnValue::RawList => Shape::RawList,
@@ -963,18 +886,33 @@ impl<'n, 'c> Shaper<'n, 'c> {
                 Shape::Object(Node::Keys(BOUND_LOCALIZATION_READ))
             }
             OwnValue::BoundLocalization => Shape::One,
-            // 1404964D0 calls ReadCustomStatementBlock unconditionally, including a scalar.
             OwnValue::Statements(node) => Shape::Statements(node),
-            OwnValue::Keywords {
-                source,
-                accepted,
-                report,
-            } => {
-                let token = match source {
-                    TokenSource::Current => field.current,
-                    TokenSource::Value => field.value,
+            OwnValue::Gender | OwnValue::OperativeState => {
+                // Gender reads the current token; operative state reads the retained value.
+                let (token, report) = match value {
+                    OwnValue::Gender => (field.current, "invalid gender"),
+                    OwnValue::OperativeState => (field.value, "invalid operative state"),
+                    _ => unreachable!(),
                 };
-                if accepted.iter().any(|keyword| token.is_keyword(keyword)) {
+                let accepted = token.lookup().is_some_and(|text| {
+                    let key = text.to_ascii_lowercase();
+                    match value {
+                        OwnValue::Gender => {
+                            matches!(key.as_slice(), b"female" | b"male" | b"undefined")
+                        }
+                        OwnValue::OperativeState => matches!(
+                            key.as_slice(),
+                            b"killed"
+                                | b"on_mission"
+                                | b"on_operation"
+                                | b"on_capture"
+                                | b"on_cooldown"
+                                | b"on_disband"
+                        ),
+                        _ => unreachable!(),
+                    }
+                });
+                if accepted {
                     Shape::One
                 } else {
                     Shape::Reported {
@@ -984,10 +922,10 @@ impl<'n, 'c> Shaper<'n, 'c> {
                     }
                 }
             }
-            OwnValue::Deferred(reader) => Shape::Reported {
+            OwnValue::Deferred => Shape::Reported {
                 kind: crate::DiagnosticKind::Unsupported,
                 report: format!(
-                    "Deferred effect `{}.{}`: inherited reader {reader:#X}; by-key reading retained",
+                    "Deferred effect `{}.{}`: inherited field grammar unavailable; by-key reading retained",
                     String::from_utf8_lossy(self.class.c_str()),
                     String::from_utf8_lossy(field.key.c_str()),
                 ),
@@ -1006,7 +944,6 @@ impl<'n, 'c> Shaper<'n, 'c> {
                 };
             }
             self.generator_seen = true;
-            // 140A2C820 selects from the retained token id, even on stale fields.
             if field.opens() {
                 Shape::ValueList
             } else {
@@ -1022,7 +959,6 @@ impl<'n, 'c> Shaper<'n, 'c> {
     }
 
     fn randomize(&mut self, field: &Field<'_>) -> Shape<()> {
-        // strcmp 14253D9F8; literals at 142766390 / 398 / 3A0.
         if field.keyword_is("distribution") {
             let value = match field.value.c_str() {
                 b"uniform" => 0,
@@ -1078,7 +1014,7 @@ impl Shaper<'_, '_> {
         };
         let Some(catalog) = self.names.and_then(|names| names.sub_units.as_ref()) else {
             return Shape::Unsettled(format!(
-                "division-template subunit `{}`: content subunit database at this load point is unavailable (140B937A0 / 1403AF6B0)",
+                "division-template subunit `{}`: content subunit database at this load point is unavailable",
                 String::from_utf8_lossy(key)
             ));
         };
@@ -1103,9 +1039,7 @@ impl Shaper<'_, '_> {
         match placement {
             Placement::Point => Shape::TemplatePoint,
             Placement::Column => {
-                // Missing defines matter to consumption only if RecordError
-                // could skip an opening current token. Ordinary scalar columns
-                // take one token on both valid and invalid native routes.
+                // Missing widths affect consumption only when rejection could skip a block.
                 if !field.skips_block() {
                     return Shape::One;
                 }
@@ -1113,9 +1047,8 @@ impl Shaper<'_, '_> {
                 let width = match widths {
                     Some(Ok(widths)) => widths[group.column_index()] as u32,
                     Some(Err(reason)) => return Shape::Unsettled(reason.clone()),
-                    None => return Shape::Unsettled("add_units_to_division_template: recorded NMilitary column-width defines unavailable (1403AF6B0)".into()),
+                    None => return Shape::Unsettled("add_units_to_division_template: recorded NMilitary column-width defines unavailable".into()),
                 };
-                // ParseTokenUnsigned1424B00A0 -> decimal atoi14254ADC4.
                 let column = crate::fixed5::decimal_i32(field.value.c_str()) as u32;
                 if column >= width {
                     Shape::Skip
@@ -1127,7 +1060,15 @@ impl Shaper<'_, '_> {
     }
 }
 
-const TEMPLATE_POINT_COMPONENTS: [&[u8]; 4] = [b"x", b"y", b"z", b"w"];
+fn template_point_component(index: usize) -> Option<&'static [u8]> {
+    match index {
+        0 => Some(b"x"),
+        1 => Some(b"y"),
+        2 => Some(b"z"),
+        3 => Some(b"w"),
+        _ => None,
+    }
+}
 
 pub(crate) fn template_point(reader: &mut Reader<'_>) -> Value {
     fn take(reader: &mut Reader<'_>) -> Token {
@@ -1139,7 +1080,6 @@ pub(crate) fn template_point(reader: &mut Reader<'_>) -> Value {
     fn error(reader: &mut Reader<'_>, message: String) {
         let line = reader.current.line;
         reader.note_native_error(line, message);
-        // RecordError1424ACF90, not TryHandleOrRecordError1424ACD40.
         reader.skip_reported();
     }
     fn item(key: Option<Vec<u8>>, token: Token) -> Item {
@@ -1153,36 +1093,30 @@ pub(crate) fn template_point(reader: &mut Reader<'_>) -> Value {
     }
     if reader.value.kind != Kind::Open {
         let value = reader.value.text.clone();
-        error(
-            reader,
-            "division-template point: Expected block (140B847D0)".into(),
-        );
+        error(reader, "division-template point: Expected block".into());
         return Value::Scalar(value);
     }
     let mut items = Vec::new();
     let mut component = 0usize;
     loop {
-        // Native snapshots end before advancing/resolving: resolving the
-        // closing token does not alter this stopping decision.
+        // Test the peek before resolving it, since a resolved closing token does not stop here.
         let ends = reader.peek().ends_block();
         let token = take(reader);
         if ends {
             break;
         }
         if token.is_number() {
-            // 1424B0220 stores unsigned16. The reader replay keeps the
-            // consumed token, leaving conversion to the point consumer.
+            // Keep lexical values for the point consumer's conversion.
             items.push(item(None, token));
             component += 1;
             continue;
         }
-        let Some(expected) = TEMPLATE_POINT_COMPONENTS.get(component) else {
-            // Native piVar13 now addresses beyond its four initialized IDs.
-            // Do not invent an expected name or a native component bound.
+        let Some(expected) = template_point_component(component) else {
+            // Extra numeric components still consume; an unavailable named label refuses.
             reader.refuse_native(
                 token.line,
                 format!(
-                    "division-template point for {}: nonnumeric component {} beyond the initialized x/y/z/w labels (140B847D0); native expected-label read is outside its local array",
+                    "division-template point for {}: nonnumeric component {} beyond the initialized x/y/z/w labels; component label is unavailable",
                     String::from_utf8_lossy(reader.key.c_str()),
                     String::from_utf8_lossy(token.c_str())
                 ),
@@ -1196,7 +1130,7 @@ pub(crate) fn template_point(reader: &mut Reader<'_>) -> Value {
             error(
                 reader,
                 format!(
-                    "division-template point: Expected component {} (140B847D0)",
+                    "division-template point: Expected component {}",
                     String::from_utf8_lossy(expected)
                 ),
             );
@@ -1207,7 +1141,7 @@ pub(crate) fn template_point(reader: &mut Reader<'_>) -> Value {
             error(
                 reader,
                 format!(
-                    "division-template point: Expected '=' after {} (140B847D0)",
+                    "division-template point: Expected '=' after {}",
                     String::from_utf8_lossy(expected)
                 ),
             );
@@ -1217,13 +1151,10 @@ pub(crate) fn template_point(reader: &mut Reader<'_>) -> Value {
         if !number.is_number() {
             error(
                 reader,
-                "division-template point: Expected a number after '=' (140B847D0)".into(),
+                "division-template point: Expected a number after '='".into(),
             );
             continue;
         }
-        // Keep named x/y points compatible with the existing identity
-        // harness representation. This is still raw token consumption:
-        // neither CReader key/operator/value slots have been changed.
         items.push(item(Some(token.text), number));
         component += 1;
     }
@@ -1237,96 +1168,124 @@ enum ScopePolicy {
     Unknown,
 }
 
-// Only proven ReadEffect fallback paths are listed. An untraced slot resets
-// context to unknown rather than assuming it preserves the enclosing kind.
-const KEY_SCOPE_POLICIES: &[(u64, ScopePolicy)] = &[
-    (0x1402F1060, ScopePolicy::Preserve), // add_trait, remove_trait; fallback 1402F109B
-    (0x1402F6D70, ScopePolicy::Set(ScopeKind::Character.bit())), // every_scientist, every_active_scientist, every_character, character_list_tooltip; MOV at 1402F6DAA
-    (0x1402F6ED0, ScopePolicy::Set(ScopeKind::Character.bit())), // random_scientist, random_active_scientist, random_character, party_leader; MOV at 1402F6EF8
-    (
-        0x140307920,
-        ScopePolicy::Set(ScopeKind::PurchaseContract.bit()),
-    ), // every_purchase_contract; MOV at 14030795A
-    (
-        0x140307A80,
-        ScopePolicy::Set(ScopeKind::PurchaseContract.bit()),
-    ), // random_purchase_contract; MOV at 140307AA8
-    (0x140307BA0, ScopePolicy::Set(ScopeKind::Country.bit())), // add_equipment_subsidy; MOV at 140307BC7
-    (0x140307C20, ScopePolicy::Set(ScopeKind::Country.bit())), // create_purchase_contract; MOV at 140307C6E
-    (0x14031B220, ScopePolicy::Set(ScopeKind::State.bit())), // every_state, every_owned_state, every_neighbor_state, every_controlled_state, every_core_state; MOV at 14031B25A
-    (0x1403234E0, ScopePolicy::Preserve), // add_doctrine_cost_reduction; fallback 14032353F
-    (0x140323AC0, ScopePolicy::Preserve), // add_tech_bonus; fallback 140323CF8
-    (0x140323F70, ScopePolicy::Preserve), // steal_random_tech_bonus; fallback 140324602
-    (0x1403ADA40, ScopePolicy::Preserve), // find_lowest_in_array, find_highest_in_array; fallback 1403ADA8A
-    (0x1403ADCF0, ScopePolicy::Set(ScopeKind::Country.bit())), // every_country, every_neighbor_country, every_enemy_country, every_subject_country, every_faction_member, every_other_country, every_allied_country, every_occupied_country, every_possible_country; MOV at 1403ADD2A
-    (0x1403ADE50, ScopePolicy::Set(ScopeKind::State.bit())), // random_state, random_owned_state, random_neighbor_state, random_owned_controlled_state, random_controlled_state, random_core_state; MOV at 1403AE778 shared tail
-    (0x1403AE630, ScopePolicy::Set(ScopeKind::Country.bit())), // random_country, random_neighbor_country, random_enemy_country, random_subject_country, random_other_country, random_allied_country, random_occupied_country; MOV at 1403AE658
-    (0x1403AEA80, ScopePolicy::Preserve), // add_advisor_role; fallback 1403AEAAA
-    (0x1403AEC00, ScopePolicy::Preserve), // add_country_leader_role; fallback 1403AEC2E
-    (0x1403AEDB0, ScopePolicy::Preserve), // add_intel; fallback 1403AEDF1
-    (0x1403B0960, ScopePolicy::Preserve), // build_railway; fallback 1403B0A68
-    (0x1403B1120, ScopePolicy::Set(ScopeKind::Country.bit())), // create_dynamic_country; MOV at 1403B1132
-    (0x1403B2310, ScopePolicy::Preserve),                      // destroy_ships; fallback 1403B2333
-    (0x1403B2390, ScopePolicy::Preserve), // diplomatic_relation; fallback 1403B23C9
-    (0x1403B2620, ScopePolicy::Set(ScopeKind::Country.bit())), // every_country_with_original_tag; MOV at 1403B2667
-    (0x1403B2890, ScopePolicy::Preserve),                      // for_each_loop; fallback 1403B28E7
-    (0x1403B2B50, ScopePolicy::Set(ScopeKind::all_bits())), // for_each_scope_loop; MOV at 1403B2B9A
-    (0x1403B2E10, ScopePolicy::Preserve),                   // for_loop_effect; fallback 1403B2E89
-    (0x1403B33C0, ScopePolicy::Preserve), // create_country_leader; fallback 1403B3460
-    (0x1403B3970, ScopePolicy::Set(ScopeKind::Country.bit())), // random_country_with_original_tag; MOV at 1403B39A5
-    (0x1403B3AB0, ScopePolicy::Preserve), // random_scope_in_array; fallback 1403B3AEE
-    (0x1403B4720, ScopePolicy::Preserve), // remove_advisor_role; fallback 1403B473E
-    (0x1403B47D0, ScopePolicy::Preserve), // remove_country_leader_role; fallback 1403B47F1
-    (0x1403B4E60, ScopePolicy::Preserve), // set_can_be_fired_in_advisor_role; fallback 1403B4E8E
-    (0x1403B5C20, ScopePolicy::Preserve), // start_civil_war; fallback 1403B5D9A
-    (0x1403B5EB0, ScopePolicy::Preserve), // add_timed_idea, modify_timed_idea; fallback 1403B5EE2
-    (0x1403B6960, ScopePolicy::Preserve), // while_loop_effect; fallback 1403B6980
-    (0x14045E970, ScopePolicy::Set(ScopeKind::Unit.bit())), // every_state_division, every_country_division; MOV at 14045E9AA
-    (0x14045EAD0, ScopePolicy::Set(ScopeKind::Unit.bit())), // random_state_division, random_country_division; MOV at 14045EAF8
-    (0x14045EC40, ScopePolicy::Preserve), // add_random_valid_trait_from_unit; fallback 14045EC51
-    (0x1404B12F0, ScopePolicy::Preserve), // add_faction_goal_slot; fallback 1404B1313
-    (0x14051EB60, ScopePolicy::Preserve), // add_daily_mastery; fallback 14051ECA9
-    (0x14051EBB0, ScopePolicy::Preserve), // add_mastery_bonus; fallback 14051ECA9
-    (0x14051EC00, ScopePolicy::Preserve), // add_mastery; fallback 14051EC42
-    (super::READ_EFFECT, ScopePolicy::Preserve), // ReadScript forwards its caller kind (140534441/44E).
-    (0x141385BA0, ScopePolicy::Preserve),        // if; fallback 141385BDC
-    (0x14138BE60, ScopePolicy::Set(ScopeKind::Character.bit())), // every_unit_leader, every_army_leader, every_navy_leader, global_every_army_leader, every_operative; MOV at 14138BEA7
-    (0x14138BFE0, ScopePolicy::Set(ScopeKind::Character.bit())), // random_unit_leader, random_army_leader, random_navy_leader, random_operative; MOV at 14138C015
-    (
-        0x14139AF50,
-        ScopePolicy::Set(ScopeKind::IndustrialOrganisation.bit()),
-    ), // every_military_industrial_organization; MOV at 14139AF97
-    (
-        0x14139B0D0,
-        ScopePolicy::Set(ScopeKind::IndustrialOrganisation.bit()),
-    ), // random_military_industrial_organization; MOV at 14139B105
-];
+mod scope_reader_identity {
+    pub(super) const TRAIT_KEYS: u64 = 0x1402F1060;
+    pub(super) const EVERY_CHARACTER_KEYS: u64 = 0x1402F6D70;
+    pub(super) const RANDOM_CHARACTER_KEYS: u64 = 0x1402F6ED0;
+    pub(super) const EVERY_CONTRACT_KEYS: u64 = 0x140307920;
+    pub(super) const RANDOM_CONTRACT_KEYS: u64 = 0x140307A80;
+    pub(super) const EQUIPMENT_SUBSIDY_KEYS: u64 = 0x140307BA0;
+    pub(super) const CREATE_CONTRACT_KEYS: u64 = 0x140307C20;
+    pub(super) const EVERY_STATE_KEYS: u64 = 0x14031B220;
+    pub(super) const DOCTRINE_COST_KEYS: u64 = 0x1403234E0;
+    pub(super) const TECH_BONUS_KEYS: u64 = 0x140323AC0;
+    pub(super) const STEAL_TECH_KEYS: u64 = 0x140323F70;
+    pub(super) const ARRAY_EXTREMUM_KEYS: u64 = 0x1403ADA40;
+    pub(super) const EVERY_COUNTRY_KEYS: u64 = 0x1403ADCF0;
+    pub(super) const RANDOM_STATE_KEYS: u64 = 0x1403ADE50;
+    pub(super) const RANDOM_COUNTRY_KEYS: u64 = 0x1403AE630;
+    pub(super) const ADD_ADVISOR_KEYS: u64 = 0x1403AEA80;
+    pub(super) const ADD_LEADER_ROLE_KEYS: u64 = 0x1403AEC00;
+    pub(super) const INTEL_KEYS: u64 = 0x1403AEDB0;
+    pub(super) const RAILWAY_KEYS: u64 = 0x1403B0960;
+    pub(super) const DYNAMIC_COUNTRY_KEYS: u64 = 0x1403B1120;
+    pub(super) const DESTROY_SHIPS_KEYS: u64 = 0x1403B2310;
+    pub(super) const DIPLOMATIC_RELATION_KEYS: u64 = 0x1403B2390;
+    pub(super) const EVERY_ORIGINAL_TAG_KEYS: u64 = 0x1403B2620;
+    pub(super) const ARRAY_LOOP_KEYS: u64 = 0x1403B2890;
+    pub(super) const SCOPE_LOOP_KEYS: u64 = 0x1403B2B50;
+    pub(super) const INDEX_LOOP_KEYS: u64 = 0x1403B2E10;
+    pub(super) const COUNTRY_LEADER_KEYS: u64 = 0x1403B33C0;
+    pub(super) const RANDOM_ORIGINAL_TAG_KEYS: u64 = 0x1403B3970;
+    pub(super) const ARRAY_SCOPE_KEYS: u64 = 0x1403B3AB0;
+    pub(super) const REMOVE_ADVISOR_KEYS: u64 = 0x1403B4720;
+    pub(super) const REMOVE_LEADER_ROLE_KEYS: u64 = 0x1403B47D0;
+    pub(super) const ADVISOR_DISMISSAL_KEYS: u64 = 0x1403B4E60;
+    pub(super) const CIVIL_WAR_KEYS: u64 = 0x1403B5C20;
+    pub(super) const TIMED_IDEA_KEYS: u64 = 0x1403B5EB0;
+    pub(super) const WHILE_KEYS: u64 = 0x1403B6960;
+    pub(super) const EVERY_DIVISION_KEYS: u64 = 0x14045E970;
+    pub(super) const RANDOM_DIVISION_KEYS: u64 = 0x14045EAD0;
+    pub(super) const UNIT_TRAIT_KEYS: u64 = 0x14045EC40;
+    pub(super) const FACTION_GOAL_SLOT_KEYS: u64 = 0x1404B12F0;
+    pub(super) const DAILY_MASTERY_KEYS: u64 = 0x14051EB60;
+    pub(super) const MASTERY_BONUS_KEYS: u64 = 0x14051EBB0;
+    pub(super) const MASTERY_KEYS: u64 = 0x14051EC00;
+    pub(super) const CONDITIONAL_KEYS: u64 = 0x141385BA0;
+    pub(super) const EVERY_LEADER_KEYS: u64 = 0x14138BE60;
+    pub(super) const RANDOM_LEADER_KEYS: u64 = 0x14138BFE0;
+    pub(super) const EVERY_ORGANISATION_KEYS: u64 = 0x14139AF50;
+    pub(super) const RANDOM_ORGANISATION_KEYS: u64 = 0x14139B0D0;
+}
 
-// ReadEffect's two pre-registry conditional tokens use the if class.
-const SCOPE_CLASS_ALIASES: &[(u32, u32)] = &[
-    (ELSE_TOKEN, IF_TOKEN),    // else -> if, 1405345D0
-    (ELSE_IF_TOKEN, IF_TOKEN), // else_if -> if, 1405345D0
-];
+// Only grammars that forward effects supply a known body scope.
+fn scope_policy(reader: u64) -> ScopePolicy {
+    use scope_reader_identity::*;
+    match reader {
+        EVERY_CHARACTER_KEYS | RANDOM_CHARACTER_KEYS | EVERY_LEADER_KEYS | RANDOM_LEADER_KEYS => {
+            ScopePolicy::Set(ScopeKind::Character.bit())
+        }
+        EVERY_CONTRACT_KEYS | RANDOM_CONTRACT_KEYS => {
+            ScopePolicy::Set(ScopeKind::PurchaseContract.bit())
+        }
+        EQUIPMENT_SUBSIDY_KEYS
+        | CREATE_CONTRACT_KEYS
+        | EVERY_COUNTRY_KEYS
+        | RANDOM_COUNTRY_KEYS
+        | DYNAMIC_COUNTRY_KEYS
+        | EVERY_ORIGINAL_TAG_KEYS
+        | RANDOM_ORIGINAL_TAG_KEYS => ScopePolicy::Set(ScopeKind::Country.bit()),
+        EVERY_STATE_KEYS | RANDOM_STATE_KEYS => ScopePolicy::Set(ScopeKind::State.bit()),
+        EVERY_DIVISION_KEYS | RANDOM_DIVISION_KEYS => ScopePolicy::Set(ScopeKind::Unit.bit()),
+        EVERY_ORGANISATION_KEYS | RANDOM_ORGANISATION_KEYS => {
+            ScopePolicy::Set(ScopeKind::IndustrialOrganisation.bit())
+        }
+        SCOPE_LOOP_KEYS => ScopePolicy::Set(ScopeKind::all_bits()),
+        TRAIT_KEYS
+        | DOCTRINE_COST_KEYS
+        | TECH_BONUS_KEYS
+        | STEAL_TECH_KEYS
+        | ARRAY_EXTREMUM_KEYS
+        | ADD_ADVISOR_KEYS
+        | ADD_LEADER_ROLE_KEYS
+        | INTEL_KEYS
+        | RAILWAY_KEYS
+        | DESTROY_SHIPS_KEYS
+        | DIPLOMATIC_RELATION_KEYS
+        | ARRAY_LOOP_KEYS
+        | INDEX_LOOP_KEYS
+        | COUNTRY_LEADER_KEYS
+        | ARRAY_SCOPE_KEYS
+        | REMOVE_ADVISOR_KEYS
+        | REMOVE_LEADER_ROLE_KEYS
+        | ADVISOR_DISMISSAL_KEYS
+        | CIVIL_WAR_KEYS
+        | TIMED_IDEA_KEYS
+        | WHILE_KEYS
+        | UNIT_TRAIT_KEYS
+        | FACTION_GOAL_SLOT_KEYS
+        | DAILY_MASTERY_KEYS
+        | MASTERY_BONUS_KEYS
+        | MASTERY_KEYS
+        | CONDITIONAL_KEYS
+        | super::READ_EFFECT => ScopePolicy::Preserve,
+        _ => ScopePolicy::Unknown,
+    }
+}
 
 pub(crate) fn read_script_scope(token: u32, enclosing: Option<u32>) -> Option<u32> {
-    let token = SCOPE_CLASS_ALIASES
-        .iter()
-        .find(|(alias, _)| *alias == token)
-        .map_or(token, |(_, class)| *class);
+    let token = match token {
+        ELSE_TOKEN | ELSE_IF_TOKEN => IF_TOKEN,
+        _ => token,
+    };
     let (_, key_reader) = super::class(token)?;
-    let policy = KEY_SCOPE_POLICIES
-        .iter()
-        .find(|(reader, _)| *reader == key_reader)
-        .map_or(ScopePolicy::Unknown, |(_, policy)| *policy);
-    match policy {
+    match scope_policy(key_reader) {
         ScopePolicy::Set(scope) => Some(scope),
         ScopePolicy::Preserve => enclosing,
         ScopePolicy::Unknown => None,
     }
 }
 
-// GetEventTargetScopeKind 14146D870 walks to the final nested target.
-// Numeric zero is a native result, never an instruction to inherit.
 fn target_kind(target: &crate::scope::Scope) -> u32 {
     use crate::scope::{Keyword, Scope};
     match target {
@@ -1358,7 +1317,7 @@ fn target_kind(target: &crate::scope::Scope) -> u32 {
     }
 }
 
-/// ReadEffect1405345D0 replaces context only after registry lookup failed.
+/// Scope targets replace context only after effect registry lookup fails.
 pub(crate) fn body_scope(
     names: Option<&KeyNames>,
     key: &Token,

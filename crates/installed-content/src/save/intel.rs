@@ -1,0 +1,1997 @@
+//! Exact serialized intel and diplomatic inputs. Missing payloads retain their
+//! presence; native fields without a proved save mapping are not synthesized.
+
+use std::{collections::BTreeMap, io};
+
+use super::{
+    Decimal, GameDate, block, boolean, bytes, decimal, field, integer, invalid, required_block,
+    required_bytes, scalar,
+};
+use crate::parser::{Item, Value};
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Pack {
+    pub countries: BTreeMap<Vec<u8>, Country>,
+    pub global_variables: Option<Variables>,
+    /// Preserve an absent states root separately from a present empty root,
+    /// and each state's absent variables payload separately from an empty one.
+    pub state_variables: Option<BTreeMap<u32, Option<Variables>>>,
+    /// Global strategic-operative roster; absent root stays None, present root
+    /// maps each numeric index to its networks. Save-root tie to countries unproved.
+    pub strategic_operatives: Option<BTreeMap<u32, StrategicOperative>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Country {
+    pub agency: Option<Agency>,
+    pub diplomacy: Option<Diplomacy>,
+    pub flags: Option<Vec<Flag>>,
+    pub variables: Option<Variables>,
+    pub operation_tokens: Option<OperationTokenManager>,
+    /// Absent root and present-but-empty queue are distinct: the writer
+    /// emits the block whenever the queue object exists.
+    pub incoming_actions: Option<Vec<IncomingAction>>,
+    /// The manager writer always saves finished/priority and omits
+    /// running when its signed count is zero. An absent manager stays distinct.
+    pub operations: Option<Operations>,
+}
+
+/// One queued incoming diplomatic action.
+///
+/// The queue writer keys each non-null slot by its decimal vector index and
+/// skips null slots without renumbering, so `ordinal` is stored state. The
+/// wrapper writes only its `id`; its status byte has no serialized form.
+/// The action body is written under its own definition name, which is the only
+/// place the action's kind appears.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IncomingAction {
+    pub ordinal: u32,
+    pub id: u64,
+    /// Definition token of the action, used as the body block's key.
+    pub kind: Vec<u8>,
+    pub action_type: i32,
+    /// The action writer always saves this Boolean independently of the
+    /// signed `type`. Missing input is not false.
+    pub initiator_matters: Option<bool>,
+    pub actor: Vec<u8>,
+    pub original_actor: Vec<u8>,
+    pub recipient: Vec<u8>,
+    pub original_recipient: Vec<u8>,
+    pub date: GameDate,
+    pub last_command_date: GameDate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Agency {
+    /// Ordinary saves always write this, including an empty name.
+    pub name: Option<Vec<u8>>,
+    /// The writer emits `is_created=yes` only when the created byte is
+    /// nonzero, so absence is not created.
+    pub created: bool,
+    pub upgrade_progress: Decimal,
+    /// The agency writer emits every upgrade entry in order, using its definition token
+    /// and its signed level. Omitted `upgrades` proves empty, even uncreated.
+    pub upgrades: Vec<AgencyUpgradeLevel>,
+    pub defense: Decimal,
+    pub active_count: i32,
+    /// Saved as max_operative_count; its gameplay meaning is unresolved.
+    pub unknown_f0: u32,
+    pub admission_ceiling: i32,
+    /// Active operative={} blocks in save order.
+    pub operatives: Vec<OperativeEntry>,
+    /// The agency writer saves the captured roster in order, omitting an empty one.
+    pub captured: Vec<CapturedOperativeReference>,
+    /// Recruitment holding vectors, including lists whose token spelling needs
+    /// the recorded LexicalTokens dictionary.
+    pub recruitment: Option<Recruitment>,
+    /// Cryptology container; None when the cryptology block is absent entirely.
+    pub cryptology: Option<Cryptology>,
+}
+
+/// The writer saves the reference's country and full operative reference.
+/// Its country is not the resolved operative owner's country.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CapturedOperativeReference {
+    pub country: Option<Vec<u8>>,
+    pub operative: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgencyUpgradeLevel {
+    pub token: Vec<u8>,
+    pub level: i32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Diplomacy {
+    pub subjects: Option<Vec<Subject>>,
+    pub autonomy: Option<Autonomy>,
+    pub capitulated: Option<bool>,
+    pub capitulated_date: Option<GameDate>,
+    pub last_surrender_date: Option<GameDate>,
+    pub faction_join_date: Option<GameDate>,
+    pub legitimacy: Option<Decimal>,
+    pub exile_army_leaders: Option<i32>,
+}
+
+/// Current autonomy status saved inside diplomacy.autonomy_state, separate
+/// from the active_relations puppet definition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Autonomy {
+    pub progress: Decimal,
+    pub state: Vec<u8>,
+    pub previous: Option<Vec<u8>>,
+    pub next: Option<Vec<u8>>,
+    pub last_modified: GameDate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Subject {
+    pub roster_owner: Vec<u8>,
+    pub target: Vec<u8>,
+    pub first: Vec<u8>,
+    pub second: Vec<u8>,
+    pub state: Option<Vec<u8>>,
+    pub autonomy_ratio: Decimal,
+    pub start_date: Option<GameDate>,
+    pub end_date: Option<GameDate>,
+    pub cancel: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Flag {
+    pub name: Vec<u8>,
+    pub value: i16,
+    pub date: GameDate,
+    /// The flag writer saves only positive durations. None does not imply -1 or 0.
+    pub remaining_days: Option<i16>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Variables {
+    /// Retain every repeated emitted name and value. The save representation
+    /// does not itself establish the corresponding full native key identities.
+    pub entries: Vec<Variable>,
+    /// The variables writer emits random state only when the seed differs
+    /// from one. The `random` inline block writes its companion word first
+    /// and the seed second.
+    pub seed: Option<u32>,
+    /// The `random` key is reserved for variables random-state metadata. Its values
+    /// are not ordinary variable entries; scalar literal-key collisions are limited.
+    pub reserved_entries: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Variable {
+    pub name: Vec<u8>,
+    pub value: Decimal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OperationTokenManager {
+    pub operation_assets: Option<Vec<OperationTokens>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OperationTokens {
+    pub target: Vec<u8>,
+    /// Retain serialized order and multiplicity. Native order is compared only
+    /// as a multiset because the engine sorts a copy before writing this list.
+    pub names: Vec<Vec<u8>>,
+}
+
+/// One country's operation-manager container as saved.
+///
+/// The manager stores finished, priority and running; instance records
+/// store the running fields.
+/// `running` is None when its key is absent; a present empty list is refused
+/// because the native writer omits the list when its signed count is zero.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Operations {
+    pub priority: Option<i32>,
+    /// The manager writer always saves the finished-operation history.
+    /// Keep its authored keys and payloads; these are history, not instances
+    /// with handles that can satisfy an operative's active operation reference.
+    pub finished: Option<Vec<Item>>,
+    pub running: Option<Vec<OperationInstance>>,
+}
+
+/// One running operation instance as saved under its authored definition name.
+///
+/// The `running` key is the authored definition name (e.g.
+/// operation_rescue_operative); the native definition token is resolved
+/// separately through LexicalTokens with the existing authored-name limitation.
+/// Repeated definition names are distinct instances, not duplicate keys: the
+/// instance serializer emits each instance's own id and target.
+/// `id` is the full native handle via the running entry's `id` block. `target`
+/// is always emitted. `target_province` uses the inferred literal `province`
+/// and is None when omitted (null target); a present case remains unresolved.
+/// `date`/`duration` are None when omitted (unset start date / zero duration).
+/// `phases`/`operative_slots`
+/// are None when omitted (signed count 0); a present-but-empty list is refused.
+/// Equipment, resources, civilian_factories/total and other cost payloads have
+/// no proved Row mapping and are not retained.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OperationInstance {
+    pub definition: Vec<u8>,
+    pub id: u64,
+    pub target: Vec<u8>,
+    pub target_province: Option<u32>,
+    pub date: Option<GameDate>,
+    pub duration: Option<i32>,
+    pub phases: Option<Vec<Vec<u8>>>,
+    pub operative_slots: Option<Vec<OperationSlot>>,
+    /// The instance writer emits each of these flags only when nonzero.
+    pub terminal: bool,
+    pub bonus: bool,
+    pub detected: bool,
+    /// Ordinary terminal saves serialize the effect description; checksum
+    /// mode omits it. Keep missing separate from the written empty string.
+    pub effect_description: Option<Vec<u8>>,
+}
+
+/// One assigned-operative slot in serialized order; ordinal is positional.
+///
+/// The assigned-slot writer omits the operative reference for a both-zero
+/// handle but retains the slot, omits selection for zero, and omits the
+/// mission for a null optional. `operative` is None when the
+/// `operative` ref is omitted (native both-zero, slot retained).
+/// `mission_present` records whether a `mission` block is present; its contents
+/// are not retained because selection-vs-mission semantics are unproved.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OperationSlot {
+    pub operative: Option<u64>,
+    pub mission_present: bool,
+}
+
+/// One operative as saved under intelligence_agency or recruitment lists.
+///
+/// The element writer saves nationalities, the capturer pair only when
+/// captured, action presence and assignment enum; the loader mirrors them.
+/// The agency roster retains operative references. Literal names resolve
+/// via LexicalTokens.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OperativeEntry {
+    pub id: u64,
+    /// The inherited leader writer saves the operative's name bytes.
+    pub name: Option<Vec<u8>>,
+    pub skill: Option<i32>,
+    pub experience: Option<Decimal>,
+    pub nationalities: Vec<Vec<u8>>,
+    pub captured: Option<Vec<u8>>,
+    pub capture_date: Option<GameDate>,
+    /// The leader writer emits cooldown fields only for a nonzero reason token.
+    pub cooldown_reason: Option<Vec<u8>>,
+    pub cooldown_start_date: Option<GameDate>,
+    pub cooldown_end_date: Option<GameDate>,
+    pub state: Option<Vec<u8>>,
+    pub operation: Option<u64>,
+    pub mission_present: bool,
+    pub mission_name: Option<Vec<u8>>,
+    /// State- and country-targeted missions emit `target` inside the concrete
+    /// mission definition block. The country writer omits non-positive
+    /// references.
+    pub mission_target: Option<Vec<u8>>,
+    /// The operative writer always delegates the codename to the division-name
+    /// writer. Its group key and the leader's separate inherited name are not serialized.
+    pub codename: Option<super::units::DivisionName>,
+}
+
+/// Three recruitment holding vectors. The first list's spelling is
+/// resolved by consumers from the recorded LexicalTokens dictionary.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Recruitment {
+    pub recruitable: Vec<OperativeEntry>,
+    pub not_to_spy_master: Vec<OperativeEntry>,
+    pub other_rosters: Vec<(Vec<u8>, Vec<OperativeEntry>)>,
+}
+
+/// Cryptology container; targets None means the key is absent (empty omitted).
+///
+/// The container writer emits the targets list only for a nonzero count
+/// and saves its source country; each target gates its optional scalar fields.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Cryptology {
+    pub targets: Option<Vec<CryptologyTarget>>,
+    pub intel_source_country: Option<Vec<u8>>,
+}
+
+/// One cryptology target; bonus literals have no established saved-field mapping.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CryptologyTarget {
+    pub target: Vec<u8>,
+    pub amount: Option<Decimal>,
+    pub date: Option<GameDate>,
+    pub decryption: Option<bool>,
+}
+
+/// One country intel network; parallel arrays share one length positionally.
+///
+/// The network writer saves target, subnetworks and coverage; the loader
+/// mirrors them. Ownership through the strategic index remains unresolved.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IntelNetworkEntry {
+    pub target: Vec<u8>,
+    pub state_ids: Vec<i32>,
+    pub strengths: Vec<Decimal>,
+    /// Subnetwork values, selected by sub_network_id; distinct
+    /// from the local graph's per-state strength array above.
+    pub subnetwork_strengths: Vec<Decimal>,
+    pub selectors: Vec<i32>,
+}
+
+/// One strategic-operative index with its networks; save-root tie unproved.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StrategicOperative {
+    pub index: u32,
+    pub networks: Vec<IntelNetworkEntry>,
+}
+
+fn date(items: &[Item], key: &[u8]) -> io::Result<Option<GameDate>> {
+    bytes(items, key)?
+        .map(|value| GameDate::parse(&value))
+        .transpose()
+}
+
+fn parse_agency(items: &[Item]) -> io::Result<Agency> {
+    // The agency writer omits upgrade progress only when its qword is zero;
+    // defense, maximum count and usable slots are emitted unconditionally.
+    // Every active pointer produces one operative block, including repeated memberships.
+    let mut operatives = Vec::new();
+    for item in items
+        .iter()
+        .filter(|item| item.key.as_deref() == Some(b"operative"))
+    {
+        operatives.push(parse_operative_entry(block(&item.value)?)?);
+    }
+    let active_count = i32::try_from(operatives.len())
+        .map_err(|_| invalid("saved agency active count exceeds i32"))?;
+    let recruitment = field(items, b"recruitment")?
+        .map(|value| parse_recruitment(block(value)?))
+        .transpose()?;
+    let cryptology = field(items, b"cryptology")?
+        .map(|value| parse_cryptology(block(value)?))
+        .transpose()?;
+    // The captured roster preserves its saved references and order.
+    let captured = field(items, b"captured")?
+        .map(|value| {
+            let entries = block(value)?;
+            if entries.is_empty() {
+                return Err(invalid(
+                    "agency writer omits an empty captured-operative roster",
+                ));
+            }
+            entries
+                .iter()
+                .map(|entry| {
+                    if entry.key.is_some() {
+                        return Err(invalid("captured-operative entry must be anonymous"));
+                    }
+                    let fields = block(&entry.value)?;
+                    Ok(CapturedOperativeReference {
+                        country: bytes(fields, b"country")?,
+                        operative: super::null_permitted_handle(
+                            field(fields, b"operative")?
+                                .ok_or_else(|| invalid("captured entry lacks operative"))?,
+                        )?,
+                    })
+                })
+                .collect::<io::Result<Vec<_>>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    Ok(Agency {
+        name: bytes(items, b"name")?,
+        created: field(items, b"is_created")?
+            .map(boolean)
+            .transpose()?
+            .unwrap_or(false),
+        upgrade_progress: decimal(items, b"upgrade_progress")?.unwrap_or(Decimal::parse(b"0")?),
+        upgrades: field(items, b"upgrades")?
+            .map(parse_agency_upgrades)
+            .transpose()?
+            .unwrap_or_default(),
+        defense: Decimal::parse(&required_bytes(items, b"defense")?)?,
+        active_count,
+        unknown_f0: integer::<i32>(&required_bytes(items, b"max_operative_count")?)? as u32,
+        admission_ceiling: integer(&required_bytes(items, b"usable_operative_slots")?)?,
+        operatives,
+        captured,
+        recruitment,
+        cryptology,
+    })
+}
+
+fn parse_agency_upgrades(value: &Value) -> io::Result<Vec<AgencyUpgradeLevel>> {
+    // Loading merges entries resolving to one definition pointer by signed
+    // addition. A fresh save writes the actual array instead:
+    // retain duplicate tokens/levels and order, never apply reload semantics.
+    let mut entries = Vec::new();
+    for entry in block(value)? {
+        let token = entry
+            .key
+            .as_ref()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| invalid("agency upgrades entry lacks its definition token"))?;
+        let refuse = || {
+            invalid(format!(
+                "agency upgrade {} is not a signed i32 scalar assignment",
+                String::from_utf8_lossy(token)
+            ))
+        };
+        if entry.operator != crate::parser::Operator::Equals {
+            return Err(refuse());
+        }
+        let level = integer(scalar(&entry.value).map_err(|_| refuse())?).map_err(|_| refuse())?;
+        entries.push(AgencyUpgradeLevel {
+            token: token.clone(),
+            level,
+        });
+    }
+    if entries.is_empty() {
+        return Err(invalid("native agency writer omits empty upgrades lists"));
+    }
+    Ok(entries)
+}
+
+fn parse_operative_entry(items: &[Item]) -> io::Result<OperativeEntry> {
+    // The operative writer gates nationalities/capturer/action/assignment;
+    // the loader mirrors it. Unlisted keys (name, traits, in_progress,
+    // script_id, legacy_id) have no established Row mapping.
+    let id = super::object_id(items)?;
+    let nationalities = field(items, b"nationalities")?
+        .map(|value| {
+            let mut tags = Vec::new();
+            for entry in block(value)? {
+                if entry.key.is_some() {
+                    return Err(invalid("operative nationalities must be an anonymous list"));
+                }
+                let tag = scalar(&entry.value)?.to_vec();
+                if tag.is_empty() {
+                    return Err(invalid("operative nationality tag is empty"));
+                }
+                tags.push(tag);
+            }
+            Ok::<_, io::Error>(tags)
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let captured = bytes(items, b"captured")?.filter(|tag| !tag.is_empty());
+    let capture_date = date(items, b"capture_date")?;
+    if captured.is_none() != capture_date.is_none() {
+        return Err(invalid(
+            "operative capturer tag and capture date must be emitted together",
+        ));
+    }
+    let (mission_present, mission_name, mission_target) = match field(items, b"mission")? {
+        None => (false, None, None),
+        Some(value) => {
+            let fields = block(value)?;
+            if fields.len() != 1 {
+                return Err(invalid(
+                    "operative mission must contain exactly one definition",
+                ));
+            }
+            let name = fields[0]
+                .key
+                .clone()
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| invalid("operative mission lacks its definition name"))?;
+            let target = bytes(block(&fields[0].value)?, b"target")?;
+            if target.as_ref().is_some_and(|target| target.is_empty()) {
+                return Err(invalid("operative mission target is empty"));
+            }
+            (true, Some(name), target)
+        }
+    };
+    Ok(OperativeEntry {
+        id,
+        name: bytes(items, b"name")?,
+        skill: field(items, b"skill")?
+            .map(|value| integer(scalar(value)?))
+            .transpose()?,
+        experience: decimal(items, b"experience")?,
+        nationalities,
+        captured,
+        capture_date,
+        cooldown_reason: bytes(items, b"cooldown_reason")?,
+        cooldown_start_date: date(items, b"leader_cooldown_start_date")?,
+        cooldown_end_date: date(items, b"leader_modifier_enable_date")?,
+        state: bytes(items, b"state")?,
+        operation: field(items, b"operation")?
+            .map(super::typed_handle)
+            .transpose()?,
+        mission_present,
+        mission_name,
+        mission_target,
+        codename: field(items, b"codename")?
+            .map(|value| super::units::division_name(block(value)?))
+            .transpose()?,
+    })
+}
+
+fn parse_recruitment_list(value: &Value) -> io::Result<Vec<OperativeEntry>> {
+    let mut entries = Vec::new();
+    for entry in block(value)? {
+        if entry.key.is_some() {
+            return Err(invalid(
+                "recruitment list must hold anonymous operative blocks",
+            ));
+        }
+        entries.push(parse_operative_entry(block(&entry.value)?)?);
+    }
+    Ok(entries)
+}
+
+fn parse_recruitment(items: &[Item]) -> io::Result<Recruitment> {
+    // The recruitment writer saves only the three roster lists, each
+    // nonempty list as anonymous polymorphic elements. Retain unknown names
+    // so the recorded dictionary can identify them without guessed spellings.
+    let mut other_rosters = Vec::new();
+    for item in items {
+        let key = item
+            .key
+            .as_deref()
+            .ok_or_else(|| invalid("recruitment roster lacks its saved name"))?;
+        if key != b"recruitable_operatives" && key != b"recruitable_operatives_not_to_spy_master" {
+            other_rosters.push((key.to_vec(), parse_recruitment_list(&item.value)?));
+        }
+    }
+    Ok(Recruitment {
+        recruitable: field(items, b"recruitable_operatives")?
+            .map(parse_recruitment_list)
+            .transpose()?
+            .unwrap_or_default(),
+        not_to_spy_master: field(items, b"recruitable_operatives_not_to_spy_master")?
+            .map(parse_recruitment_list)
+            .transpose()?
+            .unwrap_or_default(),
+        other_rosters,
+    })
+}
+
+fn parse_cryptology(items: &[Item]) -> io::Result<Cryptology> {
+    // The cryptology writer emits targets only for a nonzero count; a present
+    // empty list is refused. The target writer gates each scalar.
+    let targets = field(items, b"targets")?
+        .map(|value| {
+            let mut result = Vec::new();
+            let mut seen = std::collections::BTreeSet::new();
+            for entry in block(value)? {
+                if entry.key.is_some() {
+                    return Err(invalid("cryptology targets must be anonymous blocks"));
+                }
+                let fields = block(&entry.value)?;
+                let target = required_bytes(fields, b"target")?;
+                if !seen.insert(target.clone()) {
+                    return Err(invalid("duplicate cryptology target"));
+                }
+                let decryption = field(fields, b"decryption")?.map(boolean).transpose()?;
+                if decryption == Some(false) {
+                    return Err(invalid(
+                        "cryptology decryption explicitly saves no; native writer omits an unset flag",
+                    ));
+                }
+                result.push(CryptologyTarget {
+                    target,
+                    amount: decimal(fields, b"amount")?,
+                    date: date(fields, b"date")?,
+                    decryption,
+                });
+            }
+            if result.is_empty() {
+                return Err(invalid("native cryptology writer omits empty target lists"));
+            }
+            Ok::<_, io::Error>(result)
+        })
+        .transpose()?;
+    let intel_source_country = field(items, b"intel_source")?
+        .map(|value| {
+            let fields = block(value)?;
+            bytes(fields, b"country")
+        })
+        .transpose()?
+        .flatten();
+    Ok(Cryptology {
+        targets,
+        intel_source_country,
+    })
+}
+
+fn parse_intel_network_entry(items: &[Item]) -> io::Result<IntelNetworkEntry> {
+    // The network writer saves target/parallel arrays; the loader mirrors
+    // them. Parallel state_id/strength/sub_network_id share one length.
+    let target = required_bytes(items, b"target")?;
+    let inner = required_block(items, b"intel_network")?;
+    let mut state_ids = Vec::new();
+    for entry in required_block(inner, b"state_id")? {
+        if entry.key.is_some() {
+            return Err(invalid("intel state_id list must be anonymous"));
+        }
+        state_ids.push(integer(scalar(&entry.value)?)?);
+    }
+    let mut strengths = Vec::new();
+    for entry in required_block(inner, b"strength")? {
+        if entry.key.is_some() {
+            return Err(invalid("intel strength list must be anonymous"));
+        }
+        strengths.push(Decimal::parse(scalar(&entry.value)?)?);
+    }
+    let mut selectors = Vec::new();
+    for entry in required_block(inner, b"sub_network_id")? {
+        if entry.key.is_some() {
+            return Err(invalid("intel sub_network_id list must be anonymous"));
+        }
+        selectors.push(integer(scalar(&entry.value)?)?);
+    }
+    if state_ids.len() != strengths.len() || state_ids.len() != selectors.len() {
+        return Err(invalid("intel parallel arrays have different lengths"));
+    }
+    if state_ids.is_empty() {
+        return Err(invalid(
+            "native intel network writer omits empty state lists",
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for id in &state_ids {
+        if !seen.insert(*id) {
+            return Err(invalid("duplicate intel state id in network"));
+        }
+    }
+    let mut subnetwork_strengths = Vec::new();
+    if let Some(value) = field(items, b"sub_intel_networks")? {
+        for entry in block(value)? {
+            if entry.key.is_some() {
+                return Err(invalid("intel subnetworks list must be anonymous"));
+            }
+            let fields = block(&entry.value)?;
+            subnetwork_strengths.push(
+                decimal(fields, b"strength")?
+                    .ok_or_else(|| invalid("intel subnetwork lacks saved strength"))?,
+            );
+        }
+    }
+    for selector in &selectors {
+        if *selector >= 0 && *selector as usize >= subnetwork_strengths.len() {
+            return Err(invalid(
+                "intel subnetwork selector outside saved subnetworks",
+            ));
+        }
+    }
+    Ok(IntelNetworkEntry {
+        target,
+        state_ids,
+        strengths,
+        subnetwork_strengths,
+        selectors,
+    })
+}
+
+fn parse_strategic_operatives(items: &[Item]) -> io::Result<BTreeMap<u32, StrategicOperative>> {
+    let mut result = BTreeMap::new();
+    for item in required_block(items, b"strategic_operative")? {
+        let index = integer::<u32>(
+            item.key
+                .as_deref()
+                .ok_or_else(|| invalid("strategic operative lacks its numeric index key"))?,
+        )?;
+        let mut networks = Vec::new();
+        let mut seen_targets = std::collections::BTreeSet::new();
+        for entry in block(&item.value)?
+            .iter()
+            .filter(|entry| entry.key.as_deref() == Some(b"intel_network"))
+        {
+            let network = parse_intel_network_entry(block(&entry.value)?)?;
+            if !seen_targets.insert(network.target.clone()) {
+                return Err(invalid(
+                    "duplicate intel network target for operative index",
+                ));
+            }
+            networks.push(network);
+        }
+        if result
+            .insert(index, StrategicOperative { index, networks })
+            .is_some()
+        {
+            return Err(invalid("duplicate strategic operative index"));
+        }
+    }
+    Ok(result)
+}
+
+fn parse_subject(owner: &[u8], target: &[u8], items: &[Item]) -> io::Result<Subject> {
+    // The subject writer saves stored definition and freedom, then the same base
+    // date envelope used by war relations. Dynamic current autonomy is separate.
+    let cancel = field(items, b"cancel")?.map(boolean).transpose()?;
+    if cancel == Some(false) {
+        return Err(invalid(
+            "subject relation explicitly saves an unset cancel flag",
+        ));
+    }
+    let cancel = cancel.unwrap_or(false);
+    let start_date = date(items, b"start_date")?;
+    let end_date = date(items, b"end_date")?;
+    if cancel == start_date.is_some() {
+        return Err(invalid(
+            "subject relation must save start_date exactly when not cancelled",
+        ));
+    }
+    if let (Some(start), Some(end)) = (start_date, end_date)
+        && start.engine_hour()? >= end.engine_hour()?
+    {
+        return Err(invalid("subject relation end_date is not after start_date"));
+    }
+    Ok(Subject {
+        roster_owner: owner.to_vec(),
+        target: target.to_vec(),
+        first: required_bytes(items, b"first")?,
+        second: required_bytes(items, b"second")?,
+        state: bytes(items, b"autonomy_state")?,
+        autonomy_ratio: decimal(items, b"value")?.unwrap_or(Decimal::parse(b"0")?),
+        start_date,
+        end_date,
+        cancel,
+    })
+}
+
+fn parse_diplomacy(owner: &[u8], items: &[Item]) -> io::Result<Diplomacy> {
+    // The diplomacy writer emits both capitulation fields only for a nonzero byte.
+    let capitulated = field(items, b"capitulated")?.map(boolean).transpose()?;
+    let capitulated_date = date(items, b"capitulated_date")?;
+    if capitulated == Some(false) || capitulated.is_some() != capitulated_date.is_some() {
+        return Err(invalid(
+            "capitulation flag and date must be emitted together for a true flag",
+        ));
+    }
+    let subjects = field(items, b"active_relations")?
+        .map(|value| {
+            let mut result = Vec::new();
+            for relation in block(value)? {
+                let target = relation
+                    .key
+                    .as_deref()
+                    .filter(|tag| !tag.is_empty())
+                    .ok_or_else(|| invalid("active relation lacks its country target"))?;
+                if let Some(subject) = field(block(&relation.value)?, b"puppet")? {
+                    result.push(parse_subject(owner, target, block(subject)?)?);
+                }
+            }
+            Ok::<_, io::Error>(result)
+        })
+        .transpose()?;
+    Ok(Diplomacy {
+        subjects,
+        autonomy: field(items, b"autonomy_state")?
+            .map(|value| {
+                let fields = block(value)?;
+                Ok::<_, io::Error>(Autonomy {
+                    progress: decimal(fields, b"progress")?
+                        .ok_or_else(|| invalid("autonomy lacks saved progress"))?,
+                    state: required_bytes(fields, b"current_state")?,
+                    previous: bytes(fields, b"prev_state")?,
+                    next: bytes(fields, b"next_state")?,
+                    last_modified: GameDate::parse(&required_bytes(
+                        fields,
+                        b"last_modified_autonomy_date",
+                    )?)?,
+                })
+            })
+            .transpose()?,
+        capitulated,
+        capitulated_date,
+        last_surrender_date: date(items, b"last_surrender_date")?,
+        faction_join_date: date(items, b"faction_join_date")?,
+        legitimacy: decimal(items, b"legitimacy")?,
+        exile_army_leaders: bytes(items, b"exile_army_leaders")?
+            .map(|value| integer(&value))
+            .transpose()?,
+    })
+}
+
+pub(super) fn parse_flags(items: &[Item]) -> io::Result<Vec<Flag>> {
+    // The flag writer saves the resolved lexer name as the key, then the
+    // signed word value, date, and positive-only remaining-days word.
+    let mut result = Vec::new();
+    for item in items {
+        let name = item
+            .key
+            .clone()
+            .ok_or_else(|| invalid("saved flag lacks its literal key"))?;
+        let items = block(&item.value)?;
+        let remaining_days = bytes(items, b"days")?
+            .map(|value| integer::<i16>(&value))
+            .transpose()?;
+        if remaining_days.is_some_and(|days| days <= 0) {
+            return Err(invalid("saved flag duration must be positive when present"));
+        }
+        result.push(Flag {
+            name,
+            value: integer(&required_bytes(items, b"value")?)?,
+            date: GameDate::parse(&required_bytes(items, b"date")?)?,
+            remaining_days,
+        });
+    }
+    Ok(result)
+}
+
+fn parse_operation_tokens(items: &[Item]) -> io::Result<Vec<OperationTokens>> {
+    let mut result = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for item in items {
+        let target = item
+            .key
+            .clone()
+            .filter(|tag| !tag.is_empty())
+            .ok_or_else(|| invalid("operation token list lacks target country"))?;
+        if !seen.insert(target.clone()) {
+            return Err(invalid("duplicate operation-token target country"));
+        }
+        let mut names = Vec::new();
+        for name in block(&item.value)? {
+            if name.key.is_some() {
+                return Err(invalid("operation token list contains a keyed entry"));
+            }
+            names.push(scalar(&name.value)?.to_vec());
+        }
+        if names.is_empty() {
+            return Err(invalid(
+                "native operation-token writer omits empty target lists",
+            ));
+        }
+        result.push(OperationTokens { target, names });
+    }
+    Ok(result)
+}
+
+fn parse_operation_phases(value: &Value) -> io::Result<Vec<Vec<u8>>> {
+    let mut phases = Vec::new();
+    for entry in block(value)? {
+        if entry.key.is_some() {
+            return Err(invalid("operation phase list contains a keyed entry"));
+        }
+        phases.push(scalar(&entry.value)?.to_vec());
+    }
+    if phases.is_empty() {
+        return Err(invalid("native operation writer omits empty phase lists"));
+    }
+    Ok(phases)
+}
+
+fn parse_operation_slots(value: &Value) -> io::Result<Vec<OperationSlot>> {
+    let mut slots = Vec::new();
+    for entry in block(value)? {
+        if entry.key.is_some() {
+            return Err(invalid("operation slot list contains a keyed entry"));
+        }
+        let fields = block(&entry.value)?;
+        let operative = field(fields, b"operative")?
+            .map(super::typed_handle)
+            .transpose()?;
+        let mission_present = field(fields, b"mission")?
+            .map(|value| block(value).map(|_| ()))
+            .transpose()?
+            .is_some();
+        slots.push(OperationSlot {
+            operative,
+            mission_present,
+        });
+    }
+    if slots.is_empty() {
+        return Err(invalid(
+            "native operation writer omits empty assigned-slot lists",
+        ));
+    }
+    Ok(slots)
+}
+
+fn parse_operation_instance(definition: &[u8], items: &[Item]) -> io::Result<OperationInstance> {
+    // The instance writer emits target always, date with duration only when
+    // duration is nonzero, slots and phases only for nonzero signed counts,
+    // and province only for a non-null target. Zero duration and the unset
+    // start-date sentinel are omitted.
+    Ok(OperationInstance {
+        definition: definition.to_vec(),
+        id: super::object_id(items)?,
+        target: required_bytes(items, b"target")?,
+        target_province: field(items, b"province")?
+            .map(|value| integer(scalar(value)?))
+            .transpose()?,
+        date: bytes(items, b"date")?
+            .map(|value| GameDate::parse(&value))
+            .transpose()?,
+        duration: field(items, b"duration")?
+            .map(|value| integer(scalar(value)?))
+            .transpose()?,
+        phases: field(items, b"phases")?
+            .map(parse_operation_phases)
+            .transpose()?,
+        operative_slots: field(items, b"operative_slots")?
+            .map(parse_operation_slots)
+            .transpose()?,
+        terminal: field(items, b"completed")?
+            .map(boolean)
+            .transpose()?
+            .unwrap_or(false),
+        bonus: field(items, b"outcome_extra")?
+            .map(boolean)
+            .transpose()?
+            .unwrap_or(false),
+        detected: field(items, b"risk_extra")?
+            .map(boolean)
+            .transpose()?
+            .unwrap_or(false),
+        effect_description: bytes(items, b"looted")?,
+    })
+}
+
+fn parse_operations(items: &[Item]) -> io::Result<Operations> {
+    // The operation manager writes finished history and priority both with
+    // and without running entries. A present-but-empty `running` list is
+    // refused because the writer omits it when its count is zero.
+    let finished = field(items, b"finished")?
+        .map(|value| block(value).map(<[Item]>::to_vec))
+        .transpose()?;
+    let running = field(items, b"running")?
+        .map(|value| {
+            let mut instances = Vec::new();
+            let mut seen_ids = std::collections::BTreeSet::new();
+            for item in block(value)? {
+                let definition = item
+                    .key
+                    .clone()
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| invalid("running operation lacks its definition name"))?;
+                let instance = parse_operation_instance(&definition, block(&item.value)?)?;
+                if !seen_ids.insert(instance.id) {
+                    return Err(invalid("duplicate running operation id"));
+                }
+                instances.push(instance);
+            }
+            if instances.is_empty() {
+                return Err(invalid("native operation writer omits empty running lists"));
+            }
+            Ok::<_, io::Error>(instances)
+        })
+        .transpose()?;
+    Ok(Operations {
+        priority: field(items, b"priority")?
+            .map(|value| integer(scalar(value)?))
+            .transpose()?,
+        finished,
+        running,
+    })
+}
+
+pub(super) fn parse_variables(items: &[Item]) -> io::Result<Variables> {
+    // The variables writer emits occupied-node values with exact fixed-five
+    // precision. The loader treats random-state metadata specially.
+    let mut variables = Variables::default();
+    for item in items {
+        let name = item
+            .key
+            .as_deref()
+            .ok_or_else(|| invalid("saved variable lacks a literal key"))?;
+        if name == b"random" {
+            if let Some(words) = item.value.items() {
+                if words.len() != 2 || words.iter().any(|word| word.key.is_some()) {
+                    return Err(invalid(
+                        "variable random metadata requires two unsigned words",
+                    ));
+                }
+                integer::<u32>(scalar(&words[0].value)?)?;
+                let seed = integer::<u32>(scalar(&words[1].value)?)?;
+                if variables.seed.replace(seed).is_some() {
+                    return Err(invalid("duplicate variable random metadata"));
+                }
+            } else {
+                variables.reserved_entries += 1;
+            }
+            continue;
+        }
+        variables.entries.push(Variable {
+            name: name.to_vec(),
+            value: Decimal::parse(scalar(&item.value)?)?,
+        });
+    }
+    Ok(variables)
+}
+
+/// The queue writer emits one keyed block per surviving slot; every block holds
+/// the wrapper `id` and exactly one action body under the action's own name.
+fn parse_incoming_actions(items: &[Item]) -> io::Result<Vec<IncomingAction>> {
+    let mut actions = Vec::new();
+    for entry in items {
+        let ordinal =
+            integer::<u32>(entry.key.as_deref().ok_or_else(|| {
+                invalid("incoming diplomatic action lacks its native index key")
+            })?)?;
+        let fields = block(&entry.value)?;
+        let id = super::object_id(fields)?;
+        let mut body = fields
+            .iter()
+            .filter(|item| item.key.as_deref() != Some(b"id"));
+        let action = body
+            .next()
+            .ok_or_else(|| invalid("incoming diplomatic action lacks its action body"))?;
+        if body.next().is_some() {
+            return Err(invalid(
+                "incoming diplomatic action carries more than one action body",
+            ));
+        }
+        let kind = action
+            .key
+            .clone()
+            .ok_or_else(|| invalid("incoming diplomatic action body lacks its definition name"))?;
+        let fields = block(&action.value)?;
+        actions.push(IncomingAction {
+            ordinal,
+            id,
+            kind,
+            action_type: integer(&required_bytes(fields, b"type")?)?,
+            initiator_matters: field(fields, b"initiator_matters")?
+                .map(boolean)
+                .transpose()?,
+            actor: required_bytes(fields, b"actor")?,
+            original_actor: required_bytes(fields, b"original_actor")?,
+            recipient: required_bytes(fields, b"recipient")?,
+            original_recipient: required_bytes(fields, b"original_recipient")?,
+            date: GameDate::parse(&required_bytes(fields, b"date")?)?,
+            last_command_date: GameDate::parse(&required_bytes(fields, b"last_command_date")?)?,
+        });
+    }
+    if actions
+        .windows(2)
+        .any(|pair| pair[0].ordinal >= pair[1].ordinal)
+    {
+        return Err(invalid(
+            "incoming diplomatic action indices are not strictly increasing",
+        ));
+    }
+    Ok(actions)
+}
+
+pub fn parse(items: &[Item]) -> io::Result<Pack> {
+    parse_with_countries(items, super::CountriesView::from_root(items)?)
+}
+
+pub(super) fn parse_with_countries(
+    items: &[Item],
+    countries: super::CountriesView<'_>,
+) -> io::Result<Pack> {
+    // State, global and country variables share the same saved key
+    // and variables writer.
+    let global_variables = field(items, b"variables")?
+        .map(|value| parse_variables(block(value)?))
+        .transpose()?;
+    let state_variables = field(items, b"states")?
+        .map(|value| {
+            let mut states = BTreeMap::new();
+            for item in block(value)? {
+                let id = integer::<u32>(
+                    item.key
+                        .as_deref()
+                        .ok_or_else(|| invalid("intel state lacks its numeric key"))?,
+                )?;
+                let variables = field(block(&item.value)?, b"variables")?
+                    .map(|value| parse_variables(block(value)?))
+                    .transpose()?;
+                if states.insert(id, variables).is_some() {
+                    return Err(invalid("duplicate state id in intel save pack"));
+                }
+            }
+            Ok::<_, io::Error>(states)
+        })
+        .transpose()?;
+    let country_items = countries.required()?;
+    let mut countries = BTreeMap::new();
+    for item in country_items {
+        let tag = item
+            .key
+            .as_deref()
+            .filter(|tag| !tag.is_empty())
+            .ok_or_else(|| invalid("intel country lacks tag"))?;
+        let items = block(&item.value)?;
+        let country = Country {
+            agency: field(items, b"intelligence_agency")?
+                .map(|value| parse_agency(block(value)?))
+                .transpose()?,
+            diplomacy: field(items, b"diplomacy")?
+                .map(|value| parse_diplomacy(tag, block(value)?))
+                .transpose()?,
+            flags: field(items, b"flags")?
+                .map(|value| parse_flags(block(value)?))
+                .transpose()?,
+            variables: field(items, b"variables")?
+                .map(|value| parse_variables(block(value)?))
+                .transpose()?,
+            incoming_actions: field(items, b"incoming_diplomatic_action")?
+                .map(|value| parse_incoming_actions(block(value)?))
+                .transpose()?,
+            operation_tokens: field(items, b"tokens")?
+                .map(|value| {
+                    Ok::<_, io::Error>(OperationTokenManager {
+                        operation_assets: field(block(value)?, b"operation_assets")?
+                            .map(|value| parse_operation_tokens(block(value)?))
+                            .transpose()?,
+                    })
+                })
+                .transpose()?,
+            operations: field(items, b"operations")?
+                .map(|value| parse_operations(block(value)?))
+                .transpose()?,
+        };
+        if countries.insert(tag.to_vec(), country).is_some() {
+            return Err(invalid("duplicate country tag in intel save pack"));
+        }
+    }
+    Ok(Pack {
+        countries,
+        global_variables,
+        state_variables,
+        strategic_operatives: field(items, b"strategic_operatives")?
+            .map(|value| parse_strategic_operatives(block(value)?))
+            .transpose()?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parsed(input: &[u8]) -> io::Result<Pack> {
+        parse(&crate::parser::parse(input)?.items)
+    }
+
+    #[test]
+    fn captured_references_preserve_order_nulls_duplicates_and_unsigned_words() {
+        let pack = parsed(
+            br#"countries={AAA={intelligence_agency={
+            defense=0 max_operative_count=0 usable_operative_slots=0
+            captured={
+                {country=BBB operative={id=4294967295 type=4713} intel={}}
+                {operative={id=0 type=0} intel={}}
+                {country=CCC operative={id=4294967295 type=4713} intel={}}
+            }
+        }} BBB={intelligence_agency={defense=0 max_operative_count=0 usable_operative_slots=0}}}"#,
+        )
+        .unwrap();
+        let captured = &pack.countries[b"AAA".as_slice()]
+            .agency
+            .as_ref()
+            .unwrap()
+            .captured;
+        assert_eq!(
+            captured
+                .iter()
+                .map(|entry| entry.operative)
+                .collect::<Vec<_>>(),
+            [
+                (u64::from(u32::MAX) << 32) | 4713,
+                0,
+                (u64::from(u32::MAX) << 32) | 4713,
+            ]
+        );
+        assert_eq!(captured[0].country.as_deref(), Some(b"BBB".as_slice()));
+        assert!(captured[1].country.is_none());
+        assert!(
+            pack.countries[b"BBB".as_slice()]
+                .agency
+                .as_ref()
+                .unwrap()
+                .captured
+                .is_empty()
+        );
+        for captured in [
+            "{}",
+            "{bad={operative={id=1 type=4713}}}",
+            "{{}}",
+            "{{operative={id=1}}}",
+        ] {
+            let input = format!(
+                "countries={{AAA={{intelligence_agency={{defense=0 max_operative_count=0 usable_operative_slots=0 captured={captured}}}}}}}"
+            );
+            assert!(parsed(input.as_bytes()).is_err(), "{captured}");
+        }
+    }
+
+    const INCOMING: &[u8] = br#"countries={GER={incoming_diplomatic_action={
+        0={
+            id={ id=63179 type=4713 }
+            call_allies={
+                type=0 actor="BUL" original_actor="BUL" recipient="GER"
+                original_recipient="GER" date="1942.9.21.2" value=yes
+                last_command_date="1942.9.21.3" envoy=-1 initiator_matters=no
+                versus={ "ENG" "FRA" }
+            }
+        }
+        2={
+            id={ id=65511 type=4713 }
+            join_faction={
+                type=-1 actor="ITA" original_actor="ITA" recipient="GER"
+                original_recipient="GER" date="1942.10.19.2" value=yes
+                last_command_date="1942.10.19.2" envoy=-1 initiator_matters=no
+            }
+        }
+    }} SOV={incoming_diplomatic_action={}} D01={}}"#;
+
+    #[test]
+    fn incoming_actions_keep_queue_indices_kind_names_and_signed_type() {
+        let pack = parsed(INCOMING).unwrap();
+        let actions = pack.countries[b"GER".as_slice()]
+            .incoming_actions
+            .as_ref()
+            .unwrap();
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0].ordinal, 0);
+        assert_eq!(actions[0].id, (63179 << 32) | 4713);
+        assert_eq!(actions[0].kind, b"call_allies");
+        assert_eq!(actions[0].action_type, 0);
+        assert_eq!(actions[0].initiator_matters, Some(false));
+        assert_eq!(actions[0].actor, b"BUL");
+        assert_eq!(actions[0].recipient, b"GER");
+        assert_eq!(
+            actions[0].last_command_date.engine_hour().unwrap(),
+            actions[0].date.engine_hour().unwrap() + 1
+        );
+        // A null native slot leaves a gap in the writer's decimal keys.
+        assert_eq!(actions[1].ordinal, 2);
+        assert_eq!(actions[1].kind, b"join_faction");
+        assert_eq!(actions[1].action_type, -1);
+        // An empty queue block is not the same as an absent queue object.
+        assert_eq!(
+            pack.countries[b"SOV".as_slice()].incoming_actions,
+            Some(Vec::new())
+        );
+        assert_eq!(pack.countries[b"D01".as_slice()].incoming_actions, None);
+    }
+
+    #[test]
+    fn incoming_initiator_flag_preserves_true_false_and_missing_independently_of_type() {
+        for (replacement, expected) in [
+            ("initiator_matters=yes", Some(true)),
+            ("initiator_matters=no", Some(false)),
+            ("", None),
+        ] {
+            let text = String::from_utf8(INCOMING.to_vec())
+                .unwrap()
+                .replace("initiator_matters=no", replacement);
+            let pack = parsed(text.as_bytes()).unwrap();
+            let action = &pack.countries[b"GER".as_slice()]
+                .incoming_actions
+                .as_ref()
+                .unwrap()[0];
+            assert_eq!(action.action_type, 0);
+            assert_eq!(action.initiator_matters, expected);
+        }
+        let text = String::from_utf8(INCOMING.to_vec())
+            .unwrap()
+            .replace("initiator_matters=no", "initiator_matters=1");
+        assert!(parsed(text.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn a_malformed_incoming_action_is_refused_rather_than_partly_read() {
+        let text = String::from_utf8(INCOMING.to_vec()).unwrap();
+        for broken in [
+            text.replace("0={\n            id={ id=63179 type=4713 }", "0={"),
+            text.replace("actor=\"BUL\"", ""),
+            text.replace("type=0 ", ""),
+            text.replace("date=\"1942.9.21.2\"", ""),
+            // Two bodies in one wrapper cannot name a single action.
+            text.replace(
+                "versus={ \"ENG\" \"FRA\" }\n            }",
+                "versus={ \"ENG\" }\n            } join_faction={ type=0 }",
+            ),
+            // Keys must stay strictly increasing native indices.
+            text.replace("2={", "0={"),
+        ] {
+            assert!(parsed(broken.as_bytes()).is_err());
+        }
+    }
+
+    #[test]
+    fn agency_keeps_qword_precision_signed_dwords_and_active_membership_count() {
+        let pack = parsed(
+            br#"countries={GER={intelligence_agency={
+            defense=90071992547.40993 max_operative_count=-1 usable_operative_slots=-2147483648
+            operative={id={id=4294967295 type=4713}} operative={id={id=4294967295 type=4713}}
+        }} FRA={}}"#,
+        )
+        .unwrap();
+        let agency = pack.countries[b"GER".as_slice()].agency.as_ref().unwrap();
+        assert_eq!(agency.defense.raw, 9_007_199_254_740_993);
+        assert_eq!(agency.upgrade_progress.raw, 0);
+        assert_eq!((agency.active_count, agency.unknown_f0), (2, u32::MAX));
+        assert_eq!(agency.admission_ceiling, i32::MIN);
+        assert!(pack.countries[b"FRA".as_slice()].agency.is_none());
+        assert!(parsed(b"countries={GER={intelligence_agency={max_operative_count=1 usable_operative_slots=2}}}").is_err());
+    }
+
+    #[test]
+    fn agency_upgrade_save_entries_keep_order_duplicates_and_raw_signed_levels() {
+        let pack = parsed(br#"countries={
+            XAA={intelligence_agency={defense=0 max_operative_count=0 usable_operative_slots=0
+                upgrades={mod_upgrade=3 other_upgrade=-2147483648 mod_upgrade=0}
+            }}
+            XAB={intelligence_agency={is_created=yes defense=0 max_operative_count=0 usable_operative_slots=0}}
+            XAC={intelligence_agency={defense=0 max_operative_count=0 usable_operative_slots=0}}
+            XAD={}
+        }"#).unwrap();
+        let entries = &pack.countries[b"XAA".as_slice()]
+            .agency
+            .as_ref()
+            .unwrap()
+            .upgrades;
+        assert_eq!(
+            entries,
+            &vec![
+                AgencyUpgradeLevel {
+                    token: b"mod_upgrade".to_vec(),
+                    level: 3
+                },
+                AgencyUpgradeLevel {
+                    token: b"other_upgrade".to_vec(),
+                    level: i32::MIN
+                },
+                AgencyUpgradeLevel {
+                    token: b"mod_upgrade".to_vec(),
+                    level: 0
+                },
+            ]
+        );
+        for tag in [b"XAB", b"XAC"] {
+            assert!(
+                pack.countries[tag.as_slice()]
+                    .agency
+                    .as_ref()
+                    .unwrap()
+                    .upgrades
+                    .is_empty()
+            );
+        }
+        assert!(pack.countries[b"XAD".as_slice()].agency.is_none());
+    }
+
+    #[test]
+    fn agency_upgrade_save_malformed_entries_are_named_refusals() {
+        for body in [
+            "",
+            "1",
+            "bad_upgrade={x=1}",
+            "bad_upgrade=2147483648",
+            "bad_upgrade=-2147483649",
+            "bad_upgrade>2",
+            "\"\"=1",
+        ] {
+            let text = format!(
+                "countries={{XAA={{intelligence_agency={{defense=0 max_operative_count=0 usable_operative_slots=0 upgrades={{{body}}}}}}}}}"
+            );
+            let failure = parsed(text.as_bytes()).unwrap_err().to_string();
+            assert!(failure.contains("upgrade"), "{body}: {failure}");
+            if body.starts_with("bad_upgrade") {
+                assert!(failure.contains("bad_upgrade"), "{failure}");
+            }
+        }
+    }
+
+    #[test]
+    fn operation_outcome_save_fields_keep_omission_and_description_bytes() {
+        let pack = parsed(br#"countries={XAA={operations={running={
+            mod_operation={id={id=1 type=8} target=XAB completed=yes outcome_extra=yes risk_extra=yes looted="line\\n\"quote\"\\literal"}
+            mod_operation={id={id=2 type=8} target=XAB}
+            mod_operation={id={id=3 type=8} target=XAB completed=yes looted=""}
+        }}} XAB={}}"#).unwrap();
+        let operations = pack.countries[b"XAA".as_slice()]
+            .operations
+            .as_ref()
+            .unwrap()
+            .running
+            .as_ref()
+            .unwrap();
+        assert!(operations[0].terminal && operations[0].bonus && operations[0].detected);
+        assert_eq!(
+            operations[0].effect_description.as_deref(),
+            Some(b"line\\n\"quote\"\\literal".as_slice())
+        );
+        assert!(!operations[1].terminal && !operations[1].bonus && !operations[1].detected);
+        assert_eq!(operations[1].effect_description, None);
+        assert_eq!(operations[2].effect_description, Some(vec![]));
+        for malformed in [
+            "outcome_extra=maybe",
+            "risk_extra={}",
+            "completed=yes completed=yes",
+            "looted={}",
+        ] {
+            let text = format!(
+                "countries={{XAA={{operations={{running={{mod_operation={{id={{id=1 type=8}} target=XAB {malformed}}}}}}}}}}}"
+            );
+            assert!(parsed(text.as_bytes()).is_err(), "{malformed}");
+        }
+    }
+
+    #[test]
+    fn scoped_subject_fields_and_omitted_envelopes_are_distinct() {
+        let pack = parsed(
+            br#"countries={GER={diplomacy={active_relations={FRA={puppet={
+            first=GER second=FRA autonomy_state="puppet exact" value=-0.00001 start_date=1936.1.1.1
+        }}}}} FRA={diplomacy={active_relations={}}}}"#,
+        )
+        .unwrap();
+        let subject = &pack.countries[b"GER".as_slice()]
+            .diplomacy
+            .as_ref()
+            .unwrap()
+            .subjects
+            .as_ref()
+            .unwrap()[0];
+        assert_eq!(subject.autonomy_ratio.raw, -1);
+        assert_eq!(subject.state.as_deref(), Some(b"puppet exact".as_slice()));
+        assert_eq!(subject.roster_owner, b"GER");
+        assert_eq!(subject.target, b"FRA");
+        assert!(subject.end_date.is_none());
+        assert!(parsed(b"countries={GER={diplomacy={active_relations={FRA={puppet={first=GER second=FRA cancel=yes start_date=1936.1.1.1}}}}}}").is_err());
+    }
+
+    #[test]
+    fn flags_keep_signed_words_literal_bytes_and_duration_presence() {
+        let pack = parsed(b"countries={GER={flags={\"a\\x\"={value=-32768 date=1936.1.1.1} z={value=32767 date=1936.1.2.1 days=32767}}} FRA={flags={}} ENG={}}").unwrap();
+        let flags = pack.countries[b"GER".as_slice()].flags.as_ref().unwrap();
+        assert_eq!(flags[0].name, b"a\\x");
+        assert_eq!(flags[0].value, i16::MIN);
+        assert_eq!(flags[0].remaining_days, None);
+        assert_eq!(flags[1].remaining_days, Some(i16::MAX));
+        assert_eq!(pack.countries[b"FRA".as_slice()].flags, Some(vec![]));
+        assert!(pack.countries[b"ENG".as_slice()].flags.is_none());
+        assert!(parsed(b"countries={GER={flags={x={value=1 date=1936.1.1.1 days=0}}}}").is_err());
+        assert!(parsed(b"countries={GER={flags={x={value=32768 date=1936.1.1.1}}}}").is_err());
+        let repeated = parsed(b"countries={GER={flags={x={value=-1 date=1936.1.1.1} x={value=2 date=1936.1.2.1 days=3}}}}").unwrap();
+        let flags = repeated.countries[b"GER".as_slice()]
+            .flags
+            .as_ref()
+            .unwrap();
+        assert_eq!(flags.len(), 2);
+        assert_eq!(flags[0].name, flags[1].name);
+        assert_eq!((flags[0].value, flags[1].value), (-1, 2));
+    }
+
+    #[test]
+    fn operation_token_save_order_and_multiplicity_are_preserved() {
+        let pack = parsed(b"countries={GER={tokens={operation_assets={FRA={z a a}}}}}").unwrap();
+        let targets = pack.countries[b"GER".as_slice()]
+            .operation_tokens
+            .as_ref()
+            .unwrap()
+            .operation_assets
+            .as_ref()
+            .unwrap();
+        assert_eq!(targets[0].target, b"FRA");
+        assert_eq!(
+            targets[0].names,
+            [b"z".to_vec(), b"a".to_vec(), b"a".to_vec()]
+        );
+        assert!(parsed(b"countries={GER={tokens={operation_assets={FRA={}}}}}").is_err());
+        assert!(parsed(b"countries={GER={tokens={operation_assets={FRA={x} FRA={y}}}}}").is_err());
+    }
+
+    #[test]
+    fn conditional_payloads_keep_missing_empty_and_inactive_values_distinct() {
+        let pack = parsed(b"countries={GER={tokens={}} FRA={tokens={operation_assets={}} diplomacy={exile_army_leaders=-2147483648}} ENG={diplomacy={capitulated=yes capitulated_date=1936.1.1.1 legitimacy=-0.00001 exile_army_leaders=0}}}").unwrap();
+        assert!(
+            pack.countries[b"GER".as_slice()]
+                .operation_tokens
+                .as_ref()
+                .unwrap()
+                .operation_assets
+                .is_none()
+        );
+        assert_eq!(
+            pack.countries[b"FRA".as_slice()]
+                .operation_tokens
+                .as_ref()
+                .unwrap()
+                .operation_assets,
+            Some(vec![])
+        );
+        let inactive = pack.countries[b"FRA".as_slice()]
+            .diplomacy
+            .as_ref()
+            .unwrap();
+        assert_eq!(inactive.capitulated, None);
+        assert_eq!(inactive.capitulated_date, None);
+        assert_eq!(inactive.legitimacy, None);
+        assert_eq!(inactive.exile_army_leaders, Some(i32::MIN));
+        let active = pack.countries[b"ENG".as_slice()]
+            .diplomacy
+            .as_ref()
+            .unwrap();
+        assert_eq!(active.capitulated, Some(true));
+        assert_eq!(active.legitimacy.as_ref().unwrap().raw, -1);
+        assert!(parsed(b"countries={GER={diplomacy={capitulated=no}}}").is_err());
+        assert!(parsed(b"countries={GER={diplomacy={capitulated=yes}}}").is_err());
+        assert!(parsed(b"countries={GER={diplomacy={capitulated_date=1936.1.1.1}}}").is_err());
+    }
+
+    #[test]
+    fn variables_preserve_repeated_literal_keys_and_exact_signed_values() {
+        let pack = parsed(b"countries={GER={variables={random=1 a=90071992547.40993 a=-0.00001 \"\xff\"=-1.00001 \"\"=0 random=2}} FRA={variables={}} ENG={}}").unwrap();
+        let variables = pack.countries[b"GER".as_slice()]
+            .variables
+            .as_ref()
+            .unwrap();
+        assert_eq!(variables.reserved_entries, 2);
+        assert_eq!(variables.entries.len(), 4);
+        assert_eq!(variables.entries[0].name, b"a");
+        assert_eq!(variables.entries[1].name, b"a");
+        assert_eq!(variables.entries[0].value.raw, 9_007_199_254_740_993);
+        assert_eq!(variables.entries[1].value.raw, -1);
+        assert_eq!(variables.entries[2].name, b"\xff");
+        assert_eq!(variables.entries[2].value.raw, -100_001);
+        assert!(variables.entries[3].name.is_empty());
+        assert_eq!(
+            pack.countries[b"FRA".as_slice()].variables,
+            Some(Variables::default())
+        );
+        assert!(pack.countries[b"ENG".as_slice()].variables.is_none());
+        assert!(parsed(b"countries={GER={variables={a={value=1}}}}").is_err());
+    }
+
+    #[test]
+    fn variable_seed_metadata_preserves_the_second_unsigned_word_and_scalar_collisions() {
+        let pack = parsed(
+            b"variables={random={2147483648 4294967295}} countries={GER={variables={random={99 0} random=1.5}}} states={1={variables={random={1 2147483648}}}}",
+        )
+        .unwrap();
+        assert_eq!(pack.global_variables.as_ref().unwrap().seed, Some(u32::MAX));
+        let country = pack.countries[b"GER".as_slice()]
+            .variables
+            .as_ref()
+            .unwrap();
+        assert_eq!(country.seed, Some(0));
+        assert_eq!(country.reserved_entries, 1);
+        assert!(country.entries.is_empty());
+        let state = pack.state_variables.as_ref().unwrap()[&1].as_ref().unwrap();
+        assert_eq!(state.seed, Some(0x8000_0000));
+        for metadata in [
+            "random={}",
+            "random={1}",
+            "random={1 2 3}",
+            "random={-1 2}",
+            "random={1 4294967296}",
+            "random={x=1 2}",
+            "random={1 2} random={3 4}",
+        ] {
+            let save = format!("countries={{GER={{variables={{{metadata}}}}}}}");
+            assert!(parsed(save.as_bytes()).is_err(), "{metadata}");
+        }
+    }
+
+    #[test]
+    fn variables_preserve_global_state_and_payload_scope_presence() {
+        let pack = parsed(b"variables={same=-0.00001} countries={GER={variables={same=0.00002}}} states={0={variables={same=90071992547.40993}} 4294967295={variables={}} 7={}}").unwrap();
+        assert_eq!(
+            pack.global_variables.as_ref().unwrap().entries[0].value.raw,
+            -1
+        );
+        assert_eq!(
+            pack.countries[b"GER".as_slice()]
+                .variables
+                .as_ref()
+                .unwrap()
+                .entries[0]
+                .value
+                .raw,
+            2
+        );
+        let states = pack.state_variables.as_ref().unwrap();
+        assert_eq!(
+            states[&0].as_ref().unwrap().entries[0].value.raw,
+            9_007_199_254_740_993
+        );
+        assert_eq!(states[&u32::MAX], Some(Variables::default()));
+        assert_eq!(states[&7], None);
+        let absent = parsed(b"countries={}").unwrap();
+        assert!(absent.global_variables.is_none());
+        assert!(absent.state_variables.is_none());
+        let empty = parsed(b"variables={} countries={} states={}").unwrap();
+        assert_eq!(empty.global_variables, Some(Variables::default()));
+        assert_eq!(empty.state_variables, Some(BTreeMap::new()));
+        assert!(parsed(b"countries={} states={1={} 01={}}").is_err());
+    }
+
+    const OPERATIONS: &[u8] = br#"countries={
+        GER={operations={ finished={} priority=1 }}
+        ENG={operations={
+            finished={ operation_infiltrate_armed_forces_airforce={ SOV 1 } }
+            priority=2
+            running={
+                operation_rescue_operative={
+                    id={ id=69023 type=4713 }
+                    date="1942.12.6.10" duration=68 target="SOV"
+                    operative_slots={
+                        { operative={ id=9831 type=4713 } mission={ mission=build_intel_network target_country="SOV" target_state=219 } }
+                    }
+                    phases={ "infiltration_border" "free_operative_liberate_camp" }
+                    resources={ infantry_equipment=180 }
+                }
+            }
+        }}
+        SOV={}
+    }"#;
+
+    #[test]
+    fn operations_keep_container_shapes_running_census_and_slot_presence() {
+        let pack = parsed(OPERATIONS).unwrap();
+        // GER shape: present block with no running key means no running instances.
+        let ger = pack.countries[b"GER".as_slice()]
+            .operations
+            .as_ref()
+            .unwrap();
+        assert_eq!(ger.priority, Some(1));
+        assert_eq!(ger.finished, Some(Vec::new()));
+        assert_eq!(ger.running, None);
+        // ENG shape: one running instance with all proved optional payloads present.
+        let eng = pack.countries[b"ENG".as_slice()]
+            .operations
+            .as_ref()
+            .unwrap();
+        assert_eq!(eng.priority, Some(2));
+        let finished = eng.finished.as_ref().unwrap();
+        assert_eq!(finished.len(), 1);
+        assert_eq!(
+            finished[0].key.as_deref(),
+            Some(b"operation_infiltrate_armed_forces_airforce".as_slice())
+        );
+        assert_eq!(block(&finished[0].value).unwrap().len(), 2);
+        let running = eng.running.as_ref().unwrap();
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].definition, b"operation_rescue_operative");
+        assert_eq!(running[0].id, (69023 << 32) | 4713);
+        assert_eq!(running[0].target, b"SOV");
+        assert_eq!(running[0].target_province, None);
+        assert_eq!(
+            running[0].date.unwrap().engine_hour().unwrap(),
+            GameDate::parse(b"1942.12.6.10")
+                .unwrap()
+                .engine_hour()
+                .unwrap()
+        );
+        assert_eq!(running[0].duration, Some(68));
+        assert_eq!(running[0].phases.as_ref().unwrap().len(), 2);
+        let slots = running[0].operative_slots.as_ref().unwrap();
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].operative, Some((9831 << 32) | 4713));
+        assert!(slots[0].mission_present);
+        // Absent operations block stays distinct from a present block.
+        assert!(pack.countries[b"SOV".as_slice()].operations.is_none());
+    }
+
+    #[test]
+    fn operations_omitted_optionals_mean_zero_counts_and_null_refs() {
+        let pack = parsed(
+            br#"countries={GER={operations={
+                priority=1 running={ operation_x={ id={ id=1 type=4713 } target="FRA" } }
+            }}}"#,
+        )
+        .unwrap();
+        let running = pack.countries[b"GER".as_slice()]
+            .operations
+            .as_ref()
+            .unwrap()
+            .running
+            .as_ref()
+            .unwrap();
+        assert_eq!(running[0].date, None);
+        assert_eq!(running[0].duration, None);
+        assert_eq!(running[0].phases, None);
+        assert_eq!(running[0].operative_slots, None);
+        assert_eq!(running[0].target_province, None);
+        // A both-zero handle omits the ref but retains the slot.
+        let pack = parsed(
+            br#"countries={GER={operations={
+                running={ operation_x={
+                    id={ id=1 type=4713 } target="FRA"
+                    operative_slots={ { mission={ mission=build_intel_network } } { } }
+                } }
+            }}}"#,
+        )
+        .unwrap();
+        let slots = pack.countries[b"GER".as_slice()]
+            .operations
+            .as_ref()
+            .unwrap()
+            .running
+            .as_ref()
+            .unwrap()[0]
+            .operative_slots
+            .as_ref()
+            .unwrap();
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0].operative, None);
+        assert!(slots[0].mission_present);
+        assert_eq!(slots[1].operative, None);
+        assert!(!slots[1].mission_present);
+    }
+
+    #[test]
+    fn repeated_operation_definitions_preserve_distinct_ids_targets_and_order() {
+        let source = br#"countries={JAP={operations={ running={
+            operation_rescue_operative={ id={ id=10 type=4713 } target="FRA" duration=68 }
+            operation_rescue_operative={ id={ id=20 type=4713 } target="CHI" duration=35 }
+        } }}}"#;
+        let pack = parsed(source).unwrap();
+        let running = pack.countries[b"JAP".as_slice()]
+            .operations
+            .as_ref()
+            .unwrap()
+            .running
+            .as_ref()
+            .unwrap();
+        assert_eq!(running.len(), 2);
+        assert_eq!(running[0].definition, b"operation_rescue_operative");
+        assert_eq!(running[1].definition, running[0].definition);
+        assert_eq!(running[0].id, (10 << 32) | 4713);
+        assert_eq!(running[1].id, (20 << 32) | 4713);
+        assert_eq!(running[0].target, b"FRA");
+        assert_eq!(running[1].target, b"CHI");
+        assert_eq!(running[0].duration, Some(68));
+        assert_eq!(running[1].duration, Some(35));
+        let duplicate = String::from_utf8(source.to_vec())
+            .unwrap()
+            .replace("id=20", "id=10");
+        assert!(
+            parsed(duplicate.as_bytes())
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate running operation id")
+        );
+    }
+
+    #[test]
+    fn malformed_operation_blocks_are_refused_rather_than_partly_read() {
+        // Present-but-empty lists were omitted by the native writer (signed
+        // count==0), so they are malformed when present.
+        for broken in [
+            "countries={GER={operations={ running={} }}}",
+            "countries={GER={operations={ running={ operation_x={ id={ id=1 type=4713 } target=\"FRA\" phases={} } } }}}",
+            "countries={GER={operations={ running={ operation_x={ id={ id=1 type=4713 } target=\"FRA\" operative_slots={} } } }}}",
+            // Duplicate ids, missing id/target, keyed
+            // phase/slot entries, and a null typed handle are all malformed.
+            "countries={GER={operations={ running={ operation_x={ id={ id=1 type=4713 } target=\"FRA\" } operation_y={ id={ id=1 type=4713 } target=\"FRA\" } } }}}",
+            "countries={GER={operations={ running={ operation_x={ target=\"FRA\" } } }}}",
+            "countries={GER={operations={ running={ operation_x={ id={ id=1 type=4713 } } } }}}",
+            "countries={GER={operations={ running={ operation_x={ id={ id=1 type=4713 } target=\"FRA\" phases={ k=\"v\" } } } }}}",
+            "countries={GER={operations={ running={ operation_x={ id={ id=1 type=4713 } target=\"FRA\" operative_slots={ k={} } } } }}}",
+            "countries={GER={operations={ running={ operation_x={ id={ id=0 type=0 } target=\"FRA\" } } }}}",
+        ] {
+            assert!(parsed(broken.as_bytes()).is_err(), "{broken}");
+        }
+    }
+
+    const OPERATIVE_AGENCY: &[u8] = br#"countries={GER={intelligence_agency={
+        defense=0 max_operative_count=1 usable_operative_slots=1
+        operative={ id={ id=9831 type=4713 } skill=2 experience=453.456 nationalities={ ENG } state=on_operation operation={ id=69023 type=4713 } }
+        operative={ id={ id=29260 type=4713 } skill=1 captured="SOV" capture_date="1942.11.28.12" state=on_capture operation={ id=55674 type=4713 } }
+        recruitment={ recruitable_operatives={ { id={ id=1043 type=4713 } skill=1 nationalities={ ENG } state=on_mission } } recruitable_operatives_not_to_spy_master={ { id={ id=5801 type=4713 } skill=1 mission={ build_intel_network={ target="ITA" state=4 } } state=on_mission } } }
+        cryptology={ targets={ { target="SOV" decryption=yes amount=27625 } { target="ITA" amount=12000 date="1940.1.15.1" } } intel_source={ country="GER" pool=2 id=1 discriminant=0 } }
+    }} FRA={intelligence_agency={ defense=0 max_operative_count=0 usable_operative_slots=0 }}}"#;
+
+    #[test]
+    fn operative_codename_preserves_member_omission_rules_and_signed_order() {
+        let pack = parsed(
+            br#"countries={XXX={intelligence_agency={
+            defense=0 max_operative_count=1 usable_operative_slots=1
+            operative={ id={ id=1 type=4713 } codename={ type=2 } }
+            recruitment={ recruitable_operatives={ {
+                id={ id=2 type=4713 }
+                codename={ type=2 name_order=-1 is_name_ordered=no override="renamed" override_set_programmatically=yes }
+            } } }
+        }}}"#,
+        )
+        .unwrap();
+        let agency = pack.countries[b"XXX".as_slice()].agency.as_ref().unwrap();
+        let first = agency.operatives[0].codename.as_ref().unwrap();
+        assert_eq!(first.kind, 2);
+        assert_eq!(
+            (first.order, first.ordered, first.programmatic),
+            (None, None, None)
+        );
+        assert!(first.custom.is_none());
+        let second = agency.recruitment.as_ref().unwrap().recruitable[0]
+            .codename
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            (second.order, second.ordered, second.programmatic),
+            (Some(-1), Some(false), Some(true))
+        );
+        assert_eq!(second.custom.as_deref(), Some(b"renamed".as_slice()));
+        for malformed in [
+            "type=2 name_order=1 name_order=2",
+            "name_order=1",
+            "type=2 is_name_ordered=maybe",
+        ] {
+            let source = format!(
+                "countries={{XXX={{intelligence_agency={{defense=0 max_operative_count=0 usable_operative_slots=0 operative={{id={{id=1 type=4713}} codename={{{malformed}}}}}}}}}}}"
+            );
+            assert!(parsed(source.as_bytes()).is_err());
+        }
+    }
+
+    #[test]
+    fn operatives_keep_roster_lists_capturer_dates_and_action_presence() {
+        let pack = parsed(OPERATIVE_AGENCY).unwrap();
+        let agency = pack.countries[b"GER".as_slice()].agency.as_ref().unwrap();
+        assert_eq!(agency.operatives.len(), 2);
+        assert_eq!(agency.operatives[0].id, (9831 << 32) | 4713);
+        assert_eq!(agency.operatives[0].skill, Some(2));
+        assert_eq!(agency.operatives[0].nationalities, [b"ENG".to_vec()]);
+        assert_eq!(
+            agency.operatives[0].state.as_deref(),
+            Some(b"on_operation".as_slice())
+        );
+        assert_eq!(agency.operatives[0].operation, Some((69023 << 32) | 4713));
+        assert!(!agency.operatives[0].mission_present);
+        assert_eq!(
+            agency.operatives[1].captured.as_deref(),
+            Some(b"SOV".as_slice())
+        );
+        assert!(agency.operatives[1].capture_date.is_some());
+        let recruitment = agency.recruitment.as_ref().unwrap();
+        assert_eq!(recruitment.recruitable.len(), 1);
+        assert_eq!(recruitment.not_to_spy_master.len(), 1);
+        assert!(recruitment.not_to_spy_master[0].mission_present);
+        assert_eq!(
+            recruitment.not_to_spy_master[0].mission_name.as_deref(),
+            Some(b"build_intel_network".as_slice())
+        );
+        assert_eq!(
+            recruitment.not_to_spy_master[0].mission_target.as_deref(),
+            Some(b"ITA".as_slice())
+        );
+        // Omitted recruitment and cryptology stay distinct from present-empty.
+        let fra = pack.countries[b"FRA".as_slice()].agency.as_ref().unwrap();
+        assert!(fra.operatives.is_empty());
+        assert!(fra.recruitment.is_none());
+        assert!(fra.cryptology.is_none());
+        let crypto = agency.cryptology.as_ref().unwrap();
+        let targets = crypto.targets.as_ref().unwrap();
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].decryption, Some(true));
+        assert!(targets[1].date.is_some());
+        assert_eq!(
+            crypto.intel_source_country.as_deref(),
+            Some(b"GER".as_slice())
+        );
+        // Capturer without a date, duplicated cryptology targets and empty
+        // target lists are refused rather than partly read.
+        for broken in [
+            "countries={GER={intelligence_agency={ defense=0 max_operative_count=0 usable_operative_slots=0 operative={ id={ id=1 type=4713 } captured=\"SOV\" } }}}",
+            "countries={GER={intelligence_agency={ defense=0 max_operative_count=0 usable_operative_slots=0 cryptology={ targets={ { target=\"SOV\" } { target=\"SOV\" } } } }}}",
+            "countries={GER={intelligence_agency={ defense=0 max_operative_count=0 usable_operative_slots=0 cryptology={ targets={} } }}}",
+            "countries={GER={intelligence_agency={ defense=0 max_operative_count=0 usable_operative_slots=0 cryptology={ targets={ { target=\"SOV\" decryption=no } } } }}}",
+        ] {
+            assert!(parsed(broken.as_bytes()).is_err(), "{broken}");
+        }
+    }
+
+    #[test]
+    fn recruitment_retains_recorded_pool_spelling_and_repeated_memberships() {
+        let pack = parsed(
+            br#"countries={ X={intelligence_agency={
+            defense=0 max_operative_count=0 usable_operative_slots=0
+            recruitment={ recorded_pool_name={
+                { id={id=7 type=4713} name="first" }
+                { id={id=7 type=4713} name="first" }
+            } another_saved_list={ { id={id=8 type=4713} } } }
+        }} }"#,
+        )
+        .unwrap();
+        let recruitment = pack.countries[b"X".as_slice()]
+            .agency
+            .as_ref()
+            .unwrap()
+            .recruitment
+            .as_ref()
+            .unwrap();
+        assert!(recruitment.recruitable.is_empty());
+        assert_eq!(recruitment.other_rosters.len(), 2);
+        let (name, entries) = &recruitment.other_rosters[0];
+        assert_eq!(name, b"recorded_pool_name");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0], entries[1]);
+        assert_eq!(recruitment.other_rosters[1].0, b"another_saved_list");
+        assert_eq!(recruitment.other_rosters[1].1[0].id, (8 << 32) | 4713);
+    }
+
+    #[test]
+    fn operative_name_and_nested_mission_target_preserve_the_saved_shape() {
+        let prefix = "countries={X={intelligence_agency={ defense=0 max_operative_count=1 usable_operative_slots=1 operative={ id={id=7 type=4713} name=\"Renamed literal\" ";
+        let suffix = " } } } }";
+        let pack = parsed(
+            format!("{prefix}mission={{custom_mission={{target=Y state=123}}}}{suffix}").as_bytes(),
+        )
+        .unwrap();
+        let row = &pack.countries[b"X".as_slice()]
+            .agency
+            .as_ref()
+            .unwrap()
+            .operatives[0];
+        assert_eq!(row.name.as_deref(), Some(b"Renamed literal".as_slice()));
+        assert_eq!(
+            row.mission_name.as_deref(),
+            Some(b"custom_mission".as_slice())
+        );
+        assert_eq!(row.mission_target.as_deref(), Some(b"Y".as_slice()));
+        // The country-reference writer omits the tag for a null reference.
+        let pack =
+            parsed(format!("{prefix}mission={{custom_mission={{}}}}{suffix}").as_bytes()).unwrap();
+        let row = &pack.countries[b"X".as_slice()]
+            .agency
+            .as_ref()
+            .unwrap()
+            .operatives[0];
+        assert!(row.mission_present);
+        assert_eq!(row.mission_target, None);
+        for mission in [
+            "mission={}",
+            "mission={custom_mission={target=Y target=Z}}",
+            "mission={custom_mission={target=\"\"}}",
+            "mission={a={target=Y} b={target=Z}}",
+            "mission={mission=custom_mission target_country=Y target_state=123}",
+        ] {
+            assert!(
+                parsed(format!("{prefix}{mission}{suffix}").as_bytes()).is_err(),
+                "{mission}"
+            );
+        }
+    }
+
+    const NETWORKS: &[u8] = br#"countries={ENG={} SOV={} AUS={}}
+        strategic_operatives={ strategic_operative={
+            2={ intel_network={ target="SOV" intel_network={ state_id={ 219 253 } strength={ 71 0 } sub_network_id={ 0 -1 } } sub_intel_networks={ { strength=72.5 } } } intel_network={ target="AUS" intel_network={ state_id={ 4 } strength={ 100 } sub_network_id={ 0 } } sub_intel_networks={ { strength=100 } } } }
+        }}"#;
+
+    #[test]
+    fn intel_networks_keep_positional_parallel_arrays_and_index_presence() {
+        let pack = parsed(NETWORKS).unwrap();
+        let operatives = pack.strategic_operatives.as_ref().unwrap();
+        assert_eq!(operatives.len(), 1);
+        let networks = &operatives[&2].networks;
+        assert_eq!(networks.len(), 2);
+        assert_eq!(networks[0].target, b"SOV");
+        assert_eq!(networks[0].state_ids, [219, 253]);
+        assert_eq!(networks[0].selectors, [0, -1]);
+        // Mismatched parallel lengths, duplicate states/targets and empty
+        // state lists are refused rather than partly read.
+        for broken in [
+            "countries={ENG={}} strategic_operatives={ strategic_operative={ 0={ intel_network={ target=\"SOV\" intel_network={ state_id={ 1 2 } strength={ 1 } sub_network_id={ 0 0 } } } } }}",
+            "countries={ENG={}} strategic_operatives={ strategic_operative={ 0={ intel_network={ target=\"SOV\" intel_network={ state_id={ 1 1 } strength={ 1 1 } sub_network_id={ 0 0 } } } } }}",
+            "countries={ENG={}} strategic_operatives={ strategic_operative={ 0={ intel_network={ target=\"SOV\" intel_network={ state_id={ 1 } strength={ 1 } sub_network_id={ 0 } } } intel_network={ target=\"SOV\" intel_network={ state_id={ 2 } strength={ 1 } sub_network_id={ 0 } } } } }}",
+            "countries={ENG={}} strategic_operatives={ strategic_operative={ 0={ intel_network={ target=\"SOV\" } } }}",
+        ] {
+            assert!(parsed(broken.as_bytes()).is_err(), "{broken}");
+        }
+        let absent = parsed(b"countries={ENG={}}").unwrap();
+        assert!(absent.strategic_operatives.is_none());
+    }
+    #[test]
+    fn operative_inherited_cooldown_fields_keep_reason_and_both_dates() {
+        let items = crate::parser::parse(
+            br#"id={ id=27 type=4713 } state=on_cooldown
+            cooldown_reason=forced_into_hiding leader_cooldown_start_date=1938.4.3.7
+            leader_modifier_enable_date=1938.4.8.19"#,
+        )
+        .unwrap()
+        .items;
+        let entry = parse_operative_entry(&items).unwrap();
+        assert_eq!(
+            entry.cooldown_reason.as_deref(),
+            Some(b"forced_into_hiding".as_slice())
+        );
+        assert_eq!(
+            entry.cooldown_end_date.unwrap().engine_hour().unwrap()
+                - entry.cooldown_start_date.unwrap().engine_hour().unwrap(),
+            5 * 24 + 12
+        );
+    }
+}

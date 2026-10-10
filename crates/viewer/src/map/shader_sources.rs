@@ -1,21 +1,18 @@
 //! Named source/include diagnostics for every compiled map pass.
-//! Native effect lookup replaces `.lua` with `.shader` at 1423F4EC0. Includes are
-//! walked by the shared reader, not a second list of vanilla dependencies.
+//! Effect lookup replaces .lua with .shader. The shared content reader resolves includes through the
+//! recorded stack.
 
 use std::{cell::RefCell, collections::BTreeMap, collections::BTreeSet, io, sync::Arc};
 
 use installed_content::{ResolvedLayers, image::native::Decode, pdxshader};
 
-/// The renderer's global defines for the map passes (`derive_map_shader_constants@140A4DDE0`),
-/// under the client's own `force_pow2_textures` (`decode`, as `get_force_power_of_two@1423F07B0`
-/// answers both it and `DecodeTextureImage@1423F9A50`): with it set, the passes' file textures
-/// are padded ([`super::textures::load_file`]) and their generated ones are not, as in the game.
+/// Renderer globals use the client force_pow2_textures setting. File textures can pad; generated
+/// textures retain their own dimensions.
 pub fn globals(map: [u32; 2], decode: Decode) -> Vec<String> {
     shader_pipeline::library::globals(map, decode)
 }
 
-/// 140A4DDE0 populates the renderer's global defines; 1423F4EC0 prepends them
-/// even when a pass's registration supplies no additional caller defines.
+/// Prepend renderer globals even when the pass supplies no caller defines.
 pub fn library(
     layers: &ResolvedLayers,
     map: [u32; 2],
@@ -29,9 +26,8 @@ pub fn library(
 }
 
 /// Each independently submitted map pass, including shared shader users.
-/// Engine registrations: map 141261100, mesh 14224BA50, names/shadow blur
-/// 140B40890, particles 142281B00, post 140FF1410, LUTs 14126F590,
-/// railroads 14159B9B0. Arrow techniques are selected by maparrows.txt.
+/// Map, mesh, names, shadow blur, particles, post, LUT and railway passes have separate
+/// registrations. Arrow techniques are selected by maparrows.txt.
 pub const PASSES: &[(&str, &str)] = &[
     ("terrain", "gfx/FX/pdxmap.shader"),
     ("terrain refraction", "gfx/FX/pdxmap.shader"),
@@ -112,7 +108,7 @@ fn graph(effect: &str, read: &dyn Fn(&str) -> io::Result<Vec<u8>>) -> Graph {
             .errors
             .insert(format!("missing shader {effect}"));
     }
-    // DX11's VFS header is implicit, not in Includes (142411430, 142B5AB60).
+    // DX11's VFS header is implicit, not in Includes.
     let header = "gfx/FX/defines_hlsl_dx11.fxh";
     if read(header).is_none() {
         out.borrow_mut()
@@ -200,8 +196,7 @@ fn passes_with(read: &dyn Fn(&str) -> io::Result<Vec<u8>>) -> io::Result<Vec<(St
         .iter()
         .map(|&(name, path)| (name.into(), path.into()))
         .collect();
-    // CGraphicalMap constructor 140B40890 loads this descriptor; 14125ACB0 uses
-    // its registered arrow and arrowText effects. They are not vanilla filenames.
+    // Resolve arrow and arrowText effects from this descriptor through the content stack.
     let path = "gfx/maparrows/maparrows.txt";
     let document = installed_content::parser::parse(&read(path)?)?;
     let effect = |items: &[installed_content::parser::Item], kind: &str| -> io::Result<String> {
@@ -261,7 +256,7 @@ mod tests {
     use super::*;
 
     /// The map passes compile under the client's own `force_pow2_textures` branch of
-    /// `140A4DDE0`, as the GUI does.
+    /// GUI and map passes share those globals.
     #[test]
     fn the_map_globals_follow_the_clients_force_pow2_textures() {
         let on = Decode {
@@ -275,11 +270,8 @@ mod tests {
         assert_eq!(defines, shader_pipeline::library::globals([5632, 2048], on));
     }
 
-    /// The game point samples its RGBA32F point-light table (`CPdxMap::vf2@141268590` creates it
-    /// as format 0x19, `R32G32B32A32_FLOAT`): every installed map pass that declares
-    /// `LightDataMap` declares it point, and meshes and particles take the physical PS9 sampler
-    /// `140B40890` creates point (`mesh_shader::map_samplers`). So the map binds it without
-    /// `FLOAT32_FILTERABLE`.
+    /// Point-sample the RGBA32F light table using its authored sampler for map, mesh and particle
+    /// draws. This binding does not require FLOAT32_FILTERABLE.
     #[test]
     #[ignore = "reads the installed game's shaders; set BATTLE_PLAN_GAME_DIR"]
     fn installed_map_passes_point_sample_the_light_table() {
@@ -338,6 +330,8 @@ mod tests {
 
     #[test]
     fn compatibility_policy3_shader_sources_keep_the_uncovered_read_note() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let layers = ResolvedLayers::from_folders_with_coverage_policy(&[], 3).unwrap();
         let files = [
             (
@@ -371,6 +365,8 @@ mod tests {
 
     #[test]
     fn recursive_shared_include_counts_all_passes_once_and_names_files() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let base = [
             ("root", "Includes = { \"a.fxh\" }"),
             ("gfx/FX/a.fxh", "Includes = { \"b.fxh\" }"),
@@ -396,6 +392,8 @@ mod tests {
 
     #[test]
     fn all_compiled_passes_report_changes_without_a_vanilla_only_gate() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let base = [
             ("root", "Includes = { \"shared.fxh\" }"),
             ("gfx/FX/shared.fxh", ""),
@@ -425,6 +423,8 @@ mod tests {
 
     #[test]
     fn removed_and_added_dependencies_and_hard_errors_are_not_silent() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let base = [
             ("root", "Includes = { \"old.fxh\" }"),
             ("gfx/FX/old.fxh", ""),

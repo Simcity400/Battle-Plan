@@ -1,23 +1,18 @@
-//! Same original province-domain borrower for DE2730/CDF3F0. Quiescent
-//! acquisition only. D8 remains opaque; pointers never enter owned output.
-//! Nonzero deferred mode, marked nodes and targets outside the authenticated
-//! D0 roots refuse; this does not certify native lifetime or orphan closure.
+//! Borrowed original province-domain areas and contacts require quiescent
+//! acquisition. The secondary domain remains opaque; pointers never enter
+//! owned output. Nonzero deferred mode, marked nodes and targets outside
+//! authenticated roots refuse, without certifying lifetime or orphan closure.
 //!
-//! Ownership: 140CE0EC0/140CDCB90 build D0; 140CE1650/140CDCFF0 build
-//! D8. Controller changes (140E6B8A0 -> 140CE2870) split/join D0;
-//! 140CDD410 and 140CDD7A0 rebuild the respective contact lists. World
-//! clear 140CDE710 nulls D0 backlinks before freeing contacts and the area;
-//! 140CDEC70 -> 140CDE660 does the same for D8. 140CE24A0 removes a
-//! contact through 140BB3D40, then frees its payload at 140CE252D even
-//! when removal only marked the node (140BB3D5F).
+//! Controller changes split and join the primary domain, and both domains
+//! can rebuild contact lists. World clear nulls backlinks before freeing
+//! contacts and areas. Contact removal can free payload while its node is
+//! only marked rather than unlinked.
 //!
-//! Acquisition finishes before the hourly trampoline (1401DCEF0) runs.
-//! That orders the next tick, but does not prove the cleanup callable
-//! 1401F6D90 -> 1401C85E0 or every indirect writer is excluded. A4/marks,
-//! vtables and the constructor's +110 counter provide no lock or graph
-//! generation. Mid-game attach has no earlier lifetime witness: acceptance
-//! still requires writer/free exclusion over the entire live-read interval,
-//! including writers already in flight at its first entry.
+//! Acquisition finishes before the next hourly tick, but this does not exclude
+//! cleanup or indirect writers. Mode, marks, vtables and the construction
+//! counter provide neither a lock nor graph generation. Acceptance requires
+//! writer/free exclusion throughout the live-read interval, including writers
+//! already in flight at the first entry after mid-game attach.
 use super::*;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -58,9 +53,9 @@ fn label(domain: &[ControllerAreaProvince], pointer: usize) -> Result<u32, &'sta
 }
 
 impl<M: Memory> Reader<'_, M> {
-    /// Off-hour arena hint from the authenticated original D0 domain. CDF3F0
-    /// follows +90's ordered contacts; its signed list count is +A0. No contact
-    /// pointer or payload is followed, and the hint never supplies hourly data.
+    /// Off-hour arena hint from the authenticated original domain and its ordered
+    /// contact-list signed count. It follows no contact pointer or payload and
+    /// never supplies hourly data.
     pub fn selected_area_edge_demand(
         &self,
         domain: &[ControllerAreaProvince],
@@ -200,7 +195,7 @@ impl<M: Memory> Reader<'_, M> {
             // Original selecting pointers, for first-land authentication. No
             // second province registry walk or representative reconstruction.
             scratch[..len].sort_unstable_by_key(|row| row.pointer);
-            let nonsea_count = value::<u32>(self.memory, state, 0x6b8); // 1401DB4F0
+            let nonsea_count = value::<u32>(self.memory, state, 0x6b8);
             let indices = self
                 .base
                 .checked_add(0x0332_0db8)
@@ -272,8 +267,8 @@ impl<M: Memory> Reader<'_, M> {
         }
     }
 
-    /// CDF3F0 follows node+10. CE24A0/BB3D40 can free payload before a
-    /// marked node is unlinked: mode and mark MUST precede payload reads.
+    /// Contact traversal follows the node payload. Removal can free payload
+    /// before a marked node is unlinked: mode and mark must precede payload reads.
     fn area_neighbours(
         &self,
         area: usize,
@@ -281,8 +276,8 @@ impl<M: Memory> Reader<'_, M> {
         mut output: crate::walk::Buffer<'_, u32>,
         required: &mut usize,
     ) -> Result<usize, &'static str> {
-        // 140CDBF47 initializes A4 as one byte; 140BB3D59 tests that byte.
-        // A5..A7 are padding, not deferred-mode bits or required controls.
+        // Deferred mode is one byte; the following three bytes are padding,
+        // separate from required controls.
         let header = read::<[u8; 21]>(self.memory, at(area, 0x90)?)
             .ok_or("selected area adjacency controls unreadable")?;
         let first = u64::from_le_bytes(header[..8].try_into().unwrap()) as usize;
@@ -298,7 +293,7 @@ impl<M: Memory> Reader<'_, M> {
         if mode != 0 {
             return Err("selected area deferred adjacency mode unsupported");
         }
-        // Contacts@140CDF3F0 follow the original signed +A0 count.
+        // Contacts follow the original signed list count.
         output.ensure(count as usize)?;
         if output.len() < count as usize {
             return Err("selected area adjacency arena exhausted");

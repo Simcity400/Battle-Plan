@@ -1,9 +1,9 @@
 //! Wargoal type identities from the recorded content stack.
 //!
-//! 140A2C690 reads direct `.txt` files in filename order with lexer mode 0;
-//! 140A2B480 appends every `wargoal_types` declaration. 140A2AEA0 interns its
-//! name, and 140A2C5D0 returns the first matching token. Descriptions only need
-//! that first declared spelling (+0x18), localised by 140616BC0.
+//! Read direct `.txt` files in filename order with lexer mode 0; append
+//! every `wargoal_types` declaration. Names are interned and lookup returns
+//! the first matching token. Descriptions only need that first declared
+//! spelling for localisation.
 
 use crate::{
     ResolvedLayers,
@@ -74,8 +74,8 @@ impl Database {
     }
 }
 
-/// CWarGoalType::ReadToken 140A2C950. Names and war-name prefixes are projected; its
-/// trigger/effect/one-value readers still decide the surrounding consumption.
+/// Names and war-name prefixes are projected; the trigger/effect/one-value
+/// readers still decide the surrounding consumption.
 pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Database> {
     #[derive(Clone, Copy)]
     enum Node {
@@ -185,9 +185,9 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     Ok(database)
 }
 
-/// Naming uses the same 140A2C950 consumption as identity descriptions, including
-/// reached instant_reward effects. Differing same-token definitions stay unknown
-/// because recorded goal operands do not identify their definition pointer.
+/// Naming uses the same consumption as identity descriptions, including
+/// reached instant_reward effects. Differing same-token definitions stay
+/// unknown because recorded goal operands do not identify their definition pointer.
 pub fn read_names(layers: &ResolvedLayers) -> io::Result<Names> {
     let database = read(layers)?;
     if let Some(why) = database.gap {
@@ -205,7 +205,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn war_naming_keeps_main_reader_forms_and_native_token_identity() {
+    fn war_naming_keeps_main_reader_forms_and_token_identity() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let database = parse(
             b"wargoal_types={First={instant_reward={set_country_flag=synthetic} take_states_limit=2 war_name=EARLY war_name=LATE} FIRST={war_name=LATE}}",
             &KeyNames::default(),
@@ -232,7 +234,9 @@ mod tests {
     }
 
     #[test]
-    fn native_wargoal_names_and_field_consumption() {
+    fn wargoal_names_and_field_consumption() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let database = parse(
             b"@cost=8 \"wargoal_types\"={hidden={}} WARGOAL_TYPES={First={allowed={always=no} instant_reward={set_country_flag=synthetic} generate_base_cost=@cost} FIRST={annex=yes} other={take_states={always=yes} unknown={@lost=7} expire=@lost}}",
             &KeyNames::default(),
@@ -244,7 +248,7 @@ mod tests {
         );
         assert_eq!(database.find(b"first").unwrap(), Some(b"First".as_slice()));
         assert!(database.find(b"undefined").unwrap().is_none());
-        // ReadFixed5/ReadString/ReadInt consume one token, retaining a later
+        // Fixed5/string/integer readers consume one token, retaining a later
         // definition rather than skipping the block after the operand.
         let database = parse(
             b"wargoal_types={one={expire={}} two={}}",

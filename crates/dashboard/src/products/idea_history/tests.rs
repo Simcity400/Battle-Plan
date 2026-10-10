@@ -8,6 +8,8 @@ use std::sync::atomic::AtomicBool;
 
 #[test]
 fn artwork_problems_reach_the_reply_once_and_an_unidentified_holder_is_unknown() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use super::{IdeaCharacter, IdeaSpan, ScannedIdeas, reply};
     use crate::products::{CountryParams, politics_content::PoliticsContent};
     let (mut catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -216,6 +218,8 @@ fn idea_history_spans_break_at_gaps_and_advisors_keep_their_recorded_role() {
 
 #[test]
 fn advisor_traits_select_the_first_native_name_match() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::idea_history::{Joined, prepare_info};
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -251,9 +255,8 @@ fn advisor_traits_select_the_first_native_name_match() {
         localise: &localise,
     };
     let (advisor, findings) = prepare_info(&joined, "advisor", None, Err("no holder"), false);
-    // 1412894E0 -> 140712D20 -> 140710200 keeps the first name match.
-    // The following unread suffix cannot change that match, but can hide
-    // a match before Later or define Missing.
+    // The first name match wins. The following unread suffix cannot change
+    // that match, but can hide a match before Later or define Missing.
     let first = &advisor.traits[0];
     assert!(first.known);
     assert_eq!(first.unknown, None);
@@ -276,6 +279,8 @@ fn advisor_traits_select_the_first_native_name_match() {
 
 #[test]
 fn ideas_join_content_for_category_slot_and_traits() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::{
         content_check::Kind,
         products::idea_history::{Joined, categories, prepare_info},
@@ -285,7 +290,8 @@ fn ideas_join_content_for_category_slot_and_traits() {
         b"idea_categories = { government = { slot = economy character_slot = political_advisor character_slot = political_advisor }           country = { type = national_spirit } military_staff = { character_slot = theorist } }",
         &names,
     );
-    // An officer-corps group's entries are character advisor templates
+    // An officer-corps group's entries are character advisor templates,
+    // not ideas.
     let file = installed_content::ideas::parse_ideas(
         b"ideas = { economy = { law = yes civilian_economy = { modifier = { consumer_goods_factor = 0.35 } } }           country = { GER_spirit = { modifier = { STABILITY_FACTOR = 0.1 hidden_modifier = { Stability_Factor = 0.2 } } } }           theorist = { GER_theorist = { traits = { military_theorist } modifier = { army_org = 1 } } } }",
         &["theorist".to_owned()],
@@ -322,8 +328,8 @@ fn ideas_join_content_for_category_slot_and_traits() {
         (spirit.category.as_deref(), spirit.slot),
         (Some("country"), None)
     );
-    // One line per modifier, by the identity its folded key names
-    // (1424A7A90), the last value kept and hidden by `hidden_modifier`.
+    // One line per modifier, by the identity its folded key names,
+    // the last value kept and hidden by hidden_modifier.
     assert_eq!(
         spirit.effects,
         [crate::products::idea_history::EffectLine {
@@ -356,7 +362,7 @@ fn ideas_join_content_for_category_slot_and_traits() {
         (theorist.category.as_deref(), theorist.slot.as_deref()),
         (Some("military_staff"), Some("theorist"))
     );
-    // The officer template keeps its role's `modifier` (1413CA970).
+    // The officer template keeps its role's modifier.
     assert!(theorist.effects_known);
     assert_eq!(
         (
@@ -870,6 +876,8 @@ fn idea_history_feed_preserves_each_unchanged_unresolved_hour_before_additions()
 
 #[test]
 fn idea_history_effect_keys_include_shared_effect_and_text_sources_once() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = installed_content::ideas::IdeaContent::default();
     let characters = installed_content::characters::Characters::default();
     let traits = installed_content::leader_traits::LeaderTraits::default();

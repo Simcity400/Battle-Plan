@@ -1,11 +1,11 @@
 //! CountryStabilityInputs against each country's saved stability terms, and
 //! CountryStabilityLines as an explicit limitation.
 //!
-//! `CCountry::Write@14070C580` saves the stored words GetStability and
-//! GetWarSupport read: the bases (`stability`, `war_support`), the Q15
-//! penalties +0x14c0..+0x14e0 as five decimals truncated toward zero (a live
+//! The country save writer saves the stored words stability and
+//! war-support calculations read: the bases (`stability`, `war_support`), the Q15
+//! penalties as five decimals truncated toward zero (a live
 //! save proved they are decimals, not raw words, and that the writer truncates)
-//! and the coastal term +0x1600 through the fixed5 writer, each penalty and the coastal term only when
+//! and the coastal term through the fixed5 writer, each penalty and the coastal term only when
 //! nonzero. Everything else the table records is computed, cached outside
 //! the country or engine state no writer serializes.
 
@@ -136,7 +136,7 @@ fn inputs(
     }
     report.compared("CountryStabilityInputs", compared);
     report.limitation(
-        "no save writer serializes the war predicates (IsAtWar mode 1, offensive and defensive war), the interception ring sum, world tension as GetWarSupport reads it, the loaded defines, the tracked modifier getter values, the tree's child count or the active language; the ruling party's popularity is saved per party but not joined here. These fields decode but are not certified against a save",
+        "no save writer serializes the war predicates (the current war test, offensive and defensive war), the interception ring sum, world tension used by war support, the loaded defines, the tracked modifier getter values, the tree's child count or the active language; the ruling party's popularity is saved per party but not joined here. These fields decode but are not certified against a save",
         format!("CountryStabilityInputs: {} rows", rows.len()),
     );
     Ok(())
@@ -146,7 +146,7 @@ fn lines(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
     let rows = complete::<tables::CountryStabilityLines>(frame)?;
     report.compared("CountryStabilityLines", 0);
     report.limitation(
-        "the country modifier tree (CCountry +0x5d0) and the source pairing are runtime state no writer serializes; lines, identities and unpaired display text decode but have no save comparison",
+        "the country modifier tree and the source pairing are runtime state no writer serializes; lines, identities and unpaired display text decode but have no save comparison",
         format!("CountryStabilityLines: {} rows", rows.len()),
     );
     Ok(())

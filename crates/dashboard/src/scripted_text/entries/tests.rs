@@ -2,6 +2,8 @@ use super::*;
 
 #[test]
 fn description_append_preserves_active_cursor_graph_and_guard_state() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut graph = EventScopes::new(vec![
         EventScope {
             root: Link::Scope(1),
@@ -60,6 +62,8 @@ fn description_append_preserves_active_cursor_graph_and_guard_state() {
 
 #[test]
 fn scripted_text_cached_state_diagnostics_are_filtered_and_reported_once() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use installed_content::states::{Diagnostic, MisreadCause};
     let (cat, _folder) = crate::scripted_text::tests::catalogue("", "");
     let warnings = vec![
@@ -122,6 +126,8 @@ fn scripted_text_cached_state_diagnostics_are_filtered_and_reported_once() {
 
 #[test]
 fn scripted_text_state_display_shares_precedence_language_and_cached_failures() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut cat, _folder) =
         crate::scripted_text::tests::catalogue("", " MOD_STATE:0 \"Mod state\"\n");
     let content = cat.scripted_content().unwrap();

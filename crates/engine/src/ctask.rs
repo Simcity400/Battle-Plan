@@ -1,20 +1,18 @@
-//! Read-only completion witness for the retained native graphics task.
-//!
-//! `1424BF680` constructs the wrapper, installs its exact vtable and retains
-//! the item at +10. `1424C04A0` returns true exactly when that nonnull item's
-//! signed state is 2. `1424C08F0` publishes 1 before invoking the body and 2
-//! after it returns; worker1424C0530 uses the same locked publication. The
-//! owning idler retains the wrapper until its main-thread wait/release, so
-//! this reader requires that original authenticated main-thread owner loan.
-//! It calls neither IsDone nor Wait and returns no native pointer.
+//! Read-only completion witness for a retained graphics task. Construction
+//! installs wrapper identity and retains the item. Completion requires a
+//! nonnull item with signed state exactly two. Execution publishes state one
+//! before running the body and two after return using locked publication.
+//! The owning idler retains the wrapper until main-thread wait/release, so
+//! require that original authenticated main-thread owner loan. This reader
+//! neither invokes completion/wait nor returns a game pointer.
 
 use crate::{Memory, read};
 
-/// `1424BF680` installs CTask's primary vtable in the allocated wrapper.
+/// Primary task-wrapper vtable.
 pub const VTABLE_RVA: usize = 0x02b7_b428;
-/// `1424BF680` retains this item; `1424C04A0` follows the same pointer.
+/// Retained work-item pointer.
 pub const ITEM: usize = 0x10;
-/// `1424C04A0` reads this native signed i32 and compares it with exactly 2.
+/// Signed i32 task state tested for exactly two.
 pub const ITEM_STATE: usize = 0x58;
 
 pub const WRAPPER_UNAVAILABLE: &str = "transport graphics task wrapper unavailable";
@@ -25,7 +23,7 @@ pub const STATE_UNAVAILABLE: &str = "transport graphics task state unavailable";
 pub const OUTSTANDING: &str = "transport graphics task outstanding";
 pub const STATE_UNSUPPORTED: &str = "transport graphics task state unsupported";
 
-/// One original IsDone predicate under an authenticated idler owner loan.
+/// One original completion predicate under an authenticated idler-owner loan.
 pub fn read_completed(memory: &impl Memory, base: usize, task: usize) -> Result<(), &'static str> {
     if task == 0 {
         return Err(WRAPPER_UNAVAILABLE);

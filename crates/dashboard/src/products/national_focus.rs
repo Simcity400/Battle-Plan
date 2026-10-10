@@ -401,8 +401,8 @@ pub(crate) struct FocusCompletion {
 }
 
 /// One latest ordered completion list per recorded identity; no historical full
-/// lists, progress, active focus or UI segments are retained. AddCompletedFocus
-/// (1402CD170) appends only ordinal/token, so emitted hours are observation bounds.
+/// lists, progress, active focus or UI segments are retained. Completed entries
+/// append only ordinal/token, so emitted hours are observation bounds.
 #[derive(Default)]
 pub(crate) struct FocusCompletionProjection {
     previous: BTreeMap<(u32, u32), FocusOrder>,

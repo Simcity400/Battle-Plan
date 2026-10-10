@@ -1,8 +1,7 @@
 //! The country operands the land-model selectors prefix entity names with.
 //!
-//! `141917880` tries the cosmetic tag (`CCountry+0x1488`), the tag and the
-//! runtime graphical culture (`+0x1028`, `CountryAppearance`). The transport
-//! ladder `141278920` uses the original country (`+0x130C`) of a dynamic
+//! Try the cosmetic tag, the tag and the runtime graphical culture from
+//! `CountryAppearance`. Transport lookup uses a dynamic country's original
 //! country instead, whose tag `CountryAppearance.name_tag` names. The ruling
 //! party's ideology group filters the authored graphic pools.
 

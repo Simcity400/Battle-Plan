@@ -1,4 +1,4 @@
-//! Shared naval title geography from 1415B06C0. Consumers supply recorded
+//! Shared naval title geography. Consumers supply recorded
 //! victory points and content map positions; province naming stays with their
 //! existing native name ladder.
 use installed_content::{
@@ -6,21 +6,15 @@ use installed_content::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Every strategic region's candidate provinces in 1415B06C0's order.
+/// Every strategic region's candidate provinces in the game's order.
 ///
-/// - A state's province list (CState+0x18) is its template's list
-///   (140AAF580 appends each valid province of every `provinces` block, in
-///   order) with repeats dropped: CState::InitializeProvinces (1409D1F20)
-///   logs a repeat and does not append it again.
-/// - A province's state (CProvince+0xC0) is the last state to list it:
-///   CGameState::InitializeProvinces (1401CD490) initialises the states in
-///   id order (the state table is indexed by id), and 1409D1F20 overwrites
-///   the backlink ("thus overriding first state") while the province stays
-///   in both lists.
-/// - The region's states (CStrategicRegion+0x68) are appended by the region
-///   rebuild 140E0F2B0 at the first of their provinces in the region
-///   template's province order, and each brings its whole list, whether or
-///   not those provinces lie in the region.
+/// - A state's province list is its template's list: valid provinces from
+///   every `provinces` block in order, with repeats logged and dropped.
+/// - A province's state is the last state to list it. States initialize in
+///   id order and overwrite the backlink, while the province stays in both lists.
+/// - The region's states are appended at the first of their provinces in
+///   the region template's province order. Each brings its whole list,
+///   whether or not those provinces lie in the region.
 ///
 /// `valid` is whether a province id names a map province: the template
 /// reader and the region rebuild skip any other.
@@ -65,9 +59,9 @@ pub fn battle_name_candidates(
         .collect()
 }
 
-/// 140A51B90 (through CProvince::GetWrappedMapDistance 140E67850): zero for
-/// the same province, else the fixed5 length of the integer position deltas,
-/// the horizontal one wrapped across the map width, in native i32 arithmetic.
+/// Zero for the same province, else the fixed5 length of the integer
+/// position deltas, with horizontal wrapping across the map width and
+/// wrapping i32 arithmetic.
 fn wrapped_distance(width: i32, from: (u32, [i32; 2]), to: (u32, [i32; 2])) -> i64 {
     if from.0 == to.0 {
         return 0;
@@ -83,16 +77,16 @@ fn wrapped_distance(width: i32, from: (u32, [i32; 2]), to: (u32, [i32; 2])) -> i
     native_fixed_sqrt(dy.wrapping_mul(dy).wrapping_add(dx.wrapping_mul(dx)) as u32)
 }
 
-/// What 1415B06C0's province pick reads besides the candidates.
+/// What the province pick reads besides the candidates.
 pub struct Picker<'a> {
-    /// CMap+0x40, the map width the horizontal delta wraps across.
+    /// The map width the horizontal delta wraps across.
     pub width: i32,
     /// `NNavy.BATTLE_NAME_VP_FACTOR` and `NNavy.BATTLE_NAME_VP_CUTOFF`, fixed5.
     pub factor: i64,
     pub cutoff: i64,
-    /// The province definition's map position (+0xB0).
+    /// The province definition's map position.
     pub position: &'a dyn Fn(u32) -> [i32; 2],
-    /// The province's current victory points (CProvince+0x38), or why unknown.
+    /// The province's current victory points, or why unknown.
     pub victory_points: &'a dyn Fn(u32) -> Result<i32, String>,
 }
 

@@ -294,7 +294,7 @@ fn political_fill_uses_controller_and_borders_use_owner() {
     let map = map();
     let frame = occupied();
     let control = regions(&map, &frame).unwrap();
-    // Slot plus one: Germany is 1 and the Soviet Union 2 (section 1.7).
+    // Slot plus one: Germany is 1 and the Soviet Union 2.
     assert_eq!(control.country_of[1], 1);
     assert_eq!(control.country_of[3], 2);
     assert_ne!(control.country_of[1], control.country_of[3]);
@@ -619,10 +619,9 @@ fn inheritance_chains_use_the_final_source_and_reject_cycles() {
     );
 }
 
-/// `CCountry::GetMapColors@1406E03D0` follows a current autonomy status's definition byte to
-/// the overlord. A country whose status, definition or overlord the hour lacks is undecided
-/// by the named operand, never given its own colour; a complete table's missing row is the
-/// native null status.
+/// Current autonomy definitions select inherited overlord colours. Missing status, definition or
+/// overlord operands leave the source undecided with a named reason. A missing row in a complete
+/// table is a null status.
 #[test]
 fn incomplete_inheritance_inputs_leave_the_colour_source_undecided() {
     let mut map = map();
@@ -674,7 +673,7 @@ fn incomplete_inheritance_inputs_leave_the_colour_source_undecided() {
     );
     let why = truncated.source(2).unwrap_err();
     assert!(
-        why.contains("+0x350") && why.contains("Autonomy is truncated"),
+        why.contains("current autonomy status") && why.contains("Autonomy is truncated"),
         "{why}"
     );
     // An inheriting status whose overlord no Subjects row names.
@@ -694,7 +693,7 @@ fn incomplete_inheritance_inputs_leave_the_colour_source_undecided() {
         TableView::Complete(TableRows::Autonomy(vec![status(b"union")])),
         TableView::Complete(TableRows::Subjects(Vec::new())),
     );
-    assert!(orphan.source(2).unwrap_err().contains("+0x188"));
+    assert!(orphan.source(2).unwrap_err().contains("overlord"));
     // The political fill names them and keeps its own colour.
     let mut frame = occupied();
     *frame.tables[TableId::Autonomy.index()] =

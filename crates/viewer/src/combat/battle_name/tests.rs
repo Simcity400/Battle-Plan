@@ -1,8 +1,8 @@
 use super::*;
 use crate::combat::binding::NoIcons;
 
-/// 140E68E30 qualifies with the state owner's original tag or tag
-/// (1406DF830), from its independent exact suffix; missing rows are refused.
+/// Victory-point keys use the state owner's original tag or own tag
+/// from its independent exact suffix; missing rows are refused.
 #[test]
 fn the_victory_point_tag_is_the_state_owners_original_tag() {
     use replay::{
@@ -178,7 +178,7 @@ fn a_picked_province_is_named_through_the_native_ladder() {
         .as_deref(),
         Ok("STRATEGICREGION_5")
     );
-    // 140E68E30 picks the qualified key once: its empty text goes to the
+    // the game picks the qualified key once: its empty text goes to the
     // state ladder, never to the generic key.
     let empty: Localisation = [
         ("VICTORY_POINTS_10", "Midway"),
@@ -198,9 +198,9 @@ fn a_picked_province_is_named_through_the_native_ladder() {
     };
     assert_eq!(
             province_name(&NoIcons, &loc, &unknown),
-            Err("province 10's recorded rename (CProvince+0x40) is unknown: the ProvinceNames table is unavailable this hour (x)".into())
+            Err("province 10's recorded rename is unknown: the ProvinceNames table is unavailable this hour (x)".into())
         );
-    // CState::display_name (1409CC380): the rename, else the owner name,
+    // State display naming: the rename, else the owner name,
     // else the definition's localised name key.
     let mut loc: Localisation = [("STATE_7", "Bohemia")]
         .into_iter()
@@ -238,7 +238,7 @@ fn a_picked_province_is_named_through_the_native_ladder() {
     );
     assert_eq!(
         province_name(&NoIcons, &loc, &named(b"\xff", b"")),
-        Err("state 7: the custom name (CState+0x38) is not UTF-8".into())
+        Err("state 7: the custom name is not UTF-8".into())
     );
     // Stored without its key, a name is refused in another language; the
     // template's is not.

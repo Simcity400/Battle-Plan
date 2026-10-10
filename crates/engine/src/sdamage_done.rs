@@ -1,18 +1,15 @@
-//! `NCombatLog::CStatsObserver::SDamageDone` attribution entry.
-//!
-//! The old collector reads damage as u32 then widens it to u64. That does not
-//! prove the engine field is only four bytes; verify its producer before recording
-//! this value in the new native-precision format.
+//! Damage attribution entry. The full damage-field width is not established;
+//! a four-byte read does not authorize recording a narrower value.
 
-/// SDamageDone primary vtable; archived offsets.rs:823, confirmed by a729 RTTI.
+/// Attribution-entry vtable.
 pub const VTABLE_RVA: usize = 0x0294_6ec8;
-/// SDamageDone in-memory array stride; archived offsets.rs:824 and attribution element addressing.
+/// In-memory array stride.
 pub const STRIDE: usize = 0x20;
-/// SDamageDone u32 dealer country tag; archived offsets.rs:825 and attribution reader.
+/// Dealer country tag, u32.
 pub const DEALER: usize = 0x08;
-/// SDamageDone u32 dealer echo checked against +0x08; archived offsets.rs:826 and attribution reader.
+/// Dealer echo, u32, checked against +0x08.
 pub const DEALER_ECHO: usize = 0x0c;
-/// SDamageDone u32 victim country tag; archived offsets.rs:827 and attribution reader.
+/// Victim country tag, u32.
 pub const VICTIM: usize = 0x10;
-/// SDamageDone damage at +0x18, old u32 read with unproved full width; archived offsets.rs:828 and attribution reader.
+/// Damage at +0x18; full width remains unestablished.
 pub const DAMAGE: usize = 0x18;

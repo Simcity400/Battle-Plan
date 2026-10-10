@@ -1,5 +1,5 @@
 //! Presentation fields of the native special-project databases. Definitions
-//! are keyed by LexerToken, not by their position in the database.
+//! are keyed by lexer token, not by their position in the database.
 
 use crate::{
     ResolvedLayers,
@@ -37,10 +37,10 @@ pub struct Catalog {
     pub projects: BTreeMap<String, Project>,
     pub specializations: BTreeSet<String>,
     /// First registered token spelling, before any repeated definition is
-    /// skipped (1401698B0). The public raw-name set remains for its existing
-    /// consumers; effect display names use this token-identity projection.
+    /// skipped. The public raw-name set remains for its existing consumers;
+    /// effect display names use this token-identity projection.
     specialization_tokens: BTreeMap<Token, String>,
-    /// 140AABAD0 copies the manager's registration array, not token order.
+    /// Copies the manager's registration array, not token order.
     specialization_order: Vec<String>,
     pub warnings: Vec<String>,
     /// An unreadable stream may override prior tokens; none are assumed valid.
@@ -74,9 +74,8 @@ fn read(
     earlier: Option<&BTreeSet<Token>>,
 ) -> io::Result<Vec<crate::parser::Item>> {
     let mut registered = earlier.cloned().unwrap_or_default();
-    // Projects 140141670/140130160: mode 0, reuse repeated templates.
-    // Specializations 14018ABD0 -> 14016A5B0/1401698B0: mode 0, first
-    // token only, repeated bodies skipped. Dispatch 140AAC100/140A85D70.
+    // Projects: mode 0, reuse repeated templates. Specializations: mode 0,
+    // first token only, repeated bodies skipped. Each field retains its reader.
     let read = native::read(
         bytes,
         Mode::KeepMark,
@@ -103,13 +102,13 @@ fn read(
                 Some(b"special_project_parent") => Shape::ListIfOpen,
                 Some(b"project_tags") => Shape::ListIfOpen,
                 Some(b"visible" | b"allowed" | b"available") => Shape::Trigger,
-                Some(b"complexity") => Shape::ObjectIfOpen(Node::Complexity), // 141453030
+                Some(b"complexity") => Shape::ObjectIfOpen(Node::Complexity),
                 Some(b"project_output") => Shape::Object(Node::Output),
                 Some(b"ai_will_do" | b"empty_reward_weight") => Shape::Object(Node::Mtth),
                 Some(b"resource_cost") => Shape::Object(Node::Body),
                 Some(b"breakthrough_cost") => Shape::Object(Node::Costs),
-                // 140A85D70 -> 1409BFE50: the shared custom statement loop
-                // supports both references and inline reward definitions.
+                // The shared custom statement loop supports both references and
+                // inline reward definitions.
                 Some(b"unique_prototype_rewards" | b"generic_prototype_rewards") => {
                     Shape::Statements(Node::Uniform)
                 }
@@ -122,7 +121,7 @@ fn read(
             Node::Specialization => match field.keyword().as_deref() {
                 Some(b"icon" | b"blueprint_image" | b"program_background") => Shape::One,
                 Some(b"color") => Shape::Color,
-                _ => Shape::One, // 140AAC100 returns without ReportUnexpectedToken.
+                _ => Shape::One, // Unknown fields return without reporting.
             },
             Node::Complexity => match field.keyword().as_deref() {
                 Some(b"min" | b"max") => Shape::One,
@@ -137,8 +136,8 @@ fn read(
                     Shape::One
                 }
             }
-            // CPrototypeReward::ReadToken 140A82ED0; scalar presentation is
-            // projected away, but every reached reader still consumes its form.
+            // Scalar reward presentation is projected away, but every reached
+            // reader still consumes its form.
             Node::Reward => match field.keyword().as_deref() {
                 Some(b"option") => Shape::Object(Node::Option),
                 Some(b"threshold") => Shape::Object(Node::Complexity),
@@ -153,9 +152,9 @@ fn read(
                 Some(b"iteration_output") => Shape::Object(Node::Output),
                 Some(b"ai_will_do") => Shape::Object(Node::Mtth),
                 Some(b"default" | b"token") => Shape::One,
-                _ => Shape::Skip, // CPrototypeRewardOption::ReadToken 140A83310.
+                _ => Shape::Skip, // Unknown option fields are skipped.
             },
-            // SOutput::ReadToken 140A83400 -> 1409BFE50/14048FD40.
+            // Output fields share custom statement and uniform-list readers.
             Node::Output => match field.keyword().as_deref() {
                 Some(b"country_effects") => Shape::EffectIn(4),
                 Some(b"scientist_effects") => Shape::EffectIn(8),
@@ -182,7 +181,7 @@ fn read(
                         .as_deref()
                         .is_some_and(|key| crate::equipment::stat_index(key).is_some())
                 {
-                    Shape::One // ReadAndCombineStatToken 140625D00.
+                    Shape::One // Stats read and combine one token.
                 } else {
                     Shape::Skip
                 }
@@ -214,9 +213,8 @@ impl Catalog {
         Ok(&self.specialization_order)
     }
 
-    /// Native token match (14022F320), with the first registered spelling
-    /// used by get_token_string (1424A7300) in specialization names
-    /// (140AABD40). An unsettled stream cannot prove a lookup's answer.
+    /// Token identity uses the first registered spelling for specialization
+    /// names. An unsettled stream cannot prove a lookup's answer.
     pub fn specialization(&self, token: &Token) -> Result<Option<&str>, String> {
         if let Some(why) = &self.unsettled {
             return Err(why.clone());
@@ -226,7 +224,7 @@ impl Catalog {
 
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let mut result = Self::default();
-        // CBuildingDatabase::load 14018B610 loads project bodies after buildings.
+        // Project bodies load after buildings.
         let names = layers.key_names()?;
         for (folder, specialization) in [
             ("common/special_projects/specialization/", true),
@@ -272,7 +270,7 @@ impl Catalog {
                         continue;
                     }
                     let project = result.projects.entry(token.clone()).or_default();
-                    // 140130160 reuses the earlier template: scalars overwrite,
+                    // Reuse the earlier template: scalars overwrite,
                     // omitted fields retain their previous value.
                     for field in item.value.items().unwrap_or_default() {
                         if field.keyword_is("prototype_time") {
@@ -330,7 +328,7 @@ impl Catalog {
 mod tests {
     use super::*;
     #[test]
-    fn native_scalar_consumption_variables_and_narrative_dispatch() {
+    fn scalar_consumption_variables_and_narrative_dispatch() {
         let items = read(br#"@kind = mod_science p = { SPECIALIZATION = @kind icon = GFX_mod narrative = { name = mod_name desc = x unknown = {name=no} } }"#, false, None, None).unwrap();
         let fields = items[0].value.items().unwrap();
         assert_eq!(string(&fields[0].value).unwrap(), "mod_science");
@@ -389,6 +387,8 @@ mod tests {
     #[test]
     #[ignore = "requires BATTLE_PLAN_SP_GAME and BATTLE_PLAN_SP_WORKSHOP read-only content folders"]
     fn installed_content_corpus() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use std::path::Path;
         fn walk(
             root: &Path,

@@ -936,7 +936,7 @@ fn pspan(
     log.take_bulk(memory, addr?, len, mask)
 }
 
-/// Original CHuman fields and string gates, without retrying a failed span.
+/// Original player fields and string gates, without retrying a failed span.
 fn copy_player(
     log: &mut RawLog<2>,
     memory: &impl engine::Memory,
@@ -1013,7 +1013,7 @@ fn copy_player(
         }
         payloads[index] = Some((source, len));
     }
-    // 140BAD720/1401C0920 consume exact std::string payload lengths. Both
+    // Player descriptors use exact stored string payload lengths. Both
     // original descriptor terminator gates precede either payload copy.
     for (source, len) in payloads.into_iter().flatten() {
         if pspan(log, memory, Some(source), len, P_PLAYERS).is_none() {

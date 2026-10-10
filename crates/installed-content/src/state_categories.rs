@@ -1,11 +1,11 @@
 //! State-category identities from the recorded content stack.
 //!
-//! 1413AFB60 lists direct files in filename order with lexer mode 0;
-//! 1413AF3B0 reads `state_categories`, reusing an existing category on a
-//! duplicate. 1413AFAC0/1413AEBB0 compare the ASCII-folded hash (140BBA1B0) and name.
-//! The constructor (1413AECB0) marks every declared category valid (+0x10).
-//! Description 1403184E0 localises the effect's operand, not cached +0xB8
-//! or `local_building_slots`; only declared names are needed here.
+//! Direct files load in filename order with lexer mode 0;
+//! `state_categories` reuses an existing category on a duplicate.
+//! Identity compares ASCII-folded hash and name. Every declared category
+//! starts valid. Descriptions localise the effect's operand, rather than
+//! the cached name or `local_building_slots`; only declared names are
+//! needed here.
 
 use crate::{
     ResolvedLayers,
@@ -51,7 +51,7 @@ impl Database {
     }
 }
 
-/// 1413AFCF0: colour, per-building maximums, then CModifier::ReadMember.
+/// Colour, per-building maximums, then shared modifier fields.
 pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Database> {
     #[derive(Clone, Copy)]
     enum Node {
@@ -82,7 +82,7 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Database> {
                 )
                 .map(Node::Modifier),
             },
-            // Custom uniform statement reader 1413AFDE0 consumes one value.
+            // Each building maximum consumes one value.
             Node::Maximums => Shape::One,
             Node::Modifier(node) => modifiers::shape(
                 node,
@@ -149,7 +149,9 @@ mod tests {
     }
 
     #[test]
-    fn native_state_category_names_and_consumption() {
+    fn state_category_names_and_consumption() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         for (input, expected) in [
             (b"state_categories={Syn={local_building_slots=3 color={1 2 3}} SYN={local_supplies=0.1} other={buildings_max_level={mod_building=4}}}".as_slice(), vec![b"Syn".as_slice(), b"other"]),
             (b"\"state_categories\"={hidden={}} STATE_CATEGORIES={\"Mixed\"={}}", vec![b"Mixed".as_slice()]),
@@ -164,6 +166,8 @@ mod tests {
 
     #[test]
     fn state_category_stack_order_and_replacement() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!("state-category-{}", std::process::id()));
         let _folder = Folder(root.clone());
         let base = root.join("base");
@@ -207,6 +211,8 @@ mod tests {
 
     #[test]
     fn uncertain_state_category_modifier_names_are_named() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut names = KeyNames::default();
         names.effects.modifiers_gap = Some("synthetic missing registry".into());
         let error = parse(b"state_categories={syn={unresolved_modifier={}}}", &names)

@@ -145,6 +145,8 @@ fn frame() -> DecodedFrame {
 
 #[test]
 fn counter_members_use_the_shared_summary_without_other_province_units() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = frame();
     let content = content();
     let links = BTreeMap::from([(11, 1), (22, 2)]);
@@ -205,7 +207,7 @@ fn exact_counter_members_refuse_missing_inputs_without_a_province_label() {
     );
     assert_eq!(
         prepare_members(&frame, &[1, 3], &canonical, &vision).unwrap_err(),
-        "division 3 unit intel (1416068C0) unavailable"
+        "division 3 unit intel unavailable"
     );
     assert_eq!(
         prepare_members(&frame, &[1], &|_| None, &vision).unwrap_err(),
@@ -215,6 +217,8 @@ fn exact_counter_members_refuse_missing_inputs_without_a_province_label() {
 
 #[test]
 fn composition_aggregates_globally_in_first_encounter_and_keeps_clones_separate() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = content();
     let token_rows = [
         LexicalTokenRow {
@@ -279,6 +283,8 @@ fn composition_aggregates_globally_in_first_encounter_and_keeps_clones_separate(
 
 #[test]
 fn native_type_mask_and_nato_frame_select_ship_prefix_and_native_range_key() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = content();
     let entries = [Entry {
         name: "Boat".into(),
@@ -293,6 +299,8 @@ fn native_type_mask_and_nato_frame_select_ship_prefix_and_native_range_key() {
 
 #[test]
 fn content_preload_uses_the_same_native_glyph_names_and_type_masks() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (assets, refusals) = assets(&content().subunits);
     assert!(refusals.is_empty());
     assert!(
@@ -319,6 +327,8 @@ fn content_preload_uses_the_same_native_glyph_names_and_type_masks() {
 
 #[test]
 fn count_ranges_are_exact_at_full_intel_and_clamp_nonpositive_counts() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let d = content().defines;
     assert_eq!(count_range(9, 1, 75_000, 123, 60_827_914, d), [9, 9]);
     assert_eq!(count_range(-9, 1, 0, 123, 60_827_914, d), [0, 0]);
@@ -345,6 +355,8 @@ fn count_ranges_are_exact_at_full_intel_and_clamp_nonpositive_counts() {
 
 #[test]
 fn count_ranges_depend_on_native_month_seed_and_subunit_index() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let d = content().defines;
     let range = count_range(100, 1, 40_000, 123, 60_827_914, d);
     assert!(range[0] < 100 && range[1] > 100);
@@ -357,6 +369,8 @@ fn count_ranges_depend_on_native_month_seed_and_subunit_index() {
 
 #[test]
 fn seeded_count_range_preserves_composition_salt_and_separate_air_salt() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let d = content().defines;
     let law = [d.minimum, d.maximum, d.range];
     let hour = 60_827_914;
@@ -374,6 +388,8 @@ fn seeded_count_range_preserves_composition_salt_and_separate_air_salt() {
 
 #[test]
 fn seeded_count_range_keeps_wrapping_native_salt() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let d = content().defines;
     let law = [d.minimum, d.maximum, d.range];
     let hour = 60_827_914;
@@ -391,6 +407,8 @@ fn seeded_count_range_keeps_wrapping_native_salt() {
 
 #[test]
 fn content_reader_keeps_native_category_reset_and_unknown_tail_refusals() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut content = content();
     assert_ne!(
         content.subunits.category(b"Boat").unwrap() & 0x80004003C1,

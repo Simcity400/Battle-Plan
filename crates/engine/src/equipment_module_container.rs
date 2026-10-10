@@ -1,6 +1,5 @@
-//! Equipment-module collection embedded at CEquipmentVariant+B0.
-//! BCFF10/BD0D50 establish the array at +8 and its signed count at +14.
-//! The old identity word at +0 is not a proven vtable and is not used to authenticate the collection.
+//! Equipment-module collection embedded in a variant. Its count is signed.
+//! The header's identity word does not authenticate a vtable.
 
 use crate::{
     Memory, cequipment_module, cequipment_variant,
@@ -11,18 +10,17 @@ use crate::{
     walk::Outcome,
 };
 
-/// Candidate module-container identity word; read_compact_air_variant_modules compares it, but RTTI validation fails.
+/// Candidate collection identity word; not used for authentication.
 pub const IDENTITY_WORD_RVA_CANDIDATE: usize = 0x0306_d170;
-/// Candidate module-container data pointer; old air reader uses variant+B8, eight bytes after its assumed header.
+/// Candidate module-container data pointer.
 pub const ENTRIES_CANDIDATE: usize = 0x08;
-/// Candidate module-container u32 capacity; old air reader uses variant+C0, relative header+10.
+/// Candidate module-container u32 capacity.
 pub const ENTRIES_CAPACITY_CANDIDATE: usize = 0x10;
-/// Candidate module-container u32 count; old air reader uses variant+C4, relative header+14.
+/// Candidate module-container u32 count.
 pub const ENTRIES_COUNT_CANDIDATE: usize = 0x14;
 
-/// The module is named by `definition_token`: CEquipmentModule's constructor
-/// 1415196D0 copies the authored key into its name and adds the token from
-/// that same string, so the name is content and is not copied per row.
+/// `definition_token` names the module from its authored content key.
+/// The content name is not copied into every row.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub variant: u64,
@@ -32,10 +30,9 @@ pub struct Row {
     pub definition_active: u8,
 }
 
-/// The containing variant authenticates this header. Native BCFF10/BD0D50
-/// traverse variant+B8/C4; the old word at B0 is not used as a fake vtable.
-/// `variants` must be the same complete registry census used for variant
-/// definitions. Missing source tables cannot be represented by a shorter slice.
+/// The containing variant authenticates this header. The collection identity
+/// word is not a substitute vtable. `variants` must be the same complete registry
+/// census as variant definitions; unavailable source tables cannot become shorter slices.
 pub fn walk(
     memory: &impl Memory,
     base: usize,

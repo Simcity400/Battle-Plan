@@ -18,12 +18,14 @@ fn event_fixture() -> (Fixture, installed_content::decisions::Database, Folder) 
 
 #[test]
 fn custom_effect_tooltip_binds_nested_arguments_in_the_caller_scope() {
-    // Reached native forms: Germany.txt's replace_ascended_advisor_tt and
-    // GOE_Raj.txt's country-transfer arguments; 1413832B0/14238F670.
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    // Bound arguments cover nested text, country tokens and integer tokens.
+
     let (mut fixture, _, _folder) = event_files_fixture(&[(
         "localisation/bound_l_english.yml",
         concat!(
-            "\u{feff}l_english:\n BOUND_ROOT:0 \"$CHARACTER$ / $TARGET$ / $NUMBER|0$ / $NESTED$\"\n",
+            "\u{feff}l_english:\n BOUND_ROOT:0 \"$NESTED$ | $NUMBER|0$ | $TARGET$ | $CHARACTER$\"\n",
             " BOUND_CHILD:0 \"<$WORD$>\"\n BOUND_WORD:0 \"[ROOT.GetTag]\"\n",
             " BOUND_WRONG:0 \"wrong\"\n BOUND_FIRST:0 \"first\"\n BOUND_SECOND:0 \"second\"\n"
         ),
@@ -31,7 +33,7 @@ fn custom_effect_tooltip_binds_nested_arguments_in_the_caller_scope() {
     set::<tables::LexicalTokens>(
         &mut fixture,
         vec![LexicalTokenRow {
-            token: 37,
+            token: 83,
             literal: b"bound_integer".to_vec(),
         }],
     );
@@ -41,11 +43,11 @@ fn custom_effect_tooltip_binds_nested_arguments_in_the_caller_scope() {
         ..Default::default()
     };
     let output = fixture.render_native(
-        "custom_effect_tooltip={localization_key=BOUND_WRONG CHARACTER=AAA TARGET=[ROOT.GetName] NUMBER=token:bound_integer NESTED={localization_key=BOUND_CHILD WORD=BOUND_WORD} localization_key=BOUND_ROOT}",
+        "custom_effect_tooltip={localization_key=BOUND_WRONG NESTED={WORD=BOUND_WORD localization_key=BOUND_CHILD} NUMBER=token:bound_integer TARGET=[ROOT.GetName] CHARACTER=AAA localization_key=BOUND_ROOT}",
         &mut super::super::tests::fresh(),
         content,
     );
-    assert_eq!(output.text, "Alpha / Alpha / 37 / <AAA>");
+    assert_eq!(output.text, "<AAA> | 83 | Alpha | Alpha");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 
     let output = fixture.render_native(
@@ -58,8 +60,10 @@ fn custom_effect_tooltip_binds_nested_arguments_in_the_caller_scope() {
 }
 
 #[test]
-fn custom_effect_tooltip_idea_callback_reuses_native_wrapper_and_missing_name() {
-    // The authored doubled brace stores a literal brace (14238C1A0).
+fn custom_effect_tooltip_idea_callback_reuses_wrapper_and_missing_name() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    // The authored doubled brace stores a literal brace.
     let (fixture, _, _folder) = event_files_fixture(&[(
         "localisation/bound_l_english.yml",
         concat!(
@@ -95,6 +99,8 @@ fn custom_effect_tooltip_idea_callback_reuses_native_wrapper_and_missing_name() 
 
 #[test]
 fn custom_effect_tooltip_refuses_only_the_unavailable_bound_fragment() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _, _folder) = event_fixture();
     let names = installed_content::key_names::KeyNames::default();
     let output = fixture.render_native(
@@ -116,7 +122,9 @@ fn custom_effect_tooltip_refuses_only_the_unavailable_bound_fragment() {
 }
 
 #[test]
-fn unscoped_bound_callbacks_use_native_null_context_text() {
+fn unscoped_bound_callbacks_use_null_context_text() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _, _folder) = event_fixture();
     fixture.with_renderer(
         &mut super::super::tests::fresh(),
@@ -139,6 +147,8 @@ fn unscoped_bound_callbacks_use_native_null_context_text() {
 
 #[test]
 fn format99_inactive_decision_seed_uses_first_stored_random_item() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, database) = decision_fixture(Some(None));
     set::<tables::Decisions>(&mut fixture, Vec::new());
     let definition = database.decision(b"SYN_DECISION").unwrap().unwrap();
@@ -184,7 +194,7 @@ fn format99_inactive_decision_seed_uses_first_stored_random_item() {
                     .map_err(str::to_owned),
                 decision_seed(0, definition, Some(None), 3)
             );
-            // Raw country 200 resolves to slot 2; 140721230 passes slot 2.
+            // Raw country 200 resolves to canonical slot 2.
             let selected = renderer
                 .decision_seeded_scope(definition, 1, Some(2), 0, false)
                 .unwrap();
@@ -200,6 +210,8 @@ fn format99_inactive_decision_seed_uses_first_stored_random_item() {
 
 #[test]
 fn format99_unlock_decision_reads_instant_flag_only_for_positive_delay() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, mut database, _folder) = event_fixture();
     let definition = database
         .entries
@@ -231,7 +243,7 @@ fn format99_unlock_decision_reads_instant_flag_only_for_positive_delay() {
         assert!(output.refusals.is_empty(), "{:?}", output.refusals);
         assert_eq!(
             output.text,
-            format!("Unlock Plan AAA\nSelect:\ndetailAfter {days}:\n\n")
+            format!("Unlock Agenda AAA\nSelect:\ndetailAfter {days}:\n\n")
         );
     }
     for instant_decisions in [Recorded::Value(None), Recorded::NotRecorded] {
@@ -247,7 +259,7 @@ fn format99_unlock_decision_reads_instant_flag_only_for_positive_delay() {
             &mut super::super::tests::fresh(),
             content,
         );
-        assert_eq!(output.text, "Unlock Plan AAA\nSelect:\ndetail\n");
+        assert_eq!(output.text, "Unlock Agenda AAA\nSelect:\ndetail\n");
         assert!(
             output
                 .refusals
@@ -285,7 +297,7 @@ fn event_files_fixture(
             "localisation/events_l_english.yml",
             concat!(
                 "\u{feff}l_english:\n AAA:0 \"Alpha\"\n BBB:0 \"Beta\"\n AAA_DEF:0 \"alpha\"\n BBB_DEF:0 \"beta\"\n",
-                " SYN_NAME:0 \"Plan [FROM.GetTag]\"\n SYN_CATEGORY:0 \"Category [ROOT.GetTag]\"\n",
+                " SYN_NAME:0 \"Agenda [FROM.GetTag]\"\n SYN_CATEGORY:0 \"Panel [ROOT.GetTag]\"\n",
                 " EFFECT_ACTIVATE_DECISION:0 \"Activate $NAME$\"\n EFFECT_REMOVE_DECISION:0 \"Remove $NAME$\"\n",
                 " EFFECT_REMOVE_MISSION:0 \"Cancel $NAME$\"\n EFFECT_ACTIVATES_MISSION:0 \"Mission $NAME$\"\n",
                 " ADD_DAYS_TO_MISSION:0 \"Add $DAYS|0$ to $MISSION$\"\n REMOVE_DAYS_TO_MISSION:0 \"Subtract $DAYS|0$ from $MISSION$\"\n",
@@ -294,7 +306,7 @@ fn event_files_fixture(
                 " DECISION_WHILE_ACTIVE:0 \"Active [ROOT.GetTag]\"\n POWER:0 \"Power\"\n COST:0 \"Cost\"\n MOD_BODY:0 \"Body [ROOT.GetTag]\"\n",
                 " EFFECT_ACTIVATE_TARGETED_DECISION:0 \"Targeted $NAME$\"\n TIP:0 \"detail\"\n EFFECT_COUNTRY_EVENT:0 \"Event $EVENT$\"\n SYN_EVENT:0 \"News [FROM.GetName]\"\n",
                 " EFFECT_SHOW_MIO_TOOLTIP_MIO_NAME:0 \"Organisation $NAME$\"\n EFFECT_SHOW_MIO_TOOLTIP_INITIAL_TRAIT_NAME:0 \"Trait $NAME$\"\n",
-                " SYN_MIO_NAME:0 \"Forge\"\n BBB_SYN_MIO_NAME:0 \"Forge [FROM.GetTag]\"\n SYN_MIO_initial_trait:0 \"Industry\"\n EFFECT_MIO_UNLOCK_MIO:0 \"Unlock $NAME$ [ROOT.GetTag]\"\n EFFECT_MIO_UNLOCK_POLICY:0 \"Policy $NAME$\"\n SYN_POLICY:0 \"Tools\"\n"
+                " SYN_MIO_NAME:0 \"Workshop\"\n BBB_SYN_MIO_NAME:0 \"Workshop [FROM.GetTag]\"\n SYN_MIO_initial_trait:0 \"Craft\"\n EFFECT_MIO_UNLOCK_MIO:0 \"Unlock $NAME$ [ROOT.GetTag]\"\n EFFECT_MIO_UNLOCK_POLICY:0 \"Policy $NAME$\"\n SYN_POLICY:0 \"Tools\"\n"
             ),
         ),
     ];
@@ -323,6 +335,9 @@ macro_rules! decision_description_case {
     ($name:ident, $body:literal, $expected:literal) => {
         #[test]
         fn $name() {
+            engine::executable_tables::initialize_for_tests().expect(
+                "BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests",
+            );
             let (fixture, database, _folder) = event_fixture();
             let names = installed_content::key_names::KeyNames::default();
             let output = fixture.render_native(
@@ -340,84 +355,86 @@ macro_rules! decision_description_case {
     };
 }
 
-// F reach examples, with synthetic identifiers and the same authored form.
-// common/continuous_focus/generic.txt:194 (14036F660).
+// Decision and mission examples exercise scalar and timer block forms.
+
 decision_description_case!(
-    activate_mission_native_scalar,
+    activate_mission_scalar,
     "activate_mission=SYN_DECISION",
-    "Mission Plan AAA\n"
+    "Mission Agenda AAA\n"
 );
-// common/decisions/ast.txt:2496 (140389C20).
+
 decision_description_case!(
-    remove_mission_native_scalar,
+    remove_mission_scalar,
     "remove_mission=SYN_DECISION",
-    "Cancel Plan AAA\n"
+    "Cancel Agenda AAA\n"
 );
-// common/decisions/por.txt:2452 (14036F380).
+
 decision_description_case!(
-    activate_decision_native_scalar,
+    activate_decision_scalar,
     "activate_decision=SYN_DECISION",
-    "Activate Plan AAA\n"
+    "Activate Agenda AAA\n"
 );
-// common/national_focus/czechoslovakia_mu.txt:16401 (140388CA0).
+
 decision_description_case!(
-    remove_decision_native_scalar,
+    remove_decision_scalar,
     "remove_decision=SYN_DECISION",
-    "Remove Plan AAA\n"
+    "Remove Agenda AAA\n"
 );
-// common/decisions/jap.txt:428 (14036F940).
+
 decision_description_case!(
-    activate_mission_tooltip_native_scalar,
+    activate_mission_tooltip_scalar,
     "activate_mission_tooltip=SYN_DECISION",
-    "Mission Plan AAA\n"
+    "Mission Agenda AAA\n"
 );
-// common/decisions/afg.txt:249 (140372A90).
+
 decision_description_case!(
-    add_days_mission_timeout_native_block,
-    "add_days_mission_timeout={mission=SYN_DECISION days=180}",
-    "Add 180 to Plan AAA\n"
+    add_days_mission_timeout_block,
+    "add_days_mission_timeout={days=47 mission=SYN_DECISION}",
+    "Add 47 to Agenda AAA\n"
 );
-// common/national_focus/australia_taog.txt:5811 (140399060).
+
 decision_description_case!(
-    unlock_decision_category_native_scalar,
+    unlock_decision_category_scalar,
     "unlock_decision_category_tooltip=SYN_CATEGORY",
-    "Unlock Category AAA\n"
+    "Unlock Panel AAA\n"
 );
-// common/characters/swe.txt:1566 (140399360).
+
 decision_description_case!(
-    unlock_decision_native_flags,
-    "unlock_decision_tooltip={decision=SYN_DECISION show_effect_tooltip=yes show_modifiers=yes}",
-    "Unlock Plan AAA\n"
+    unlock_decision_flags,
+    "unlock_decision_tooltip={show_modifiers=yes decision=SYN_DECISION show_effect_tooltip=yes}",
+    "Unlock Agenda AAA\n"
 );
 decision_description_case!(
     unlock_decision_missing_definition_keeps_wrapper,
     "unlock_decision_tooltip=missing",
     "Unlock \n"
 );
-// common/decisions/ins.txt:4837 (140388F80).
+
 decision_description_case!(
-    remove_decision_on_cooldown_native_scalar,
+    remove_decision_on_cooldown_scalar,
     "remove_decision_on_cooldown=SYN_DECISION",
-    "Remove Plan AAA\n"
+    "Remove Agenda AAA\n"
 );
 decision_description_case!(
     mission_timeout_negative_rounds_half_away,
     "add_days_mission_timeout={mission=SYN_DECISION days=-0.5}",
-    "Subtract 1 from Plan AAA\n"
+    "Subtract 1 from Agenda AAA\n"
 );
 decision_description_case!(
-    mission_timeout_zero_is_native_empty,
+    mission_timeout_zero_is_empty,
     "add_days_mission_timeout={mission=SYN_DECISION days=0.49999}",
     ""
 );
 decision_description_case!(
     mission_tooltip_appends_desc_to_name,
     "activate_mission_tooltip={mission=SYN_DECISION desc=TIP}",
-    "Mission Plan AAAdetail\n\n"
+    "Mission Agenda AAAdetail\n\n"
 );
 
 #[test]
 fn unlock_decision_deterministic_body_needs_no_active_seed_row() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, mut database, _folder) = event_fixture();
     set::<tables::Decisions>(&mut fixture, Vec::new());
     let definition = database
@@ -438,12 +455,14 @@ fn unlock_decision_deterministic_body_needs_no_active_seed_row() {
             ..Default::default()
         },
     );
-    assert_eq!(output.text, "Unlock Plan AAA\nSelect:\ndetail\n");
+    assert_eq!(output.text, "Unlock Agenda AAA\nSelect:\ndetail\n");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
 #[test]
 fn unlock_decision_random_body_refuses_only_at_selection_without_seed_row() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, mut database, _folder) = event_fixture();
     set::<tables::Decisions>(&mut fixture, Vec::new());
     let definition = database
@@ -451,8 +470,8 @@ fn unlock_decision_random_body_refuses_only_at_selection_without_seed_row() {
         .get_mut(b"syn_decision".as_slice())
         .unwrap();
     definition.fixed_random_seed = false;
-    // Random-owned-state selection draws even for one candidate (1402F70C0).
-    // Unlike a random_list description (141383AB0), it selects a member.
+    // Random-owned-state selection draws even for one candidate.
+    // Unlike a random_list description, it selects a member.
     definition.complete_effect =
         installed_content::parser::parse(b"random_owned_state={limit={state=1} custom_effect_tooltip=TIP}")
             .unwrap()
@@ -467,7 +486,7 @@ fn unlock_decision_random_body_refuses_only_at_selection_without_seed_row() {
             ..Default::default()
         },
     );
-    assert_eq!(output.text, "Unlock Plan AAA\n");
+    assert_eq!(output.text, "Unlock Agenda AAA\n");
     assert_eq!(output.refusals.values().sum::<usize>(), 1);
     assert!(
         output
@@ -475,7 +494,7 @@ fn unlock_decision_random_body_refuses_only_at_selection_without_seed_row() {
             .keys()
             .next()
             .unwrap()
-            .contains("CRandomOwnedStateEffect")
+            .contains("random_owned_state")
     );
     assert!(
         output
@@ -489,6 +508,8 @@ fn unlock_decision_random_body_refuses_only_at_selection_without_seed_row() {
 
 #[test]
 fn unlock_decision_modifiers_use_full_mask_and_ordered_target_headings() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, mut database, _folder) = event_fixture();
     set::<tables::Politics>(
         &mut fixture,
@@ -551,8 +572,8 @@ fn unlock_decision_modifiers_use_full_mask_and_ordered_target_headings() {
         parse(b"tag=ROOT political_power_cost=-0.3"),
         parse(b"tag=capital custom_modifier_tooltip=MOD_BODY"),
     ];
-    // 140399821/140399BC9 use 0xffffffff, while the default raw list masks
-    // out bit 24. 1403998AB skips every part of a nonpositive target block.
+    // Targeted decision details use the full mask, while the default raw list masks
+    // out bit 24. A nonpositive target skips every part of the block.
     let masked = installed_content::modifiers::values(&parse(b"political_power_gain=0.1"));
     fixture.with_renderer(
         &mut super::super::tests::fresh(),
@@ -579,7 +600,7 @@ fn unlock_decision_modifiers_use_full_mask_and_ordered_target_headings() {
     assert_eq!(
         output.text,
         concat!(
-            "Unlock Plan AAA\nActive AAA\nPower: \u{11}G+0.10\u{11}!\nBody AAA\n",
+            "Unlock Agenda AAA\nActive AAA\nPower: \u{11}G+0.10\u{11}!\nBody AAA\n",
             "\u{11}H\u{12}BBB Beta\u{11}!\n  Power: \u{11}G+0.20\u{11}!\nBody AAA\n",
             "\u{11}H\u{12}AAA Alpha\u{11}!\n  Cost: \u{11}R-0.30\u{11}!\n",
         )
@@ -589,6 +610,8 @@ fn unlock_decision_modifiers_use_full_mask_and_ordered_target_headings() {
 
 #[test]
 fn shared_decision_seed_self_from_is_mixed_twice() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, database, _folder) = event_fixture();
     let mut graph = super::super::tests::fresh();
     let definition = &database.entries[b"syn_decision".as_slice()];
@@ -613,7 +636,9 @@ fn shared_decision_seed_self_from_is_mixed_twice() {
 
 #[test]
 fn activate_targeted_decision_saved_target_without_active_instance() {
-    // common/decisions/ast.txt:633, 140370080/1407290D0.
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+
     let (mut fixture, mut database, _folder) = event_fixture();
     set::<tables::Decisions>(&mut fixture, Vec::new());
     database
@@ -627,7 +652,7 @@ fn activate_targeted_decision_saved_target_without_active_instance() {
         .saved_targets
         .insert(0, vec![(b"synthetic".to_vec(), EventObject::Country(2))]);
     let output = fixture.render_native(
-        "activate_targeted_decision={target=event_target:synthetic decision=SYN_DECISION}",
+        "activate_targeted_decision={decision=SYN_DECISION target=event_target:synthetic}",
         &mut scopes,
         Content {
             decisions: Some(&database),
@@ -635,12 +660,14 @@ fn activate_targeted_decision_saved_target_without_active_instance() {
             ..Default::default()
         },
     );
-    assert_eq!(output.text, "Targeted Plan BBB\n");
+    assert_eq!(output.text, "Targeted Agenda BBB\n");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
 #[test]
-fn activate_targeted_decision_random_title_needs_seed_only_on_native_default_draw() {
+fn activate_targeted_decision_random_title_needs_seed_only_on_default_draw() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, mut database, _folder) = event_files_fixture(&[
         (
             "common/scripted_localisation/random.txt",
@@ -662,8 +689,8 @@ fn activate_targeted_decision_random_title_needs_seed_only_on_native_default_dra
         .unwrap();
     definition.fixed_random_seed = false;
     let names = installed_content::key_names::KeyNames::default();
-    // 140A9CD8A skips seed for a sole entry; 140A9CF27 supplies an explicit
-    // seed; only the default +0x0C reads 140A9CF9A/140A9CFBD need this row.
+    // A sole entry skips the seed; an explicit seed supplies its own value.
+    // Only the default seed reads need this row.
     for (name, expected, refused) in [
         (b"RANDOM_NAME".as_slice(), "", true),
         (b"SINGLE_NAME".as_slice(), "Targeted detail\n", false),
@@ -690,10 +717,7 @@ fn activate_targeted_decision_random_title_needs_seed_only_on_native_default_dra
         );
         if refused {
             let reason = output.refusals.keys().next().unwrap();
-            assert!(
-                reason.contains("CActivateTargetedDecisionEffect"),
-                "{reason}"
-            );
+            assert!(reason.contains("activate_targeted_decision"), "{reason}");
             assert!(reason.contains(DECISION_RANDOM_COUNT_GAP), "{reason}");
         }
     }
@@ -701,6 +725,8 @@ fn activate_targeted_decision_random_title_needs_seed_only_on_native_default_dra
 
 #[test]
 fn missing_decision_seed_propagates_through_event_title_lanes_without_refusing_plain_title() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, mut database, _folder) = event_files_fixture(&[
         (
             "common/scripted_localisation/random.txt",
@@ -721,15 +747,15 @@ fn missing_decision_seed_propagates_through_event_title_lanes_without_refusing_p
         .unwrap()
         .items;
     let names = installed_content::key_names::KeyNames::default();
-    // 14037BDC0's draw only derives the title's seed. 140A9CF9A/BD is the
+    // The draw only derives the title's seed. Title selection is the
     // first use that can change title text; do not refuse a plain title.
     for (title, expected, refused) in [
         (
             b"title=SYN_EVENT".as_slice(),
-            "Unlock Plan AAA\nSelect:\nEvent News Alpha\n",
+            "Unlock Agenda AAA\nSelect:\nEvent News Alpha\n",
             false,
         ),
-        (b"title=RANDOM_NAME".as_slice(), "Unlock Plan AAA\n", true),
+        (b"title=RANDOM_NAME".as_slice(), "Unlock Agenda AAA\n", true),
     ] {
         let event = std::sync::Arc::new(installed_content::events::Event {
             titles: installed_content::parser::parse(title).unwrap().items,
@@ -765,8 +791,10 @@ fn missing_decision_seed_propagates_through_event_title_lanes_without_refusing_p
 }
 
 #[test]
-fn news_event_native_id_and_timing_fields() {
-    // common/decisions/bel.txt:870; shares 14037BDC0 with country_event.
+fn news_event_id_and_timing_fields() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    // News events share the country-event title path.
     let (fixture, _, _folder) = event_fixture();
     let names = installed_content::key_names::KeyNames::default();
     let event = std::sync::Arc::new(installed_content::events::Event {
@@ -775,7 +803,7 @@ fn news_event_native_id_and_timing_fields() {
     });
     let lookup = |_: &[u8]| Ok(event.clone());
     let output = fixture.render_native(
-        "news_event={id=synthetic.18 hours=12}",
+        "news_event={hours=19 id=synthetic.73}",
         &mut super::super::tests::fresh(),
         Content {
             events: Some(&lookup),
@@ -788,8 +816,10 @@ fn news_event_native_id_and_timing_fields() {
 }
 
 #[test]
-fn state_event_native_controller_keeps_state_and_from_root() {
-    // common/on_actions/00_on_actions.txt:5209; 140318EA0/14137D8C0.
+fn state_event_controller_keeps_state_and_from_root() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+
     let (fixture, _, _folder) = event_fixture();
     let names = installed_content::key_names::KeyNames::default();
     let event = std::sync::Arc::new(installed_content::events::Event {
@@ -799,7 +829,7 @@ fn state_event_native_controller_keeps_state_and_from_root() {
     let lookup = |_: &[u8]| Ok(event.clone());
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::State(2))]);
     let output = fixture.render_native(
-        "state_event={id=synthetic.49 trigger_for=controller}",
+        "state_event={trigger_for=controller id=synthetic.62}",
         &mut scopes,
         Content {
             events: Some(&lookup),
@@ -818,7 +848,9 @@ fn state_event_native_controller_keeps_state_and_from_root() {
 
 #[test]
 fn show_mio_template_name_initial_trait_and_no_line_feed() {
-    // common/decisions/aat_mio_decisions.txt:154; 1402FEFE0.
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+
     let (fixture, _, _folder) = event_fixture();
     let names = installed_content::key_names::KeyNames::default();
     let mut database = installed_content::industrial_organisations::Database::default();
@@ -834,7 +866,7 @@ fn show_mio_template_name_initial_trait_and_no_line_feed() {
             ..Default::default()
         },
     );
-    assert_eq!(output.text, "Organisation Forge Trait Industry");
+    assert_eq!(output.text, "Organisation Workshop Trait Craft");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
@@ -853,7 +885,7 @@ fn unlock_mio_fixture() -> (Fixture, Folder) {
         }],
     );
     // The pool country selects the instance; its distinct owner selects the
-    // name environment. Native +0x130 roster order wins over recording order.
+    // name environment. Native roster order wins over recording order.
     set::<tables::IndustrialOrganisations>(
         &mut fixture,
         vec![
@@ -893,8 +925,10 @@ fn unlock_mio_fixture() -> (Fixture, Folder) {
 }
 
 #[test]
-fn unlock_mio_reached_operand_uses_recorded_instance_and_owner_name() {
-    // common/national_focus/austria.txt:15050; reach 171, 1402FF9D0/140537750.
+fn unlock_mio_operand_uses_recorded_instance_and_owner_name() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+
     let (fixture, _folder) = unlock_mio_fixture();
     let names = installed_content::key_names::KeyNames::default();
     let output = fixture.render_native(
@@ -905,13 +939,15 @@ fn unlock_mio_reached_operand_uses_recorded_instance_and_owner_name() {
             ..Default::default()
         },
     );
-    assert_eq!(output.text, "Unlock Forge BBB AAA\n");
+    assert_eq!(output.text, "Unlock Workshop BBB AAA\n");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
 #[test]
 fn show_mio_instance_reuses_the_shared_owner_name_path() {
-    // 1402FEFE0 selects the caller's first template match, then 140DA44C0.
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    // Select the caller's first matching organisation template.
     let (fixture, _folder) = unlock_mio_fixture();
     let names = installed_content::key_names::KeyNames::default();
     let mut database = installed_content::industrial_organisations::Database::default();
@@ -927,12 +963,14 @@ fn show_mio_instance_reuses_the_shared_owner_name_path() {
             ..Default::default()
         },
     );
-    assert_eq!(output.text, "Organisation Forge BBB Trait Industry");
+    assert_eq!(output.text, "Organisation Workshop BBB Trait Craft");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
 #[test]
-fn unlock_mio_carried_saved_and_variable_operands_share_the_native_name_path() {
+fn unlock_mio_carried_saved_and_variable_operands_share_the_name_path() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = unlock_mio_fixture();
     let names = installed_content::key_names::KeyNames::default();
     for operand in ["FROM", "event_target:chosen", "var:syn_carrier"] {
@@ -959,7 +997,7 @@ fn unlock_mio_carried_saved_and_variable_operands_share_the_native_name_path() {
             },
         );
         assert_eq!(
-            output.text, "Unlock Forge BBB AAA\n",
+            output.text, "Unlock Workshop BBB AAA\n",
             "{operand}: {:?}",
             output.refusals
         );
@@ -973,6 +1011,8 @@ fn unlock_mio_carried_saved_and_variable_operands_share_the_native_name_path() {
 
 #[test]
 fn unlock_mio_absent_or_non_mio_targets_keep_literal_fallback() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = unlock_mio_fixture();
     let names = installed_content::key_names::KeyNames::default();
     for operand in ["mio:ABSENT", "SYN_MIO_NAME", "THIS"] {
@@ -995,6 +1035,8 @@ fn unlock_mio_absent_or_non_mio_targets_keep_literal_fallback() {
 
 #[test]
 fn unlock_mio_missing_recorded_roster_is_named_and_counted() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = unlock_mio_fixture();
     *fixture.frame.tables[tables::IndustrialOrganisations::ID.index()] = TableView::Unavailable {
         reason: "synthetic MIO roster gap".into(),
@@ -1016,7 +1058,7 @@ fn unlock_mio_missing_recorded_roster_is_named_and_counted() {
             .keys()
             .next()
             .unwrap()
-            .contains("NIndustrialOrganisation::CUnlockIndustrialOrgTooltipEffect")
+            .contains("unlock_military_industrial_organization_tooltip")
     );
     assert!(
         output
@@ -1029,12 +1071,14 @@ fn unlock_mio_missing_recorded_roster_is_named_and_counted() {
 }
 
 #[test]
-fn unlock_mio_policy_reached_block_refuses_only_unrecorded_roster() {
-    // common/national_focus/india_goe.txt:25014; 141396FF0/140E487D0.
+fn unlock_mio_policy_block_refuses_only_unrecorded_roster() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+
     let (fixture, _, _folder) = event_fixture();
     let names = installed_content::key_names::KeyNames::default();
     let output = fixture.render_native(
-        "unlock_mio_policy_tooltip={policy=SYN_POLICY}",
+        "unlock_mio_policy_tooltip={policy=SYN_POLICY show_modifiers=yes}",
         &mut super::super::tests::fresh(),
         Content {
             key_names: Some(&names),
@@ -1054,8 +1098,10 @@ fn unlock_mio_policy_reached_block_refuses_only_unrecorded_roster() {
 }
 
 #[test]
-fn format99_mio_policy_uses_cached_membership_content_and_native_modifiers() {
-    // 1413D0370 supplies fixed5 VALUE; its plain $VALUE$ uses two decimals.
+fn format99_mio_policy_uses_cached_membership_content_and_modifiers() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    // The policy tooltip supplies fixed5 VALUE; its plain $VALUE$ uses two decimals.
     let (mut fixture, _, _folder) = event_fixture();
     let names = installed_content::key_names::KeyNames::default();
     let mut database = installed_content::industrial_organisations::Database::default();
@@ -1099,7 +1145,7 @@ fn format99_mio_policy_uses_cached_membership_content_and_native_modifiers() {
             }],
         );
         let output = fixture.render_native(
-            "unlock_mio_policy_tooltip={policy=SYN_POLICY}",
+            "unlock_mio_policy_tooltip={policy=SYN_POLICY show_modifiers=yes}",
             &mut super::super::tests::fresh(),
             content,
         );
@@ -1128,7 +1174,7 @@ fn format99_mio_policy_uses_cached_membership_content_and_native_modifiers() {
             }],
         );
         let output = fixture.render_native(
-            "unlock_mio_policy_tooltip={policy=SYN_POLICY}",
+            "unlock_mio_policy_tooltip={policy=SYN_POLICY show_modifiers=yes}",
             &mut super::super::tests::fresh(),
             content,
         );
@@ -1145,18 +1191,20 @@ fn format99_mio_policy_uses_cached_membership_content_and_native_modifiers() {
 }
 
 #[test]
-fn event_option_tooltip_reached_scalar_describes_option_effects() {
-    // common/decisions/ast.txt:1843; ReadValue@141385570, lookup@1413832F0.
+fn event_option_tooltip_scalar_describes_option_effects() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    // A scalar option selector describes the matching option's effects.
     let (fixture, _, _folder) = event_files_fixture(&[(
         "events/synthetic.txt",
         concat!(
-            "add_namespace=synthetic country_event={id=synthetic.3 ",
-            "option={name=synthetic.3.a custom_effect_tooltip=TIP}}"
+            "add_namespace=synthetic country_event={id=synthetic.74 ",
+            "option={name=synthetic.74.a custom_effect_tooltip=TIP}}"
         ),
     )]);
     let names = installed_content::key_names::KeyNames::default();
     let output = fixture.render_native(
-        "event_option_tooltip=synthetic.3.a",
+        "event_option_tooltip=synthetic.74.a",
         &mut super::super::tests::fresh(),
         Content {
             key_names: Some(&names),
@@ -1168,7 +1216,9 @@ fn event_option_tooltip_reached_scalar_describes_option_effects() {
 }
 
 #[test]
-fn event_option_tooltip_matches_raw_name_in_native_registration_order() {
+fn event_option_tooltip_matches_raw_name_in_registration_order() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _, _folder) = event_files_fixture(&[
         (
             "events/a.txt",
@@ -1205,7 +1255,9 @@ fn event_option_tooltip_matches_raw_name_in_native_registration_order() {
 }
 
 #[test]
-fn event_option_tooltip_skips_recursive_effects_in_inactive_native_children() {
+fn event_option_tooltip_skips_recursive_effects_in_inactive_children() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _, _folder) = event_files_fixture(&[(
         "events/synthetic.txt",
         concat!(
@@ -1235,6 +1287,8 @@ fn event_option_tooltip_skips_recursive_effects_in_inactive_native_children() {
 
 #[test]
 fn event_option_tooltip_copies_scope_and_swaps_root_from_without_a_new_session() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _, _folder) = event_files_fixture(&[
         (
             "events/synthetic.txt",
@@ -1299,7 +1353,7 @@ fn event_option_tooltip_copies_scope_and_swaps_root_from_without_a_new_session()
         scopes.tooltip_targets[&2],
         vec![(b"prior_tip".to_vec(), EventObject::Country(2))]
     );
-    // Nested BuildDescription does not clean the target just saved to its ROOT.
+    // Nested description does not clean the target just saved to its ROOT.
     assert!(
         scopes.tooltip_targets[&1]
             .iter()
@@ -1308,7 +1362,9 @@ fn event_option_tooltip_copies_scope_and_swaps_root_from_without_a_new_session()
 }
 
 #[test]
-fn event_option_tooltip_trims_only_native_ascii_whitespace() {
+fn event_option_tooltip_trims_only_ascii_whitespace() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _, _folder) = event_files_fixture(&[
         (
             "events/synthetic.txt",
@@ -1334,6 +1390,8 @@ fn event_option_tooltip_trims_only_native_ascii_whitespace() {
 
 #[test]
 fn event_option_tooltip_does_not_visit_scripted_templates_or_operand_text() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _, _folder) = event_files_fixture(&[
         (
             "events/synthetic.txt",
@@ -1355,8 +1413,8 @@ fn event_option_tooltip_does_not_visit_scripted_templates_or_operand_text() {
     let scripted = fixture.catalogue.scripted_content().unwrap();
     let names = scripted.layers.layers.key_names().unwrap();
     let effects = installed_content::scripted_effects::read(&scripted.layers.layers, &names).unwrap();
-    // CScriptedEffect's traversal slot@14299F888 is 140535120; it does
-    // not follow +0x60, unlike its description slot@141382080.
+    // Scripted effect traversal visits attached children; it does
+    // not expand the template body, unlike its description.
     for (name, expected) in [("chosen", "detail"), ("operand", "operand text")] {
         let output = fixture.render_native(
             &format!("event_option_tooltip={name}"),
@@ -1373,7 +1431,9 @@ fn event_option_tooltip_does_not_visit_scripted_templates_or_operand_text() {
 }
 
 #[test]
-fn event_option_tooltip_empty_name_matches_the_native_default_option_name() {
+fn event_option_tooltip_empty_name_matches_the_default_option_name() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _, _folder) = event_files_fixture(&[(
         "events/synthetic.txt",
         "add_namespace=synthetic country_event={id=synthetic.1 option={custom_effect_tooltip=TIP}}",
@@ -1392,8 +1452,10 @@ fn event_option_tooltip_empty_name_matches_the_native_default_option_name() {
 }
 
 #[test]
-fn custom_effect_tooltip_reached_scalar_preserves_no_line_feed() {
-    // common/bop/eth.txt:69; already-landed 1413832B0 path stays unchanged.
+fn custom_effect_tooltip_scalar_preserves_no_line_feed() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    // Nested bound arguments keep the same expansion path.
     let (fixture, _, _folder) = event_fixture();
     let names = installed_content::key_names::KeyNames::default();
     let output = fixture.render_native(
@@ -1410,6 +1472,8 @@ fn custom_effect_tooltip_reached_scalar_preserves_no_line_feed() {
 
 #[test]
 fn removal_finder_preserves_container_target_alias_and_first_ordinal() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let row = |ordinal, container, target, state| DecisionRow {
         country: 100,
         ordinal,
@@ -1460,6 +1524,8 @@ fn removal_finder_preserves_container_target_alias_and_first_ordinal() {
 
 #[test]
 fn unknown_target_link_is_not_an_absent_decision() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let row = DecisionRow {
         country: 100,
         container: 3,
@@ -1476,6 +1542,8 @@ fn unknown_target_link_is_not_an_absent_decision() {
 
 #[test]
 fn decision_seed_distinguishes_unread_absence_and_fixed_random_seed() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut definition = decision();
     assert!(
         decision_seed(9, &definition, None, 2)
@@ -1498,7 +1566,9 @@ fn decision_seed_distinguishes_unread_absence_and_fixed_random_seed() {
 }
 
 #[test]
-fn native_decision_name_fallback_ladder() {
+fn decision_name_fallback_ladder() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let keys = [
         "COS_Name_group",
         "COS_Name",
@@ -1588,6 +1658,8 @@ fn decision_fixture(seed: Option<Option<i32>>) -> (Fixture, installed_content::d
 
 #[test]
 fn removal_description_binds_highlighted_target_from_and_stored_execution_count() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, database) = decision_fixture(Some(None));
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
     let caller = scopes.scopes[0];
@@ -1599,7 +1671,7 @@ fn removal_description_binds_highlighted_target_from_and_stored_execution_count(
             ..Default::default()
         },
     );
-    // 1407290D0 base 0xE2746C3C+target2; 14071C840 draw1504267454%2=0.
+    // The target seed draws the first candidate.
     // Candidate order is [2,4], despite authored [4,2,4].
     assert_eq!(description.text, "Remove Conflict in Two\n");
     assert!(
@@ -1617,7 +1689,7 @@ fn removal_description_binds_highlighted_target_from_and_stored_execution_count(
             ..Default::default()
         },
     );
-    // The persisted additive count changes the draw to634125187%2=1.
+    // The persisted additive count changes the draw to the second candidate.
     assert_eq!(description.text, "Remove Conflict in Four\n");
     assert!(
         description.refusals.is_empty(),
@@ -1629,6 +1701,8 @@ fn removal_description_binds_highlighted_target_from_and_stored_execution_count(
 
 #[test]
 fn removal_refuses_unread_seed_but_fixed_seed_bypasses_it_and_missing_instance_is_empty() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, mut database) = decision_fixture(None);
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
     let body = "remove_targeted_decision = { decision = SYN_DECISION target = BBB }";
@@ -1714,7 +1788,9 @@ fn removal_refuses_unread_seed_but_fixed_seed_bypasses_it_and_missing_instance_i
 }
 
 #[test]
-fn highlight_filters_use_native_fresh_country_from_state_and_all_state_fallback() {
+fn highlight_filters_use_fresh_country_from_state_and_all_state_fallback() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, mut database) = decision_fixture(Some(None));
     let definition = database
         .entries
@@ -1755,6 +1831,8 @@ fn highlight_filters_use_native_fresh_country_from_state_and_all_state_fallback(
 
 #[test]
 fn state_target_wins_before_authored_highlight_candidates() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, database) = decision_fixture(Some(None));
     set::<tables::Decisions>(
         &mut fixture,
@@ -1782,6 +1860,8 @@ fn state_target_wins_before_authored_highlight_candidates() {
 
 #[test]
 fn inactive_decision_skips_unsupported_title_and_empty_trigger_does_not_enable_highlight() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, mut database) = decision_fixture(Some(None));
     database
         .entries
@@ -1829,7 +1909,7 @@ fn inactive_decision_skips_unsupported_title_and_empty_trigger_does_not_enable_h
             ..Default::default()
         },
     );
-    // No native +98C children and no +9E0: FROM.FROM remains the target itself.
+    // With no attached children or template expansion, FROM.FROM remains the target itself.
     assert_eq!(output.text, "Remove Conflict in Three\n");
     assert!(output.refusals.is_empty());
     assert!(

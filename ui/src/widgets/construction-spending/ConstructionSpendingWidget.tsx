@@ -18,8 +18,8 @@ import { GAP_LABELS, LEVELS, footnote, formatSpent, spendingItems, validateSpend
 const NO_WARNINGS: string[] = [];
 const ROOT = { id: 'all', label: 'All construction' };
 
-/** Where one country's civilian-factory output went, as a sunburst (spec 2.4, mock-up
- * style-3): new buildings or repairs, then building type, then state. With Live on it
+/** Where one country's civilian-factory output went, as a sunburst:
+ * new buildings or repairs, then building type, then state. With Live on it
  * grows at recorded factory-output reads; off, the whole campaign. */
 export default function ConstructionSpendingWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');

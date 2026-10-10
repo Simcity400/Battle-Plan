@@ -1,4 +1,4 @@
-//! Slot-5 readers outside Assign, Comparison and direct LoadBody.
+//! Specialized value reads beyond assignment, comparison, and direct bodies.
 //! Body paths use the class's one KEY_READERS entry, including inline loops.
 
 use super::{Node, Shaper};
@@ -7,25 +7,25 @@ use crate::parser::native::{Field, Shape};
 impl Shaper<'_> {
     pub(super) fn own_value(&self, token: u32, address: u64, field: &Field<'_>) -> Shape<Node> {
         match address {
-            // LoadBody thunks and variable-trigger builders; KEY_READERS
-            // records the slot-6 reader or embedded loop each one supplies.
+            // Body and variable-trigger readers use the key loop or embedded
+            // helper selected by KEY_READERS.
             0x140434710 | 0x141394F70 | 0x14047F840 | 0x14047FC90 | 0x1404800E0 | 0x140480530
             | 0x140480980 => Shape::Body(Node::Class(token)),
             // Scalar first unless the value opens the class's key loop.
             0x140434790 | 0x1404348E0 | 0x140434EC0 | 0x1413950F0 | 0x14044B1D0 | 0x14044B2D0 => {
                 Shape::ObjectIfOpen(Node::Class(token))
             }
-            // ReadScriptInt32Array@1401F91B0: raw resolved tokens, no definitions.
+            // Integer arrays read resolved tokens without registering definitions.
             0x140471560 => Shape::RawList,
-            // NScript::NMath::CExpression::Read@141405ED0 -> 141406A00.
+            // Read the numeric expression.
             0x14051AB70 => Shape::Expression,
             0x1404347E0 | 0x140434C00 | 0x140434EB0 | 0x1404A1DE0 => Shape::One,
             0x140471500 => Shape::Current,
-            // report_field_error + raw SkipBlock on a block; otherwise one value.
+            // Opening blocks report errors and skip raw tokens; other values read once.
             0x140434720 if field.opens() => Shape::SkipIfOpen,
             0x140434720 => Shape::One,
-            // 140458170: < and > select Comparison; every other operator
-            // selects LoadBody, including = with an opening value.
+            // `<` and `>` select a comparison; every other operator selects a
+            // body read, including `=` with an opening value.
             0x140458170
                 if matches!(
                     field.operator,
@@ -49,10 +49,12 @@ mod tests {
         parser::native::{self, Shape},
     };
 
-    /// 140472210 records an error for a missing or provincial building;
-    /// 140471900 instead requires a provincial building.
+    /// The state-building reader rejects missing or provincial buildings;
+    /// the province-building reader requires a provincial building.
     #[test]
     fn non_damaged_building_level_rejects_provincial_buildings() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut names = KeyNames::default();
         for (name, provincial) in [(b"factory".as_slice(), false), (b"port".as_slice(), true)] {
             names.counts.buildings.insert(name.to_vec());
@@ -67,7 +69,7 @@ mod tests {
         assert!(accepted.unsettled.is_none(), "{accepted:?}");
         assert!(accepted.misreads.is_empty(), "{accepted:?}");
         for building in ["port", "missing"] {
-            // Scalar RecordError reads nothing. A stale invalid building
+            // Scalar error recovery reads nothing. A stale invalid building
             // with `{` consumed as its operator must skip that block.
             let text = format!(
                 "non_damaged_building_level = {{ building = {building} building {{ @lost = 7 level > 0 }} level > 2 }} always = @lost"
@@ -84,9 +86,11 @@ mod tests {
         }
     }
 
-    /// 140458170's = path calls LoadBody and its key reader 140458240.
+    /// Assignment reads a body through its key reader.
     #[test]
     fn completed_mio_trait_count_reads_its_assignment_body() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let result = crate::triggers::read(
             b"has_mio_number_of_completed_traits = { @kept = 2 value > 3 } always = @kept",
             &KeyNames::default(),
@@ -118,6 +122,8 @@ mod tests {
 
     #[test]
     fn own_key_loops_skip_unknown_blocks_without_registering_definitions() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         // One fixture for every reached skip-dispatch family; a generic
         // by-key reader defines @lost inside the unknown field instead.
         for (class, key) in [
@@ -166,6 +172,8 @@ mod tests {
 
     #[test]
     fn own_one_value_keys_leave_blocks_in_the_enclosing_loop() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         for class in [
             "has_country_flag",
             "core_compliance",
@@ -193,6 +201,8 @@ mod tests {
 
     #[test]
     fn owns_any_state_of_is_a_raw_list_even_with_a_definition() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let result = read(b"body = { owns_any_state_of = { 1 @lost = 2 } } lost = @lost");
         assert!(result.unsettled.is_none());
         assert_eq!(result.items[1].value.scalar(), Some(&b"@lost"[..]));
@@ -206,6 +216,8 @@ mod tests {
 
     #[test]
     fn custom_override_tooltip_uses_bound_localisation_and_trigger_dispatch() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let result = read(b"body = { custom_override_tooltip = { tooltip = { arg = { @kept = 4 localization_key = x } } invalid = { @lost = 2 } always = yes } } kept = @kept lost = @lost");
         assert!(result.unsettled.is_none());
         assert_eq!(result.items[1].value.scalar(), Some(&b"4"[..]));
@@ -214,6 +226,8 @@ mod tests {
 
     #[test]
     fn math_errors_skip_the_tail_without_registering_definitions() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let result = read(b"body = { check_expr = { value = { value = 1 @kept = 4 add = @kept } invalid = 0 ignored = { @lost = 2 } @tail = 8 add = 1 } } kept = @kept lost = @lost tail = @tail");
         assert!(result.unsettled.is_none());
         assert_eq!(result.items[1].value.scalar(), Some(&b"4"[..]));
@@ -223,6 +237,8 @@ mod tests {
 
     #[test]
     fn math_fixed_argument_and_conditional_loops_share_the_reader() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let result = read(b"body = { check_expr = { value = 1 clamp = { min = { value = 0 @a = 2 add = @a } max = 10 } if = { limit = 1 @b = 3 add = @b } else_if = { limit = 0 add = 4 } else = { @c = 5 add = @c } add = 6 } } a = @a b = @b c = @c");
         assert!(result.unsettled.is_none());
         assert!(result.misreads.is_empty(), "{:?}", result.misreads);

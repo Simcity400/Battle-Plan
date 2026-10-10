@@ -148,7 +148,7 @@ impl PreparedBases {
                     .map(|drawn| (family, name, priority, placed[&drawn.owner], drawn)),
             );
         }
-        // CMapIconManagerImpl::update@140B2F270 sorts map icons by projected depth.
+        // Sort map icons by projected depth.
         layouts.sort_by(|a, b| b.3.depth.total_cmp(&a.3.depth));
         for (family, name, priority, _, drawn) in layouts {
             let key = layer(priority, report.base_ordinal(), 0);
@@ -202,13 +202,13 @@ struct Controls<'a> {
 }
 
 fn bind(root: &native::Element, family: Family) -> Result<Controls<'_>, String> {
-    // Air@1418B7F90 and HQ/facility@1418BA830: local FindButton@1422A4A20.
+    // Air-base, headquarters and facility controls use window-local lookup.
     let button = root
         .find(native::Kind::Button, "bg_btn")
         .ok_or("no button named bg_btn")?;
     let air = if family == Family::AirBase {
         let find = |kind, name: &str| {
-            // FindButton@1422A4A20, FindInstantTextBox@1422A7520, FindIcon@1422A6FD0.
+            // Find buttons, instant text boxes and icons in the local window.
             root.find(kind, name)
                 .ok_or_else(|| format!("no control named {name}"))
         };
@@ -232,7 +232,7 @@ fn update(
 ) -> Result<(), String> {
     let Controls { button, air } = bind(root, family)?;
     if let Some([strategic, wings, permission_count, permission_bg]) = air {
-        // Political branch of UpdateAirBaseMapIcon@1418B1C50.
+        // Political-map visibility branch.
         instance.hide(root, strategic)?;
         instance.set_frame(root, strategic, state.frame)?;
         instance.control(root, strategic)?.enabled = Some(state.enabled);
@@ -240,7 +240,7 @@ fn update(
             instance.hide(root, control)?;
         }
     }
-    // Air@1418B1C50 and HQ@1418D70B0 write frames; facility@1418BC070 keeps it.
+    // Air-base and headquarters updates write frames; facilities retain them.
     if family != Family::Facility {
         instance.set_frame(root, button, state.frame)?;
     }
@@ -268,6 +268,8 @@ mod tests {
 
     #[test]
     fn air_update_uses_local_buttons_and_hides_the_air_mode_controls() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = window(
             r#"
                 buttonType = { name = bg_btn quadTextureSprite = GFX_even }
@@ -314,6 +316,8 @@ mod tests {
 
     #[test]
     fn base_hits_use_drawn_scale_clip_and_sprite_hit_mode() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = window(
             r#"buttonType = { name = bg_btn quadTextureSprite = GFX_even position = { x = 2 y = 3 } scale = 2 }"#,
         );
@@ -366,6 +370,8 @@ mod tests {
 
     #[test]
     fn base_binders_do_not_bind_nested_controls() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = window(
             r#"containerWindowType={name=nested
             buttonType={name=bg_btn quadTextureSprite=GFX_even}}"#,
@@ -391,6 +397,8 @@ mod tests {
 
     #[test]
     fn facility_setter_rebuilds_the_drawable_and_keeps_an_undefined_sprite() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = window(
             r#"buttonType = { name = bg_btn quadTextureSprite = GFX_even frame = 2 rotation = 1 }"#,
         );
@@ -431,6 +439,8 @@ mod tests {
 
     #[test]
     fn naval_update_overrides_authored_scale_and_hides_strategic_controls() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = window(
             r#"
             buttonType = { name = bg_btn quadTextureSprite = GFX_even scale = 3 }

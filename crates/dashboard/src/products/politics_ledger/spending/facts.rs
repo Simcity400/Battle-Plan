@@ -70,8 +70,8 @@ pub(super) fn character_fact(
             leaders.and_then(|leaders| leaders.iter().find(|leader| leader.character_id == id))
         })
         .map(|leader| leader.category);
-    // P: role creation 140F881E0/140F88600 reads GetCategoryMask@140C09BB0;
-    // upgrades 1416AB600/141BDB1D0 request small army/navy portraits.
+    // Role creation reads the category mask; upgrades request
+    // small army/navy portraits.
     let (role, size) = match cause {
         PowerCause::Advisor | PowerCause::AdvisorRemoval | PowerCause::Idea => (
             replay::rows::PORTRAIT_CIVILIAN,
@@ -185,8 +185,8 @@ pub(super) fn store_facts(
             owner_tag,
         })
     });
-    // P: daily getter 140B9A1D0 reads modifier index 0x26. Its title and
-    // argument come from that read's ModifierDefinitions, never a vanilla key.
+    // The daily getter reads modifier index 0x26. Its title and argument
+    // come from that read's ModifierDefinitions, never a vanilla key.
     let modifier = (component == Some(PowerDailyCostKind::PoliticalPowerCostModifier))
         .then(|| {
             frame?

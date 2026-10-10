@@ -8,9 +8,9 @@ pub struct Definition {
     pub parent: Vec<u8>,
     pub small_layout: bool,
     pub equipment: Vec<Item>,
-    /// CSubUnitStatBonus at +0x150; selectors retain their content spelling.
+    /// Sub-unit stat bonuses; selectors retain their content spelling.
     pub unit_bonus: Vec<Item>,
-    /// CModifier at +0x188, formatted from its accumulator +0x198.
+    /// Modifiers formatted from their accumulator.
     pub modifiers: modifiers::Modifiers,
     pub modules: Vec<Item>,
     pub sub_units: Vec<Item>,
@@ -56,8 +56,8 @@ impl Catalog {
             equipment: crate::equipment::Database::load_complete(layers)?,
             ..Self::default()
         };
-        // 140AC1BA0: direct directory, mode 0. 140ABCFC0/140AC3C70 are
-        // shared with the equipment projection, including @variable consumption.
+        // Direct directory, mode 0, shared with the equipment projection,
+        // including @variable consumption.
         for path in layers.directory_files("common/technologies", ".txt")? {
             let (read, undecided, refused) = read_templates(&layers.read(&path)?, &registry, names);
             catalog
@@ -95,8 +95,8 @@ impl Catalog {
     fn append(&mut self, roots: &[Item], registry: &units::Registry, names: &KeyNames) {
         for root in roots {
             if root.keyword_is("technology_categories") {
-                // 140ABCFC0 -> 140ABB190: anonymous category names; lookup
-                // 140AC12B0 returns the first valid object with the token.
+                // Anonymous category names; lookup returns the first valid object
+                // with the token.
                 for entry in root.value.items().unwrap_or_default() {
                     if let Some(name) = entry.value.scalar() {
                         self.categories
@@ -115,9 +115,9 @@ impl Catalog {
                     id: id.to_vec(),
                     ..Definition::default()
                 };
-                let mut max_level = 1; // 140ABBF20 initializes +0x3DC to one.
-                // +0x3B0 parent, +0x40A force_use_small_tech_layout; constructor
-                // 140ABBF20 clears the flag. 140AC3C70 keeps the equipment list.
+                let mut max_level = 1; // Starts at one.
+                // Parent and small-layout flag start empty/false. The equipment
+                // list is retained across repeated fields.
                 for field in item.value.items().unwrap_or_default() {
                     if field.keyword_is("parent") {
                         definition.parent = field.value.read_string().unwrap_or_default().to_vec();
@@ -142,16 +142,16 @@ impl Catalog {
                             max_level = value;
                         }
                     } else if field.keyword_is("enable_building") {
-                        // 140AC3C70 token32FD defaults the level to the current
-                        // max_level; building/level replace their value slots.
+                        // enable_building defaults the level to the current max_level;
+                        // building/level replace their value slots.
                         let mut name = Vec::new();
                         let mut level = max_level;
                         for entry in field.value.items().unwrap_or_default() {
                             if entry.keyword_is("building") {
                                 name = entry.value.read_string().unwrap_or_default().to_vec();
                             } else if entry.keyword_is("level") {
-                                // Inline ParseTokenInt32 1424B0080 assigns its
-                                // result (zero on failure), unlike max_level.
+                                // Integer conversion assigns its result (zero on failure),
+                                // unlike max_level.
                                 level = crate::fixed5::decimal_i32(
                                     entry.value.read_string().unwrap_or_default(),
                                 );
@@ -168,8 +168,7 @@ impl Catalog {
                         let body = field.value.items().unwrap_or_default();
                         let leading = body.first().filter(|item| item.keyword_is("limit"));
                         if let Some(limit) = leading {
-                            // Both forms load the same CAndTrigger +0x470;
-                            // CTrigger::LoadBody 1405431C0 appends child keys.
+                            // Both forms load the same conjunction, appending child keys.
                             definition
                                 .on_research_complete_limit
                                 .extend(limit.value.items().unwrap_or_default().iter().cloned());
@@ -196,8 +195,8 @@ impl Catalog {
                         definition.modifiers.read(field);
                     }
                 }
-                // 140ABCFC0 allocates every repeated definition afresh;
-                // 140AB9020/140AC1A80 return the first registered token.
+                // Every repeated definition is allocated afresh; lookup returns
+                // the first registered token.
                 self.by_name
                     .entry(identity)
                     .or_insert(self.definitions.len());
@@ -232,6 +231,8 @@ mod tests {
     use super::*;
     #[test]
     fn layered_repeated_technology_declarations_keep_every_index_and_first_name_lookup() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let stack = crate::mod_layers_tests::Stack::new("technology_occurrences");
         stack.write(
             &stack.base(),
@@ -266,7 +267,9 @@ mod tests {
     }
 
     #[test]
-    fn technology_description_names_use_native_parent_and_layout_flag() {
+    fn technology_description_names_use_parent_and_layout_flag() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (read, _, _) = read_templates(b"@title=mod_parent technology_categories={mod_category} technologies={mod_tech={parent=@title force_use_small_tech_layout=yes enable_equipments={mod_equipment}}}", &units::Registry::default(), &KeyNames::default());
         assert!(read.unsettled.is_none(), "{read:?}");
         let mut catalog = Catalog::default();
@@ -291,13 +294,15 @@ mod tests {
 
     #[test]
     fn technology_effect_projection_retains_read_order_and_shared_completion_limit() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let registry = units::Registry {
             units: BTreeSet::from([b"mod_unit".to_vec()]),
             ..Default::default()
         };
         let names = KeyNames::default();
-        // Both external limits append to +0x470. An empty inline limit
-        // leaves the value slot at `{`, so ReadScript loads the effect body.
+        // Both external limits append to the conjunction. An empty inline
+        // limit leaves the value slot at `{`, so the effect body loads.
         let (read, _, _) = read_templates(b"technologies={mod_tech={enable_building={building=mod_first} max_level=4 enable_building={building=mod_second} enable_building={building=mod_third level=bad} mod_unit={soft_attack=0.1} enable_equipment_modules={mod_module} enable_subunits={mod_unit} enable_tactic=Mod_Tactic on_research_complete_limit={always=no} on_research_complete_limit={always=yes} on_research_complete={limit={} custom_effect_tooltip=mod_tooltip} modifier={custom_modifier_tooltip=mod_modifier}}}", &registry, &names);
         assert!(read.unsettled.is_none(), "{read:?}");
         let mut catalog = Catalog::default();
@@ -328,8 +333,10 @@ mod tests {
 
     #[test]
     fn technology_completion_projection_keeps_limit_when_body_guard_rejects_tail() {
-        // 140AC3C70 loads the inline trigger before calling ReadScript
-        // (140534280). Its last scalar leaves `yes`, so no effect body loads.
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        // The inline trigger loads before the effect body is read. Its
+        // last scalar leaves `yes`, so no effect body loads.
         let names = KeyNames::default();
         let registry = units::Registry::default();
         let (read, _, _) = read_templates(
@@ -342,7 +349,7 @@ mod tests {
             read.misreads.iter().any(|note| {
                 note.what.contains("on_research_complete")
                     && note.what.contains("`yes`")
-                    && note.what.contains("140534280")
+                    && note.what.contains("where its effect reads a block")
                     && note.what.contains("nothing more is read")
             }),
             "{read:?}"

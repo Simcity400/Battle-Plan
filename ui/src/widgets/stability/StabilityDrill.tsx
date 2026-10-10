@@ -21,7 +21,7 @@ import type { Measure } from './stabilityData';
 
 export const MEASURE_NAMES: Record<Measure, string> = { stability: 'Stability', warSupport: 'War support' };
 
-/** The drill view of Stability & War support (mock-up drill-1): the chosen
+/** The drill view of Stability & War support: the chosen
  * measure's parts at one day as bars with their share and the total, and the
  * same parts over time as a stacked chart whose click picks another day. */
 export default function StabilityDrill({ reply, numbers, pickOwner, presentationReady, measure, onMeasure, hour, onPick, onContextMenu, extent, playback, branchStart, hoursPerSecond, active, tokens, within, readAt }: {

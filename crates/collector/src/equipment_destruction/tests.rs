@@ -401,8 +401,8 @@ unsafe extern "system-unwind" fn subtract(pool: usize, design: usize, amount: us
     for i in 0..count as usize {
         let row = (items + i * 16) as *mut u64;
         if unsafe { *row } == design as u64 {
-            // 140FF7A30 clamps signed quantities at these fixed5 limits; it
-            // does not clamp an exhausted pool to zero.
+            // Quantity subtraction clamps signed quantities at these fixed5
+            // limits; it does not clamp an exhausted pool to zero.
             let limit = 0x53e2d620fb40i128;
             unsafe {
                 *row.add(1) = ((*row.add(1) as i64 as i128 - amount as i64 as i128)
@@ -459,8 +459,8 @@ unsafe extern "system-unwind" fn land_scale_and_ceiling(
 ) {
     unsafe { forwarding(a, b, c, d, e, f, g, h) };
     let bank = a + carmy::EQUIPMENT_POOL;
-    // active_damage scales by 100000-damage@140C7C1AC, then the stochastic
-    // ceiling branch@140FFCDF8 can round above the pre-damage fraction.
+    // Damage scales by 100000-damage, then the stochastic ceiling
+    // branch can round above the pre-damage fraction.
     unsafe { fraction_scale(bank, (100000i64 - b as i64) as usize) };
     let items = unsafe { *((bank + pool::ITEMS) as *const usize) };
     let count = unsafe { *((bank + pool::COUNT) as *const i32) };
@@ -480,7 +480,7 @@ unsafe extern "system-unwind" fn air_request(wing: usize, request: usize, source
     let bank = wing + engine::cair_wing::EQUIPMENT_POOL;
     let items = unsafe { *((bank + pool::ITEMS) as *const usize) };
     let design = unsafe { *(items as *const usize) };
-    // KillAirplanes@140F4E4EB negates the signed request before the add.
+    // Airplane losses negate the signed request before the add.
     let amount = i64::from(request as u32 as i32) * equipment_entry::FIXED_POINT_SCALE;
     unsafe { subtract(bank, design, amount as usize) };
 }
@@ -575,7 +575,7 @@ fn scripted_factor_above_one_records_signed_gain_without_poison() {
     world.owner(4999);
     world.amount(0, 1030000);
     let diagnostics = refusal_diagnostics();
-    // CScopedVariable::Evaluate@14049B2B3 leaves the scale factor unclamped.
+    // Scripted scaling leaves the scale factor unclamped.
     unsafe { scripted_equipment_fraction(world.army() + carmy::EQUIPMENT_POOL, 200000) };
     assert_signed_row(
         -1030000,
@@ -880,7 +880,7 @@ fn supplemental_snapshot_refusals_identify_writer_and_preserve_first_diagnostic(
         assert!(POISONED.load(Ordering::SeqCst));
         assert_eq!(drain(&mut [Entry::default(); 8]), Err(reason));
     }
-    // ScaleQuantities@140FFBCC0 stores signed values beyond AddVariantQuantity's saturation.
+    // Quantity scaling stores signed values beyond quantity addition saturation.
     for quantity in [0x53e2d620fb41, -0x53e2d620fb41] {
         setup(8, 1);
         boundary(clock(1, 1));
@@ -2127,7 +2127,7 @@ fn residual_follows_damage_flush_attrition_and_owner_cleanup_without_double_coun
         world.dword(engine::cunit::EXPEDITIONARY_OWNER, 1500);
         let ctx = context(&world, residual);
         assert_eq!(ctx.country, 1500);
-        // DeleteUnit clears expeditionary ownership before its nested combat
+        // Unit deletion clears expeditionary ownership before its nested combat
         // flush; every observation retains the scope's entry owner instead.
         world.dword(engine::cunit::EXPEDITIONARY_OWNER, 0);
         let _scope = DeletionScope::enter(Some(ctx));
@@ -2202,8 +2202,7 @@ fn recovered_deletion_scope_retains_owner_and_allows_native_nested_flushes() {
             .store(land_removal as *const () as usize, Ordering::Release);
         ORIGINAL[SiteId::Delete as usize]
             .store(cleanup_delete as *const () as usize, Ordering::Release);
-        // DeleteUnit@1401D69AB -> 140BF4C40 -> 1413CE250 -> OnCombatEnded
-        // @140C7B370 -> active_damage@140C7BFC0; free follows at 1401D6DA3.
+        // Unit deletion ends combat and applies damage before freeing the unit.
         let invoke: unsafe extern "system-unwind" fn(usize, usize, usize, usize) =
             unsafe { std::mem::transmute(destruction_delete_test_caller as *const ()) };
         unsafe {
@@ -4603,7 +4602,7 @@ unsafe extern "system-unwind" fn merged_delete_fixture(_: usize, army: usize, _:
     let source_items = unsafe { *((source_pool + pool::ITEMS) as *const usize) };
     let variant = unsafe { *(source_items as *const usize) };
     unsafe {
-        // Native DeleteUnit's transferred-source flush uses the real scope,
+        // Native unit deletion's transferred-source flush uses the real scope,
         // including any queued HQ provenance that takes caller precedence.
         land(
             army,
@@ -5241,7 +5240,7 @@ fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
                 PoolState::Bookkeeping
             );
         }
-        // The real queued DeleteUnit path retains HQ provenance; live state
+        // The real queued unit deletion path retains HQ provenance; live state
         // still admits its final damage flush and new residual snapshot.
         ORIGINAL[SiteId::Delete as usize]
             .store(cleanup_delete as *const () as usize, Ordering::SeqCst);

@@ -117,7 +117,7 @@ fn air_loss_snapshot_reads_selected_scout_words_aliases_and_clamp_effects() {
         f.value(index, -(index as i64));
     }
     // The native add can saturate; capture its actual increment.
-    const NATIVE_MAX: i64 = 0x53e2_d620_fb40; // AddClampedInt64ArrayValue@141504630.
+    const NATIVE_MAX: i64 = 0x53e2_d620_fb40;
     f.value(71, NATIVE_MAX - 7);
     let snapshot = f.before(1, 1);
     assert_eq!(

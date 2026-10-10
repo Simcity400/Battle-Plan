@@ -1,7 +1,6 @@
-//! A shared projection of native payments. P: signed PP operands are applied
-//! then clamped at 140B98130/140B98220; CP subtracts at 140707F90. Upkeep
-//! commits at 1406EFC6D in 1406EF9A0, on each paid activation anniversary.
-//! Reconciliation, grants and refunds are never payments.
+//! A shared projection of payments. Signed PP operands are applied then
+//! clamped; CP subtracts its operand. Upkeep commits on each paid activation
+//! anniversary. Reconciliation, grants and refunds are never payments.
 use super::*;
 use crate::products::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
 use crate::products::{
@@ -52,7 +51,7 @@ pub struct LedgerSpendChange {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LedgerSpend {
-    /// Recorded CCountry+08 link identity (1401DA850), also CountryRow.id.
+    /// Recorded country link identity, also CountryRow.id.
     #[serde(default)]
     #[ts(optional, as = "Option<_>")]
     pub country_id: u32,
@@ -328,7 +327,7 @@ struct PresenceRun {
     tags: BTreeSet<String>,
     refused_tags: BTreeSet<String>,
 }
-// P: load_tags@14070E900 accepts three non-NUL bytes, without a UTF-8 check.
+// Tags accept three non-NUL bytes, without a UTF-8 check.
 // Refuse only the unrequestable identity, preserving other countries' facts.
 fn valid_recorded_tag(country: &CountryRow) -> Result<&str, String> {
     let reason = match std::str::from_utf8(&country.tag) {
@@ -534,7 +533,7 @@ pub(super) fn observe_all(
             }
         }
     }
-    // P: collector publish_daily preserves the native wrapping sum and
+    // collector publish_daily preserves the native wrapping sum and
     // matching applied PP sequence. Complete tables alone do not prove that
     // a positive native daily cost supplied its component rows.
     let mut component_sums: BTreeMap<_, i64> = BTreeMap::new();
@@ -857,7 +856,7 @@ pub(super) fn observe_all(
             if let Some(&index) = scan.daily.get(&key) {
                 let old = &mut scan.country(&tag, frame.branch).daily[index];
                 // publish_daily commits matching PP rate/application operands
-                // together (politics.daily@140B990B0), independently of CP.
+                // together, independently of CP.
                 if [
                     value.pp_gross_raw.as_deref(),
                     value.pp_cost_raw.as_deref(),
@@ -1196,12 +1195,12 @@ fn category(cause: PowerCause) -> (&'static str, &'static str) {
         PowerCause::NotIdentified => ("notIdentified", "Not identified"),
     }
 }
-/// P: the capture normalizes evaluated charges to signed deltas. Do not
+/// The capture normalizes evaluated charges to signed deltas. Do not
 /// classify from the realized delta: a no-deficit/cap floor may swallow it.
 fn charge(row: &LedgerMutation) -> Option<Option<i128>> {
-    // P: PP's net daily application includes its separately recorded costs
-    // (140B990B0/140B993AC). CP instead applies the signed daily operand
-    // (1406DAAF0 -> 1406DADC7 -> 1406C3320), without clamping it nonnegative.
+    // PP's net daily application includes its separately recorded costs.
+    // CP instead applies the signed daily operand without clamping
+    // it nonnegative.
     if holds::is_hold(row)
         || row.cause == "DailyGain" && row.currency == "Political"
         || !matches!(row.operation.as_str(), "Add" | "Subtract")
@@ -1311,9 +1310,8 @@ fn localise_at(
         );
         if let Some((decision, selects_state)) = decision {
             use crate::scripted_text::{EventObject, EventScope, EventScopes, Link};
-            // P: 1407209E0/140720D40 call 1407290D0. The recorded
-            // identity supplies the country target, but not the name seed
-            // or 14071C840's conditional state-target selector.
+            // The recorded identity supplies the country target, but not
+            // the name seed or conditional state-target selector.
             let mut root = EventScope::of(EventObject::Country(slot));
             if selects_state {
                 root.from = Link::Unknown;
@@ -1354,9 +1352,9 @@ fn localise_at(
                 if present {
                     scopes.scopes[0].from = Link::Scope(1);
                     let mut from = EventScope::of(EventObject::State(state));
-                    // P: 14071C840 returns an existing positive FROM state
-                    // before selector arrays/triggers. 140720D40 wraps it in
-                    // a fresh nested state scope whose seed is default 1.
+                    // An existing positive FROM state takes precedence over selector
+                    // arrays/triggers. It becomes a fresh nested state scope with
+                    // default seed 1.
                     if selects_state {
                         from.from = Link::Scope(2);
                     }
@@ -1541,12 +1539,12 @@ fn event_text<'a>(
                     .map_err(Clone::clone)?;
                 let owner = crate::triggers::Scope::Country(own.naming.slot);
                 let mut scopes = crate::triggers::Scopes::of(owner);
-                // P: 140528800 + 14052DD00 preserve the fresh self links.
+                // Preserve the fresh self links.
                 scopes.from = Some(owner);
                 scopes.prev = Some(owner);
-                // Until a caller's recorded links establish FROM/PREV, any
-                // trigger that reads one refuses instead of guessing a target.
-                // P: 140B363A0/140719FC0 set art FROM to the recorded country or state target.
+                // Until a caller's recorded links establish FROM/PREV, any trigger
+                // that reads one refuses instead of guessing a target. Artwork FROM
+                // is set to the recorded country or state target.
                 if row.cause == "TargetedDecision"
                     || row.item.target_country.is_some()
                     || row.item.target_state.is_some()
@@ -1586,10 +1584,9 @@ fn event_text<'a>(
                 .focuses
                 .get(token)
                 .ok_or_else(|| format!("focus {token} is not defined in recorded content"))?;
-            // P: 1402D2250 constructs self-linked owner scope, then
-            // 1402DADC0 seeds it from campaign+0x720 + focus+0x58.
-            // Those caller inputs are not recorded; only a reached random
-            // read of this seed is unknown. Name and art stay independent.
+            // The owner scope starts self-linked and receives a seed from campaign
+            // and focus inputs. Those caller inputs are not recorded; only a
+            // reached random read of this seed is unknown. Name and art stay independent.
             let name = localise_at(
                 content,
                 &focus.localisation,
@@ -1606,8 +1603,8 @@ fn event_text<'a>(
                 let own = own.ok_or_else(|| {
                     format!("focus {token} art: country identity unavailable at action hour")
                 })?;
-                // P: 140B32B40 tries country-qualified then token-qualified
-                // overrides before either normal or alternate icon selection.
+                // Try country-qualified then token-qualified overrides before
+                // either normal or alternate icon selection.
                 for sprite in focus.sprite_overrides(token, Some(&own.tag)) {
                     if content
                         .catalogue
@@ -1619,15 +1616,14 @@ fn event_text<'a>(
                         return Ok(Some(sprite));
                     }
                 }
-                // P: 141378F40 supplies the unrecorded interface-window mode.
+                // The interface-window mode is not recorded.
                 if focus.alternate_icon_present {
                     return Err(format!(
                         "focus {token} art: alternate icon mode is not recorded"
                     ));
                 }
-                // P: 1402D0890 -> 1413621E0 evaluates the first null/true
-                // ScriptedKey case, including a singleton. Its caller's
-                // fresh owner scope has FROM/PREV self (140528800).
+                // Evaluate the first null/true ScriptedKey case, including a singleton.
+                // Its caller's fresh owner scope has FROM/PREV self.
                 focus
                     .select_normal_icon(|body| {
                         if body.is_empty() {
@@ -1746,8 +1742,8 @@ fn resolve_item(
     };
     let mut info = None;
     if let Some(content) = content {
-        // P: topbar titles 141882160 and 1418845C0. Broad laws/advisors
-        // have no identified title getter and retain fixed cause words.
+        // Use topbar titles where defined. Broad laws/advisors have no
+        // identified title and retain fixed cause words.
         let key = match category.0.as_str() {
             "diplomacy" => Some("TOPBAR_DIPLOMACY"),
             "decisions" => Some("TOPBAR_DECISIONVIEW"),
@@ -1763,7 +1759,7 @@ fn resolve_item(
             && let Ok(Some(idea)) = content.idea(token)
             && !idea.law
         {
-            // P: category names are plain 1406708A0; slots join in database order.
+            // Category names are plain; slots join in database order.
             if let Some(authored) = content
                 .ideas
                 .tags
@@ -1899,8 +1895,8 @@ fn resolve_item(
             }
         }
         if row.cause == "Diplomacy" {
-            // P: daily relation title 140D159A0/140D159B0; its recorded
-            // item token is CRelation's TYPE_ID, not a diplomatic action.
+            // The daily relation title uses the recorded relation TYPE_ID token,
+            // not a diplomatic action.
             let key = if daily_component == Some("Relation") {
                 Some(installed_content::diplomacy::improve_relation_title_key().to_owned())
             } else if !row.item.key.is_empty() {
@@ -1983,8 +1979,7 @@ fn resolve_item(
                         Some((key, argument))
                             if content.catalogue.localisation.get(key).is_some() =>
                         {
-                            // P: modifier_definition::GetLocalizedName@1405505D0
-                            // substitutes its recorded argument as ARG (type 1).
+                            // Modifier names substitute the recorded argument as ARG (type 1).
                             let arguments =
                                 [("ARG", installed_content::localisation::Argument::Text(argument))];
                             let arguments: &[_] =
@@ -2013,10 +2008,9 @@ fn resolve_item(
             }
             Some("MioResearch" | "MioProduction") => {
                 if let Some(organisation) = facts.and_then(|facts| facts.organisation.as_ref()) {
-                    // P: 140DA44C0's scoped name is frozen by event_text at
-                    // this read. Only artwork is loaded at presentation.
-                    // P: GetIconName@140DA4410; reuse the production kit's
-                    // recorded owner/key precedence and native fallback.
+                    // The scoped name is frozen by event_text at this read. Only artwork
+                    // is loaded at presentation. Reuse the production kit's recorded
+                    // owner/key precedence and icon fallback.
                     let sprite = crate::products::production_lines::organisation_icon_with_token(
                         organisation,
                         facts.is_some_and(|facts| facts.organisation_token_known),
@@ -2065,7 +2059,7 @@ fn resolve_item(
             _ => {}
         }
     }
-    // P: 1406DAAF0 applies the net daily CP gain; a negative operand is an
+    // The net daily CP gain can be a negative operand: that is an
     // identified deficit, not an unidentified authored purchase.
     if row.currency == "Command" && row.cause == "DailyGain" {
         item.name = Some("Daily deficit".into());
@@ -2214,8 +2208,8 @@ pub(super) fn present(
 ) -> io::Result<PoliticsLedgerReply> {
     present_view(scan, branch, tag, content, cancelled, LedgerView::Raw)
 }
-/// GovernmentChanges retains the old group before native destruction
-/// (ClearPolitics@140B98E20). Late publication cannot borrow today's identities.
+/// GovernmentChanges retains the old group before destruction.
+/// Late publication cannot borrow today's identities.
 fn government_token(
     frame: &DecodedFrame,
     previous: Option<&DecodedFrame>,
@@ -2418,9 +2412,9 @@ fn present_view(
         budget.add(&spend)?;
         reply.spending.push(spend);
     }
-    // Daily-rate components and later TimedActivity subtractions are different
-    // native applications (140B990B0 versus 140B99633). Never count the net
-    // DailyGain mutation again, nor apportion its realized/clamped delta.
+    // Daily-rate components and later TimedActivity subtractions are
+    // different applications. Never count the net DailyGain mutation again,
+    // nor apportion its realized/clamped delta.
     let daily_applications: BTreeSet<_> = raw
         .daily
         .iter()

@@ -6,7 +6,7 @@
 //! modifier the table does not hold is read from content
 //! (`common/modifier_definitions`) with the engine's defaults. A key found in
 //! neither has no format: the viewer shows it as authored, marked unformatted.
-//! The formatting rules themselves (`FormatValue@14054FE50`) are applied by the
+//! The formatting rules themselves are applied by the
 //! viewer; see `ui/src/dashboard/ideaTooltip.ts`.
 
 use super::politics_content::PoliticsContent;
@@ -63,7 +63,7 @@ pub struct LocalisedText {
 }
 
 /// The recorded definitions by the modifier each names (its script name
-/// folded, as the lexer looks a key up, 1424A7A90), from the branch's last
+/// folded for lookup), from the branch's last
 /// hour that holds both the definitions and the lexer names complete. Blocks
 /// are read from the last back, decoding only those two tables.
 fn recorded(
@@ -148,10 +148,9 @@ pub(crate) fn index_recorded(
         .collect()
 }
 
-/// `key` as `modifier_definition::GetLocalizedName` (1405505D0) localises
-/// it: through the game's localiser with its stored argument as the string
+/// Localise `key` through the shared localiser with its stored argument as the string
 /// `ARG` (type 1) when it has one, else with none. A key the content lacks is
-/// its own bytes (142230940); the error names why the text cannot be shown.
+/// its own bytes; the error names why the text cannot be shown.
 fn name_arguments(argument: &str) -> Vec<(&str, Argument<'_>)> {
     if argument.is_empty() {
         Vec::new()
@@ -261,10 +260,8 @@ pub(crate) fn modifier_formats_from_recorded(
             });
             continue;
         }
-        // LoadScriptModifierDefinitions@1406025E0 as it stored the
-        // definition first registered under the key's name
-        // (FindOrRegisterDynamicModifierDefinition 1405FF750), which a key
-        // finds folded (1424A7A90, 1424A5EE0).
+        // Use the first definition registered under the key's name,
+        // with folded lookup.
         if let Some(format) = content_format(content, key) {
             formats.push(format);
         }
@@ -283,7 +280,7 @@ pub fn texts(content: &PoliticsContent, keys: &BTreeSet<String>) -> Vec<Localise
     keys.iter()
         .map(|key| LocalisedText {
             key: key.clone(),
-            // The idea tooltip's lines (140FBC770 -> 14054E520 -> 1410CF560).
+            // Idea tooltip lines use scoped localisation.
             text: content.localised(key, catalogue::View::Scripted),
         })
         .collect()
@@ -293,7 +290,7 @@ pub fn texts(content: &PoliticsContent, keys: &BTreeSet<String>) -> Vec<Localise
 mod tests {
     use super::{catalogue, name_arguments};
 
-    /// The game's localiser fills `ARG` at every nested level (142230940), a
+    /// The localiser fills `ARG` at every nested level, a
     /// `$KEY|format$` that is no argument looks up the whole operand, which no
     /// key is, and writes nothing, and a key the content lacks is its own
     /// bytes.

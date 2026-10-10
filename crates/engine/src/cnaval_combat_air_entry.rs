@@ -1,5 +1,5 @@
-//! CNavalCombatAirEntry retained result snapshot.140CD2A60 constructs0x88 bytes
-//! and copies CFEXAir variant/counts/country/name plus three transferred hit lists.
+//! Retained naval-air result snapshot, 0x88 bytes. It copies variant,
+//! counts, country and name with three transferred hit arrays.
 use crate::capture_text::Value;
 use crate::{
     Memory,
@@ -7,14 +7,14 @@ use crate::{
     cnaval_combatant::field,
 };
 
-///140CD2FB7 LEA RIP+1C744E2 resolves to1429474A0 in the pinned executable.
+/// Naval-combat air-entry primary vtable.
 pub const VTABLE_RVA: usize = 0x0294_74a0;
 pub const SIZE: usize = 0x88;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DetailsRow {
     pub variant: u64,
-    ///141DF1400 uses these exact variant+2A0/+2A8 operands in its summary.
+    /// Variant-summary operands at +0x2A0/+0x2A8.
     pub variant_summary_inputs: [i64; 2],
     pub initial_planes: i32,
     pub current_planes: i32,

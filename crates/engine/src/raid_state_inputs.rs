@@ -1,14 +1,11 @@
-//! What the state-scope raid `target_type` triggers read that the game stores.
+//! Stored operands of state-scope raid target triggers.
 //!
-//! `<resource> <op> N` (`CResourceCountTrigger::GetValue@141390640`) sums, in
-//! `AccumulateStrategicResourceAmounts@1409CC730`, the template amount, the
-//! state's own pool, three accumulator keys of the resource, the global factor
-//! key and, when the controller has a `CResourceOrigin` for the state, the
-//! infrastructure and supply-route factors; then the healthy-level building
-//! grants, adjusted by the controller's overrides. The game computes that on
-//! demand, so its operands are read here and nothing is computed.
-//! `has_dynamic_modifier` in state scope reads the state's
-//! `CDynamicModifierContainer` (`HasModifierForScope@140552A60`).
+//! Resource amounts combine the template amount, state's own pool, three
+//! resource accumulator keys and the global factor. A controller origin for
+//! the state also selects infrastructure and supply-route factors. Healthy
+//! building levels add grants adjusted by the controller's overrides.
+//! These values are computed on demand; this reader acquires their operands.
+//! Dynamic-modifier checks read the state's stored modifier container.
 
 use crate::{
     Memory, cbuilding, cbuilding_database, cbuilding_status, cbuilding_template, ccountry,
@@ -24,15 +21,15 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// The global resource factor key `CalculateBaseResourceAmount@1409C5670` reads.
+/// The global resource factor key.
 /// Fixed built-in keys are checked once per attachment by
 /// [`crate::fixed_layout`]; a mismatch withholds the tables that use them.
 pub const GLOBAL_FACTOR_KEY: u32 = crate::modifier_keys::STATE_RESOURCES_FACTOR;
-/// The country infrastructure key `InfrastructureResourceFactor@140C9DCB0` reads.
+/// The country infrastructure resource factor key.
 pub const INFRASTRUCTURE_KEY: u32 =
     crate::modifier_keys::LOCAL_RESOURCE_GAIN_EFFICIENCY_PER_INFRASTRUCTURE;
 
-/// `BuildingDatabase + 0x3b0`, the template `140C9DCB0` looks up.
+/// Infrastructure building template pointer at database +0x3b0.
 const INFRASTRUCTURE_TEMPLATE: usize = 0x3b0;
 
 /// One state's operands shared by every resource.
@@ -43,16 +40,16 @@ pub struct InputRow {
     pub gate: u8,
     /// Effective key 0x223 in `CState + 0x558`.
     pub global_factor: i64,
-    /// The controller has a `CResourceOrigin` whose `+0x80` is this state
-    /// (`ResourceMap_SelectViewer@140C9ECA0`); without one both factors are one.
+    /// The controller has a resource origin whose +0x80 identifies this state;
+    /// without one both factors are one.
     pub origin: u8,
     /// The infrastructure building's `+0x40` level, damage included, read only
     /// with an origin; `None` when the state has no such building.
     pub infrastructure_level: Option<i32>,
-    /// Effective key 0x292 for the controller (`GetModifierForCountry@1409CC140`),
-    /// read only with an infrastructure level; zero otherwise.
+    /// Effective controller key 0x292, read only with an infrastructure level;
+    /// zero otherwise.
     pub infrastructure_modifier: i64,
-    /// `MaxStateProvinceNodeValue@1412138A0 > 0`, read only with an origin.
+    /// Whether the maximum state province-node value is positive, read only with an origin.
     pub supply_route: u8,
 }
 
@@ -114,9 +111,8 @@ const DATABASE_FIELDS: [RecordField; 2] = [
 ];
 const DATABASE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&DATABASE_FIELDS, 32).expect("valid record layout");
-/// A descriptor's vtable, one-based index, token and the three state keys
-/// `AccumulateStrategicResourceAmounts@1409CC730` reads, in the order
-/// `cstrategic_resource::row` meets them.
+/// A descriptor's vtable, one-based index, token and three state keys, in
+/// the order `cstrategic_resource::row` meets them.
 const DESCRIPTOR_FIELDS: [RecordField; 6] = [
     field(0, 0, 8),
     field(cstrategic_resource::INDEX, 8, 4),
@@ -173,7 +169,7 @@ fn resource_database(
         return Err("resource database item and key counts disagree");
     }
     let count = items.count as usize;
-    // AccumulateStrategicResourceAmounts@1409CC730 reaches every database item.
+    // Resource accumulation reaches every database item.
     grow(output, count - 1, growing)?;
     grow(keys, count - 1, growing)?;
     grow(bytes, BATCH * DESCRIPTOR_LAYOUT.stride(), growing)?;
@@ -863,7 +859,7 @@ const BUILDING_FIELDS: [RecordField; 2] = [
 const BUILDING_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&BUILDING_FIELDS, 16).expect("valid record layout");
 
-/// The first bucket's probe distance byte (`GetModifierForCountry@1409CC140`).
+/// The first bucket's probe distance byte.
 const BUCKET_FIELDS: [RecordField; 1] = [field(4, 0, 1)];
 const BUCKET_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&BUCKET_FIELDS, 8).expect("valid record layout");
@@ -2010,8 +2006,8 @@ fn non_null(bytes: &[u8], addresses: &mut [usize]) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// `GetModifierForCountry@1409CC140`'s first probe for the state's
-/// controller: the bucket address, with the header's bounds checks.
+/// The first country-modifier probe for the state's controller: the bucket
+/// address, with the header's bounds checks.
 fn first_bucket(state: &Scratch, census: &Census<'_>) -> Result<usize, &'static str> {
     let header = &state.fields[STATE_HASH..STATE_HASH + 17];
     let data = u64_at(header, 0) as usize;
@@ -2074,9 +2070,8 @@ fn origin_states(
     Ok(())
 }
 
-/// `lookup_building@141160CD0` for up to `BATCH` states: the index, building
-/// pointer, template and `+0x40` level of the infrastructure building,
-/// `None` without one.
+/// Infrastructure lookup for up to `BATCH` states: the index, building
+/// pointer, template and +0x40 level; `None` without a building.
 fn infrastructure_levels(
     memory: &impl Memory,
     infrastructure: Infrastructure,
@@ -2163,8 +2158,8 @@ fn infrastructure_levels(
     Ok(levels)
 }
 
-/// `MaxStateProvinceNodeValue@1412138A0 > 0` for up to `BATCH` states whose
-/// controllers' routes are in `routes`, reading province vectors and ids in
+/// Positive maximum province-node value for up to `BATCH` states whose
+/// controllers' routes are in `routes`, reading province vectors and IDs in
 /// groups that fit. A state whose provinces alone do not fit is skipped,
 /// counted in `unread` and its province count kept in `provinces`.
 #[allow(clippy::too_many_arguments)]
@@ -2192,7 +2187,7 @@ fn route_supply(
             .ok_or("state provinces invalid")?;
         let count = provinces.count as usize;
         need(provinces_required, count);
-        // MaxStateProvinceNodeValue@1412138A0 walks the full province vector.
+        // The maximum node value requires the full province vector.
         grow(words, total + count, growing)?;
         grow(addresses, total + count, growing)?;
         grow(bytes, (total + count) * 16, growing)?;
@@ -2244,8 +2239,8 @@ fn route_supply(
     )
 }
 
-/// `MaxStateProvinceNodeValue@1412138A0 > 0` for states whose province
-/// vectors are `spans`: a province's route node has a positive `+0x78`.
+/// Positive maximum province-node value for states whose province vectors
+/// are `spans`: a province's route node has a positive +0x78.
 #[allow(clippy::too_many_arguments)]
 fn origin_states_supply(
     memory: &impl Memory,
@@ -2381,7 +2376,8 @@ fn infrastructure_template(
     })
 }
 
-/// country or leader, this state's id at `+0x18`).
+/// The state container's authenticated entry array: no country or leader,
+/// and this state's ID at +0x18.
 fn container_array(base: usize, state: &Scratch) -> Result<Array, &'static str> {
     let bytes = &state.fields[STATE_CONTAINER..STATE_CONTAINER + 0x38];
     if u64_at(bytes, 0) != address(base, cdynamic_modifier_container::VTABLE_RVA)? as u64 {

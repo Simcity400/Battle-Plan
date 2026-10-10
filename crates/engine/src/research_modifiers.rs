@@ -1,0 +1,775 @@
+//! Passive research-speed and tooltip inputs.
+//! Country operands are copied once; only assigned technologies are followed.
+//! All links are pass-local. Worker storage grows from acquired native demand;
+//! fixed fixture readers retain explicit shortages. No native calls or catalogue sweep.
+//!
+//! The hourly reader follows assigned technology links from the same acquisition
+//! pass. It copies shared country speed/source trees once, slot-specific
+//! idea/script and design-team operands, XP boosts, matching production licences,
+//! sharing group operands and selected scientist-category bonuses. Sharing uses
+//! bounded direct template-index lookups for raw member levels and predecessor
+//! classifiers, not a technology census. Native group filters, doctrine flags
+//! and scientist category values stay separate; analytics derives eligibility,
+//! contributor counts and the combined scientist contribution. Modifier metadata
+//! keeps native flags and feature operands for replay eligibility and clamping.
+//! Scientist efficiency-modifier sources are separate from cached category
+//! values; do not sum those values as direct technology-speed contributions.
+//! Applied-bonus roster scans have a finite bound and stop once requested IDs
+//! resolve (`research_inputs`). Operand meanings stay beside the fields.
+//!
+//! Synthetic fixtures cover signed values, missing reads, output capacity,
+//! ownership, aliases, source cycles and conditional read cost.
+use crate::{
+    Memory, ccountry, cpdx_array::Array, msvc_string::Descriptor, read, read_slice,
+    research_inputs, research_inputs::Text, walk::Outcome,
+};
+
+mod sharing;
+#[cfg(test)]
+mod tests;
+
+/// Acquisition categories, mapped explicitly to replay's wire tags by collector.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    #[default]
+    Technology,
+    CountrySpeed,
+    CategorySpeed,
+    DesignTeam,
+    Experience,
+    Sharing,
+    License,
+    Scientist,
+    Year,
+    AheadFactor,
+    MinimumSpeed,
+    CountrySource,
+    IdeaSource,
+    ScriptSource,
+    ScientistSource,
+    SharingMultiplier,
+    SharingMaximum,
+    ModifierMetadata,
+    ScientistCategory,
+    SharingMember,
+    SharingPredecessor,
+    SharingFilter,
+    SharingCategory,
+    SharingDoctrine,
+    SharingMissingMember,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Row {
+    pub country: u32,
+    /// u32::MAX denotes country-wide operands shared by its active slots.
+    pub index: u32,
+    pub ordinal: u32,
+    pub technology_handle: u32,
+    pub kind: Kind,
+    pub raw: i64,
+    pub auxiliary: i64,
+    pub count: u32,
+    pub source_id: u32,
+    pub name: Text,
+}
+
+/// Minimum research speed, licence factor, sharing clamp and ahead-of-time factor.
+const DEFINES: [usize; 4] = [0x0331_a998, 0x0331_a670, 0x0331_a5d0, 0x0331_a4b0];
+#[derive(Clone, Copy)]
+pub struct Context {
+    minimum: i64,
+    license: i64,
+    sharing_maximum: i64,
+    ahead_factor: i64,
+}
+impl Context {
+    pub fn read(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+        let mut bytes = [[0; 8]; 4];
+        let mut addresses = [0; 4];
+        for (address, rva) in addresses.iter_mut().zip(DEFINES) {
+            *address = at(base, rva)?;
+        }
+        if memory.copy_scattered_prefetched(addresses, &mut bytes.each_mut().map(|v| &mut v[..]))
+            != 4
+        {
+            return Err("research modifier defines unreadable");
+        }
+        let [minimum, license, sharing_maximum, ahead_factor] = bytes.map(i64::from_le_bytes);
+        Ok(Self {
+            minimum,
+            license,
+            sharing_maximum,
+            ahead_factor,
+        })
+    }
+}
+
+struct Output<'a> {
+    rows: crate::walk::Buffer<'a, Row>,
+    len: usize,
+    omitted: u32,
+    current: Row,
+}
+impl Output<'_> {
+    fn push(
+        &mut self,
+        kind: Kind,
+        raw: i64,
+        auxiliary: i64,
+        count: u32,
+        source_id: u32,
+        name: Text,
+    ) -> Result<(), &'static str> {
+        let row = Row {
+            kind,
+            raw,
+            auxiliary,
+            count,
+            source_id,
+            name,
+            ..self.current.clone()
+        };
+        self.current.ordinal = self
+            .current
+            .ordinal
+            .checked_add(1)
+            .ok_or("research modifier ordinal overflow")?;
+        self.rows.ensure(
+            self.len
+                .checked_add(1)
+                .ok_or("research modifier row count overflow")?,
+        )?;
+        if self.len < self.rows.len() {
+            self.rows[self.len] = row;
+            self.len += 1;
+        } else {
+            self.omitted = self
+                .omitted
+                .checked_add(1)
+                .ok_or("research modifier count overflow")?;
+        }
+        Ok(())
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn modified(
+        &mut self,
+        kind: Kind,
+        raw: i64,
+        metadata: Option<crate::modifier_definition::Operands>,
+        count: u32,
+        source_id: u32,
+        name: Text,
+    ) -> Result<(), &'static str> {
+        let ordinal = self.current.ordinal;
+        self.push(kind, raw, 0, count, source_id, name)?;
+        if let Some(metadata) = metadata {
+            self.push(
+                Kind::ModifierMetadata,
+                i64::from(metadata.flags),
+                i64::from(metadata.eligibility_flags),
+                metadata.selector,
+                ordinal,
+                Text::default(),
+            )?;
+        }
+        Ok(())
+    }
+    fn value(&mut self, kind: Kind, raw: i64) -> Result<(), &'static str> {
+        self.push(kind, raw, 0, 0, 0, Text::default())
+    }
+}
+
+pub fn walk_country<M: Memory>(
+    memory: &M,
+    base: usize,
+    countries: &ccountry::Reader<'_, M>,
+    country: ccountry::Country,
+    context: Result<Context, &'static str>,
+    inputs: &[research_inputs::Row],
+    output: &mut [Row],
+) -> Outcome {
+    walk_country_buffer(
+        memory,
+        base,
+        countries,
+        country,
+        context,
+        inputs,
+        crate::walk::Buffer::Fixed(output),
+    )
+}
+
+pub fn walk_country_growing<M: Memory>(
+    memory: &M,
+    base: usize,
+    countries: &ccountry::Reader<'_, M>,
+    country: ccountry::Country,
+    context: Result<Context, &'static str>,
+    inputs: &[research_inputs::Row],
+    output: &mut Vec<Row>,
+) -> Outcome {
+    walk_country_buffer(
+        memory,
+        base,
+        countries,
+        country,
+        context,
+        inputs,
+        crate::walk::Buffer::Growing(output),
+    )
+}
+
+pub fn walk_country_buffer<M: Memory>(
+    memory: &M,
+    base: usize,
+    countries: &ccountry::Reader<'_, M>,
+    country: ccountry::Country,
+    context: Result<Context, &'static str>,
+    inputs: &[research_inputs::Row],
+    output: crate::walk::Buffer<'_, Row>,
+) -> Outcome {
+    // Idle countries need neither defines, modifier trees nor sharing/industrial state.
+    if !inputs.iter().any(|r| r.slot.technology_present != 0) {
+        return Outcome::Rows { len: 0 };
+    }
+    let growing = output.is_growing();
+    let mut out = Output {
+        rows: output,
+        len: 0,
+        omitted: 0,
+        current: Row {
+            country: country.id,
+            index: u32::MAX,
+            ..Row::default()
+        },
+    };
+    let result = (|| {
+        let context = context?;
+        let accumulator = at(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?;
+        let (raw, metadata) = modifier(
+            memory,
+            base,
+            accumulator,
+            crate::modifier_keys::RESEARCH_SPEED_FACTOR,
+        )?;
+        out.modified(Kind::CountrySpeed, raw, metadata, 0, 0, Text::default())?;
+        out.value(Kind::AheadFactor, context.ahead_factor)?;
+        out.value(Kind::MinimumSpeed, context.minimum)?;
+        out.value(Kind::SharingMaximum, context.sharing_maximum)?;
+        country_sources(memory, base, accumulator, &mut out)?;
+
+        let status = inputs
+            .iter()
+            .find(|r| r.slot.technology_present != 0)
+            .unwrap()
+            .status_pointer;
+        let sharing = sharing::Country::read(memory, base, countries, country, status, growing)?;
+        let (raw, metadata) = if sharing.is_empty() {
+            (0, None)
+        } else {
+            modifier(
+                memory,
+                base,
+                accumulator,
+                crate::modifier_keys::RESEARCH_SHARING_PER_COUNTRY_BONUS_FACTOR,
+            )?
+        };
+        out.modified(
+            Kind::SharingMultiplier,
+            raw,
+            metadata,
+            0,
+            0,
+            Text::default(),
+        )?;
+        let mut witnesses = sharing::Witnesses::default();
+        // Licence and scientist contexts are lazy: no linked equipment/categories, no read.
+        let mut licenses = None;
+        let mut scientist = None;
+        for input in inputs.iter().filter(|r| r.slot.technology_present != 0) {
+            if input.status_pointer != status {
+                return Err("research modifier owner changed");
+            }
+            out.current = Row {
+                country: country.id,
+                index: input.slot.index,
+                technology_handle: input.slot.technology_handle,
+                ..Row::default()
+            };
+            out.value(Kind::Technology, i64::from(input.slot.technology_handle))?;
+            out.value(Kind::Year, i64::from(input.template_year))?;
+            let tech = input.technology_pointer;
+            let mut cached = [0; 24];
+            let mut xp = [0; 12];
+            let mut equipment = [0; 16];
+            let mut lists = [0; 64];
+            // Research uses category sum +0x190, design-team sum +0x1a0 and XP flag +0x1e8.
+            // Tooltip sources are ideas +0x110, scripts +0x128 and scientist categories +0x140.
+            if memory.copy_scattered_prefetched(
+                [
+                    at(tech, 0x190)?,
+                    at(tech, 0x1e8)?,
+                    at(tech, 0x68)?,
+                    at(tech, 0x110)?,
+                ],
+                &mut [
+                    &mut cached[..],
+                    &mut xp[..],
+                    &mut equipment[..],
+                    &mut lists[..],
+                ],
+            ) != 4
+            {
+                return Err("research modifier operands unreadable");
+            }
+            out.value(Kind::CategorySpeed, i64_at(&cached, 0))?;
+            // Resolve the adjacent +0x1ec/+0x1f0 organisation reference. Retain the
+            // exact reference even when its localized name is unavailable.
+            out.push(
+                Kind::DesignTeam,
+                i64_at(&cached, 16),
+                i64_at(&xp, 4),
+                u32::from_le_bytes(xp[4..8].try_into().unwrap()),
+                u32::from_le_bytes(xp[8..12].try_into().unwrap()),
+                Text::default(),
+            )?;
+            out.push(
+                Kind::Experience,
+                if xp[0] != 0 {
+                    read::<i64>(memory, at(input.template_pointer, 0x538)?)
+                        .ok_or("research XP modifier unreadable")?
+                } else {
+                    0
+                },
+                i64::from(xp[0]),
+                0,
+                0,
+                Text::default(),
+            )?;
+            let ideas = array(&lists[..16], 8)?;
+            let scripts = array(&lists[24..40], 40)?;
+            let categories = array(&lists[48..64], 4)?;
+            pointer_pages(memory, ideas, |pointer| {
+                // Idea contribution at +0x38 and idea pointer at +0x40.
+                let bytes = read::<[u8; 16]>(memory, at(pointer, 0x38)?)
+                    .ok_or("research idea contribution unreadable")?;
+                let raw = i64_at(&bytes, 0);
+                if raw != 0 {
+                    let idea = pointer_from(&bytes[8..])?;
+                    if read::<u64>(memory, idea) != Some(at(base, crate::cidea::VTABLE_RVA)? as u64)
+                    {
+                        return Err("research idea identity mismatch");
+                    }
+                    out.push(
+                        Kind::IdeaSource,
+                        raw,
+                        0,
+                        0,
+                        0,
+                        text(memory, at(idea, crate::cidea::TOKEN)?, growing)?,
+                    )?;
+                }
+                Ok(())
+            })?;
+            // Walk the original scripted-source count.
+            for index in 0..scripts.count {
+                let entry = scripts
+                    .element(index, 40)
+                    .ok_or("research script address overflow")?;
+                let source = pointer(memory, entry)?;
+                let raw = read::<i64>(memory, at(source, 0x30)?)
+                    .ok_or("research script contribution unreadable")?;
+                if raw != 0 {
+                    out.push(
+                        Kind::ScriptSource,
+                        raw,
+                        0,
+                        0,
+                        0,
+                        text(memory, at(entry, 8)?, growing)?,
+                    )?;
+                }
+            }
+            let equipment = array(&equipment, 8)?;
+            let license = if equipment.count == 0 {
+                false
+            } else {
+                let roster = match licenses {
+                    Some(roster) => roster,
+                    None => {
+                        // Production +0x190 embeds the industrial status; +0x20 holds licensed variants.
+                        let production =
+                            pointer(memory, at(country.pointer, ccountry::PRODUCTION_STATUS)?)?;
+                        let roster = array_at(memory, at(production, 0x1b0)?, 8)?;
+                        licenses = Some(roster);
+                        roster
+                    }
+                };
+                licensed(memory, equipment, roster)?
+            };
+            out.value(Kind::License, if license { context.license } else { 0 })?;
+            scientist_bonus(
+                memory,
+                base,
+                country,
+                countries,
+                categories,
+                &mut scientist,
+                &mut out,
+            )?;
+            sharing.capture(memory, base, countries, input, &mut witnesses, &mut out)?;
+        }
+        Ok(())
+    })();
+    match result {
+        Err(reason) => Outcome::Unavailable { reason },
+        Ok(()) if out.omitted != 0 => Outcome::Truncated {
+            len: out.len,
+            unread_rows: out.omitted,
+        },
+        Ok(()) => Outcome::Rows { len: out.len },
+    }
+}
+
+fn country_sources(
+    memory: &impl Memory,
+    base: usize,
+    accumulator: usize,
+    out: &mut Output<'_>,
+) -> Result<(), &'static str> {
+    struct Frame {
+        accumulator: usize,
+        children: Array,
+        next: u32,
+        bytes: [u8; 64 * 8],
+    }
+    fn frame(memory: &impl Memory, accumulator: usize) -> Result<Frame, &'static str> {
+        Ok(Frame {
+            accumulator,
+            children: array_at(memory, at(accumulator, 0x18)?, 8)?,
+            next: 0,
+            bytes: [0; 64 * 8],
+        })
+    }
+    // Visit every original child through wrapper +0x10. Keep acquired pages
+    // on the worker stack so neither depth nor fanout caps the pass, and
+    // returning from a child never reacquires its parent page.
+    let mut stack =
+        crate::allocation::vec(1).map_err(|_| "research source stack allocation failed")?;
+    stack.push(frame(memory, accumulator)?);
+    while let Some(current) = stack.last_mut() {
+        if current.children.count == 0 {
+            let accumulator = current.accumulator;
+            if stack.len() != 1 {
+                let (raw, metadata) = modifier(
+                    memory,
+                    base,
+                    accumulator,
+                    crate::modifier_keys::RESEARCH_SPEED_FACTOR,
+                )?;
+                if raw != 0 {
+                    out.modified(
+                        Kind::CountrySource,
+                        raw,
+                        metadata,
+                        0,
+                        0,
+                        text(memory, at(accumulator, 0x48)?, out.rows.is_growing())?,
+                    )?;
+                }
+            }
+            stack.pop();
+            continue;
+        }
+        if current.next == current.children.count {
+            stack.pop();
+            continue;
+        }
+        let offset = current.next % 64;
+        if offset == 0 {
+            let count = (current.children.count - current.next).min(64);
+            if !read_slice(
+                memory,
+                current
+                    .children
+                    .element(current.next, 8)
+                    .ok_or("research pointer page overflow")?,
+                &mut current.bytes[..count as usize * 8],
+            ) {
+                return Err("research modifier pointers unreadable");
+            }
+        }
+        let child = at(
+            pointer_from(&current.bytes[offset as usize * 8..offset as usize * 8 + 8])?,
+            0x10,
+        )?;
+        current.next += 1;
+        if stack.iter().any(|frame| frame.accumulator == child) {
+            return Err("research modifier source cycle");
+        }
+        crate::allocation::reserve_push_batch(&mut stack, 1)
+            .map_err(|_| "research source stack allocation failed")?;
+        stack.push(frame(memory, child)?);
+    }
+    Ok(())
+}
+
+/// Lower-bound lookup without a census of irrelevant modifiers.
+fn modifier(
+    memory: &impl Memory,
+    base: usize,
+    accumulator: usize,
+    key: u32,
+) -> Result<(i64, Option<crate::modifier_definition::Operands>), &'static str> {
+    let entries = array_at(memory, accumulator, 16)?;
+    let mut first = 0;
+    let mut count = entries.count;
+    while count != 0 {
+        let half = count / 2;
+        let index = first + half;
+        let found = read::<u32>(
+            memory,
+            entries
+                .element(index, 16)
+                .ok_or("research modifier search overflow")?,
+        )
+        .ok_or("research modifier key unreadable")?;
+        if found < key {
+            first = index + 1;
+            count -= half + 1;
+        } else {
+            count = half;
+        }
+    }
+    if first == entries.count {
+        return Ok((0, None));
+    }
+    let bytes = read::<[u8; 16]>(
+        memory,
+        entries
+            .element(first, 16)
+            .ok_or("research modifier search overflow")?,
+    )
+    .ok_or("research modifier value unreadable")?;
+    if u32::from_le_bytes(bytes[..4].try_into().unwrap()) != key {
+        return Ok((0, None));
+    }
+    let raw = i64_at(&bytes, 8);
+    Ok((
+        raw,
+        Some(crate::modifier_definition::operands(memory, base, key)?),
+    ))
+}
+
+fn licensed(memory: &impl Memory, equipment: Array, licenses: Array) -> Result<bool, &'static str> {
+    let mut found = false;
+    pointer_pages(memory, equipment, |equipment| {
+        if !found {
+            pointer_pages(memory, licenses, |license| {
+                if !found {
+                    found = pointer(memory, at(license, 0x3f0)?)? == equipment;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    })?;
+    Ok(found)
+}
+
+#[derive(Clone, Copy)]
+struct Scientist {
+    data: usize,
+    mask: u32,
+    overflow: u8,
+}
+#[allow(clippy::too_many_arguments)]
+fn scientist_bonus<M: Memory>(
+    memory: &M,
+    base: usize,
+    country: ccountry::Country,
+    countries: &ccountry::Reader<'_, M>,
+    categories: Array,
+    cached: &mut Option<Scientist>,
+    out: &mut Output<'_>,
+) -> Result<(), &'static str> {
+    if categories.count == 0 {
+        return out.value(Kind::Scientist, 0);
+    }
+    let header = match *cached {
+        Some(v) => v,
+        None => {
+            // Country +0xFA8 selects hash storage +0x88, mask +0x94 and overflow +0x98.
+            let owner =
+                crate::nproject_cprogram_status::from_country(memory, base, country, countries)?;
+            let bytes = read::<[u8; 17]>(memory, at(owner, 0x88)?)
+                .ok_or("research scientist map unreadable")?;
+            let value = Scientist {
+                data: pointer_from(&bytes[..8])?,
+                mask: u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+                overflow: bytes[16],
+            };
+            if !value.mask.checked_add(1).is_some_and(u32::is_power_of_two) {
+                return Err("research scientist map mask invalid");
+            }
+            *cached = Some(value);
+            value
+        }
+    };
+    // Consume every category; the batch is scratch, not a limit.
+    let mut category_bytes = [0; 128 * 4];
+    let mut first = 0;
+    while first < categories.count {
+        let count = (categories.count - first).min(128);
+        if !read_slice(
+            memory,
+            categories
+                .element(first, 4)
+                .ok_or("research scientist category address overflow")?,
+            &mut category_bytes[..count as usize * 4],
+        ) {
+            return Err("research scientist categories unreadable");
+        }
+        if first == 0 {
+            out.value(Kind::Scientist, i64::from(categories.count))?;
+        }
+        for bytes in category_bytes[..count as usize * 4].chunks_exact(4) {
+            let category = u32::from_le_bytes(bytes.try_into().unwrap());
+            let mut hash = (category >> 16 ^ category).wrapping_mul(0x45d9f3b);
+            hash = (hash >> 16 ^ hash).wrapping_mul(0x45d9f3b);
+            hash = (hash >> 16 ^ hash) & header.mask;
+            let mut found = false;
+            for distance in 1..=u32::from(header.overflow) + 1 {
+                let index = hash
+                    .checked_add(distance - 1)
+                    .ok_or("research scientist probe overflow")?;
+                if index > header.mask + u32::from(header.overflow) {
+                    break;
+                }
+                let bytes = read::<[u8; 48]>(memory, at(header.data, index as usize * 48)?)
+                    .ok_or("research scientist bucket unreadable")?;
+                if bytes[4] == 0 || (distance > 1 && distance > u32::from(bytes[4])) {
+                    break;
+                }
+                if u32::from_le_bytes(bytes[8..12].try_into().unwrap()) == category {
+                    let value = i64_at(&bytes, 16);
+                    found = true;
+                    out.push(
+                        Kind::ScientistCategory,
+                        value,
+                        0,
+                        0,
+                        category,
+                        Text::default(),
+                    )?;
+                    // These pointers are the exact selected scientist source list.
+                    pointer_pages(memory, array(&bytes[24..40], 8)?, |source| {
+                        // Retain scientists with a positive modifier 0x27A.
+                        // Their +8 character backlink is also copied.
+                        let identity = read::<[u8; 16]>(memory, source)
+                            .ok_or("research scientist identity unreadable")?;
+                        if u64::from_le_bytes(identity[..8].try_into().unwrap())
+                            != at(base, crate::cscientist::VTABLE_RVA)? as u64
+                        {
+                            return Err("research scientist identity mismatch");
+                        }
+                        let character = pointer_from(&identity[8..])?;
+                        let identity = read::<[u8; 16]>(memory, character)
+                            .ok_or("research scientist character unreadable")?;
+                        if u64::from_le_bytes(identity[..8].try_into().unwrap())
+                            != at(base, crate::ccharacter::VTABLE_RVA)? as u64
+                            || u32::from_le_bytes(identity[8..12].try_into().unwrap())
+                                != crate::ccharacter::REFERENCE_TYPE
+                            || pointer(memory, at(character, crate::ccharacter::SCIENTIST)?)?
+                                != source
+                        {
+                            return Err("research scientist character identity mismatch");
+                        }
+                        let id = u32::from_le_bytes(identity[12..16].try_into().unwrap());
+                        let accumulator = at(source, 0x58)?;
+                        let (raw, metadata) = modifier(
+                            memory,
+                            base,
+                            accumulator,
+                            crate::modifier_keys::SCIENTIST_RESEARCH_BONUS_FACTOR,
+                        )?;
+                        out.modified(
+                            Kind::ScientistSource,
+                            raw,
+                            metadata,
+                            category,
+                            id,
+                            text(
+                                memory,
+                                at(character, crate::ccharacter::TOKEN)?,
+                                out.rows.is_growing(),
+                            )?,
+                        )
+                    })?;
+                    break;
+                }
+            }
+            if !found {
+                out.push(Kind::ScientistCategory, 0, 0, 0, category, Text::default())?;
+            }
+        }
+        first += count;
+    }
+    Ok(())
+}
+
+fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
+    pointer
+        .checked_add(offset)
+        .ok_or("research modifier address overflow")
+}
+fn pointer_from(bytes: &[u8]) -> Result<usize, &'static str> {
+    usize::try_from(u64::from_le_bytes(bytes.try_into().unwrap()))
+        .ok()
+        .filter(|p| *p != 0)
+        .ok_or("research modifier pointer invalid")
+}
+fn pointer(memory: &impl Memory, address: usize) -> Result<usize, &'static str> {
+    pointer_from(&read::<[u8; 8]>(memory, address).ok_or("research modifier pointer unreadable")?)
+}
+fn array(bytes: &[u8], stride: usize) -> Result<Array, &'static str> {
+    Array::from_header(bytes.try_into().unwrap(), stride).ok_or("research modifier array invalid")
+}
+fn array_at(memory: &impl Memory, address: usize, stride: usize) -> Result<Array, &'static str> {
+    Array::read(memory, address, stride).ok_or("research modifier array unreadable")
+}
+fn i64_at(bytes: &[u8], offset: usize) -> i64 {
+    i64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+}
+fn text(memory: &impl Memory, address: usize, growing: bool) -> Result<Text, &'static str> {
+    Text::from_descriptor(memory, Descriptor::read(memory, address)?, growing)
+}
+fn pointer_pages(
+    memory: &impl Memory,
+    array: Array,
+    mut visit: impl FnMut(usize) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    // Bounded by the validated native header (count <= capacity <= i32::MAX)
+    // only: faction member rosters hold countries and grow with the country
+    // table; each page is one guarded read and a failure fails the walk.
+    let mut bytes = [0; 64 * 8];
+    let mut first = 0;
+    while first < array.count {
+        let count = (array.count - first).min(64);
+        if !read_slice(
+            memory,
+            array
+                .element(first, 8)
+                .ok_or("research pointer page overflow")?,
+            &mut bytes[..count as usize * 8],
+        ) {
+            return Err("research modifier pointers unreadable");
+        }
+        for p in bytes[..count as usize * 8].chunks_exact(8) {
+            visit(pointer_from(p)?)?;
+        }
+        first += count;
+    }
+    Ok(())
+}

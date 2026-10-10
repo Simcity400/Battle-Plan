@@ -380,7 +380,7 @@ fn viewer_relation_gates_on_the_mission_countrys_own_reference() {
     let fixture = PortFixture::new();
     let mut frame = fixture.frame();
     assert_eq!(fixture.admit_in(&frame, &[412]), Some(true));
-    // `CCountry+8`, not the wing's raw reference, is tested.
+    // The country's own reference is tested, rather than the wing's raw reference.
     table::<tables::Countries>(&mut frame)[0].id = 0x8000_0001;
     assert_eq!(fixture.admit_in(&frame, &[412]), Some(false));
     truncate::<tables::Countries>(&mut frame);
@@ -1252,7 +1252,7 @@ fn strategic_witness_uses_full_region_states_and_active_building_vectors() {
             TargetAdmission::Allowed
         );
     }
-    // F61B40 walks the active vector, not the full building list.
+    // Target scanning uses the active vector rather than the full building list.
     table::<tables::ProvinceBuildings>(&mut frame)[0].active = false;
     assert_eq!(admit(&frame, &[401]), Some(false));
     const RAIL_WAY: u32 = cbuilding_template::RAIL_WAY_TOKEN;
@@ -1263,8 +1263,8 @@ fn strategic_witness_uses_full_region_states_and_active_building_vectors() {
     assert_eq!(admit(&frame, &[401]), Some(false));
     table::<tables::ProvinceUnitOrder>(&mut frame)[0].mixed = vec![40];
     table::<tables::ProvinceBuildings>(&mut frame)[0].active = true;
-    // F61B40's railway-gun arm: every mixed occupant is a recorded
-    // division or task force, so there is none.
+    // Every mixed occupant is an identified division or task force, proving that no railway gun
+    // qualifies.
     assert_eq!(admit(&frame, &[401]), Some(false));
     table::<tables::ProvinceUnitOrder>(&mut frame)[0].mixed = vec![77];
     assert_eq!(
@@ -1274,8 +1274,8 @@ fn strategic_witness_uses_full_region_states_and_active_building_vectors() {
             railway_gun: true
         }
     );
-    // F61B40 skips any other type below level 1, whatever the occupants,
-    // so the strategic scan blocks the mission.
+    // Other building types below level one are skipped regardless of occupants; no strategic target
+    // remains.
     table::<tables::ProvinceBuildings>(&mut frame)[0].building_type = OTHER;
     assert_eq!(admit(&frame, &[401]), Some(false));
     for bit in [3, 16] {
@@ -1427,7 +1427,7 @@ fn projected_air_definition_bits_preserve_native_map_predicates() {
 #[test]
 fn reached_count_gates_every_mask_and_stale_membership_is_used_as_is() {
     // Province 412 can belong to an earlier region and target 913 can be
-    // stale independently; neither is part of 14122EB00's checks.
+    // stale independently; neither is part of 's checks.
     let none = TargetPredicates::default();
     assert_eq!(
         target_admission(1 << 10, 1, Some(LAND), Some(0), none),

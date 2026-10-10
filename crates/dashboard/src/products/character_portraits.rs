@@ -11,8 +11,8 @@ pub enum RecordedPortrait {
     Unrecorded,
 }
 
-/// GetCharacterPortrait@140B35360 -> portrait_entry: requested role/size,
-/// else the first entry of that size. Unset entries require runtime generation.
+/// Select the requested portrait role/size, else the first entry of that size.
+/// Unset entries require runtime generation.
 pub fn recorded_portrait(
     holders: Option<&[replay::rows::CharacterPortraitRow]>,
     id: u32,

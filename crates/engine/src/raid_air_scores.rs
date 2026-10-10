@@ -1,18 +1,11 @@
-//! Stored regional air-superiority pairs, read by raid target intel
-//! (`140FD0EA0`) and success (`14157BC30`) through
-//! `GetStrategicAirRegionEntry@140C456F0`: `CStrategicAir+E0`, stride A0, at
-//! the region's runtime slot. Copy the pairs; never reconstruct them from wings.
+//! Stored regional air-superiority pairs used by raid target intel and success.
+//! Copy these region-slot pairs rather than reconstructing them from wings.
 //!
-//! The game rewrites a region's pairs only in its phase hour. `14194ED70`
-//! lists the roster slots from 1 whose region has provinces and whose
-//! [`cstrategic_region::AIR_PHASE`] equals `(CURRENT_HOUR - 43,800,000) %
-//! (2 * NAir::HOURS_DELAY_AFTER_EACH_COMBAT)` in signed 32-bit arithmetic
-//! (`140E0FC30`). At those slots alone `140C368F0` (serially `140C57F80`)
-//! clears every active country's entry and `140C56A30`, from `140C3B330`,
-//! accumulates it; setup (`140C49FB0`) zeroes new entries. The hook samples at
-//! the entry of `CGameState::HourlyUpdate`, whose previous call advanced to the
-//! hour it reads before updating air. So after one complete read, each hour
-//! re-reads only its phase slots and carries every other pair.
+//! The game rewrites only regions with provinces whose phase matches the signed
+//! remainder of elapsed game hours over twice the loaded combat delay. It clears
+//! and accumulates active countries at those slots; setup zeroes new entries.
+//! Sampling sees the hour advanced by the preceding update. After a complete read,
+//! each hour therefore rereads its phase slots and carries the other pairs.
 
 use crate::{
     Memory, cgame_state,
@@ -23,12 +16,12 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// `GetStrategicAirRegionEntry@140C456F0`.
+/// Strategic-air region-entry selector.
 const SCORES: usize = 0xe0;
 const STRIDE: usize = 0xa0;
-/// `NAir::HOURS_DELAY_AFTER_EACH_COMBAT`, i32; `140E0FC30` doubles it.
+/// Loaded signed i32 combat delay, doubled for the phase period.
 pub const COMBAT_DELAY_RVA: usize = 0x0331_d048;
-/// `140E0FC30` subtracts this from `CGameState+468` before the remainder.
+/// Epoch subtracted from the game hour before signed remainder.
 const HOUR_EPOCH: i32 = 43_800_000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -50,7 +43,7 @@ pub struct Region {
 }
 
 impl Region {
-    /// Whether `14194ED70` lists this slot in the hour with this phase.
+    /// Whether this region slot is reached in the current phase hour.
     fn updated(self, slot: usize, phase: i32) -> bool {
         slot != 0 && self.provinces && self.phase == phase
     }
@@ -217,7 +210,7 @@ fn read_table(
         .checked_add(COMBAT_DELAY_RVA)
         .and_then(|at| read::<i32>(memory, at))
         .ok_or("air combat delay define unreadable")?;
-    // `140E0FC30`'s IDIV faults where this has no remainder.
+    // Signed division traps when no remainder exists.
     let period = delay.wrapping_add(delay);
     let phase = hour
         .wrapping_sub(HOUR_EPOCH)
@@ -229,7 +222,7 @@ fn read_table(
         .ok_or("raid air region roster unreadable")?;
     walk.regions = roster.count as usize;
     if output.is_growing() {
-        // Setup@140C49FB0 sizes +E0 from the live strategic-region roster.
+        // Setup sizes regional entries from the live strategic-region roster.
         held.grow(walk.regions, held.next_countries.len(), held.rows.len())
             .map_err(|_| "capture buffer allocation failed")?;
     }
@@ -343,7 +336,7 @@ const fn field(source_offset: usize, destination_offset: usize, len: usize) -> R
     }
 }
 
-/// `14194ED70` dereferences every slot from 1; slot 0 may be null.
+/// Every positive region slot is dereferenced; slot zero may be null.
 fn read_regions(
     memory: &impl Memory,
     base: usize,
@@ -543,7 +536,7 @@ mod tests {
     const MEMORY: usize = 0x1000_0000;
     const BASE: usize = MEMORY + 0x100 - COMBAT_DELAY_RVA;
     const GAME: usize = MEMORY + 0x1000;
-    /// `(HOUR - 43,800,000) % 8 == 3` with the vanilla delay of 4.
+    /// Synthetic phase-three hour with combat delay four and period eight.
     const HOUR: i32 = 43_800_000 + 8 * 1_000 + 3;
 
     struct World {
@@ -555,8 +548,7 @@ mod tests {
     }
 
     impl World {
-        /// Slot 0 of the roster is null; every region has provinces and the
-        /// phase `AddProvince` stores, `slot % 8`.
+        /// Slot zero is null; fixture regions have provinces and phase equal to slot modulo eight.
         fn new(countries: usize, regions: usize) -> Self {
             let slots = countries + 1;
             let countries_at = 0x3000;

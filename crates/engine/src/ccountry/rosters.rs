@@ -6,8 +6,8 @@ use crate::{
     cunit_leader, read, walk::Buffer,
 };
 
-/// Refresh@1406FE3C0 rebuilds these raw country references; controller changes
-/// and RefreshDerivedStateByFlags@1406F2680 invoke it, with no hourly refresh.
+/// Controller changes and flagged derived-state updates rebuild raw neighbor
+/// references. No hourly refresh is performed.
 pub const NEIGHBORS: usize = 0x1088;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -62,7 +62,7 @@ impl EffectRosters<'_> {
             .ok_or("country neighbor roster unreadable or invalid")?;
         add(&mut self.required.neighbors, source.count)?;
         let count = source.count as usize;
-        // Refresh@1406FE3C0 retains every native neighbor occurrence.
+        // Neighbor refresh retains every stored occurrence.
         self.neighbors.ensure(
             self.neighbor_len
                 .checked_add(count)
@@ -120,8 +120,8 @@ impl EffectRosters<'_> {
     }
 }
 
-/// Army and navy CUnitLeader* arrays. 1406DF460/1406E6500 read them;
-/// 1410DAF80 inserts, 1410D2540/1410D26B0 and 1410D90E0 remove.
+/// Army and navy unit-leader pointer arrays maintained by role insertion
+/// and removal.
 const LEADERS: [usize; 2] = [0x70, 0x88];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -187,10 +187,10 @@ pub fn counter_roster_demand(
     counter_roster_demand_inner(memory, base, state, None)
 }
 
-/// Reuses the authenticated roster census for an independent sparse ship-name
-/// sizing hint. After each country's established headers, observes its full
-/// registered pride reference (+250, getter1406EA580). Observer faults do not
-/// affect roster demand, and the original API performs no added pride reads.
+/// Reuse authenticated roster controls for an independent sparse ship-name
+/// sizing hint. After each country's headers observe its full pride reference.
+/// Observer faults leave roster demand independent; the original API adds
+/// no pride reads.
 pub fn counter_roster_demand_with_pride_observer(
     memory: &impl Memory,
     base: usize,
@@ -278,8 +278,8 @@ impl CounterRosters<'_> {
         if !row_fits {
             return Err("country roster row capacity exceeded");
         }
-        // 1406DF460/1406E6500 and the state headers bound the complete
-        // original rosters; worker growth keeps their native order.
+        // Leader and state headers bound complete original rosters; worker growth
+        // preserves their occurrence order.
         self.states.ensure(
             self.state_len
                 .checked_add(state_count)

@@ -60,8 +60,8 @@ pub(in crate::oracle) fn occupation_settings(
                 let mut recorded = BTreeMap::new();
                 for group in groups {
                     let occupied = required_country_tag(group.occupied, links)?;
-                    // 140FEA660 gates on the +0xA0 law pointer, then
-                    // writes the law's +0x10 string through 1424ADF40.
+                    // The game gates on the law pointer, then
+                    // writes the law's string.
                     let field =
                         format!("{subject}.group_laws.{}", String::from_utf8_lossy(occupied));
                     let law = group
@@ -94,16 +94,16 @@ pub(in crate::oracle) fn occupation_settings(
             ),
         }
         report.limitation(
-            "the retained occupied-country pointer (+0x18) is not serialized; saved group keys certify +0x10 membership, not the pointer's current target",
+            "the retained occupied-country pointer is not serialized; saved group keys certify membership, not the pointer's current target",
             format!("{subject}.scope_country"),
         );
         report.limitation(
-            "the database fallback pointer (+0x48, 140FE2FE0) and eligibility trigger results have no text-save counterpart",
+            "the database fallback pointer and eligibility trigger results have no text-save counterpart",
             format!("{subject}.fallback_law"),
         );
         if let Some(law) = &saved.default_law {
-            // 140FEAE70 gates on the default-law pointer (+0x100 at
-            // the secondary base), not on its stored string length.
+            // The save gates on the default-law pointer,
+            // not on the law's stored string length.
             let field = format!("{subject}.default_law");
             let name = super::super::serialized_text(report, &field, &row.law);
             value(report, &field, name, law.as_slice());
@@ -147,9 +147,8 @@ pub(in crate::oracle) fn occupation_laws(
             continue;
         };
         matched += 1;
-        // 140FEA660 writes override law names through 1424AD7A0 /
-        // 1424ADB70; CArchiveFile@1424CC890 and CMemoryFile@1424D9810
-        // consume only the first-NUL prefix of that raw string.
+        // Archive and memory streams save only the first-NUL prefix
+        // of an override law's raw name string.
         let name = super::super::serialized_text(report, &subject, &row.name);
         value(report, &subject, name, saved.law.as_slice());
     }
@@ -286,10 +285,10 @@ pub(in crate::oracle) fn assigned_manpower(
     Ok(())
 }
 
-/// 140FEB450 writes +90 through 140FFDB00 (variant rows, zero policy) and
-/// +D0 through 140FFDA90 (ordered nonzero token/amount pairs). Allocation
-/// lookups are derived from the saved variants' archetypes; their native
-/// running-total clamp is 140FF7A30, as for StockpileArchetypes.
+/// The save writes variant rows with their zero policy and
+/// ordered nonzero token/amount pairs. Allocation
+/// lookups are derived from the saved variants' archetypes; the running
+/// total is clamped after each addition, as for StockpileArchetypes.
 pub(in crate::oracle) fn garrison_equipment(
     frame: &DecodedFrame,
     saved: &saved::Pack,
@@ -355,11 +354,11 @@ pub(in crate::oracle) fn garrison_equipment(
                 "missing serialized equipment_need",
             ),
         }
-        // 140FDFA80 scales and 140FFD700 floors the allocation records (pool+8)
-        // and each variant separately; 140FEB450/140FFDB00 save only the variants.
-        report.limitation("CStateGarrisonData::Serialize@140FEB450 saves the variant pool, not the allocation cache GetArchetypeQuantity@140FF97C0 reads; resistance damage floors each separately, so the save cannot certify allocations", format!("{subject}.allocations"));
+        // Scaling and flooring apply to the allocation records
+        // and each variant separately; the save writes only the variants.
+        report.limitation("the garrison save writer saves the variant pool, not the allocation cache used by archetype quantity lookup; resistance damage floors each separately, so the save cannot certify allocations", format!("{subject}.allocations"));
         matched += 1;
-        report.limitation("140FFDA90 omits exactly zero requirements; their membership and absolute ordinal are not save-certified", format!("{subject}.zero_requirements"));
+        report.limitation("the game omits exactly zero requirements; their membership and absolute ordinal are not save-certified", format!("{subject}.zero_requirements"));
         report.limitation("the two pool serializers omit live equipment weights, archetype active bytes and pointer-identity lookup operands; these require the source-byte read witness and matched native display", format!("{subject}.live_operands"));
     }
     report.compared("StateGarrisons equipment", matched);

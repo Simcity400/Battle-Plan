@@ -865,7 +865,7 @@ pub(crate) fn copy_weather_refresh(
         arrays.iter().map(|array| array.count as usize).sum()
     });
     if job.worker_growth {
-        // 140F07550/140F04E70 walk every live province/region. Continue
+        // Walk every live province/region. Continue
         // from the headers already acquired; no source read is repeated.
         job.regions.grow();
         job.provinces.grow();

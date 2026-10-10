@@ -14,7 +14,7 @@ pub(super) fn compare(
     report: &mut Report,
 ) -> io::Result<()> {
     report.limitation(
-        "recording self-check only: CALL 140D15418 observes the second war link and CALL 1406C8E34 precedes annex on-actions. Text saves retain neither these calls nor the native actor/target instance words. Saved war and country state cannot certify action kind, sequence, exact hour, actor roles or complete capture; matched native observations and world/load, unwind and detach checks are required",
+        "recording self-check only: the war-link observation records the second war link and the annex observation precedes annex on-actions. Text saves retain neither these calls nor the native actor/target instance words. Saved war and country state cannot certify action kind, sequence, exact hour, actor roles or complete capture; matched native observations and world/load, unwind and detach checks are required",
         "EventFeedHistory",
     );
     let selected = [TableId::EventFeedHistory];

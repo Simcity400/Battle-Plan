@@ -72,19 +72,19 @@ fn state_border_flag_preserves_absence_and_strict_boolean_witness() {
     );
 }
 
-/// The live #63 save's GER line; an omitted list is empty.
+/// Ordered advisor slots, including an empty slot; an omitted list is empty.
 #[test]
 fn faction_advisor_slots_keep_slot_order_and_empty_slots() {
     let faction = crate::parser::parse(
         br#"id={ id=1 type=88 } upgrades={ slots={
-            { modifier={ name="x" } }
-            { country="GER" advisor=GER_wilhelm_canaris modifier={ } }
+            { modifier={ name="fixture_modifier" } }
+            { country="ZZZ" advisor=fixture_advisor modifier={ } }
         } doctrine={ } }"#,
     )
     .unwrap();
     assert_eq!(
         parse_faction(&faction.items).unwrap().advisor_slots,
-        [None, Some(b"GER_wilhelm_canaris".to_vec())]
+        [None, Some(b"fixture_advisor".to_vec())]
     );
     let bare = crate::parser::parse(br#"id={ id=1 type=88 }"#).unwrap();
     assert!(parse_faction(&bare.items).unwrap().advisor_slots.is_empty());
@@ -159,7 +159,7 @@ fn country_original_tag_preserves_conditional_presence_and_exact_scalar_bytes() 
 }
 
 #[test]
-fn map_input_fields_preserve_literal_bytes_and_native_omissions() {
+fn map_input_fields_preserve_literal_bytes_and_writer_omissions() {
     let country = crate::parser::parse(b"cosmetic_tag=BRM_british").unwrap();
     assert_eq!(
         parse_country(b"BRM", &country.items).unwrap().cosmetic_tag,
@@ -500,7 +500,7 @@ provinces={3={controller=D01}}
 "#,
     )
     .unwrap();
-    // 1409D4040 writes the +0x38 rename only when it is nonempty.
+    // The rename is written only when nonempty.
     assert_eq!(save.states[&1].name.as_deref(), Some(&b"Renamed"[..]));
     assert_eq!(save.states[&2].name, None);
     let map = MapMembership {
@@ -591,7 +591,7 @@ countries={ GER={} } states={1={owner=GER}} provinces={}
 }
 
 #[test]
-fn country_intel_triples_keep_native_order_signs_and_nonpositive_levels() {
+fn country_intel_triples_keep_saved_order_signs_and_nonpositive_levels() {
     let save = division_save(
         r#"
 division={
@@ -618,7 +618,7 @@ division={ id={id=2 type=4919} logical_country=SOV strength=0 organisation=0 }
             },
         ]
     );
-    // An omitted field is a native empty array, not a refusal.
+    // An omitted field is an empty array, not a refusal.
     assert!(
         save.divisions[&((2_u64 << 32) | 4919)]
             .country_intel
@@ -784,7 +784,7 @@ fn railway_gun_parser_refuses_invalid_ids_location_and_combat_shape() {
 }
 
 #[test]
-fn division_extract_preserves_full_handles_ownership_and_native_fixed_values() {
+fn division_extract_preserves_full_handles_ownership_and_saved_fixed_values() {
     let save = division_save(
         r#"
 division={
@@ -1111,7 +1111,7 @@ fn war_relations_preserve_envelopes_order_and_unscaled_signed_integers() {
 }
 
 #[test]
-fn war_dates_preserve_native_omissions_without_filling_raw_hours() {
+fn war_dates_preserve_writer_omissions_without_filling_raw_hours() {
     let cancelled = WAR_FIELDS.replace("start_date=1936.1.1.12", "cancel=yes");
     for suffix in ["", " end_date=1936.1.2.1"] {
         let save =
@@ -1233,7 +1233,7 @@ faction={id={id=0 type=88} members={} name="" color={ 81 78 74 } is_color_overri
 }
 
 #[test]
-fn faction_theatres_keep_native_order_ids_countries_and_hidden_tags() {
+fn faction_theatres_keep_saved_order_ids_countries_and_hidden_tags() {
     let save = diplomacy_save(
         "",
         r#"faction={id={id=2 type=88} icon="GFX_icon" pings={ regions={
@@ -1397,7 +1397,7 @@ fn player_header_requires_serialized_fields_and_preserves_ambiguity() {
 }
 
 #[test]
-fn army_orders_preserve_all_lists_marshal_ownership_and_signed_native_bits() {
+fn army_orders_preserve_all_lists_marshal_ownership_and_signed_saved_bits() {
     let saved = parse(br#"HOI4txt
 date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
 states={} provinces={} countries={GER={theatres={theatre={id={id=1 type=67}
@@ -1535,9 +1535,6 @@ fn naval_combat_keeps_full_member_handles_signed_slots_and_required_side_scalars
     }
 }
 
-// Suggested additions to installed-content/src/save.rs::tests.
-// Pure strings only. No build or repository changes were made by this helper.
-
 fn naval_save(units: &str) -> io::Result<Save> {
     parse(format!(
     "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 countries={{ GER={{units={{{units}}}}} SOV={{}} D01={{}} }} states={{}} provinces={{}}"
@@ -1583,7 +1580,7 @@ fn naval_save_keeps_nested_ownership_full_handles_and_exact_fixed5() {
     );
     assert_eq!(force.roster_owner, b"GER");
     assert_eq!(force.logical_owner, b"SOV");
-    // The CUnit writer's motion fields: target token 0x2EDA, ordinary and alternate routes.
+    // The unit writer's motion fields: target, ordinary and alternate routes.
     assert_eq!(
         (
             force.target,
@@ -1701,7 +1698,7 @@ fn a_header_without_every_counter_is_refused_rather_than_defaulted() {
 }
 
 #[test]
-fn relation_records_keep_cached_sums_native_ordinals_and_class_spellings() {
+fn relation_records_keep_cached_sums_saved_ordinals_and_class_spellings() {
     let save = relations_save(
         r#"SOV={
             opinion={ modifier=m date="1940.4.24.1" value=35 }
@@ -1777,7 +1774,7 @@ fn relation_blocks_without_endpoints_are_not_relations() {
 #[test]
 fn relation_tuples_enforce_the_writers_conditional_date_rules() {
     for body in [
-        // cancel=no is never written by the native writer.
+        // cancel=no is never written by the game writer.
         r#"guarantee={ first="A" second="B" cancel=no start_date="1936.1.1.1" }"#,
         // start_date and cancel are mutually exclusive.
         r#"guarantee={ first="A" second="B" cancel=yes start_date="1936.1.1.1" }"#,

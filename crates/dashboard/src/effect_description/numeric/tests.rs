@@ -91,6 +91,8 @@ fn text(fixture: &Fixture, body: &str) -> String {
 
 #[test]
 fn fixed5_template_and_numeric_integer_forms() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     assert_eq!(
         text(
@@ -121,6 +123,8 @@ fn fixed5_template_and_numeric_integer_forms() {
 
 #[test]
 fn int_effect_literal_scoped_clamp_sign_and_no_line_feed() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     assert_eq!(text(&fixture, "gain_xp=010"), "XP 8 [This.GetTag]");
     assert_eq!(text(&fixture, "gain_xp=amount"), "XP 2 [This.GetTag]");
@@ -132,7 +136,9 @@ fn int_effect_literal_scoped_clamp_sign_and_no_line_feed() {
 }
 
 #[test]
-fn garrison_colour_percent_and_zero_plus_follow_the_native_helper() {
+fn garrison_colour_percent_and_zero_plus_follow_the_helper() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     assert_eq!(
         text(
@@ -145,6 +151,8 @@ fn garrison_colour_percent_and_zero_plus_follow_the_native_helper() {
 
 #[test]
 fn collaboration_gate_and_sign_do_not_add_a_line_feed() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     assert_eq!(
         text(&fixture, "add_collaboration={target=BBB value=-0.25}"),
@@ -166,6 +174,8 @@ fn collaboration_gate_and_sign_do_not_add_a_line_feed() {
 
 #[test]
 fn decryption_ratio_assignment_wins_and_marked_country_is_capitalized() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     assert_eq!(
         text(
@@ -177,7 +187,9 @@ fn decryption_ratio_assignment_wins_and_marked_country_is_capitalized() {
 }
 
 #[test]
-fn intel_uses_owned_state_existence_and_native_domain_order() {
+fn intel_uses_owned_state_existence_and_domain_order() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     assert_eq!(
         text(
@@ -198,7 +210,7 @@ fn intel_uses_owned_state_existence_and_native_domain_order() {
     *fixture.frame.tables[TableId::ScriptVariables.index()] = TableView::Unavailable {
         reason: "synthetic gap".into(),
     };
-    // ResolveScriptCountryTag (140BA5D10) consults the native original-tag
+    // Country-tag resolution consults the original-tag
     // bucket before the intel description can reject a nonowning target.
     *fixture.frame.tables[TableId::ReservedCountryNaming.index()] =
         TableView::Complete(TableRows::ReservedCountryNaming(vec![
@@ -214,7 +226,9 @@ fn intel_uses_owned_state_existence_and_native_domain_order() {
 }
 
 #[test]
-fn intel_nonowning_target_requires_its_native_original_tag_bucket() {
+fn intel_nonowning_target_requires_its_original_tag_bucket() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
         &mut *fixture.frame.tables[TableId::CountryCounterInputs.index()]
@@ -251,7 +265,9 @@ fn intel_nonowning_target_requires_its_native_original_tag_bucket() {
 }
 
 #[test]
-fn truce_rounds_days_from_current_midnight_and_uses_native_date_text() {
+fn truce_rounds_days_from_current_midnight_and_uses_date_text() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     fixture.frame.hour = engine::cdate::HOUR_EPOCH + 1936 * 8760 + 23;
     fixture.catalogue.localisation = std::sync::Arc::new(
@@ -271,6 +287,8 @@ fn truce_rounds_days_from_current_midnight_and_uses_native_date_text() {
 
 #[test]
 fn imports_and_licenses_use_content_and_ignore_execution_only_fields() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let resources = [installed_content::resources::Resource {
         token: "syn_resource".into(),
@@ -311,6 +329,8 @@ fn imports_and_licenses_use_content_and_ignore_execution_only_fields() {
 
 #[test]
 fn imports_and_licenses_resolve_reserved_country_names() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     *fixture.frame.tables[TableId::ReservedCountryNaming.index()] =
         TableView::Complete(TableRows::ReservedCountryNaming(vec![
@@ -351,6 +371,8 @@ fn imports_and_licenses_resolve_reserved_country_names() {
 
 #[test]
 fn mines_missing_instance_names_are_counted_and_launch_nuke_returns_empty() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let out = fixture.render(
         "add_mines={region=0 amount=amount} add_mines={region=7 amount=1} launch_nuke={state=1}",
@@ -362,6 +384,6 @@ fn mines_missing_instance_names_are_counted_and_launch_nuke_returns_empty() {
     assert!(
         out.refusals
             .keys()
-            .any(|name| name.contains("CAddMinesEffect") && name.contains("+0x38/+0x48"))
+            .any(|name| name.contains("add_mines") && name.contains("unrecorded instance name"))
     );
 }

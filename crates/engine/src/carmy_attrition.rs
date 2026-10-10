@@ -1,8 +1,6 @@
-//! Passive operands for the own-country singleton attrition hover.
-//!
-//! 1418C00D0 calls 140C65DC0 with param4=0. The +438 counter cache is
-//! updated before acclimatization (140C79330), so it cannot replace these
-//! fresh operands. Numeric fields and formatter sources fail independently.
+//! Passive operands for the own-country singleton attrition hover. The counter
+//! cache is updated before acclimatization and cannot replace fresh operands.
+//! Numeric fields and formatter sources fail independently.
 
 use crate::{
     Memory, carmy, carmy_leader, ccountry, cdiplomacy_status, cequipment_variant, cgame_state,
@@ -31,19 +29,19 @@ pub const KEYS: [u32; 10] = [
     ENEMY_ATTRITION,
 ];
 
-/// The exact 140C68270 define, loaded by 14091FDE0.
+/// Unit-upkeep attrition define.
 pub const UNIT_UPKEEP_ATTRITION_RVA: usize = 0x0331_c5d8;
-/// 140C65DC0 scales the 140C67F40 result by this define (loader14090D430).
+/// Multiplier for out-of-supply attrition.
 pub const OUT_OF_SUPPLY_ATTRITION_RVA: usize = 0x0331_9430;
-/// 140C67F40(param3=1); loader1409A5860 clamps this define to [0, ONE].
+/// Supply threshold, clamped by loading to zero through ONE.
 pub const SUPPLY_THRESHOLD_RVA: usize = 0x0331_9cd8;
-/// 140C67F40 divides stored out-of-supply days (+0x498) by this signed define.
+/// Signed divisor for stored out-of-supply days.
 pub const MAX_OUT_OF_SUPPLY_DAYS_RVA: usize = 0x0331_9394;
-/// 140C67F40 divides remaining grace (+0x610) by this signed hours define.
+/// Signed hours divisor for remaining grace.
 pub const SUPPLY_GRACE_RVA: usize = 0x0331_91c0;
-/// 140C65DC0 exercise branch; loader14091CA50.
+/// Exercise-branch attrition define.
 pub const TRAINING_ATTRITION_RVA: usize = 0x0331_cd38;
-/// 140C65DC0 border branch; loader1408F6290.
+/// Border-war attrition factor.
 pub const BORDER_WAR_ATTRITION_FACTOR_RVA: usize = 0x0331_a118;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,9 +78,9 @@ pub fn copy_terrain_name(
     Ok(Some((start, name.len)))
 }
 
-/// 1418C00D0 formats the retained CTerrainType+18 label independently of
-/// 140C65DC0's numeric attrition operands. Worker storage grows from the
-/// original descriptor and acquired payload, without repeating either read.
+/// The retained terrain label is formatted independently of numeric attrition
+/// operands. Worker storage grows from the original descriptor and acquired
+/// payload without repeating either read.
 pub fn copy_terrain_name_growing(
     memory: &impl Memory,
     address: usize,
@@ -100,14 +98,14 @@ pub fn copy_terrain_name_growing(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Supply {
-    /// Fresh 140C67F40(army, out, 1), including its threshold normalization.
+    /// Fresh out-of-supply inputs, including threshold normalization.
     pub penalty: Field<i64>,
     pub attrition_factor: Field<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Thermal {
-    /// Weather-key value already scaled by fresh 140607FA0 acclimatization.
+    /// Weather-key value already scaled by fresh acclimatization.
     pub base: i64,
     pub country_factor: Field<i64>,
     pub leader_factor: Field<Option<i64>>,
@@ -288,7 +286,7 @@ fn product(left: i64, right: i64) -> i64 {
 }
 
 fn fraction(numerator: i64, denominator: i64) -> Field<i64> {
-    // 1424B8380: sentinel numerator and zero divisor produce fixed5 NaN.
+    // The sentinel numerator and zero divisor produce fixed5 NaN.
     if denominator == 0
         || (numerator as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd
     {
@@ -334,8 +332,8 @@ fn request(accumulator: usize, key: u32, depth: i32, scale: i64) -> SourceReques
     }
 }
 
-/// Reads one already admitted class-zero seed. Missing seed fields are never
-/// retried. The caller supplies the existing fresh 140C79CC0 exercise result.
+/// Read one admitted class-zero seed without retrying missing fields.
+/// The caller supplies its existing fresh exercise result.
 pub fn capture(
     memory: &impl Memory,
     base: usize,
@@ -569,7 +567,7 @@ pub fn capture_with_acclimatization(
         let Some(state) = state else {
             return Ok(None);
         };
-        // IsBorderWarActive@1409CDA60, before 1409C8D50(owner, mode0).
+        // Check active border war before the owner's ordinary war status.
         if field::<u8>(memory, state, 0x865)? == 0 {
             return Ok(None);
         }
@@ -656,8 +654,8 @@ fn terrain(
             let entry = entries
                 .element(ordinal, 16)
                 .ok_or("attrition equipment index invalid")?;
-            // 140C65E93..EA3: any nonzero amount, including negative, contributes
-            // exactly once; identical variants in different entries stay repeated.
+            // Any nonzero amount, including a negative amount, contributes exactly
+            // once. Identical variants in separate entries keep separate occurrences.
             if field::<i64>(memory, entry, 8)? == 0 {
                 continue;
             }
@@ -676,8 +674,8 @@ fn terrain(
 }
 
 fn at_war(memory: &impl Memory, base: usize, country: usize) -> Field<bool> {
-    // IsAtWar@140D2B530(mode0): count first, then raw relation kind. It does
-    // not test the retired byte in this branch.
+    // War status tests count first, then raw relation kind; this branch does
+    // not test the retired byte.
     let diplomacy = field::<u64>(memory, country, ccountry::DIPLOMACY_STATUS)? as usize;
     identity(memory, base, diplomacy, cdiplomacy_status::VTABLE_RVA)?;
     if field::<i32>(memory, diplomacy, cdiplomacy_status::ENEMY_COUNTRY_COUNT)? != 0 {
@@ -826,7 +824,7 @@ fn thermal(
         {
             return Err("attrition army leader reference type mismatch");
         }
-        // Weather uses 140C66B4D/140C66D8B +298, not GetModifiersForUnit.
+        // Weather selects the leader's weather block rather than its unit block.
         at(leader, 0x298).map(Some)
     })();
     sources[source + 2] =
@@ -933,7 +931,7 @@ fn supply_penalty(
 }
 
 fn template_ratio(memory: &impl Memory, base: usize, template: usize) -> Field<i64> {
-    // 140C67F40 supplies a default empty composition for a null template.
+    // A null template supplies the default empty composition.
     if template == 0 {
         return Ok(0);
     }

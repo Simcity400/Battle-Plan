@@ -1,24 +1,20 @@
 //! Owned wargoals, retaining the diplomacy roster's native daily-stale expiry.
 //!
-//! Append 140D2AF00, script removal 140D2EFA0, consumption 140D052C0,
-//! reset 140D25970 and daily expiry 140D270F0 mutate the roster. Load
-//! 140D2CB00/1415CD530 restores it. No expiry is computed by this reader.
+//! Creation, script removal, consumption, reset and daily expiry mutate the
+//! roster. Loading restores it. This reader computes no expiry.
 
 use crate::{
     Memory, ccountry, cdiplomacy_status, cpdx_array, cpdx_array::Array, cstate, read, walk::Outcome,
 };
 
-/// CWarGoal primary vtable; constructor store 1415CB976/1415CB97D.
+/// CWarGoal primary vtable.
 pub const VTABLE_RVA: usize = 0x029c_9468;
-/// Recipient raw CCountryTag and type pointer, set by payload ctor
-/// 1415CB8A0 at complete object +0x38, saved by 1415CE720 -> 1415CE460.
+/// Recipient raw country reference and type pointer in the embedded goal data.
 pub const RECIPIENT: usize = 0x3c;
 pub const GOAL_TYPE: usize = 0x40;
-/// Definition's declared lexer token; 140A2C5D0 looks it up by this word,
-/// and 1415CE460 saves it under type (0xE1).
+/// Declared definition token used for lookup and serialization.
 pub const TYPE_TOKEN: usize = 0x08;
-/// Claimed CState* array. Script ctor 1415CBCE0 -> 140A2B8F0 and timed
-/// ctor 1415CBA00 fill it; the latter retains null for an invalid state ID.
+/// Claimed-state pointer array; timed creation can retain null for an invalid state ID.
 pub const STATES: usize = 0x48;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

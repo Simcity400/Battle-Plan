@@ -26,7 +26,7 @@ fn the_strength_ratio_sums_the_roster_and_floors_each_raw_maximum() {
         strength_ratio([(900_000, 1_000_000), (100_000, 1_000_000)]),
         50_000
     );
-    // HMS Salmon of pairL_naval: 618182 of 1500000.
+    // A synthetic ship at 618182 of 1500000 strength truncates to 41212.
     assert_eq!(strength_ratio([(618_182, 1_500_000)]), 41_212);
     // A zero raw maximum is floored at 100, not divided by.
     assert_eq!(strength_ratio([(50, 0)]), 50_000);
@@ -57,8 +57,8 @@ fn the_counter_mean_divides_by_the_members_it_summed() {
 
 #[test]
 fn a_bar_steps_by_half_its_length_and_draws_two_pixels_a_step() {
-    // W1 X3, the British mountain division at Gdynia: organisation 0.8487 is step 7, sixteen
-    // pixels, where a plain 17 * fill would draw fourteen.
+    // A fill of 0.8487 produces step seven and sixteen pixels; full fill produces
+    // step eight and eighteen pixels.
     assert_eq!(bar_step(bar_fill(84_870), 17.0), 7);
     assert_eq!(bar_pixels(bar_fill(84_870), 17.0), 16.0);
     // Full is step 8, eighteen pixels; 0.9411 stays below it, 0.9412 reaches it.

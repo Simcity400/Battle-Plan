@@ -1,6 +1,6 @@
 //! End-screen country scores at each acquisition read, never cumulative totals.
-//! The native row constructor 141F70860 calls current getters, not the hourly
-//! Army/Navy/Air caches. Industry and Land are separate from Total (1406D8DE0).
+//! The end screen calls current getters rather than hourly Army/Navy/Air caches.
+//! Industry and Land are separate from Total.
 
 use super::{
     BranchParams, LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
@@ -271,13 +271,13 @@ pub struct GameScoreReply {
     pub score_warnings: Vec<GameScoreWarning>,
 }
 
-// Getters 1406D8920/1406D93E0/1406E4760/1406E4B80: preserve both low-64
-// products before signed /100000. Cancelling the final scale changes overflow.
+// Preserve both low-64 products before signed /100000.
+// Cancelling the final scale changes overflow.
 fn count_score(count: i32, multiplier: i64) -> i64 {
     i64::from(count).wrapping_mul(multiplier).wrapping_mul(Q) / Q
 }
 
-// 1406E4760: truncate each total, narrow to i32, then add/subtract in this order.
+// Truncate each total, narrow to i32, then add/subtract in this order.
 fn industry_count(row: &CountryFactoriesRow) -> i32 {
     ((row.naval_total_raw / Q) as i32)
         .wrapping_add((row.civilian_total_raw / Q) as i32)
@@ -288,13 +288,13 @@ fn industry_count(row: &CountryFactoriesRow) -> i32 {
         .wrapping_sub(row.military_to_overlord)
 }
 
-// Air 1406D86BB..1406D86E1, then 1406D88D6..1406D88F2. Every occurrence
-// contributes independently; the selected stat is a stored wing cache.
+// Every air occurrence contributes independently; the selected stat
+// is a stored wing cache.
 fn air_contribution(planes: i32, stat: i64) -> i64 {
     stat.wrapping_mul(i64::from(planes).wrapping_mul(Q)) / Q
 }
 
-// Total 1406D90B6..1406D90D9 excludes Industry and Land.
+// Total excludes Industry and Land.
 fn total_score(army: i64, navy: i64, air: i64, multiplier: i64) -> i64 {
     air.wrapping_add(navy)
         .wrapping_add(army)
@@ -407,8 +407,8 @@ fn multipliers_at(
     multipliers(row, &absent)
 }
 
-// Existing Defines::fixed5 owns Lua double -> f32 and separate MULSS/ADDSS/
-// SUBSS/CVTTSS2SI (14205D560). Old recordings have no runtime define read.
+// Defines::fixed5 owns Lua double -> f32 and separate multiply, add, subtract
+// and truncating integer conversion. Old recordings have no runtime define read.
 fn content_multipliers(defines: Result<&installed_content::defines::Defines, &str>) -> GameScoreValues {
     let read = |key: &str| match defines {
         Ok(defines) => match defines.fixed5("NCountry", key) {
@@ -472,7 +472,7 @@ fn air_score(
     registrations: Option<&HashMap<(u64, u32), &replay::rows::AirBaseRegistrationRow>>,
 ) -> GameScoreAmount {
     match row.air_state {
-        CountryGameScoreInputRow::AIR_ABSENT => return GameScoreAmount::known(0, true), // 1406D8595..1406D85A2
+        CountryGameScoreInputRow::AIR_ABSENT => return GameScoreAmount::known(0, true),
         CountryGameScoreInputRow::AIR_PRESENT => {}
         _ => {
             return GameScoreAmount::recording(
@@ -485,7 +485,7 @@ fn air_score(
         let mut sum = 0_i64;
         for site in &row.first_sites {
             match site.access {
-                GameScoreAirSite::ACCESS_FALSE => continue, // Native 140C47CC0 false, regardless of capacity.
+                GameScoreAirSite::ACCESS_FALSE => continue, // Access is false regardless of capacity.
                 GameScoreAirSite::ACCESS_TRUE => {}
                 _ => return Err(bytes_reason(&site.error, "air-base access unreadable")),
             }
@@ -626,8 +626,8 @@ fn faction_names_at(
     Some(
         rows.iter()
             .map(|row| {
-                // CFaction::display_name@140D77360: literals bypass both the template
-                // and lexical dictionary; empty literals use the shared bound-name rule.
+                // Faction-name literals bypass both the template and lexical dictionary;
+                // empty literals use the shared bound-name rule.
                 let template = match (row.template_token, &lexical.missing) {
                     (Some(_), Some(reason)) => Err(reason.clone()),
                     _ => faction_names::template_spelling(frame, row.template_token),
@@ -1271,9 +1271,9 @@ fn score_hints(
     localisation: Option<&Localisation>,
     warnings: &mut BTreeMap<(GameScoreMissingKind, String), u64>,
 ) -> BTreeMap<String, String> {
-    // End-screen setup 141F72EA0 -> 141F72780 binds these sort controls;
-    // recorded menubar GUI/localisation supplies their text. Keep translated
-    // phrases intact rather than stripping an English "Sort by" prefix.
+    // The end-screen sort controls take their text from the recorded menubar
+    // GUI/localisation. Keep translated phrases intact rather than stripping
+    // an English Sort by prefix.
     let keys = [
         ("country", "ENDGAME_SORT_NAME"),
         ("total", "ENDGAME_SORT_SCORE"),

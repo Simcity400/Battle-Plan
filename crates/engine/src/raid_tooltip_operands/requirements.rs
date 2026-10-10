@@ -1,6 +1,6 @@
-//! 14157E530 sorts each equipment map by definition pointer, which content
-//! order cannot reconstruct. Record just its ordered tokens, not amounts or
-//! addresses. Definitions are reloadable; the tooltip reads the map live.
+//! Equipment maps are sorted by definition pointer, which content order
+//! cannot reconstruct. Record their ordered tokens. Definitions are
+//! reloadable; tooltips read the map live.
 use super::*;
 use crate::{cequipment_type as eq, raid_database as db};
 

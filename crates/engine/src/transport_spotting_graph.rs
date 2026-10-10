@@ -1,9 +1,9 @@
 //! Independent selected-transport words borrowed from the original stat selector.
 //!
-//! D5AE30/D5AF10 read +138/+160; F9C6E0 reads +148/+150. The caller owns
-//! the original CUnit+138 selector and CSubUnitDefinition authentication. An
-//! original failed selector is retained and never retried here. These copied
-//! numbers contain no pointer and do not establish carrier/air-region lifetime.
+//! Transport weight/detection read +0x138/+0x160; visibility reads
+//! +0x148/+0x150. The caller owns the original unit +0x138 selector and
+//! stat-definition authentication. Failed selectors are never retried.
+//! Copied numbers do not establish carrier or air-region lifetime.
 
 use crate::{Memory, read};
 
@@ -25,8 +25,8 @@ impl TaskForceStats {
         Self::capture_with_visibility(memory, original, true)
     }
 
-    /// F97BF0's contributor union reaches only D5AF10's detection words;
-    /// the receiver's own F9C6E0 visibility query may remain unreached.
+    /// Contributor detection reaches only the detection words; the receiver
+    /// visibility query may remain unreached.
     pub fn capture_detection(memory: &impl Memory, original: Fact<usize>) -> Self {
         Self::capture_with_visibility(memory, original, false)
     }
@@ -62,8 +62,8 @@ impl TaskForceStats {
     }
 }
 
-/// Stored F96470/F62FE0 inputs from one originally authenticated wing.
-/// The current mission word is distinct from the wing's enabled mask.
+/// Stored transport-air inputs from one authenticated wing. The current
+/// mission word is distinct from the enabled mask.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AirMissionWords {
     pub wing: u64,
@@ -147,7 +147,7 @@ fn word<T: crate::memory::Raw>(memory: &impl Memory, pointer: usize, offset: usi
         .ok_or("transport original air mission word unreadable")
 }
 
-/// F49280/F4B7F0's single original selector; -1 alone means fallback.
+/// Single original mission-stat selector; only -1 selects fallback.
 fn mission_stats(memory: &impl Memory, wing: usize, kind: u32) -> Fact<usize> {
     if !kind.is_power_of_two() || kind as i32 <= 0 {
         return Err("transport original air current mission is not one positive bit");

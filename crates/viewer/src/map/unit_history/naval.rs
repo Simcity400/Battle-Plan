@@ -50,30 +50,30 @@ impl Sources {
     }
 }
 
-/// One admitted province occupant, in the order 141277A00 walks it.
+/// One admitted province occupant, in the order the game walks it.
 #[derive(Clone)]
 pub struct Candidate {
     pub province: u32,
     pub identity: u64,
     pub ordinal: u32,
     pub slot: u32,
-    /// 141277A00: ours, unselected = 3 - movement-target presence;
+    /// Ours, unselected = 3 - movement-target presence;
     /// other shared-vision = 2, at war = 1, otherwise 0.
     pub priority: u8,
     pub ours: bool,
     pub class: CounterClass,
-    /// 141277D76..DBD: land occupants must pass both the terrain/slot
+    /// Land occupants must pass both the terrain/slot
     /// predicate and the land model gate to offer a representative.
     pub land_eligible: bool,
-    /// 1416317D0's sampled route count, tested by 140BAFAF0.
+    /// Sampled route count used by the arrival gate.
     pub sample_count: usize,
-    /// Arc at the next anchor sample, animator t[+0x54] (1416317D0).
+    /// Arc at the next anchor sample.
     pub next_arc: f32,
     pub route: Vec<u32>,
     pub speed: f32,
-    /// 141632130 forces the free arc to one at game speed index >= 4.
+    /// The game forces the free arc to one at game speed index >= 4.
     pub min_arc: f32,
-    /// 141632130: arrival glide needs speed < 4, no combat, and its day deadline.
+    /// Arrival glide needs speed < 4, no combat, and its day deadline.
     pub arrival_allowed: bool,
     pub day: i32,
 }
@@ -95,7 +95,7 @@ impl Candidate {
 #[derive(Clone)]
 pub struct Hull {
     pub flags: u64,
-    /// EquipmentVariant_GetExplicitEntity@140C2A380, byte-for-byte.
+    /// The retained attachment's explicit entity name, byte-for-byte.
     pub graphics: Vec<u8>,
     pub targets: [Option<Target>; 4],
 }
@@ -111,7 +111,7 @@ pub struct Formation {
     pub identity: u64,
     pub province: u32,
     pub slot: u32,
-    /// TaskForce_GetFirstShip@140D56C30 and eligibility order.
+    /// First roster ship and eligibility order.
     pub roster: Vec<Hull>,
 }
 
@@ -124,7 +124,7 @@ impl Formation {
             .flat_map(|h| h.targets.iter().copied().flatten())
     }
 
-    /// 141653F00 maintains slot 0, then support slots 1..3. 1416542A0
+    /// Maintain slot 0, then support slots 1..3. Hull creation
     /// retains an entity while its ship handle and explicit graphics match.
     pub(super) fn update(
         &self,
@@ -172,7 +172,7 @@ impl Formation {
                 });
             if let Some(hull) = next {
                 // A failed attach does not acquire the handle, so later empty
-                // slots retry this same first candidate (141653F00).
+                // slots retry this same first candidate.
                 attach(hull, slot, entity, frame, epoch, budget);
             }
         }
@@ -271,8 +271,9 @@ impl ArcState {
             self.next_arc = candidate.next_arc;
             return;
         }
-        // P 141632130: stored count == path count + 2, stored[1] ==
-        // province, and the tail matches. Keep the old arc until t[+0x54].
+        // The stored route has two extra entries, its second entry is the
+        // current province, and its tail matches. Keep the old arc until
+        // it reaches the next anchor sample.
         let arrived = self.sample_count != 0
             && self.route.first() == Some(&candidate.province)
             && self.route[1..] == candidate.route;
@@ -304,7 +305,7 @@ impl ArcState {
             // Native starts the six-day deadline on the first animator visit,
             // not when the hour's unseen candidate inputs are installed.
             self.arrival_deadline.get_or_insert(candidate.day + 6);
-            // P 141632130: arrived arc clamps to [0,t[A]]; reaching t[A]
+            // arrived arc clamps to [0,t[A]]; reaching t[A]
             // rebuilds and initializes at ZERO, with no second dt advance.
             self.arc = if frame.steady {
                 self.next_arc
@@ -317,7 +318,7 @@ impl ArcState {
             }
         } else {
             // <4 controls clears the stored animator route and samples;
-            // empty routes initialize at zero on every frame (141632130).
+            // empty routes initialize at zero on every frame.
             self.arc = if self.route.is_empty() || self.sample_count == 0 {
                 0.0
             } else if frame.steady {
@@ -372,7 +373,7 @@ impl History {
     }
 
     pub(super) fn reset(&mut self, provinces: Option<&BTreeSet<u32>>) {
-        // P 1412771B0 -> 141277390 destroys entities, not CUnit+0x298
+        // Recreating units destroys entities, preserving the movement animator
         // animators. Only a load-equivalent reset restarts our simulated arcs.
         if provinces.is_none() {
             for candidate in &self.sources.candidates {
@@ -385,7 +386,7 @@ impl History {
         }
     }
 
-    /// 141277A00 chooses ONE representative per visual slot, including land
+    /// The game chooses ONE representative per visual slot, including land
     /// occupants in the same bucket. Its pointer and priority can diverge:
     /// an eligible foreign candidate keeps an own pointer but writes priority.
     pub(super) fn representatives(
@@ -393,13 +394,13 @@ impl History {
         province: u32,
         frame: Frame,
     ) -> impl Clone + Iterator<Item = &Formation> {
-        // P 141277A00 / 1412771B0: 0x26 visual slots. Counts and the
+        // 0x26 visual slots. Counts and the
         // reusable output are bounded by the native slots, not unit counts.
         let mut slots: [Option<(usize, u8)>; 0x26] = [None; 0x26];
         let mut counts = [0u16; 0x26];
         for &index in self.candidates.get(&province).into_iter().flatten() {
             let candidate = &self.sources.candidates[index];
-            // 141277D08..D2D: only the first 0x400 admitted occupants of a
+            // Only the first 0x400 admitted occupants of a
             // bucket reach animator advancement and representative selection.
             let count = &mut counts[candidate.slot as usize];
             if *count == 0x400 {
@@ -416,7 +417,7 @@ impl History {
             {
                 continue;
             }
-            // 141277A00: only an own selected unit gets priority 4.
+            // Only an own selected unit gets priority 4.
             // Moving-arc precedence below still runs before priority.
             let candidate_priority = if candidate.ours && self.selected.contains(&candidate.unit())
             {
@@ -444,7 +445,7 @@ impl History {
             }
             *priority = candidate_priority;
         }
-        // 14127CDCE compares slot PRIORITIES, not occupant counts. A tie
+        // The game compares slot PRIORITIES, not occupant counts. A tie
         // selects slot 9 even if only slot 10 has a priority-zero unit.
         let combat_slot = if slots[9].map_or(0, |(_, priority)| priority)
             < slots[10].map_or(0, |(_, priority)| priority)
@@ -652,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn l4e9_naval_representative_ties_keep_foreign_first_but_ours_last() {
+    fn naval_representative_ties_keep_foreign_first_but_ours_last() {
         let mut history = History::default();
         history.install(sources(vec![
             candidate(1, 2, false),
@@ -674,7 +675,7 @@ mod tests {
     }
 
     #[test]
-    fn l4e9_representative_stops_at_the_native_bucket_capacity() {
+    fn representative_stops_at_the_native_bucket_capacity() {
         let mut history = History::default();
         history.install(sources(
             (1..=0x401).map(|id| candidate(id, 3, true)).collect(),
@@ -683,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn l4e9_free_arc_can_override_ownership_only_with_nonzero_samples() {
+    fn free_arc_can_override_ownership_only_with_nonzero_samples() {
         let mut history = History::default();
         let mut moving = candidate(2, 0, false);
         moving.route = vec![9206, 1434];
@@ -699,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn l4e9_animator_resets_on_route_change_and_fast_speed_forces_one() {
+    fn animator_resets_on_route_change_and_fast_speed_forces_one() {
         let mut history = History::default();
         let mut moving = candidate(2, 0, false);
         moving.sample_count = 8;
@@ -716,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn l4e9_representatives_prepare_arc_storage_and_reuse_native_slot_buffer() {
+    fn representatives_prepare_arc_storage_and_reuse_native_slot_buffer() {
         let mut history = History::default();
         let candidates = (0..0x26)
             .rev()
@@ -752,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn l4e9_perspective_entity_reset_keeps_animator_but_seek_restarts_it() {
+    fn perspective_entity_reset_keeps_animator_but_seek_restarts_it() {
         let mut history = History::default();
         let mut moving = candidate(2, 0, false);
         moving.sample_count = 8;
@@ -768,7 +769,7 @@ mod tests {
     }
 
     #[test]
-    fn l4e9_arrival_glides_to_old_next_anchor_then_rebuilds_at_zero() {
+    fn arrival_glides_to_old_next_anchor_then_rebuilds_at_zero() {
         let mut history = History::default();
         let mut moving = candidate(2, 0, false);
         moving.sample_count = 8;
@@ -805,7 +806,7 @@ mod tests {
         assert_eq!(winner(&mut history, 0.25), 2);
 
         // A final arrival has no new samples, but the old samples still
-        // compete until their glide completes (140BAFAF0 / 141632130).
+        // compete until their glide completes.
         moving.province = 1660;
         moving.route.clear();
         moving.sample_count = 0;
@@ -827,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn l4e9_arrival_glide_expires_after_six_days_or_snaps_for_speed_or_combat() {
+    fn arrival_glide_expires_after_six_days_or_snaps_for_speed_or_combat() {
         for (allowed, day, route) in [
             (true, 16, vec![1660]),
             (false, 10, vec![1660]),
@@ -855,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    fn l4e9_naval_gate_and_port_or_combat_slot_never_offer_ordinary_models() {
+    fn naval_gate_and_port_or_combat_slot_never_offer_ordinary_models() {
         let mut history = History::default();
         for slot in [9, 10, 19] {
             let mut c = candidate(1, 3, true);
@@ -870,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn l4e9_kotka_plate_only_when_another_naval_representative_wins_the_slot() {
+    fn carrier_plate_only_when_another_naval_representative_wins_the_slot() {
         let mut history = History::default();
         let mut cv = candidate((944 << 32) | 61, 3, true);
         cv.ordinal = 0;
@@ -890,13 +891,13 @@ mod tests {
                     .map(|f| f.identity)
                     .collect::<Vec<_>>(),
                 [escort_id],
-                "141277A00 leaves the CV plate without its own formation"
+                "Choosing another representative leaves the carrier plate without its own formation"
             );
         }
     }
 
     #[test]
-    fn l4e9_land_representatives_require_both_native_terrain_and_camera_gates() {
+    fn land_representatives_require_both_native_terrain_and_camera_gates() {
         let mut history = History::default();
         let ship = candidate(1, 3, true);
         let mut land = candidate(2, 3, true);
@@ -960,7 +961,7 @@ mod tests {
     }
 
     #[test]
-    fn l4e9_supports_retain_handles_graphics_and_mesh_after_roster_reorders() {
+    fn supports_retain_handles_graphics_and_mesh_after_roster_reorders() {
         let mut entity = entity();
         let mut epoch = 0;
         let roster = vec![
@@ -999,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn l4e9_mesh_budget_yields_one_hull_then_a_full_formation() {
+    fn mesh_budget_yields_one_hull_then_a_full_formation() {
         let mut entity = entity();
         let mut epoch = 0;
         let formation = formation(vec![
@@ -1037,7 +1038,7 @@ mod tests {
     }
 
     #[test]
-    fn l4e9_capital_holds_but_stale_support_drops_when_budget_is_spent() {
+    fn capital_holds_but_stale_support_drops_when_budget_is_spent() {
         let mut entity = entity();
         let mut epoch = 0;
         formation(vec![hull(271, 0x400040, b"cv"), hull(11, 1 << 8, b"cl")]).update(

@@ -1,40 +1,28 @@
-//! Viewer-owned unit entity lifetimes: which land figures and ship hulls
-//! exist, at what popup scale, and since when their animation runs. The
-//! viewer is the game's client here, so this runs on the viewer's frame clock.
+//! Viewer-owned lifetimes, popup scales and animation histories for unit entities.
+//! All updates use the viewer's frame clock.
 //!
-//! **Popup scale, not alpha.** `FadeOrDestroyUnitSlotEntity@141279F50`
-//! shrinks the uniform transform scale, `max(0, scale - dt *
-//! MESH_POPUP_SCALE_DOWN_SPEED)` into all three axes (`14127A047..14127A062`
-//! -> `1424E7450` -> `14227BA20`), and destroys an entity whose scale was
-//! already zero when visited. Formations shrink at
-//! `SHIP_POPUP_SCALE_DOWN_SPEED`, their root scale carrying the hull offsets
-//! (`141652B90`). Both grow at `MESH_POPUP_SCALE_UP_SPEED` (`14127F000`).
+//! Popup fades change uniform transform scale. Each visit subtracts frame time
+//! times the content's scale-down speed, clamped at zero; destruction happens
+//! when the old scale was already zero. Formation roots use
+//! `SHIP_POPUP_SCALE_DOWN_SPEED`, carrying their hull offsets. Both land and
+//! formation entities grow at `MESH_POPUP_SCALE_UP_SPEED`.
 //!
-//! **Visits.** `UpdateUnitStackGraphics@14127C910` visits a kind that just
-//! lost its show bit in its gate-loss loop and again in
-//! `FadeInactiveUnitStackModels@14127A090`; later frames visit once.
-//! Provinces in view update every frame. `CGraphicalMap::update@140B49340`
-//! advances a phase `(+0x130 + 1) % 100` per frame before `140B4C120`
-//! updates an off-screen province, only when its index modulo 100 equals the
-//! phase: the view's one schedule, which also drives the provinces'
-//! presentation-dirty bits ([`super::province_schedule`]). That update destroys at once (`141277FC0` clears the show bits,
-//! `14127D260` passes camera admission false); until then the entity, its
-//! transform and its animation clock survive, so a quick pan back resumes
-//! them. Hidden entities' clocks advance (`14227CE00` -> `14226EF30`). A
-//! selected unit bypasses the phase (`province+0x1764`), using this viewer's local selection.
+//! A newly hidden kind is visited in both the gate-loss loop and inactive pass;
+//! subsequent frames visit once. In-view provinces update every frame. Off-screen
+//! provinces follow the shared modulo-100 schedule ([`super::province_schedule`])
+//! and retain entities, transforms and advancing animation clocks until that
+//! visit destroys them. Selected units bypass the phase using local selection.
 //!
-//! Divisions (transports included) and railway guns share the land path,
-//! naval formations the ship path. Naval combat graphics are deactivated on
-//! land-gate loss (`14127CAA9`); aircraft and trains have their own
-//! managers. The shared creation counter is in [`super::mesh_budget`].
+//! Divisions, transports and railway guns share the land path; naval formations
+//! use the ship path. Land-gate loss deactivates naval combat graphics. Aircraft
+//! and trains have their own managers. [`super::mesh_budget`] owns the shared
+//! creation allowance.
 //!
-//! Native slots are the 38 visual buckets of `14127F000`. Land uses its
-//! reconstructed visual order with identity ties; naval representatives use
-//! recorded occupant order and viewer-owned animator/selection presentation
-//! ([`naval`]). Hull handles and graphics are derived and retained here.
-//! Deferred native land selection runs
-//! in parallel (`140B3E400`, `1412785B0`), so worker completion/RNG order is
-//! not recoverable; all queued creations still become visible on one frame.
+//! The 38 visual buckets retain reconstructed land order with identity ties.
+//! Naval representatives use recorded occupant order and viewer-owned animator
+//! and selection presentation ([`naval`]). Deferred land selection runs in
+//! parallel, so original completion and RNG order are unavailable; all queued
+//! creations still become visible on one frame.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -70,10 +58,10 @@ pub struct Target {
     pub identity: u64,
     /// The hull within a formation; 0 for a land figure.
     pub part: u32,
-    /// Land: the reconstructed native visual slot `141277810` walks in
+    /// Land: the reconstructed native visual slot the game walks in
     /// order; stacks the reconstruction puts in one slot follow `identity`.
     pub order: u32,
-    /// The ship a hull shows (`1416542A0` keeps a hull while its ship and
+    /// The ship a hull shows (the game keeps a hull while its ship and
     /// graphics stay); a land figure's representative.
     pub occupant: u64,
     pub kind: Kind,
@@ -111,12 +99,12 @@ struct Part {
     target: Target,
     epoch: u32,
     identity: u32,
-    /// 140C2A380 / 141653F00: retained attachment's explicit graphics string.
+    /// Retained attachment's explicit graphics string.
     graphics: Vec<u8>,
 }
 
 impl Part {
-    /// 1416542A0 retains each unchanged hull's own entity. Dumps sample
+    /// The game retains each unchanged hull's own entity. Dumps sample
     /// epoch zero, but same-model hulls still need distinct live players.
     fn new(target: Target, identity: &mut u32, steady: bool) -> Self {
         *identity = identity.wrapping_add(1);
@@ -129,7 +117,7 @@ impl Part {
     }
 }
 
-/// A slot's entity. Its popup scale belongs to the slot (`+0xD38`), so the
+/// A slot's entity. Its popup scale belongs to the slot, so the
 /// hulls of a formation share their root's.
 struct Entity {
     kind: Kind,
@@ -140,7 +128,7 @@ struct Entity {
 }
 
 impl Entity {
-    /// One `141279F50` visit: it tests the OLD scale, then subtracts, so zero
+    /// One fade visit: it tests the OLD scale, then subtracts, so zero
     /// lasts one visit. False means the entity is destroyed.
     fn shrink(&mut self, delta: f32, gates: Gates) -> bool {
         if self.scale <= 0.0 {
@@ -160,7 +148,7 @@ impl Entity {
             let mut instance = part.target.instance;
             instance.animation_epoch = part.epoch;
             instance.animation_identity = part.identity;
-            // FadeInactiveUnitStackModels passes land multiplier 1.0, including
+            // Inactive land models use multiplier 1.0, including
             // transports; the admitted path uses the authored unit multiplier.
             instance.scale = if self.shrinking && self.kind == Kind::Land {
                 self.scale
@@ -193,23 +181,23 @@ struct Frame {
 /// One province's unit graphics.
 #[derive(Default)]
 struct Province {
-    /// The land and ship show bits of its last update (`+0x175D`).
+    /// The land and ship show bits of its last update.
     shown: [bool; 2],
-    /// The arrow flag of its last update (`+0x175E`).
+    /// The arrow flag of its last update.
     arrows: bool,
     entities: BTreeMap<Slot, Entity>,
-    /// `141277810`'s round-robin cursor (`+0x18`): the visual slot
+    /// The round-robin cursor: the visual slot
     /// ([`Target::order`]) it last visited, not its successor, whichever
-    /// representative holds it now. `1412771B0` does not reset it.
+    /// representative holds it now. Recreating units does not reset it.
     land_cursor: u32,
-    /// Visits since each land slot was last queued (`+0x30 + slot * 0x50`).
+    /// Visits since each land slot was last queued.
     land_visits: BTreeMap<Slot, u16>,
 }
 
 impl Province {
-    /// Queues land creations against what the counter leaves (`141277810`),
+    /// Queues land creations against what the counter leaves,
     /// then grows existing figures and attaches hulls, which spend it inline
-    /// (`14127F000`). The queued land is created after every province's
+    /// The queued land is created after every province's
     /// visit ([`Province::create_land`]).
     fn visit<'a>(
         &mut self,
@@ -258,13 +246,13 @@ impl Province {
                 return frame.shown[kind] && placed(slot);
             }
             if !frame.shown[kind] {
-                // The gate-loss loop precedes 14127A090, so the first frame
+                // The gate-loss loop precedes the inactive fade pass, so the first frame
                 // out of range visits twice.
                 return (!was[kind] || entity.shrink(frame.delta, frame.gates))
                     && entity.shrink(frame.delta, frame.gates);
             }
             // A missing stack of a kind shown now and before is destroyed at
-            // once (14127A090 param 7); otherwise it shrinks.
+            // once when popup growth is requested; otherwise it shrinks.
             placed(slot) || (!was[kind] && entity.shrink(frame.delta, frame.gates))
         });
         for (&slot, parts) in targets.into_iter().flatten() {
@@ -277,7 +265,7 @@ impl Province {
                     for (&index, &target) in parts {
                         if let Some(part) = entity.parts.get_mut(&index) {
                             // Transform/state follow this frame; the definition waits
-                            // for 141277810's periodic selection or pointer change.
+                            // for the game's periodic selection or pointer change.
                             let mesh = part.target.mesh;
                             part.target = target;
                             part.target.mesh = mesh;
@@ -292,7 +280,7 @@ impl Province {
                 }
                 continue;
             }
-            // 14127F000 acquires a formation root outside the counter, full
+            // The game acquires a formation root outside the counter, full
             // size where ships were already shown, and grows it even while
             // all its hulls wait.
             let entity = self.entities.entry(slot).or_insert_with(|| Entity {
@@ -302,14 +290,14 @@ impl Province {
                 parts: BTreeMap::new(),
             });
             // Hulls attach and detach under the root without touching its
-            // scale (141653F00 -> 1416542A0), slot 0 first.
+            // scale, slot 0 first.
             entity.parts.retain(|part, _| parts.contains_key(part));
             for (&index, &target) in parts {
                 let replace = entity.parts.get(&index).is_none_or(|part| {
                     part.target.mesh != target.mesh || part.target.occupant != target.occupant
                 });
                 if replace {
-                    // 141653F00 clears a stale support slot before attaching;
+                    // The game clears a stale support slot before attaching;
                     // slot 0 attaches directly and keeps its old hull if held.
                     if index != 0 {
                         entity.parts.remove(&index);
@@ -331,7 +319,7 @@ impl Province {
                 (entity.scale + frame.delta * frame.gates.scale_up).min(1.0)
             };
         }
-        // 14127F000 walks native visual slots, not task-force handles. A land
+        // The game walks native visual slots, not task-force handles. A land
         // representative in the same slot admits no ordinary naval formation.
         for formation in formations {
             let entity = self
@@ -360,7 +348,7 @@ impl Province {
     }
 
     fn finalize_shown(&mut self, frame: Frame, budget: &Budget) {
-        // 14127C910 keeps a newly shown kind's bit clear while the counter is
+        // The game keeps a newly shown kind's bit clear while the counter is
         // spent, so what it creates next frame still grows from zero.
         for kind in 0..2 {
             if budget.remaining() != 0 || !frame.shown[kind] {
@@ -369,7 +357,7 @@ impl Province {
         }
     }
 
-    /// `141276C20` for a request `141277810` queued: `1412785B0` recreates
+    /// Resolve a queued land-creation request, recreating
     /// the figure only if its definition changed, at the scale of the show
     /// bit the request remembered.
     fn create_land(
@@ -393,7 +381,7 @@ impl Province {
         if !changed {
             return;
         }
-        // 141276C20 has no budget guard; queued work can exceed the limit.
+        // The game has no budget guard; queued work can exceed the limit.
         budget.charge();
         self.entities.insert(
             slot,
@@ -411,7 +399,7 @@ impl Province {
 
     /// The phase update of a province out of view. The gate-loss loops
     /// destroy each kind shown last update, and a changed arrow flag forces
-    /// the inactive pass, which destroys the rest. Otherwise `14127C910`
+    /// the inactive pass, which destroys the rest. Otherwise the update
     /// returns early and a kind already shrinking keeps its entity.
     fn leave(&mut self, steady: bool) {
         let (shown, arrows) = (self.shown, self.arrows);
@@ -440,18 +428,17 @@ pub struct History {
     bounds: Arc<BTreeMap<u32, [f32; 4]>>,
     /// The previous frame's animation clock.
     last: Option<f32>,
-    /// The view's province schedule (`CGraphicalMap+0x130` and the dirty
-    /// bits), shared with its counters ([`Self::share_schedule`]).
+    /// The view's province phase and dirty bits, shared with its counters ([`Self::share_schedule`]).
     schedule: super::province_schedule::Shared,
     /// The last incarnation handed out.
     epoch: u32,
     /// Offline frames settle for their camera instead of animating.
     steady: bool,
     /// The raid arrows' units. No unit slot holds them:
-    /// `CRaidArrow::CreateUnitEntity@141CD4900` creates its entity at once
-    /// through `entity_factory@142277DF0`, never testing or charging the
-    /// shared creation counter (`1433232A4`, [`super::mesh_budget`]), and
-    /// `UpdateForRaid@141CD75A0` shows it at every camera height with no
+    /// The game creates its entity at once
+    /// without testing or charging the shared creation counter
+    /// ([`super::mesh_budget`]), and
+    /// The game shows it at every camera height with no
     /// popup scale, so they stand on every frame whatever the gates.
     raids: Vec<(usize, ModelInstance)>,
     /// The raid units' incarnation: a load-equivalent reset recreates them
@@ -504,7 +491,7 @@ impl History {
             .is_some_and(|province| province.arrows)
     }
     /// Recorded roster/route inputs; mutable animator and attachment state
-    /// belongs to this viewer's frame history (141277A00 / 141653F00).
+    /// belongs to this viewer's frame history.
     pub fn set_naval(&mut self, sources: NavalSources) {
         for candidate in &sources.candidates {
             self.provinces.entry(candidate.province).or_default();
@@ -566,7 +553,7 @@ impl History {
     }
 
     /// Clears the unit slots of `provinces`, or of every province, as a load
-    /// [`super::presentation::UnitRestart`]): their entities go and their
+    /// or a tag switch does ([`super::presentation::UnitRestart`]): their entities go and their
     /// show bits drop, so what shows next grows in on a new clock.
     pub fn reset(&mut self, provinces: Option<&BTreeSet<u32>>) {
         self.naval.reset(provinces);
@@ -576,7 +563,7 @@ impl History {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .reset(provinces);
         // A load destroys the raid arrows and their units with the rest of
-        // the map (`CRaidArrowManager::Update@14166B540` builds them again);
+        // the map (the raid manager builds them again);
         // a tag switch shows the new country's raids, other raid ids.
         if provinces.is_none() && self.raid_epoch != 0 {
             self.epoch += 1;
@@ -601,8 +588,8 @@ impl History {
     }
 
     /// The frame's advance of the schedule at this camera, made before the
-    /// view's map icons read the dirty bits (`CGraphicalMap::update` runs
-    /// before `CMapIconManagerImpl::update`); the frame's walk
+    /// view's map icons read the dirty bits (province updates run
+    /// before map-icon updates); the frame's walk
     /// ([`Self::update_models`]) then takes it instead of advancing again. A
     /// frame whose walk has not yet taken the last advance advances nothing.
     pub fn advance_schedule(&mut self, camera: Camera, viewport: [u32; 2]) {
@@ -773,7 +760,7 @@ impl History {
                 budget,
             );
         }
-        // 140DBF240 runs graphical province setters/probes before 14029EAD0
+        // Graphical province setters and probes run before idle updates
         // dispatches the animation manager. Admit each private combat player
         // once here, after this frame's callbacks and before its rendered pose.
         self.combats.advance(frame.delta);
@@ -954,7 +941,7 @@ pub(super) mod tests {
         assert_eq!(
             meshes(limited(&mut h, 0.2, 1)),
             [30],
-            "1412771B0 leaves the cursor on the last slot visited"
+            "Recreating units leaves the cursor on the last slot visited"
         );
         // A new representative in the cursor's slot is visited first.
         h.set(vec![land(1, 10), land(2, 40)], Arc::default(), false);
@@ -1259,9 +1246,8 @@ pub(super) mod tests {
     }
 
     /// The view's units and map icons run on one schedule: a frame whose map icons already
-    /// advanced it (`CGraphicalMap::update` before `CMapIconManagerImpl::update`) walks its
+    /// advanced it (province updates before map-icon updates) walks its
     /// provinces at that phase instead of advancing again, and a reset sets the dirty bits
-    /// (`ResetUnitSlots@1412771B0`).
     #[test]
     fn the_units_walk_the_phase_their_map_icons_advanced() {
         let mut h = history(vec![target(1, Kind::Land)], false);

@@ -18,7 +18,7 @@ pub enum Kind {
     Ambiguous,
     Fallback,
     Warning,
-    /// Cited engine parity only.
+    /// Content behavior matching the game.
     Content,
     /// A recording supplies the operands; aggregated once per product/reason.
     Offline,
@@ -797,8 +797,8 @@ fn place_names_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(
         let subject = format!("state {id}");
         match key {
             Ok(key) => {
-                // 1409CC380 returns the template text even when empty;
-                // 142230940 preserves successfully localised empty text.
+                // Template text and successfully localised text remain
+                // known even when empty.
                 catalogue.localised(key, crate::catalogue::View::Plain);
                 take(catalogue, &subject, findings);
             }
@@ -810,8 +810,8 @@ fn place_names_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(
         .map_err(|error| format!("Strategic-region names unavailable: {error}"))?;
     for region in regions.regions.values() {
         let subject = format!("strategic region {}", region.id);
-        // 1415938B0 stores the localiser's result without an empty gate;
-        // 140E0EB10 returns it, including the empty constructor default.
+        // Stored localised text includes successful empty results and
+        // the empty constructor default.
         catalogue.localised(&region.name_key, crate::catalogue::View::Plain);
         take(catalogue, &subject, findings);
     }
@@ -922,7 +922,7 @@ fn artwork_check(
     }
     Ok(match kind {
         products::artwork::Kind::Focus => format!(
-            "{total} declared items checked; {without_description} missing description localisation keys (the key is shown, 142230940)."
+            "{total} declared items checked; {without_description} missing description localisation keys (the key is shown)."
         ),
         products::artwork::Kind::Technology => {
             format!("{total} declared technologies checked (text and icons).")
@@ -954,8 +954,8 @@ fn flags_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), Str
     let mut cache = FlagCache::default();
     for (tag, definition) in tags {
         if definition.dynamic {
-            // CCountryDatabase::load_tags 14070E900 declares runtime slots;
-            // the product's choices() resolves their recorded appearance.
+            // Dynamic tags declare runtime slots; the product's choices()
+            // resolves their recorded appearance.
             findings.push(Finding::new(
                 Kind::Offline,
                 format!("country {tag:?}"),
@@ -981,7 +981,7 @@ fn flags_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), Str
                 )
                 .map_err(|error| error.to_string())?;
                 // A completely missing group/set authored no image, and the
-                // engine's LoadFirstDecodableCountryFlag 14122A730 skips it.
+                // game skips it while searching for a decodable flag.
                 // Keep file refusals, but no diagnostic for authored absence.
                 findings.extend(
                     problems
@@ -998,9 +998,9 @@ fn flags_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), Str
                 }
             }
         }
-        // Probe the native null-group candidate only if every group/set was absent,
-        // and retain one visible-fallback note per tag (dashboard README,
-        // "Offline product checks"), rather than three impossible requests.
+        // Probe the null-group candidate only if every group/set was absent,
+        // and retain one visible-fallback note per tag, rather than three
+        // impossible requests.
         if !any {
             let candidates = installed_content::country_names::flag_keys(Some(tag), "", None);
             let mut plain_found = false;
@@ -1073,9 +1073,13 @@ fn parties_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), S
             let (key, reason) = party_key_checked(&naming, |key| politics.defines(key))
                 .ok_or_else(|| "static party naming operands were refused".to_owned())?;
             if let Some(reason) = reason {
-                // CPoliticalParty::GetLocalizedName 14118F860 / 14118EAD0:
-                // the group token is the engine's final naming rung.
-                findings.push(Finding::grouped(Kind::Content, &subject, "party name keys are missing; the ideology group name is shown (14118F860 / 14118EAD0)", reason));
+                // The group token is the final party-naming rung.
+                findings.push(Finding::grouped(
+                    Kind::Content,
+                    &subject,
+                    "party name keys are missing; the ideology group name is shown",
+                    reason,
+                ));
             }
             politics.localised(&key, crate::catalogue::View::Plain);
             take(&politics.catalogue, &subject, findings);
@@ -1240,7 +1244,7 @@ fn names_check(content: &Content, plain: bool, findings: &mut Vec<Finding>) -> R
     let (groups, _) = ideologies.groups();
     for (tag, definition) in tags {
         if definition.dynamic {
-            // 14070E900 marks runtime slots. CountryNames' recorded operands
+            // Dynamic tags mark runtime slots. CountryNames' recorded operands
             // (country_names.rs) supply the runtime naming/cosmetic identity.
             findings.push(Finding::new(
                 Kind::Offline,
@@ -1269,8 +1273,12 @@ fn names_check(content: &Content, plain: bool, findings: &mut Vec<Finding>) -> R
                     let message =
                         format!("{reason}; the country name is unavailable and the tag is shown");
                     findings.push(if key.is_none() {
-                        Finding::grouped(Kind::Content, subject,
-                            "country-name ladder has no localisation; the bare tag key is copied (142230940)", message)
+                        Finding::grouped(
+                            Kind::Content,
+                            subject,
+                            "country-name ladder has no localisation; the bare tag key is copied",
+                            message,
+                        )
                     } else {
                         Finding::new(Kind::Refused, subject, message)
                     });
@@ -1287,6 +1295,8 @@ mod tests {
 
     #[test]
     fn place_name_inventory_accepts_successful_empty_text_and_native_defaults() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
             (
                 "common/defines/mod.lua",
@@ -1351,6 +1361,8 @@ mod tests {
 
     #[test]
     fn operative_content_checks_prepare_roster_and_keep_placements_recording_only() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (operative, _folder) = products::operative_content::test_content(&[
             (
                 "common/operations/fixture.txt",
@@ -1380,6 +1392,8 @@ mod tests {
 
     #[test]
     fn equipment_and_autonomy_preparation_reuse_the_same_loaded_objects() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let content = Content::new(
             Arc::new(ResolvedContent {
                 layers: installed_content::ResolvedLayers::from_folders(&[]).unwrap(),

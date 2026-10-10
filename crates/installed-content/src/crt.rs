@@ -1,31 +1,19 @@
-//! The C runtime's scans, as the executable links them, and the float-to-int
-//! truncation: the one implementation every reader converts through.
+//! Shared C-runtime number scans and float-to-int truncation for content readers.
 //!
-//! `sscanf` (14029D000) goes through vsscanf (1425478D8) to the UCRT's
-//! formatted_scan (14254681C). A signed `%i` or `%lli` conversion
-//! (conversion dispatch 142546A2C -> 142546CCC, base 0, signed) parses into
-//! an unsigned 64-bit value with `parse_integer` (142542E9C -> 142542A60)
-//! and stores it through store_scanned_integer (1425477D0), which writes the
-//! low 32 bits for `%i` and all 64 for `%lli`.
+//! Signed `%i` and `%lli` conversions accumulate at 64 bits. `%i` stores the low 32
+//! bits, while `%lli` stores all 64.
 //!
-//! `parse_integer` (142542A60):
-//! - skips white space (the C locale's `isspace`: space, `\t` to `\r`), then
-//!   one sign;
-//! - base 0: `0x`/`0X` selects hexadecimal (the digits start after the `x`),
-//!   another leading `0` octal, anything else decimal; digits are `0-9`,
-//!   `a-z`, `A-Z` below the base;
-//! - on 64-bit wrap, or a magnitude past the signed range (14253C738), sets
-//!   `ERANGE` and returns `i64::MAX` for a positive and `i64::MIN` for a
-//!   negative value; otherwise negates a negative one;
-//! - with no digit it stores nothing. formatted_scan then returns EOF (-1)
-//!   when the scan stopped at the end of the text (it read nothing but
-//!   space, a sign or `0x`), else 0.
+//! Integer scanning:
+//! - skips C-locale white space (space and `\t` through `\r`), then one sign;
+//! - selects hexadecimal after `0x`/`0X`, octal after another leading `0`, otherwise
+//!   decimal for base-zero conversions; digits below the base are accepted without case;
+//! - clamps a signed overflow to `i64::MAX` or `i64::MIN`, and otherwise negates a
+//!   negative magnitude;
+//! - stores nothing without a digit. A scan stopped at the end after only white space,
+//!   a sign or `0x` returns EOF; other failures return no match.
 //!
-//! `%u` and `%x` (1424AB9A0, 1424B01A0) are the same `parse_integer` at base
-//! 10 and 16, unsigned. `%f` is [`scan_f32`].
-//!
-//! The text ends at its first NUL, as the C string does
-//! ([`crate::parser::c_string`]).
+//! Unsigned `%u` and `%x` conversions use bases 10 and 16. `%f` uses [`scan_f32`]. Text
+//! ends at its first NUL ([`crate::parser::c_string`]).
 
 /// The C locale's `isspace`: space and tab to carriage return.
 fn is_space(byte: u8) -> bool {
@@ -65,8 +53,8 @@ fn digit(byte: u8) -> Option<u32> {
 pub enum Scanned<T> {
     /// sscanf returns 1 and stores the value.
     Stored(T),
-    /// sscanf returns EOF (-1) and stores nothing. The game's callers test
-    /// `!= 0` (1424B02C0, 1424B0480), so they take this as success.
+    /// The scan returns EOF and stores nothing. Callers that test a nonzero scan result
+    /// take this as success.
     End,
     /// sscanf returns 0 and stores nothing: a byte that is no digit
     /// stopped the scan before any digit.
@@ -92,10 +80,10 @@ impl<T> Scanned<T> {
     }
 }
 
-/// `parse_integer` (142542A60) as one scanf conversion: `base` 0 detects
-/// the base, 16 skips a `0x`; a signed conversion clamps past the signed
-/// range, an unsigned one gives `u64::MAX` on a 64-bit wrap and otherwise
-/// negates after a `-`. The 64 bits as stored.
+/// Scan one integer conversion: base 0 detects the base, and base 16 skips an optional
+/// `0x`. Signed conversions clamp past the signed range. Unsigned conversions give
+/// `u64::MAX` on a 64-bit wrap and otherwise negate after `-`. Returns the 64 bits as
+/// stored.
 fn parse_integer(bytes: &[u8], base: u32, signed: bool) -> Scanned<u64> {
     let (negative, mut rest) = sign(trim(crate::parser::c_string(bytes)));
     let mut radix = base;
@@ -146,23 +134,18 @@ fn parse_integer(bytes: &[u8], base: u32, signed: bool) -> Scanned<u64> {
     })
 }
 
-/// `sscanf(text, "%lli", &value)`: the 64-bit signed conversion
-/// (read_fixed5 1424B0480, format 142B7AB90).
+/// The 64-bit signed `%lli` conversion, including radix-prefix detection.
 pub fn scan_i64(bytes: &[u8]) -> Scanned<i64> {
     parse_integer(bytes, 0, true).map(|value| value as i64)
 }
 
-/// `sscanf(text, "%i", &value)` into an `int` (assign_signed_integer32_token
-/// 1424B02C0, format 142A24BE8; ReadScriptSignedInt32 1424AB970): the same
-/// 64-bit conversion, of which store_scanned_integer (1425477D0) keeps the
-/// low 32 bits, so `2147483648` stores `i32::MIN` and a clamped `i64::MAX`
-/// stores -1.
+/// The signed `%i` conversion stores the low 32 bits of the 64-bit scan. Thus
+/// `2147483648` stores `i32::MIN`, and a clamped `i64::MAX` stores -1.
 pub fn scan_i32(bytes: &[u8]) -> Scanned<i32> {
     parse_integer(bytes, 0, true).map(|value| value as u32 as i32)
 }
 
-/// `sscanf(text, "%d", &value)` (1424B0220, format 14291F82C):
-/// signed decimal, narrowed by the caller when its destination is a short.
+/// The signed decimal `%d` conversion, narrowed by callers with a short destination.
 pub fn scan_d32(bytes: &[u8]) -> Scanned<i32> {
     parse_integer(bytes, 10, true).map(|value| value as u32 as i32)
 }
@@ -171,15 +154,14 @@ pub fn scan_d32(bytes: &[u8]) -> Scanned<i32> {
 #[path = "crt/tests.rs"]
 mod decimal_tests;
 
-/// `sscanf(text, "%u", &value)` (ReadScriptUnsignedInt32 1424AB9A0): the
-/// unsigned decimal conversion, its low 32 bits, so `4294967296` stores 0
-/// and `-1` stores `u32::MAX`.
+/// The unsigned decimal `%u` conversion stores the low 32 bits, so `4294967296` stores
+/// 0 and `-1` stores `u32::MAX`.
 pub fn scan_u32(bytes: &[u8]) -> Scanned<u32> {
     parse_integer(bytes, 10, false).map(|value| value as u32)
 }
 
-/// unsigned hexadecimal conversion after an optional `0x`, its low 32 bits,
-/// so `0x4ffffffff` stores `0xffffffff`.
+/// The unsigned hexadecimal `%x` conversion skips an optional `0x` and stores the low
+/// 32 bits, so `0x4ffffffff` stores `0xffffffff`.
 pub fn scan_x32(bytes: &[u8]) -> Scanned<u32> {
     parse_integer(bytes, 16, false).map(|value| value as u32)
 }
@@ -205,15 +187,14 @@ fn starts_with_word(text: &[u8], word: &[u8]) -> bool {
     text.len() >= word.len() && text[..word.len()].eq_ignore_ascii_case(word)
 }
 
-/// `sscanf(text, "%f", &value)` into a `float` (read_float_token 1424B0320,
-/// format 1427179D8): the UCRT's `parse_floating_point` through the scanf
-/// input's single-character push-back. Decimal and hexadecimal (`0x`, a `p`
-/// exponent) mantissas of up to 768 significant digits, `inf`, `infinity`,
-/// `nan`, `nan(...)`, `nan(snan)` and `nan(ind)`, rounded once to the
-/// nearest `float` (ties to even), an overflow storing an infinity and an
-/// underflow a zero. A partial `infinity`, an exponent marker with no digit,
-/// `0x` with no digit and an unclosed or malformed `nan(` consume more than
-/// the push-back restores: `None`, nothing stored.
+/// Scan a `%f` conversion with single-character push-back. Decimal and hexadecimal
+/// (`0x`, with a `p` exponent) mantissas retain up to 768 significant digits. Supports
+/// `inf`, `infinity`, `nan`, `nan(...)`, `nan(snan)` and `nan(ind)`. Rounds once to the
+/// nearest `float`, with ties to even; overflow stores infinity and underflow stores
+/// zero.
+/// A partial `infinity`, an exponent marker without a digit, `0x` without a digit, or
+/// an unclosed or malformed `nan(` consumes more than push-back restores: returns
+/// `None`, storing nothing.
 pub fn scan_f32(text: &[u8]) -> Option<f32> {
     let (negative, rest) = sign(trim(crate::parser::c_string(text)));
     let signed = |value: f32| if negative { -value } else { value };
@@ -473,8 +454,8 @@ mod tests {
         assert_eq!(scan_i32(b""), Scanned::End);
     }
 
-    /// `%i`, `%u` and `%x` accumulate at 64 bits and store the low 32 (`142542A60`,
-    /// `1425477D0`); a 64-bit overflow saturates; no digit stores nothing.
+    /// `%i`, `%u` and `%x` accumulate at 64 bits and store the low 32. A 64-bit
+    /// overflow saturates; no digit stores nothing.
     #[test]
     fn integers_store_the_low_32_bits_of_a_64_bit_scan() {
         let i32_of = |text: &[u8]| scan_i32(text).stored();
@@ -495,8 +476,8 @@ mod tests {
         }
     }
 
-    /// `%u` and `%x` accumulate at 64 bits and store the low 32 (142542A60,
-    /// 1425477D0); a 64-bit wrap is `u64::MAX`; no digit stores nothing.
+    /// `%u` and `%x` accumulate at 64 bits and store the low 32. A 64-bit wrap gives
+    /// `u64::MAX`; no digit stores nothing.
     #[test]
     fn unsigned_conversions_store_the_low_32_bits() {
         assert_eq!(scan_u32(b"4294967296"), Scanned::Stored(0));

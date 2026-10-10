@@ -4,8 +4,8 @@ import type { TooltipRow } from './tooltip.ts';
 
 /** Event badges: small glyphs along the top edge of a time chart (a war, a law, a
  * focus), each with a faint guide line down the plot, or small triangles pointing
- * at the plot in the colour of whoever caused the event (mock-up diplo-1's world
- * tension events), which stay above the plot so many of them never cover it.
+ * at the plot in the colour of whoever caused the event, which stay above the
+ * plot so many of them never cover it.
  * Hovering one snaps the chart to its hour and names the event; right-click jumps
  * there like anywhere else. */
 

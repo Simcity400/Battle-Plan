@@ -1,4 +1,4 @@
-//! Native database dispatch; projection lives in the parent module.
+//! Raid database dispatch; projection lives in the parent module.
 use crate::{
     fields::invalid,
     key_names::KeyNames,
@@ -72,42 +72,41 @@ impl Node {
         }
     }
 
-    /// The native reader of a node's fields.
+    /// The reader context used in field diagnostics.
     fn reader(self) -> &'static str {
         use Node::*;
         match self {
-            File => "140A8CA20",
-            Categories => "140A88270",
-            Types => "140A88840",
-            Category => "14157ED70",
-            Raid => "140A8FA30",
-            Target => "14157F920",
-            Building => "1415779B0",
-            Bounds => "141577790",
-            EquipmentAmounts => "14157E530",
-            StartingPoint => "14157EE40",
-            Requirements => "14157FD70",
-            BattalionTypes => "14157E7B0",
-            Equipment => "14157E990",
-            Animations => "14157FAF0",
-            Stage => "141578480",
-            Arrow => "14157E670",
-            Model => "14157FB30",
-            Factors => "14157F860",
-            Formula => "14157F4D0",
-            StandardModifier => "14157F800",
-            CustomModifier => "14157F2A0",
-            Mtth => "CMeanTimeToHappen",
-            Levels => "14157F8B0",
-            Outcome => "141577C10",
-            Visual => "141578280",
+            File => "raid file reader",
+            Categories => "category container reader",
+            Types => "type container reader",
+            Category => "category reader",
+            Raid => "raid type reader",
+            Target => "target selector reader",
+            Building => "building selector reader",
+            Bounds => "bounds reader",
+            EquipmentAmounts => "equipment pool reader",
+            StartingPoint => "starting-point reader",
+            Requirements => "unit requirement reader",
+            BattalionTypes => "battalion-type reader",
+            Equipment => "required equipment reader",
+            Animations => "animation reader",
+            Stage => "animation stage reader",
+            Arrow => "arrow reader",
+            Model => "unit model reader",
+            Factors => "success factors reader",
+            Formula => "success formula reader",
+            StandardModifier => "standard modifier reader",
+            CustomModifier => "custom modifier reader",
+            Mtth => "mean-time-to-happen reader",
+            Levels => "success levels reader",
+            Outcome => "outcome reader",
+            Visual => "visual effect reader",
         }
     }
 }
 
-/// One file's dispatch. `equipment` is the registry 14157E530 looks a key
-/// up in; the triggers are read against `names`; each place the game
-/// reports, and each misread, goes to `notes`.
+/// One file's dispatch. `equipment` resolves equipment keys; triggers are
+/// read against `names`. Reported fields and misreads go to `notes`.
 pub(super) fn document(
     bytes: &[u8],
     equipment: super::Equipment<'_>,
@@ -117,18 +116,16 @@ pub(super) fn document(
     use Node::*;
     let mut reported = Vec::new();
     let mut battalions = BTreeSet::new();
-    // Database 140A8CA20, declaration loops 140A88270/140A88840;
-    // CRaidCategory 14157ED70, CRaidType 140A8FA30. The file loop is EOF,
-    // nested loops stop at close. Unknown fields report and skip blocks.
-    // 140192E60 constructs each file's lexer in mode 0 (1424A6370).
+    // The file loop runs to EOF; nested loops stop at close. Unknown fields
+    // report and skip blocks. Each file uses the lexer's keep-mark mode.
     let read = native::read(
         bytes,
         native::Mode::KeepMark,
         native::Top::File(File),
         Some(names),
         &mut |node, field| match (node, field.keyword().as_deref()) {
-            // 140A88270 and 140A88840 need an opening brace; otherwise they
-            // report the token and return, entering nothing.
+            // Categories and types need an opening brace; otherwise report the
+            // token and return without entering a container.
             (File, Some(b"categories")) if field.opens() => Shape::Object(Categories),
             (File, Some(b"types")) if field.opens() => Shape::Object(Types),
             (File, Some(key @ (b"categories" | b"types"))) => {
@@ -137,9 +134,9 @@ pub(super) fn document(
                     field.key.line,
                     String::from_utf8_lossy(key),
                     if key == b"types" {
-                        "140A88840"
+                        "type container reader"
                     } else {
-                        "140A88270"
+                        "category container reader"
                     },
                 ));
                 Shape::Skip
@@ -166,22 +163,22 @@ pub(super) fn document(
                 Shape::One
             }
             (Raid, Some(b"ai_will_do")) => Shape::Object(Mtth),
-            (Raid, Some(b"target_type")) => Shape::Object(Target), // 140A89350 / 14157F920
+            (Raid, Some(b"target_type")) => Shape::Object(Target),
             (Raid, Some(b"essential_equipment" | b"additional_equipment")) => {
                 Shape::Object(EquipmentAmounts)
-            } // 140A88D80 / 14157E530
-            (Raid, Some(b"starting_point")) => Shape::Object(StartingPoint), // 140A89160 / 14157EE40
-            // Each field is a new requirement (140A87530), whose one
-            // CBattalionTypeRequirements every battalion_types reads into.
+            }
+            (Raid, Some(b"starting_point")) => Shape::Object(StartingPoint),
+            // Each field creates a new requirement, whose battalion-type table
+            // persists across all of its `battalion_types` fields.
             (Raid, Some(b"unit_requirements")) => {
                 battalions.clear();
                 Shape::Object(Requirements)
-            } // 140A89920 / 14157FD70
-            (Raid, Some(b"unit_animations")) => Shape::Object(Animations), // 140A89540 / 14157FAF0
-            (Raid, Some(b"arrow")) => Shape::Object(Arrow),                // 14157E670
-            (Raid, Some(b"unit_model")) => Shape::Object(Model),           // 14157FB30
-            (Raid, Some(b"success_factors")) => Shape::Object(Factors),    // 14157F860
-            (Raid, Some(b"success_levels")) => Shape::Object(Levels),      // 14157F8B0
+            }
+            (Raid, Some(b"unit_animations")) => Shape::Object(Animations),
+            (Raid, Some(b"arrow")) => Shape::Object(Arrow),
+            (Raid, Some(b"unit_model")) => Shape::Object(Model),
+            (Raid, Some(b"success_factors")) => Shape::Object(Factors),
+            (Raid, Some(b"success_levels")) => Shape::Object(Levels),
             (
                 Raid,
                 Some(
@@ -205,41 +202,37 @@ pub(super) fn document(
                     | b"nuke_type",
                 ),
             ) => Shape::One,
-            // ReadScriptInt32Array (1401F91B0) resolves each token into the
-            // value slot (+0xC0).
+            // Resolve each list token into the value slot.
             (Target, Some(b"province")) if field.opens() => Shape::List,
             (Target, Some(b"state")) if field.opens() => Shape::Trigger,
             (Target, Some(b"province" | b"state" | b"captured_army_leader")) => Shape::One,
-            (Target, Some(b"building")) => Shape::Object(Building), // 1415779B0
-            // Any other key, a quoted one included: ReportUnexpectedToken
-            // (1424AD100), no selector added.
+            (Target, Some(b"building")) => Shape::Object(Building),
+            // Any other key, including a quoted one, is reported; no selector is added.
             (Target, _) => {
                 reported.push(format!(
-                    "line {}: target_type key {} is reported and skipped (14157F920)",
+                    "line {}: target_type key {} is reported and skipped",
                     field.key.line,
                     String::from_utf8_lossy(&field.key.text)
                 ));
                 Shape::Skip
             }
-            (Building, Some(b"type" | b"tags")) if field.opens() => Shape::List, // 140309360, into +0xC0
-            // 140309DC0 registers the lexer's current token (1424A6500), not
-            // the value slot's.
+            (Building, Some(b"type" | b"tags")) if field.opens() => Shape::List, // list tokens fill the value slot
+            // Register the lexer's current token, rather than the value slot's token.
             (Building, Some(b"type" | b"tags")) => Shape::Current,
             (Building, Some(b"is_coastal")) => Shape::One,
-            (Building, Some(b"level")) | (Equipment, Some(b"amount")) => Shape::Object(Bounds), // 141577790
+            (Building, Some(b"level")) | (Equipment, Some(b"amount")) => Shape::Object(Bounds),
             (Bounds, Some(b"min" | b"max")) => Shape::One,
-            // 14157E530: `nukes` (0x34CD) ReadScriptSignedInt32; a key whose
-            // token 1409EB110 finds as an equipment type ParseTokenInt32 on
-            // the value token alone; any other, a quoted key included,
-            // ReportUnexpectedToken, skipping its block. Where the database
-            // was lost before it could hold the key, both read a scalar value
-            // alike (the projection refuses the type); a block they do not.
+            // `nukes` uses integer scanning; a known equipment key reads only its
+            // value token as a decimal amount. Any other key, including a quoted
+            // one, is reported and its block skipped. An undecided key consumes a
+            // scalar either way, but block consumption depends on whether it names
+            // equipment; the projection refuses that uncertainty.
             (EquipmentAmounts, Some(b"nukes")) => Shape::One,
             (EquipmentAmounts, Some(key)) if equipment(key) == Some(true) => Shape::One,
             (EquipmentAmounts, Some(key)) if equipment(key).is_none() => {
                 if field.opens() {
                     Shape::Unsettled(format!(
-                        "raid equipment {} has a block, which 14157E530 reads by whether it is an equipment type, and the equipment database was lost before it",
+                        "raid equipment {} has a block, whose reading depends on whether it is an equipment type, and the equipment database was lost before it",
                         String::from_utf8_lossy(&field.key.text)
                     ))
                 } else {
@@ -248,7 +241,7 @@ pub(super) fn document(
             }
             (EquipmentAmounts, _) => {
                 reported.push(format!(
-                    "line {}: raid equipment {} is not an equipment type; reported and skipped (14157E530)",
+                    "line {}: raid equipment {} is not an equipment type; reported and skipped",
                     field.key.line,
                     String::from_utf8_lossy(&field.key.text)
                 ));
@@ -259,25 +252,24 @@ pub(super) fn document(
             (Requirements, Some(b"battalion_types")) => Shape::Object(BattalionTypes),
             (Requirements, Some(b"equipment")) => Shape::Object(Equipment),
             (BattalionTypes, _) => {
-                // 14157E7B0 finds the key's token among those held: a repeat
-                // is RecordError, its block skipped. A quoted key is token
-                // 0xF (the projection refuses it).
+                // A repeated battalion token is reported and its block skipped.
+                // A quoted key has no battalion identity; the projection refuses it.
                 let key = field.keyword().unwrap_or_default();
                 if battalions.insert(key) {
                     Shape::Object(Bounds)
                 } else {
                     reported.push(format!(
-                        "line {}: raid battalion_types repeats {}; reported and skipped (14157E7B0)",
+                        "line {}: raid battalion_types repeats {}; reported and skipped",
                         field.key.line,
                         String::from_utf8_lossy(&field.key.text)
                     ));
                     Shape::Skip
                 }
             }
-            // 14157E990 -> 1409FB540 / 140309360, each token into +0xC0.
+            // Each equipment type or module token is read into the value slot.
             (Equipment, Some(b"type" | b"modules")) => Shape::List,
             (Animations, Some(b"stage")) => Shape::Object(Stage),
-            (Stage, Some(b"state" | b"intro" | b"at_progress")) => Shape::One, // 141578480
+            (Stage, Some(b"state" | b"intro" | b"at_progress")) => Shape::One,
             (Arrow, Some(b"type"))
                 if matches!(
                     field.value_keyword().as_deref(),
@@ -292,8 +284,8 @@ pub(super) fn document(
             ) => Shape::One,
             (Factors, Some(b"success" | b"critical" | b"disaster")) => Shape::Object(Formula),
             (Formula, Some(b"base")) => Shape::One,
-            // 14157F4D0 selects native standard classes by token; any other
-            // name constructs a custom modifier, including quoted names.
+            // Folded standard keys select standard modifiers; every other name,
+            // including a quoted one, constructs a custom modifier.
             (Formula, Some(key)) if super::tooltips::standard(key).is_some() => {
                 Shape::Object(StandardModifier)
             }
@@ -301,8 +293,8 @@ pub(super) fn document(
             (
                 StandardModifier | CustomModifier,
                 Some(b"weight" | b"reference" | b"start_weight" | b"start_reference"),
-            ) => Shape::One, // 14157F800
-            (CustomModifier, Some(b"enable")) => Shape::ByKey, // assign-trigger, 14157F2A0
+            ) => Shape::One,
+            (CustomModifier, Some(b"enable")) => Shape::ByKey, // assignment-form trigger
             (CustomModifier, Some(b"formula")) => Shape::Object(Mtth),
             (CustomModifier, Some(b"scope" | b"can_target_affect" | b"can_actor_affect")) => {
                 Shape::One
@@ -313,21 +305,20 @@ pub(super) fn document(
             }
             (Outcome, Some(b"division_effects" | b"actor_effects" | b"victim_effects")) => {
                 if field.keyword_is("division_effects") {
-                    // Raid outcome reader 141577C10 passes unit scope at 141577D04.
+                    // Division effects use unit scope.
                     Shape::EffectIn(ScopeKind::Unit.bit())
                 } else {
-                    // 141577C10 passes raid-instance scope at 141577CEC/141577CD7.
+                    // Actor and victim effects use raid-instance scope.
                     Shape::EffectIn(ScopeKind::RaidInstance.bit())
                 }
             }
             (Outcome, Some(b"custom_sound" | b"destroy_additional_equipment")) => Shape::One,
             (Outcome, Some(b"visual_effect")) => Shape::Object(Visual),
-            (Visual, Some(b"animation" | b"entity")) => Shape::One, // 141578280
-            // Every reader here reports any other field through
-            // ReportUnexpectedToken (1424AD100) and skips its block.
+            (Visual, Some(b"animation" | b"entity")) => Shape::One,
+            // Every reader here reports other fields and skips their blocks.
             _ => {
                 reported.push(format!(
-                    "line {}: {} field {} is reported and skipped ({}, 1424AD100)",
+                    "line {}: {} field {} is reported and skipped by {}",
                     field.key.line,
                     node.what(),
                     String::from_utf8_lossy(&field.key.text),

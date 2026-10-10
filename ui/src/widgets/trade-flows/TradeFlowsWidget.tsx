@@ -56,7 +56,7 @@ type TradeLink = FlowLink & { trade: { selection: TradeSelection; link: SideLink
 const SMALL_FLAGS = flagReadSpec('small');
 const ALL_CONTRIBUTORS: TradeSelection = { kind: 'all' };
 
-/** Who sells what to whom (mock-up style-6): a Sankey of sellers to buyers, one
+/** Who sells what to whom: a Sankey of sellers to buyers, one
  * ribbon per seller, buyer and resource, sized by the chosen measure. */
 export default function TradeFlowsWidget({ widget, runtime, active, countrySlot, onDiagnostics, setOption }: WidgetProps) {
   const [drill, dispatchDrill] = useReducer(reduceDrill, CLOSED);

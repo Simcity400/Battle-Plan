@@ -1,5 +1,5 @@
-//! Save serializers: combat manager 140BABDA0/history 140BABC50/entry 140BABCC0,
-//! army 140C80E00/manpower 140C5B5D0/values 140C5B610. No inferred deletion causes.
+//! Saved combat history and division manpower comparisons.
+//! No inferred deletion causes.
 use super::*;
 use installed_content::parser::{Item, Value};
 use replay::frame::FrameDecoder;
@@ -92,9 +92,9 @@ fn division_handle(items: &[Item]) -> io::Result<u64> {
     Ok(first)
 }
 
-// CLandCombatant serializer token29B4 is `log`; CD1240 token3754 is
-// `combat_side_data`; CD15D0 tokens3750/3753 are `manpower_lost`/`equipment_lost`.
-// FFDB00 writes equipment{id,amount}, omitting zero unless allow_zero_entries.
+// Combat sides contain a `log` with `combat_side_data`, including
+// `manpower_lost` and `equipment_lost`.
+// The pool writer writes equipment{id,amount}, omitting zero unless allow_zero_entries.
 fn saved_losses(side: &[Item]) -> io::Result<(replay::rows::LandSideLosses, Option<bool>)> {
     let log = block(required(side, b"log")?)?;
     let stats = block(required(log, b"combat_side_data")?)?;
@@ -163,7 +163,7 @@ pub(super) fn read(items: &[Item], comparison: Comparison) -> io::Result<Saved> 
                 out.allow_zero.insert(id, [attacker.1, defender.1]);
             }
         }
-        // BABC50 may omit empty history; the manager parent is unconditional.
+        // The history writer may omit empty history; the manager parent is unconditional.
         if comparison != Comparison::Losses
             && let Some(history) = field(combats, b"history")?
             && let Some(entries) = field(block(history)?, b"history")?
@@ -217,9 +217,9 @@ fn read_division_countries<'a>(
                 let id = division_handle(i)?;
                 let mut division = Division {
                     maximum: Decimal::parse(scalar(required(i, b"max_supply")?)?)?.raw,
-                    // 140C80E00 receives primary+10. Token4CED at 140C810CA
-                    // reads secondary+600 (primary+610), including zero.
-                    // Optional secondary+610 fuel is a different operand.
+                    // The army writer emits the current supply ratio,
+                    // including zero, independently of the optional fuel field.
+                    // Fuel is a different operand.
                     remaining: Decimal::parse(scalar(required(i, b"army_current_supply_ratio")?)?)?
                         .raw,
                     ..Default::default()
@@ -296,7 +296,7 @@ pub(super) fn compare_losses(
                     expected[side].manpower,
                 );
                 if manpower < 0 {
-                    report.limitation("140CD15D0 omits nonpositive manpower; the save cannot certify its negative magnitude", format!("combat {} side {side}", row.combat));
+                    report.limitation("the game omits nonpositive manpower; the save cannot certify its negative magnitude", format!("combat {} side {side}", row.combat));
                 }
             }
             if let Some(pool) = pools[side] {
@@ -313,7 +313,7 @@ pub(super) fn compare_losses(
                         &expected[side].equipment,
                     );
                 } else {
-                    report.limitation("140CD15D0 gates equipment_lost via 140FFB8F0 on archetype allocations (+8), not variant entries; an omitted wrapper cannot certify an empty variant pool", format!("combat {} side {side}", row.combat));
+                    report.limitation("the game gates equipment_lost on archetype allocations, not variant entries; an omitted wrapper cannot certify an empty variant pool", format!("combat {} side {side}", row.combat));
                 }
             }
         }
@@ -326,7 +326,7 @@ pub(super) fn compare_losses(
         );
     }
     report.compared("LandCombatProgress casualties", rows.len());
-    report.limitation("140CD1240 -> 140CD15D0 certifies counters of combats live at the save hour through LandCombatProgress; ended history omits casualty pools, so a later save cannot certify LandCombatResults terminal amounts or flush/deletion coverage", "terminal losses require matched final combat-window evidence and hook tests");
+    report.limitation("the game certifies counters of combats live at the save hour through LandCombatProgress; ended history omits casualty pools, so a later save cannot certify LandCombatResults terminal amounts or flush/deletion coverage", "terminal losses require matched final combat-window evidence and hook tests");
     Ok(())
 }
 
@@ -352,10 +352,10 @@ pub(super) fn compare_divisions(
         };
         let mut manpower = Vec::new();
         for entry in &row.manpower {
-            // C5B610 intentionally omits nonpositive amounts; retain them in
+            // The manpower writer intentionally omits nonpositive amounts; retain them in
             // the recording but compare only the serializer's projection.
             if entry.amount > 0 {
-                // 140C5B610 calls 140BA5C20: raw-indexed strings, not the
+                // Manpower saves raw-indexed strings, not the
                 // canonical country's tag. Countries records its own raw id
                 // only; CountryLinks does not preserve an alias's spelling.
                 let tag = if entry.country == 0 {
@@ -369,7 +369,7 @@ pub(super) fn compare_divisions(
                 };
                 if tag.is_none() {
                     report.limitation(
-                        "140C5B610 saves the raw tag string; an alias/null contributor's spelling is not captured by Countries or CountryLinks. Amount and position are still compared",
+                        "the game saves the raw tag string; an alias/null contributor's spelling is not captured by Countries or CountryLinks. Amount and position are still compared",
                         format!("division {} positive contributor {} raw country {}", row.division, manpower.len(), entry.country),
                     );
                 }
@@ -415,8 +415,8 @@ pub(super) fn compare_divisions(
         saved.divisions.keys().copied().collect::<BTreeSet<_>>(),
     );
     report.compared("DivisionLandInputs", rows.len());
-    report.limitation("CArmyManpower serializer 140C5B610 omits nonpositive contributors; their values and positions cannot be certified","DivisionLandInputs.manpower");
-    report.limitation("CUnit 140BF7010 and supply consumer 140EBB270 do not serialize received supply or naval-transfer membership; those hourly operands are unverified","DivisionLandInputs.received_supply/naval_transfer");
+    report.limitation("the manpower writer omits nonpositive contributors; their values and positions cannot be certified","DivisionLandInputs.manpower");
+    report.limitation("The unit and supply-consumer writers do not serialize received supply or naval-transfer membership; those hourly operands are unverified","DivisionLandInputs.received_supply/naval_transfer");
     Ok(())
 }
 
@@ -454,9 +454,9 @@ fn compare_certified_history(
     }) {
         return Err(invalid("land event outside certified history span"));
     }
-    // PruneHistory 140BA96C0, called at the beginning of manager update
-    // 140BA9890, drops head entries dated < now - 0xA8 (equality survives),
-    // and future head entries. HourlyUpdate advances +0x468 before that call:
+    // History pruning, called at the beginning of manager update,
+    // drops head entries dated < now - 168 (equality survives),
+    // and future head entries. The hourly update advances the clock before that call:
     // for a settled fresh save at H, last manager update H_u = H, NOT H - 1.
     // The inclusive lower bound is H - 168; event coverage remains (from,to].
     let oldest = i64::from(manager_hour) - i64::from(engine::ccombat_history::RETENTION_HOURS);
@@ -464,7 +464,7 @@ fn compare_certified_history(
     let outside = captured.iter().filter(|e| !retained(e)).count();
     if outside != 0 {
         report.limitation(
-            "combat history retention: 140BA96C0 prunes results older than H_u - 168 (engine literal 0xA8); the save cannot certify these recorded results",
+            "combat history retention: the game prunes results older than H_u - 168 (engine literal 0xA8); the save cannot certify these recorded results",
             format!("{outside} results before hour {oldest}; last manager update H_u={manager_hour}"),
         );
     }
@@ -559,8 +559,8 @@ pub(super) fn compare_events(
     }
     report.compared("LandCombatResults", compared);
     report.compared("LandEventCoverage", retained_span_count(&spans, frame.hour));
-    report.limitation("CCombatHistoryEntry 140BABCC0 saves location, attacker, defender, end_date and type, but no winner, commander, full country sets, start date, duration or raw outcome inputs","LandCombatResults");
-    report.limitation("140C79E70 writes UNIT_KILL_HISTORY on the dying army+638, gated by 14143A800/141435880; it deletes that army. No corresponding surviving killer-unit entry is proved; this event has no certified save comparator",format!("DestroyedDivisions: {destroyed} observed events, unverified"));
+    report.limitation("The combat-history writer saves location, attacker, defender, end_date and type, but no winner, commander, full country sets, start date, duration or raw outcome inputs","LandCombatResults");
+    report.limitation("the game writes UNIT_KILL_HISTORY on the dying army, gated by unit-death processing; it deletes that army. No corresponding surviving killer-unit entry is proved; this event has no certified save comparator",format!("DestroyedDivisions: {destroyed} observed events, unverified"));
     Ok(())
 }
 
@@ -852,56 +852,92 @@ mod tests {
         );
     }
     #[test]
-    fn native_duplicate_division_ids_must_all_agree() {
+    fn duplicate_division_ids_must_all_agree() {
         let bytes = br#"combat={} countries={ opaque={ units={ division={
-            id={id=81188 type=4713} seed=266256362 id={id=81188 type=4713}
-            max_supply=108 army_current_supply_ratio=108
-            army_manpower={army_manpower_value={value={tag=opaque value=12000}}}
+            id={id=37 type=4713} seed=91 id={id=37 type=4713}
+            max_supply=7 army_current_supply_ratio=7
+            army_manpower={army_manpower_value={value={tag=opaque value=23}}}
         } } } }"#;
         assert_eq!(read(bytes).unwrap().divisions.len(), 1);
         let unequal = String::from_utf8(bytes.to_vec())
             .unwrap()
-            .replace("seed=266256362 id={id=81188", "seed=266256362 id={id=81189");
+            .replace("seed=91 id={id=37", "seed=91 id={id=38");
         assert!(read(unequal.as_bytes()).is_err());
         let duplicate_supply = String::from_utf8(bytes.to_vec())
             .unwrap()
-            .replace("max_supply=108", "max_supply=108 max_supply=108");
+            .replace("max_supply=7", "max_supply=7 max_supply=7");
         assert!(read(duplicate_supply.as_bytes()).is_err());
     }
     #[test]
-    fn retained_real_save_divisions_and_history_parse_when_available() {
-        let path = std::path::Path::new(
-            r"captures\pr132_smoke_20260928\boundary-save.hoi4",
+    #[ignore = "requires BATTLE_PLAN_LAND_SAVE and BATTLE_PLAN_LAND_EXPECTATIONS"]
+    fn installed_save_divisions_and_history_match_expectations() {
+        let path = std::path::PathBuf::from(
+            std::env::var_os("BATTLE_PLAN_LAND_SAVE").or_else(|| std::env::var_os("HOI4_LAND_SAVE")).expect("set BATTLE_PLAN_LAND_SAVE to a text save"),
         );
-        if !path.exists() {
-            eprintln!("SKIP retained real land save: {}", path.display());
-            return;
-        }
-        // Exercises every production key over ALL division and history blocks,
-        // including the native repeated id and lexical fixed5 representations.
+        let expectations_path = std::path::PathBuf::from(
+            std::env::var_os("BATTLE_PLAN_LAND_EXPECTATIONS").or_else(|| std::env::var_os("HOI4_LAND_EXPECTATIONS"))
+                .expect("set BATTLE_PLAN_LAND_EXPECTATIONS to the expected-value JSON file"),
+        );
+        let expected: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(expectations_path).expect("read land expectations"),
+        )
+        .expect("parse land expectations");
+        // Parse every division and history block, including repeated IDs and
+        // lexical fixed5 representations, then check the supplied expectations.
         let saved = read(&std::fs::read(path).unwrap()).unwrap();
         assert!(!saved.divisions.is_empty());
-        let division = &saved.divisions[&(81188u64 << 32 | 4713)];
-        assert_eq!(division.manpower, [(b"ENG".to_vec(), 15_620)]);
-        assert_eq!(division.maximum, 10_800_000);
-        assert_eq!(division.remaining, 5_793_156);
-        assert_eq!(saved.history.len(), 89);
+        let id = u32::try_from(expected["division_id"].as_u64().expect("division_id"))
+            .expect("division_id fits u32");
+        let kind = u32::try_from(expected["division_type"].as_u64().expect("division_type"))
+            .expect("division_type fits u32");
+        let division = &saved.divisions[&(u64::from(id) << 32 | u64::from(kind))];
+        let manpower: Vec<_> = expected["manpower"]
+            .as_array()
+            .expect("manpower array")
+            .iter()
+            .map(|entry| {
+                (
+                    entry[0].as_str().expect("manpower tag").as_bytes().to_vec(),
+                    i32::try_from(entry[1].as_i64().expect("manpower amount"))
+                        .expect("manpower amount fits i32"),
+                )
+            })
+            .collect();
+        assert_eq!(division.manpower, manpower);
+        assert_eq!(
+            division.maximum,
+            expected["maximum"].as_i64().expect("maximum")
+        );
+        assert_eq!(
+            division.remaining,
+            expected["remaining"].as_i64().expect("remaining")
+        );
+        assert_eq!(
+            saved.history.len(),
+            usize::try_from(expected["history_count"].as_u64().expect("history_count"))
+                .expect("history_count fits usize")
+        );
         let hour = |date: &[u8]| save::GameDate::parse(date).unwrap().engine_hour().unwrap();
-        assert_eq!(
-            saved.history.iter().map(|e| e.hour).min(),
-            Some(hour(b"1943.10.22.12"))
+        let first_date = hour(
+            expected["first_date"]
+                .as_str()
+                .expect("first_date")
+                .as_bytes(),
         );
-        assert_eq!(
-            saved.history.iter().map(|e| e.hour).max(),
-            Some(hour(b"1943.10.29.9"))
+        let last_date = hour(
+            expected["last_date"]
+                .as_str()
+                .expect("last_date")
+                .as_bytes(),
         );
+        assert_eq!(saved.history.iter().map(|e| e.hour).min(), Some(first_date));
+        assert_eq!(saved.history.iter().map(|e| e.hour).max(), Some(last_date));
         println!(
-            "REAL_LAND_SAVE divisions={} history={} first={} last={} save_hour={}",
+            "LAND_SAVE divisions={} history={} first={} last={}",
             saved.divisions.len(),
             saved.history.len(),
-            hour(b"1943.10.22.12"),
-            hour(b"1943.10.29.9"),
-            hour(b"1943.10.29.12")
+            first_date,
+            last_date
         );
     }
     #[test]

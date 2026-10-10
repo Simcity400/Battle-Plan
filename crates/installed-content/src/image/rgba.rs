@@ -7,7 +7,7 @@ use super::{
 use std::io;
 
 /// The base level of a two-dimensional texture as RGBA8. Its edges are those the
-/// decoder admitted: the native decoder refuses any past its cited device limit.
+/// decoder admitted: the native decoder refuses any past its device limit.
 /// Straight RGBA8 is moved, not copied; 16-bit surfaces expand as the device
 /// samples them ([`TextureFormat::sample_16`]).
 pub fn dds_base(mut texture: Texture) -> io::Result<Rgba8Image> {

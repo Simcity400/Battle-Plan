@@ -643,7 +643,7 @@ type Walked = Vec<Result<Captured, &'static str>>;
 /// Divisions per image gather in the test walk: a combat's.
 const IMAGE_BATCH: usize = 20;
 
-/// Fixed scratch for comparison within the historical baseline's limits.
+/// Fixed scratch for comparison within the unshared reader baseline's limits.
 struct Scratch {
     widths: [inputs::WidthTerm; main_combat::WIDTH_TERM_LIMIT],
     modifiers: [reinforcement::ModifierTerm; main_reinforcement::MODIFIER_LIMIT],
@@ -686,9 +686,8 @@ impl Scratch {
     }
 }
 
-/// The unshared per-division chain, as the collector ran it before
-/// sharing: those readers, one country reader for the combat and the
-/// per-pass context memo, every division read in full.
+/// Unshared per-division chain: one country reader for the combat, the
+/// per-pass context memo and every division read in full.
 fn walk_main(memory: &World, divisions: &[(usize, u64)]) -> Walked {
     use super::{main_combat as combat, main_reinforcement as reinforcement};
     let mut memo = combat::ContextModifiers::default();

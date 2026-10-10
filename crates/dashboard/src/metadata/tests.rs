@@ -101,8 +101,8 @@ fn link_tags_incomplete_reads_are_errors_and_recovery_rebuilds_even_the_same_vie
 
 #[test]
 fn link_tags_aliases_join_slots_without_requiring_a_countries_own_link() {
-    // 140BA5140 / 140BA6240 resolve each raw link to a slot; 140BA60A0
-    // permits distinct links to the same country. Missing target rows name none.
+    // Each raw link resolves to a slot; distinct links may name the same
+    // country. Missing target rows name none.
     let mut sample = source(1, 100, Some(1));
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *sample.tables[TableId::Countries.index()]
@@ -701,8 +701,8 @@ fn daily_slot_of(table: TableId) -> i32 {
 fn a_slot_hour_reads_its_tables_even_when_another_table_is_charged() {
     let slot = daily_slot_of(TableId::CountryFuel);
     let day = 1000 * replay::cadence::STAGGER_PERIOD;
-    // Part Q's pattern: the shared economy read is charged to the hourly
-    // ProvinceSupply, so no table of the slot is timed at its slot hour.
+    // The shared economy read is charged to hourly ProvinceSupply, so no
+    // table of the slot is timed at its slot hour.
     let mut charged = replay::frame::Metrics::default();
     charged.table_ns[TableId::ProvinceSupply.index()] = 1_051_200;
     for table in [TableId::CountryFuel, TableId::CountryExperience] {

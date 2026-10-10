@@ -1,4 +1,4 @@
-//! CAirGroup, pinned a729; harvested layout only, hourly consistency unproven.
+//! CAirGroup layout; hourly consistency is unproven.
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -20,19 +20,19 @@ pub struct MemberRow {
     pub ordinal: u32,
 }
 
-/// CAirGroup primary vtable; executable RTTI confirms old offsets.rs AIR_GROUP_VTABLE_RVA.
+/// Air-group primary vtable.
 pub const VTABLE_RVA: usize = 0x029b_6340;
-/// CAirGroup reference type; checked by collector theatre_selector::air against its +8 handle.
+/// Reference type checked against the handle.
 pub const TYPE: u32 = 78;
-/// CAirGroup paired u32 type/id handle; collector theatre_selector::reference_id reads a qword here.
+/// Full handle containing u32 type and id.
 pub const HANDLE: usize = 0x08;
-/// CAirGroup std::string name; collector theatre_selector::air reads offsets.rs AIR_GROUP_OFF_NAME.
+/// Literal name string.
 pub const NAME: usize = 0x50;
-/// CAirGroup parent CAirTheatre paired-u32 reference; collector theatre_selector::air checks equality.
+/// Full parent CAirTheatre reference checked for equality.
 pub const THEATRE_HANDLE: usize = 0x70;
-/// CAirGroup vector of paired-u32 CAirWing references; collector theatre_selector::air reads raw qwords.
+/// Vector of full raw CAirWing references.
 pub const WINGS: usize = 0x78;
-/// CAirGroup wing-vector u32 capacity; collector theatre_selector::air checks the header.
+/// Wing-vector capacity, u32.
 pub const WINGS_CAPACITY: usize = 0x80;
-/// CAirGroup wing-vector u32 count; collector theatre_selector::air preserves engine order.
+/// Wing-vector count, u32; occurrence order is preserved.
 pub const WINGS_COUNT: usize = 0x84;

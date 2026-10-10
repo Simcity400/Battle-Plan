@@ -1,5 +1,5 @@
 //! tech_effect's ordinary tooltip body; the callback deliberately omits timing,
-//! requirements and the technology's prose (140526740 -> 140EC5F90, 0, 1, 1).
+//! requirements and the technology's prose.
 use super::*;
 use installed_content::{parser::c_string, tokens::Token};
 
@@ -11,15 +11,15 @@ impl Renderer<'_, '_, '_> {
     ) -> Result<String, String> {
         let catalog = self.technology_catalog()?;
         let Some(template) = catalog.get(token.as_bytes())?.cloned() else {
-            return Ok(String::new()); // 140526740: missing technology gives empty text.
+            return Ok(String::new()); // missing technology gives empty text.
         };
         let country = match scopes.this {
             Scope::Country(country) | Scope::CountryLeader { country, .. } => country,
-            _ => 0, // The native formatter reads +8, without state-owner fallback.
+            _ => 0, // The formatter reads the current country without state-owner fallback.
         };
         if country == 0 {
-            // 140EBECF0 constructs an empty status roster; 1401E09B0 calls
-            // fresh-init 140ECE9E0 only for country indices starting at one.
+            // constructs an empty status roster; calls
+            // fresh-init only for country indices starting at one.
             return Ok(String::new());
         }
         let world = self.context.world()?;
@@ -29,7 +29,7 @@ impl Renderer<'_, '_, '_> {
             .map_err(|why| why.to_string())?
             .iter()
             .find(|row| c_string(&row.id).eq_ignore_ascii_case(c_string(&template.id)))
-            .ok_or("TechnologyDefinitions lacks bound technology identity (140EBFDA0)")?;
+            .ok_or("TechnologyDefinitions lacks bound technology identity")?;
         let status = frame
             .complete::<tables::ResearchTechnologies>()
             .map_err(|why| why.to_string())?
@@ -39,15 +39,13 @@ impl Renderer<'_, '_, '_> {
                     && world.slot(row.country) == Some(country)
             });
         if !status {
-            return Err(
-                "ResearchTechnologies lacks bound country's technology status (140EBFDA0)".into(),
-            );
+            return Err("ResearchTechnologies lacks bound country's technology status".into());
         }
         if let Some(why) = &catalog.effect_refusal {
             return Err(why.clone());
         }
 
-        // CSubUnitStatBonus is the same helper used by add_unit_bonus and
+        // sub unit stat bonus is the same helper used by add_unit_bonus and
         // special-project output. Its icon preference comes from the viewer.
         let mut out = match self.units_bonus_description(&template.unit_bonus, scopes) {
             Ok(text) => text,
@@ -58,8 +56,8 @@ impl Renderer<'_, '_, '_> {
         };
         self.technology_unlock_description(&mut out, &template, country, scopes);
 
-        // 140EC5F90 constructs a fresh scope with this technology's country
-        // and tests +0x470 before describing +0x4C8. Caller links do not leak in.
+        // constructs a fresh scope with this technology's country
+        // and tests before describing. Caller links do not leak in.
         if !template.on_research_complete.is_empty() {
             let selected = (|| {
                 let selected = self.evaluator()?.fresh_country_scope(Some(country), None)?;
@@ -90,7 +88,7 @@ impl Renderer<'_, '_, '_> {
             Ok(_) => {}
             Err(why) => self.refuse("technology tactics", why),
         }
-        // Native 14054E050 uses precision2, include mask -1, scale100000,
+        // uses precision2, include mask -1, scale100000,
         // no expansion; a body of at most one byte is omitted.
         if template.modifiers.listed().next().is_some()
             || !template.modifiers.tooltips().is_empty()
@@ -120,7 +118,7 @@ impl Renderer<'_, '_, '_> {
         self.evaluator()?.evaluate(body, scopes).decided()
     }
 
-    // CTechnology constructor140EBDC40 builds the ordered immutable roster,
+    // technology constructor builds the ordered immutable roster,
     // skipping unknown types and the DLC-locked floating-harbor category.
     pub(super) fn technology_enabled_equipment(
         &self,
@@ -138,7 +136,7 @@ impl Renderer<'_, '_, '_> {
             let name = entry
                 .value
                 .scalar()
-                .ok_or("technology equipment reader is unsettled (140AC3C70)")?;
+                .ok_or("technology equipment reader is unsettled")?;
             let Some(index) = catalog.equipment.get(name) else {
                 continue;
             };
@@ -179,7 +177,7 @@ impl Renderer<'_, '_, '_> {
                     let definition = &catalog.equipment.equipment[index];
                     if definition.duplicate {
                         continue;
-                    } // CEquipmentType+0x556.
+                    } // equipment type.
                     let name = self.technology_country_name(
                         &definition.name,
                         self.context.perspective,
@@ -213,7 +211,7 @@ impl Renderer<'_, '_, '_> {
                 let operand = entry
                     .value
                     .scalar()
-                    .ok_or("technology module unlock is not scalar (140AC3C70)")?;
+                    .ok_or("technology module unlock is not scalar")?;
                 if let Some(name) = catalog.equipment.module(operand)
                     && !modules
                         .iter()
@@ -228,7 +226,7 @@ impl Renderer<'_, '_, '_> {
                     if !self.technology_module_allowed(&catalog.equipment, name, country)? {
                         continue;
                     }
-                    // 140EC5F90 passes an explicit zero tag to 140BBA780.
+                    // Pass an explicit zero country tag to equipment naming.
                     let name = self.technology_country_name(name, 0, false, scopes)?;
                     self.technology_join(&mut names, &name, ordinal + 1 == modules.len(), scopes)?;
                 }
@@ -261,7 +259,7 @@ impl Renderer<'_, '_, '_> {
                     if let Some(building) =
                         database.by_token(token).map_err(|why| why.to_string())?
                     {
-                        // +0x210 is the constructor-localised singular name.
+                        // Use the localised singular equipment name.
                         let name = self.localised(building.name.as_bytes(), &[], scopes, false)?;
                         let level = self.char_native_text(
                             b"BUILDING_LEVEL",
@@ -380,8 +378,8 @@ impl Renderer<'_, '_, '_> {
         Ok(names)
     }
 
-    // 140A80B40 drops repeated definition pointers before 140AB8A50
-    // attaches its combined leading limit; 140EBDC40 admits that first roster.
+    // Drop repeated definition pointers before the reader
+    // attaches its combined leading limit; admits that first roster.
     pub(super) fn technology_enabled_subunits(&self, lists: &[Item]) -> Result<Vec<&str>, String> {
         if lists.is_empty() {
             return Ok(Vec::new());
@@ -403,7 +401,7 @@ impl Renderer<'_, '_, '_> {
                     .collect(),
             };
             for operand in operands {
-                // 140A80B40 uses GetSubUnitByName 140AB5DA0, not the
+                // Look up the registered token spelling directly, rather than the
                 // token lookup which coalesces rejected names to token zero.
                 let operand = std::str::from_utf8(c_string(operand))
                     .map_err(|_| "sub-unit unlock name is not UTF-8")?;
@@ -436,7 +434,7 @@ impl Renderer<'_, '_, '_> {
         Ok(admitted)
     }
 
-    // 14151C9B0 is shared by technology and special-project module unlocks.
+    // is shared by technology and special-project module unlocks.
     pub(super) fn technology_module_allowed(
         &self,
         equipment: &installed_content::equipment::Database,
@@ -465,7 +463,7 @@ impl Renderer<'_, '_, '_> {
         self.technology_join_formatted(out, &format!("\u{11}H{name}\u{11}!"), last, scopes)
     }
 
-    // 140EBF9D0 tests the final roster pointer, even when a later duplicate
+    // tests the final roster pointer, even when a later duplicate
     // equipment's display line is skipped; AND includes its authored suffix.
     fn technology_join_formatted(
         &self,

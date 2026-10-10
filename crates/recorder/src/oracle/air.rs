@@ -89,7 +89,7 @@ pub(super) fn compare(
     complete &= report.attempt("air RaidAirScores", |report| {
         let rows = super::complete::<tables::RaidAirScores>(frame)?;
         for row in rows { required_country_tag(row.country, links)?; }
-        report.limitation("CStrategicAir::vf2@140C57230 omits the entire +E0 regional-score array; fresh saves cannot certify the stored superiority operands", "RaidAirScores.friendly / enemy");
+        report.limitation("the strategic air save writer omits the entire regional-score array; fresh saves cannot certify the stored superiority operands", "RaidAirScores.friendly / enemy");
         Ok(())
     });
     if complete {
@@ -136,7 +136,7 @@ fn compare_bases(frame: &DecodedFrame, save: &Pack, report: &mut Report) -> io::
     }
     extra(report, "air base", &actual);
     report.compared("AirBases", matched);
-    report.limitation("air base province is a cached pointer-derived location omitted by C57070; a state base's host reference is also omitted", "AirBases.province / state-base host");
+    report.limitation("air base province is a cached pointer-derived location omitted by the air-base writer; a state base's host reference is also omitted", "AirBases.province / state-base host");
     Ok(())
 }
 
@@ -173,7 +173,7 @@ fn compare_cumulative(frame: &DecodedFrame, save: &Pack, report: &mut Report) ->
                     "omitted: native value must be nonpositive",
                 );
             } else {
-                report.limitation("F539B0 omits every nonpositive accident count; the exact raw omitted value is not serialized", format!("{label}.accidents"));
+                report.limitation("the air-wing writer omits every nonpositive accident count; the exact raw omitted value is not serialized", format!("{label}.accidents"));
             }
         } else {
             missing(report, format!("{label}.cumulative"));
@@ -300,12 +300,12 @@ fn compare_aces(
             ("name", &actual.name, &expected.name),
             ("surname", &actual.surname, &expected.surname),
         ] {
-            // CAce::Serialize@14060F1F0 always emits +0xF0/+0x110.
+            // The ace save writer always emits name and surname.
             let label = format!("{label}.{name}");
             let text = super::serialized_text(report, &label, actual);
             check(report, &label, text, expected.as_slice());
         }
-        // 14060F1F0 gates the +0x130 callsign on stored length +0x140.
+        // The game gates the callsign on stored length.
         let callsign_label = format!("{label}.callsign");
         let callsign = (!actual.callsign.is_empty())
             .then(|| super::serialized_text(report, &callsign_label, &actual.callsign));

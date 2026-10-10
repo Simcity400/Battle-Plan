@@ -1,4 +1,4 @@
-/** The settings every log offers (spec 2.2d, mock-up style-5): density, month
+/** The settings every log offers: density, month
  * dividers, the new-row animation and the filter chips above it. A log widget
  * lists `LOG_OPTIONS` among its own and reads them with `logSettings`. */
 import type { OptionField, OptionValue } from '../../dashboard/options';

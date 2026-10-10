@@ -1,5 +1,5 @@
-//! CNavalMissionUnitItem::tooltip_builder@14197C410, for political port items.
-//! The metadata is retained by the item's native update; no arrival query exists.
+//! Political port-item tooltips.
+//! The item's update retains its metadata; it has no arrival query.
 
 use super::*;
 use crate::map::{counter_inputs::NavalMember, unit_selection};
@@ -19,8 +19,7 @@ pub enum Control {
 
 pub use super::gui_authored::Authored;
 
-/// The independent bytes written by BuildNavalCounterData@14197B4F0.
-/// Keeping these with the pooled update preserves an off-screen retained item.
+/// Independent metadata fields retained by port-item updates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Metadata {
     pub country: u32,
@@ -273,7 +272,7 @@ pub(super) fn build(context: &Context<'_>, input: &Hover) -> Tooltip {
     out
 }
 
-/// Port pride uses metadata country+10, then the registered pride ship's
+/// Port pride uses the metadata country, then the registered pride ship's
 /// current task force. It does not scan only this item's member force names.
 fn pride(context: &Context<'_>, metadata: &Metadata, out: &mut Tooltip) -> bool {
     if metadata.pride == Some(false) {
@@ -502,6 +501,8 @@ mod tests {
 
     #[test]
     fn unbound_port_authored_fallback_keeps_raw_lookup_and_bound_localisation_distinct() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = test_frame(0);
         let gui = installed_content::gui::native::read(
             br#"guiTypes = {
@@ -550,6 +551,8 @@ mod tests {
 
     #[test]
     fn port_callback_handled_empty_controls_suppress_authored_fallback() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let gui = installed_content::gui::native::read(
             b"guiTypes = { guiButtonType = { name = authored pdx_tooltip = RAW } }",
         );
@@ -601,6 +604,8 @@ mod tests {
 
     #[test]
     fn port_callback_false_allows_fallback_but_unknown_admission_does_not() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let gui = installed_content::gui::native::read(
             b"guiTypes = { guiButtonType = { name = authored pdx_tooltip = RAW } }",
         );
@@ -639,6 +644,8 @@ mod tests {
 
     #[test]
     fn authored_fallback_replaces_only_present_hash_fields_and_appends_unscoped_bound() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let gui = installed_content::gui::native::read(
             br#"guiTypes = {
             guiButtonType = { name = absent pdx_tooltip = MISSING pdx_tooltip_delayed = BODY }

@@ -81,7 +81,7 @@ fn refused_stat_and_reserve_hovers_name_their_key() {
             false,
             Err("x")
         ),
-        // A missing top-level key shows its own bytes (142230940).
+        // A missing top-level key shows its own bytes.
         Ok("Soft attack: 0.00
 BASE_VALUE
 Total 0.00
@@ -118,22 +118,25 @@ Total 0.00
 }
 use replay::rows::{DivisionMovementRow, DivisionRow, ProvinceRow};
 
-/// 1415BF4B0's invasion section with the shipped English strings: the
+/// Invasion section with fixture text: the
 /// description, the progress (complete from 100000 up, the zero-extended
 /// sentinel included), and the two scales only when either differs.
 #[test]
 fn invasion_section_follows_the_native_order_and_branches() {
     let loc: Localisation = [
-        ("NAVAL_INVASION_COMBAT_PROGRESS_DESC", "Invading."),
-        ("NAVAL_INVASION_PROGRESS", "Progress: $VALUE|Y0%$"),
+        ("NAVAL_INVASION_COMBAT_PROGRESS_DESC", "Landing fixture."),
+        ("NAVAL_INVASION_PROGRESS", "Landing ratio: $VALUE|Y0%$"),
         (
             "NAVAL_INVASION_PROGRESS_COMPLETE",
-            "Progress: $VALUE|Y0%$
-(All ashore).
+            "Landing ratio: $VALUE|Y0%$
+(Fixture complete).
 ",
         ),
-        ("NAVAL_INVASION_ATTACK_SCALE", "Attack: $VALUE|=+0%$"),
-        ("NAVAL_INVASION_DEFEND_SCALE", "Defense: $VALUE|=+0%$"),
+        (
+            "NAVAL_INVASION_ATTACK_SCALE",
+            "Offence factor: $VALUE|=+0%$",
+        ),
+        ("NAVAL_INVASION_DEFEND_SCALE", "Guard factor: $VALUE|=+0%$"),
     ]
     .iter()
     .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
@@ -141,33 +144,33 @@ fn invasion_section_follows_the_native_order_and_branches() {
     let neutral = [0, 0, 100_000, 100_000];
     let partial = invasion_section(&NoIcons, &loc, 50_000, neutral).unwrap();
     assert!(partial.starts_with(
-        "Invading.
+        "Landing fixture.
 
-Progress: "
+Landing ratio: "
     ));
     assert!(partial.ends_with(
         "
 
 "
     ));
-    assert!(!partial.contains("Attack"));
+    assert!(!partial.contains("Offence factor"));
     let complete = invasion_section(&NoIcons, &loc, 4_294_967_295, neutral).unwrap();
-    assert!(complete.contains("(All ashore)"));
+    assert!(complete.contains("(Fixture complete)"));
     let scaled = invasion_section(&NoIcons, &loc, 100_000, [0, 0, 50_000, 125_000]).unwrap();
     let attack = scaled
         .find(
             "
-Attack: ",
+Offence factor: ",
         )
         .unwrap();
     let defense = scaled
         .find(
             "
-Defense: ",
+Guard factor: ",
         )
         .unwrap();
     assert!(attack < defense);
-    // A missing top-level key shows its own bytes (142230940).
+    // A missing top-level key shows its own bytes.
     assert_eq!(
         invasion_section(&NoIcons, &Localisation::default(), 0, neutral),
         Ok("NAVAL_INVASION_COMBAT_PROGRESS_DESC\n\nNAVAL_INVASION_PROGRESS\n\n".into())
@@ -175,14 +178,13 @@ Defense: ",
 }
 
 /// The default hover names the exact key it lacks or cannot render, even
-/// deep inside the invasion section (round-6 review: a missing
-/// NAVAL_INVASION_ATTACK_SCALE lost its identity).
+/// deep inside the invasion section.
 #[test]
 fn the_division_summary_names_its_missing_or_unrenderable_key() {
     let entries = |extra: &[(&str, &str)]| -> Localisation {
         [
             ("COMBAT_DIVISION_ATTACKER", "$NAME$"),
-            ("NAVAL_INVASION_COMBAT_PROGRESS_DESC", "Invading."),
+            ("NAVAL_INVASION_COMBAT_PROGRESS_DESC", "Landing fixture."),
             ("NAVAL_INVASION_PROGRESS", "$VALUE|Y0%$"),
             ("STAT_COMMON_ARMOR", "Armor"),
             ("COMBAT_STAT", "$STAT_NAME$ $VALUE$"),
@@ -201,7 +203,7 @@ fn the_division_summary_names_its_missing_or_unrenderable_key() {
         scales: [0, 0, 50_000, 100_000],
         ..Default::default()
     };
-    // A missing top-level key shows its own bytes (142230940).
+    // A missing top-level key shows its own bytes.
     assert!(
         division_summary(&NoIcons, &entries(&[]), "1st", &row, Some(10_000), None)
             .unwrap()
@@ -341,11 +343,11 @@ fn organization_is_preformatted_text_not_localization_integer_precision() {
     assert_eq!(one_decimal(1_234_567), "12.3");
     assert_eq!(one_decimal(-19_999), "-0.1");
     assert_eq!(one_decimal(-1), "-0.0");
-    // The whole part is the native signed i32 (1424B7A80).
+    // The whole part is the native signed i32.
     assert_eq!(one_decimal(214_748_364_800_000), "-2147483648.0");
 }
 
-/// FormatFixed5Trimmed (1424B60D0): the whole part through the signed
+/// trimmed fixed-point formatting: the whole part through the signed
 /// i32 formatter, the magnitude by wrapping negation, so neither a huge
 /// value nor i64::MIN is refused.
 #[test]

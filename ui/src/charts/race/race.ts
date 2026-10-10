@@ -1,4 +1,4 @@
-/** Ranked bars that race (mock-ups style-1 and style-2, "A · Clean"): one row per
+/** Ranked bars that race: one row per
  * entry, re-ranked whenever the values change; rows glide to their new place, a
  * new row slides in from below and fades in, a row that is gone slides away and
  * fades out. Bars may be split into segments (a factory type each), and each

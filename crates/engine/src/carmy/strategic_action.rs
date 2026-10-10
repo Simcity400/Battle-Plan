@@ -1,3 +1,4 @@
+//! Shared strategic-action reader for glyphs and ETA rail inputs.
 
 use super::*;
 
@@ -49,7 +50,7 @@ pub enum StrategicAction {
     Withheld(StrategicActionFailure),
 }
 
-/// Unit_GetActionCode@140BEF850 reaches this reader only on its class-zero branch.
+/// Action-code selection reaches this reader only for class zero.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn capture(
     memory: &impl Memory,
@@ -115,8 +116,8 @@ pub(super) fn capture(
     }
 }
 
-/// 140C79B70: country, state-for-roster, then friendly state-for-roster.
-/// Closures preserve the caller's acquired roots and skipped reads.
+/// Read country, roster state, then friendly roster state. Closures preserve
+/// the caller's acquired roots and skipped reads.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn read_inputs(
     memory: &impl Memory,

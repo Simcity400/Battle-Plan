@@ -12,27 +12,27 @@ pub(crate) enum Reader {
 }
 impl Reader {
     pub(crate) fn refusal(self, name: &[u8], kind: &str) -> String {
-        let (use_, address) = match self {
-            Self::Context => ("scope", "14146BB30"),
-            Self::Variable => ("variable storage", "140535BE0"),
-            Self::Text => ("scripted-text object", "1410CFF00"),
+        let use_ = match self {
+            Self::Context => "scope",
+            Self::Variable => "variable storage",
+            Self::Text => "scripted-text object",
             Self::CountrySelector => unreachable!("country selector has no unsupported target"),
         };
         let reference = match kind {
-            "unit" => Some("CSavedEventTarget+0x38"),
-            "industrial_organisation" => Some("CSavedEventTarget+0x40"),
-            "raid_instance" => Some("CSavedEventTarget+0x50"),
-            "project" => Some("CSavedEventTarget+0x58"),
+            "unit" => Some("unit"),
+            "industrial_organisation" => Some("organisation"),
+            "raid_instance" => Some("raid"),
+            "project" => Some("project"),
             _ => None,
         };
         if let Some(reference) = reference {
             return format!(
-                "saved event target {}: {kind} {use_} needs the full {reference} reference; GlobalSavedEventTargets records liveness only ({address})",
+                "saved event target {}: {kind} {use_} needs the full {reference} reference; GlobalSavedEventTargets records liveness only",
                 String::from_utf8_lossy(name)
             );
         }
         format!(
-            "saved event target {}: {kind} {use_} is not reproduced ({address})",
+            "saved event target {}: {kind} {use_} is not reproduced",
             String::from_utf8_lossy(name)
         )
     }
@@ -66,8 +66,8 @@ impl Selected {
         })
     }
 }
-/// 14146BB30 (context), 140535BE0 (variable store), 1410CFF00 (text),
-/// 140542000 (country selector).
+/// Select a saved target for context, variable storage, text or a
+/// country selector.
 pub(crate) fn select(r: &Row, reader: Reader) -> Selected {
     if !valid_saved_target(r) {
         return Selected::Missing;
@@ -91,7 +91,7 @@ pub(crate) fn select(r: &Row, reader: Reader) -> Selected {
         return Selected::Country(r.country);
     }
     if r.live & Row::CHARACTER != 0 {
-        // Variable storage uses the character, not GetUnitLeader (140535BE0).
+        // Variable storage uses the character, not its unit leader.
         return if variable {
             Selected::Character(r.character)
         } else {

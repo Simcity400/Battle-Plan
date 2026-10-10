@@ -1,8 +1,7 @@
 //! Off-thread bounds from live source headers and the shared count-only
-//! modifier census, without copying display-name payloads. 140C29020,
-//! 14195C7D0 and 141963700 select the source/hover union;
-//! 14054D0F0 traverses child+0x10 with depth -1. Depth and name bytes have no
-//! fixed per-request bound, so their sizing hint visits the retained topology.
+//! modifier census, without copying display-name payloads. The selected hover
+//! union visits the full retained child topology because depth and name bytes
+//! have no fixed per-request bound.
 
 use super::{at, field};
 use crate::{Memory, cpdx_array::Array};
@@ -257,9 +256,8 @@ fn demand_advisory(
                 add(&mut demand.commander_timed_traits, timed.count as usize)?;
             }
         }
-        // Empty members conservatively include the country-only submarine
-        // hover. The native side paths emit at most 1 + 4 + 4 requests each
-        // (14160A7B0, 141609460 -> 1415B4BB0).
+        // Empty members conservatively include the country-only submarine hover.
+        // Side paths select at most one country-only and two four-source requests.
         let initial = field(memory, base, super::COMBAT_INITIAL_DURATION_RVA)?;
         super::side_trees::<false>(
             &mut |request| {
@@ -306,10 +304,8 @@ fn demand_advisory(
             let active_air = array(memory, group, 0x58)?;
             count_planes(memory, base, active_air, &mut demand)?;
             count_planes(memory, base, array(memory, group, 0x88)?, &mut demand)?;
-            // 14195C7D0 selects at most two escape keys. Each drawable
-            // carrier-air slot (141963700) selects two more, deduplicated
-            // per member by enumerate_requests. Plane/wing counts cannot
-            // increase that native four-key ceiling.
+            // Escape selects at most two keys and drawable carrier air selects two
+            // more, deduplicated per member. Plane/wing counts do not increase that bound.
             let side_index = usize::from(side == sides[1]);
             let keys = if carrier_air[side_index] { 4 } else { 2 };
             for offset in [cfex_group::MEMBERS, 0x70] {
@@ -367,8 +363,7 @@ fn demand_advisory(
                         )?;
                         count_base(memory, base, context.air_base, &mut demand)?;
                     } else {
-                        // 14195EEC0's non-ship path reaches at most the four
-                        // side accumulators, with the distinct convoy key.
+                        // The non-ship path reaches at most four side accumulators and a distinct convoy key.
                         let member = crate::cfex_member::DetailsRow {
                             native_group: group,
                             member: cnaval_combatant::Row {
@@ -419,8 +414,7 @@ fn count_planes(
     planes: Array,
     demand: &mut Demand,
 ) -> Result<(), &'static str> {
-    // 141C58360 serializes group +58/+88 to their own counts;
-    // 141962F80/141969B60 maintain each plane's +28/+40 wing arrays.
+    // Group counts and each plane's two wing arrays retain their independent stored extents.
     add(&mut demand.planes, planes.count as usize)?;
     for index in 0..planes.count {
         let plane = element(memory, planes, index)?;
@@ -459,8 +453,7 @@ fn count_planes(
     Ok(())
 }
 
-/// CountAirBaseAircraft@140C3E1D0 walks every dense registered occurrence.
-/// Repeated references conservatively reserve the same base more than once.
+/// Aircraft counting walks every dense occurrence; repeats may reserve a base more than once.
 fn count_base(
     memory: &impl Memory,
     base: usize,

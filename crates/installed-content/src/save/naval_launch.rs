@@ -1,10 +1,9 @@
 //! Ordered saved launch-base words, without interpreting country tags as aliases.
 //!
-//! CGameState::Write@1401F2A20 emits every physical country pointer after slot
-//! zero. CCountry::Write@14070C580 writes `strategic_navy` (token 0x34E9);
-//! CStrategicNavy::Write@140E9D0C0 writes its +0x18 base list under `naval_base`
-//! (0x31F6), with each CNavalBase+0x10 word formatted as a signed i32 key.
-//! CNavalBase::Write@140E9CFF0 does not serialize the holder's raw country word.
+//! The writer emits every physical country after slot zero, with its
+//! `strategic_navy` and the base list under `naval_base`. Each base province
+//! word is formatted as a signed i32 key. The base holder's raw country word
+//! is not serialized.
 
 use std::io;
 
@@ -25,9 +24,8 @@ pub struct CountryNavalLaunchOccurrence {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NavalBaseOccurrence {
     pub province: i32,
-    /// CNavalBase::Write@140E9CFF0 emits disabled_for_repairs (0x3C4A) once per
-    /// +0x40 dword, in order, including repeats and empty tag strings.
-    /// Registration@1400FB3D5/1400FB3E8 binds that ID and spelling.
+    /// `disabled_for_repairs` is emitted once per country word, in order,
+    /// including repeats and empty tag strings.
     pub countries: Vec<Vec<u8>>,
 }
 
@@ -44,7 +42,9 @@ fn singleton<'a>(items: &'a [Item], key: &[u8]) -> io::Result<Option<&'a Value>>
     let mut found = None;
     for item in items.iter().filter(|item| item.key.as_deref() == Some(key)) {
         if item.key_quoted || item.operator != Operator::Equals {
-            return Err(invalid("naval launch singleton is not a native save field"));
+            return Err(invalid(
+                "naval launch singleton is not an unquoted save assignment",
+            ));
         }
         if found.replace(&item.value).is_some() {
             return Err(invalid(format!(
@@ -86,7 +86,7 @@ pub fn parse_country_occurrences(
                         .map(|base| {
                             if base.key_quoted || base.operator != Operator::Equals {
                                 return Err(invalid(
-                                    "naval base key is not a native signed integer key",
+                                    "naval base key is not an unquoted signed integer assignment",
                                 ));
                             }
                             let key = base
@@ -102,7 +102,7 @@ pub fn parse_country_occurrences(
                                 .map(|field| {
                                     if field.key_quoted || field.operator != Operator::Equals {
                                         return Err(invalid(
-                                            "naval base country is not a native save field",
+                                            "naval base country is not an unquoted save assignment",
                                         ));
                                     }
                                     Ok(super::scalar(&field.value)?.to_vec())

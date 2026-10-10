@@ -1,6 +1,6 @@
 //! Hourly land manpower and supply operands for every division in the census.
 //! Fixed fields are owned DivisionSeed copies; only contributor entries remain
-//! live here. Supply classification belongs to the future dashboard product.
+//! live here. Supply classification belongs to the dashboard.
 use crate::{
     Memory, carmy, carmy_manpower_values,
     cpdx_array::Array,
@@ -60,8 +60,8 @@ pub fn capture(
     )
 }
 
-/// Contributor headers are retained in the original census. The writer
-/// 140C5B610 visits their complete native count, without a country ratio.
+/// Contributor headers are retained in the original census. Visit their complete
+/// stored count without applying a country ratio.
 pub fn capture_growing(
     memory: &impl Memory,
     base: usize,
@@ -241,8 +241,8 @@ fn capture_buffer(
                         std::mem::offset_of!(Contributor, amount) == manpower_value_entry::COUNT
                     );
                 };
-                // C repr, no padding, all u32/i32 bits valid; native eight-byte
-                // stride is proved at 140C5B350/140C5B610 beside ENTRY's source.
+                // C representation has no padding; every u32/i32 pattern is valid.
+                // ENTRY covers the complete eight-byte element stride.
                 let bytes = unsafe {
                     std::slice::from_raw_parts_mut(
                         entries.as_mut_ptr().cast::<u8>(),

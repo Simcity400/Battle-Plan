@@ -8,7 +8,7 @@ use crate::{ResolvedLayers, crt, parser};
 use super::{Material, SubMesh, Transform, invalid, parse};
 
 /// One `meshsettings` block: a per (shape, material index) override of the
-/// `.mesh`'s own textures and effect (section 1.4).
+/// `.mesh`'s own textures and effect.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MeshSetting {
     /// The shape node name inside the `.mesh`.
@@ -24,7 +24,7 @@ pub struct MeshSetting {
 
 impl Default for MeshSetting {
     fn default() -> Self {
-        // SMeshData construction in 1422F8720; signed reader 142251AE0(+D4).
+        // An unset index matches every child ordinal.
         Self {
             name: String::new(),
             index: -1,
@@ -38,7 +38,7 @@ impl Default for MeshSetting {
 }
 
 impl MeshSetting {
-    /// 14224F250: an empty name matches immediately, regardless of index.
+    /// An empty name matches immediately, regardless of index.
     pub fn applies(&self, shape: &str, child_index: usize) -> bool {
         self.name.is_empty()
             || (self.name == shape
@@ -46,7 +46,7 @@ impl MeshSetting {
     }
 }
 
-/// One `pdxmesh` block of a `gfx/entities/*.gfx` file (section 1.4).
+/// One `pdxmesh` block of a `gfx/entities/*.gfx` file.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MeshDefinition {
     pub name: String,
@@ -61,7 +61,7 @@ pub struct MeshDefinition {
 }
 
 impl MeshDefinition {
-    /// 14224F250 selects the first matching row. 14224CC00/14224BB00 apply only
+    /// Selects the first matching row and applies only
     /// nonempty texture/shader overrides; later matching rows are never merged.
     pub fn material(&self, shape: &str, sub: &SubMesh) -> Material {
         let mut material = sub.material.clone().unwrap_or_default();
@@ -92,14 +92,14 @@ impl MeshDefinition {
     }
 }
 
-/// One `attach` block of an `entity` (section 1.5).
+/// One `attach` block of an `entity`.
 ///
 /// The block is `attach = { name = "<own name>" <joint> = "<entity>" }`: the
 /// `name` is the attachment's own handle, which `propagate_state` addresses and
 /// which a `clone` overrides by, and the one other key is a joint of the
-/// parent's skeleton verbatim — `Right_Hand_node`, `Root_node_2`, `vehicle`,
-/// `infantry`, `horse`, `artillery`, `bike` are all joint names in the
-/// matching `.mesh`.
+/// parent's skeleton verbatim. Its spelling is retained so the attachment
+/// can resolve the same joint in the matching `.mesh`, independently of
+/// the attachment's own handle.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Attachment {
     /// The attachment's own handle.
@@ -122,7 +122,7 @@ impl Attachment {
     }
 }
 
-/// One `entity` block of a `gfx/entities/*.asset` file (section 1.5).
+/// One `entity` block of a `gfx/entities/*.asset` file.
 ///
 /// Definitions retain states and events; consumers own their playback clocks.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -130,12 +130,12 @@ pub struct EntityDefinition {
     pub name: String,
     /// `pdxmesh`, the key of a [`MeshDefinition`].
     pub mesh: Option<String>,
-    /// Failed authored binding when no native mesh survives (`142272140`).
+    /// Failed authored binding when no registered mesh survives.
     pub unbound_mesh: Option<String>,
     /// `clone`, the entity this one inherits from before its own overrides.
     pub clone: Option<String>,
     pub scale: Option<f32>,
-    /// Native held `cull_radius`, default 1. A clone keeps its parent's radius.
+    /// Held `cull_radius`, default 1. A clone keeps its parent's radius.
     pub cull_radius: Option<f32>,
     /// `attach`, in file order.
     pub attachments: Vec<Attachment>,
@@ -150,7 +150,7 @@ pub struct EntityDefinition {
     pub game_data: Option<Result<EntityGameData, String>>,
 }
 
-///140B65040: allocated on the first entity-level game_data field.
+/// Allocated on the first entity-level `game_data` field.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EntityGameData {
     pub texture_anim_speed: f32,
@@ -177,7 +177,7 @@ fn entity_game_data(items: &[parser::Item]) -> Option<Result<EntityGameData, Str
         return None;
     }
     let mut data = EntityGameData::default();
-    // CReader::ReadFloat@1424AB9D0 and ReadScriptSignedInt32@1424AB970 use CRT scans.
+    // Float and signed-integer fields use the shared CRT scans.
     for field in fields {
         match field.key.as_deref() {
             Some(b"texture_anim_speed") => {
@@ -202,7 +202,7 @@ fn entity_game_data(items: &[parser::Item]) -> Option<Result<EntityGameData, Str
                     ));
                 }
                 for (index, value) in values.iter().enumerate() {
-                    //1402C7A50 accepts ordered x/y labels as well as bare values.
+                    // Ordered x/y labels are accepted as well as bare values.
                     if value
                         .key
                         .as_deref()
@@ -224,19 +224,18 @@ fn entity_game_data(items: &[parser::Item]) -> Option<Result<EntityGameData, Str
                     data.atlas_size[index] = value;
                 }
             }
-            _ => {} //Native logs unknown keys after allocating the defaults.
+            _ => {} // Unknown keys are logged after allocating the defaults.
         }
     }
     Some(Ok(data))
 }
 
 /// One entity `locator`: a transform in entity space, or in the space of its
-/// `parent_joint`. `SEntityLocatorReader::ReadMember` (`14233BE00`) reads
-/// `name`, `position`, `rotation` (degrees), `scale` (default 1) and
-/// `parent_joint`; the lexer registers `locator` as token 0x1FF and
-/// `parent_joint` as 0x200 (`14008AA8B`..`14008AAE7`). `14227D8C0` resolves
-/// the joint name; one the skeleton lacks is logged and the locator stays in
-/// entity space. No vanilla entity names a joint.
+/// `parent_joint`. Its fields are `name`, `position`, `rotation` (degrees),
+/// `scale` (default 1) and `parent_joint`. Registration resolves the joint
+/// name against the bound mesh's skeleton. A joint absent from that skeleton
+/// is logged and the locator stays in entity space. A clone keeps the
+/// parent's registered locator order and joint ordinals.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Locator {
     pub transform: Transform,
@@ -253,7 +252,7 @@ pub struct EntityState {
     pub looping: bool,
     pub next_state: Option<String>,
     pub chance: f32,
-    /// Native `14233CC10` Fixed5 chance, stored as the low i32 word.
+    /// Fixed5 chance, stored as the low i32 word.
     /// Parsed states retain the genuine omitted/failed-read zero. `None`
     /// preserves legacy manually constructed states' float weighting.
     pub chance_weight: Option<i32>,
@@ -263,30 +262,30 @@ pub struct EntityState {
     pub random_start: f32,
     pub propagate: Vec<(String, String)>,
     pub events: Vec<EntityEvent>,
-    /// State-mode `game_data.hitmiss_effect` rows (`140B65040`), in authored order.
+    /// State-mode `game_data.hitmiss_effect` rows, in authored order.
     pub naval_hitmiss_effects: Vec<NavalHitMissEffect>,
     /// A named unsupported form. Consumers
     /// must refuse these timings instead of treating the retained prefix as complete.
     pub naval_hitmiss_error: Option<String>,
 }
 
-/// `SNavalHitMissDataReader::vf4@140B65260`: each appended row starts at zero.
+/// Each appended hit/miss row starts at zero.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct NavalHitMissEffect {
     pub time: f32,
-    /// Native `small` = 0 and `big` = 1; an unknown type retains the previous value.
+    /// `small` = 0 and `big` = 1; an unknown type retains the previous value.
     pub kind: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EntityEvent {
-    /// Native callback name (`14233BB30`, dispatched by `14123ACB0`).
+    /// Callback name dispatched when the event fires.
     pub id: Option<String>,
     pub time: f32,
     pub node: String,
     pub light: Option<String>,
     pub particle: Option<String>,
-    /// Played by `1422701A3`; retained for consumers without audio.
+    /// Sound played by the event; retained for consumers without audio.
     pub sound: Option<String>,
     pub keep_particle: bool,
     pub trigger_once: bool,
@@ -304,9 +303,9 @@ fn state_naval_hitmiss_effects(
         };
         for field in fields {
             if !field.keyword_is("hitmiss_effect") {
-                // 140B65040 reports an unexpected field. Its recovery
-                // (1424AD270) does nothing for a consumed literal scalar;
-                // CPersistent::Read logs/clears that error and continues.
+                // An unexpected field is reported. Recovery does nothing
+                // for a consumed literal scalar; the surrounding reader
+                // clears that error and continues with subsequent fields.
                 if fully_consumed_literal(field) {
                     continue;
                 }
@@ -314,7 +313,7 @@ fn state_naval_hitmiss_effects(
                 // reproduce that table or an unresolved value's block expansion.
                 error.get_or_insert_with(|| {
                     format!(
-                        "state game_data has unexpected field {} (140B65040)",
+                        "state game_data has unexpected field {}",
                         String::from_utf8_lossy(field.key.as_deref().unwrap_or_default())
                     )
                 });
@@ -324,26 +323,25 @@ fn state_naval_hitmiss_effects(
                 error.get_or_insert_with(|| "state hitmiss_effect is not a native block".into());
                 continue;
             };
-            // 140B65040 zeroes one 8-byte row before reading and appending it.
+            // Each eight-byte row starts at zero before it is read and appended.
             let mut effect = NavalHitMissEffect::default();
             for member in record {
                 let time = member.keyword_is("time");
                 let kind = member.keyword_is("type");
                 if !time && !kind {
-                    // 140B65260 ignores unknown scalar fields. An unconsumed
-                    // block is read as subsequent keys by CPersistent::Read;
+                    // Unknown scalar fields are ignored. An unconsumed
+                    // block is read as subsequent keys by the state reader;
                     // unresolved variables can alter that same reader table.
                     if !fully_consumed_literal(member) {
                         error.get_or_insert_with(|| {
-                            "state hitmiss_effect has an unsettled unknown member (140B65260)"
-                                .into()
+                            "state hitmiss_effect has an unsettled unknown member".into()
                         });
                     }
                     continue;
                 }
                 let Some(value) = member.value.scalar() else {
                     error.get_or_insert_with(|| {
-                        "state hitmiss_effect time/type has an unconsumed block (140B65260)".into()
+                        "state hitmiss_effect time/type has an unconsumed block".into()
                     });
                     continue;
                 };
@@ -354,15 +352,15 @@ fn state_naval_hitmiss_effects(
                     continue;
                 }
                 if time {
-                    // ReadFloat@1424AB9D0 uses the shared CRT prefix scan;
+                    // Float reads use the shared CRT prefix scan;
                     // a conversion that stores nothing leaves the previous bits.
                     // Its scalar error recovery does not poison the following rows.
                     if let Some(value) = crt::scan_f32(value) {
                         effect.time = value;
                     }
                 } else {
-                    // ReadStringInto@1424ABB50 then String_ToLowerInPlace:
-                    // exact whole-string comparisons, including quoted values.
+                    // String reads compare the entire value without case
+                    // differences, including quoted values.
                     // A reported LF becomes "Unreadable String", hence leaves
                     // the prior kind just as every other unknown type does.
                     let value = parser::read_string(value);
@@ -399,37 +397,31 @@ fn unsettled_state_data(fields: &[parser::Item]) -> Option<&'static str> {
     for field in fields {
         if field.keyword_is("name") || field.keyword_is("animation") {
             if literal_value(field).is_none() {
-                return Some(
-                    "state name/animation input has unsettled native consumption (14233CC10)",
-                );
+                return Some("state name/animation input has unsettled native consumption");
             }
         } else if field.keyword_is("game_data") {
             let parser::Value::Block(data) = &field.value else {
-                return Some("state game_data carrier is not a native block (14233CC10)");
+                return Some("state game_data carrier is not a native block");
             };
             for member in data {
                 if !member.keyword_is("hitmiss_effect") {
                     if !fully_consumed_literal(member) {
-                        return Some(
-                            "state game_data member has unsettled native skip (140B65040)",
-                        );
+                        return Some("state game_data member has unsettled native skip");
                     }
                     continue;
                 }
                 let parser::Value::Block(record) = &member.value else {
-                    return Some("hitmiss_effect carrier is not a native block (140B65040)");
+                    return Some("hitmiss_effect carrier is not a native block");
                 };
                 for value in record {
                     if value.keyword_is("time") || value.keyword_is("type") {
                         if literal_value(value).is_none() {
                             return Some(
-                                "hitmiss_effect time/type input has unsettled native consumption (140B65260)",
+                                "hitmiss_effect time/type input has unsettled native consumption",
                             );
                         }
                     } else if !fully_consumed_literal(value) {
-                        return Some(
-                            "hitmiss_effect member has unsettled native consumption (140B65260)",
-                        );
+                        return Some("hitmiss_effect member has unsettled native consumption");
                     }
                 }
             }
@@ -438,13 +430,13 @@ fn unsettled_state_data(fields: &[parser::Item]) -> Option<&'static str> {
     None
 }
 
-/// SEntityStateReader::vf4@14233CC10 writes both name and animation with
-/// strncpy(255), followed by a NUL. No whitespace trim or LF replacement.
+/// State names and animations retain at most 255 bytes followed by a NUL.
+/// Neither whitespace trimming nor LF replacement is applied.
 fn state_text(items: &[parser::Item], key: &str, error: &mut Option<String>) -> String {
     let mut stored: &[u8] = b"";
     for field in items.iter().filter(|item| item.keyword_is(key)) {
         let Some(value) = field.value.scalar() else {
-            error.get_or_insert_with(|| format!("state {key} has an unconsumed block (14233CC10)"));
+            error.get_or_insert_with(|| format!("state {key} has an unconsumed block"));
             stored = b"";
             continue;
         };
@@ -461,9 +453,7 @@ fn state_text(items: &[parser::Item], key: &str, error: &mut Option<String>) -> 
     match std::str::from_utf8(stored) {
         Ok(value) => value.to_owned(),
         Err(_) => {
-            error.get_or_insert_with(|| {
-                format!("state {key} native 255-byte text is not UTF-8 (14233CC10)")
-            });
+            error.get_or_insert_with(|| format!("state {key} native 255-byte text is not UTF-8"));
             String::new()
         }
     }
@@ -498,10 +488,9 @@ pub struct ResolvedMesh<'a> {
     pub definition: &'a MeshDefinition,
     /// `entity.scale` times `pdxmesh.scale`.
     ///
-    /// UNVERIFIED (section 1.5): whether the two compose or the entity's wins.
-    /// In shipped data only one of the two is ever set for a map object, so on
-    /// this content the two readings agree; every `mapobject_*` sets only the
-    /// `pdxmesh` scale.
+    /// Simultaneous authored scales compose here; their relative precedence
+    /// in the game remains unverified. When only one is authored, the other
+    /// contributes its default factor of one, so both readings agree.
     pub scale: f32,
 }
 
@@ -514,23 +503,23 @@ pub struct Descriptors {
     pub animations: BTreeMap<String, AnimationDefinition>,
 }
 
-/// An entity with its `clone` chain already applied (section 1.5).
+/// An entity with its `clone` chain already applied.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InheritedEntity<'a> {
     /// `pdxmesh`, from the nearest link that declares one.
     pub mesh: Option<&'a str>,
-    /// Diagnostic name when the native binding stayed absent.
+    /// Diagnostic name when the registered binding stayed absent.
     pub unbound_mesh: Option<&'a str>,
     /// `scale`, from the nearest link that declares one.
     pub scale: Option<f32>,
-    /// The ordinary ancestor's held radius: the native clone reader never
-    /// sets the authorship byte that would allow a child to replace it.
+    /// The ordinary ancestor's held radius: clone declarations never mark
+    /// the radius as authored for replacement.
     pub cull_radius: Option<f32>,
     /// `default_state`, from the nearest link that declares one.
     pub default_state: Option<&'a str>,
     /// Every attachment reachable through the chain, merged down it as each
-    /// clone merges its own (`14227CEF0`): a declaration replaces the held
-    /// one of its slot where it stands, a new slot is appended.
+    /// clone merges its own: a declaration replaces the held attachment
+    /// in its slot, while a new slot is appended.
     pub attachments: Vec<&'a Attachment>,
     /// State name to animation id, the nearest declaration winning.
     pub states: BTreeMap<&'a str, Vec<&'a EntityState>>,
@@ -544,17 +533,15 @@ impl Descriptors {
     ///
     /// **The engine's `clone` copies the whole entity and then applies the
     /// overrides**, so a field the child does not declare is the parent's even
-    /// when the child declares some other field. The shipped data needs that
-    /// reading and the frames confirm it: `GER_infantry_entity` is
-    /// `clone = "infantry_rifle_entity"` plus its own `pdxmesh` and its own
-    /// five `attach` handles, and it declares no `scale`, no `default_state`
-    /// and no `idle` state; the game draws it at `infantry_rifle_entity`'s
-    /// `scale = 0.8` (`pairD_in10.png`: the game's helmet is 31.7 device pixels
-    /// across and the unscaled figure's 40) and plays that entity's idle
-    /// animation. A field-by-field override also explains every `attach`
-    /// handle in the file: `GER_artillery_entity` clones `artillery_entity` and
-    /// redeclares exactly the two handles `artillery` and `infantry` that it
-    /// wants to point elsewhere.
+    /// when the child declares some other field. A mesh override alone
+    /// therefore leaves the parent's scale, default state and undeclared
+    /// state variants in place. Attachments follow their own handle-based
+    /// merge: a child can replace an attached entity while keeping the
+    /// parent's other attachments and their order. State names likewise
+    /// select the nearest declaration, while unrelated states remain
+    /// reachable through the chain. The flattened result retains references
+    /// to those declarations so consumers share their timing and event data.
+    /// Registered clones keep the parent's locator snapshot and radius.
     ///
     /// The walk is bounded by the number of entities, so a cyclic `clone`
     /// terminates.
@@ -668,15 +655,13 @@ impl Descriptors {
     /// Resolves an entity or mesh name to its `.mesh` and world scale.
     ///
     /// **Entities are tried first.** The two tables share a namespace and the
-    /// shipped content collides in it: `gfx/entities/buildings.gfx:4-8`
-    /// declares a *pdxmesh* named `westerngfx_house_1_1` and
-    /// `buildings.asset:6-10` declares an *entity* of the same name whose only
-    /// content is `pdxmesh = "westerngfx_house_1_1"` and `scale = 1.4`. Taking
-    /// the mesh first loses that scale, and the sprawl houses come out at 1.0
-    /// against the game's 1.4 (or 1.8 and 2.0 for the taller rings). Every
-    /// name that exists in only one table resolves the same either way, which
-    /// includes every `mapobject_<paletteIndex>` the tree layer asks for
-    /// (R3 section 3.1): those are pdxmesh names with no entity.
+    /// same name can identify a mesh definition and an entity that binds
+    /// that mesh. Taking the mesh first would discard the entity's scale,
+    /// states and inherited fields. An entity lookup preserves those fields
+    /// before choosing its final mesh definition. A name held only by the
+    /// mesh table instead resolves directly to that mesh and its authored
+    /// scale, with no entity chain to apply. Missing bindings remain absent
+    /// rather than selecting an unrelated mesh.
     ///
     /// An entity name follows its whole `clone` chain, field by field; see
     /// [`Descriptors::inherit`].
@@ -698,7 +683,7 @@ pub fn parse_descriptors(bytes: &[u8], path: &str) -> io::Result<Descriptors> {
     Ok(out)
 }
 
-/// Unported entity-field consumption can shift the surrounding native file
+/// Unsupported entity-field consumption can shift the surrounding native file
 /// out of tree alignment. Refuse the file before registering any declaration;
 /// representation-only failures remain scoped to the final stored state text.
 fn settled_state_carriers(document: &parser::Document, path: &str) -> io::Result<()> {
@@ -712,7 +697,7 @@ fn settled_state_carriers(document: &parser::Document, path: &str) -> io::Result
     {
         let parser::Value::Block(fields) = &item.value else {
             return Err(invalid(format!(
-                "{path}: scalar/tagged entity state carrier leaves the native file reader alignment unsupported (14233BF40)"
+                "{path}: scalar/tagged entity state carrier leaves the native file reader alignment unsupported"
             )));
         };
         if let Some(reason) = unsettled_state_data(fields) {
@@ -736,7 +721,7 @@ fn settled_state_carriers(document: &parser::Document, path: &str) -> io::Result
             if literal_value(field).is_none() {
                 let name = last_text(fields, "name").unwrap_or_default();
                 return Err(invalid(format!(
-                    "{path}: entity {name} cull_radius variable/block/tagged carrier has unsupported native consumption (14233C3FC); descriptor file refused"
+                    "{path}: entity {name} cull_radius variable/block/tagged carrier has unsupported native consumption; descriptor file refused"
                 )));
             }
         }
@@ -826,23 +811,19 @@ pub fn balanced_blocks(bytes: &[u8]) -> Vec<u8> {
 /// Three registries, each filled in its own pass; no file name is derived from
 /// an identifier, and stray braces are balanced as the engine's reader
 /// tolerates them:
-/// - Meshes. `SGfxFileReader::ReadToken` (`1422264C0`) reads each object of
-///   the `.gfx` files in the particle catalog's order (startup, `interface`,
-///   then `gfx`) and prepends it to its name's bucket (`1406B1110`); the
-///   lookup (`142223D70`) takes the first exact match, so the last object of a
-///   name wins. `142272140` binds an entity's `pdxmesh` only to an object of
-///   type 0x180, so a name whose last object is an `arrowType`,
+/// - Meshes. Each object in the `.gfx` files follows the particle catalog's
+///   order (startup, `interface`, then `gfx`). Registration prepends it to
+///   its name's bucket; lookup takes the first exact match, so the last
+///   object of a name wins. An entity's `pdxmesh` binds only to a mesh
+///   object, so a name whose last object is an `arrowType`,
 ///   `animatedmaptext` or `pdxparticle` is no mesh.
-/// - Animations and lights. The asset factory (`142218E80` from
-///   `CApplication::Initialize` `142218780`, entity flag clear) reads every
-///   `gfx/**/*.asset` in `Vfs_EnumerateRecursive` order, and `142338C30`
-///   registers each `animation` whose file loads (`14224D620`: it opens and
-///   holds `[info]` and `[samples]`, `14224D6A0`), a later one replacing the
-///   clip (`142399290`), and each `light` (token 0x54, `SAnimatedLightReader`),
-///   a later one of the name rewriting the record (`1423C96F0`).
-/// - Entities. `LoadAssets` (`142218E80` from `CGameApplication::Initialize`
-///   `1401806B0`, entity flag set) reads the same files again for `entity`
-///   blocks only: see [`Entities`].
+/// - Animations and lights. Every `gfx/**/*.asset` is read in recursive
+///   directory order. An `animation` registers when its file loads with
+///   `[info]` and `[samples]` blocks; a later successful declaration of the
+///   name replaces its clip. Each `light` registers its fields in the same
+///   pass, and a later declaration of its name rewrites the held record.
+/// - Entities. The same files are read again for `entity` blocks only, after
+///   the other asset registries are ready: see [`Entities`].
 #[derive(Clone, Debug, Default)]
 pub struct Roster {
     pub descriptors: Descriptors,
@@ -860,13 +841,11 @@ pub struct Roster {
     pub unreadable_names: BTreeMap<String, String>,
 }
 
-/// The objects of the mesh registry (`1422264C0` tokens 0x180, 0x57, 0x10E
-/// and 0x181); only the first is a mesh.
+/// The registered object kinds; only the first is a mesh.
 const OBJECTS: [&str; 4] = ["pdxmesh", "arrowType", "animatedmaptext", "pdxparticle"];
 
-/// `14224D6A0` copies an `animation` name, and `1423C96F0` a light's, into 64
-/// bytes, and `14233BF40` an
-/// entity's name, `clone` and `pdxmesh` into 256, each ending with a NUL. A
+/// Animation and light names occupy 64 bytes. An entity's name, `clone`
+/// and `pdxmesh` each occupy 256 bytes, ending with a NUL. A
 /// longer name would be cut, which is not modelled.
 const ANIMATION_NAME: usize = 63;
 const ENTITY_NAME: usize = 255;
@@ -1002,7 +981,7 @@ fn add_objects(
 }
 
 /// The declaration of an animation name the engine keeps: the last whose file
-/// loads (`14224D620`). Declarations of one file need no reading, and when
+/// loads. Declarations of one file need no reading, and when
 /// none loads no clip does either, so the last stands.
 fn loaded_animation(
     layers: &ResolvedLayers,
@@ -1027,18 +1006,17 @@ fn loaded_animation(
     Ok(last)
 }
 
-/// The entity registry as `LoadAssets` fills it, block by block, each name with
+/// The entity registry fills block by block, each name with
 /// its definition and stored version.
 ///
-/// A plain block is `create_or_reuse` (`14227D8C0`); a block with a `clone` is
-/// `update` (`14227CEF0`) of a copy of the parent as registered at that moment
-/// (`entity_definition_lookup` `14227E5F0`, exact name), and is dropped when no
-/// parent is registered yet ("Couldn't find parent clone entity",
-/// `142338C30`). Either way a name already registered keeps its definition when
-/// the block's `version` (`ParseTokenInt32`) is lower than the stored one, and
-/// is replaced otherwise. The stored version is the one the name was created
-/// with, and a clone stores its parent's (`14226C110` and `14226D5E0` copy it;
-/// neither path writes the block's).
+/// A plain block creates or reuses a definition. A block with a `clone`
+/// updates a copy of the parent as registered at that moment, selected by
+/// exact name, and is dropped when no parent is registered yet. Either way
+/// a registered name keeps its definition when the block's `version` is
+/// lower than the stored one, and is replaced otherwise. The stored
+/// version is the one the name was created with; a clone copies its
+/// parent's stored version rather than the block's authored version.
+/// Mesh binding and attachment merging apply to the retained definition.
 #[derive(Default)]
 struct Entities(BTreeMap<String, (EntityDefinition, i32)>);
 
@@ -1111,10 +1089,10 @@ impl Entities {
             }));
         definition.name = name.clone();
         definition.clone = None;
-        // 142272140 binds the named object only when it is a `pdxmesh`, and
-        // otherwise logs and leaves the bindings as they are: the parent's
-        // copy (14226C110, 14226D5E0) or the definition being redefined,
-        // whose bindings create_or_reuse (14227D8C0) does not clear.
+        // A named object binds only when it is a `pdxmesh`; otherwise the
+        // failed lookup is logged and the held binding stays. That binding
+        // belongs to the parent's copy or the definition being redefined,
+        // and reuse does not clear it.
         let held = parent.as_ref().or(registered).map(|(held, _)| held);
         let kept = held.and_then(|held| held.mesh.clone());
         let mut unbound = held.and_then(|held| held.unbound_mesh.clone());
@@ -1142,13 +1120,13 @@ impl Entities {
     }
 }
 
-/// A clone as `14227CEF0` builds it: the parent's definition, each field the
+/// A clone starts with the parent's definition, each field the
 /// block declares replacing the parent's as [`Descriptors::inherit`] reads a
 /// chain, and its attachments merged ([`merge_attachments`]).
 fn overlay(parent: EntityDefinition, child: EntityDefinition) -> EntityDefinition {
     let mut attachments = parent.attachments;
     merge_attachments(&mut attachments, child.attachments);
-    //14227CEF0 copies the parent's ordered array and ignores child locators.
+    // The parent's ordered locator array is copied; child locators are ignored.
     let locators = parent.locators;
     let own: BTreeSet<String> = child
         .states
@@ -1168,7 +1146,7 @@ fn overlay(parent: EntityDefinition, child: EntityDefinition) -> EntityDefinitio
         unbound_mesh: child.unbound_mesh,
         clone: None,
         scale: child.scale.or(parent.scale),
-        //14227D0AF tests description+448, but token500 never sets that byte.
+        // Clone radius declarations never mark the held value for replacement.
         cull_radius: parent.cull_radius,
         attachments,
         default_state: child.default_state.or(parent.default_state),
@@ -1179,7 +1157,7 @@ fn overlay(parent: EntityDefinition, child: EntityDefinition) -> EntityDefinitio
     }
 }
 
-/// `14227CEF0`'s attachment merge: each attachment the clone declares
+/// Attachment merging: each attachment the clone declares
 /// replaces, where it stands, the held one of the same name (of the same
 /// joint when both names are empty), and is appended otherwise.
 fn merge_attachments(held: &mut Vec<Attachment>, declared: Vec<Attachment>) {
@@ -1191,7 +1169,7 @@ fn merge_attachments(held: &mut Vec<Attachment>, declared: Vec<Attachment>) {
     }
 }
 
-/// Whether a clone's attachment replaces a held one (`14227CEF0`): the same
+/// Whether a clone's attachment replaces a held one: the same
 /// name, and the same joint when both names are empty.
 fn same_slot(held: &Attachment, declared: &Attachment) -> bool {
     held.name == declared.name && (!held.name.is_empty() || held.joint == declared.joint)
@@ -1220,7 +1198,7 @@ pub fn lexical_names(bytes: &[u8]) -> BTreeSet<String> {
         .collect()
 }
 
-/// `InitTextureLookup(gfx/models)`: `142251F00` indexes every `.dds` and
+/// Indexes every `.dds` and
 /// `.tga` below `gfx/models` by its stored basename.
 #[derive(Clone, Debug, Default)]
 pub struct TextureIndex {
@@ -1228,8 +1206,8 @@ pub struct TextureIndex {
 }
 
 impl TextureIndex {
-    /// `142251F00` walks `gfx/models` with `Vfs_EnumerateRecursive`
-    /// (`1424C7630`, no filter, any depth), in [`crate::defines::load_order`].
+    /// Walks `gfx/models` recursively at any depth, in
+    /// [`crate::defines::load_order`].
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let paths = layers.descriptor_paths("gfx/models", &[".dds", ".tga"])?;
         Ok(Self::new(crate::defines::load_order(
@@ -1240,12 +1218,12 @@ impl TextureIndex {
     }
 
     /// Indexes `paths` in enumeration order: each basename keeps the first
-    /// file (the FNV-1a and byte-compare map of `142251F00`; a later file of
-    /// that basename is only reported, `1422527C0`).
+    /// file by exact byte spelling. A later file of that basename does not
+    /// replace the held path.
     pub fn new(paths: impl IntoIterator<Item = String>) -> Self {
         let mut index = Self::default();
         for path in paths {
-            // The suffix test is byte-exact (ends_with 1424B6AB0).
+            // The suffix test is byte-exact.
             if !(path.ends_with(".dds") || path.ends_with(".tga")) {
                 continue;
             }
@@ -1255,8 +1233,8 @@ impl TextureIndex {
         index
     }
 
-    /// The one path `14224CC00` requests for a material texture.
-    /// `142251230` looks the authored string up byte-exactly after spelling
+    /// The one path requested for a material texture.
+    /// Looks the authored string up byte-exactly after spelling
     /// its first `.tga` as `.dds`; a miss keeps the mesh directory plus the
     /// authored name.
     pub fn resolve(&self, directory: &str, authored: &str) -> String {
@@ -1278,7 +1256,7 @@ fn animation_definition(value: &parser::Value, directory: &str) -> Option<Animat
     }
     Some(AnimationDefinition {
         name,
-        // 142338C30 joins the descriptor's directory, `/` and the file,
+        // Joins the descriptor's directory, `/` and the file,
         // whatever the file holds.
         file: if directory.is_empty() {
             file
@@ -1291,9 +1269,9 @@ fn animation_definition(value: &parser::Value, directory: &str) -> Option<Animat
 fn mesh_definition(value: &parser::Value) -> Option<MeshDefinition> {
     let items = value.items()?;
     let name = unquote(text(items, b"name")?);
-    // PhysFS drops a path's leading slashes (`sanitizePlatformIndependentPath`),
-    // so `/gfx/models/...`, as the shipped supply-train meshes spell it, is
-    // the content-root path.
+    // Leading slashes are dropped by the content path sanitizer, so
+    // `/gfx/models/...` resolves from the content root rather than the
+    // descriptor's directory.
     let file = unquote(text(items, b"file")?)
         .trim_start_matches('/')
         .to_owned();
@@ -1327,7 +1305,7 @@ fn mesh_definition(value: &parser::Value) -> Option<MeshDefinition> {
 fn mesh_setting(value: &parser::Value) -> Option<MeshSetting> {
     let items = value.items()?;
     let mut setting = MeshSetting::default();
-    // 142251AE0 writes fields in reader order; failed numeric conversions retain the field.
+    // Fields are written in reader order; failed numeric conversions retain the field.
     for item in items {
         let Some(value) = item.value.scalar_str() else {
             continue;
@@ -1343,7 +1321,7 @@ fn mesh_setting(value: &parser::Value) -> Option<MeshSetting> {
             Some(b"texture_normal") => setting.normal = Some(unquote(value)),
             Some(b"texture_specular") => setting.specular = Some(unquote(value)),
             Some(b"shader") => setting.shader = Some(unquote(value)),
-            // Token 0x2A6 at 14008C426; reader142251AE0 writes SMeshData+A8.
+            // An authored shader file overrides the material's source path.
             Some(b"shader_file") => setting.shader_file = Some(unquote(value)),
             _ => {}
         }
@@ -1398,7 +1376,7 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
             Some(EntityState {
                 name,
                 animation,
-                // 14233CC10: +0x21C, true by default (142281510).
+                // Looping defaults to true when no read overrides it.
                 looping: parser::read_bool_field(block, "looping", true),
                 next_state: text(block, b"next_state").map(unquote),
                 chance: number(block, b"chance", 1.0),
@@ -1435,7 +1413,7 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
                             .filter_map(|item| item.value.items())
                             .filter_map(|fields| last_text(fields, "soundeffect"))
                             .next_back(),
-                        // 14233BB30: +0x714/715.
+                        // Both event flags default to false.
                         keep_particle: parser::read_bool_field(event, "keep_particle", false),
                         trigger_once: parser::read_bool_field(event, "trigger_once", false),
                     })
@@ -1452,8 +1430,8 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
         unbound_mesh: None,
         clone: text(items, b"clone").map(unquote),
         scale: text(items, b"scale").and_then(|value| crt::scan_f32(value.as_bytes())),
-        //1422813B0 initializes +44C to 1;14233C3FC scans into the held
-        //word, so a failed later scan preserves its previous value.
+        // Radius starts at one; each scan writes into the held value,
+        // so a failed later scan preserves its previous value.
         cull_radius: Some(
             items
                 .iter()
@@ -1464,7 +1442,7 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
         ),
         attachments,
         default_state: text(items, b"default_state").map(unquote),
-        // 14233BF40: +0x414; +0x415 marks authorship even on failure.
+        // Field presence marks authorship even when its boolean read fails.
         get_state_from_parent: items
             .iter()
             .any(|item| item.keyword_is("get_state_from_parent"))
@@ -1519,8 +1497,8 @@ fn text<'a>(items: &'a [parser::Item], key: &[u8]) -> Option<&'a str> {
         .and_then(|item| item.value.scalar_str())
 }
 
-/// Each native chance read starts with zero; only a positive Fixed5 result
-/// is copied to the state's low word (`14233CC10`, `142281510`).
+/// Each chance read starts with zero; only a positive Fixed5 result
+/// is copied to the state's low word.
 fn state_chance_weight(items: &[parser::Item]) -> i32 {
     items
         .iter()

@@ -857,7 +857,7 @@ fn dump_frame(
     overlay: &mut crate::document::DumpOverlay<'_>,
     request: Request<'_>,
 ) -> io::Result<()> {
-    // CInGameIdler::Idle@140DBF240: province owners, icon manager, then draw.
+    // Province owners, icon manager, then draw.
     let sprites = overlay.present(request.animation_time)?;
     scene.render(
         device,

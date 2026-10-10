@@ -1,5 +1,5 @@
 //! Operation presentation through the recorded content stack.
-//! Native readers consume every field; only names and authored sprites are projected.
+//! The readers consume every field; only names and authored sprites are projected.
 
 use crate::{
     Diagnostic, DiagnosticKind, ResolvedLayers,
@@ -22,7 +22,7 @@ pub struct Operation {
     pub token: String,
     pub name: String,
     pub sprite: String,
-    /// Agency operative assignment portrait, COperation+0x4B0 (141E21710).
+    /// Agency operative assignment portrait.
     pub map_icon: String,
 }
 
@@ -74,12 +74,12 @@ fn token(item: &Item) -> io::Result<String> {
         .map_err(|why| invalid(format!("intelligence definition name: {why} (count: 1)")))
 }
 
-/// CPersistentScriptTargets::vf4 140727A20 delegates to 140C1D730.
+/// Script targets delegate variable-array fields to a separate reader.
 fn targets(field: &Field<'_>) -> Shape<Node> {
     match field.keyword().as_deref() {
         Some(b"targets") => Shape::List,
         Some(b"target_array") => Shape::Unsettled(format!(
-            "script targets target_array at line {}: the variable-array reader 140C1D730 is not ported here",
+            "script targets target_array at line {}: the variable-array reader is not ported here",
             field.key.line
         )),
         Some(
@@ -90,8 +90,8 @@ fn targets(field: &Field<'_>) -> Shape<Node> {
     }
 }
 
-/// COperation::vf4 140A70140 and nested readers 140A6C360/140A6C630,
-/// 140A6BA80/140A6BF30. Unknown keywords take ReportUnexpectedToken's skip.
+/// Operation fields and their nested readers.
+/// Unknown keywords are reported and skipped.
 fn operation_field(field: &Field<'_>) -> Shape<Node> {
     match field.keyword().as_deref() {
         Some(
@@ -138,8 +138,8 @@ fn operation_field(field: &Field<'_>) -> Shape<Node> {
     }
 }
 
-/// 1401674C0 refuses a token already read in this file or an earlier file,
-/// with RecordError's skip. The first registered definition therefore wins.
+/// A token already read in this file or an earlier file is reported
+/// and its body skipped. The first registered definition wins.
 pub fn parse_operations(
     input: &[u8],
     names: &KeyNames,
@@ -158,7 +158,7 @@ fn parse_operations_with_notes(
     let read = native::read(
         input,
         native::Mode::KeepMark,
-        // The reloadable operation loop 1401674C0 stops at token 4 or 0x13.
+        // The operation loop stops at a closing brace or the end of text.
         native::Top::Persistent(Node::File),
         Some(names),
         &mut |node, field| match node {
@@ -201,8 +201,8 @@ fn parse_operations_with_notes(
             continue;
         };
         let token = token(&item).map_err(|why| note_refusal(notes, why))?;
-        // RecordError's skipped duplicate retains a tree placeholder, not a
-        // registered operation (1401674C0).
+        // A skipped duplicate retains a tree placeholder, not a
+        // registered operation.
         if !projected.insert(token.to_ascii_lowercase()) {
             continue;
         }
@@ -216,7 +216,7 @@ fn parse_operations_with_notes(
             } else if field.keyword_is("icon") {
                 operation.sprite = string(field).map_err(|why| note_refusal(notes, why))?;
             } else if field.keyword_is("map_icon") {
-                // COperation::vf4@140A70140 stores this independently of icon.
+                // The map icon is stored independently of the portrait icon.
                 operation.map_icon = string(field).map_err(|why| note_refusal(notes, why))?;
             }
         }
@@ -267,7 +267,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Intelligence> {
     Ok(result)
 }
 
-/// COperationToken's name (+0x50) and text icon (+0x70), 140A70B70.
+/// An operation token's name and text icon.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OperationToken {
     pub token: String,
@@ -301,8 +301,8 @@ enum TokenNode {
     Token,
 }
 
-/// 140166AA0 registers the first token and skips a duplicate body;
-/// 140A70B70 dispatches its fields. The loader uses lexer mode 0.
+/// The first token is registered and a duplicate body is skipped;
+/// its accepted fields use a mode-0 lexer.
 pub fn parse_operation_tokens(
     input: &[u8],
     names: &KeyNames,
@@ -327,7 +327,7 @@ pub fn parse_operation_tokens(
                     b"name" | b"desc" | b"icon" | b"text_icon" | b"intel_source" | b"intel_gain",
                 ) => Shape::One,
                 Some(b"targeted_modifier") if field.skips_block() => Shape::Unsettled(format!(
-                    "operation token targeted_modifier at line {}: block consumption depends on the static-modifier lookup 140550940 (count: 1)",
+                    "operation token targeted_modifier at line {}: block consumption depends on the static-modifier lookup (count: 1)",
                     field.key.line
                 )),
                 Some(b"targeted_modifier") => Shape::One,
@@ -393,8 +393,8 @@ pub fn read_operation_tokens(layers: &ResolvedLayers) -> io::Result<OperationTok
     Ok(result)
 }
 
-/// CAgencyUpgrade's authored identifier (+0x18), constructed by 140615D50;
-/// 140616BC0 localises it. Its reader 1406188D0 has no name override.
+/// An agency upgrade's authored identifier is its localisation key;
+/// the reader has no name override.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgencyUpgrade {
     pub token: String,
@@ -461,8 +461,8 @@ enum UpgradeNode {
 
 type UpgradeBranches = Vec<(String, Vec<AgencyUpgrade>)>;
 
-/// 140617860 loads branches until EOF. 140618C40 reconstructs a repeated
-/// upgrade in the same branch; the loader keeps the first global pointer.
+/// Branches load until the end of text. A repeated upgrade in the same
+/// branch is reconstructed; the loader keeps the first global pointer.
 fn parse_agency_upgrades(
     input: &[u8],
     names: &KeyNames,
@@ -477,7 +477,7 @@ fn parse_agency_upgrades(
         &mut |node, field| match node {
             UpgradeNode::File => Shape::Object(UpgradeNode::Branch),
             UpgradeNode::Branch => Shape::Object(UpgradeNode::Upgrade),
-            // CAgencyUpgrade::vf4 1406188D0.
+            // Agency upgrade fields.
             UpgradeNode::Upgrade => match field.keyword().as_deref() {
                 Some(b"frame" | b"picture" | b"sound") => Shape::One,
                 Some(b"available" | b"visible") => Shape::Trigger,
@@ -488,7 +488,7 @@ fn parse_agency_upgrades(
                 Some(b"level") => Shape::Object(UpgradeNode::Level),
                 _ => Shape::Skip,
             },
-            // CUpgradeLevel::vf4 140618F90.
+            // Upgrade-level fields.
             UpgradeNode::Level => match field.keyword().as_deref() {
                 Some(b"modifier") => {
                     Shape::Object(UpgradeNode::Modifier(modifiers::Node::Modifier))
@@ -587,7 +587,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn operation_map_icon_is_separate_and_keeps_first_native_definition() {
+    fn operation_map_icon_is_separate_and_keeps_first_definition() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (definitions, _) = parse_operations(
             b"op = { name = NAME icon = CARD map_icon = MAP } OP = { name = WRONG map_icon = WRONG } other = { name = OTHER }",
             &KeyNames::default(),
@@ -603,6 +605,8 @@ mod tests {
 
     #[test]
     fn intelligence_operation_token_name_text_icon_and_duplicate_skip() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (definitions, warnings) = parse_operation_tokens(
             br#"
             @name=MOD_NAME
@@ -653,7 +657,9 @@ mod tests {
     }
 
     #[test]
-    fn intelligence_agency_upgrade_native_readers_and_identifier_name() {
+    fn intelligence_agency_upgrade_readers_and_identifier_name() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (branches, warnings) = parse_agency_upgrades(
             br#"
             branch={
@@ -694,6 +700,8 @@ mod tests {
 
     #[test]
     fn intelligence_token_upgrade_layers_first_global_pointer_and_replace_path() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "hoi4_intelligence_domains_{}_{}",
             std::process::id(),
@@ -790,7 +798,9 @@ mod tests {
     }
 
     #[test]
-    fn intelligence_operation_names_art_variables_and_native_duplicate_skip() {
+    fn intelligence_operation_names_art_variables_and_duplicate_skip() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (operations, warnings) = parse_operations(
             br#"
             @sprite = mod_art
@@ -837,6 +847,8 @@ mod tests {
 
     #[test]
     fn intelligence_operation_named_unreached_array_refusal() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let why = parse_operations(
             b"custom={operation_target={target_array=a}}",
             &KeyNames::default(),
@@ -848,7 +860,9 @@ mod tests {
     }
 
     #[test]
-    fn intelligence_operation_notes_keep_native_deferred_kind_and_public_parser_output() {
+    fn intelligence_operation_notes_keep_deferred_kind_and_public_parser_output() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let input = b"custom = { on_start = { free_operative = { operative = custom_name } } }";
         let mut notes = Vec::new();
         let parsed =

@@ -6,12 +6,13 @@
 
 use crate::{Memory, cequipment_variant, cpdx_array::Array, read as read_memory, walk::Outcome};
 
+/// Equipment-entry stride.
 pub const STRIDE: usize = 0x10;
-/// Equipment-entry CEquipmentVariant pointer; old division reader at attach_log.rs:131655 and market-stockpile reader :138169 read the first qword.
+/// Equipment-entry CEquipmentVariant pointer.
 pub const VARIANT: usize = 0x00;
-/// Equipment-entry amount, i64 native fixed point; old division, market stockpile and D93 readers read the second qword.
+/// Equipment-entry amount, i64 native fixed point.
 pub const AMOUNT: usize = 0x08;
-/// Equipment-entry native fixed-point denominator; old market serializer interpretation and D93 lib.rs:65 use 100,000.
+/// Equipment-entry native fixed-point denominator.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

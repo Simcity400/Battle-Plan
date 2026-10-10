@@ -1,12 +1,10 @@
-//! The single-province, non-move branch of `BuildOffensiveBoundary@141243C90`
-//! (its `count == 1 && type != 1` tail): a line whose path is one province and
-//! that did not snap to a border.
+//! A single-province non-move line whose path is one province and did not
+//! snap to a border.
 //!
-//! The native line extends from an owned pixel in both half-unit directions,
-//! stopping at the first sample outside the province. It submits those outside
-//! positions to `rail_arrow_geometry_builder@141251430` with smoothing off and
-//! skips the ordinary smoothing loop. Province pixels and centroids come only
-//! from the matching map content.
+//! Extend from an owned pixel in both half-unit directions, stopping at the
+//! first sample outside the province. Submit those outside positions with
+//! smoothing off and skip the ordinary smoothing loop. Province pixels and
+//! centroids come only from matching map content.
 
 use std::collections::BTreeMap;
 
@@ -41,9 +39,9 @@ impl Centers {
                 candidates[province] = Some((centroid, i64::MAX, None));
             }
         }
-        // 140A507D0 builds province runs in increasing world Z then X, and the
-        // search (141245525) accepts only a strictly smaller Manhattan distance,
-        // so the first pixel wins ties, including on disconnected shapes.
+        // Build province runs in increasing world Z then X. Accept only a strictly
+        // smaller Manhattan distance, so the first pixel wins ties, including on
+        // disconnected shapes.
         if candidates.iter().any(Option::is_some) {
             for z in 0..map.height {
                 let row = (map.height - 1 - z) as usize * map.width as usize;
@@ -151,7 +149,7 @@ fn squared_distance([ax, az]: Point, [bx, bz]: Point) -> i64 {
     x * x / SCALE + z * z / SCALE
 }
 
-/// The geometry half of `141251430` with smoothing off (`param_3 = 0`).
+/// Stored-control geometry with smoothing disabled.
 fn append_control(controls: &mut Vec<Point>, point: Point) {
     let count = controls.len();
     if count >= MAX_CONTROLS {
@@ -167,7 +165,7 @@ fn append_control(controls: &mut Vec<Point>, point: Point) {
         return;
     }
     let mut previous = controls[count - 1];
-    // Native CVTSI2SS/DIVSS/SQRTSS/DIVSS/CVTTSS2SI, in f32.
+    // Convert and divide in f32, take square roots and divide before integer conversion.
     let distance = (squared_distance(previous, point) as f32 / SCALE as f32).sqrt();
     let spacing = (threshold as f32 / SCALE as f32).sqrt();
     let count = (distance / spacing) as i32;

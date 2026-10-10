@@ -24,11 +24,9 @@ pub(crate) struct EffectNames {
 }
 
 impl EffectNames {
-    /// 140636690 first finds a sub-unit by token (140AB5EE0), then a
-    /// category (140AB5BB0). SSubUnitStats finds terrain types by token
-    /// (141415B80 -> singleton 14022F8F0); `need` and `need_equipment`
-    /// use GetTypeByToken (140FFC070 -> 1409EB9F0 -> 1409DC660), which
-    /// converts the token to text and includes equipment aliases.
+    /// Find a sub-unit by token first, then a category. Terrain types are also found by
+    /// token. `need` and `need_equipment` look up the token text, including equipment
+    /// aliases.
     pub(super) fn read(layers: &ResolvedLayers, names: &KeyNames) -> io::Result<Self> {
         let fallback;
         let sub_units = if let Some(sub_units) = &names.sub_units {
@@ -49,10 +47,9 @@ impl EffectNames {
         result
             .modifiers
             .extend(sub_units.modifiers().iter().cloned());
-        // CTerrainDatabase::load_directory 140AC7AF0 / 140AC6EB0 appends
-        // categories before later effect files are read. An absent directory
-        // is an empty database; the full map projection's requirement for
-        // at least one category does not apply to token lookup.
+        // Terrain categories append before later effect files are read. An absent
+        // directory is an empty database; the full map projection's requirement for at
+        // least one category does not apply to token lookup.
         let mut definitions = terrain::TerrainDefinitions::default();
         for path in terrain::definition_paths(layers)? {
             if let Err(error) = definitions.append(&layers.read(&path)?) {
@@ -98,6 +95,8 @@ mod tests {
 
     #[test]
     fn sub_unit_category_lists_register_raw_values_without_definitions() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let mut units = unit_leader::SubUnits::default();
         units.read(
             b"@cat = Group_A SUB_UNIT_CATEGORIES = { @cat \"GROUP_B\" @inside = NeverDefined } \
@@ -141,6 +140,8 @@ mod tests {
 
     #[test]
     fn sub_unit_modifier_lists_use_native_string_conversion_and_register_no_definitions() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let mut units = unit_leader::SubUnits::default();
         units.read(b"@mod = Active_Mod SUB_UNIT_MODIFIERS = { @mod \"two\nlines\" @inside = Undefined } sub_unit_modifiers = { @inside }", "common/units/unit_modifiers/a.txt");
         assert_eq!(
@@ -159,6 +160,8 @@ mod tests {
 
     #[test]
     fn an_unread_sub_unit_suffix_remains_a_roster_gap() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let mut units = unit_leader::SubUnits::default();
         units.read(b"sub_unit_categories = { first } sub_units = { known = { } broken = { weights = { x @v = 1 } } later = { } }", "common/units/a.txt");
         assert!(units.categories().contains(b"first".as_slice()));
@@ -173,6 +176,8 @@ mod tests {
     #[cfg(feature = "test-support")]
     #[test]
     fn effect_rosters_use_layer_replacement_and_equipment_aliases() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "installed_content_effect_names_{}_{:?}",
             std::process::id(),
@@ -244,8 +249,7 @@ mod tests {
             names.equipment,
             [b"active_equipment".to_vec(), b"active_alias".to_vec()].into()
         );
-        // RegisterType (1409ECF30) installs Active_Alias in the same index
-        // that GetTypeByToken (1409EB9F0) uses for Pool (140FFC070).
+        // An equipment alias registers in the same index used to find its pool.
         let token = |kind, text: &[u8]| LexToken {
             kind,
             text: text.to_vec(),

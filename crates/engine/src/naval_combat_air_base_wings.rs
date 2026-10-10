@@ -1,12 +1,8 @@
 //! Dense carrier-air-base wing occurrences used by naval combat calculations.
-//!
-//! `CountAirBaseAircraft` walks `CAirBase+0x48`, not the country-indexed
-//! registration vector at `+0x30`. Save loading can append the same container
-//! twice to the dense vector, so neither containers nor wing handles are
-//! deduplicated here. The caller supplies only bases referenced by captured
-//! naval combats; this is not a census of every base in the game.
-//! The referenced bases are gathered once, in first-reference order, through
-//! `UniqueHandles`.
+//! Aircraft counting walks the dense container vector rather than country-indexed
+//! registration. Save loading may append a container twice, so neither container
+//! occurrences nor wing handles are deduplicated. Only combat-referenced bases
+//! are supplied; `UniqueHandles` gathers them once in first-reference order.
 
 use crate::{
     Memory, cair_base, cair_wing, cair_wing_pool, ccountry_air_container, cpdx_array::Array,
@@ -140,7 +136,7 @@ pub fn walk(
     )
 }
 
-/// CountAirBaseAircraft@140C3E1D0 reaches every dense container/pool occurrence.
+/// Aircraft counting reaches every dense container and pool occurrence.
 /// Grow worker storage from those acquired headers before publishing a base.
 pub fn walk_growing(
     memory: &impl Memory,

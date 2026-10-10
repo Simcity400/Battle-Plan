@@ -1,9 +1,9 @@
 //! Exact observed aircraft bookkeeping and applied bombing health loss.
-//! AirLossEvents keeps the native writer context because its ordinal families
-//! overlap (engine::air_loss_sites, 140C4D180). Never sum the daily field array.
-//! Bombing includes only the proved AirMission/AirNaval callers of ApplyDamage
-//! (1410C6F60); other callers are not aircraft bombing. A complete interval
-//! certifies an empty event list. Gaps and unavailable intervals certify nothing.
+//! AirLossEvents keeps the writer context because its ordinal families
+//! overlap (engine::air_loss_sites). Never sum the daily field array. Bombing
+//! includes only proved air-mission and air-naval callers of building damage;
+//! other callers are not aircraft bombing. A complete interval certifies an
+//! empty event list. Gaps and unavailable intervals certify nothing.
 
 use super::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, country_groups::HourSpan};
 use crate::{

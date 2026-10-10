@@ -1,12 +1,12 @@
-//! NAcclimatization::CData embedded division state; hourly consistency remains unproved.
+//! Embedded division acclimatization state; hourly consistency is unverified.
 
-/// NAcclimatization::CData vtable; division_presentation_inputs.rs:913-916 authenticates the embedded object.
+/// Embedded acclimatization object vtable.
 pub const VTABLE_RVA: usize = 0x027c_7b30;
-/// NAcclimatization::CData category/weight vector data; division_presentation_inputs.rs:924.
+/// Category/weight vector data.
 pub const DATA: usize = 0x08;
-/// NAcclimatization::CData u32 vector capacity; division_presentation_inputs.rs:925.
+/// Vector capacity, u32.
 pub const CAPACITY: usize = 0x10;
-/// NAcclimatization::CData u32 vector count; division_presentation_inputs.rs:926.
+/// Vector count, u32.
 pub const COUNT: usize = 0x14;
-/// NAcclimatization::CData maximum, i64 engine raw value; division_presentation_inputs.rs:934.
+/// Maximum, i64 raw value.
 pub const MAXIMUM: usize = 0x38;

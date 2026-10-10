@@ -1,5 +1,5 @@
-//! Unit composition: 140C6AC80 -> 140C634C0, with count ranges from
-//! 14141BFA0 -> 141417870. The optional selected-unit/detail outputs are absent.
+//! Unit composition with estimated count ranges.
+//! Optional selected-unit/detail outputs are absent.
 
 use std::{cmp::Reverse, collections::BTreeMap, io};
 
@@ -15,8 +15,8 @@ use replay::{
 
 use crate::{map::perspective::Vision, table_access::TokenNames};
 
-/// 141006BC0's glyph inventory, from the one parsed sub-unit database. Both
-/// NATO frames use the same declaration; missing declarations draw nothing.
+/// Glyph inventory from the parsed sub-unit database. Both NATO frames
+/// use the same declaration; missing declarations draw nothing.
 pub(crate) fn assets(subunits: &SubUnits) -> (crate::map::native_gui::Assets, Vec<String>) {
     let mut assets = crate::map::native_gui::Assets::default();
     let mut refused = Vec::new();
@@ -86,8 +86,8 @@ impl Content {
         self.subunits.warnings()
     }
 
-    /// Authenticated CSubUnitDefinition+0x58C database identity. Zero is the
-    /// producer-proved native null singleton, not a failed token lookup.
+    /// Authenticated sub-unit database identity. Zero is a producer-proved null
+    /// singleton, distinct from a failed token lookup.
     pub(crate) fn subunit(&self, index: u32) -> Result<(&str, u64), String> {
         if index == 0 {
             return Ok(("", 0));
@@ -134,7 +134,7 @@ pub fn summary(
     let divisions = frame
         .complete::<tables::Divisions>()
         .map_err(|e| e.to_string())?;
-    // 140E65210/140E6B110 maintain the land array in the mixed array's order.
+    // Maintain the land array in the mixed array's order.
     let land: Vec<_> = order
         .mixed
         .iter()
@@ -242,7 +242,7 @@ pub(crate) fn prepare_members(
     let first = division(first)?;
     let canonical =
         |raw| links(raw).ok_or_else(|| format!("country {raw} has no CountryLinks row"));
-    // 140C6AC80 tests FIRST INPUT's roster owner before sorting, even if hidden.
+    // Test the first input's roster owner before sorting, even if hidden.
     let disclosed = vision
         .shares_vision_proven(canonical(first.roster_owner)?)
         .map_err(|e| e.describe())?;
@@ -266,12 +266,7 @@ pub(crate) fn prepare_members(
             template: division.template,
             intel: vision
                 .land_byte_known(division.id, owner, division.province)
-                .ok_or_else(|| {
-                    format!(
-                        "division {} unit intel (1416068C0) unavailable",
-                        division.id
-                    )
-                })?,
+                .ok_or_else(|| format!("division {} unit intel unavailable", division.id))?,
         });
     }
     let fallback = if disclosed {
@@ -294,9 +289,9 @@ pub(crate) fn prepare_members(
 }
 
 fn group_templates(mut units: Vec<Unit>, disclosed: bool, fallback: u64) -> PreparedMembers {
-    // 140C5DAC0/140C5C900: descending rank, slot, template +0xC numeric ID.
-    // Equal keys have the same actual template, so tie permutations cannot
-    // change the grouped template order or multiplicity (140C6AC80).
+    // Sort by descending rank, slot and template numeric ID. Equal keys have
+    // the same actual template, so tie permutations cannot change grouped
+    // template order or multiplicity.
     units.sort_by_key(|unit| Reverse((unit.rank, unit.owner, (unit.template >> 32) as u32)));
     let mut prepared = PreparedMembers {
         disclosed,
@@ -338,7 +333,7 @@ fn aggregate(
     entries: &mut Vec<Entry>,
     indices: &mut BTreeMap<Identity, usize>,
 ) -> Result<(), String> {
-    // 140C634C0: global aggregation in grouped-template/subunit first order.
+    // Aggregate globally in grouped-template/sub-unit first order.
     for subunit in &template.subunits {
         let (index, name, category) = if subunit.token == 0 {
             (0, "", 0)
@@ -407,7 +402,7 @@ fn format_entries(entries: &[Entry], loc: &Localisation, nato: bool) -> Result<S
     Ok(text)
 }
 
-/// 141006BC0: executable category mask/prefix and viewer-local NATO frame.
+/// Category mask/prefix and viewer-local NATO frame.
 pub(crate) fn subunit_icon(name: &str, category: u64, nato: bool) -> String {
     let prefix = if category & 0x80004003C1 != 0 {
         "ship_"
@@ -430,7 +425,7 @@ fn ratio(numerator: i64, denominator: i64) -> i64 {
 }
 
 fn fixed15(value: i64) -> i64 {
-    // Fixed5ToFixed15@1424D8420 truncates the quotient and fractional remainder.
+    // Truncate the quotient and fractional remainder.
     (value / 100_000)
         .wrapping_mul(32_768)
         .wrapping_add((value % 100_000).wrapping_mul(1 << 30) / 3_276_800_000)
@@ -453,8 +448,8 @@ fn count_range(
     )
 }
 
-/// 141417870's count law, with the caller's native salt already applied.
-/// Land composition uses subtype +0x4A2; air-base estimates use country +0x5E2.
+/// Apply the count law after the caller's salt. Land composition uses the
+/// subtype salt; air-base estimates use the country salt.
 pub(crate) fn count_range_seeded(
     count: i32,
     intel: i64,
@@ -483,7 +478,7 @@ pub(crate) fn count_range_seeded(
     let date = hour.wrapping_sub(43_800_000);
     let mut day = (date / 24) % 365;
     let mut month = 0_i32;
-    // GetMonthZeroBased@140177140, native month table 14306D210.
+    // Use the zero-based month and fixed month offsets.
     for length in [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] {
         if day < length {
             break;
@@ -518,7 +513,7 @@ pub(crate) fn count_range_seeded(
 }
 
 fn sqrt_fixed5(input: i64) -> i64 {
-    // 1424DAE00, called directly by 141417870 (not floating-point sqrt).
+    // Use fixed5 square root rather than floating-point square root.
     if input < 2 {
         return 0;
     }

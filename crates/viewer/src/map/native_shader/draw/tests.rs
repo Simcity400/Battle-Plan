@@ -41,7 +41,7 @@ fn part(kind: PartKind, asset: Arc<super::super::library::Effect>) -> gui::Part 
                 asset,
                 technique: "Down".into(),
             }),
-            program: None,
+            fixture: None,
             since: 0.,
             animation: 0.,
             time: 0.,
@@ -52,10 +52,12 @@ fn part(kind: PartKind, asset: Arc<super::super::library::Effect>) -> gui::Part 
 
 use gui::PartKind;
 
-/// 14222D1A0: an animated state whose technique has no record (+0x2C zero) draws as the
-/// plain sprite, masking included, and binds none of the records' slots 1-4 or b1.
+/// An animated state whose technique has no sampler slots draws as the plain sprite,
+/// masking included, and binds none of the records' slots 1-4 or b1.
 #[test]
 fn a_recordless_animated_technique_draws_the_plain_sprite() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let sheets = Sheets(sprites::SpriteSheet {
         name: "fixture".into(),
         texture: 7,
@@ -122,6 +124,8 @@ fn a_recordless_animated_technique_draws_the_plain_sprite() {
 /// per quad as a list for glyphs and cornered tiles.
 #[test]
 fn each_draw_submits_its_native_records_and_topology() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use eframe::wgpu::PrimitiveTopology::{TriangleList, TriangleStrip};
     let sheets = Sheets(sprites::SpriteSheet {
         name: "fixture".into(),
@@ -215,18 +219,17 @@ fn each_draw_submits_its_native_records_and_topology() {
     assert_eq!((topology, corners.len()), (TriangleList, 6));
 }
 
-/// Each draw uploads its native b0 allocation whole (`Renderer_UploadConstantBuffer
-/// @142400A40`) but writes only a prefix of it: a sprite 104 of `0x70` bytes, pooled so a
-/// shader sees 256 (`14222B590`; its last writes, `Time` and `AnimationTime`, at
-/// `14222DAA1`/`14222DAAE`), a cornered tile and a shield overlay 104 of `0x70` unpooled,
-/// a progress bar 100 of `0x70`, a masked shield's flag all 96 of `0x60` (its last 16
-/// zeroed at `14162FE4B`), text 80 of `0x50`, a circular progress bar 64 of `0x40`. The
-/// payload carries the whole allocation and the written prefix, never zeros claimed as
-/// written. Animation records' b1 (`0xA0`, two 80-byte records) is known where
-/// `14222D1A0` zeroes it (each record's first 48 bytes) and where `14222DEF0` writes an
-/// active record (to byte 68; floats 12 and 14 only for types 1 to 4).
+/// Each draw uploads its whole b0 allocation but writes only a prefix: sprites write
+/// 104 of 112 bytes and expose a pooled 256-byte slot; cornered tiles and shield overlays
+/// write 104 of 112 unpooled bytes; progress bars write 100 of 112; masked flags write all
+/// 96, including a 16-byte zero tail; text writes all 80; circular progress writes all 64.
+/// The payload carries both allocation and written prefix without claiming unwritten zeros.
+/// Animation b1 holds two 80-byte records, each with 48 zeroed bytes and the active record's
+/// writes through byte 68, including floats 12 and 14 only for types 1 to 4.
 #[test]
 fn each_draw_carries_its_native_allocation_and_the_bytes_it_writes() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let sheets = Sheets(sprites::SpriteSheet {
         name: "fixture".into(),
         texture: 7,

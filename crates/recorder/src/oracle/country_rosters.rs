@@ -42,8 +42,8 @@ pub(super) fn compare_owned(
             return Err(invalid("duplicate OwnedWargoals country ordinal"));
         }
     }
-    // 140D32BD0 saves every +0x68 slot, including null references. Its +0x80
-    // object list supplies the payloads through 1415CE720 -> 1415CE460.
+    // The diplomacy writer saves every goal slot, including null references. Its
+    // object list supplies the payloads.
     for (tag, handles) in report.canonical_countries(&save.country_rosters.owned_goals) {
         let recorded = by_tag.remove(tag.as_slice()).unwrap_or_default();
         let label = format!("OwnedWargoals {}", String::from_utf8_lossy(tag));
@@ -77,7 +77,7 @@ pub(super) fn compare_owned(
             };
             if row.recipient == 0 {
                 report.limitation(
-                    "ccountry_tag::tag_string@140BA5C20 saves the null database tag; its literal is not recorded by CountryLinks",
+                    "the country-tag text lookup saves the null database tag; its literal is not recorded by CountryLinks",
                     format!("{item}.recipient"),
                 );
             } else {
@@ -110,7 +110,7 @@ pub(super) fn compare_owned(
             }
             if row.states.contains(&0) {
                 report.limitation(
-                    "1415CE460 dereferences every claimed-state pointer; the save cannot serialize a null membership recorded as state id zero",
+                    "the game dereferences every claimed-state pointer; the save cannot serialize a null membership recorded as state id zero",
                     format!("{item}.states"),
                 );
             }
@@ -181,7 +181,7 @@ pub(super) fn compare_lists(
         if let Some(owner) = &state.owner {
             owned.entry(owner.as_slice()).or_default().insert(id);
         }
-        // PostRead@1409CDF80 supplies an omitted controller from its owner.
+        // The loader supplies an omitted controller from its owner.
         if let Some(controller) = state.controller.as_ref().or(state.owner.as_ref()) {
             controlled
                 .entry(controller.as_slice())
@@ -215,7 +215,7 @@ pub(super) fn compare_lists(
         ) {
             report.limitation(
                 if cache.is_some() {
-                    "directed CRelationStatus+0x310 cache truth is runtime-only; saved wars and factions cannot certify rebuild timing"
+                    "the directed alliance cache truth is runtime-only; saved wars and factions cannot certify rebuild timing"
                 } else {
                     "directed co-belligerent cache was unavailable at capture"
                 },
@@ -288,7 +288,7 @@ pub(super) fn compare_lists(
                 controlled.remove(tag).unwrap_or_default(),
             );
         }
-        // CCountry::Write@14070C580 writes +0x4A8/count+0x4B4 as `cores`
+        // The country writer saves the ordered core-state roster as `cores`
         // in native order, retaining duplicates rather than reconstructing it.
         match core_states {
             Some(Some(states)) => {
@@ -342,8 +342,8 @@ pub(super) fn compare_lists(
             .filter(|status| status.unit_leader == Some(true))
         {
             let character = &status.character;
-            // 1410DAF80 inserts kind 0/1 into +0x70 and kind 2 into +0x88.
-            // It resolves through 140F8A840; operative fallback kind 3 is
+            // Character roles of kinds 0/1 use the leader roster, kind 2 the advisor roster.
+            // It resolves raw references; operative fallback kind 3 is
             // independent of the serialized military roles and both rosters.
             match leader_roles.get(character) {
                 Some(leader) if leader.category < 2 => {
@@ -615,7 +615,7 @@ pub(super) fn compare_theatre_areas(
     {
         return Err(invalid(format!("{label} names unknown province {id}")));
     }
-    report.limitation("membership compares retained theatre area pointers against actual CProvince+D0, including a separate null-area witness; saved theatre descriptors cannot certify this runtime pointer equality", label);
+    report.limitation("membership compares retained theatre area pointers against the province controller area, including a separate null-area witness; saved theatre descriptors cannot certify this runtime pointer equality", label);
     Ok(())
 }
 

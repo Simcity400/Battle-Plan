@@ -1,12 +1,12 @@
-//! CountryDoctrineState's locked-tactic source list (1413B6F90 -> 1413B3560).
+//! CountryDoctrineState's locked-tactic source list.
 
 use super::*;
 use crate::{scripted_text::EventScope, triggers::Eval};
 use installed_content::{doctrines::DefinitionSources, tokens::Token};
 
-/// Fully formatted source fragments, retaining native order and duplicates.
-/// `resolve_tactic` shares the caller's exact-name combat-tactic registry
-/// (1406B11F0). Independent fragments survive a named local refusal.
+/// Fully formatted source fragments, retaining source order and duplicates.
+/// `resolve_tactic` shares the caller's exact-name combat-tactic registry.
+/// Independent fragments survive a named local refusal.
 pub fn doctrine_tactic_sources(
     context: &Context<'_, '_>,
     country: u32,
@@ -49,8 +49,8 @@ pub fn doctrine_tactic_sources(
                 .or_default() += 1
         }
     };
-    // Both databases' +50 pointer rosters include repeated definition
-    // occurrences. Grand sources always precede sub sources (1413B3560).
+    // Both databases' pointer rosters include repeated definition
+    // occurrences. Grand sources always precede sub sources.
     for (grand, order, definitions, names, unread) in [
         (
             true,
@@ -147,16 +147,14 @@ pub fn doctrine_tactic_sources(
                     record(&label, Err(why.clone()));
                     continue;
                 }
-                // 1409C0BD0 addresses milestones by track index, never by
+                // addresses milestones by track index, never by
                 // authored name or country progress. A shorter array is
                 // invalid native content, not an empty milestone.
                 for (index, track) in definition.tracks.iter().enumerate() {
                     let Some(milestone) = definition.milestones.get(index) else {
                         record(
                             &label,
-                            Err(format!(
-                                "milestone {index} is absent for a resolved track (1409C0BD0)"
-                            )),
+                            Err(format!("milestone {index} is absent for a resolved track")),
                         );
                         continue;
                     };
@@ -185,7 +183,7 @@ pub fn doctrine_tactic_sources(
                     // native ADD wraps, and zero selects the stack's define.
                     let amount = if reward.mastery == 0 {
                         sources.default_reward_mastery.ok_or_else(|| {
-                            "NDoctrines.DEFAULT_REWARD_MASTERY unavailable (1409D7F50)".to_owned()
+                            "NDoctrines.DEFAULT_REWARD_MASTERY unavailable".to_owned()
                         })
                     } else {
                         Ok(reward.mastery)
@@ -236,8 +234,8 @@ fn tracked_source(
     track: &installed_content::gui::native::BoundLocalization,
     mastery: Option<i64>,
 ) -> Result<String, String> {
-    // EvaluateLocalizationExpressionToString 142390C20 receives an empty
-    // argument array, with no country/scripted-text expansion (1413B3560).
+    // localisation expansion receives an empty
+    // argument array, with no country/scripted-text expansion.
     let track = renderer.bound_localisation(track, Scopes::empty(), false)?;
     let mut args = vec![
         (doctrine_argument, Argument::Text(name)),
@@ -257,8 +255,8 @@ fn available(
     if definition.available.is_empty() {
         return Ok(true);
     }
-    // 1413B9A30 constructs a new CEventScope and sets only the country.
-    // ROOT/FROM/PREV and seed lanes are native fresh defaults. The +208
+    // constructs a new event scope and sets only the country.
+    // ROOT/FROM/PREV and seed lanes are native fresh defaults. The
     // available conjunction is the sole gate: no captured progress is read.
     let graph = Rc::new(RefCell::new(EventScopes::new(vec![EventScope::of(
         EventObject::Country(country),

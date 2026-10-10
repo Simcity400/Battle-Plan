@@ -1,4 +1,4 @@
-//! CWarRelation::BuildWarName@140D0BCA0. Content owns types and overrides;
+//! War names use content-defined types and overrides;
 //! the capture supplies the native default prefix and ordered first goal.
 use super::*;
 use installed_content::{country_names::CountryNames, localisation::Argument};
@@ -111,7 +111,7 @@ pub(super) fn name(
         let second_tag = &hour.tags[&defender];
         let pair_key = format!("{prefix}_{first_tag}_{second_tag}");
         let allied = |target: u32| -> Result<bool, String> {
-            // IsAlliedTo@1406F3A90(local,target,0,0): self, war veto,
+            // Check self, the war veto,
             // nonnull faction equality, then either cached subject endpoint.
             if hour.view == target {
                 return Ok(true);
@@ -142,7 +142,7 @@ pub(super) fn name(
         } else {
             allied(defender)?
         };
-        // Both native branches append the DEFENDER tag (140D0C065..C150).
+        // Both alliance branches append the defender tag.
         let extra = format!("{pair_key}_{second_tag}");
         let key = if suffix && localisation.get(&extra).is_some() {
             extra
@@ -169,8 +169,7 @@ pub(super) fn name(
                 .plain_state_name(goal.first_state)?;
             }
             if goal.country_count != 0 {
-                // 140D0BCA0 calls 140BA5960/140BA5560; 140BA56A0 resolves
-                // reference zero to the reserved CCountry[0], without a link.
+                // Reference zero selects the reserved country without a link.
                 let slot = if goal.first_country == 0 {
                     0
                 } else {
@@ -189,7 +188,7 @@ pub(super) fn name(
             ("SECOND_COUNTRY", Argument::Text(&second_country)),
             ("ORDER", Argument::Text("")),
         ];
-        // ReturnZero@14011CD10 makes the collision loop stop on pass one.
+        // The recorded naming rule supplies no ordinal suffix.
         if goal.is_some() {
             arguments.push(("STATE", Argument::Text(&state)));
         }

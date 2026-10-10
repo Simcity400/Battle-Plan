@@ -1,5 +1,5 @@
 import { fillHatched } from '../hatch.ts';
-/** Canvas drawing for the race (style A · Clean): hairline value gridlines with
+/** Canvas drawing for the race: hairline value gridlines with
  * their labels under the plot, bars with a 4 px rounded tip and a square baseline,
  * segments split by a surface seam, hatched parts and the corner date. */
 import { font } from '../draw.ts';
@@ -14,7 +14,7 @@ const OUTER_ALPHA = .35;
 export const TIP_RADIUS = 4;
 /** Room between a bar's tip and its value label. */
 export const VALUE_GAP = 8;
-/** A flag in the label column: 21 × 14 px, 8 px from the edge (mock-up style-1). */
+/** A flag in the label column: 21 × 14 px, 8 px from the edge. */
 export const FLAG = { x: 8, width: 21, height: 14 } as const;
 /** Where the name starts, after the flag. */
 export const NAME_X = FLAG.x + FLAG.width + 7;

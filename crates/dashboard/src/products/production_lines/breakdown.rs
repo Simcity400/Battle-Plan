@@ -153,9 +153,9 @@ fn subtree_end(nodes: &[replay::rows::ModifierBreakdownNode], start: usize) -> u
     }
     end
 }
-/// The native 14054D0F0 depth selects rows without double counting interiors.
-/// Exact selectable rows retain zeros and aliases; modifier_text::breakdown
-/// instead suppresses zero text. Both use the same captured preorder tree.
+/// Depth selects rows without double counting interiors. Exact selectable
+/// rows retain zeros and aliases; modifier_text::breakdown instead suppresses
+/// zero text. Both use the same captured preorder tree.
 fn sources(
     country: &CountryProductionModifiersRow,
     key: u32,
@@ -239,7 +239,7 @@ fn multiply(a: i64, b: i64, denominator: i64) -> Option<i64> {
     a.wrapping_mul(b).checked_div(denominator)
 }
 
-/// FactoryEfficiencyGain141921EE0, including the native fixed5/Q15 roundings.
+/// Factory efficiency gain, including the fixed5/Q15 roundings.
 fn factory_gain(current: i64, cap: i64, gain: i64, balance: i64) -> Option<i64> {
     if balance <= 0 || current == 0 {
         return Some(0);
@@ -248,7 +248,7 @@ fn factory_gain(current: i64, cap: i64, gain: i64, balance: i64) -> Option<i64> 
     let denominator = ((current.wrapping_mul(0x13880000) >> 15).wrapping_mul(balance)) >> 15;
     numerator.wrapping_shl(15).checked_div(denominator)
 }
-/// The tooltip141921160 averages clamped *per-factory* gains over active,
+/// The tooltip averages clamped *per-factory* gains over active factories,
 /// even when the maximum admits fewer factories. It does not grow the average.
 fn daily_gain(
     line: &ProductionLineModifiersRow,
@@ -281,7 +281,7 @@ fn daily_gain(
             .checked_div(i64::from(run.active_factories).wrapping_shl(15))
     }
 }
-/// EffectivePoweredFraction1415B7D10 and BaseFactorySpeed1415B7AB0/C60.
+/// Effective powered fraction and base factory speed.
 fn factory_speed(
     country: &CountryProductionModifiersRow,
     power_modifier: i64,
@@ -306,7 +306,7 @@ fn output_base(
     run: &RawRun,
 ) -> Option<i64> {
     let base = factory_speed(country, value(country, 0xa8)?, line.naval_output)?;
-    // 141922E00 scales IC by active factories, while efficiency_average alone
+    // IC scales by active factories, while efficiency_average alone
     // clamps its cache lookup to the virtual maximum.
     let factories = run.active_factories;
     let speed = multiply(i64::from(factories).wrapping_mul(100000), base, 100000)?;
@@ -354,9 +354,9 @@ fn at(raw: &RawModifierRun, selected: Option<&str>) -> ProductionModifierRun {
         );
     }
     if line.licensed && wants("output") {
-        // LicenceSpeed1414260B0 selects importer country and exporter-specific
-        // +10 accumulators, archetype keys, year and faction penalties. Their
-        // complete supplying pack is absent, so no country-only approximation.
+        // Licence speed selects importer and exporter-specific accumulators,
+        // archetype keys, year and faction penalties. Their complete supplying
+        // pack is absent, so no country-only approximation.
         warnings.insert("Licence output source attribution lacks exporter-specific accumulator, year and faction operands; its exact difference is Other / not identified".into());
     }
     if run.max_factories < 0 {
@@ -470,7 +470,7 @@ fn at(raw: &RawModifierRun, selected: Option<&str>) -> ProductionModifierRun {
             "Base efficiency gain",
             percent(q15_to_fixed5(fixed5_to_q15(country.gain_raw))),
         )];
-        // Growth tooltip141921160 passes native depth -1 (style argument 2).
+        // Growth tooltip passes depth -1 (style argument 2).
         gain_parts.extend(sources(
             country,
             0xaa,
@@ -507,7 +507,7 @@ fn at(raw: &RawModifierRun, selected: Option<&str>) -> ProductionModifierRun {
             })
             .map(q15_to_fixed5);
         groups.push(group("daily", daily, daily.map(|value| vec![part("native", "Per-factory growth and clamp", value)]).unwrap_or_default(), "%",
-        "Ported per-factory tooltip calculation; summed admitted gains are divided by the active factory count."));
+        "Per-factory tooltip calculation; summed admitted gains are divided by the active factory count."));
     }
     for index in 0..country.retention.len() {
         let id = format!("retention-{index}");
@@ -552,8 +552,8 @@ fn at(raw: &RawModifierRun, selected: Option<&str>) -> ProductionModifierRun {
             .unwrap_or_default();
         if let Some(base) = base {
             let key = if line.naval_output { 0xd6 } else { 0xd4 };
-            // Output formatter1415B76F0, refit141922160 and conversion141920D40
-            // use native depth 1. The full recorded trees retain deeper operands.
+            // Output, refit and conversion formatting use depth 1.
+            // The full recorded trees retain deeper operands.
             output_parts.extend(sources(
                 country,
                 key,
@@ -580,8 +580,8 @@ fn at(raw: &RawModifierRun, selected: Option<&str>) -> ProductionModifierRun {
                     })
                     .map(|value| value.max(0))
             {
-                // 1415B7D6C calls NegateInt64Into1424DA720 (NEG RDX); the
-                // military/naval callers1415B79B0/B60 add this negative return.
+                // The powered-factory adjustment is negated as signed i64;
+                // military/naval output adds that negative return.
                 let adjustment = multiply(
                     100000_i64.wrapping_sub(power),
                     modifier.wrapping_neg(),

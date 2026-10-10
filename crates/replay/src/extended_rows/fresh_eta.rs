@@ -178,10 +178,10 @@ value_struct!(RailwayBuildingHealth {
     partial: Option<i64>,
 });
 
-/// Current-hour E733D0/E765F0 inputs, independent of sorted RailEdges.
-/// Levels retain every signed +20 entry in native definition-neighbour order.
-/// None in a domain is a counted capture refusal. Building-level None can also
-/// be outside both gates; Some(None) observes the native null +18 pointer.
+/// Current-hour railway-selection inputs, independent of sorted RailEdges.
+/// Levels retain every signed entry in definition-neighbour order. None
+/// in a domain is a counted capture refusal. Building-level None can also
+/// be outside both gates; Some(None) observes the null pointer.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RailwaySelectionInputs {
     pub levels: Option<Vec<i32>>,

@@ -146,6 +146,8 @@ fn content_source(
 
 #[test]
 fn state_names_use_recorded_custom_owner_and_content_precedence_at_5000_countries() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_cat, folder) = catalogue();
     let mut f = frame(1);
     let template = f.complete::<tables::States>().unwrap()[0].clone();
@@ -195,6 +197,8 @@ fn state_names_use_recorded_custom_owner_and_content_precedence_at_5000_countrie
 
 #[test]
 fn state_names_only_need_states_and_the_catalogues_own_state_cache() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_cat, folder) = catalogue();
     std::fs::write(
         folder.0.join("common/defines/00_defines.lua"),
@@ -271,6 +275,8 @@ fn state_names_only_need_states_and_the_catalogues_own_state_cache() {
 
 #[test]
 fn place_names_mixed_requests_preserve_province_bytes_and_state_only_labels() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_cat, folder) = catalogue();
     let (source, context) = content_source(vec![frame(1)], &folder);
     let mut params = PlaceNamesParams {
@@ -302,6 +308,8 @@ fn place_names_mixed_requests_preserve_province_bytes_and_state_only_labels() {
 
 #[test]
 fn state_names_key_recorded_renames_by_each_requested_hour_and_keep_gaps() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_cat, folder) = catalogue();
     let mut first = frame(1);
     let mut states = first.complete::<tables::States>().unwrap().to_vec();
@@ -399,6 +407,8 @@ fn state_names_preserve_successful_empty_names_and_stored_language_failures() {
 
 #[test]
 fn place_names_return_all_states_and_refuse_the_combined_transport_budget() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_cat, folder) = catalogue();
     let (source, context) = content_source(vec![frame(1)], &folder);
     let state = StateNameRequest {
@@ -441,6 +451,8 @@ fn place_names_return_all_states_and_refuse_the_combined_transport_budget() {
 
 #[test]
 fn place_names_use_the_recorded_owner_and_stored_name_precedence_at_5000_countries() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (cat, _folder) = catalogue();
     let names = BTreeMap::from([(64, Ok("MOD_STATE".into()))]);
     let mut f = frame(1);
@@ -485,6 +497,8 @@ fn place_names_use_the_recorded_owner_and_stored_name_precedence_at_5000_countri
 
 #[test]
 fn place_names_refuse_missing_rename_data_and_preserve_recorded_language() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut cat, _folder) = catalogue();
     let names = BTreeMap::from([(64, Ok("MOD_STATE".into()))]);
     let mut f = frame(1);
@@ -662,6 +676,8 @@ fn name(
 }
 #[test]
 fn place_names_primary_name_needs_no_state_lookup_and_names_sea_regions() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (cat, _folder) = catalogue();
     let mut f = frame(1);
     let (name, missing) = resolved(
@@ -697,6 +713,8 @@ fn place_names_primary_name_needs_no_state_lookup_and_names_sea_regions() {
 
 #[test]
 fn land_place_names_try_the_state_after_empty_primary_and_never_use_a_region() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_cat, folder) = catalogue();
     let path = folder.0.join("localisation/mod_l_english.yml");
     let mut localisation = std::fs::read_to_string(&path).unwrap();
@@ -767,6 +785,8 @@ fn land_place_names_try_the_state_after_empty_primary_and_never_use_a_region() {
 
 #[test]
 fn place_names_unresolvable_names_keep_ids_out_of_display_text() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (cat, _folder) = catalogue();
     let mut f = frame(1);
     set::<tables::Provinces>(

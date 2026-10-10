@@ -59,14 +59,22 @@ Once cells serialize identical in-process requests; cross-process races leave a 
 
 Discovery uses explicit `BATTLE_PLAN_SHADER_COMPILER` or exactly the sibling `shader-tools/dxc/dxc.exe`; there is no PATH/SDK search or runtime download. `dxc --version` must match the pin in [lib.rs](src/lib.rs), also named by the cache ABI. Discovery runs on the first cache miss, once per content load. Missing/wrong compilers and launch/DLL/compiler failures name the technique; cached programs remain usable.
 
-Desktop builds stage the pinned official archive via [install-shader-compiler.ps1](../../tools/install-shader-compiler.ps1), with hash verification. Ship the whole `shader-tools/dxc/` directory beside `viewer.exe` and `replay-desktop.exe`: compiler/runtime DLLs and all three upstream licence files. Preserve Microsoft's distribution terms; its archive refers to a distributables list it does not include. The build produces an executable directory, not an installer. Follow [publication guidance](../../docs/publication.md) before distributing sources or artifacts.
+Desktop builds stage the pinned official archive via [install-shader-compiler.ps1](../../tools/install-shader-compiler.ps1), with hash verification. Ship the whole `shader-tools/dxc/` directory beside `viewer.exe` and `replay-desktop.exe`: compiler/runtime DLLs and all three upstream licence files. Preserve Microsoft's distribution terms; its archive refers to a distributables list it does not include. The build produces an executable directory, not an installer.
 
-The compiler uses the pinned HLSL/SPIR-V/naga settings in code. DXC has no native D3DCompile backwards-compatibility mode; legacy syntax unsupported by this route remains a named refusal. Native source/state evidence lives beside assembly, compiler and adapter code.
+The compiler uses the pinned HLSL/SPIR-V/naga settings in code. DXC has no native D3DCompile backwards-compatibility mode; legacy syntax unsupported by this route remains a named refusal. Source assembly, compilation and state lowering share the same stage and register contracts.
 
 ## Verification
 
-Use [AGENTS.md](../../AGENTS.md) for the build wrapper and scoped fmt/clippy/tests. Synthetic tests cover lazy selection/variants, invalidation, native state lowering, partial constants/vertices, resource namespaces, sampling and clock analysis. Consumer submission and pixel comparisons belong in the [viewer checks](../viewer/README.md#compare-changes).
+From the repository root, set `BATTLE_PLAN_GAME_DIR` to the supported installation for tests that parse effects. Their authored sources are synthetic, while the shared lexer uses verified runtime metadata. Set `BATTLE_PLAN_SHADER_COMPILER` to the pinned `dxc.exe` for compiler/GPU tests and run:
 
-Installed checks use `BATTLE_PLAN_GAME_DIR` and `BATTLE_PLAN_SHADER_COMPILER`, without launching the game. Through the wrapper, run `cargo test -p shader-pipeline -- --ignored --skip installed_vanilla_persistent_cache_across_processes --nocapture --test-threads=1` for installed GUI compilation and GPU cases.
+```powershell
+cargo fmt -p shader-pipeline -- --check
+cargo clippy -p shader-pipeline --all-targets -- -D warnings
+cargo test -p shader-pipeline
+```
+
+Synthetic tests cover lazy selection/variants, invalidation, native state lowering, partial constants/vertices, resource namespaces, sampling and clock analysis. Consumer submission and pixel comparisons belong in the [viewer checks](../viewer/README.md#compare-changes).
+
+Installed checks use `BATTLE_PLAN_GAME_DIR` and `BATTLE_PLAN_SHADER_COMPILER`, without launching the game. Run `cargo test -p shader-pipeline -- --ignored --skip installed_vanilla_persistent_cache_across_processes --nocapture --test-threads=1` for installed GUI compilation and GPU cases.
 
 For the separate disk-cache process check, set `BATTLE_PLAN_CACHE_TEST_DIR` to new external scratch. Run `cargo test -p shader-pipeline installed_vanilla_persistent_cache_across_processes -- --ignored --nocapture` twice: `BATTLE_PLAN_EXPECT_COMPILES=1`, then `BATTLE_PLAN_EXPECT_COMPILES=0`. The second process must not discover the compiler. Map effects also require their consumer-supplied globals. Cache reuse, identical-input pixels and a matched live game frame are distinct checks.

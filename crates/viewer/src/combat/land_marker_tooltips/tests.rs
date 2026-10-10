@@ -158,6 +158,6 @@ fn marker_country_list_and_roster_have_no_viewer_cap() {
     .unwrap();
     assert!(text.starts_with("\nAttacker: 5000 (\u{11}YC0\u{11}!, \u{11}YC1\u{11}!"));
     // The shared native localiser limits each substitution to its own
-    // 0x1800-byte buffer (142230FF5); this is not a country-list cap.
+    // 0x1800-byte buffer; this is not a country-list cap.
     assert!(text.contains("\nDefender: 0 ()"));
 }

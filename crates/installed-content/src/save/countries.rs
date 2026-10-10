@@ -27,7 +27,7 @@ pub struct CountryEmissionIdentity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SavedCountryEmission {
     pub identity: CountryEmissionIdentity,
-    /// Outer FE8 object presence, distinct from its omitted count-zero list.
+    /// Outer intel object presence, distinct from its omitted count-zero list.
     pub intel_present: bool,
 }
 

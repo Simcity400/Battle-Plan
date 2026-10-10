@@ -10,7 +10,7 @@ export const STABILITY_BREAKDOWNS: readonly Breakdown[] = [
   { id: 'warSupport', label: 'War support parts' },
 ];
 
-/** Settings as signed off (mock-ups politics-1/2): either line can be switched
+/** Settings: either line can be switched
  * off, the scale is fixed 0–100% or zooms to the data, line playback is
  * selectable (draw-in by default; the whole campaign stops at the playhead
  * unless set to show past it), and values sit at the line ends. */

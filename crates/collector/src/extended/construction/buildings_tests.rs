@@ -222,7 +222,7 @@ fn fixture(countries: usize, types: usize) -> Fixture {
                     building + cbuilding::TEMPLATE,
                     &((templates + ordinal * cbuilding_template::SIZE) as u64).to_le_bytes(),
                 );
-                // rebuild_active_buildings@1411641D0 keeps positive signed levels in order.
+                // Active buildings keep positive signed levels in order.
                 if ordinal % 3 == 2 {
                     put(
                         &mut bytes,

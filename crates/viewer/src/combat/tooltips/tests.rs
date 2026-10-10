@@ -3,6 +3,8 @@ use crate::combat::binding::NoIcons;
 
 #[test]
 fn combat_close_hovers_use_first_authored_shortcut_and_keep_tooltip_parts() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let loc = loc(&[
         ("SHORTCUT", "Shortcut: $KEY$"),
         ("MAIN", "Main"),
@@ -175,7 +177,7 @@ fn naval_flag_hover_titles_both_flags_from_first_side_and_refuses_unknown_alias(
     };
     // The viewer in the first combatant is selected through its canonical
     // alias; viewing from the other combatant still titles BOTH flags with
-    // the first country's name (1417D53C0), not the enemy flag's country.
+    // the first country's name, not the enemy flag's country.
     let combat = detail(&[12, 34], &[80]);
     assert_eq!(naval_flag_country(&combat, &aliases, 340), Ok(340));
     assert_eq!(naval_flag_country(&combat, &aliases, 800), Ok(120));
@@ -269,12 +271,14 @@ fn loc(entries: &[(&str, &str)]) -> Localisation {
         .collect()
 }
 
-/// The hovers find the recorded tactic at its recorded ID (1406B0A70
-/// stores the database ID at +0x98), which must carry the recorded name;
+/// The hovers find the recorded tactic at its recorded ID, which must carry
+/// the recorded name;
 /// a repeated name is its own tactic, and a refused effect or an
 /// unproven entry names the tactic and why.
 #[test]
 fn recorded_tactics_find_their_registry_effects() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // Whether `x` names an ideology group is unknown while an ideology
     // file stops short.
     let mut names = installed_content::key_names::KeyNames::default();
@@ -305,7 +309,7 @@ fn recorded_tactics_find_their_registry_effects() {
         Ok(50_000)
     );
     assert_eq!(registry.effects(1, b"PHASES"), Ok(Effects::default()));
-    // 1424B8600 reads any text: an undefined reference is its own text
+    // the game reads any text: an unbound reference is its own text
     // (0), and 'e' is a digit to it.
     assert_eq!(registry.effects(3, b"tactic_b"), Ok(Effects::default()));
     assert_eq!(
@@ -319,7 +323,7 @@ fn recorded_tactics_find_their_registry_effects() {
     // and no later one is known.
     let unsettled = registry.effects(6, b"tactic_d").unwrap_err();
     assert!(
-        unsettled.starts_with("tactic tactic_d's ID or fields cannot be read as the game reads them: combat_tactics.txt line 7: field `x`: LoadKey (1405434F0) reads it"),
+        unsettled.starts_with("tactic tactic_d's ID or fields cannot be read as the game reads them: combat_tactics.txt line 7: field `x`"),
         "{unsettled}"
     );
     let past = registry.effects(10, b"tactic_a").unwrap_err();
@@ -344,12 +348,13 @@ fn tactic_a() -> Described<'static> {
     }
 }
 
-/// CNullCombatTactic (kind 1) takes 1415BC770's ordinary path: the
-/// header of its constructor's localised name, no effect line (all zero,
-/// 1406B0A70), and TACTIC_DESC in the delayed slot; countered, the
-/// countered line.
+/// The null tactic (kind 1) takes the ordinary hover path: its constructor
+/// name supplies the header, zero effects add no lines, and TACTIC_DESC supplies
+/// the delayed text. A countered tactic adds the countered line.
 #[test]
 fn the_null_tactic_object_is_described_like_a_tactic() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let loc = loc(&[
         ("HEADER", "$KEY$\n"),
         ("nullCombatTactic", "No Tactic Chosen"),
@@ -392,6 +397,8 @@ fn the_null_tactic_object_is_described_like_a_tactic() {
 
 #[test]
 fn tactic_description_goes_to_the_delayed_slot() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let loc = loc(&[
         ("tactic_a", "Tactic A"),
         ("HEADER", "$KEY$\n"),
@@ -425,6 +432,8 @@ fn tactic_description_goes_to_the_delayed_slot() {
 /// undrawable delayed description leaves the immediate text standing.
 #[test]
 fn refused_hovers_name_their_reason() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let entries = |extra: &[(&str, &str)]| -> Localisation {
         [("tactic_a", "Tactic A"), ("HEADER", "$KEY$\n")]
             .iter()
@@ -435,7 +444,7 @@ fn refused_hovers_name_their_reason() {
     let content = tactics(b"tactic_a = { }");
     let missing = tactic_description(&NoIcons, &entries(&[]), &content, tactic_a(), true, false);
     assert!(
-        // A missing top-level key shows its own bytes (142230940).
+        // A missing top-level key shows its own bytes.
         matches!(&missing, Ok((_, Ok(text))) if text == "TACTIC_DESC"),
         "{missing:?}"
     );
@@ -459,7 +468,7 @@ fn refused_hovers_name_their_reason() {
         unknown,
         Err("recorded tactic id 1 is tactic_b, but the content's tactic 1 is tactic_a".into())
     );
-    // CNullCombatTactic's name key, missing, shows as itself (142230940).
+    // The null tactic's missing name key shows as itself.
     let side = LandCombatSideDetails {
         tactic_kind: 1,
         ..Default::default()
@@ -497,7 +506,7 @@ fn refused_hovers_name_their_reason() {
             .unwrap()
             .contains("LEADER_SKILL_WITH_PROGRESS")
     );
-    // A missing top-level key shows its own bytes (142230940).
+    // A missing top-level key shows its own bytes.
     assert!(
         skill_tooltip(&NoIcons, &loc, 3, 0, Some(None), false, Ok(()))
             .unwrap()
@@ -519,10 +528,12 @@ fn refused_hovers_name_their_reason() {
 
 /// The authored `pdx_tooltip` is the text a widget is created with: a
 /// dynamic builder's text, or its refusal, replaces it whichever binds
-/// first (1415C1A60 sets its hovers on every update), and an unowned
+/// first (the game sets its hovers on every update), and an unowned
 /// widget keeps the seed.
 #[test]
 fn authored_seeds_never_replace_a_dynamic_hover_or_its_refusal() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let windows = windows(
         br#"containerWindowType = { name = view
             buttonType = { name = dynamic pdx_tooltip = AUTHORED }
@@ -558,6 +569,8 @@ fn authored_seeds_never_replace_a_dynamic_hover_or_its_refusal() {
 
 #[test]
 fn authored_seeds_resolve_case_without_aliasing_dynamic_hovers() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let windows = windows(
         br#"containerWindowType = { name = view
         buttonType = { name = Dynamic pdx_tooltip = AUTHORED }
@@ -604,6 +617,8 @@ fn authored_seeds_resolve_case_without_aliasing_dynamic_hovers() {
 
 #[test]
 fn authored_tooltip_hashes_preserve_fallback_and_count_invalid_keys() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let windows = windows(
         br#"containerWindowType = { name = view
         buttonType = { name = fallback tooltipText = MISSING }
@@ -689,6 +704,8 @@ fn null_tactic_object_can_counter_but_null_pointer_cannot() {
 
 #[test]
 fn organisation_effects_follow_active_tactics_and_validate_damage_sums() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = tactics(
         b"tactic_a = { attacker = 0.2 attacker_org_damage_modifier = 0.15 \
           defender_org_damage_modifier = -0.05 }",
@@ -807,7 +824,7 @@ fn cas_reports_the_opponents_air_defence_against_our_planes() {
         cas_tooltip(&NoIcons, &loc, cas(), &Conditions::new(), &gap, Ok(0), &defines),
         Err("opposing committed division 7's condition is unknown: the DivisionStatus table has no row for it".into())
     );
-    // A missing executable key shows its own bytes (142230940).
+    // A missing executable key shows its own bytes.
     let bare: Localisation = [("ATTACKING".to_owned(), "attacking".to_owned())]
         .into_iter()
         .collect();

@@ -1,4 +1,4 @@
-//! Luminance gather/adaptation at140FF2890, after the shrinking reductions.
+//! Luminance gather/adaptation, after the shrinking reductions.
 use std::{io, sync::Arc};
 
 use eframe::wgpu;
@@ -50,8 +50,8 @@ impl Gather {
             &assets.luminance.source.techniques[selection.index],
         )
         .map_err(refuse)?;
-        // 140FF2D49..2DAC binds program and physical PS t0/t1+s0/s1 only.
-        // Blend stays seed's; forced depth and CGraphics+c0 raster retain.
+        // Bind the program and physical PS t0/t1+s0/s1 slots. Retain the seed blend, forced depth and
+        // renderer raster state.
         state
             .samplers
             .retain(|key, _| *key == binding(0, Stage::Pixel));
@@ -80,8 +80,8 @@ impl Gather {
         previous: &wgpu::TextureView,
         target: &wgpu::TextureView,
     ) -> io::Result<()> {
-        // 140FF2C7A..2D0C: b2, both stages, 48 bytes. Offset12 is unknown
-        // stack padding, checked against compiled reads at construction. Zero40..47 is native.
+        // The 48-byte b2 allocation is bound to both stages. Offset 12 is unknown padding checked against
+        // compiled reads at construction; bytes 40 through 47 are initialized zeros.
         let constants = [
             1.0,
             1.0,

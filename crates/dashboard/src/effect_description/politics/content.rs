@@ -45,7 +45,7 @@ impl PoliticsContent {
                 notes.extend(db.warnings.iter().cloned());
             })
             .map_err(|why| why.to_string());
-        // Relation titles need bindings (141395B30/1413931A0) stripped from the predicate copy.
+        // Relation titles need bindings stripped from the predicate copy.
         let triggers = installed_content::scripted_triggers::read_descriptions(layers)
             .inspect(|db| {
                 notes.extend(db.logged.iter().cloned());
@@ -81,10 +81,10 @@ impl Renderer<'_, '_, '_> {
         Ok(&self.context.text.content().effects()?.politics)
     }
 
-    // Own 1403929D0 -> 14039CAE0: resolve all selectors before evaluating
-    // values. Country party roster follows ideology creation order (140B9F5E0).
+    // resolve all selectors before evaluating
+    // values. Country party roster follows ideology creation order.
     // First authored match wins; absent groups are zero. No divide-by-total.
-    // EFFECT_SET_POPULARITIES@142750EC8; 142259590's times_hundred=false.
+    // Percent formatting does not multiply by one hundred.
     pub(in crate::effect_description) fn politics_popularities(
         &self,
         item: &Item,
@@ -108,16 +108,13 @@ impl Renderer<'_, '_, '_> {
             .map_err(|why| why.to_string())?;
         let mut text = self.line(b"EFFECT_SET_POPULARITIES", &[], scopes, true)?;
         for group in groups {
-            // FindPartyByIdeology (140B980C0); a missing recorded row is a gap,
+            // A missing recorded ideology-party row is a gap,
             // not permission to invent a party the runtime roster did not hold.
             if !parties.iter().any(|party| {
                 self.context.text.recorded().slot(party.country) == Some(country)
                     && party.token.eq_ignore_ascii_case(group.token.as_bytes())
             }) {
-                return Err(format!(
-                    "PoliticalParties lacks ideology {} (14039CAE0)",
-                    group.token
-                ));
+                return Err(format!("PoliticalParties lacks ideology {}", group.token));
             }
             let value = selectors
                 .iter()
@@ -125,16 +122,16 @@ impl Renderer<'_, '_, '_> {
                 .map(|at| self.scoped_value(fields[at].value.scalar().unwrap_or_default(), scopes))
                 .transpose()?
                 .unwrap_or(0);
-            let name = self.localised(group.token.as_bytes(), &[], scopes, false)?; // 140616BC0.
+            let name = self.localised(group.token.as_bytes(), &[], scopes, false)?;
             text.push_str(&name);
-            text.push_str(": "); // 142700678.
-            text.push_str(&installed_content::fixed5::fixed5_percent(value, 2, false)); // 142259590.
+            text.push_str(": ");
+            text.push_str(&installed_content::fixed5::fixed5_percent(value, 2, false));
             text.push('\n');
         }
         Ok(text)
     }
 
-    // GetCountryTagOrStateOwner 14052B6A0, used by all three focus describers.
+    // country or state-owner lookup, used by all three focus describers.
     fn politics_focus_country(&self, scopes: Scopes) -> Result<u32, String> {
         match scopes.this {
             Scope::Country(country) | Scope::CountryLeader { country, .. } => Ok(country),
@@ -143,16 +140,14 @@ impl Renderer<'_, '_, '_> {
                 .world()?
                 .state_row(state)
                 .and_then(|(owner, _)| self.context.text.recorded().slot(owner))
-                .ok_or_else(|| {
-                    format!("States/CountryLinks lacks focus-name owner for {state} (14052B6A0)")
-                }),
-            _ => Err("focus description scope has no country/state owner (14052B6A0)".into()),
+                .ok_or_else(|| format!("States/CountryLinks lacks focus-name owner for {state}")),
+            _ => Err("focus description scope has no country/state owner".into()),
         }
     }
 
-    // CNationalFocus::GetLocalizedName 1402D2250: fresh country scope;
-    // SeedEventScope 1402DADC0 adds Clock seed to byte-exact FNV1a(id) +0x58
-    // (ReadToken 1402D76A0 -> 1402D70E0). Reuse the shared hash lanes.
+    // fresh country scope;
+    // scope seeding adds Clock seed to byte-exact FNV1a(id)
+    // while parsing the token. Reuse the shared hash lanes.
     fn politics_focus_name(
         &self,
         id: &str,
@@ -166,7 +161,7 @@ impl Renderer<'_, '_, '_> {
             .complete::<tables::Clock>()
             .map_err(|why| why.to_string())?
             .first()
-            .ok_or("Clock lacks focus-description seed (1402DADC0)")?
+            .ok_or("Clock lacks focus-description seed")?
             .seed;
         let hash = id.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
             (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
@@ -189,18 +184,17 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // Own 14037B7B0 / 14039A170 / 140398CF0. No appended LF. Lookup
-    // 1402D1D60 compares exact ID bytes; continuous focuses cannot match.
-    // UNLOCK_COMPLETE_EFFECT_FOR@14275A6F0; FOR@14275A6E8, FOCUS@14275A6E0.
-    // UNLOCK_FOCUS_EFFECT@14275A5C8 / UNCOMPLETE_FOCUS_EFFECT@14275A820.
+    // No appended LF. Lookup
+    // compares exact ID bytes; continuous focuses cannot match.
+
     pub(in crate::effect_description) fn politics_focus(
         &self,
         item: &Item,
         scopes: Scopes,
         action: u8,
     ) -> Result<String, String> {
-        // Complete 1403A9B50/1403B1040 accepts scalar or focus; unlock's
-        // 141385570 is scalar-only; uncomplete 1403B64F0 reads block focus.
+        // Completion accepts scalar or focus; unlock
+        // is scalar-only; uncomplete reads block focus.
         let focus = || field(children(item), "focus").and_then(|item| item.value.scalar());
         let id = match action {
             0 => item.value.scalar().or_else(focus),
@@ -209,28 +203,27 @@ impl Renderer<'_, '_, '_> {
         }
         .unwrap_or_default();
         let id = std::str::from_utf8(installed_content::parser::c_string(id))
-            .map_err(|_| "national-focus ID is not UTF-8 (1402D1D60)")?;
+            .map_err(|_| "national-focus ID is not UTF-8")?;
         let content = self.politics_content()?;
         let definition = content
             .focuses
             .as_ref()
             .map_err(Clone::clone)?
             .get(id)
-            .ok_or_else(|| {
-                format!("national focus {id} is absent from recorded content (1402D1D60)")
-            })?;
+            .ok_or_else(|| format!("national focus {id} is absent from recorded content"))?;
         let country = self.politics_focus_country(scopes)?;
         let name = self.politics_focus_name(id, definition, country)?;
-        let who = self.country_name(country, false)?; // 140BA5960.
+        let who = self.country_name(country, false)?;
         if action == 0
             && let Some(tooltip) = field(children(item), "originator_name")
         {
-            // +0x80 is CBoundLocalization (1403B1040 -> 1402F19A0), not ReadString.
-            // The corpus reaches scalar keys; blocks need the core bound formatter.
-            let tooltip = tooltip.value.scalar().ok_or(
-                "originator_name bound localisation block requires core formatter (1402F19A0)",
-            )?;
-            let tooltip = self.localised(tooltip, &[], scopes, true)?; // +0x80; 14037B7B0.
+            // The originator name is bound localisation, not a plain string.
+            // Scalar keys are supported; blocks need the core bound formatter.
+            let tooltip = tooltip
+                .value
+                .scalar()
+                .ok_or("originator_name bound localisation block requires core formatter")?;
+            let tooltip = self.localised(tooltip, &[], scopes, true)?;
             return self.localised(
                 b"UNLOCK_COMPLETE_EFFECT_FOR",
                 &[
@@ -243,7 +236,7 @@ impl Renderer<'_, '_, '_> {
             );
         }
         let key = match action {
-            0 => b"UNLOCK_COMPLETE_EFFECT".as_slice(), // 14275A6C8.
+            0 => b"UNLOCK_COMPLETE_EFFECT".as_slice(),
             1 => b"UNLOCK_FOCUS_EFFECT".as_slice(),
             _ => b"UNCOMPLETE_FOCUS_EFFECT".as_slice(),
         };
@@ -255,13 +248,12 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             true,
-        ) // 14275A5C0 / 14272B3D8.
+        )
     }
 
-    // 1403214E0 / 140321A90: template name 1413BCF50 is scoped;
+    // template name is scoped;
     // outer three-argument localisation is plain, then explicit LF.
-    // EFFECT_ADD_COUNTRY_TO_TECH_SHARING_GROUP@14273C1D8;
-    // EFFECT_REMOVE_COUNTRY_FROM_TECH_SHARING_GROUP@14273C0D8.
+
     pub(in crate::effect_description) fn politics_sharing(
         &self,
         item: &Item,
@@ -298,12 +290,11 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // Own 140321840: +0x58 is ReadTokenId (140323D40), matched against
-    // group+8 by 140EBFF80. Group+8 is its template token (140ED0641,
-    // 140ED0A65), already recorded by TechSharingGroups; members retain the
-    // recorded freshness. GetName 140ED0950 -> 1413BCF50 expands in caller.
-    // EFFECT_MODIFY_COUNTRY_TECH_SHARING_BONUS@14273C3E8;
-    // COUNTRY@142728968, GROUPNAME@14273C0C8, BONUS@14273BC2C.
+    // Parse the template token and match it against
+    // the recorded group template token.
+    // TechSharingGroups members retain the
+    // recorded freshness. The group name expands in the caller.
+
     pub(in crate::effect_description) fn politics_sharing_bonus(
         &self,
         item: &Item,
@@ -324,7 +315,7 @@ impl Renderer<'_, '_, '_> {
             return empty::describe();
         };
         if token == 0x165 {
-            // Native unset token (140321876).
+            // Native unset token.
             return empty::describe();
         }
         let frame = self.context.text.frame();
@@ -347,7 +338,7 @@ impl Renderer<'_, '_, '_> {
             return empty::describe();
         }
         let id = std::str::from_utf8(installed_content::parser::c_string(id))
-            .map_err(|_| "technology-sharing ID is not UTF-8 (140323D40)")?;
+            .map_err(|_| "technology-sharing ID is not UTF-8")?;
         let group = self
             .politics_content()?
             .sharing
@@ -355,11 +346,11 @@ impl Renderer<'_, '_, '_> {
             .map_err(Clone::clone)?
             .group(id)?
             .ok_or_else(|| {
-                format!("technology-sharing group {id} is absent from recorded content (1413BCF50)")
+                format!("technology-sharing group {id} is absent from recorded content")
             })?;
         let name = self.localised(group.name.as_bytes(), &[], scopes, true)?;
         let country = self.country_name(country, false)?;
-        // ReadFixed5 1424ABB10 -> 1424B0480, not a scoped variable.
+        // fixed-point parsing, not a scoped variable.
         let bonus = field(fields, "bonus")
             .and_then(|item| item.value.scalar())
             .and_then(installed_content::fixed5::script_fixed5)
@@ -372,13 +363,13 @@ impl Renderer<'_, '_, '_> {
                 ("BONUS", Argument::Fixed5(bonus)),
             ],
             scopes,
-            false, // 14031DEB0: plain outer localisation, then explicit LF.
+            false, // plain outer localisation, then explicit LF.
         )
     }
 
-    // 14039A4E0: nonnull, defined (+0x10 nonempty) upgrade then UPGRADE
-    // @142703C38 in EFFECT_UPGRADE_INTELLIGENCE_AGENCY, expansion and LF.
-    // EFFECT_UPGRADE_INTELLIGENCE_AGENCY@142763058.
+    // A defined upgrade with a nonempty identifier supplies UPGRADE
+    // in EFFECT_UPGRADE_INTELLIGENCE_AGENCY, expansion and LF.
+
     pub(in crate::effect_description) fn politics_upgrade_agency(
         &self,
         item: &Item,
@@ -406,10 +397,10 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 140375370 / 140389F00: +0x50 name expands first, +0x70 text_icon
-    // emits control 0x13. Marked-country helper 140BA59E0 is the shared
-    // GetNameWithFlag scripted-text path (capitalized definite name).
-    // OPERATION_TOKEN_RECEIVE@142761F78 / OPERATION_TOKEN_REMOVE@142762100.
+    // name expands first, text_icon
+    // emits control 0x13. Marked-country helper is the shared
+    // scripted-text path for a capitalized definite name.
+
     pub(in crate::effect_description) fn politics_operation_token(
         &self,
         item: &Item,
@@ -425,22 +416,20 @@ impl Renderer<'_, '_, '_> {
             .transpose()?
             .flatten()
         else {
-            return Err("operation-token target is invalid (140536ED0)".into());
+            return Err("operation-token target is invalid".into());
         };
         let token = field(fields, "token")
             .and_then(|item| item.value.scalar())
             .unwrap_or_default();
         let token = std::str::from_utf8(installed_content::parser::c_string(token))
-            .map_err(|_| "operation-token ID is not UTF-8 (14039D9B0)")?;
+            .map_err(|_| "operation-token ID is not UTF-8")?;
         let content = self.politics_content()?;
         let token = content
             .tokens
             .as_ref()
             .map_err(Clone::clone)?
             .token(token)?
-            .ok_or_else(|| {
-                format!("operation token {token} is absent from recorded content (14039D9B0)")
-            })?;
+            .ok_or_else(|| format!("operation token {token} is absent from recorded content"))?;
         let name = self.localised(token.name.as_bytes(), &[], scopes, true)?;
         let name = format!("\u{13}{} {name}", token.icon);
         let at = {
@@ -470,8 +459,8 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 14051E260 -> 1406B11F0: exact tactic bytes, NAME@142727E7C,
-    // UNLOCK_TACTIC_EFFECT@1427BB730; plain localisation and no LF.
+    // exact tactic bytes,
+    // plain localisation and no LF.
     pub(in crate::effect_description) fn politics_unlock_tactic(
         &self,
         item: &Item,
@@ -490,7 +479,7 @@ impl Renderer<'_, '_, '_> {
             .find(|tactic| tactic.token == token)
             .ok_or_else(|| {
                 format!(
-                    "combat tactic {} is absent from recorded content (1406B11F0)",
+                    "combat tactic {} is absent from recorded content",
                     String::from_utf8_lossy(token)
                 )
             })?;

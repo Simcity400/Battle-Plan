@@ -42,7 +42,7 @@ impl Demand {
         let Some(state) = FAILURES[0].observe(demand_game_state(memory, base))? else {
             return Ok(None);
         };
-        // CGameState::reset@1401E0190 and InitializeProvinces@1401CD490
+        // World reset and province initialization
         // size the indexed live registries; slot zero supplies no source row.
         let indexed = |offset, width| {
             state

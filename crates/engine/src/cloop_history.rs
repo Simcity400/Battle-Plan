@@ -1,9 +1,8 @@
-//! CLoopHistory layout and its air-statistics channel schema.
+//! CLoopHistory layout and air-statistics channel schema.
 //!
-//! Harvested from `air_loss_stats_live/src/lib.rs`, whose country walk checks
-//! the vtable, self-reference and 89 fields. The
-//! 24 named channels below are a subset of those 89 fields. Values remain i64;
-//! display divisors do not justify narrowing or rounding the recorded value.
+//! The 24 named channels are a subset of the 89-field history record.
+//! Values remain signed i64; display divisors do not justify narrowing or
+//! rounding recorded values.
 
 use crate::{
     Memory,
@@ -23,25 +22,23 @@ const SLOT_FIELD: [RecordField; 1] = [RecordField {
 const SLOT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&SLOT_FIELD, 8).expect("valid record layout");
 
-/// CLoopHistory primary vtable; a729 RTTI identity and old derive_country_row_result vtable check.
+/// CLoopHistory primary vtable.
 pub const VTABLE_RVA: usize = 0x029b_be58;
-/// CLoopHistory embedded CLoopHistoryContainerQueue at +8 (vtable 0x1429bbe08, written by the
-/// constructor@141504330); its three window pointers follow at +0x10, +0x18 and +0x20.
+/// Embedded history queue at +8, with window pointers at +0x10/+0x18/+0x20.
 pub const QUEUE: usize = 0x08;
-/// CLoopHistory daily window pointer; AdvanceLoopHistoryWindows@141504690 creates it with 30 records,
-/// CLoopHistoryContainerQueue::Advance@1415050b0 advances it on every call, and
-/// GetNestedQword10_30@141504620 reads its current record (+0x30) for the logistics series.
+/// CLoopHistory daily window pointer.
 pub const DAILY_WINDOW: usize = 0x10;
-/// Records in the daily window; AdvanceLoopHistoryWindows@141504690 passes 0x1e.
+/// Records in the daily window.
 pub const DAILY_WINDOW_CAPACITY: u32 = 30;
-/// CLoopHistory third window pointer at +0x20 (the queue's third window, which advances when the
-/// twelve-record second window wraps); old derive_country_row_result follows it before field reads.
+/// Third history window at +0x20 advances when the twelve-record second
+/// window wraps.
 pub const WINDOW: usize = 0x20;
-/// CLoopHistory self-reference pointer at +0x28; old derive_country_row_result requires object equality.
+/// History self-reference pointer at +0x28, required to equal its object.
 pub const SELF_REFERENCE: usize = 0x28;
-/// CLoopHistory roll-up mode i32; the constructor@141504330 stores its third argument here and
+/// History roll-up mode, signed i32: zero sums wrapped records,
+/// one keeps the latest record.
 pub const ROLL_UP: usize = 0x30;
-/// CLoopHistory field-count u32 at +0x34; old derive_country_row_result checks the air schema's 89 fields.
+/// History field-count u32 at +0x34; air schema requires 89 fields.
 pub const FIELD_COUNT: usize = 0x34;
 
 /// A country's current annual-ring air-statistics bucket in one air region.
@@ -184,8 +181,8 @@ fn read_current(
     let capacity = field::<u32>(memory, window, loop_history_window::CAPACITY)?;
     let year_slot = field::<u32>(memory, window, loop_history_window::CURRENT_SLOT)?;
     let year_window_wrapped = field::<u8>(memory, window, loop_history_window::WRAPPED)?;
-    // 140C40870 leaves existing air histories intact; 141504800 and
-    // 141505AD0 use the original signed ring capacity without a five-slot gate.
+    // Existing air histories remain intact. The original signed ring
+    // capacity supplies its bound, without a five-slot gate.
     if capacity as i32 <= 0
         || records.count != capacity
         || year_slot >= capacity
@@ -322,65 +319,65 @@ fn array(
         .ok_or("air history array unreadable or invalid")
 }
 
-/// Air-statistics semantics attached to a CLoopHistory instance by the old engine walk.
+/// Air-statistics semantics attached to a history instance.
 pub mod air_stats {
-    /// Air-statistics field count 89; old air_loss_stats_live validates the live CLoopHistory header.
+    /// Air-statistics field count 89.
     pub const FIELD_COUNT: u32 = 89;
-    /// Air statistics display divisor for non-building channels; old CHANNEL_DISPLAY_DIVISORS uses 100000.
+    /// Non-building air-statistics display divisor.
     pub const DISPLAY_DIVISOR: i64 = 100_000;
-    /// Building-bombing display divisor; old CHANNEL_DISPLAY_DIVISORS uses 1000 for fields zero and 41.
+    /// Building-bombing display divisor for fields zero and 41.
     pub const BUILDINGS_BOMBED_DISPLAY_DIVISOR: i64 = 1_000;
 
-    /// CLoopHistory air field 0, our buildings bombed; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 0, our buildings bombed.
     pub const OUR_BUILDINGS_BOMBED: usize = 0;
-    /// CLoopHistory air field 1, our troops bombed; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 1, our troops bombed.
     pub const OUR_TROOPS_BOMBED: usize = 1;
-    /// CLoopHistory air field 2, our ships bombed; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 2, our ships bombed.
     pub const OUR_SHIPS_BOMBED: usize = 2;
-    /// CLoopHistory air field 3, our fighters lost; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 3, our fighters lost.
     pub const OUR_FIGHTERS_LOST: usize = 3;
-    /// CLoopHistory air field 10, our bombers lost; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 10, our bombers lost.
     pub const OUR_BOMBERS_LOST: usize = 10;
-    /// CLoopHistory air field 17, our close-air-support aircraft lost; old PINNED_CHANNELS mapping.
+    /// Air history field 17: friendly close-air-support aircraft lost.
     pub const OUR_CAS_LOST: usize = 17;
-    /// CLoopHistory air field 24, our transports lost; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 24, our transports lost.
     pub const OUR_TRANSPORTS_LOST: usize = 24;
-    /// CLoopHistory air field 36, our trains lost; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 36, our trains lost.
     pub const OUR_TRAINS_LOST: usize = 36;
-    /// CLoopHistory air field 37, our trucks lost; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 37, our trucks lost.
     pub const OUR_TRUCKS_LOST: usize = 37;
-    /// CLoopHistory air field 38, our railway guns lost; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 38, our railway guns lost.
     pub const OUR_RAILWAY_GUNS_LOST: usize = 38;
-    /// CLoopHistory air field 39, our bombers disrupted; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 39, our bombers disrupted.
     pub const OUR_BOMBERS_DISRUPTED: usize = 39;
-    /// CLoopHistory air field 40, our missiles lost; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 40, our missiles lost.
     pub const OUR_MISSILES_LOST: usize = 40;
-    /// CLoopHistory air field 41, enemy buildings bombed; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 41, enemy buildings bombed.
     pub const ENEMY_BUILDINGS_BOMBED: usize = 41;
-    /// CLoopHistory air field 42, enemy troops bombed; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 42, enemy troops bombed.
     pub const ENEMY_TROOPS_BOMBED: usize = 42;
-    /// CLoopHistory air field 43, enemy ships sunk; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 43, enemy ships sunk.
     pub const ENEMY_SHIPS_SUNK: usize = 43;
-    /// CLoopHistory air field 44, enemy fighters lost; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 44, enemy fighters lost.
     pub const ENEMY_FIGHTERS_LOST: usize = 44;
-    /// CLoopHistory air field 51, enemy bombers lost; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 51, enemy bombers lost.
     pub const ENEMY_BOMBERS_LOST: usize = 51;
-    /// CLoopHistory air field 58, enemy close-air-support aircraft lost; old PINNED_CHANNELS mapping.
+    /// Air history field 58: enemy close-air-support aircraft lost.
     pub const ENEMY_CAS_LOST: usize = 58;
-    /// CLoopHistory air field 65, enemy transports lost; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 65, enemy transports lost.
     pub const ENEMY_TRANSPORTS_LOST: usize = 65;
-    /// CLoopHistory air field 77, enemy trains lost; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 77, enemy trains lost.
     pub const ENEMY_TRAINS_LOST: usize = 77;
-    /// CLoopHistory air field 78, enemy trucks lost; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 78, enemy trucks lost.
     pub const ENEMY_TRUCKS_LOST: usize = 78;
-    /// CLoopHistory air field 79, enemy railway guns lost; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 79, enemy railway guns lost.
     pub const ENEMY_RAILWAY_GUNS_LOST: usize = 79;
-    /// CLoopHistory air field 80, enemy bombers disrupted; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 80, enemy bombers disrupted.
     pub const ENEMY_BOMBERS_DISRUPTED: usize = 80;
-    /// CLoopHistory air field 81, enemy missiles lost; old air_loss_stats_live PINNED_CHANNELS mapping.
+    /// CLoopHistory air field 81, enemy missiles lost.
     pub const ENEMY_MISSILES_LOST: usize = 81;
 
-    /// Native channel ordering preserved from the archived PINNED_CHANNELS map.
+    /// Stored air-history channel ordering.
     pub const CHANNELS: [usize; 24] = [
         OUR_BUILDINGS_BOMBED,
         OUR_TROOPS_BOMBED,

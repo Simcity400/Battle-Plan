@@ -45,7 +45,7 @@ const OTHER = '\u0000other';
 /** Events a compact grouped-marker tooltip names before counting the rest. */
 const COMPACT_EVENTS = 5;
 
-/** World tension over time (mock-up diplo-1): stacked areas of the countries whose
+/** World tension over time: stacked areas of the countries whose
  * actions generated it, each in its recorded map colour, with world tension as a
  * line on top, the events that changed it as triangles along the top, and the
  * values at the moment shown listed beside the chart. A world widget
@@ -279,7 +279,7 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }}
-        // 0–100% as signed off, grown to whatever is drawn beyond it (negative parts, or sources past the cap), never cut.
+        // 0–100%, grown to whatever is drawn beyond it (negative parts, or sources past the cap), never cut.
         fitValues={shown => [Math.min(0, shown?.[0] ?? 0), Math.max(100, shown?.[1] ?? 100)]}
         layers={layers} active={active && (drill.breakdown == null || options.drill === 'popout')}
         revision={`${head}:${model.reply.branchId}:${keysKey}:${share}:${looks.revision}:${hover.revision}:${tokens.countryColours}:${viewport}`}

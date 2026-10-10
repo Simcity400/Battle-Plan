@@ -1,6 +1,6 @@
-//! Naval mission admission topology, 140E0DD70 / 140D51530 and the quantised
-//! sea-distance matrix, 140A4E4B0 / 140E67CE0. Content is the shared native
-//! province graph; port links are ProvinceRow.port_sea, never nearest-sea guesses.
+//! Naval mission admission topology and the quantised sea-distance matrix.
+//! Content comes from the shared province graph; port links use
+//! ProvinceRow.port_sea, never nearest-sea guesses.
 use crate::{province_geometry::ProvinceGeometry, province_graph::ProvinceGraph};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -8,12 +8,12 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 pub struct RegionEdge {
     pub to: u32,
     pub unrestricted: bool,
-    /// None is a native sea-crossing record with a null rule, which admits.
+    /// None is a sea-crossing record with a null rule, which admits.
     pub rules: Vec<Option<String>>,
 }
 
-/// 140E0DD70 builds region neighbours in province/neighbour order. Only
-/// sea-to-sea edges set the unrestricted byte or append rule records.
+/// Build region neighbours in province/neighbour order. Only sea-to-sea
+/// edges set the unrestricted byte or append rule records.
 pub fn region_edges(
     graph: &ProvinceGraph,
     geometry: &ProvinceGeometry,
@@ -64,8 +64,8 @@ pub fn region_edges(
         .collect()
 }
 
-/// 140D51530 marks a neighbour visited before testing its rule, even when
-/// it fails. An undecided admission cannot safely be retried from another edge.
+/// Mark a neighbour visited before testing its rule, even when it fails.
+/// An undecided admission cannot safely be retried from another edge.
 pub fn region_reaches(
     edges: &BTreeMap<u32, Vec<RegionEdge>>,
     sea: &BTreeSet<u32>,
@@ -106,8 +106,8 @@ pub fn region_reaches(
     Ok(false)
 }
 
-/// Load-static source rows, as built by 140A4E4B0. One native relaxation per base,
-/// shared by every task force using it; no task-force x province path searches.
+/// Load-static source rows. One relaxation per base, shared by every task
+/// force using it; no task-force x province path searches.
 pub struct Distances {
     ports: BTreeMap<u32, u32>,
     indexed: Vec<u32>,
@@ -115,8 +115,8 @@ pub struct Distances {
 }
 impl Distances {
     pub fn new(geometry: &ProvinceGeometry, ports: &BTreeMap<u32, u32>) -> Self {
-        // 140A54280 indexes valid definitions in province-id order when
-        // +0xC8 is nonzero or the definition's land/lake flags are both clear.
+        // Index valid definitions in province-id order when their port sea is
+        // nonzero or their land/lake flags are both clear.
         let indexed = geometry
             .centroids
             .keys()
@@ -133,8 +133,8 @@ impl Distances {
             rows: BTreeMap::new(),
         }
     }
-    /// 140E9A9D0 substitutes land/lake port seas first; a missing port
-    /// takes 140E67820's wrapped centroid distance over the original pair.
+    /// Substitute land/lake port seas first; a missing port uses the wrapped
+    /// centroid distance over the original pair.
     pub fn distance(
         &mut self,
         graph: &ProvinceGraph,
@@ -155,8 +155,8 @@ impl Distances {
         self.mapped_distance(graph, geometry, source, target)
     }
 
-    /// 140E93C00 reads the raw matrix for stored nearest-base IDs. It does
-    /// not project ports or fall back to centroid distance, including ID zero.
+    /// Read the raw matrix for stored nearest-base IDs. Do not project ports
+    /// or fall back to centroid distance, including ID zero.
     pub fn mapped_distance(
         &mut self,
         graph: &ProvinceGraph,
@@ -167,9 +167,9 @@ impl Distances {
         if from == to {
             return Ok(0);
         }
-        // 140A4E4B0 narrows the map's lookup to signed i16. Negative slots
-        // take 140E67CE0's unmapped sentinel; a wrapped positive slot aliases
-        // that earlier matrix row. This is a native limit, not a chosen cap.
+        // Narrow the map's lookup to signed i16. Negative slots use the unmapped
+        // sentinel; a wrapped positive slot aliases that earlier matrix row.
+        // The signed storage width determines this limit.
         let index = |id| {
             self.indexed
                 .binary_search(&id)
@@ -202,13 +202,13 @@ impl Distances {
         while let Some(from) = queue.pop_front() {
             let distance = distances[&from];
             let neighbours = graph.edges.get(&from).map(Vec::as_slice).unwrap_or(&[]);
-            // 140A4E4B0 narrows the neighbour count to signed i16 before its
-            // loop: negative counts visit nothing; wrapped positive counts
-            // visit only the corresponding prefix.
+            // Narrow the neighbour count to signed i16 before the loop: negative
+            // counts visit nothing; wrapped positive counts visit only the
+            // corresponding prefix.
             let count = (neighbours.len() as i16).max(0) as usize;
             for &(to, raw) in &neighbours[..count] {
-                // Unindexed lakes and land without sea access are not vertices
-                // of the native relaxation, even if the province graph links them.
+                // Unindexed lakes and land without sea access are not relaxation
+                // vertices, even if the province graph links them.
                 if self.indexed.binary_search(&to).is_err() {
                     continue;
                 }
@@ -227,7 +227,7 @@ impl Distances {
                         graph.unavailable_reason(from, to)
                     )
                 })? as i32;
-                // A negative narrowed edge can make the native relaxation unbounded.
+                // A negative narrowed edge can make the relaxation unbounded.
                 if raw < 0 {
                     return Err(format!(
                         "naval distance edge {from}/{to} has negative narrowed distance {raw}"
@@ -240,7 +240,7 @@ impl Distances {
                 }
             }
         }
-        // The game stores ushort(distance / 100000), not an unquantised path.
+        // The game stores distance in unsigned 16-bit whole fixed5 units.
         Ok(distances
             .into_iter()
             .map(|(id, value)| (id, i64::from((value / 100_000) as u16) * 100_000))
@@ -288,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn native_distance_quantises_and_port_land_cannot_bridge_two_seas() {
+    fn distance_quantises_and_port_land_cannot_bridge_two_seas() {
         let graph = ProvinceGraph {
             edges: BTreeMap::from([
                 (1, vec![(2, Some(175_000)), (4, Some(100_000))]),
@@ -338,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn native_signed_i16_matrix_slots_keep_their_negative_sentinel_and_positive_alias() {
+    fn signed_i16_matrix_slots_keep_their_negative_sentinel_and_positive_alias() {
         let graph = ProvinceGraph {
             edges: [(1, vec![(2, Some(200_000))])].into(),
             ..Default::default()
@@ -360,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn native_signed_i16_neighbour_count_keeps_its_empty_and_prefix_cases() {
+    fn signed_i16_neighbour_count_keeps_its_empty_and_prefix_cases() {
         let mut graph = ProvinceGraph::default();
         let geometry = ProvinceGeometry {
             centroids: [(1, [0, 0]), (2, [1, 0])].into(),
@@ -382,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn native_region_visit_precedes_rule_admission() {
+    fn region_visit_precedes_rule_admission() {
         let restricted = |to, rule: &str| RegionEdge {
             to,
             rules: vec![Some(rule.into())],

@@ -1,10 +1,9 @@
 //! Current raw tie-breaking operands of the ship's already selected variant.
 //!
-//! Native140C24A90 delegates equal-strength distinct variants to140BC88A0.
-//! Its terms are mutable simulation state: command1419918B0 rebuilds the same
-//! variant and140BC4660 refreshes its retained organisation marker. Daily
-//! variant tables therefore cannot stand in for this current observation.
-//! No native pointer is returned in the captured packet and no getter is called.
+//! Equal-strength distinct variants use mutable simulation terms. Commands
+//! can rebuild the same variant and refresh its retained organisation marker,
+//! so daily variant tables cannot replace this current observation.
+//! No game pointer is returned in the packet and no getter is called.
 
 use super::{ModelMemo, SelectedModelVariant};
 use crate::{
@@ -12,23 +11,23 @@ use crate::{
     memory::Raw, read,
 };
 
-/// Comparator140BC88A0 reads module count at+C4. BD0D50 rebuilds414/418
-/// from upgrade levels and signed module priorities, respectively.
+/// Module comparison reads the live count. Rebuilding derives summary fields
+/// from upgrade levels and signed module priorities.
 const MODULE_COUNT: usize = 0xc4;
 const UPGRADE_LEVEL_SUM: usize = 0x414;
 const MODULE_PRIORITY_SUM: usize = 0x418;
-/// RefreshOrganisationBonuses140BC4660 stores linked organisation+148 here;
-/// Serialize140BD4770 writes its nonzero signed value under token4002.
+/// Organisation-bonus refresh stores the linked organisation's +0x148
+/// marker here; serialization writes its nonzero signed value.
 const ORGANISATION_MARKER: usize = 0x4b0;
-/// General definition ordinal: ctor140C82D60 stores current DB count, null
-/// ctor140C82B50 stores-1, and generated copy1409EA240 preserves this field.
+/// General definition ordinal. Construction stores the current database
+/// count, null construction stores -1, and copying preserves the field.
 const DEFINITION_INDEX: usize = 0x418;
-/// DB ctor1409E2AE0 seeds this array with the null definition at slot0;
-/// loader1409E5170 and generated-copy1409EA240 append at their supplied index.
+/// The database begins with the null definition at slot zero. Loading and
+/// copying append at their supplied index.
 const DEFINITIONS: usize = 0x68;
-/// Database ctor1409E2AE0 installs the null wrapper at1429219F0, clears
-/// ACTIVE, and publishes its sole pointer at143320C78. Type ctor140C82B50
-/// supplies token165 and ordinal-1. This is not a null variant reference.
+/// The database installs the null-definition vtable, clears ACTIVE and
+/// publishes its sole pointer. Null type construction supplies the null
+/// definition token and ordinal -1. This is not a null variant reference.
 pub(super) const NULL_DEFINITION_VTABLE_RVA: usize = 0x0292_19f0;
 pub(super) const NULL_DEFINITION_SINGLETON_RVA: usize = 0x0332_0c78;
 pub(super) const NULL_DEFINITION_TOKEN: u32 = 0x165;

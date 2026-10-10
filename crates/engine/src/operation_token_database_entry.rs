@@ -1,12 +1,10 @@
-//! Observed slot in COperationTokensDatabase's numeric-id map.
-//!
-//! The old source does not recover this non-polymorphic entry's C++ type name.
+//! Operation-token database numeric-ID map slot.
 
-/// Operation-token database map slot stride; old diplomacy_intel_operatives_live/src/extractor.rs:91,10720 advances by 0x38 bytes.
+/// Operation-token database slot stride.
 pub const STRIDE: usize = 0x38;
-/// Operation-token database slot occupancy byte; old diplomacy_intel_operatives_live/src/extractor.rs:10721 skips zero and accepts any nonzero value.
+/// Slot occupancy byte: zero skips, any nonzero value is occupied.
 pub const OCCUPIED: usize = 0x04;
-/// Operation-token database numeric id, u32; old diplomacy_intel_operatives_live/src/extractor.rs:10724 uses it as the membership-vector lookup key.
+/// Operation-token u32 numeric ID used for membership lookup.
 pub const NUMERIC_ID: usize = 0x08;
-/// Operation-token database definition pointer, u64; old diplomacy_intel_operatives_live/src/extractor.rs:10725-10730 follows it to COperationToken +0x50.
+/// Operation-token definition pointer.
 pub const DEFINITION: usize = 0x10;

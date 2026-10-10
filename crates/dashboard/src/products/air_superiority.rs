@@ -1,18 +1,16 @@
 //! Regional air comparison, bounded by the rows and dates drawn.
 //!
-//! GetStrategicAirRegionEntry@140C456F0 indexes CStrategicAir+E0, stride A0,
-//! by strategic-region runtime slot (+60). 140C56A30 (140C3B330) sums the
-//! +110 friendly roster's contributions, minus +128 suppression; enemy sums
-//! +128 contributions minus +110 suppression. Both clamp at zero.
-//! 140C557A0/140C43B30 include wartime allies and volunteer relationships
-//! (1406C48D0), so the side comparison is an application comparison of views.
-//! Co-belligerents are assigned once by recorded war relations (assignment.rs).
-//! build_strategic_air_map_mode@140DFF6E0 uses friendly*100000/(friendly+enemy),
-//! strictly >60000 good, <40000 bad. Native zero colouring also reads counters
-//! not recorded here. Threshold labels are application wording.
-//! AirWings.mission_region is the assigned mission region (140F70850,
-//! 140F726A0), including inactive assignments. Theatre groups/members are the
-//! recorded CAirTheatre roster (1414D9390), joined through those wings.
+//! Strategic-air entries are indexed by the region's runtime slot. Friendly
+//! scores sum the friendly roster's contributions minus enemy suppression;
+//! enemy scores reverse those rosters. Both clamp at zero.
+//! The rosters include wartime allies and volunteer relationships, so the side
+//! comparison is an application comparison of views. Co-belligerents are
+//! assigned once by recorded war relations (assignment.rs).
+//! The map uses friendly*100000/(friendly+enemy), strictly >60000 good and
+//! <40000 bad. Zero colouring also reads counters not recorded here.
+//! Threshold labels are application wording. AirWings.mission_region is the
+//! assigned mission region, including inactive assignments. Theatre groups
+//! and members are the recorded theatre roster, joined through those wings.
 //! RaidAirScores is sparse: complete tables witness every air-object owner;
 //! a missing pair for that owner is zero, an absent owner has no air object.
 //! Partial absent pairs are unknown. The score array is not saved: no oracle.
@@ -1222,9 +1220,9 @@ fn resolve_names(
         let mut names = BTreeMap::new();
         for (id, definition) in regions.regions {
             match catalogue::localised(&loc, &definition.name_key, catalogue::View::Plain) {
-                // GetName@140E0EB10 returns the template text without a
-                // success gate: empty text survives, and 142230940 copies
-                // a missing localisation key rather than a region-id label.
+                // The region name uses template text without a success gate:
+                // empty text survives, and a missing localisation key is copied
+                // instead of a region-id label.
                 Ok(name) => {
                     names.insert(id, name);
                 }
@@ -1252,7 +1250,7 @@ fn resolve_names(
     let mut stored_language = installed_content::localisation::Localisation::default();
     stored_language.language = viewer_language;
     if let AirReply::Choices(reply) = reply {
-        // CAirTheatre ctor@1414D9390 stores localised +20 text; no source key or literal marker survives.
+        // The theatre retains localised text; no source key or literal marker survives.
         let localisation = names
             .as_ref()
             .map_or(&stored_language, |(_, loc)| loc.as_ref());

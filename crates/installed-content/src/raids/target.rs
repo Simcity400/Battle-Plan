@@ -24,9 +24,9 @@ fn state_row(frame: &DecodedFrame, id: u32) -> Result<&StateRow> {
         .map_err(|_| format!("raid target state {id} is absent"))
 }
 
-/// country_resolver@140FD1AD0: building (GetCountryTag@141162010),
-/// province, state, resolved captive leader's captor, then leader province.
-/// A resolved captor's raw word suppresses the leader-province fallback.
+/// Target country priority: building, province, state, resolved captive
+/// leader's captor, then leader province. A resolved captor's raw word
+/// suppresses the leader-province fallback.
 pub fn country(frame: &DecodedFrame, scope: &RaidScope) -> Result<Option<u32>> {
     let raw = if scope.building_type != 0 {
         if scope.building_country > 0 {
@@ -41,8 +41,8 @@ pub fn country(frame: &DecodedFrame, scope: &RaidScope) -> Result<Option<u32>> {
     } else if scope.state != 0 {
         state_row(frame, scope.state)?.controller
     } else if let Some(captor) = scope.leader_country {
-        // 140FD1B7B -> 140FD1B97 copies the captor's +0x105C dword unchanged;
-        // no signed-positive test or leader-province retry follows that read.
+        // Copy the captor's raw country word unchanged; no signed-positive
+        // test or leader-province retry follows that read.
         captor as u32
     } else if scope.leader_province != 0 {
         province(frame, scope.leader_province)?.controller
@@ -52,8 +52,8 @@ pub fn country(frame: &DecodedFrame, scope: &RaidScope) -> Result<Option<u32>> {
     Ok((raw != 0).then_some(raw))
 }
 
-/// Plain location@140FD1BB0: explicit state, province, leader province, then
-/// building state (1410C6520 -> 141162450, bit 0 selects province -> state).
+/// Plain location priority: explicit state, province, leader province,
+/// then building state. A provincial building resolves through its province.
 pub fn state(frame: &DecodedFrame, scope: &RaidScope) -> Result<Option<u32>> {
     if scope.state != 0 {
         return Ok(Some(scope.state));
@@ -67,20 +67,20 @@ pub fn state(frame: &DecodedFrame, scope: &RaidScope) -> Result<Option<u32>> {
     } else if scope.building_flags & 1 != 0 {
         province(frame, scope.building_location)?.state
     } else if scope.building_location as i32 <= 0 {
-        // 141162450's state-table arm rejects nonpositive signed locations.
+        // A state building rejects a nonpositive signed location.
         0
     } else {
         scope.building_location
     };
-    // 140FD1BB0 loads province/leader +0xC0 and tests null at 140FD1CBD;
-    // 141162450's province-building arm returns that same pointer. The recorder
-    // retains an observed null as state 0; an unreadable pointer is a table gap.
+    // Province and leader locations require a state pointer, as does a
+    // provincial building's province. The recorder retains an observed null
+    // as state 0; an unreadable pointer is a table gap.
     Ok((id != 0).then_some(id))
 }
 
 fn owner_tag(frame: &DecodedFrame, owner: u32) -> Result<&str> {
-    // 140E68E30 calls 140BA56A0 even for owner zero; its *param_1 == 0 arm
-    // selects reserved slot zero, then 1406DF830 supplies its original/own tag.
+    // Owner zero still resolves reserved country slot zero, whose
+    // original or own tag supplies the qualified localisation key.
     if owner == 0 {
         return crate::country_names::reserved_zero_original_tag(frame);
     }
@@ -121,10 +121,10 @@ fn owner_tag(frame: &DecodedFrame, owner: u32) -> Result<&str> {
         .map_err(|reason| format!("raid target state owner {owner}'s {reason}"))
 }
 
-/// ResolveVictoryPointLocalization@140E68E30 tests key existence, not text
-/// length: an existing empty qualified name suppresses the bare-key retry.
-/// Plain location@140FD1BB0 then falls back to the state's display name.
-/// The callback keeps native controls until after this emptiness test.
+/// Victory-point localisation tests key existence, not text length:
+/// an existing empty qualified name suppresses the bare-key retry.
+/// Plain location then falls back to the state's display name.
+/// The callback keeps text controls until after this emptiness test.
 pub fn victory_point(
     frame: &DecodedFrame,
     id: u32,
@@ -148,9 +148,9 @@ pub fn victory_point(
     Ok(None)
 }
 
-/// Plain target location@140FD1BB0, without a province rename override.
-/// Consumers resolve localisation through their recorded content stack and
-/// supply the shared stored-state-name rule in their display representation.
+/// Plain target location, without a province rename override. Consumers
+/// resolve localisation through their recorded content stack and supply
+/// the shared stored-state-name rule in their display representation.
 pub fn location(
     frame: &DecodedFrame,
     scope: &RaidScope,
@@ -169,7 +169,7 @@ pub fn location(
     }
     match state(frame, scope)? {
         Some(id) => state_name(id),
-        // Null-state arm@140FD1CE3 copies 14296C780, without localisation.
+        // A null state supplies the literal `no_target_name` without localisation.
         None => Ok("no_target_name".into()),
     }
 }

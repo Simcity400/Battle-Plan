@@ -1,14 +1,14 @@
 //! `map/ambient_object.txt`: the entities the map places once, at fixed world
 //! positions, for as long as the map exists.
 //!
-//! `map/default.map` names the file (`ambient_object = "ambient_object.txt"`).
-//! Each `type` block names an entity from `gfx/entities/*.asset`, an optional
-//! uniform `scale` the entity's own scale multiplies, and one or more `object`
-//! placements. Positions are game world space (x right, y height, z into the
-//! map), the same space `map/unitstacks.txt` uses.
+//! `map/default.map` names the ambient-object file. Each `type` block names an
+//! entity from `gfx/entities/*.asset`, an optional uniform `scale` the entity's
+//! own scale multiplies, and one or more `object` placements. Positions use
+//! game world space (x right, y height, z into the map), the same space as
+//! `map/unitstacks.txt`.
 //!
-//! Type defaults and source-order placement routing follow 141633FE0 and
-//! 141634490. Entity admission and presentation lifetime belong to the viewer.
+//! Placements use the type's flags as they are read. Entity admission and
+//! presentation lifetime belong to the viewer.
 
 use crate::key_names::KeyNames;
 use std::io;
@@ -34,9 +34,9 @@ pub struct AmbientObject {
     pub name: String,
     /// World `(x, y, z)`.
     pub position: [f32; 3],
-    /// Authored degrees. 141633D00 consumes only the Y component.
+    /// Authored degrees. Only the Y component is consumed for rotation.
     pub rotation: [f32; 3],
-    /// 141634490 routes at the `object` token, before later type-key updates.
+    /// Routing uses the flag at the `object` token, before later type-key updates.
     pub always_queued: bool,
 }
 
@@ -47,16 +47,16 @@ pub struct AmbientObjectType {
     pub entity: String,
     /// The block's uniform scale; `1.0` when the block declares none.
     pub scale: f32,
-    /// `use_animation`; true at 141633FE0.
+    /// `use_animation`; true when absent.
     pub use_animation: bool,
     /// `always_visible`, which exempts the object from distance culling;
     /// `false` when absent.
     pub always_visible: bool,
-    /// Instance countdown; nonpositive values never expire (141634900).
+    /// Instance countdown; nonpositive values never expire.
     pub duration: f32,
-    /// Signed admission ceiling; nonpositive means unlimited (141634330).
+    /// Signed admission ceiling; nonpositive means unlimited.
     pub max_visible: i32,
-    /// Native CAndTrigger payload, retained for the consumer's evaluator.
+    /// Conjunction trigger payload, retained for the consumer's evaluator.
     pub dlc: Option<Vec<Item>>,
     pub objects: Vec<AmbientObject>,
 }
@@ -76,8 +76,7 @@ impl Default for AmbientObjectType {
     }
 }
 
-/// Replays CGraphicalMap's ambient reader (140B479B0), type (141634490)
-/// and object (141634350); all three use CPersistent::Read.
+/// Reads ambient type and object blocks with persistent field consumption.
 pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Vec<AmbientObjectType>> {
     #[derive(Clone, Copy)]
     enum Node {
@@ -85,8 +84,7 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Vec<AmbientObjectType
         Type,
         Object,
     }
-    // 140B46EC0 borrows an open file through 1424A63D0 -> 1424A62E0,
-    // bypassing the file constructor's BOM skip (1424A8C30).
+    // This reader keeps the leading mark instead of skipping it on file open.
     let document = native::read(
         input,
         native::Mode::KeepMark,
@@ -143,29 +141,28 @@ fn parse_type(items: &[Item]) -> io::Result<AmbientObjectType> {
             } else {
                 &mut out.always_visible
             };
-            // CAmbientObjectType::vf4@141634490: 0x16E into +0x48,
-            // 0x2D50 into +0x7C, both read_bool_field.
+            // Both boolean fields retain their previous value when a read fails.
             *dst = field
                 .value
                 .scalar()
                 .and_then(crate::parser::read_bool)
                 .unwrap_or(*dst);
         } else if field.keyword_is("time_duration") {
-            // 1424AB9D0: a failed conversion keeps the value.
+            // A failed float conversion keeps the value.
             out.duration =
                 crt::scan_f32(field.value.scalar().unwrap_or_default()).unwrap_or(out.duration);
         } else if field.keyword_is("max_visible") {
-            // ReadScriptSignedInt32 (1424AB970): a failed `%i` keeps the value.
+            // A failed integer prefix scan keeps the value.
             if let crt::Scanned::Stored(value) =
                 crt::scan_i32(field.value.scalar().unwrap_or_default())
             {
                 out.max_visible = value;
             }
         } else if field.keyword_is("dlc_allowed") {
-            // Each field is a new CAndTrigger; the last is kept.
+            // Each field creates a new conjunction; the last is kept.
             out.dlc = Some(field.value.items().unwrap_or_default().to_vec());
         } else if field.keyword_is("object") {
-            // 141634490 routes the placement with the flag it has now.
+            // Route the placement with the flag the type has now.
             let mut object = AmbientObject {
                 always_queued: out.always_visible,
                 ..Default::default()
@@ -192,8 +189,8 @@ fn parse_type(items: &[Item]) -> io::Result<AmbientObjectType> {
     Ok(out)
 }
 
-/// 141634350 initializes three fixed5 words to zero, reads the span with
-/// 1410DB8F0, then converts each int64 to f32 and divides by 100000f32.
+/// Initialize three fixed5 components to zero, read the bounded span, then
+/// convert each int64 to f32 and divide by the fixed5 scale.
 fn triple(value: &Value) -> io::Result<[f32; 3]> {
     let mut out = [0.0; 3];
     for (dst, item) in out.iter_mut().zip(block(value, "ambient vector")?) {
@@ -214,57 +211,57 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Vec<AmbientObjectType>> {
 mod tests {
     use super::*;
 
-    /// The three frame blocks of vanilla's own file, byte for byte.
-    const FRAME: &[u8] = br#"
+    /// Two placements with different scales, positions and visibility flags.
+    const PLACEMENTS: &[u8] = br#"
 type={
-	type="frame_border_entity"
-	use_animation=no
-	scale=100.000000
-	always_visible=yes
-	object={
-		name="frame_border_entity_top"
-		position={
-			0 0 2190
-		}
-		rotation={
-			0 0 0
-		}
-	}
+    type="signal_arch_entity"
+    use_animation=yes
+    scale=2.500000
+    always_visible=no
+    object={
+        name="signal_arch_west"
+        position={ -17.125 2.5 48.75 }
+        rotation={ 0 35 0 }
+    }
 }
 type={
-	type="frame_border_logo_entity"
-	use_animation=no
-	scale=300.000000
-	always_visible=yes
-	object={
-		name="frame_border_logo_entity_top"
-		position={
-			3000 -1 2130
-		}
-		rotation={
-			0 0 0
-		}
-	}
+    type="harbor_lantern_entity"
+    use_animation=no
+    scale=0.750000
+    always_visible=yes
+    object={
+        name="harbor_lantern_east"
+        position={ 91.5 -3.25 12 }
+        rotation={ 0 -25 0 }
+    }
 }
 "#;
 
     #[test]
-    fn the_frame_blocks_read_with_their_scale_and_position() {
-        let types = parse(FRAME, &KeyNames::default()).unwrap();
+    fn synthetic_placements_read_with_their_scale_and_position() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let types = parse(PLACEMENTS, &KeyNames::default()).unwrap();
         assert_eq!(types.len(), 2);
-        assert_eq!(types[0].entity, "frame_border_entity");
-        assert_eq!(types[0].scale, 100.0);
-        assert!(types[0].always_visible && !types[0].use_animation);
+        assert_eq!(types[0].entity, "signal_arch_entity");
+        assert_eq!(types[0].scale, 2.5);
+        assert!(!types[0].always_visible && types[0].use_animation);
         assert_eq!(types[0].objects.len(), 1);
-        assert_eq!(types[0].objects[0].name, "frame_border_entity_top");
-        assert_eq!(types[0].objects[0].position, [0.0, 0.0, 2190.0]);
-        assert_eq!(types[0].objects[0].rotation, [0.0; 3]);
-        assert_eq!(types[1].scale, 300.0);
-        assert_eq!(types[1].objects[0].position, [3000.0, -1.0, 2130.0]);
+        assert_eq!(types[0].objects[0].name, "signal_arch_west");
+        assert_eq!(types[0].objects[0].position, [-17.125, 2.5, 48.75]);
+        assert_eq!(types[0].objects[0].rotation, [0.0, 35.0, 0.0]);
+        assert_eq!(types[1].entity, "harbor_lantern_entity");
+        assert_eq!(types[1].scale, 0.75);
+        assert!(types[1].always_visible && !types[1].use_animation);
+        assert_eq!(types[1].objects[0].name, "harbor_lantern_east");
+        assert_eq!(types[1].objects[0].rotation, [0.0, -25.0, 0.0]);
+        assert_eq!(types[1].objects[0].position, [91.5, -3.25, 12.0]);
     }
 
     #[test]
     fn a_block_without_scale_or_flags_takes_the_defaults() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let types = parse(
             b"type={ type=\"a\" object={ position={ 1 2 3 } } }",
             &KeyNames::default(),
@@ -280,6 +277,8 @@ type={
 
     #[test]
     fn several_objects_of_one_type_are_all_kept() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let types = parse(
             b"type={ type=\"a\" object={ position={ 1 2 3 } } object={ position={ 4 5 6 } } }",
             &KeyNames::default(),
@@ -290,7 +289,9 @@ type={
     }
 
     #[test]
-    fn native_span_reads_tokens_and_recovers_only_at_first_overflow() {
+    fn span_reads_tokens_and_recovers_only_at_first_overflow() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let types = parse(
             br#"@x=1 TYPE={type=a object={position={@x 2}} object={position={x=1 2 3}}
             object={position={1 2 3 {ignored={}} 9} name=kept} object={}}"#,
@@ -303,7 +304,7 @@ type={
         assert_eq!(types[0].objects[2].name, "kept");
         assert_eq!(types[0].objects[3].position, [0.0; 3]);
         // The overflow token is checked after `@` resolution: a variable
-        // holding `{` has its block skipped (RecordError 1424ACF90).
+        // holding `{` has its block skipped.
         let types = parse(
             br#"@open={
             type={type=a object={
@@ -324,6 +325,8 @@ type={
 
     #[test]
     fn routing_uses_the_flag_at_each_object_but_actor_inputs_use_final_type_values() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let types = parse(
             br#"type={type=changed
             object={position={0 0 0}}
@@ -348,6 +351,8 @@ type={
 
     #[test]
     fn vectors_keep_fixed5_truncation_and_float_conversion_order() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let types = parse(b"type={type=a object={position={1.234567 -0.123456 3000.12345} rotation={0 30.000009 0}}}", &KeyNames::default()).unwrap();
         let object = &types[0].objects[0];
         let raw: [i64; 3] = [123456, -12345, 300012345];
@@ -363,6 +368,8 @@ type={
 
     #[test]
     fn anything_that_is_not_a_type_block_is_ignored() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         assert!(
             parse(b"# a comment\nother={ type=\"a\" }", &KeyNames::default())
                 .unwrap()
@@ -372,6 +379,8 @@ type={
 
     #[test]
     fn the_loader_keeps_a_leading_mark_as_part_of_the_first_key() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let types = parse(
             b"\xef\xbb\xbftype={type=lost} type={type=kept object={name=placed}}",
             &KeyNames::default(),

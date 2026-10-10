@@ -58,8 +58,8 @@ impl<'w, 'a> Moves<'w, 'a> {
         Ok(Some((row, inputs)))
     }
 
-    /// E67D80's actual-location mode. A non-base target or selection already
-    /// at the target has no transport fragment and demands no risk producer.
+    /// Use actual-location mode. A non-base target or a selection already at
+    /// the target has no transport fragment and demands no risk producer.
     pub(crate) fn selected_transport_message(
         &self,
         selected: &[crate::map::unit_selection::Unit],
@@ -111,9 +111,9 @@ impl<'w, 'a> Moves<'w, 'a> {
         if actual != 0 && target_raw != 0 && receiver == target {
             return Ok(true);
         }
-        // Preserve the original F3B00 zero-cell observation and its failure
-        // domains. Directed war from another query cannot repair a refused
-        // forward visibility attempt or erase historical field absence.
+        // Preserve the recorded zero-cell observation and its failure domains.
+        // Directed war from another query cannot repair refused forward visibility
+        // or erase historical field absence.
         if receiver == 0 || target == 0 {
             return crate::map::visibility::event_shared(
                 self.world.frame(),
@@ -124,10 +124,9 @@ impl<'w, 'a> Moves<'w, 'a> {
             )
             .map_err(str::to_owned);
         }
-        // F3A90 -> F3B00 reads +2E8/+49 directly: no signed-positive
-        // F3A00 gate. Transport passes mode1/flag0: hourly RelationLinks
-        // is the genuine sparse +2A0 pointer census (D025E0 writers), before
-        // faction/subject; no alternative D0FE00 access is selected.
+        // Read the relation and war bytes directly, without a signed-positive
+        // receiver gate. Transport uses mode 1/flag 0: hourly RelationLinks supplies
+        // the sparse pointer census before faction/subject checks. Keep this access policy.
         if self.common_owner(receiver, |owner| owner.pointer_active_slot(target))? {
             return Ok(false);
         }
@@ -235,9 +234,8 @@ impl<'w, 'a> Moves<'w, 'a> {
         Ok(Some(&forces[at]))
     }
 
-    /// 140E16ED0(...,false) / 140E15810, bound to this same frame's
-    /// directed Owner. Keep the caller's raw target through both predicates.
-    /// Ordinary raid strait_fleet remains on its existing adapter.
+    /// Bind both strait predicates to this frame's directed owner, preserving
+    /// the caller's raw target. Ordinary raid strait_fleet keeps its own adapter.
     pub(crate) fn selected_strait(&self, through: u32, raw_owner: u32) -> Fact<StraitFleet> {
         for &handle in self.province_units(through)? {
             let Some(task_force) = self.common_task_force(handle, through)? else {
@@ -268,8 +266,8 @@ impl<'w, 'a> Moves<'w, 'a> {
                             ship.id
                         )
                     })?;
-                // 140D5F950 returns at the first clear flag; 140E15810
-                // then reads visibility without reaching later ship models.
+                // Return at the first clear flag, then read visibility without reaching
+                // later ship models.
                 if models[at].formation_flags & 0x80 == 0 {
                     all_flag_seven = false;
                     break;
@@ -281,8 +279,8 @@ impl<'w, 'a> Moves<'w, 'a> {
             let level = if self.common_discloses_raw(task_force.roster_owner, raw_owner)? {
                 3
             } else {
-                // Complete UnitIntel retains every native per-viewer entry;
-                // absence of this pair is read_viewer_level's native zero.
+                // Complete UnitIntel retains every per-viewer entry; an absent pair
+                // contributes zero.
                 self.intel()?
                     .get(&(handle, self.slot(raw_owner)?))
                     .copied()
@@ -317,8 +315,8 @@ impl<'w, 'a> Moves<'w, 'a> {
         })
     }
 
-    /// Does not call Moves::army: that eager raid adapter reconstructs land
-    /// combats and demands commander bans before BEADD0's access short circuit.
+    /// Do not call Moves::army: that eager raid adapter reconstructs land combats
+    /// and demands commander bans before the common access short circuit.
     pub(crate) fn common_army_scalars(&self, handle: u64) -> Fact<(Army, u32, u32)> {
         let row = self
             .division(handle)?
@@ -434,8 +432,8 @@ impl<'w, 'a> Moves<'w, 'a> {
             location: row.province,
             retreating: row.retreat != 0,
             naval_transfer: row.naval_transfer != 0,
-            // Railway vf37 GetOrganisationValue@140E74990 stores this
-            // native fixed5 constant; it does not use Army's scalar getter.
+            // Railway organization is this fixed5 constant, independent of the army
+            // scalar getter.
             organisation: 10_000_000,
             ..Default::default()
         };
@@ -482,11 +480,11 @@ impl CommonMoveWorld for Moves<'_, '_> {
         let first = self
             .common_area(from)?
             .owner
-            .ok_or("selected source D8 capture refused")?;
+            .ok_or("selected source area-owner capture refused")?;
         let second = self
             .common_area(to)?
             .owner
-            .ok_or("selected target D8 capture refused")?;
+            .ok_or("selected target area-owner capture refused")?;
         Ok(first == second)
     }
     fn controller_area(&self, province: u32) -> Fact<u32> {
@@ -512,8 +510,8 @@ impl CommonMoveWorld for Moves<'_, '_> {
         })
     }
     fn area_nonsea_count(&self, label: u32) -> Fact<u32> {
-        // The recorded +6B8 count bounds native temporary area storage;
-        // CDF3F0's visited identity domain is CMap+234 (140A50210).
+        // The recorded area count bounds temporary area storage. Visited identities
+        // use the map's area domain.
         self.common_area_node(label)?
             .nonsea_count
             .ok_or("selected area temporary domain refused")?;
@@ -599,7 +597,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
     }
     fn combat_minimum_duration(&self, combat: CommonCombat) -> Fact<bool> {
         match combat.kind {
-            // Border-war inherits land vf12@141299720.
+            // Border-war combat uses the land minimum-duration rule.
             0 | 1 => {
                 self.common_land_kind(combat)?;
                 let rows = self.table::<tables::LandCombats>()?;
@@ -609,9 +607,8 @@ impl CommonMoveWorld for Moves<'_, '_> {
                 Ok(self.assets.combat_minimum_time <= rows[at].duration)
             }
             2 => {
-                // CNavalCombat::HasMinimumDuration@1415B0460 compares signed
-                // CCombat+44 with NNavy.COMBAT_MIN_DURATION@14331D124.
-                // The hourly details walk already records that exact operand.
+                // Compare signed elapsed combat duration with NNavy.COMBAT_MIN_DURATION.
+                // The hourly details walk already records that operand.
                 let details = rows::<tables::NavalCombatDetails>(self.world.frame())
                     .map_err(|error| error.to_string())?;
                 let rows = match details {
@@ -631,7 +628,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
                 Ok(*minimum <= rows[at].duration)
             }
             _ => Err(format!(
-                "selected combat vf12 body for authenticated kind {} is unsupported",
+                "selected combat duration check for authenticated kind {} is unsupported",
                 combat.kind
             )),
         }
@@ -655,7 +652,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
         }
     }
     fn primary_path_combat(&self, unit: &CommonUnit<'_>, province: u32) -> Fact<bool> {
-        // BF0FF0 -> F1C390 reads CCombat+38 in the unit's full reference order.
+        // Read combat location in the unit's full reference order.
         if (unit.combat_count as i32) <= 0 {
             return Ok(false);
         }
@@ -736,13 +733,13 @@ impl CommonMoveWorld for Moves<'_, '_> {
             .fresh
             .require("RailwayGunCounterInputs.fresh")?
             .as_ref()
-            .ok_or("selected railway CUnit+C0 capture refused")?;
+            .ok_or("selected railway orders-group capture refused")?;
         if packet.sample_hour != self.world.frame().hour {
-            return Err("selected railway CUnit+C0 sample is stale".into());
+            return Err("selected railway orders-group sample is stale".into());
         }
         packet
             .orders_group
-            .ok_or_else(|| "selected railway CUnit+C0 lookup refused".into())
+            .ok_or_else(|| "selected railway orders-group lookup refused".into())
     }
     fn ordered_enemy_raws(&self, country: Country) -> Fact<Vec<u32>> {
         let raw = self.actual_country_raw(country)?;
@@ -819,7 +816,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
         }
     }
     fn unit_retreat_ban(&self, unit: &CommonUnit<'_>, attacking: bool) -> Fact<bool> {
-        // Railway's actual vf8 is ReturnZero@140120030: no group/leader read.
+        // Railway returns zero without reading group or leader.
         if unit.class == CommonClass::RailwayGun {
             return Ok(false);
         }
@@ -858,8 +855,8 @@ impl CommonMoveWorld for Moves<'_, '_> {
         let Some((row, inputs)) = self.selected_railway(source)? else {
             return Ok(false);
         };
-        // E733D0: +20[index] > 0, then +68 == 0, then +18/+40 > 0.
-        // Neither sorted-pair presence nor the target's rail state is read.
+        // Require positive indexed level, zero cooldown, then positive building
+        // maximum and health. Read neither sorted pairs nor target rail state.
         let level = inputs
             .levels
             .as_ref()
@@ -881,8 +878,8 @@ impl CommonMoveWorld for Moves<'_, '_> {
             .binary_search_by_key(&combat.combat, |row| row.id)
             .map_err(|_| "selected counterattack combat side missing")?;
         for &handle in &rows[at].attackers {
-            // The original LandCombats census authenticates CArmy vtables;
-            // another class's equal numeric handle cannot supply its location.
+            // The LandCombats census authenticates the army class; another
+            // class with the same numeric handle cannot supply its location.
             let row = self
                 .division(handle)?
                 .ok_or("selected counterattack army location missing")?;
@@ -928,8 +925,8 @@ impl CommonMoveWorld for Moves<'_, '_> {
         let Some((row, inputs)) = self.selected_railway(province)? else {
             return Ok(false);
         };
-        // E765F0 tests != 0, including signed-negative +44. No pair vector,
-        // indexed level, building health or cooldown sign approximation.
+        // Test cooldown against zero, including signed-negative values. Do not
+        // read pairs, indexed level or building health, or approximate by sign.
         if inputs
             .pair_count
             .ok_or("selected railway raw pair count capture refused")?
@@ -1047,8 +1044,7 @@ impl CommonMoveText for CommonText<'_> {
         )
     }
     fn rule(&self, key: &str, rule: &installed_content::adjacency_rules::AdjacencyRule) -> Fact<String> {
-        // CAdjacencyRule::vf4@141536C50 writes name (token1B) at +38;
-        // BEADD0 passes that exact rule to LocalizeKeyAt38@140FBD700.
+        // Use the reached adjacency rule's stored name key for localization.
         let name = self.plain(&rule.name)?;
         crate::combat::text::localise(
             self.loc,
@@ -1057,8 +1053,7 @@ impl CommonMoveText for CommonText<'_> {
         )
     }
     fn warning(&self, key: &str, raw: i64) -> Fact<String> {
-        // Supported static14272F830 is exact56 41 4C 00 (`VAL` + NUL),
-        // receipt4CD711155DA4. C684A0 passes precision0 to1424B6200.
+        // Bind `VAL` including its terminating NUL with precision zero.
         let value = installed_content::fixed5::fixed5_to_string(raw, 0);
         crate::combat::text::localise(
             self.loc,

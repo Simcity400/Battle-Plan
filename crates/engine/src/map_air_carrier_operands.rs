@@ -1,23 +1,21 @@
-//! Host-base operands of the map aircraft count and admission.
+//! Host-base operands of map aircraft count and admission.
 //!
-//! `140F63380` follows any stateless CAirBase's host ship, task force and
-//! fleet to add an eligible leader's key-0x11 modifier to sortie efficiency,
-//! and skips it for a null task force. `140F631E0` indexes the authored
-//! carrier sortie-ratio table by the task force's stance (+0x4EC) for an
-//! ordinary (carrier) base only. `IsAirWingScenarioEligible@140F66100`
-//! rejects a wing whose host task force is in combat unless its mask has bit
-//! 0 or 2 and its mission region is the task force location's region.
+//! A stateless base follows its host ship, task force and fleet to add an
+//! eligible leader's key-0x11 sortie modifier, skipping a null task force.
+//! Ordinary carrier bases index the authored sortie-ratio table by task-force
+//! stance. A wing whose host task force is in combat is rejected unless its
+//! mask has bit 0 or 2 and its mission region matches the task-force location.
 
 use crate::{Memory, modifier_accumulator, read as read_native};
 
-/// CTaskForce stance index used by `140F631E0` for host-base ordinary counts.
+/// Task-force stance index used for ordinary host-base counts.
 pub const CARRIER_STANCE: usize = 0x4ec;
-/// CFleet packed leader reference read by `140D3C6B0` during `140F63380`.
+/// Fleet packed leader reference used for sortie efficiency.
 const FLEET_LEADER_REFERENCE: usize = 0xb0;
-/// CUnitLeader modifier-cooldown type tested by `140C0E0F0` in `140F63380`.
-/// A nonzero kind suppresses the leader's sortie modifier.
+/// Unit-leader modifier cooldown type. A nonzero kind suppresses the
+/// leader's sortie modifier.
 const LEADER_MODIFIER_COOLDOWN: usize = 0xe84;
-/// CNavyLeader key-0x11 accumulator read by `140551820` in `140F63380`.
+/// Navy-leader key-0x11 accumulator used for sortie efficiency.
 const LEADER_MODIFIERS: usize = 0x418;
 const SORTIE_EFFICIENCY_KEY: u32 = 0x11;
 
@@ -30,9 +28,8 @@ pub struct Row {
     /// The host task force's combat references (`CUnit+0x1B4`); None for a
     /// state base or a null task force.
     pub task_force_combats: Option<i32>,
-    /// The strategic region (`CProvince+0xC8`) of an in-combat task force's
-    /// location, which F66100 compares with the mission region; None when
-    /// not in combat or for a null region.
+    /// The strategic region of an in-combat task force's location, compared with
+    /// the mission region. None when not in combat or when the region is null.
     pub task_force_region: Option<u32>,
 }
 
@@ -67,12 +64,11 @@ fn authenticate(
     Ok(())
 }
 
-/// Read one CAirBase's host operands. A state base has none. A carrier base
-/// (`AddCarrierAirBase@140C3BE60` writes ship+0x730 and base+0x60) must be its
-/// ship's carrier base; a rocket (kind 1) host keeps only the leader modifier.
-/// `None` is a stale host, a null or unresolved ship that 140F63380 and F66100
-/// would dereference: only a wing F66100 rejects earlier can have one, so the
-/// caller omits that wing rather than the hour.
+/// Read one base's host operands. A state base has none. A carrier base must
+/// be its ship's carrier base; a rocket (kind 1) host keeps only the leader
+/// modifier. `None` denotes a stale host or a null or unresolved ship. Only a
+/// wing rejected by an earlier admission gate can have one, so the caller omits
+/// that wing rather than the hour.
 pub fn read(
     memory: &impl Memory,
     base: usize,
@@ -170,8 +166,7 @@ pub fn read(
     }))
 }
 
-/// The ID of the region `CProvince+0xC8` of the task force's location
-/// (`CUnit+0x1F0`), which F66100 dereferences for a task force in combat.
+/// Region ID of the task-force location, reached only for a task force in combat.
 fn location_region(
     memory: &impl Memory,
     base: usize,

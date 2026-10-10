@@ -1,7 +1,7 @@
-//! Guarded operands for the second war-link CALL@140D15418 and annex
-//! dispatch@1406C8E34. Fresh reciprocal matrix checks prove a war attachment.
-//! The caller must independently prove world and thread lifetime; these reads
-//! do not qualify replacement/load operations or safe hook publication.
+//! Guarded operands for reciprocal war-link and annex dispatch boundaries.
+//! Fresh reciprocal matrix checks authenticate attachment. The caller establishes
+//! world and thread lifetime independently; these reads establish neither
+//! load/replacement eligibility nor safe hook publication.
 
 use crate::{
     Memory, ccountry, cdiplomacy_status, cevent_scope, cgame_state, cpdx_array::Array, crelation,
@@ -16,8 +16,8 @@ pub struct CallSite {
     pub sentinel: [u8; 16],
 }
 
-/// Indexed CALL140D15418 -> 140D18990; second link, native RCX=status,
-/// RDX=RDI=candidate. The suffix is MOV R15D,860; MOV R14D,10.
+/// Second war-link CALL: RCX status, RDX candidate retained in RDI.
+/// The continuation initializes the war bookkeeping discriminators.
 pub const WAR: CallSite = CallSite {
     rva: 0x00d1_5418,
     return_rva: 0x00d1_541d,
@@ -26,7 +26,7 @@ pub const WAR: CallSite = CallSite {
         0xe8, 0x73, 0x35, 0, 0, 0x41, 0xbf, 0x60, 0x08, 0, 0, 0x41, 0xbe, 0x10, 0, 0,
     ],
 };
-/// Indexed CALL1406C8E34 -> 140A6AAE0; R8=RBP+A0 primary scope, R9D=0.
+/// Annex dispatch CALL: R8 primary scope at RBP+0xA0, R9D zero.
 pub const ANNEX: CallSite = CallSite {
     rva: 0x006c_8e34,
     return_rva: 0x006c_8e39,
@@ -73,8 +73,8 @@ pub struct Operands {
     pub target: CountryIdentity,
 }
 
-/// Snapshot of native registers immediately BEFORE CALL140D15418. This is
-/// neither Rust callback RSP nor stub-entry RSP (which is eight bytes lower).
+/// Register snapshot immediately before the war-link CALL. This RSP differs
+/// from Rust callback RSP and the eight-byte-lower stub-entry RSP.
 #[derive(Debug, Clone, Copy)]
 pub struct WarFrame {
     pub rsp_before_call: usize,
@@ -142,7 +142,7 @@ fn identity(
     reference: u32,
 ) -> Result<(ccountry::Country, CountryIdentity), &'static str> {
     let country = if reference == 0 {
-        // ResolveCountryReference@140BA56A0 selects physical slot zero.
+        // Country resolution selects the physical reserved slot zero.
         let array = countries.arrays()[0];
         let address = array
             .element(0, 8)
@@ -175,7 +175,7 @@ fn same(
     a: u32,
     b: u32,
 ) -> Result<bool, &'static str> {
-    // CompareCountryReferences@140BA60A0: raw equality, else two nonzero links.
+    // Country equality checks raw references first, then two nonzero links.
     Ok(a == b
         || (a != 0
             && b != 0
@@ -246,22 +246,22 @@ fn candidate(
 }
 
 fn war_source(memory: &impl Memory, base: usize, frame: WarFrame) -> Result<Source, &'static str> {
-    // apply_link pushes28/sub1B0; InitializeUnlessDuplicate pushes18/sub250;
-    // CreateWarRelation pushes8/sub50. Include each intervening CALL's return.
+    // Include return-address space for every intervening call when validating
+    // the three nested frame extents.
     if value::<u64>(memory, frame.rsp_before_call, 0x1d8)? != at(base, 0x00d0_baff)? as u64
         || value::<u64>(memory, frame.rsp_before_call, 0x448)? != at(base, 0x00d0_b57d)? as u64
         || pointer(memory, frame.rsp_before_call, 0x438)? != frame.rcx
     {
         return Err("event feed war creator frame mismatch");
     }
-    // Actual intermediary instructions: vtable+A8@140D0BAF9, creator@140D0B578.
+    // The original route includes virtual dispatch and war-relation creation.
     if read::<[u8; 6]>(memory, at(base, 0x00d0_baf9)?) != Some([0xff, 0x90, 0xa8, 0, 0, 0])
         || read::<[u8; 5]>(memory, at(base, 0x00d0_b578)?) != Some([0xe8, 0x03, 0x05, 0, 0])
     {
         return Err("event feed war creator instruction differs");
     }
     let source_pc = value::<u64>(memory, frame.rsp_before_call, 0x4a8)?;
-    // Indexed E8s: declaration140D20809, join140D269D5, transfer1410CB9C3.
+    // Declaration, join and transfer routes have independent caller identities.
     let (source, call_rva, bytes) = if source_pc == at(base, 0x00d2_080e)? as u64 {
         (
             Source::Declaration,
@@ -334,11 +334,11 @@ pub fn war_before(
     })
 }
 
-/// Only on proved normal native return, before returning to140D1541D.
-/// ReplaceRelation@140D02DF0 destroys the old relation before store@140D03010.
-/// Fresh reads must retain the owned full IDs, raw candidate pair and exact
-/// candidate in both actual matrix slots. Never retry or substitute another
-/// relation. Root-address equality does not replace a proved world lifetime.
+/// Only on a proven normal return, before resuming the original caller.
+/// Replacement destroys the prior relation before storing the candidate.
+/// Fresh reads retain full country IDs, raw candidate pair and that exact
+/// candidate in both matrix slots. Never retry or substitute a relation.
+/// Root-address equality cannot authenticate world lifetime.
 pub fn war_returned(
     memory: &impl Memory,
     base: usize,
@@ -392,7 +392,7 @@ pub struct AnnexFrame {
 
 /// Copy the annex operation before authored dispatch can mutate either role.
 /// Zero country references are preserved through the reserved native object.
-/// Escape handling and partial evidence belong to the enclosing runtime owner.
+/// Escape handling and partial observations belong to the enclosing runtime owner.
 pub fn annex_before(
     memory: &impl Memory,
     base: usize,

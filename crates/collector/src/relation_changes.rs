@@ -2,7 +2,7 @@
 //! vectors AirCountryRelations records ([`engine::diplomacy_mutations`]). A
 //! detour only notifies the shared watch registry ([`WatchRegistry`]) and
 //! calls the original; it never changes game behaviour. Receivers are
-//! CDiplomacyStatus or CCountry addresses the collector registered; a
+//! diplomacy status or country object addresses the collector registered; a
 //! notification never infers an owner. Anything unobserved (disabled,
 //! poisoned, a refused registration, an epoch change) makes the collector
 //! read afresh.
@@ -17,7 +17,7 @@ use std::{
 };
 
 static WATCHES: WatchRegistry = WatchRegistry::new();
-/// Receivers watched per country slot: its CCountry and CDiplomacyStatus.
+/// Receivers watched per country slot: its country object and diplomacy status.
 const RECEIVERS_PER_COUNTRY: usize = 2;
 static ORIGINAL: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
 static EVENTS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];

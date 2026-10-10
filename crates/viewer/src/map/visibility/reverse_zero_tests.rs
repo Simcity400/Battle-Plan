@@ -116,7 +116,7 @@ fn reverse_zero_uses_actual_receiver_identity_and_keeps_positive_target_alias_ze
     install(
         &mut frame,
         vec![Some(ReverseZeroVisibilityInputs {
-            // Active war decides before the unknown +50 and subject.
+            // Active war decides before the unknown raw target and subject.
             war: Some([1, 0]),
             ..Default::default()
         })],
@@ -258,7 +258,7 @@ fn reverse_zero_subject_matches_actual_cell_target_by_ordered_raw_then_canonical
             }),
         ],
     );
-    // Retired war is clear; target +50 is an alias rather than query raw101.
+    // Retired war is clear; the cell target is an alias rather than query raw101.
     assert_eq!(reverse_zero_shared(&frame, &links, 1), Ok(true));
     assert_eq!(
         map_intel_subject(&subject(Some(999), None), &links, Ok(999)),

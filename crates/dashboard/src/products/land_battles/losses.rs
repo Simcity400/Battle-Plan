@@ -273,7 +273,7 @@ impl Census {
             let losses = result.losses.each_ref().map(SideLossInputs::from);
             let sides = self.loss_values(result.end_hour, &losses);
             let episode = &mut self.episodes[at];
-            // FinalizeCombat@1412A43A0's mask is distinct from the leader on-action verdict.
+            // The combat finalizer mask is distinct from the leader on-action verdict.
             let winner = match result.winners {
                 1 => battles::BattleWinner::Side { side: 0 },
                 2 => battles::BattleWinner::Side { side: 1 },

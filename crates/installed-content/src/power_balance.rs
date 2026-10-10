@@ -1,6 +1,6 @@
-//! Authored balance ranges (140A7F150, 140A7FD10, 140A7FC50, 140A7FC20).
+//! Authored balance ranges.
 //! Files use lexer mode 0, no recursion; a repeated template is rebuilt.
-//! Ranges append, with template ranges before side ranges (140A7F510).
+//! Ranges append, with template ranges before side ranges.
 
 use crate::{
     ResolvedLayers, ideas,
@@ -13,134 +13,21 @@ use crate::{
 };
 use std::{collections::BTreeMap, io};
 
-/// CRuleDefinition's executable registry, in order (14062DBC0).
-/// Name, localisation key, default (+0x32), fulfilled value (+0x30).
-pub const RULES: &[(&str, &str, bool, bool)] = &[
-    ("none", "NONE", false, true),
-    (
-        "can_not_build_buildings",
-        "CAN_NOT_BUILD_BUILDINGS",
-        false,
-        false,
-    ),
-    ("can_not_declare_war", "CAN_NOT_DECLARE_WAR", false, false),
-    (
-        "can_declare_war_without_wargoal_when_in_war",
-        "CAN_DECLARE_WAR_WITHOUT_WARGOAL_WHEN_IN_WAR",
-        false,
-        true,
-    ),
-    (
-        "can_declare_war_on_same_ideology",
-        "CAN_DECLARE_WAR_ON_SAME_IDEOLOGY",
-        true,
-        true,
-    ),
-    ("can_force_government", "CAN_FORCE_GOVERNMENT", true, true),
-    (
-        "can_guarantee_other_ideologies",
-        "CAN_GUARANTEE_OTHER_IDEOLOGIES",
-        false,
-        true,
-    ),
-    ("can_send_volunteers", "CAN_SEND_VOLUNTEERS", false, true),
-    (
-        "can_generate_female_aces",
-        "CAN_GENERATE_FAMALE_ACES",
-        false,
-        true,
-    ),
-    (
-        "can_use_kamikaze_pilots",
-        "CAN_USE_KAMIKAZE_PILOTS",
-        false,
-        true,
-    ),
-    ("can_lower_tension", "CAN_LOWER_TENSION", false, true),
-    (
-        "can_join_opposite_factions",
-        "CAN_JOIN_OPPOSITE_FACTIONS",
-        true,
-        true,
-    ),
-    ("can_create_factions", "CAN_CREATE_FACTIONS", false, true),
-    ("can_puppet", "CAN_PUPPET", true, true),
-    (
-        "can_only_justify_war_on_threat_country",
-        "CAN_ONLY_JUSTIFY_WAR_ON_THREAT_COUNTRY",
-        false,
-        false,
-    ),
-    (
-        "can_boost_other_ideologies",
-        "CAN_BOOST_OTHER_IDEOLOGIES",
-        false,
-        true,
-    ),
-    ("can_occupy_non_war", "CAN_OCCUPY_NON_WAR", true, true),
-    (
-        "can_decline_call_to_war",
-        "CAN_DECLINE_CALL_TO_WAR",
-        true,
-        true,
-    ),
-    (
-        "units_deployed_to_overlord",
-        "UNITS_DEPLOYED_TO_OVERLORD",
-        false,
-        false,
-    ),
-    ("can_join_factions", "CAN_JOIN_FACTIONS", true, true),
-    (
-        "can_create_collaboration_government",
-        "CAN_CREATE_COLLABORATION_GOVERNMENT",
-        true,
-        true,
-    ),
-    ("can_be_spymaster", "CAN_BE_SPYMASTER", true, true),
-    (
-        "contributes_operatives",
-        "CONTRIBUTES_OPERATIVES",
-        true,
-        true,
-    ),
-    (
-        "can_boost_own_ideology",
-        "CAN_BOOST_OWN_IDEOLOGY",
-        true,
-        true,
-    ),
-    (
-        "can_generate_female_unit_leaders",
-        "CAN_GENERATE_FEMALE_UNIT_LEADERS",
-        false,
-        true,
-    ),
-    (
-        "can_generate_female_country_leaders",
-        "CAN_GENERATE_FEMALE_COUNTRY_LEADERS",
-        false,
-        true,
-    ),
-    ("can_access_market", "CAN_ACCESS_MARKET", true, true),
-    (
-        "can_use_underway_replenishment",
-        "CAN_USE_UNDERWAY_REPLENISHMENT",
-        false,
-        true,
-    ),
-];
+/// Rule name, localisation label, default and fulfilled value by rule index.
+pub fn rules() -> &'static [(&'static str, &'static str, bool, bool)] {
+    &engine::executable_tables::get().auxiliary.rules
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Range {
     pub id: Vec<u8>,
-    /// CProgressSection +8/+0x10 (140A05820); constructor 140A7C610.
+    /// Inclusive range bounds in fixed5 units.
     pub min: i64,
     pub max: i64,
     pub modifiers: modifiers::Modifiers,
-    /// One boolean per executable rule, including the defaults (14062BED0).
+    /// One boolean per executable rule, including its default.
     pub rules: Vec<bool>,
-    /// Full native bodies, including scopes, operands and conditional siblings.
+    /// Complete bodies, including scopes, operands and conditional siblings.
     pub activation: Vec<Item>,
     pub deactivation: Vec<Item>,
 }
@@ -159,14 +46,14 @@ impl Default for Range {
     }
 }
 
-/// Template own fields, consumed by effect descriptions (140A7FD10).
+/// Template fields consumed by effect descriptions.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Definition {
     pub id: Vec<u8>,
     pub initial_value: i64,
     pub left: Vec<u8>,
     pub right: Vec<u8>,
-    /// Native side array order; find_side (140A7E960) takes its first match.
+    /// Authored side order; side selection takes its first match.
     pub sides: Vec<Vec<u8>>,
 }
 
@@ -193,7 +80,7 @@ impl Database {
         database
     }
     /// A recorded id identifies a unique authored range. The active pointer
-    /// (+0xB0, 140E43E70) is not recorded, so duplicate ids are ambiguous.
+    /// is not recorded, so duplicate ids are ambiguous.
     pub fn range(&self, balance: &[u8], range: &[u8]) -> Result<Option<&Range>, String> {
         let balance = parser::c_string(balance);
         let range = parser::c_string(range);
@@ -207,7 +94,7 @@ impl Database {
         match matches.as_slice() {
             [] if range.is_empty() => Ok(None),
             _ if range.is_empty() => Err(format!(
-                "balance {}: {} unnamed authored ranges cannot be distinguished from the null range; the recording lacks the active range's pointer or ordinal (+0xB0, 140E43E70)",
+                "balance {}: {} unnamed authored ranges cannot be distinguished from the null range; the recording lacks the active range's pointer or ordinal",
                 String::from_utf8_lossy(balance),
                 matches.len()
             )),
@@ -218,7 +105,7 @@ impl Database {
                 String::from_utf8_lossy(range)
             )),
             _ => Err(format!(
-                "balance {}: {} ranges named {}; the recording lacks the active range's pointer or ordinal (+0xB0, 140E43E70)",
+                "balance {}: {} ranges named {}; the recording lacks the active range's pointer or ordinal",
                 String::from_utf8_lossy(balance),
                 matches.len(),
                 String::from_utf8_lossy(range)
@@ -265,7 +152,7 @@ fn read_file(
                 Some(b"on_activate" | b"on_deactivate") => Shape::ByKey,
                 _ => Shape::Skip,
             },
-            // CPowerBalanceRange delegates its progress fields to 140A05820.
+            // A range includes the shared progress fields.
             Node::Range => match field.keyword().as_deref() {
                 Some(b"id") => Shape::Current,
                 Some(b"min" | b"max") => Shape::One,
@@ -292,7 +179,7 @@ fn read_file(
 
 fn range(items: &[Item], notes: &mut Vec<String>, registry: modifiers::Registry<'_>) -> Range {
     let mut range = Range {
-        rules: RULES.iter().map(|r| r.2).collect(),
+        rules: rules().iter().map(|r| r.2).collect(),
         ..Default::default()
     };
     for item in items {
@@ -321,11 +208,15 @@ fn range(items: &[Item], notes: &mut Vec<String>, registry: modifiers::Registry<
                 .extend_from_slice(item.value.items().unwrap_or_default()),
             Some(b"rule") => {
                 for rule in item.value.items().unwrap_or_default() {
-                    if let Some(at) = RULES.iter().position(|r| rule.keyword_is(r.0)) {
-                        // 14062F5E0's temporary bool starts false: a failed scan stores false.
+                    if let Some(at) = rules().iter().position(|r| rule.keyword_is(r.0)) {
+                        // A failed boolean scan stores false.
                         let value = rule.value.scalar().and_then(parser::read_bool);
                         if value.is_none() {
-                            notes.push(format!("range {}: rule {} failed boolean conversion; stored false (14062F5E0)", String::from_utf8_lossy(&range.id), RULES[at].0));
+                            notes.push(format!(
+                                "range {}: rule {} failed boolean conversion; stored false",
+                                String::from_utf8_lossy(&range.id),
+                                rules()[at].0
+                            ));
                         }
                         range.rules[at] = value.unwrap_or(false);
                     } else if !rule.keyword_is("icon")
@@ -333,7 +224,7 @@ fn range(items: &[Item], notes: &mut Vec<String>, registry: modifiers::Registry<
                         && !rule.keyword_is("override")
                     {
                         notes.push(format!(
-                            "range {}: unknown rule {} ignored (14062EDC0)",
+                            "range {}: unknown rule {} ignored",
                             String::from_utf8_lossy(&range.id),
                             String::from_utf8_lossy(rule.key.as_deref().unwrap_or_default())
                         ));
@@ -346,7 +237,7 @@ fn range(items: &[Item], notes: &mut Vec<String>, registry: modifiers::Registry<
     range.modifiers.values.retain(|m| {
         if registry(m.name.as_bytes()) == Some(false) {
             notes.push(format!(
-                "range {}: unknown modifier {} ignored (1406042A0)",
+                "range {}: unknown modifier {} ignored",
                 String::from_utf8_lossy(&range.id),
                 m.key
             ));
@@ -383,7 +274,7 @@ pub fn read(layers: &ResolvedLayers, registry: modifiers::Registry<'_>) -> io::R
                 id: key.clone(),
                 ..Default::default()
             };
-            // 140A7CA70 initialises value to zero; repeated reads retain on failure.
+            // Initial value starts at zero; a repeated failed read retains it.
             for item in items {
                 if item.keyword_is("initial_value") {
                     if let Some(value) = modifiers::read_fixed5(item) {
@@ -441,14 +332,14 @@ pub fn read(layers: &ResolvedLayers, registry: modifiers::Registry<'_>) -> io::R
                     format!("{path}: 1 unread balance file: {cause}"),
                 ));
             }
-            // 140A7B800 hashes without case; 140A7F150 compares with _stricmp.
+            // Template identity is ASCII case insensitive.
             if database
                 .balances
                 .insert(key.to_ascii_lowercase(), ranges)
                 .is_some()
             {
                 database.notes.push(format!(
-                    "{path}: duplicate template {} replaced (140A7F150)",
+                    "{path}: duplicate template {} replaced",
                     String::from_utf8_lossy(&key)
                 ));
             }
@@ -457,7 +348,7 @@ pub fn read(layers: &ResolvedLayers, registry: modifiers::Registry<'_>) -> io::R
     Ok(database)
 }
 
-/// The content registry supplies 1406042A0's native modifier-token lookup.
+/// Uses the recorded content registry for modifier-token lookup.
 pub fn read_descriptions(layers: &ResolvedLayers) -> io::Result<Database> {
     let names = layers.key_names()?;
     read(layers, &|key| modifiers::registered(key, Some(&names)))

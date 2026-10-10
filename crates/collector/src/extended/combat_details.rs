@@ -193,7 +193,7 @@ struct ModifierSide {
     len: usize,
 }
 /// One combat's side country sets, with the indicator and flag words read
-/// with its modifier context (1418B4BD0's operands).
+/// with its modifier context.
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 struct CombatSides {
     sets: cland_combat::CountrySetsRow,
@@ -322,7 +322,7 @@ fn read_division<M: Memory, C: Memory>(
         outputs.names,
     )?;
     let countries = countries.as_ref().map_err(|reason| *reason)?;
-    // 1415CA660 evaluates the exile frames for committed entries only.
+    // Exile frames apply to committed entries only.
     let exile = match role {
         1 => carmy_combat_inputs::capture_exile_buffer(
             memory,
@@ -904,9 +904,8 @@ impl Destination<'_> {
                     }
                 }
                 row.stored_terrain_name.start += text;
-                // 1413D69D0/1413DAD10 consume these MSVC identifiers, read through
-                // msvc_string::{LENGTH, CAPACITY, INLINE_CAPACITY} (14070E900).
-                // Like the other tokens, their spans are relative to the text slice.
+                // These identifiers use the MSVC string reader. Like the other
+                // tokens, their spans are relative to the text slice.
                 if let Some(border) = &mut row.border_war {
                     for side in &mut border.sides {
                         side.win_event.start += text;

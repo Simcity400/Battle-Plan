@@ -206,8 +206,8 @@ impl LinkTags {
             self.from = Some(views);
             return Ok(false);
         }
-        // Resolve the link's country (140BA5140 / 140BA6240), then use its
-        // recorded current tag; 140BA5C20's raw alias string is not recorded here.
+        // Resolve the link's country, then use its recorded current tag;
+        // the raw alias string is not recorded here.
         let slots: HashMap<u32, &[u8]> = countries
             .iter()
             .map(|country| (country.canonical_slot, country.tag.as_slice()))

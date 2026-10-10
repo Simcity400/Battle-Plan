@@ -213,14 +213,14 @@ fn parse_game_graphics_keys(
     result.nato_counters = Some(counters.nato == 1);
     result.full_resolution = map("draw_map_full_res", result.full_resolution);
     result.trees = map("draw_trees", result.trees);
-    // 140B481A0 gates map casters on map options+0x13. Graphics+0xf0's
-    // shadows flag only reaches the device support check at142224600.
+    // Map shadows use the map-rendering option; the graphics shadows
+    // setting only reaches the device support check.
     result.shadows = map("draw_shadows", result.shadows);
     result.rivers = map("draw_rivers", result.rivers);
-    // 1401FAA60 token0x3699 writes map options+0x18; used by141264830.
+    // High-quality map shaders use the map-rendering option.
     result.high_gfx_shaders = map("high_gfx_shaders", result.high_gfx_shaders);
     result.water_reflections = map("draw_water_reflections", result.water_reflections);
-    // 1401FAA60 token0x281c writes options+0x0e; sky141268860 reads it.
+    // Sky rendering uses the map-rendering option.
     result.sky = map("draw_sky", result.sky);
     result.buildings = map("draw_buildings", result.buildings);
     result.units = map("draw_units", result.units);
@@ -317,6 +317,8 @@ mod tests {
 
     #[test]
     fn imports_real_graphics_and_rejects_invalid_quality() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let settings = parse_game_graphics(b"template_counter=1 graphics={multi_sampling=0 shadows=no} mapRenderingOptions={draw_trees=no draw_shadows=yes texture_quality=2 draw_units=no high_gfx_shaders=no draw_water_reflections=no draw_sky=no draw_map_full_res=no}").unwrap();
         assert_eq!(settings.nato_counters, Some(true));
         assert_eq!(settings.samples, 1);
@@ -345,6 +347,8 @@ mod tests {
     }
     #[test]
     fn map_shadow_option_is_independent_of_device_shadow_preference() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         for device in ["yes", "no"] {
             for (map, expected) in [("yes", true), ("no", false)] {
                 let input = format!(

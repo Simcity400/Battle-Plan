@@ -1,0 +1,634 @@
+//! CEquipmentVariantPool, shared by stockpiles, convoys, deployment and upgrades.
+//!
+//! Amounts are native signed i64 fixed point. The serializer omits zero
+//! entries unless ALLOW_ZERO is set. Array order can matter to consumers.
+
+use crate::{
+    Memory, allocation_equipment_row, carmy, ccountry, cequipment_variant,
+    cpdx_array::Array,
+    cproduction_status, equipment_entry,
+    memory::{RecordField, RecordLayout, RecordSources},
+    read,
+    walk::{Buffer, Outcome},
+};
+
+pub use equipment_entry::Row;
+
+/// CEquipmentVariantPool primary vtable.
+pub const VTABLE_RVA: usize = 0x27330a0;
+/// Equipment-pool archetype-allocation array, initialized before the
+/// variant array at +0x20.
+pub const ALLOCATIONS: usize = 0x08;
+/// CEquipmentVariantPool archetype-allocation capacity, i32.
+pub const ALLOCATIONS_CAPACITY: usize = 0x10;
+/// CEquipmentVariantPool archetype-allocation count, i32; native allocation operations use pool+8 with 24-byte entries.
+pub const ALLOCATIONS_COUNT: usize = 0x14;
+/// CEquipmentVariantPool row array pointer.
+pub const ITEMS: usize = 0x20;
+/// CEquipmentVariantPool row capacity, i32.
+pub const CAPACITY: usize = 0x28;
+/// CEquipmentVariantPool row count, i32.
+pub const COUNT: usize = 0x2c;
+/// CEquipmentVariantPool allocator slot.
+pub const ALLOCATOR: usize = 0x30;
+/// CEquipmentVariantPool allow-zero byte.
+pub const ALLOW_ZERO: usize = 0x38;
+/// CEquipmentVariantPool serializer.
+pub const SERIALIZE_RVA: usize = 0xffdb00;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct StockpileRow {
+    pub country: u32,
+    pub ordinal: u32,
+    pub variant_handle: u64,
+    pub amount_raw: i64,
+}
+
+/// A source from the authenticated division census, not an independent roster.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DivisionSource {
+    pub pointer: usize,
+    pub division: u64,
+    pub template: u64,
+    pub country: u32,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DivisionRow {
+    pub division: u64,
+    pub template: u64,
+    pub country: u32,
+    pub ordinal: u32,
+    pub variant_handle: u64,
+    pub amount_raw: i64,
+}
+
+/// Authenticate a genuine CEquipmentVariantPool and return its variant array.
+/// CArmy embeds this object at primary+348 and CProductionStatus at +200;
+/// their familiar +368/+220 array pointers are not the pool's primary address.
+pub fn entries(
+    memory: &impl Memory,
+    module_base: usize,
+    pool: usize,
+) -> Result<Array, &'static str> {
+    authenticated_array(memory, module_base, pool, ITEMS, equipment_entry::STRIDE)
+}
+
+/// Select the first pool entry with the largest signed i64 amount, keeping
+/// the first on ties. This is an embedded-pool selection, not a reference at
+/// the pool primary address. Empty pools and winning null pointers return zero.
+/// Positive entries authenticate their flag union; the caller authenticates
+/// the selected target even when its winning amount is nonpositive.
+pub fn model_selection(
+    memory: &impl Memory,
+    module_base: usize,
+    pool: usize,
+) -> Result<(usize, u64), &'static str> {
+    model_selection_observed(memory, module_base, pool, &mut 0)
+}
+
+/// Loan exact flags reached by model selection, including a positive
+/// flag-22 early return usable by transport after a later model failure.
+pub fn model_selection_observed(
+    memory: &impl Memory,
+    module_base: usize,
+    pool: usize,
+    observed_flags: &mut u64,
+) -> Result<(usize, u64), &'static str> {
+    model_selection_entries(memory, module_base, pool, observed_flags, |_, _, _| {})
+}
+
+/// Transport observes original raw entries and positive flag attempts.
+/// Model selection leaves nonpositive flags unattempted; acquire them once
+/// through the same raw-entry loan before reading amount. Independent
+/// memory admission prevents extra reads from starving model rows.
+pub fn model_selection_transport_observed(
+    memory: &impl Memory,
+    transport_memory: &impl Memory,
+    module_base: usize,
+    pool: usize,
+    transport_flags: &mut Result<u64, &'static str>,
+) -> Result<(usize, u64), &'static str> {
+    let observation = std::cell::Cell::new(Ok(0_u64));
+    let decisive = std::cell::Cell::new(false);
+    let mut reached = 0;
+    let result = model_selection_entries(
+        memory,
+        module_base,
+        pool,
+        &mut reached,
+        |variant, amount, original| {
+            if decisive.get() || observation.get().is_err() {
+                return;
+            }
+            let flags = original
+                .unwrap_or_else(|| transport_variant_flags(transport_memory, module_base, variant));
+            match flags {
+                Ok(flags) => {
+                    if amount > 0 {
+                        let flags = observation.get().unwrap() | flags;
+                        observation.set(Ok(flags));
+                        decisive.set(flags & (1 << 22) != 0);
+                    }
+                }
+                Err(reason) => observation.set(Err(reason)),
+            }
+        },
+    );
+    *transport_flags = if observation.get().is_err() || decisive.get() {
+        observation.get()
+    } else {
+        result
+            .as_ref()
+            .map(|_| observation.get())
+            .unwrap_or_else(|reason| Err(*reason))
+    };
+    result
+}
+
+fn model_selection_entries(
+    memory: &impl Memory,
+    module_base: usize,
+    pool: usize,
+    observed_flags: &mut u64,
+    mut observe: impl FnMut(usize, i64, Option<Result<u64, &'static str>>),
+) -> Result<(usize, u64), &'static str> {
+    *observed_flags = 0;
+    let expected = module_base
+        .checked_add(VTABLE_RVA)
+        .ok_or("equipment pool vtable address overflow")?;
+    if read::<u64>(memory, pool) != Some(expected as u64) {
+        return Err("equipment pool vtable unreadable or mismatch");
+    }
+    let header_at = pool
+        .checked_add(ITEMS)
+        .ok_or("equipment pool address overflow")?;
+    let header = read::<[u8; 16]>(memory, header_at).ok_or("equipment pool array unreadable")?;
+    let array = Array::from_header(header, equipment_entry::STRIDE)
+        .ok_or("equipment pool array invalid")?;
+    // Walk the complete signed count. Scratch is a repeated window with no
+    // aggregate pool population limit.
+    const BATCH: usize = 64;
+    let mut bytes = [0; BATCH * equipment_entry::STRIDE];
+    let mut selected = 0;
+    let mut positive_flags = 0u64;
+    let mut largest = None;
+    let mut first = 0_u32;
+    while first < array.count {
+        let count = ((array.count - first) as usize).min(BATCH);
+        let address = array
+            .element(first, equipment_entry::STRIDE)
+            .ok_or("equipment model pool address overflow")?;
+        let copied = &mut bytes[..count * equipment_entry::STRIDE];
+        if !crate::read_slice(memory, address, copied) {
+            return Err("equipment model pool entries unreadable");
+        }
+        // Each owned entry advances the hint cursor once. The four-entry
+        // window stays inside this successfully copied chunk; no future
+        // identity or flags are loaded ahead of their native entry order.
+        let mut hints = copied.chunks_exact(equipment_entry::STRIDE);
+        let mut hinting = hints
+            .by_ref()
+            .take(4)
+            .all(|entry| hint_model_variant(entry, crate::prefetch::span));
+        for entry in copied.chunks_exact(equipment_entry::STRIDE) {
+            let amount = i64::from_le_bytes(entry[8..16].try_into().unwrap());
+            let variant = u64::from_le_bytes(entry[..8].try_into().unwrap()) as usize;
+            if amount > 0 {
+                let flags = transport_variant_flags(memory, module_base, variant);
+                observe(variant, amount, Some(flags));
+                let flags = flags?;
+                positive_flags |= flags;
+                *observed_flags = positive_flags;
+            } else {
+                observe(variant, amount, None);
+            }
+            if largest.is_none_or(|previous| amount > previous) {
+                largest = Some(amount);
+                selected = usize::try_from(u64::from_le_bytes(entry[..8].try_into().unwrap()))
+                    .map_err(|_| "equipment model variant pointer overflow")?;
+            }
+            if hinting && let Some(next) = hints.next() {
+                hinting = hint_model_variant(next, crate::prefetch::span);
+            }
+        }
+        first += count as u32;
+    }
+    Ok((selected, positive_flags))
+}
+
+/// Search flag 22 first, then flag 37, borrowing each positive variant
+/// once. Observed flag 22 returns immediately; a complete no-22 pass has
+/// already lent all flag-37 operands. Storage follows the live header.
+pub fn transport_carrier_flags(
+    memory: &impl Memory,
+    module_base: usize,
+    pool: usize,
+) -> Result<u64, &'static str> {
+    let array = entries(memory, module_base, pool)?;
+    transport_carrier_flags_in(memory, module_base, array)
+}
+
+fn transport_variant_flags(
+    memory: &impl Memory,
+    module_base: usize,
+    variant: usize,
+) -> Result<u64, &'static str> {
+    if variant == 0 {
+        return Err("positive ship equipment has null variant");
+    }
+    let identity =
+        read::<[u8; 16]>(memory, variant).ok_or("ship equipment variant identity unreadable")?;
+    cequipment_variant::identity_from_header(
+        module_base
+            .checked_add(cequipment_variant::VTABLE_RVA)
+            .ok_or("ship equipment module overflow")?,
+        identity,
+    )?;
+    let at = variant
+        .checked_add(cequipment_variant::CLASSIFIER_FLAGS)
+        .ok_or("ship equipment flag address overflow")?;
+    read(memory, at).ok_or("ship equipment flags unreadable")
+}
+
+fn transport_carrier_flags_in(
+    memory: &impl Memory,
+    module_base: usize,
+    array: Array,
+) -> Result<u64, &'static str> {
+    let mut flags = 0_u64;
+    for ordinal in 0..array.count {
+        let at = array
+            .element(ordinal, equipment_entry::STRIDE)
+            .ok_or("transport carrier pool address overflow")?;
+        let entry =
+            read::<[u8; 16]>(memory, at).ok_or("transport carrier pool entry unreadable")?;
+        let variant = usize::try_from(u64::from_le_bytes(entry[..8].try_into().unwrap()))
+            .ok()
+            .filter(|pointer| *pointer != 0)
+            .ok_or("transport carrier equipment has null variant")?;
+        let raw = transport_variant_flags(memory, module_base, variant)?;
+        // Acquire flags before the amount predicate, including nonpositive rows.
+        if i64::from_le_bytes(entry[8..].try_into().unwrap()) <= 0 {
+            continue;
+        }
+        flags |= raw;
+        if flags & (1 << 22) != 0 {
+            return Ok(flags);
+        }
+    }
+    Ok(flags)
+}
+
+/// Advisory targets from one owned equipment occurrence. Rejecting a target
+/// only ends lookahead; its original identity/flags reads decide the result.
+#[inline]
+fn hint_model_variant(entry: &[u8], mut hint: impl FnMut(usize, usize)) -> bool {
+    if i64::from_le_bytes(entry[8..16].try_into().unwrap()) <= 0 {
+        return true;
+    }
+    let variant = u64::from_le_bytes(entry[..8].try_into().unwrap()) as usize;
+    if variant == 0
+        || variant.checked_add(16).is_none()
+        || !crate::memory::is_canonical_range(variant, 16)
+    {
+        return false;
+    }
+    hint(variant, 16);
+    let Some(flags) = variant
+        .checked_add(cequipment_variant::CLASSIFIER_FLAGS)
+        .filter(|&address| {
+            address.checked_add(8).is_some() && crate::memory::is_canonical_range(address, 8)
+        })
+    else {
+        return false;
+    };
+    hint(flags, 8);
+    true
+}
+
+/// The first array stores allocation rows rather than variant/amount pairs.
+/// Its count and identity are independent of the second array.
+pub fn allocation_entries(
+    memory: &impl Memory,
+    module_base: usize,
+    pool: usize,
+) -> Result<Array, &'static str> {
+    authenticated_array(
+        memory,
+        module_base,
+        pool,
+        ALLOCATIONS,
+        allocation_equipment_row::STRIDE,
+    )
+}
+
+fn authenticated_array(
+    memory: &impl Memory,
+    module_base: usize,
+    pool: usize,
+    field: usize,
+    stride: usize,
+) -> Result<Array, &'static str> {
+    let expected = module_base
+        .checked_add(VTABLE_RVA)
+        .ok_or("equipment pool vtable address overflow")?;
+    let actual = read::<u64>(memory, pool).ok_or("equipment pool vtable unreadable")?;
+    if actual != expected as u64 {
+        return Err("equipment pool vtable mismatch");
+    }
+    let header = pool
+        .checked_add(field)
+        .ok_or("equipment pool address overflow")?;
+    Array::read(memory, header, stride).ok_or("equipment pool array invalid or unreadable")
+}
+
+/// Preserve every live pool entry, including amounts omitted by the native
+/// serializer's allow-zero policy. No allocation, sorting or rescaling occurs.
+pub fn walk(memory: &impl Memory, module_base: usize, pool: usize, output: &mut [Row]) -> Outcome {
+    match entries(memory, module_base, pool) {
+        Ok(array) => equipment_entry::walk(memory, module_base, array, output),
+        Err(reason) => Outcome::Unavailable { reason },
+    }
+}
+
+/// Every canonical country's complete stockpile. Air-reserve joins use
+/// wing entries off the game thread without rereading the pool.
+pub fn walk_stockpiles(
+    memory: &impl Memory,
+    module_base: usize,
+    game_state: usize,
+    output: &mut [StockpileRow],
+) -> Outcome {
+    walk_stockpiles_buffer(
+        memory,
+        module_base,
+        game_state,
+        crate::walk::Buffer::Fixed(output),
+    )
+}
+
+pub fn walk_stockpiles_growing(
+    memory: &impl Memory,
+    module_base: usize,
+    game_state: usize,
+    output: &mut Vec<StockpileRow>,
+) -> Outcome {
+    walk_stockpiles_buffer(
+        memory,
+        module_base,
+        game_state,
+        crate::walk::Buffer::Growing(output),
+    )
+}
+
+pub fn walk_stockpiles_buffer(
+    memory: &impl Memory,
+    module_base: usize,
+    game_state: usize,
+    mut output: crate::walk::Buffer<'_, StockpileRow>,
+) -> Outcome {
+    let result = (|| {
+        let countries = ccountry::Reader::new(memory, module_base, game_state)?;
+        let mut found_country = false;
+        let mut len = 0_usize;
+        let mut unread_rows = 0_u32;
+        for slot in 1..countries.count() {
+            let Some(country) = countries.at(slot)? else {
+                continue;
+            };
+            found_country = true;
+            let manager = cproduction_status::manager(memory, module_base, country)?;
+            let pool = manager
+                .checked_add(cproduction_status::STOCKPILE_POOL)
+                .ok_or("stockpile pool address overflow")?;
+            let array = entries(memory, module_base, pool)?;
+            output.ensure(
+                len.checked_add(array.count as usize)
+                    .ok_or("stockpile row count overflow")?,
+            )?;
+            let available = (output.len() - len).min(array.count as usize);
+            for ordinal in 0..available {
+                let address = array
+                    .element(ordinal as u32, equipment_entry::STRIDE)
+                    .ok_or("stockpile entry address overflow")?;
+                let row = equipment_entry::read(memory, module_base, address, ordinal as u32)?;
+                output[len] = StockpileRow {
+                    country: country.id,
+                    ordinal: row.source_ordinal,
+                    variant_handle: row.variant_handle,
+                    amount_raw: row.amount_raw,
+                };
+                len += 1;
+            }
+            unread_rows = unread_rows
+                .checked_add(array.count - available as u32)
+                .ok_or("stockpile unread row count overflow")?;
+        }
+        if !found_country {
+            Err("stockpile country census contains no countries")
+        } else {
+            Ok(complete(len, unread_rows))
+        }
+    })();
+    result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
+}
+
+/// Reuse the division census's authenticated roots and native identity fields.
+/// An incomplete source census must make this dependent table unavailable; an
+/// empty slice alone is not evidence of an empty world. Every later pool header
+/// is authenticated after row capacity is reached to count omitted entries.
+pub fn walk_divisions(
+    memory: &impl Memory,
+    module_base: usize,
+    divisions: &[DivisionSource],
+    output: &mut [DivisionRow],
+) -> Outcome {
+    walk_divisions_where(memory, module_base, divisions, |_| true, output)
+}
+
+/// [`walk_divisions`] over only the census entries `keep` admits, in census
+/// order; the others are not read at all.
+pub fn walk_divisions_where(
+    memory: &impl Memory,
+    module_base: usize,
+    divisions: &[DivisionSource],
+    keep: impl Fn(&DivisionSource) -> bool,
+    output: &mut [DivisionRow],
+) -> Outcome {
+    walk_divisions_buffer(memory, module_base, divisions, keep, Buffer::Fixed(output))
+}
+
+/// Worker-only capture grows from each original authenticated pool header,
+/// then continues entries without rereading it or omitting a capacity prefix.
+pub fn walk_divisions_growing(
+    memory: &impl Memory,
+    module_base: usize,
+    divisions: &[DivisionSource],
+    output: &mut Vec<DivisionRow>,
+) -> Outcome {
+    walk_divisions_where_growing(memory, module_base, divisions, |_| true, output)
+}
+
+/// Filtered worker capture grows from original pool headers.
+/// Rejected census entries acquire no operands.
+pub fn walk_divisions_where_growing(
+    memory: &impl Memory,
+    module_base: usize,
+    divisions: &[DivisionSource],
+    keep: impl Fn(&DivisionSource) -> bool,
+    output: &mut Vec<DivisionRow>,
+) -> Outcome {
+    walk_divisions_buffer(
+        memory,
+        module_base,
+        divisions,
+        keep,
+        Buffer::Growing(output),
+    )
+}
+
+fn walk_divisions_buffer(
+    memory: &impl Memory,
+    module_base: usize,
+    divisions: &[DivisionSource],
+    keep: impl Fn(&DivisionSource) -> bool,
+    mut output: Buffer<'_, DivisionRow>,
+) -> Outcome {
+    let result = (|| {
+        // A division's bank entries are contiguous and each names one variant.
+        // Both stages gather a batch at a time instead of two guarded copies
+        // per entry; every entry is still decoded and authenticated in native
+        // order with its own copied prefix, so each reason keeps its position.
+        const BATCH: usize = 64;
+        let mut addresses = [0_usize; BATCH];
+        let mut entry_bytes = [0_u8; BATCH * equipment_entry::STRIDE];
+        let mut identities = [0_u8; BATCH * 16];
+        // Relocated once for the whole walk, but still reported at the entry
+        // whose identity would have computed it, so its precedence is intact.
+        let relocated = module_base.checked_add(cequipment_variant::VTABLE_RVA);
+        let mut len = 0usize;
+        let mut unread_rows = 0_u32;
+        for division in divisions.iter().filter(|division| keep(division)) {
+            let pool = division
+                .pointer
+                .checked_add(carmy::EQUIPMENT_POOL)
+                .ok_or("division equipment pool address overflow")?;
+            let array = entries(memory, module_base, pool)?;
+            output.ensure(
+                len.checked_add(array.count as usize)
+                    .ok_or("division equipment sizing overflow")?,
+            )?;
+            let available = (output.len() - len).min(array.count as usize);
+            let mut first = 0;
+            while first < available {
+                let count = (available - first).min(BATCH);
+                let mut overflow = None;
+                for (slot, address) in addresses[..count].iter_mut().enumerate() {
+                    match array.element((first + slot) as u32, equipment_entry::STRIDE) {
+                        Some(element) => *address = element,
+                        None => {
+                            overflow = Some(slot);
+                            break;
+                        }
+                    }
+                }
+                let ready = overflow.unwrap_or(count);
+                let copied = memory.copy_records(
+                    RecordSources::Pointers(&addresses[..ready]),
+                    &ENTRY_LAYOUT,
+                    &mut entry_bytes[..ready * equipment_entry::STRIDE],
+                );
+                let mut staged = 0;
+                while staged < copied.min(count) {
+                    let start = staged * equipment_entry::STRIDE;
+                    let word = u64::from_le_bytes(
+                        entry_bytes
+                            [start + equipment_entry::VARIANT..start + equipment_entry::AMOUNT]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    match usize::try_from(word) {
+                        Ok(pointer) => addresses[staged] = pointer,
+                        Err(_) => break,
+                    }
+                    staged += 1;
+                }
+                let authenticated = memory.copy_records(
+                    RecordSources::Pointers(&addresses[..staged]),
+                    &IDENTITY_LAYOUT,
+                    &mut identities[..staged * 16],
+                );
+                for slot in 0..count {
+                    if overflow == Some(slot) {
+                        return Err("division equipment entry address overflow");
+                    }
+                    if slot >= copied {
+                        return Err("equipment entry unreadable");
+                    }
+                    if slot >= staged {
+                        return Err("equipment variant pointer overflow");
+                    }
+                    let expected = relocated.ok_or("variant module address overflow")?;
+                    if slot >= authenticated {
+                        return Err("variant identity unreadable");
+                    }
+                    let start = slot * equipment_entry::STRIDE;
+                    let amount_raw = i64::from_le_bytes(
+                        entry_bytes
+                            [start + equipment_entry::AMOUNT..start + equipment_entry::STRIDE]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    let variant_handle = cequipment_variant::identity_from_header(
+                        expected,
+                        identities[slot * 16..slot * 16 + 16].try_into().unwrap(),
+                    )?;
+                    output[len] = DivisionRow {
+                        division: division.division,
+                        template: division.template,
+                        country: division.country,
+                        ordinal: (first + slot) as u32,
+                        variant_handle,
+                        amount_raw,
+                    };
+                    len += 1;
+                }
+                first += count;
+            }
+            unread_rows = unread_rows
+                .checked_add(array.count - available as u32)
+                .ok_or("division equipment unread row count overflow")?;
+        }
+        Ok(complete(len, unread_rows))
+    })();
+    result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
+}
+
+/// One bank entry: its variant reference and native amount, in native order.
+const ENTRY_FIELD: [RecordField; 1] = [RecordField {
+    source_offset: 0,
+    destination_offset: 0,
+    len: equipment_entry::STRIDE,
+}];
+/// One variant's vtable and full handle, the exact bytes `identity` reads.
+const IDENTITY_FIELD: [RecordField; 1] = [RecordField {
+    source_offset: 0,
+    destination_offset: 0,
+    len: 16,
+}];
+const ENTRY_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&ENTRY_FIELD, equipment_entry::STRIDE).expect("valid record layout");
+const IDENTITY_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&IDENTITY_FIELD, 16).expect("valid record layout");
+
+fn complete(len: usize, unread_rows: u32) -> Outcome {
+    if unread_rows == 0 {
+        Outcome::Rows { len }
+    } else {
+        Outcome::Truncated { len, unread_rows }
+    }
+}
+
+#[cfg(test)]
+mod tests;

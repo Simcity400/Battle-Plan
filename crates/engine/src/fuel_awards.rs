@@ -1,7 +1,6 @@
-//! Applied fuel operands, observed without calling the game. UpdateFuel
-//! @1410E2450 is called only by 1407098B0 in the serial owned-state country
-//! loop of PreHourlyUpdate@1401D8120. UpdateModifiers@1410E3560 also has other
-//! callers: sampling its later rates cannot reconstruct historical awards.
+//! Applied fuel operands, observed without game calls. The serial owned-state
+//! country loop applies fuel updates before the hourly boundary. Rate refresh
+//! also has other callers; later rates cannot reconstruct historical awards.
 use crate::{
     Memory, cair_base, ccountry, ccountry_air_container, ccountry_fuel_status as fuel, cfleet,
     cgame_state, cpdx_array::Array, creference_registry, cstrategic_air, cstrategic_air_manager,
@@ -18,17 +17,16 @@ pub const BEGIN: (usize, [u8; 16]) = (
     ],
 );
 /// All awards and Q15 consumer debits have settled, before pending/ring clear.
-/// UpdateFuel tail-jumps to 1410E33D0; this MOV+MOV span is eight bytes.
+/// Post-update eight-byte load span before the original clear continuation.
 pub const END: (usize, [u8; 16]) = (
     0x010e_3453,
     [
         0x48, 0x8b, 0x4b, 0x48, 0x48, 0x8b, 0x41, 0x40, 0x48, 0x01, 0x83, 0xa8, 0, 0, 0, 0x48,
     ],
 );
-/// Native unrolled and residual division receipt writes. RAX is CArmy*,
-/// RDX the actual signed fixed5 receipt, including the native parity rounding.
-/// PE unwind entries 1410DE14C..29B / 29B..311 chain to 1410DE110's
-/// handler-free body; each site+5 remains in its original unwind entry.
+/// Division receipt writes, including unrolled and residual paths. RAX is the
+/// division, RDX the actual signed fixed5 receipt with parity rounding. Chained
+/// unwind entries lead to a handler-free body; each site+5 remains in its original entry.
 pub const LAND: [(usize, [u8; 16]); 5] = [
     (
         0x010d_e1ad,
@@ -61,29 +59,27 @@ pub const LAND: [(usize, [u8; 16]); 5] = [
         ],
     ),
 ];
-/// 140D4FF10's complete ADD, leaving the native RET untouched. RCX task force,
-/// RDX signed fixed5 receipt; its sole caller is 1410DE320+0x2EE.
-/// This native leaf has no PE unwind entry or handler.
+/// Complete receipt addition, preserving the original return. RCX task force,
+/// RDX signed fixed5 receipt. This leaf has no unwind entry or handler.
 pub const NAVAL: (usize, [u8; 16]) = (
     0x00d4_ff10,
     [
         0x48, 1, 0x91, 0xf8, 4, 0, 0, 0xc3, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
     ],
 );
-/// 140C3C3D0's nonnull-container store. RDI base, RDX container, RBX receipt.
-/// The seven-byte MOV ends immediately before the native restore sequence.
-/// Its handler-free PE body includes site+5; the epilogue begins at 140C3C408.
+/// Non-null-container receipt store: RDI base, RDX container, RBX receipt.
+/// The seven-byte store ends before register restoration; site+5 remains
+/// inside the handler-free body.
 pub const AIR: (usize, [u8; 16]) = (
     0x00c3_c401,
     [
         0x48, 0x89, 0x9a, 0xf0, 0, 0, 0, 0x48, 0x8b, 0x5c, 0x24, 0x30, 0x48, 0x83, 0xc4, 0x20,
     ],
 );
-/// Unconditional fuel reset prefix, RSI=status. ResetCountryAppearance
-/// @1406D61D0 calls 1410DDC00 at 1406D64BB during runtime reset, dynamic reuse
-/// and country-file initialization. Same pointer/identity-word zero can recur.
-/// These two MOVs run after the handler-free prologue (through +37); no branch
-/// or native return PC enters their eight-byte span. site+5 has the same unwind.
+/// Unconditional fuel-reset prefix, RSI status. Appearance reset reaches it
+/// during runtime reset, country reuse and initialization; a pointer and zero
+/// identity can recur. The eight-byte span follows the handler-free prologue
+/// and contains no interior branch or return address. site+5 shares its unwind state.
 pub const RESET: (usize, [u8; 16]) = (
     0x010d_dc69,
     [
@@ -110,10 +106,9 @@ pub struct Started {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Settled {
-    /// Own gain parts: base, state modifiers, oil, negative-cost gain; fixed5.
-    /// FuelPanel_BuildBreakdown@1410DE880 uses FUEL_DAILY_GAIN_BASE,
-    /// FUEL_DAILY_GAIN_FROM_STATES, _FROM_OIL and _FROM_OTHER. These content
-    /// templates must be resolved, not replaced with a vanilla refinery name.
+    /// Own gain components: base, state modifiers, oil and negative-cost gain,
+    /// all fixed5. Resolve the content-loaded breakdown templates rather than
+    /// substituting a built-in refinery name.
     pub gains: [i64; 4],
     pub own_gain: i64,
     /// Q15: incoming LL, outgoing LL, positive-cost debit, total other debit.
@@ -123,8 +118,8 @@ pub struct Settled {
     pub current: i64,
 }
 
-/// Fixed5ToFixed15@1424D8420, including native truncation toward zero. The
-/// quotient/remainder form avoids overflowing the equivalent raw*32768 form.
+/// Fixed5-to-Q15 conversion with truncation toward zero. The quotient/remainder
+/// form avoids overflowing a direct product.
 pub fn quantity(raw: i64) -> i64 {
     (raw % 100_000) * 0x4000_0000 / 0xc350_0000 + (raw / 100_000) * 0x8000
 }
@@ -193,7 +188,7 @@ pub fn settle(
         0
     };
     // These are differences of native book entries, never a tank-net estimate.
-    // 1410E26D8 adds exactly the fixed5 input before its aggregate conversion.
+    // Bookkeeping adds the exact fixed5 input before aggregate conversion.
     let oil = own_gain
         .wrapping_sub(begun.base)
         .wrapping_sub(begun.states)
@@ -312,8 +307,8 @@ pub fn air(
     })
 }
 
-/// Off-hour log sizing from native request rosters, including duplicates.
-/// 1410DD0C0, DD630 and DD2D0 can each enqueue at most their live roster count.
+/// Off-hour log sizing from live request rosters, including duplicates.
+/// Each queue route is bounded by its own roster count.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Demand {
     pub entries: usize,
@@ -330,9 +325,8 @@ impl StoredName {
         self.0.copy(memory, output)
     }
 }
-/// Pure getters: CArmy::GetName@140C72F00 returns its member+60 cache;
-/// CTaskForce's slot13@140BEDEB0 returns primary+258. Do not run the generator:
-/// the game's retained, possibly stale language bytes are the displayed name.
+/// Stored division and task-force name caches. Never run name generation;
+/// the retained, possibly stale language bytes supply the displayed name.
 pub fn stored_name(
     memory: &impl Memory,
     pointer: usize,

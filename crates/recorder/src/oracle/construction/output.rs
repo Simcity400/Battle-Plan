@@ -168,8 +168,8 @@ impl OutputCheck {
                 }
             }
         }
-        // 1419EEEA0 looks progress up by province pair; 140E7DF25/3D and
-        // 140E7DF4B/64 write both directions. 1419F0DF0 and 1419F0ED3/E7
+        // Progress is looked up by province pair; updates
+        // write both directions. Transfers and completion
         // recompute produced from that shared progress, not this line's spend.
         let mut segments: BTreeMap<(u32, u32), BTreeSet<u64>> = BTreeMap::new();
         for line in railways {
@@ -295,7 +295,8 @@ impl OutputCheck {
                         || b.repair_ticks != a.repair_ticks)
                 {
                     if let (Some(old), Some(new)) = (&was.building, &now.building) {
-                        // AdvanceRepair@1410C5C90: 10^7 partial health per level.
+                        // Repair advancement: 10^7 partial health per level.
+                        // The game also adds BASE_FACTORY_REPAIR at zero IC;
                         // zero-IC repair advances are therefore retained as ticks.
                         let gain = (i128::from(new.healthy_level) - i128::from(old.healthy_level))
                             * i128::from(engine::cbuilding::PARTIAL_HEALTH_PER_LEVEL)
@@ -322,8 +323,8 @@ impl OutputCheck {
                 let mut ownership_reset = false;
                 let mut external_growth = false;
                 if !b.railway {
-                    // 140F55590 -> 140F59250 consumes this line's +48 amount
-                    // for each completed cost subtraction from +38. A target's
+                    // The game consumes this line's amount
+                    // for each completed cost subtraction from its progress. A target's
                     // level can also rise through another line or an effect.
                     let mut finished = i128::from(was.amount) - i128::from(now.amount);
                     if finished < 0 {
@@ -335,8 +336,7 @@ impl OutputCheck {
                         .as_ref()
                         .zip(now.building.as_ref())
                         .map(|(old, new)| i128::from(new.level) - i128::from(old.level));
-                    // set_level@1410C71A0 also serves script effects
-                    // (14031CF00, 14030DFF0/14030F480) without spending
+                    // Script effects can also update levels without spending
                     // this line's IC or consuming its remaining count.
                     let reset = match (&a.count_reset, &b.count_reset) {
                         (replay::rows::Recorded::Value(a), replay::rows::Recorded::Value(b)) => {
@@ -364,11 +364,10 @@ impl OutputCheck {
                         continue;
                     }
                     if finished > 0 {
-                        // SetOwner@1409D1710 -> 140E5C190 calls slot27 on
-                        // the old owner's lines for this state. MarkComplete
-                        // @140F55390 clears count and repair levels without
+                        // Ownership transfer resets the old owner's lines for this state.
+                        // The reset clears count and repair levels without
                         // touching progress, spending or the building level.
-                        // 140BA60A0 compares canonical identity, not raw tags.
+                        // The game compares canonical identity, not raw tags.
                         ownership_reset = now.amount == 0
                             && was.country.is_some()
                             && was.country == now.country
@@ -377,9 +376,9 @@ impl OutputCheck {
                             && was.state_owner != now.state_owner
                             && growth.is_some();
                         if let Some(reset) = reset {
-                            // The native MarkComplete@140F55390 observation
+                            // The native count reset observation
                             // separates cleared quantity from paid completions,
-                            // even when 1409D26D0 lowers their target afterwards.
+                            // even when the game lowers their target afterwards.
                             finished -= reset;
                             ownership_reset = reset > 0;
                             if reset < 0 || finished < 0 {
@@ -425,15 +424,15 @@ impl OutputCheck {
                     external_growth = growth.is_some_and(|growth| growth > finished);
                 }
                 let carry = i128::from(b.carry_raw) - i128::from(a.carry_raw);
-                // 1419EF5C1 forwards the overdraw to another segment. Its
+                // The game forwards the overdraw to another segment. Its
                 // destination can consume some or all of it; args alone do not
                 // tell the discarded tail. Bound that tail, never call the
                 // whole carry new spending or pretend it was all discarded.
                 let valid = if b.railway {
                     carry >= 0 && spent >= expected && spent - expected <= carry
                 } else {
-                    // Progress ADD at 140F557F5/813 and completed-level
-                    // subtraction at 140F55BA4 store native qwords. Compare
+                    // Progress addition and completed-level
+                    // subtraction store signed qwords. Compare
                     // their bit patterns after widening all aggregate arithmetic.
                     carry == 0 && spent as u64 == expected as u64
                 };

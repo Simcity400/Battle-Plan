@@ -1,5 +1,5 @@
-//! CGameState::Write@1401F2A20 emits every +6C0 record in order through
-//! CSavedEventTarget::Write@14052F780. No block means an empty registry.
+//! Every saved event-target record is emitted in order.
+//! No block means an empty registry.
 use super::{block, bytes, field, integer, invalid, null_permitted_handle, scalar};
 use crate::parser::Item;
 use replay::rows::GlobalSavedEventTargetRow as Row;

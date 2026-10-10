@@ -1,0 +1,326 @@
+//! Persistent sunk-convoy aggregate records. The first month/killer/owner
+//! observation creates a bucket and later observations increment it. Vector
+//! order is first-seen order. Transient route/combat attribution requires a
+//! separate event observation and cannot be recovered from aggregates.
+
+/// Primary vtable.
+pub const VTABLE_RVA: usize = 0x0295_d008;
+/// CSunkConvoyInfo complete read extent.
+pub const READ_EXTENT: usize = 0x18;
+/// CSunkConvoyInfo native i32 month bucket.
+pub const MONTH: usize = 0x08;
+/// CSunkConvoyInfo native i32 sunk-convoy count.
+pub const CONVOYS: usize = 0x0c;
+/// CSunkConvoyInfo native u32 killer country link.
+pub const KILLER_COUNTRY: usize = 0x10;
+/// CSunkConvoyInfo native u32 owner country link.
+pub const OWNER_COUNTRY: usize = 0x14;
+
+use crate::{
+    Memory, cgame_state,
+    cpdx_array::Array,
+    read,
+    walk::{Buffer, Outcome},
+};
+
+/// One native aggregate bucket. The ordinal preserves first-seen order but is
+/// not row identity: the engine searches by month and country equivalence.
+/// Raw country references remain unchanged, including an unknown killer zero.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Row {
+    pub month: i32,
+    pub killer_country: u32,
+    pub owner_country: u32,
+    pub convoys: i32,
+    pub ordinal: u32,
+}
+
+impl Row {
+    /// Exact native bucket fields; no pointer or collector sequence is stored.
+    pub fn key(self) -> u128 {
+        (u128::from(self.month as u32) << 64)
+            | (u128::from(self.killer_country) << 32)
+            | u128::from(self.owner_country)
+    }
+}
+
+/// Reads the persistent vector once into caller-owned storage. The spool's
+/// generic key validation rejects duplicate raw bucket identities off-thread.
+pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
+    walk_buffer(memory, base, game_state, Buffer::Fixed(output))
+}
+
+/// Worker rows grow from the original aggregate header, including appended
+/// buckets without country-roster changes.
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<Row>,
+) -> Outcome {
+    walk_buffer(memory, base, game_state, Buffer::Growing(output))
+}
+
+fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: Buffer<'_, Row>,
+) -> Outcome {
+    match walk_inner(memory, base, game_state, output) {
+        Ok(outcome) => outcome,
+        Err(reason) => Outcome::Unavailable { reason },
+    }
+}
+
+fn walk_inner(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    mut output: Buffer<'_, Row>,
+) -> Result<Outcome, &'static str> {
+    let array = game_state
+        .checked_add(cgame_state::SUNK_CONVOY_HISTORY)
+        .and_then(|address| Array::read(memory, address, 8))
+        .ok_or("sunk convoy history vector unreadable or invalid")?;
+    let vtable = base
+        .checked_add(VTABLE_RVA)
+        .ok_or("module address overflow")? as u64;
+    output.ensure(array.count as usize)?;
+    let len = output.len().min(array.count as usize);
+    for (ordinal, row) in output[..len].iter_mut().enumerate() {
+        let pointer = array
+            .element(ordinal as u32, 8)
+            .and_then(|address| read::<u64>(memory, address))
+            .and_then(|pointer| usize::try_from(pointer).ok())
+            .filter(|&pointer| pointer != 0)
+            .ok_or("sunk convoy history pointer unreadable or null")?;
+        let raw = read::<[u8; READ_EXTENT]>(memory, pointer)
+            .ok_or("sunk convoy history record unreadable")?;
+        if u64::from_le_bytes(raw[..8].try_into().expect("fixed span")) != vtable {
+            return Err("sunk convoy history vtable mismatch");
+        }
+        *row = Row {
+            month: i32::from_le_bytes(raw[MONTH..CONVOYS].try_into().expect("fixed span")),
+            convoys: i32::from_le_bytes(
+                raw[CONVOYS..KILLER_COUNTRY].try_into().expect("fixed span"),
+            ),
+            killer_country: u32::from_le_bytes(
+                raw[KILLER_COUNTRY..OWNER_COUNTRY]
+                    .try_into()
+                    .expect("fixed span"),
+            ),
+            owner_country: u32::from_le_bytes(
+                raw[OWNER_COUNTRY..READ_EXTENT]
+                    .try_into()
+                    .expect("fixed span"),
+            ),
+            ordinal: ordinal as u32,
+        };
+    }
+    if len < array.count as usize {
+        Ok(Outcome::Truncated {
+            len,
+            unread_rows: array.count - len as u32,
+        })
+    } else {
+        Ok(Outcome::Rows { len })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::SliceMemory;
+
+    fn fixture() -> Vec<u8> {
+        let mut bytes = vec![0; 0x700];
+        bytes[cgame_state::SUNK_CONVOY_HISTORY..cgame_state::SUNK_CONVOY_HISTORY + 8]
+            .copy_from_slice(&0x1600_u64.to_le_bytes());
+        bytes[cgame_state::SUNK_CONVOY_HISTORY_CAPACITY
+            ..cgame_state::SUNK_CONVOY_HISTORY_CAPACITY + 4]
+            .copy_from_slice(&2_u32.to_le_bytes());
+        bytes[cgame_state::SUNK_CONVOY_HISTORY_COUNT..cgame_state::SUNK_CONVOY_HISTORY_COUNT + 4]
+            .copy_from_slice(&2_u32.to_le_bytes());
+        bytes[0x600..0x608].copy_from_slice(&0x1620_u64.to_le_bytes());
+        bytes[0x608..0x610].copy_from_slice(&0x1640_u64.to_le_bytes());
+        for (offset, month, killer, owner, count) in [
+            (0x620, i32::MIN, 0_u32, u32::MAX, i32::MAX),
+            (0x640, i32::MAX, u32::MAX, 1, -1),
+        ] {
+            bytes[offset..offset + 8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+            bytes[offset + MONTH..offset + CONVOYS].copy_from_slice(&month.to_le_bytes());
+            bytes[offset + CONVOYS..offset + KILLER_COUNTRY].copy_from_slice(&count.to_le_bytes());
+            bytes[offset + KILLER_COUNTRY..offset + OWNER_COUNTRY]
+                .copy_from_slice(&killer.to_le_bytes());
+            bytes[offset + OWNER_COUNTRY..offset + READ_EXTENT]
+                .copy_from_slice(&owner.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn history_preserves_full_native_values_unknown_killer_and_order() {
+        let bytes = fixture();
+        let mut rows = [Row::default(); 2];
+        assert_eq!(
+            walk(
+                &SliceMemory {
+                    base: 0x1000,
+                    bytes: &bytes
+                },
+                0,
+                0x1000,
+                &mut rows
+            ),
+            Outcome::Rows { len: 2 }
+        );
+        assert_eq!(
+            rows[0],
+            Row {
+                month: i32::MIN,
+                killer_country: 0,
+                owner_country: u32::MAX,
+                convoys: i32::MAX,
+                ordinal: 0
+            }
+        );
+        assert_eq!(rows[1].convoys, -1);
+        assert_eq!(rows[1].ordinal, 1);
+        assert_ne!(rows[0].key(), rows[1].key());
+        assert_eq!(
+            rows[0].key(),
+            (u128::from(0x8000_0000_u32) << 64) | u128::from(u32::MAX)
+        );
+    }
+
+    #[test]
+    fn history_capacity_fault_and_empty_are_distinct() {
+        let mut bytes = fixture();
+        let mut rows = [Row::default(); 1];
+        assert_eq!(
+            walk(
+                &SliceMemory {
+                    base: 0x1000,
+                    bytes: &bytes
+                },
+                0,
+                0x1000,
+                &mut rows
+            ),
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 1
+            }
+        );
+        bytes[0x600..0x608].fill(0);
+        assert!(matches!(
+            walk(
+                &SliceMemory {
+                    base: 0x1000,
+                    bytes: &bytes
+                },
+                0,
+                0x1000,
+                &mut rows
+            ),
+            Outcome::Unavailable { .. }
+        ));
+        bytes[cgame_state::SUNK_CONVOY_HISTORY_COUNT..cgame_state::SUNK_CONVOY_HISTORY_COUNT + 4]
+            .fill(0);
+        assert_eq!(
+            walk(
+                &SliceMemory {
+                    base: 0x1000,
+                    bytes: &bytes
+                },
+                0,
+                0x1000,
+                &mut rows
+            ),
+            Outcome::Rows { len: 0 }
+        );
+        bytes[cgame_state::SUNK_CONVOY_HISTORY_CAPACITY
+            ..cgame_state::SUNK_CONVOY_HISTORY_CAPACITY + 4]
+            .copy_from_slice(&(-1_i32).to_le_bytes());
+        assert!(matches!(
+            walk(
+                &SliceMemory {
+                    base: 0x1000,
+                    bytes: &bytes
+                },
+                0,
+                0x1000,
+                &mut rows
+            ),
+            Outcome::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn growing_history_handles_5000_countries_and_later_month_buckets() {
+        use std::cell::RefCell;
+        struct Traced<'a> {
+            memory: SliceMemory<'a>,
+            reads: RefCell<Vec<(usize, usize)>>,
+        }
+        impl Memory for Traced<'_> {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                self.reads.borrow_mut().push((at, out.len()));
+                self.memory.copy(at, out)
+            }
+        }
+        let mut rows = Vec::new();
+        for count in [5_000, 15_000] {
+            let list = 0x800;
+            let records = list + count * 8;
+            let mut bytes = vec![0; records + count * READ_EXTENT];
+            bytes[cgame_state::SUNK_CONVOY_HISTORY..cgame_state::SUNK_CONVOY_HISTORY + 8]
+                .copy_from_slice(&((0x1000 + list) as u64).to_le_bytes());
+            for at in [
+                cgame_state::SUNK_CONVOY_HISTORY_CAPACITY,
+                cgame_state::SUNK_CONVOY_HISTORY_COUNT,
+            ] {
+                bytes[at..at + 4].copy_from_slice(&(count as u32).to_le_bytes());
+            }
+            for index in 0..count {
+                let record = records + index * READ_EXTENT;
+                bytes[list + index * 8..list + index * 8 + 8]
+                    .copy_from_slice(&((0x1000 + record) as u64).to_le_bytes());
+                bytes[record..record + 8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+                bytes[record + MONTH..record + MONTH + 4]
+                    .copy_from_slice(&((index / 5_000) as i32).to_le_bytes());
+                bytes[record + CONVOYS..record + CONVOYS + 4]
+                    .copy_from_slice(&(-(index as i32)).to_le_bytes());
+                bytes[record + OWNER_COUNTRY..record + OWNER_COUNTRY + 4]
+                    .copy_from_slice(&((index % 5_000 + 1) as u32).to_le_bytes());
+            }
+            let memory = Traced {
+                memory: SliceMemory {
+                    base: 0x1000,
+                    bytes: &bytes,
+                },
+                reads: RefCell::default(),
+            };
+            assert_eq!(
+                walk_growing(&memory, 0, 0x1000, &mut rows),
+                Outcome::Rows { len: count }
+            );
+            assert_eq!(rows[count - 1].owner_country, 5_000);
+            assert_eq!(rows[count - 1].month, (count / 5_000 - 1) as i32);
+            assert_eq!(rows[count - 1].ordinal, (count - 1) as u32);
+            assert_eq!(memory.reads.borrow().len(), 1 + count * 2);
+            assert_eq!(
+                memory.reads.borrow()[0],
+                (0x1000 + cgame_state::SUNK_CONVOY_HISTORY, 16)
+            );
+            assert_eq!(
+                walk(&memory, 0, 0x1000, &mut [Row::default(); 1]),
+                Outcome::Truncated {
+                    len: 1,
+                    unread_rows: (count - 1) as u32
+                }
+            );
+        }
+    }
+}

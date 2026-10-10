@@ -1,11 +1,11 @@
-//! Anonymous province-to-i64 hash bucket instantiation; RTTI name unknown.
-//! The disrupted-supply bucket has a two-word key and is a different instantiation.
+//! Province-to-i64 supply hash bucket. The disrupted-supply bucket uses
+//! a separate two-word-key layout.
 
-/// Province supply hash bucket stride; old attach_log.rs:141248 BUCKET_STRIDE in d81_hash_table_rows.
+/// Bucket stride.
 pub const STRIDE: usize = 0x18;
-/// Bucket probe marker, u8; old d81_hash_table_rows reads `bucket[4]`, zero empty and 0xff terminal.
+/// Probe marker, u8; zero is empty and 0xff terminal.
 pub const MARKER: usize = 0x04;
-/// Bucket province key, u32; old d81_hash_table_rows reads bucket+8.
+/// Province key, u32.
 pub const PROVINCE_ID: usize = 0x08;
-/// Bucket supply value, native i64; old d81_hash_table_rows reads bucket+0x10 without narrowing.
+/// Supply value, i64, without narrowing.
 pub const VALUE: usize = 0x10;

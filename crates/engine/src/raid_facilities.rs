@@ -1,10 +1,7 @@
-//! Hourly operands of the map target tooltip (`1416151F0`). It selects the
-//! first program at the target province in the controller's status array
-//! (`140E621E0`), then reads its optional project token (`14142FD80`).
-//! `1414315F0` writes +0x50/+0x54 from StartProject (`140FD02E0`),
-//! CancelProject (`140FCF450`), completion and scripted effects, at any hour.
-//! The daily project-history walk is
-//! deliberately not needed here. No game function is called.
+//! Hourly raid-target tooltip operands. Select the first program at the
+//! target province in the controller's status, then its optional project token.
+//! Starting, cancelling, completion and script effects can update this at any
+//! hour, independently of daily project history. No game function is called.
 
 use crate::{
     Memory, ccountry, nproject_cprogram as program, nproject_cprogram_status as status, read,
@@ -20,8 +17,7 @@ pub struct Row {
     pub owner: u32,
     pub province: u32,
     pub active_project: Option<u32>,
-    /// Selected project's stored definition token; absent for a missing
-    /// pool entry even when the program retains a token (`14142FD80`).
+    /// Selected project's stored definition token, absent for a missing pool entry even when the program retains a token.
     pub project_definition: Option<u32>,
 }
 

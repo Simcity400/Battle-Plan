@@ -32,7 +32,7 @@ export interface TooltipContent {
   scrollable?: boolean;
   /** Stable hovered item, so arriving facts preserve its scroll position. */
   scrollId?: string;
-  /** A game-style header (mock-up politics-4): the thing's icon and a line under its name. */
+  /** A game-style header: the thing's icon and a line under its name. */
   icon?: string; subtitle?: string;
   countryFlag?: TooltipRow['countryFlag'];
   /** Running text after the rows, such as an idea's description. */

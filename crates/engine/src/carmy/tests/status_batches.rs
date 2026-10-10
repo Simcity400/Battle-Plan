@@ -225,8 +225,8 @@ fn worker_manpower_and_lazy_thresholds_grow_before_first_and_later_payloads() {
         source
             .globals
             .insert(carmy::EXPERIENCE_THRESHOLDS_RVA, header);
-        // Native 140BEA660 stops at its first strict upper threshold. Keep
-        // one unread suffix to prove storage growth adds no payload reads.
+        // Stop at the first strict upper experience threshold. Keep an unread
+        // suffix to prove storage growth adds no payload reads.
         p64(&mut source.bytes, 0x40000 + (count - 1) * 8, 151);
         p64(&mut source.bytes, 0x40000 + count * 8, u64::MAX);
         let actual = ScalarBatchMemory::new(&source);

@@ -35,8 +35,7 @@ impl Renderer<'_, '_, '_> {
                 if report {
                     self.refuse(
                         &key(item),
-                        "else/else_if does not follow an open if chain (14137D840/141385BA0)"
-                            .into(),
+                        "else/else_if does not follow an open if chain".into(),
                     );
                 }
                 continue;
@@ -51,7 +50,7 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn limit<'a>(&self, items: &'a [Item]) -> Result<&'a [Item], String> {
-        // 141385BA0 reads another limit only while the embedded trigger has no children.
+        // reads another limit only while the embedded trigger has no children.
         let evaluator = self.evaluator()?;
         for body in items
             .iter()
@@ -112,7 +111,7 @@ impl Renderer<'_, '_, '_> {
         Some(String::new())
     }
 
-    // HasMultipleDescriptions@140533D80 invokes own descriptions, then vf11.
+    // Probe each own description, then its child count.
     // These probes are deliberately not replaced by a cached body/newline count.
     pub(super) fn multiple(&mut self, items: &[Item], scopes: Scopes) -> bool {
         let children = self.attached(items, false);
@@ -139,20 +138,20 @@ impl Renderer<'_, '_, '_> {
 
     fn multiple_child(&mut self, item: &Item, branches: &[&Item], scopes: Scopes) -> bool {
         if self.iterator_multiple(item) {
-            return true; // vf11 ReturnTrue@1401802A0, also random selectors.
+            return true; // also random selectors.
         }
         match self.effect_class(item).map(|class| class.vtable) {
             Some(0x14275FF40) => field(children(item), "tooltip")
                 .and_then(|item| item.value.scalar())
-                .is_some_and(|key| !key.is_empty()), // has_0x208@1403A5340.
+                .is_some_and(|key| !key.is_empty()),
             Some(0x1427BE590) => self
                 .if_chain(item, branches, scopes, 0, true)
                 .is_some_and(|text| !text.is_empty()),
             _ => {
-                // Base vf11 and CRandomScopeInArray use this child projection.
-                // Empty vf8 overrides still inherit it (14275FEC8/142760258/142760160).
+                // Base and random scope in array use this child projection.
+                // Empty overrides still inherit it.
                 let body = self.effect_children(item);
-                self.multiple(&body, scopes) // 140533D80.
+                self.multiple(&body, scopes)
             }
         }
     }
@@ -169,7 +168,7 @@ impl Renderer<'_, '_, '_> {
     }
 }
 
-// The control/list own-description virtual is empty (140176EE0).
+// The control/list own-description virtual is empty.
 pub(super) fn own() -> Result<String, String> {
     Ok(String::new())
 }
@@ -183,20 +182,20 @@ impl Renderer<'_, '_, '_> {
     ) -> Option<String> {
         let class = self.effect_class(item)?;
         let result = match class.vtable {
-            0x14299F7C8 => self.scripted_effect(item, scopes, indent), // 141382080.
-            0x1429A00F0 => self.random_effect(item, scopes, indent),   // 141381B60.
+            0x14299F7C8 => self.scripted_effect(item, scopes, indent),
+            0x1429A00F0 => self.random_effect(item, scopes, indent),
             0x1429A0260 => self
                 .random_list(item, scopes)
-                .map(|text| format!("{}{text}", "   ".repeat(indent))), // 141381EB0.
-            0x14275FF40 => self.scope_loop(item, scopes, indent),      // 14036B420.
-            0x142761860 => self.meta_effect(item, scopes, indent),     // 14036B860.
-            0x14299FFF8 => self.override_tooltip(item, scopes, indent), // 141384190 / 140532780.
+                .map(|text| format!("{}{text}", "   ".repeat(indent))),
+            0x14275FF40 => self.scope_loop(item, scopes, indent),
+            0x142761860 => self.meta_effect(item, scopes, indent),
+            0x14299FFF8 => self.override_tooltip(item, scopes, indent),
             _ => return None,
         };
         Some(match result {
             Ok(text) => text,
             Err(why) => {
-                self.refuse(class.name, why);
+                self.refuse(&key(item), why);
                 String::new()
             }
         })
@@ -208,9 +207,11 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
         indent: usize,
     ) -> Result<String, String> {
-        // Port backstop, not a game limit: changing THIS must not exhaust our stack.
+        // Traversal backstop: changing THIS must not exhaust our stack.
         if self.scripted_stack.len() >= 64 {
-            return Err("scripted-effect description depth exceeds the port's 64-level stack limit (141382080)".into());
+            return Err(
+                "scripted-effect description depth exceeds the 64-level stack limit".into(),
+            );
         }
         let name = installed_content::parser::c_string(item.key.as_deref().unwrap_or_default())
             .to_ascii_lowercase();
@@ -220,7 +221,7 @@ impl Renderer<'_, '_, '_> {
             .any(|(active, this)| *active == name && *this == scopes.this)
         {
             return Err(format!(
-                "scripted effect {} recursively calls an active template in the same THIS scope (141382080); this recursive expansion is not ported",
+                "scripted effect {} recursively calls an active template in the same THIS scope; this recursive expansion is unsupported",
                 String::from_utf8_lossy(&name)
             ));
         }
@@ -236,7 +237,7 @@ impl Renderer<'_, '_, '_> {
             .as_ref()
             .map_err(Clone::clone)?;
         self.scripted_stack.push((name, scopes.this));
-        // CScriptedEffect's boolean operand controls execution, not description.
+        // scripted effect's boolean operand controls execution, not description.
         let text = self.group(body, scopes, indent);
         self.scripted_stack.pop();
         Ok(text)
@@ -253,7 +254,7 @@ impl Renderer<'_, '_, '_> {
             .and_then(|item| item.value.scalar())
             .unwrap_or(b"0");
         let chance = crate::triggers::fixed_round(self.scoped_value(value, scopes)?) as i32;
-        // 141381B60 rounds percent to an i32, then divides its fixed5 by 100.
+        // rounds percent to an i32, then divides its fixed5 by 100.
         let mut text = "   ".repeat(indent);
         text.push_str(&self.localised(
             b"RANDOM_EFFECT",
@@ -285,7 +286,7 @@ impl Renderer<'_, '_, '_> {
         let members = installed_content::effect_keys::random_list_members(item)?;
         let mut weights = Vec::new();
         let mut total = 0_i64;
-        // 141386790: Exists before Evaluate; modifiers apply in authored order.
+        // Exists before Evaluate; modifiers apply in authored order.
         for member in &members {
             let operand = member.key.as_deref().unwrap_or_default();
             let mut weight = if self.evaluator()?.scoped_exists(operand, scopes)? {
@@ -333,7 +334,7 @@ impl Renderer<'_, '_, '_> {
             .cursor
             .ok_or("random_list needs an event graph cursor")?;
         let seed = self.graph.borrow().scopes[cursor];
-        // 141383AB0 resets both words before each member. The final member's
+        // resets both words before each member. The final member's
         // description leaves its draws; explicit execution seed is not used.
         for (member, weight) in members.iter().zip(weights) {
             let chance = if matches!(weight, i64::MAX | i64::MIN) || weight == i64::MIN + 1 {
@@ -389,7 +390,7 @@ impl Renderer<'_, '_, '_> {
         else {
             return Ok(String::new());
         };
-        // 14036B420 decodes into a default-constructed scope, not a caller copy.
+        // decodes into a default-constructed scope, not a caller copy.
         let object = match target {
             Scope::Country(id) | Scope::CountryLeader { country: id, .. } => {
                 crate::scripted_text::EventObject::Country(id)
@@ -406,7 +407,7 @@ impl Renderer<'_, '_, '_> {
             }
             Scope::Raid(id) => crate::scripted_text::EventObject::Raid(id),
             Scope::Unit(id) => crate::scripted_text::EventObject::Unit(id),
-            Scope::Combat => return Err("array combat scope is unavailable (140537A10)".into()),
+            Scope::Combat => return Err("array combat scope is unavailable".into()),
         };
         let cursor = scopes.cursor.ok_or("scope loop needs a graph cursor")?;
         let at = {
@@ -420,7 +421,7 @@ impl Renderer<'_, '_, '_> {
             selected.from = caller.from;
             selected.prev = crate::scripted_text::Link::Scope(cursor);
             let at = graph.scopes.len();
-            // 14036B420 default-constructs, then copies ROOT/FROM and sets PREV.
+            // default-constructs, then copies ROOT/FROM and sets PREV.
             if selected.root == crate::scripted_text::Link::Itself {
                 selected.root = crate::scripted_text::Link::Scope(cursor);
             }
@@ -449,8 +450,8 @@ impl Renderer<'_, '_, '_> {
             Some(item) => item
                 .value
                 .scalar()
-                .ok_or("meta_effect text must be read as native raw text (141408C80)")?,
-            None => b"".as_slice(), // Empty default script in CMetaEffect, 14036B860.
+                .ok_or("meta_effect text must be read as raw text")?,
+            None => b"".as_slice(), // Empty default script in meta effect.
         };
         let mut parameters = BTreeMap::new();
         for parameter in fields
@@ -461,7 +462,7 @@ impl Renderer<'_, '_, '_> {
             let value = parameter
                 .value
                 .scalar()
-                .ok_or("meta_effect parameter is not scalar (141408D40)")?;
+                .ok_or("meta_effect parameter is not scalar")?;
             let value = if parameter.quoted() {
                 let text = std::str::from_utf8(installed_content::parser::c_string(value))
                     .map_err(|_| "meta_effect parameter is not UTF-8")?;
@@ -479,7 +480,7 @@ impl Renderer<'_, '_, '_> {
             } else {
                 installed_content::fixed5::fixed5_to_string(self.scoped_value(value, scopes)?, -1)
             };
-            parameters.entry(name.to_vec()).or_insert(value); // 141408490's first exact name match.
+            parameters.entry(name.to_vec()).or_insert(value); // The first exact name match.
         }
         let mut generated = Vec::new();
         let mut remaining = raw;
@@ -488,7 +489,7 @@ impl Renderer<'_, '_, '_> {
             let end = remaining[start + 1..]
                 .iter()
                 .position(|byte| *byte == b']')
-                .ok_or("meta_effect parameter bracket is not closed (141408C80)")?
+                .ok_or("meta_effect parameter bracket is not closed")?
                 + start
                 + 1;
             if let Some(value) = parameters.get(&remaining[start + 1..end]) {
@@ -502,7 +503,7 @@ impl Renderer<'_, '_, '_> {
             .content
             .key_names
             .ok_or_else(|| self.content_gap("effect key names"))?;
-        let body = installed_content::effect_keys::read_body(&generated, names)?; // 1414082F0 -> 140534280.
+        let body = installed_content::effect_keys::read_body(&generated, names)?;
         Ok(self.group(&body, scopes, indent))
     }
 

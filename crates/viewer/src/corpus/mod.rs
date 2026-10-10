@@ -118,6 +118,7 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
 
 fn run(args: &[OsString]) -> io::Result<()> {
     let options = parse(args)?;
+    engine::executable_tables::initialize(&options.game_dir)?;
     let started = Instant::now();
     let language = stacks::language(&options.user_dir)?;
     // The reading client's texture decode state, which font pages load under.

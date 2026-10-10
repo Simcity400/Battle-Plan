@@ -1,4 +1,3 @@
-//! Authored source fixtures only. None has been compiled or executed.
 use super::*;
 use crate::{
     parser::Item,
@@ -123,7 +122,7 @@ impl MoveWorld for World {
         Ok(false)
     }
     fn enemies(&self, _: Country) -> Fact<Vec<Country>> {
-        panic!("derived enemy sets must not replace native vector")
+        panic!("derived enemy sets must not replace the ordered enemy vector")
     }
     fn controller(&self, _: u32) -> Fact<Country> {
         self.canonical_country(self.controller)
@@ -171,7 +170,7 @@ impl MoveWorld for World {
         Ok(0)
     }
     fn armies(&self, _: u32) -> Fact<Vec<Occupant>> {
-        panic!("unordered/canonical occupants must not replace native array")
+        panic!("unordered/canonical occupants must not replace the recorded array")
     }
     fn land_combat(&self, _: u32) -> Fact<bool> {
         panic!("unreached land combat query")
@@ -305,7 +304,7 @@ impl CommonMoveWorld for World {
         Ok(0)
     }
     fn ordered_enemy_raws(&self, _: Country) -> Fact<Vec<u32>> {
-        panic!("unreached native enemies")
+        panic!("unreached ordered enemies")
     }
     fn move_strength_threshold(&self) -> Fact<i64> {
         self.trace.borrow_mut().push("threshold:0".into());
@@ -340,7 +339,7 @@ impl CommonMoveWorld for World {
     fn combat_minimum_duration(&self, combat: CommonCombat) -> Fact<bool> {
         self.trace
             .borrow_mut()
-            .push(format!("vf12:{}", combat.combat));
+            .push(format!("duration:{}", combat.combat));
         self.minimum
             .get(&combat.combat)
             .cloned()
@@ -478,7 +477,7 @@ fn unit(army: &Army) -> CommonUnit<'_> {
 }
 
 #[test]
-fn selected_vf17_transfer_and_counterattack_gates_precede_class_path() {
+fn selected_transfer_and_counterattack_gates_precede_class_path() {
     let graph = graph();
     let world = World {
         path: Err("unreached area graph".into()),
@@ -527,7 +526,7 @@ fn selected_vf17_transfer_and_counterattack_gates_precede_class_path() {
 }
 
 #[test]
-fn selected_vf17_allows_retreat_and_falls_back_only_after_a_known_failed_path() {
+fn selected_allows_retreat_and_falls_back_only_after_a_known_failed_path() {
     let graph = graph();
     let world = World {
         path: Ok(false),
@@ -576,7 +575,7 @@ fn selected_vf17_allows_retreat_and_falls_back_only_after_a_known_failed_path() 
 }
 
 #[test]
-fn selected_railway_vf16_cooldown_message_precedes_common_access_and_route() {
+fn selected_railway_cooldown_message_precedes_common_access_and_route() {
     let graph = graph();
     let world = World {
         rail_cooldown: Some(4),
@@ -601,7 +600,7 @@ fn selected_railway_vf16_cooldown_message_precedes_common_access_and_route() {
 }
 
 #[test]
-fn railway_vf20_source_gate_precedes_inherited_retreat_operands() {
+fn railway_source_gate_precedes_inherited_retreat_operands() {
     let mut graph = graph();
     graph.ranges[0] = Some((0, 1));
     graph.edges.push(super::super::Edge {
@@ -633,7 +632,7 @@ fn railway_vf20_source_gate_precedes_inherited_retreat_operands() {
         );
         assert_eq!(*world.trace.borrow(), ["railway-retreat-edge"]);
     }
-    // E74990's vf37 constant admits the inherited hostile-controller org gate.
+    // Railway organisation admits the inherited hostile-controller organisation gate.
     let world = World {
         controller: 2,
         wars: BTreeMap::from([((2, 1), Ok(true))]),
@@ -654,7 +653,7 @@ fn railway_vf20_source_gate_precedes_inherited_retreat_operands() {
 }
 
 #[test]
-fn selected_vf17_keeps_advance_warning_even_when_no_enemy_allows_the_path() {
+fn selected_keeps_advance_warning_even_when_no_enemy_allows_the_path() {
     let graph = graph();
     let world = World::default();
     let army = Army {
@@ -874,7 +873,7 @@ fn province_access_actual_zero_active_war_skips_later_operands() {
     };
     let army = Army { owner: 0, ..army() };
     let mut selected = unit(&army);
-    // F09D0 also applies when a positive logical-owner alias resolves to zero.
+    // Country access also applies when a positive logical-owner alias resolves to zero.
     for raw in [0, 99] {
         selected.logical_owner_raw = raw;
         assert_eq!(mover.common_class_access(&selected, 2), Ok(true));
@@ -950,7 +949,7 @@ fn raw_self_and_nonpositive_f3a00_gates_do_not_demand_direct_packet() {
     assert_eq!(mover.raw_at_war(0, 99), Ok(false));
     assert_eq!(mover.raw_at_war(1, 1), Ok(false));
     assert!(world.trace.borrow().is_empty());
-    // Raw0 versus nonzero alias0 is not the native both-nonzero alias arm.
+    // Raw zero versus a nonzero zero-alias does not take the both-nonzero alias arm.
     assert_eq!(mover.raw_same(0, 99), Ok(false));
 }
 #[test]
@@ -1046,7 +1045,7 @@ fn commander_ban_reads_full_side_membership_including_nonland_combats() {
     assert_eq!(&*world.trace.borrow(), &["ban:false", "side:88:false"]);
 }
 #[test]
-fn railway_vf21_uses_transport_presence_and_plain_advance_key() {
+fn railway_selection_uses_transport_presence_and_plain_advance_key() {
     let graph = graph();
     let world = World {
         thresholds: [Err("not army".into()), Err("not army".into())],
@@ -1081,10 +1080,10 @@ fn railway_vf21_uses_transport_presence_and_plain_advance_key() {
 }
 
 #[test]
-fn vf12_first_hit_does_not_demand_later_unknown_combat() {
+fn combat_duration_first_hit_does_not_demand_later_unknown_combat() {
     let graph = graph();
     let world = World {
-        minimum: BTreeMap::from([(88, Ok(true)), (99, Err("later vf12 held".into()))]),
+        minimum: BTreeMap::from([(88, Ok(true)), (99, Err("later duration held".into()))]),
         ..Default::default()
     };
     let army = army();
@@ -1110,7 +1109,7 @@ fn vf12_first_hit_does_not_demand_later_unknown_combat() {
     );
     assert_eq!(
         &*world.trace.borrow(),
-        &["ban:false", "ban:true", "vf12:88"]
+        &["ban:false", "ban:true", "duration:88"]
     );
 }
 #[test]
@@ -1638,7 +1637,7 @@ fn army_route_runs_d0_area_graph_and_discards_only_later_target_callback_failure
 }
 
 #[test]
-fn railway_route_passes_current_raw_exile_and_keeps_native_predicate_gate_order() {
+fn railway_route_passes_current_raw_exile_and_keeps_predicate_gate_order() {
     let graph = route_graph(2, &[(1, 2, Some(100), false)]);
     let army = Army {
         exiled: true,
@@ -1759,7 +1758,7 @@ fn railway_route_uses_first_repeated_adjacency_and_accepts_zero_distance() {
             world: &World::default()
         }
         .selected_railway_path(&railway_unit(&army), 2),
-        Err("selected rail native adjacency distance unavailable".into())
+        Err("selected rail adjacency distance unavailable".into())
     );
 }
 
@@ -1767,7 +1766,7 @@ fn railway_route_uses_first_repeated_adjacency_and_accepts_zero_distance() {
 fn railway_route_heap_bubbles_equal_cost_later_neighbour_before_lower_id() {
     let army = army();
     let world = World {
-        rail_edges: BTreeMap::from([((3, 4), Err("native equal-cost first branch".into()))]),
+        rail_edges: BTreeMap::from([((3, 4), Err("equal-cost first branch".into()))]),
         ..Default::default()
     };
     let graph = route_graph(
@@ -1785,7 +1784,7 @@ fn railway_route_heap_bubbles_equal_cost_later_neighbour_before_lower_id() {
             world: &world
         }
         .selected_railway_path(&railway_unit(&army), 4),
-        Err("native equal-cost first branch".into())
+        Err("equal-cost first branch".into())
     );
     let graph = route_graph(
         4,
@@ -1854,7 +1853,7 @@ fn railway_route_relaxation_keeps_earlier_heap_key_frozen_and_expands_duplicate(
 }
 
 #[test]
-fn railway_route_wraps_native_map_position_before_integer_heuristic() {
+fn railway_route_wraps_map_position_before_integer_heuristic() {
     let mut graph = route_graph(
         4,
         &[
@@ -1882,7 +1881,7 @@ fn railway_route_wraps_native_map_position_before_integer_heuristic() {
 }
 
 #[test]
-fn railway_route_native_unseen_cost_bound_rejects_before_intermediate_position() {
+fn railway_route_unseen_cost_bound_rejects_before_intermediate_position() {
     let army = army();
     for (cost, expected) in [
         (RAILWAY_UNSEEN_COST - 1, true),
@@ -1917,7 +1916,7 @@ fn railway_route_equal_endpoint_resolves_owner_before_exile_and_target_position(
     graph.centroids[0] = None;
     let army = army();
     let world = World {
-        canonical_failure: Some("native owner resolution unavailable".into()),
+        canonical_failure: Some("owner resolution unavailable".into()),
         exile_raw: Err("later raw exile unavailable".into()),
         ..Default::default()
     };
@@ -1927,7 +1926,7 @@ fn railway_route_equal_endpoint_resolves_owner_before_exile_and_target_position(
             world: &world
         }
         .selected_railway_path(&railway_unit(&army), 1),
-        Err("native owner resolution unavailable".into())
+        Err("owner resolution unavailable".into())
     );
     assert_eq!(&*world.route_trace.borrow(), &["canonical:1"]);
 
@@ -2007,12 +2006,12 @@ fn railway_route_equal_endpoint_still_requires_current_exile_and_null_neighbour_
             world: &World::default()
         }
         .selected_railway_path(&railway_unit(&army), 2),
-        Err("selected rail null or undefined native neighbour".into())
+        Err("selected rail null or undefined neighbour".into())
     );
 }
 
 #[test]
-fn railway_integer_newton_heuristic_keeps_native_truncation_and_wrapped_negative_square() {
+fn railway_integer_newton_heuristic_keeps_truncation_and_wrapped_negative_square() {
     for (square, expected) in [
         (0, 0),
         (1, 100_000),

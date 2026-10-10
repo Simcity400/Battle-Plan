@@ -1,9 +1,8 @@
-//! A state's strategic resource amount, as `CResourceCountTrigger::GetValue`
-//! (141390640) reads it in a state scope: `CState::AccumulateStrategicResourceAmounts`
-//! (1409CC730) over the state's recorded operands, compared by
-//! `CIntTrigger::Evaluate` (14138CC70). The shared trigger evaluator
-//! ([`crate::triggers`], used by the viewer's raids and by scripted text) and
-//! the viewer's tactic triggers both evaluate it here, from one recorded hour.
+//! A state's strategic resource amount from its recorded operands,
+//! compared as a whole 32-bit integer in a state scope. The shared trigger
+//! evaluator ([`crate::triggers`], used by the viewer's raids and by scripted
+//! text) and the viewer's tactic triggers both evaluate it here, from one
+//! recorded hour.
 
 use std::{collections::BTreeMap, io, sync::OnceLock};
 
@@ -22,15 +21,14 @@ type Grants = BTreeMap<u32, Result<Vec<(u32, i64)>, String>>;
 /// One in fixed5.
 pub const ONE: i64 = 100_000;
 
-/// The operands `AccumulateStrategicResourceAmounts@1409CC730` combines for
-/// one state and resource, all fixed5.
+/// The operands combined for one state and resource, all fixed5.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ResourceOperands {
     /// `StateBaseResources`: the template amount.
     pub template: i64,
-    /// `CState + 0x1c0`.
+    /// The retained resource pool.
     pub pool: i64,
-    /// `CState + 0x1b4`: whether `additive` counts.
+    /// Whether `additive` counts.
     pub gate: bool,
     pub additive: i64,
     pub factor: i64,
@@ -44,18 +42,16 @@ pub struct ResourceOperands {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OriginFactors {
-    /// The infrastructure `+0x40` level and the controller's modifier 0x292.
+    /// The infrastructure level and the controller's infrastructure modifier.
     pub infrastructure: Option<(i32, i64)>,
     pub supply_route: bool,
     /// `INFRASTRUCTURE_RESOURCE_BONUS` and `SUPPLY_ROUTE_RESOURCE_BONUS`.
     pub bonuses: [i64; 2],
 }
 
-/// `AccumulateStrategicResourceAmounts@1409CC730` for one resource, in the
-/// game's order: `CalculateBaseResourceAmount@1409C5670`, then the origin's
-/// `InfrastructureResourceFactor@140C9DCB0` and `SupplyRouteResourceFactor@140CA5170`
-/// clamped at zero (`1409C6E20`), minus the cost, plus the grants. Signed i64
-/// with truncating division and wrapping products, as the native code.
+/// One resource in the game's order: base amount, then the origin's
+/// infrastructure and supply-route factors, clamped at zero, minus the cost,
+/// plus the grants. Uses signed i64 with truncating division and wrapping products.
 pub fn state_resource_amount(operands: &ResourceOperands) -> i64 {
     let additive = if operands.gate { operands.additive } else { 0 };
     let factor = operands.factor.wrapping_add(ONE).max(0);
@@ -98,9 +94,8 @@ pub fn state_resource_amount(operands: &ResourceOperands) -> i64 {
         .wrapping_add(operands.grants)
 }
 
-/// `AccumulateBuildingResourceGrants@141163590` for one building and
-/// resource: `bonus` is the controller's override amount when the building
-/// has an override, which keeps only a positive sum.
+/// One building's resource grant: `bonus` is the controller's override
+/// amount when the building has an override, which keeps only a positive sum.
 pub fn building_grant(healthy: i16, amount: i64, bonus: Option<i64>) -> i64 {
     if healthy <= 0 {
         return 0;
@@ -119,14 +114,13 @@ pub fn building_grant(healthy: i16, amount: i64, bonus: Option<i64>) -> i64 {
     }
 }
 
-/// `CIntTrigger::Evaluate@14138CC70` for `CResourceCountTrigger`: the
-/// amount truncated to whole units and to 32 bits, then compared.
+/// The resource amount truncated to whole units and to 32 bits, then compared.
 pub fn resource_comparison(amount: i64, comparison: Operator, wanted: i32) -> bool {
     int_comparison((amount / ONE) as i32, comparison, wanted)
 }
 
-/// `CIntTrigger::Evaluate@14138CC70`: `>` is `N < v`, `<` is `v < N`, `=`
-/// equality, over the one-character operators the lexer reads (1424A7A90).
+/// `>` is `N < v`, `<` is `v < N`, `=` is equality, over the
+/// one-character operators the lexer reads.
 pub fn int_comparison(value: i32, comparison: Operator, wanted: i32) -> bool {
     match comparison {
         Operator::Greater => wanted < value,
@@ -213,7 +207,7 @@ impl<'a> StateResources<'a> {
     }
 
     /// `local_resources` grants by building token; the game drops a name
-    /// that is not an active resource (`read_is_port@1414A9220`).
+    /// that is not an active resource.
     fn grants(&self, links: &impl Links) -> Result<&Grants, String> {
         get(&self.grants, || {
             let resources = self.resource_database()?;
@@ -249,9 +243,8 @@ impl<'a> StateResources<'a> {
         })
     }
 
-    /// The amount `CResourceCountTrigger::GetValue@141390640` reads, fixed5,
-    /// for the state's resource token; `controller` is the state's
-    /// controller's canonical slot, whose building overrides apply.
+    /// The fixed5 amount for the state's resource token; `controller` is
+    /// the state's controller's canonical slot, whose building overrides apply.
     pub fn amount(
         &self,
         state: u32,
@@ -304,8 +297,7 @@ impl<'a> StateResources<'a> {
         }))
     }
 
-    /// The state's buildings' grants of one resource, with the controller's
-    /// overrides (`CCountryResources + 0x7a0`).
+    /// The state's buildings' grants of one resource, with the controller's overrides.
     fn building_grants(
         &self,
         state: u32,
@@ -349,8 +341,8 @@ impl<'a> StateResources<'a> {
             let Some(&(_, amount)) = list.iter().find(|(token, _)| *token == resource) else {
                 continue;
             };
-            // `HasBuildingResourceOverride@140CA54A0` reads the first entry;
-            // `GetBuildingResourceOverride@140CA2C70` the first matching element.
+            // Override presence uses the first building entry; its amount
+            // uses the first matching resource element.
             // The amounts are the country's at its daily read.
             let bonus = overrides
                 .iter()
@@ -375,7 +367,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn state_resource_amounts_follow_the_native_order_and_truncation() {
+    fn state_resource_amounts_preserve_order_and_truncation() {
         use state_resource_amount as amount;
         let plain = ResourceOperands {
             template: 2_000_000,

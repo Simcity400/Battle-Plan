@@ -265,7 +265,7 @@ fn actual_new_merge_transient_skipped_and_five_thousand_sources() {
     assert!(output[2].merged && output[2].transient);
     assert_eq!(output[2].combat, u64::MAX);
     assert_eq!(output[2].combat_created_hour, Some(11));
-    // Eligibility/previously-emitted exits in 1415B2790 reach neither CALL.
+    // Eligibility/previously-emitted exits reach neither CALL.
     // Construction alone cannot publish a result, including a skipped strike.
     unsafe {
         constructor(world.combat(), world.base() + 0xba917c);

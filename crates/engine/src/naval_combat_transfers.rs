@@ -1,14 +1,10 @@
-//! The transfer vectors of naval combats and the live unit vectors of their transfers.
+//! Naval-combat transfer vectors and their live unit occurrences.
 //!
-//! `UpdateProvinceNavalCombatIcons@14127C6B0` spills an engaged naval combat onto a sea
-//! province when `CNavalCombat::transfer_contains_province@1415B10A0` finds one of its
-//! transfers' units there: it walks the combat's transfer handles (`CNavalCombat+0xF0`),
-//! resolves each nonzero one and tests the location (`CUnit+0x1F0`) of each unit handle
-//! (`CNavalUnitTransfer+0x38`) that resolves; a stale unit handle is skipped. The combat's
-//! vector is recorded raw, in native order (`CNavalCombat::Serialize@1415B36C0` saves every
-//! slot as `naval_transport`). A transfer's units are recorded as that walk and
-//! `CNavalUnitTransfer::Serialize@140E14640` (`unit`) see them: the nonzero handles that
-//! resolve, in native order. The units' provinces come from the unit tables.
+//! Map icons can extend an engaged combat onto a sea province when one of its
+//! transfers has a resolving unit located there. Combat transfer handles are
+//! recorded raw in stored order. Transfer units retain each nonzero resolving
+//! handle in stored order, skipping stale handles; their provinces come from
+//! unit tables.
 
 use crate::{
     Memory, cgame_state, cland_border_war_combat, cland_combat, cnaval_combat,
@@ -48,8 +44,8 @@ pub struct Walk {
     pub unit_handles_required: usize,
 }
 
-/// Where a unit's reference object sits in it: `1415B10A0` and `140E14640` subtract it from
-/// the resolved pointer and skip a unit that comes out null.
+/// Unit reference-subobject offset, subtracted from a resolved pointer.
+/// A null resulting unit is skipped.
 const UNIT_REFERENCE_BASE: usize = 0x10;
 
 fn handles(memory: &impl Memory, pointer: usize, offset: usize) -> Result<Array, &'static str> {
@@ -274,7 +270,7 @@ fn walk_buffer(
             }
             let units = handles(memory, pointer, cnaval_unit_transfer::UNITS)?;
             let start = unit_used;
-            // Serialize@140E14640 reaches every original unit occurrence.
+            // Serialization reaches every original unit occurrence.
             unit_handles.ensure(
                 start
                     .checked_add(units.count as usize)
@@ -282,8 +278,8 @@ fn walk_buffer(
             )?;
             let mut live = 0usize;
             for_each_handle(memory, units, |_, unit| {
-                // Both natives take the resolved CReferenceObject (`CUnit+0x10`) and skip one
-                // that casts to a null unit, as they skip a null or unresolved handle.
+                // Resolved unit reference subobjects that cast to null are skipped,
+                // as are null or unresolved handles.
                 let resolved = resolver.resolve(memory, base, unit)?;
                 if unit == 0 || resolved.is_none_or(|object| object == UNIT_REFERENCE_BASE) {
                     return Ok(());
@@ -375,6 +371,7 @@ mod tests {
         }
     }
 
+    /// Robin-hood reference table holding `objects`.
     fn install(bytes: &mut Vec<u8>, objects: &[(u64, u64)]) -> usize {
         let capacity = (objects.len() * 3).max(8).next_power_of_two();
         let exponent = capacity.trailing_zeros();
@@ -606,8 +603,7 @@ mod tests {
                 units: [0, 1]
             }
         );
-        // The stale, null-object and zero unit handles are left out, as 1415B10A0 and the
-        // serializer do.
+        // Stale, null-object and zero unit handles are omitted.
         assert_eq!(units[0], unit);
         assert_eq!(walked.unit_handles_required, 1);
         // A short handle arena truncates the combats and leaves the transfers to grow.

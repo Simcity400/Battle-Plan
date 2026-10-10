@@ -1,6 +1,6 @@
-//! Class-1 counter admission: 140D5BD20/140D5BAA0 range and target access,
-//! 140D5F950 submarine rules, and 140E152B0 hostile strength. Stored physical
-//! navy slots and nearest-base IDs retain their native identity and order.
+//! Class-1 counter admission: range, target access, submarine rules and
+//! hostile strength. Stored physical navy slots and nearest-base IDs retain
+//! their identity and order.
 
 use super::{
     MovementContent,
@@ -268,7 +268,7 @@ impl<'a> NavalInputs<'a> {
                 .ok_or_else(|| {
                     format!("fresh naval ETA ship {:#x} has no formation flags", ship.id)
                 })?;
-            // 140C2BAE0 reads bit7 of the raw +628 low byte, not class/category.
+            // The formation flag is bit 7 of the raw low byte, independent of class/category.
             if model.formation_flags & 0x80 == 0 {
                 return Ok(false);
             }
@@ -296,8 +296,8 @@ impl<'a> NavalInputs<'a> {
         let forces = rows::<tables::TaskForces, _>(&self.forces, self.frame, |row| row.id)?;
         let mut sum = 0_i64;
         for handle in &occupants.mixed {
-            // The complete class1 census filters mixed class occurrences; repeated
-            // task-force occurrences contribute repeatedly, as 140E152B0 does.
+            // The complete class-1 census filters mixed class occurrences; repeated
+            // task-force occurrences contribute repeatedly.
             if let Some(force) = forces.get(handle)
                 && at_war(self.slot(force.logical_owner)?, query)?
             {
@@ -377,7 +377,7 @@ impl<'a> NavalInputs<'a> {
         let fleet = rows::<tables::Fleets, _>(&self.fleets, self.frame, |row| row.id)?
             .get(&force.fleet)
             .ok_or_else(|| format!("fresh naval ETA fleet {:#x} is not recorded", force.fleet))?;
-        // 140E93DA0 returns before consulting hubs when the stored home is null.
+        // A null stored home returns before consulting hubs.
         if fleet.home_base == 0 {
             return Ok(false);
         }
@@ -644,6 +644,8 @@ mod tests {
 
     #[test]
     fn current_packets_require_the_exact_hour_without_poisoning_other_domains() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let content = content();
         let mut frame = frame();
         owners(&mut frame, 19);
@@ -772,6 +774,8 @@ mod tests {
 
     #[test]
     fn physical_nearest_slots_and_stored_zero_are_independent_of_country_links_and_current_bases() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let content = content();
         let mut frame = frame();
         shared(
@@ -840,6 +844,8 @@ mod tests {
 
     #[test]
     fn owner_alias_join_theatre_membership_and_foreign_order_keep_their_domains() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let content = content();
         let mut frame = frame();
         owners(&mut frame, 20);

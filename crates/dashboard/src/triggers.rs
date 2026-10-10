@@ -3,13 +3,13 @@
 //! localisation, adjacency rules).
 //!
 //! A trigger body is read as its content's reader reads it
-//! ([`installed_content::triggers`]); each child is dispatched as CTrigger::LoadKey
-//! (1405434F0) dispatches it ([`installed_content::trigger_keys::TriggerNames::dispatch`]):
+//! ([`installed_content::triggers`]); each child is dispatched through
+//! [`installed_content::trigger_keys::TriggerNames::dispatch`]:
 //! a coded trigger by its static keyword, a scope of the key's text
-//! (14146DB00, resolved over the hour by [`crate::scope::RecordedScopes`]), a
+//! (resolved over the hour by [`crate::scope::RecordedScopes`]), a
 //! content count trigger, a scripted trigger, or no child. A coded trigger is
-//! checked as CTrigger::Check (140540570) checks it: its class's accepted
-//! scopes first ([`installed_content::trigger_keys::trigger_class`], 140542CA0),
+//! checked against its class's accepted
+//! scopes first ([`installed_content::trigger_keys::trigger_class`]),
 //! false in a scope it does not accept.
 //!
 //! Each input is read from the table the game itself reads, joined through
@@ -139,7 +139,7 @@ pub fn refused(reason: String) -> String {
 /// Whether a war row is still running at `hour`.
 ///
 /// The engine writes a relation's `end_date` only when its raw start hour is
-/// below its raw end hour (`crates/engine/src/crelation.rs:46`, serializer
+/// below its raw end hour, which is the same rule
 /// `crates/recorder/src/oracle.rs::compare_war_relations` verifies against the
 /// save. A row with `end_hour <= start_hour` therefore has no end at all and is
 /// ongoing whatever the hour; a row that does carry an end is ongoing only
@@ -149,8 +149,7 @@ pub fn ongoing(start_hour: i32, end_hour: i32, hour: Hour) -> bool {
     end_hour <= start_hour || hour < end_hour
 }
 
-/// A key as the lexer identifies it: only ASCII A-Z fold (the token hash
-/// 1424A5EE0 and `_strnicmp` 142549958).
+/// A key as the lexer identifies it: only ASCII A-Z fold.
 pub fn fold_token(key: &str) -> String {
     key.to_ascii_lowercase()
 }
@@ -222,7 +221,7 @@ impl Eval {
     }
 }
 
-/// What a scope holds (CEventScope's THIS, ROOT, PREV or FROM).
+/// What an event scope holds in THIS, ROOT, PREV or FROM.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Scope {
     /// A canonical country slot.
@@ -232,33 +231,33 @@ pub enum Scope {
     /// A full unit leader reference, whose character the scope carries.
     Leader(u64),
     /// The active ability tooltip's country and leader character together
-    /// (1418BFCE0 -> SetCountry(1), SetUnitLeader(0)). Getter priorities are
-    /// native-specific; entering a fresh country/leader still clears the other.
+    /// from a clearing country setter and retaining leader setter. Getter
+    /// priorities differ; entering a fresh country/leader still clears the other.
     CountryLeader {
         country: u32,
         leader: u64,
     },
     /// A character by its recorded id.
     Character(u32),
-    /// Full industrial-organisation reference (CEventScope+0x78, 14052E720).
+    /// Full industrial-organisation reference.
     IndustrialOrganisation(u64),
-    /// Project reference (+0x90, SetProject 14052EBE0), disambiguated by
+    /// Project reference, disambiguated by
     /// its recorded pool owner because Projects keys local ids per country.
     Project {
         owner: u32,
         id: u32,
     },
-    /// Full raid-instance reference (+0x88, SetRaidInstance 14052E960).
+    /// Full raid-instance reference.
     Raid(u64),
-    /// Full CUnit reference (+0x70, SetUnit 14052EDA0), not a unit leader.
+    /// Full unit reference, not a unit leader.
     Unit(u64),
-    /// A combat side's scope ([`Combat`]); SetCombat with clearing leaves
-    /// country+8 zero (1412A7824 -> 14052DC80 -> 14052F3F0).
+    /// A combat side's scope ([`Combat`]); setting combat with clearing
+    /// leaves country zero.
     Combat,
 }
 
-/// The scopes a trigger is evaluated in. A raid's
-/// (`InitializeRaidEventScope@141580600`) has the raiding country as ROOT,
+/// The scopes a trigger is evaluated in. A raid's scope
+/// has the raiding country as ROOT,
 /// the target country as FROM and the target's province, state and leader
 /// as variables.
 #[derive(Clone, Copy, Debug)]
@@ -274,10 +273,10 @@ pub struct Scopes {
     /// unknown links): a condition that reads one is unknown, one that does
     /// not is evaluated.
     pub unknown: UnknownLinks,
-    /// THIS was set with clearing (14052F3F0), so it carries no character
-    /// (+0x50) from the scope it was entered from.
+    /// THIS was set with clearing, so it carries no character
+    /// from the scope it was entered from.
     pub bare: bool,
-    /// Cursor in the evaluator's caller-owned CEventScope graph.
+    /// Cursor in the evaluator's caller-owned event scope graph.
     pub cursor: Option<usize>,
 }
 
@@ -290,9 +289,9 @@ pub struct UnknownLinks {
 }
 
 impl Scopes {
-    /// Default CEventScope (140528800): no carried objects, with ROOT,
+    /// Default event scope: no carried objects, with ROOT,
     /// FROM and PREV pointing to that same empty scope. Pool limits use it
-    /// on every lookup (1409F1540). NULL_STATE already represents a scope
+    /// on every lookup. NULL_STATE already represents a scope
     /// carrying no objects; it is not a recorded state.
     pub fn empty() -> Self {
         let empty = Scope::State(NULL_STATE);
@@ -304,8 +303,8 @@ impl Scopes {
     }
 
     /// A fresh caller scope with itself as ROOT and no FROM/PREV.
-    /// Fresh scopes (140528800); description completion clears temporary
-    /// globals (1401D20F0). Event-chain consumers need their own target arrays.
+    /// Fresh scopes; description completion clears temporary
+    /// globals. Event-chain consumers need their own target arrays.
     pub fn of(scope: Scope) -> Self {
         Self {
             root: scope,
@@ -322,7 +321,7 @@ impl Scopes {
     }
 
     /// The combat scope a tactic's triggers are checked in: its constructor
-    /// (1405286D0) makes THIS, ROOT, FROM and PREV the side.
+    /// makes THIS, ROOT, FROM and PREV the side.
     pub fn combat() -> Self {
         Self {
             prev: Some(Scope::Combat),
@@ -333,8 +332,7 @@ impl Scopes {
 
     /// A new THIS set with clearing, with PREV the calling scope and ROOT
     /// and FROM carried: a collection trigger's child scope (a copy of the
-    /// caller whose item its setter installs with clearing: 140472450's
-    /// SetState, 14043B650's set_country, each with 1 -> 14052F3F0).
+    /// caller whose item its setter installs with clearing).
     pub fn with_this(self, this: Scope) -> Self {
         Self {
             prev: Some(self.this),
@@ -350,18 +348,17 @@ impl Scopes {
     }
 
     /// The scopes of a target entered from these
-    /// (event_target_functions::resolve 14146BB30): ROOT kept, PREV this
+    /// with ROOT kept, PREV this
     /// scope, and FROM this scope's, except that ROOT, FROM and PREV copy
-    /// their own scope's members and links (copy_members 1405296C0), so a
+    /// their own scope's members and links, so a
     /// target through one has that scope's FROM, which only the combat
-    /// scope (whose links are itself, 1405286D0) holds here.
+    /// scope (whose links are itself) holds here.
     ///
     /// Whether THIS carries what it was entered from follows the path:
-    /// every setter 14146BB30 calls clears (set_country, SetState,
-    /// SetCharacter and the others, each with 1 -> 14052F3F0), while THIS
-    /// copies the calling scope (copy_members of +0x18/+0x20/+0x28 or of the
-    /// scope itself), and a character target without a scope country leaves
-    /// the copy_construct of the calling scope.
+    /// every target setter clears, while THIS
+    /// copies the calling scope's members, and ROOT/FROM/PREV copy
+    /// their linked scope's members. A character target without a scope
+    /// country leaves the copy of the calling scope.
     pub fn entered(self, target: &installed_content::scope::Scope, this: Scope) -> Self {
         let mut scopes = self.with_this(this);
         if relinks(target) && self.root != Scope::Combat {
@@ -395,7 +392,7 @@ impl Scopes {
     }
 }
 
-/// What a target's last step leaves THIS carrying (14146BB30).
+/// What a target's last step leaves THIS carrying.
 enum Carried {
     /// THIS: a copy of the calling scope, as it carries.
     Kept,
@@ -428,7 +425,7 @@ fn carried(target: &installed_content::scope::Scope) -> Carried {
 }
 
 /// Whether a target passes through ROOT, FROM or PREV, whose scope's links
-/// it takes (14146BB30).
+/// it takes.
 fn relinks(target: &installed_content::scope::Scope) -> bool {
     use installed_content::scope::{Keyword, Scope as Parsed};
     let link = |keyword: &Keyword| matches!(keyword, Keyword::Root | Keyword::From | Keyword::Prev);
@@ -440,8 +437,8 @@ fn relinks(target: &installed_content::scope::Scope) -> bool {
 }
 
 impl World<'_> {
-    /// Whether a trigger body holds a child CTrigger::LoadKey (1405434F0)
-    /// adds ([`Evaluator::has_children`]).
+    /// Whether a trigger body holds a loaded child
+    /// ([`Evaluator::has_children`]).
     pub fn has_children(&self, triggers: &[Item]) -> Result<bool, String> {
         Evaluator::new(self, None).has_children(triggers)
     }
@@ -457,8 +454,8 @@ impl World<'_> {
         Evaluator::new(self, None).country_operand(item, scopes)
     }
 
-    /// A country tag or tag alias as ResolveScriptCountryTag (140BA5D10)
-    /// resolves it in `scopes`, an alias through AliasResolve (1407141F0);
+    /// Resolve a country tag or tag alias in `scopes`,
+    /// an alias through its candidates;
     /// `None` is no country.
     pub fn resolve_tag(&self, tag: &str, scopes: Scopes) -> Result<Option<u32>, String> {
         Evaluator::new(self, None).resolve_tag(tag, scopes)

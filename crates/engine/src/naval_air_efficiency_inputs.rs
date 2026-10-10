@@ -1,6 +1,6 @@
-//! Raw CFEXAir sortie operands (141963700/141965010) and the ordered wing
-//! category-kill inputs consumed by tooltip1417D2430. No efficiency, maximum
-//! organisation, fighter bonus or kill aggregation is evaluated here.
+//! Raw naval-air sortie operands and ordered wing category-kill inputs.
+//! These readers evaluate no efficiency, maximum organisation, fighter bonus or
+//! kill aggregation.
 use crate::{Memory, cnaval_combatant::field, cpdx_array::Array};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -27,12 +27,9 @@ pub struct Row {
     pub eligibility_callback: u8,
 }
 
-/// Weather and night keys 0x22/0x23 of `141963700`, then the sortie keys
-/// 0x24/0x1B6 that `14195EEC0` reads from the `screening_bonus` and
-/// `capital_screening_bonus` static modifiers through
-/// `modifier_accumulator::value@140551820`. That getter takes a key's flags
-/// and feature selector from the global definition table whether or not any
-/// accumulator holds the key, so the table rows are read here unconditionally.
+/// Weather and night keys, followed by screening sortie keys. Their raw
+/// flags and feature selectors come from the global definition table regardless
+/// of accumulator presence, so these definition rows are read unconditionally.
 pub const METADATA_KEYS: [u32; 4] = [
     crate::modifier_keys::CARRIER_TRAFFIC,
     crate::modifier_keys::CARRIER_NIGHT_TRAFFIC,
@@ -44,7 +41,7 @@ pub const METADATA_KEYS: [u32; 4] = [
 pub struct WingKill {
     pub wing: u64,
     pub index: u32,
-    /// Equipment category bitmask passed to140F742C0, not a pointer or handle.
+    /// Equipment-category bitmask, distinct from a pointer or handle.
     pub category: u64,
     pub count: i32,
 }
@@ -164,8 +161,8 @@ pub fn read(
     auth(memory, base, task, crate::ctask_force::VTABLE_RVA)?;
     let country_id = field::<u32>(memory, task, crate::cunit::ROSTER_OWNER)?;
     row.mission = field(memory, task, 0x4ec)?;
-    // 141963700 selects the authored sortie ratio by this mission. Matching
-    // content supplies the ratio table and initial/default sortie defines.
+    // The mission selects the authored sortie ratio. Matching content supplies
+    // the ratio table and initial/default sortie defines.
     let side = ptr(memory, group, crate::cfex_group::SIDE)?;
     auth(memory, base, side, crate::cnaval_combatant::VTABLE_RVA)?;
     if ptr(memory, side, crate::cnaval_combatant::COMBAT)? != combat {
@@ -306,8 +303,8 @@ fn capture_kills_buffer(
 ) -> Result<[usize; 2], &'static str> {
     auth(memory, base, plane, crate::cfex_air::VTABLE_RVA)?;
     let wings = array(memory, plane, 0x40, 8)?;
-    // P: 1417D2430 visits each active wing and its +9F8 category vector.
-    // Keep repeated occurrences; grow scratch only after a guarded header.
+    // Visit every active wing and category-vector occurrence, retaining repeats.
+    // Grow scratch only after a guarded header.
     let mut sources = Vec::new();
     let mut required = 0usize;
     for index in 0..wings.count {

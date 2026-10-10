@@ -1,4 +1,4 @@
-// Authored UNRUN. Reuses the existing gun/motion fixture and observer.
+// Reuses the gun/motion fixture and observer.
 use super::*;
 
 const LAND_REFERENCE: u64 = 0xffff_fffe_0000_1b59;
@@ -82,6 +82,7 @@ fn reference_capture(
             required: 0,
         },
         layout: &mut layout,
+        layout_buffer: &mut [],
         supply_origins: crate::walk::Buffer::Fixed(&mut []),
         supply_origins_len: 0,
         required_supply_origins: 0,

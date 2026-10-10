@@ -11,7 +11,7 @@ use replay::{
 
 use super::{Report, complete, equal, invalid, tag};
 
-const UNSAVED_RESERVED_THEATRE: &str = "1401F2A20 omits actual country slot zero; this certified reserved theatre has no serialized payload";
+const UNSAVED_RESERVED_THEATRE: &str = "the game omits actual country slot zero; this certified reserved theatre has no serialized payload";
 
 #[derive(Default)]
 struct ReservedTheatres {
@@ -200,7 +200,7 @@ fn check_omitted_ordinals(
 }
 
 fn name(report: &mut Report, label: String, actual: &[u8], expected: Option<&[u8]>) {
-    // CTheaterGroup::Serialize@141628460 / CAirTheatre::Serialize@1414DA290
+    // The theatre-group and air-theatre writers
     // emit name unconditionally outside checksum mode, even when empty.
     let text = super::serialized_text(report, &label, actual);
     equal(report, label, Some(text), expected);
@@ -375,7 +375,7 @@ pub(super) fn compare_theatres(
                 } else if actual.volunteers_theatre > 0 {
                     report.difference(format!("{label}.volunteers_theatre"), actual.volunteers_theatre, "omitted signed-nonpositive reference");
                 } else {
-                    report.limitation("EED430 omits signed-nonpositive volunteers_theatre references; omission does not distinguish their raw native bits", label);
+                    report.limitation("the theatre writer omits signed-nonpositive volunteers_theatre references; omission does not distinguish their raw native bits", label);
                 }
                 Ok(())
             },
@@ -535,7 +535,7 @@ pub(super) fn compare_theatres(
                     actual.ordinal as usize,
                     ordinal,
                 );
-                // CAirGroup::Serialize@1414DA180 always writes +0x50.
+                // The air-group save writer always emits its name.
                 let field = format!("{label}.name");
                 let text = super::serialized_text(report, &field, &actual.name);
                 equal(report, field, text, expected.name.as_slice());
@@ -727,23 +727,23 @@ pub(in crate::oracle) fn compare_order_of_battle(
             report,
             |actual, ((country, theatre, expected), oob), report| {
                 let label = format!("orders group {}", expected.id);
-                // BE8100 never emits +3c. The serialized enclosing country
+                // The formation writer never emits its raw country. The serialized enclosing country
                 // proves roster placement, not this independent raw reference.
                 // Keep strict positive-reference resolution without inventing a
                 // country equality for cross-country or reserved groups.
                 if actual.country != 0 {
                     let actual_country = tag(actual.country, links)?;
                     if actual_country != *country {
-                        report.limitation("BE8100 does not serialize the orders group's raw country; a cross-country reference needs an independent native witness", format!("{label}.country"));
+                        report.limitation("the formation writer does not serialize the orders group's raw country; a cross-country reference needs an independent native witness", format!("{label}.country"));
                     }
                 } else {
-                    report.limitation("BE8100 does not serialize the orders group's raw reserved-country reference", format!("{label}.country"));
+                    report.limitation("the formation writer does not serialize the orders group's raw reserved-country reference", format!("{label}.country"));
                 }
                 match &actual.name {
                     Recorded::NotRecorded => report.limitation("stored command name not in this recording", format!("{label}.name")),
                     Recorded::Value(None) => return Err(invalid("stored command name capture refused")),
                     Recorded::Value(Some(bytes)) => {
-                        // BE8100 gates on stored length before ADF40 writes
+                        // The formation writer gates on stored length before the quoted-text writer writes
                         // the first-NUL prefix, including an emitted empty one.
                         let name = (!bytes.is_empty()).then(|| {
                             super::serialized_text(report, &format!("{label}.name"), bytes)
@@ -752,7 +752,7 @@ pub(in crate::oracle) fn compare_order_of_battle(
                     }
                 }
                 equal(report, format!("{label}.theatre"), actual.theatre, *theatre);
-                // EED430 emits each theatre roster in its own native order.
+                // The theatre writer emits each theatre roster in its own native order.
                 // An unrostered recorded group has None, distinct from the
                 // first saved position; every saved definition is rostered.
                 equal(
@@ -769,7 +769,7 @@ pub(in crate::oracle) fn compare_order_of_battle(
                 );
                 if actual.is_army_group > 1 {
                     report.limitation(
-                        "BE8100 writes the raw +0x39 discriminator through the boolean writer; a nonzero byte other than one cannot be distinguished from one in the save",
+                        "the formation writer writes the raw discriminator through the boolean writer; a nonzero byte other than one cannot be distinguished from one in the save",
                         label.clone(),
                     );
                 }
@@ -791,7 +791,7 @@ pub(in crate::oracle) fn compare_order_of_battle(
                     equal(report, format!("{label}.parent"), actual.parent,
                         oob.parent.get(&expected.id).copied().unwrap_or(0));
                 }
-                // BE8100 emits leader and leader_unit only for a non-null
+                // The formation writer emits leader and leader_unit only for a non-null
                 // pointer, so an omission proves the native pointer is null.
                 equal(
                     report,
@@ -868,7 +868,7 @@ pub(in crate::oracle) fn compare_order_of_battle(
         let oob = order_of_battle(saved, &omitted)?;
         compare_division_parents(frame, divisions, &oob, &omitted, report)
     });
-    report.limitation("BE8100 does not serialize COrdersGroup+3c; enclosing saved country tags certify theatre roster placement, not raw group-country identity", "OrdersGroups.country");
+    report.limitation("the formation writer does not serialize the group's raw country reference; enclosing saved country tags certify theatre roster placement, not raw group-country identity", "OrdersGroups.country");
     if passed {
         Ok(())
     } else {
@@ -876,7 +876,7 @@ pub(in crate::oracle) fn compare_order_of_battle(
     }
 }
 
-/// The group's own member vector and each division's `+0xc0` back-pointer are
+/// The group's own member vector and each division's back-pointer are
 /// two independent native sources for the same membership. Both are recorded;
 /// this compares the division pointers against the save and reports any
 /// disagreement between the two recorded sources without resolving it.

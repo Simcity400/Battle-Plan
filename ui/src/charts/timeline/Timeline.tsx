@@ -485,7 +485,7 @@ export default function Timeline(props: TimelineProps) {
             continue;
           }
           // A span's own colour (a faction, a subject level) comes first. A law keeps its
-          // escalation shade even while held (signed off, mock-up politics-4); other held
+          // escalation shade even while held; other held
           // spans are accented.
           const fill = span.color ?? (span.positive ? mix(tokens.surface, tokens.positive, 0.7) : span.shade != null ? mix(tokens.surface, tokens.accent, 0.3 + 0.6 * span.shade)
             : span.emphasis ? mix(tokens.surface, tokens.accent, 0.55) : mix(tokens.surface, tokens.text, 0.1));

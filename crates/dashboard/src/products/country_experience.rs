@@ -2,11 +2,10 @@
 //!
 //! Banked values hold until the next read within one recorded country stretch.
 //! Change per day is their net difference from a read exactly 24 hours earlier
-//! in that stretch, including experience spent and the game's cap. The engine's
-//! daily accumulators are not daily gains: DailyUpdate@141292fc0, called by
-//! CCountry::daily_update@1406daaf0 inside CGameState::DailyUpdate@1401d4390,
-//! adds passive gain and zeroes them at the day boundary before the daily-slot
-//! read. Read dating and hourly identity checks follow country_fuel.
+//! in that stretch, including experience spent and the game's cap. The daily
+//! accumulators are not daily gains: updates add passive gain and zero them
+//! at the day boundary before the daily-slot read. Read dating and hourly
+//! identity checks follow country_fuel.
 
 use super::{
     LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,

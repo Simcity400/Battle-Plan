@@ -3,6 +3,8 @@ use crate::effect_description::tests::{Fixture, fresh};
 
 #[test]
 fn random_headers_weights_modifiers_and_member_seed_reset() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let out = fixture.render("random={chance=49.6 army_experience=2} random={chance=0 army_experience=3 add_political_power=4}", &mut fresh(), Content::default());
     assert_eq!(out.text, "50%: XP2\n0%: \n   XP3\n   PP4\n");
@@ -22,6 +24,8 @@ fn random_headers_weights_modifiers_and_member_seed_reset() {
 
 #[test]
 fn scripted_templates_ignore_call_boolean_and_refuse_recursive_cycles() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let mut names = installed_content::key_names::KeyNames::default();
     names.scripted_effects = [
@@ -54,12 +58,14 @@ fn scripted_templates_ignore_call_boolean_and_refuse_recursive_cycles() {
     assert!(
         out.refusals
             .keys()
-            .any(|why| why.contains("CScriptedEffect") && why.contains("recursively"))
+            .any(|why| why.contains("effect cycle:") && why.contains("recursively"))
     );
 }
 
 #[test]
 fn meta_uses_native_reader_and_case_sensitive_parameter_substitution() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     *fixture.frame.tables[replay::rows::TableId::ScriptVariables.index()] =
         replay::frame::TableView::Complete(replay::rows::TableRows::ScriptVariables(vec![
@@ -80,7 +86,7 @@ fn meta_uses_native_reader_and_case_sensitive_parameter_substitution() {
         },
     );
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-    assert_eq!(out.text, "XP2\nPP1\n"); // Fixed5 truncates at zero decimals (1424B89F0).
+    assert_eq!(out.text, "XP2\nPP1\n"); // Fixed5 truncates at zero decimals.
     let out = fixture.render_native(
         "meta_effect={X=2 text={army_experience=[x]}}",
         &mut fresh(),
@@ -89,7 +95,7 @@ fn meta_uses_native_reader_and_case_sensitive_parameter_substitution() {
             ..Default::default()
         },
     );
-    assert_eq!(out.text, "XP0\n"); // Unmatched parameter emits no text (141408490); the native reader retains '='.
+    assert_eq!(out.text, "XP0\n"); // Unmatched parameter emits no text; the native reader retains '='.
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     let out = fixture.render_native(
         "meta_effect={}",
@@ -104,6 +110,8 @@ fn meta_uses_native_reader_and_case_sensitive_parameter_substitution() {
 
 #[test]
 fn array_loop_without_tooltip_does_not_read_and_override_keeps_children() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let out = fixture.render("for_each_scope_loop={array=unread break=yes army_experience=9} custom_override_tooltip={tooltip=TIP army_experience=2} custom_override_tooltip={tooltip=\"\" army_experience=3}", &mut fresh(), Content::default());
     assert_eq!(out.text, "tip\nXP2\nXP3\n");
@@ -112,6 +120,8 @@ fn array_loop_without_tooltip_does_not_read_and_override_keeps_children() {
 
 #[test]
 fn array_selectors_decode_in_order_and_loop_keeps_links_with_default_seed() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::scripted_text::{EventObject, EventScope, Link};
     use replay::{frame::TableView, rows::*};
     let mut fixture = Fixture::new();
@@ -165,6 +175,8 @@ fn array_selectors_decode_in_order_and_loop_keeps_links_with_default_seed() {
 
 #[test]
 fn random_list_maximum_weight_uses_native_invalid_chance_sentinel() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::{frame::TableView, rows::*};
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
@@ -207,6 +219,8 @@ fn random_list_maximum_weight_uses_native_invalid_chance_sentinel() {
 
 #[test]
 fn scripted_depth_is_bounded_when_this_keeps_changing() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::scripted_text::{EventObject, EventScope};
     use replay::{frame::TableView, rows::*};
     let mut fixture = Fixture::new();
@@ -243,12 +257,14 @@ fn scripted_depth_is_bounded_when_this_keeps_changing() {
     assert!(
         out.refusals
             .keys()
-            .any(|why| why.contains("CScriptedEffect") && why.contains("depth"))
+            .any(|why| why.contains("effect walk:") && why.contains("depth"))
     );
 }
 
 #[test]
 fn own_like_scripted_keys_are_not_removed_from_unrelated_bodies() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let mut names = installed_content::key_names::KeyNames::default();
     names.scripted_effects = [
@@ -274,6 +290,8 @@ fn own_like_scripted_keys_are_not_removed_from_unrelated_bodies() {
 
 #[test]
 fn random_array_probe_recurses_through_its_children() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::{frame::TableView, rows::*};
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
@@ -304,6 +322,8 @@ fn random_array_probe_recurses_through_its_children() {
 
 #[test]
 fn empty_overrides_keep_inherited_multiple_probe() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
         let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();

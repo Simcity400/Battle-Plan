@@ -1,15 +1,11 @@
-//! Tooltip-only fields. Readers: `CRaidType::ReadToken@140A8FA30`,
-//! `CRaidSuccessFactors::vf4@14157F860`, formula `141578090/14157F4D0`
-//! and modifier `14157F800/14157F2A0`. Repeated formulas append modifiers;
-//! repeated scalar fields replace the previous value.
+//! Tooltip-only fields. Repeated formulas append modifiers; repeated scalar
+//! fields replace the previous value.
 //!
-//! 14157F4D0 picks a term's class by its key's token: `base` is the
-//! formula's base, a standard name ([`STANDARD`]) a
-//! CRaidSuccessChanceStandardModifier holding that token, and any other key,
-//! a quoted one included, a CRaidSuccessChanceCustomModifier. That is kept
-//! only when IsConfigured (14157E390) finds a modifier in its `formula` (the
-//! CMeanTimeToHappen at +0x38 counts them at +0x2C); otherwise the game
-//! records an error (1424ACD40) and drops it.
+//! A term's key selects its class: `base` sets the formula's base, a standard
+//! name ([`STANDARD`]) retains its folded token name, and every other key,
+//! including a quoted one, creates a custom modifier. A custom modifier is
+//! kept only when its `formula` contains a modifier; otherwise the game
+//! records an error and drops it.
 
 use crate::{fields, parser::Item};
 
@@ -23,12 +19,7 @@ pub struct Definition {
     pub misreads: Vec<String>,
 }
 
-/// The keys 14157F4D0 gives a standard modifier class, by token (names
-/// from register_authored_keys 140082CB0): strategic_bomber 0x2FC5,
-/// air_defence 0x2EB6, strength 0x28A6, interception 0x2B32, experience
-/// 0x2E9A, organisation 0x2ECB, anti_air 0x2F86, recon 0x2FA4, intel
-/// 0x30EC, radar 0x2FCD, air_agility 0x2FCE, air_superiority 0x302F,
-/// reliability 0x317C, resistance 0x32E1, enemy_units 0x40D7.
+/// The folded bare keys that select standard success modifiers.
 pub const STANDARD: [&str; 15] = [
     "strategic_bomber",
     "air_defence",
@@ -75,7 +66,7 @@ pub struct Modifier {
 
 impl Modifier {
     fn new(name: String) -> Self {
-        // Constructor in `14157F4D0`, both standard and custom classes.
+        // Both standard and custom modifiers share these constructor defaults.
         Self {
             name,
             weight: 0,
@@ -102,8 +93,7 @@ fn read_into(items: &[Item], out: &mut Definition) -> std::io::Result<()> {
             .map(crate::parser::Keyword::folded)
             .as_deref()
         {
-            // ReadScriptSignedInt32 and ReadFixed5 keep a slot whose
-            // conversion fails.
+            // Integer and fixed5 fields keep their slots when conversion fails.
             Some(b"days_to_prepare") => super::integer(&item.value, &mut out.days_to_prepare),
             Some(b"target_loc_key") => {
                 out.target_loc_key = super::text(&item.value, "target_loc_key")?.to_owned()
@@ -128,7 +118,7 @@ fn read_into(items: &[Item], out: &mut Definition) -> std::io::Result<()> {
                                 .any(|entry| entry.keyword_is("modifier"))
                         {
                             out.misreads.push(format!(
-                                "success formula {name:?}: a custom modifier whose formula has no modifier is recorded as an error and dropped (14157E390)"
+                                "success formula {name:?}: a custom modifier whose formula has no modifier is recorded as an error and dropped"
                             ));
                             continue;
                         }
@@ -143,7 +133,7 @@ fn read_into(items: &[Item], out: &mut Definition) -> std::io::Result<()> {
                                 Some(b"reference") => &mut modifier.reference,
                                 Some(b"start_weight") => &mut modifier.start_weight,
                                 Some(b"start_reference") => &mut modifier.start_reference,
-                                // 14157F800 reads only the four weights.
+                                // A standard modifier reads only the four weights.
                                 _ if class.is_some() => continue,
                                 _ => {
                                     modifier.custom.push(field.clone());
@@ -167,7 +157,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn repeated_formulas_preserve_modifier_order_and_native_defaults() {
+    fn repeated_formulas_preserve_modifier_order_and_defaults() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let got = tooltip(
             br#"days_to_prepare = 4 target_loc_key = "some_target"
             success_factors = { success = { base = 0.4 STRENGTH = { weight = -0.1 ignored = 1 } } }
@@ -195,6 +187,8 @@ mod tests {
 
     #[test]
     fn an_unconfigured_custom_modifier_is_dropped() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         // A quoted key is looked up as no token: a custom class, even
         // `strength`.
         let got = tooltip(

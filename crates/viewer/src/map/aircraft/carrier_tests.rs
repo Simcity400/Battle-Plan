@@ -100,7 +100,7 @@ fn anchor(province: u32, slot: u32) -> Option<[f32; 3]> {
 
 #[test]
 fn carrier_takeoff_uses_the_joined_task_forces_settled_route_point() {
-    // Native route slots (141630E60), interpolation (141632130) and stack law (141279110):
+    // Native route slots, interpolation and stack law:
     // a moving carrier's source is one unit along its task-force route spline.
     let (frame, registry, base) = fixture();
     let motions = TaskForceMotions::read(&frame).unwrap();

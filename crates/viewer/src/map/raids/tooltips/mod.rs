@@ -1,8 +1,5 @@
-//! Ordinary-map raid tooltips. The entry points are
-//! `CActiveRaidMapIconData::vf1@141E72380`,
-//! `CEnemyRaidMapIconData::vf1@141E76D40` and
-//! `CRaidTargetMapIconData::vf1@141E732A0` (mode 0 only).
-//! The planning-only unit icon is deliberately outside this module.
+//! Ordinary-map tooltips for own active/result raids, incoming raids and
+//! target offers in mode 0. The planning-only unit icon is outside this module.
 
 mod chance;
 pub(super) mod content;
@@ -31,8 +28,8 @@ pub enum Key {
     Offer(Arc<[TooltipTarget]>),
 }
 
-/// Interface pixels, in window paint order; reverse iteration gives the
-/// topmost admitted icon (visible-window reattachment@140B2F270, hit list@142226CC0).
+/// Interface pixels in window paint order; reverse iteration selects the
+/// topmost admitted icon.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hit {
     pub origin: [f32; 2],

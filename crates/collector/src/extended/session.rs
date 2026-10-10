@@ -1,10 +1,10 @@
 //! World-tension acquisition: the CWorldThreat manager word, its ordered
 //! contribution vector and its per-country aggregate cache.
 //!
-//! The hourly game speed is not a table here: `CGameState+0x4bc` is already read
+//! The hourly game speed is not a table here: it is already read
 //! by the authenticated clock read in the same guarded batch as the hour, so it
 //! rides on the existing Clock row instead of paying a second read and a second
-//! availability outcome. Pause use is not recorded; see [archived domain index](#)'s D57 row.
+//! availability outcome. Pause use is not recorded.
 //!
 //! Worker-owned capture growth and replay conversion allocate.
 
@@ -235,8 +235,8 @@ impl Captured {
             Err(reason) => return Pass::unavailable(reason),
         };
         if growing {
-            // CWorldThreat::rebuild_aggregates@140EEFFD0 uses the full current
-            // country census. These are the original owned header extents.
+            // World-tension aggregates use the full current country census.
+            // These are the original owned header extents.
             let grown = (|| {
                 engine::walk::Buffer::Growing(&mut self.manager.rows).ensure(1)?;
                 engine::walk::Buffer::Growing(&mut self.aggregates.rows)

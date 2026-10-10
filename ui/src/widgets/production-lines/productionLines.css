@@ -2,7 +2,7 @@
 .production-caption { margin: 0; padding: var(--space-1) var(--space-3) 0; color: var(--muted); font-size: var(--type-xs); min-height: 1.2em; }
 .production-history { padding: var(--space-1) 0 var(--space-2); }
 
-/* The live table (mock-up economy-1): absolutely placed rows that slide between slots. */
+/* The live table: absolutely placed rows that slide between slots. */
 .production-table { --production-head: 26px; --production-row: 46px; position: relative; font-size: var(--type-sm); }
 .production-head, .production-row { display: grid; grid-template-columns: var(--production-columns); align-items: center; gap: var(--space-3); padding: 0 var(--space-3); }
 .production-head { position: sticky; top: 0; z-index: 1; height: var(--production-head); background: var(--surface); color: var(--muted); font-size: var(--type-xs); text-transform: uppercase; letter-spacing: .04em; }

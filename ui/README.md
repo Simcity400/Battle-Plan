@@ -16,11 +16,11 @@ The React/TypeScript interface hosted by the desktop app. It owns navigation, ap
 
 ## Development
 
-Run `npm.cmd run dev:ui` from the repository root for Vite only. `check:ui`, `test:ui` and `build:ui` are the frontend checks/build; the tests live beside their modules and need no game. Desktop startup and Rust build wrappers are in the [desktop guide](../crates/desktop/README.md) and [AGENTS.md](../AGENTS.md).
+Run `npm.cmd run dev:ui` from the repository root for Vite only. `check:ui`, `test:ui` and `build:ui` are the frontend checks/build; the tests live beside their modules and need no game. Desktop startup and Rust build instructions are in the [desktop guide](../crates/desktop/README.md) and [AGENTS.md](../AGENTS.md).
 
 ### Real recordings in the browser
 
-Build the dashboard's `dashboard-bridge` binary with the shared wrapper. Set `BATTLE_PLAN_RECORDINGS_DIR` in ignored `ui/.env.local` to a scratch folder outside Git; `BATTLE_PLAN_GAME_DIR` and `BATTLE_PLAN_USER_DIR` enable artwork. Settings folders take precedence. [browserBridge.ts](browserBridge.ts) starts the adapter on demand and forwards cancellation. Production uses the desktop transport. Both transports enforce the generated message-size budget and preserve country selections intact.
+Build the dashboard's `dashboard-bridge` binary with `cargo build -p dashboard --bin dashboard-bridge` from the repository root. Set `BATTLE_PLAN_RECORDINGS_DIR` in ignored `ui/.env.local` to a scratch folder outside Git; `BATTLE_PLAN_GAME_DIR` and `BATTLE_PLAN_USER_DIR` enable artwork. Settings folders take precedence. [browserBridge.ts](browserBridge.ts) starts the adapter on demand and forwards cancellation. Production uses the desktop transport. Both transports enforce the generated message-size budget and preserve country selections intact.
 
 ## Data and identity
 

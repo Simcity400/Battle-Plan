@@ -66,7 +66,7 @@ export interface SunburstProps {
   legendExtra?: ReactNode;
 }
 
-/** The surface gap between slices, in pixels (spec 2.4). */
+/** The surface gap between slices, in pixels. */
 const GAP = 2;
 /** How far a hovered slice stands out. */
 const LIFT = 4;
@@ -103,7 +103,7 @@ function fitText(text: string, width: number, measure: (text: string) => number)
 }
 
 
-/** A zoomable sunburst (spec 2.4, mock-up style-3): rings of slices where the inner
+/** A zoomable sunburst: rings of slices where the inner
  * ring is the level zoomed into and the outer ring breaks it down. Click a slice to
  * zoom in and the centre to go back; slices glide there, grow as playback adds to
  * them, and re-colour smoothly. The centre names the slice zoomed into with its exact

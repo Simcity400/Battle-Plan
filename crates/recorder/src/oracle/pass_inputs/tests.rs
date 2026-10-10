@@ -693,8 +693,8 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
     );
 }
 
-/// The task force and naval-combat blocks as `CTaskForce::Serialize@140D66770` (through
-/// `CUnit::Serialize@140BF7010`) and `CNavalCombatant::Serialize@14160FF40` write them: no
+/// The task force and naval-combat blocks as the task force save writer (through
+/// the unit save writer) and the naval participant save writer write them: no
 /// combat list on the unit, the side's `unit` references in the combat.
 fn serialized(task_force: &str, combats: &str) -> Save {
     installed_content::save::parse(format!(
@@ -1580,7 +1580,7 @@ fn fresh_task_force_exile_compares_saved_truth_without_claiming_raw_magnitude() 
             report
                 .limitations
                 .keys()
-                .any(|reason| reason.contains("nonzero primary+0x2AE byte identity"))
+                .any(|reason| reason.contains("nonzero exile byte identity"))
         );
     }
     set(

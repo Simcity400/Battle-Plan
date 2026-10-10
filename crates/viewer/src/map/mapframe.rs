@@ -1,4 +1,4 @@
-//! Ambient actor admission140B49340, placement141633D00 and lifetime141634900.
+//! Ambient actor admission, placement and lifetime.
 use super::{
     camera::Camera,
     entity_animation,
@@ -186,7 +186,7 @@ impl FrameAssets {
 }
 
 fn instance(kind: &ambient::AmbientObjectType, object: &ambient::AmbientObject) -> ModelInstance {
-    //141633DB5 divides by360 then multiplies TAU40C90FDB; only negative-Y rotation.
+    // Convert degrees by dividing by 360 then multiplying by TAU; rotate around negative Y.
     ModelInstance {
         position: object.position,
         rotation: object.rotation[1] / 360. * f32::from_bits(0x40c90fdb),
@@ -200,8 +200,8 @@ fn instance(kind: &ambient::AmbientObjectType, object: &ambient::AmbientObject) 
     }
 }
 
-///140B46EC0: 4x4 quarter-map boxes, extended one quarter outside each outer edge.
-///141634490 assigns the first inclusive box containing the authored position.
+/// The game: 4x4 quarter-map boxes, extended one quarter outside each outer edge.
+/// The game assigns the first inclusive box containing the authored position.
 fn buckets([width, height]: [u32; 2]) -> Vec<[[f32; 3]; 2]> {
     let dx = (width / 4) as f32;
     let dz = (height / 4) as f32;
@@ -235,7 +235,7 @@ fn buckets([width, height]: [u32; 2]) -> Vec<[[f32; 3]; 2]> {
 fn contains([low, high]: [[f32; 3]; 2], p: [f32; 3]) -> bool {
     (0..3).all(|i| low[i] <= p[i] && p[i] <= high[i])
 }
-///141633DD7 passes clampSea=true to140A51CC0: nearest sample, bottom-up, no wrap.
+/// Sea-clamped nearest height sample, bottom-up and without wrapping.
 fn height(image: &IndexedImage, [x, _, z]: [f32; 3]) -> f32 {
     let x = ((x + 0.5) as i32).clamp(0, image.width as i32 - 1) as usize;
     let z = ((z + 0.5) as i32).clamp(0, image.height as i32 - 1) as usize;
@@ -250,7 +250,7 @@ impl Presentation {
         size: [u32; 2],
         time: f32,
     ) -> Vec<(usize, ModelInstance)> {
-        //140B497F7..498C8: the bucket's own box against each active map view's expanded sides.
+        // The bucket's own box against each active map view's expanded sides.
         let admission = Admission::new(camera, size);
         let visible: Vec<_> = self
             .bounds
@@ -268,7 +268,7 @@ impl Presentation {
             self.last = None;
         }
         self.last = Some(time);
-        //140B49340 visits the sixteen bucket banks, then the always-queued list.
+        // The game visits the sixteen bucket banks, then the always-queued list.
         for bucket in (0..self.bounds.len())
             .map(Some)
             .chain(std::iter::once(None))
@@ -283,7 +283,7 @@ impl Presentation {
                 .filter(|(_, p)| p.bucket == bucket)
             {
                 let kind = &self.kinds[placement.kind];
-                //141634330's comparison is counter>max, not an active-count ceiling.
+                // The game's comparison is counter>max, not an active-count ceiling.
                 if self.active.iter().any(|a| a.placement == index)
                     || (kind.max_visible > 0 && self.counters[placement.kind] > kind.max_visible)
                 {
@@ -299,7 +299,7 @@ impl Presentation {
                 });
             }
         }
-        //141634900 first captures the clock, then subtracts elapsed process time.
+        // The game first captures the clock, then subtracts elapsed process time.
         let mut i = 0;
         while i < self.active.len() {
             let a = &mut self.active[i];
@@ -329,6 +329,8 @@ impl Presentation {
 
 #[test]
 fn placement_preserves_authored_height_scale_and_only_y_rotation() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let types = ambient::parse(b"type={type=mod_frame scale=2 always_visible=yes use_animation=no object={position={3 -4 5} rotation={90 90 90}}}", &installed_content::key_names::KeyNames::default()).unwrap();
     let value = instance(&types[0], &types[0].objects[0]);
     assert_eq!(value.position, [3., -4., 5.]);
@@ -461,6 +463,8 @@ fn ambient_admission_expiry_and_recreation_preserve_native_order() {
 
 #[test]
 fn event_only_ambient_uses_shared_player_scale_and_entry_clock() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let descriptors = installed_content::mesh::parse_descriptors(br#"entity={name=emitter scale=0.3 state={name=idle event={time=0 particle=mist keep_particle=yes}}}"#, "gfx/synthetic.asset").unwrap();
     let library = ModelLibrary::load(
         &ResolvedLayers::default(),

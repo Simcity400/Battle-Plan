@@ -42,10 +42,10 @@ fn target_only_definitions_do_not_replace_normal_lookup() {
         ..Database::default()
     };
     assert!(database.find("only_target").unwrap().is_none());
-    // The native if/else clamp keeps the high bound even with inverted bounds.
+    // The if/else clamp keeps the high bound even with inverted bounds.
     assert_eq!(database.find("ordinary").unwrap().unwrap().opinion, 10);
     let error = parse(b"opinion_modifiers={broken={value=}}", [-100, 100])
         .unwrap_err()
         .to_string();
-    assert!(error.contains("broken") && error.contains("1424B0220"));
+    assert!(error.contains("broken") && error.contains("empty short operand has no stored value"));
 }

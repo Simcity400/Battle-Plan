@@ -10,6 +10,7 @@ pub(super) const LINE_OUTPUT_TABLES: [TableId; 4] = [
 
 /// The save keeps no per-line count, so ProductionLineOutput is checked through
 /// the organisation history, which the game credits in the same call the
+/// collector observes: between the first hour R since the
 /// branch's observation began whose frame read both tables and the compared
 /// hour, each (organisation, variant) history slot must change by the change
 /// of the lines' `mio_credit` for that pair. Each row counts with its last

@@ -140,7 +140,7 @@ export type MapGraphics = {
  */
 showAlliedPlans: boolean,
 /**
- * Viewer-local world target size; CMapRenderingOptions+0x19 defaults true.
+ * Viewer-local world target size; defaults true.
  */
 fullResolution: boolean,
 /**
@@ -152,15 +152,15 @@ dayNight: boolean,
  */
 natoCounters: boolean | null,
 /**
- * CMapRenderingOptions+0x18; ctor1401F9640 defaults true.
+ * High-quality map shaders; defaults true.
  */
 highGfxShaders: boolean,
 /**
- * CMapRenderingOptions+0x15; ctor1401F9640 defaults true.
+ * Water reflections; defaults true.
  */
 waterReflections: boolean,
 /**
- * CMapRenderingOptions+0x0e; ctor1401F9696 defaults true.
+ * Sky rendering; defaults true.
  */
 sky: boolean, textureQuality: number, samples: number, trees: boolean, shadows: boolean, rivers: boolean, buildings: boolean, units: boolean, citySprawl: boolean, weather: boolean, };
 export type CampaignMapSettings = {
@@ -543,7 +543,7 @@ export type ModifierBreakdown = {
  */
 key: string,
 /**
- * The native key index; none when the game registers no such key.
+ * The recorded key index; none when the game registers no such key.
  */
 index: number | null,
 /**
@@ -660,8 +660,8 @@ gainedRaw: string,
  */
 burnedRaw: string,
 /**
- * Native consumer receipts, fixed5; per-hour quantity conversions cannot be
- * reconstructed from these sums (1410DE320 / 1410E33D0).
+ * Consumer receipts, fixed5; per-hour quantity conversions cannot be
+ * reconstructed from these sums.
  */
 receivedRaw: [string, string, string],
 /**
@@ -721,8 +721,8 @@ gainScale: number,
  */
 dayHours: number,
 /**
- * FuelPanel_BuildBreakdown@1410DE880 uses these native keys for consumers.
- * Null names retain their missing/refused content diagnostic.
+ * Fuel-panel consumer localisation keys. Null names retain their
+ * missing/refused content diagnostic.
  */
 consumerNames: [string | null, string | null, string | null], gainLabels: [FuelLabel, FuelLabel, FuelLabel, FuelLabel],
 /**
@@ -1010,7 +1010,8 @@ export type StockVariantName = {
  */
 firstHour: number,
 /**
- * `GetDisplayName`; null when content does not name it, or when not known.
+ * The variant's display name; null when content does not name it, or when
+ * not known.
  */
 name: string | null,
 /**
@@ -1224,7 +1225,7 @@ garrisonStrengthRaw: string | null, requiredManpower: number | null,
  */
 garrisonRequiredRaw: string | null,
 /**
- * +0x60: native requirement failure; its strength getter returns zero.
+ * Requirement failure makes displayed strength zero.
  */
 garrisonAlert: boolean,
 /**
@@ -1271,8 +1272,8 @@ export type OccupationCollaborationActor = { slot: number, countryId: number,
 nameHour: number | null, };
 export type OccupationCollaboration = { tag: string | null,
 /**
- * P: CCountryCollaborationData+0x10, 1413DFC50; fixed5 fraction, unlike
- * the state percentage-point scalars. Politics meter: 141C441D0.
+ * Collaboration is a fixed5 fraction, unlike the state percentage-point
+ * scalars, matching the politics meter.
  */
 raw: string | null, readHour: number | null, actor?: OccupationCollaborationActor, };
 export type OccupationTrendRun = { firstHour: number, lastHour: number, readHour: number, startsSegment: boolean, resistanceRaw: string, complianceRaw: string, states: number,
@@ -1314,18 +1315,16 @@ token: string,
 name: string, };
 export type EffectLine = {
 /**
- * The modifier, as the game identifies it: its key folded (1424A7A90,
- * FindTokenNoCase 1424A7060); the formats are keyed the same way.
+ * The modifier's case-folded key; formats are keyed the same way.
  */
 key: string,
 /**
- * The stored value in fixed point with five decimals, as a decimal
- * string: the CRT conversion of the authored text into a zeroed
- * destination (1406042A0, 1424B0480).
+ * The stored fixed5 value as a decimal string. Authored text converts
+ * into a zeroed destination.
  */
 fixed5: string,
 /**
- * Named in `hidden_modifier`: applied, never listed (14054F6D0).
+ * Named in hidden_modifier: applied, never listed.
  */
 hidden: boolean, };
 export type EffectGroup = { target: string | null,
@@ -1334,8 +1333,8 @@ export type EffectGroup = { target: string | null,
  */
 instant: boolean, lines: Array<EffectLine>,
 /**
- * A targeted modifier's custom tooltip keys, in the order its CModifier
- * lists them (14054E050); none for an equipment bonus.
+ * A targeted modifier's custom tooltip keys in stored order;
+ * none for an equipment bonus.
  */
 tooltips: Array<string>, };
 export type TraitEffects = { token: string,
@@ -1577,7 +1576,7 @@ export type LedgerDailyCost = { country: number, instance: number, epoch: string
 export type LedgerBalanceChange = { countryId?: number, hour: number, readHour: number, currency: string, amountRaw: string | null, realizedDeltaRaw: string, action: string, covered: boolean, reason: string | null, };
 export type LedgerSpend = {
 /**
- * Recorded CCountry+08 link identity (1401DA850), also CountryRow.id.
+ * Recorded country link identity, also CountryRow.id.
  */
 countryId?: number, id: string, sequence: string, ordinal: number, hour: number, readHour: number, countryTag: string, countryName: string | null, currency: string, category: string, itemId: string, chargeRaw: string | null, realizedDeltaRaw: string | null, covered: boolean, occurrences: number,
 /**
@@ -1913,7 +1912,7 @@ known: boolean,
  */
 token: string,
 /**
- * The row's name (`GetDisplayName`); null when content does not name it.
+ * The row's variant display name; null when content does not name it.
  */
 name: string | null,
 /**
@@ -2412,11 +2411,11 @@ scientistAsOf: number | null, };
 export type ProjectState = "running" | "paused" | "cancelled" | "completed" | "unknown";
 export type SpecialProjectRun = { firstHour: number, lastHour: number, presentation: number,
 /**
- * Percent from prototype +0x88, clamped as 141A238C0. No phase ratio.
+ * Clamped prototype percent, separate from the phase ratio.
  */
 progress: number, state: ProjectState, completion: ProjectDate | null, cancellation: ProjectDate | null,
 /**
- * Native history length minus IsCompleted. Missing history is null.
+ * Recorded history length minus the completion entry. Missing history is null.
  */
 iterations: number | null, };
 export type ProjectEpisode = { id: string, start: ProjectDate, runs: Array<SpecialProjectRun>, };
@@ -3179,23 +3178,23 @@ preparationRatio: number | null, ownerTag: string | null, targetTag: string | nu
  */
 typeKey: string | null,
 /**
- * Selected definitions, not completed phases (1413EB710).
+ * Selected definitions, not completed phases.
  */
 phaseCount: number,
 /**
- * Manager 14118B110 tests +0x41 after completion.
+ * Manager removal flag tested after completion.
  */
 autoRepeat: boolean,
 /**
- * Launch writes duration and start on the same instance (1413EAD80).
+ * Launch writes duration and start on the same instance.
  */
 durationDays: number,
 /**
- * All +0xE0 slots, including unassigned ones (1413E9210/141BD1CD0).
+ * All assignment slots, including unassigned ones.
  */
 assignedSlots: number,
 /**
- * 1413EC160 signed day result at this read; native -1 stays unknown.
+ * Signed day result at this read; -1 stays unknown.
  */
 elapsedDays: number | null,
 /**
@@ -3203,7 +3202,7 @@ elapsedDays: number | null,
  */
 currentPhase: number | null, terminal: boolean,
 /**
- * Auto-commence, tested by 141189630 before 1413EF490 starts it.
+ * Auto-commence flag tested before the operation starts.
  */
 autoCommence: boolean, startHour: number | null,
 /**
@@ -3218,11 +3217,11 @@ export type EspionageOperativeName = { id: string, name: string | null, unavaila
 export type EspionageEndReason = "completed" | "disappeared";
 export type EspionageOutcome = {
 /**
- * Stored independent trials, +C0/+C1 (1413EE390), never success/failure.
+ * Stored independent trials, never success/failure.
  */
 bonus: boolean, detected: boolean,
 /**
- * Language of the stored +0xA0 text, not the viewer's display language.
+ * Language of the stored description, not the viewer's display language.
  */
 recordedLanguage: string, descriptionRef: OperationDescriptionRef | null, descriptionUnrecorded: string | null,
 /**
@@ -3238,7 +3237,7 @@ completionHour: number | null, completionSequence: string | null, typeKey: strin
 export type EspionageOperation = {
 /**
  * Full native handle and episode's first read. Auto-repeat creates a fresh
- * identity (14118B110 -> 141A13EA0 -> 141189390 -> 142209A50).
+ * identity.
  */
 id: string, firstRead: number, startHour: number | null, startKnownAt: number | null,
 /**
@@ -3321,12 +3320,12 @@ export type AgencyTop = { count: number, field: AgencyRankField, };
 export type AgencyUpgradeItem = {
 /**
  * This read's array position, preserving repeated definitions and all levels
- * as Save140FCA0F0 writes the native +0x60/+0x6C entries.
+ * in the recorded upgrade list.
  */
 ordinal: number, definitionPointer: string, branchPointer: string,
 /**
- * CAgencyUpgrade+0x260 owns the branch; branch+8 and definition+8 are
- * separate lexical tokens (140615D50, 140618C40, 140FCA0F0). A token alone is ambiguous.
+ * The upgrade's branch and definition have separate lexical tokens.
+ * A token alone is ambiguous.
  */
 branchToken: string | null, token: string | null,
 /**
@@ -3344,14 +3343,14 @@ export type AgencyUpgrades = { readHour: number | null,
 unavailable: string | null,
 /**
  * Mathematical sum of max(0, signed level), unknown for an incomplete or
- * unauthenticated list. The nonnegative term comes from 140FC2B80; this
- * inventory sum omits its created gate, i32 wrapping, base and slot formula.
+ * unauthenticated list. This inventory sum omits the maximum-count formula's
+ * created gate, i32 wrapping, base and slot calculation.
  */
 nonnegativeLevelSum: string | null, items: Array<AgencyUpgradeItem>, };
 export type AgencyValue = { created: boolean,
 /**
  * Created names are literal recorded bytes, including an empty name.
- * Uncreated names use GetAgency's content-localised default (141A7B350).
+ * Uncreated names use the content-localised default.
  */
 name: string | null, defenseRaw: string,
 /**
@@ -3359,7 +3358,7 @@ name: string | null, defenseRaw: string,
  */
 defenseText: string | null,
 /**
- * Only LEVEL's native formatted output (1402E2DA0 -> 142232AB0).
+ * Only LEVEL's complete formatted output.
  */
 defenseValue: string | null, activeCount: number, maximum: number, upgrades: AgencyUpgrades, };
 export type AgencyEntry = { firstHour: number, lastHour: number,
@@ -3385,7 +3384,7 @@ available: boolean,
  */
 observed: Array<HourSpan>, operativeReadHours: Array<number>, series: Array<AgencySeries>,
 /**
- * Label from the screen's AGENCY_DEFENSE_LEVEL template (140F172A0).
+ * Label from the screen's AGENCY_DEFENSE_LEVEL template.
  */
 defenseLabel: string | null,
 /**

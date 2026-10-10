@@ -1,6 +1,6 @@
-//! CURRENT (`140FD0EA0` / `140FD0E60`) is evaluated for the viewing country.
-//! Each product, division and the final subtraction follows native fixed5
-//! order. No displayed rating is stored by the game.
+//! Evaluate CURRENT for the viewing country. Preserve fixed5 operation order
+//! for products, divisions and the final subtraction. The displayed rating
+//! is derived rather than stored.
 use super::super::{RaidAssets, script::World};
 use replay::rows::{RaidCounterOperative, RaidIntelInputRow, RaidScope, tables};
 
@@ -70,7 +70,7 @@ fn times(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / 100_000
 }
 
-/// `140FD0EA0` and `14157BC30`: neutral when the wrapping sum is below 1.
+/// Neutral when the wrapping sum is below 1.
 pub fn air_ratio(friendly: i64, enemy: i64) -> Result<i64, String> {
     let total = friendly.wrapping_add(enemy);
     if total < 1 {
@@ -85,8 +85,8 @@ pub fn air_ratio(friendly: i64, enemy: i64) -> Result<i64, String> {
         .ok_or_else(|| "air superiority signed division overflow".into())
 }
 
-/// `1411E3C60`: deduplicate objects, then sort by signed contribution and
-/// (type,id). `1411D7410` compares those words in that order; iterate backwards.
+/// Deduplicate objects, sort by signed contribution then (type, id), and
+/// iterate backwards.
 fn stacked(operatives: &[RaidCounterOperative], base: i64, factor: i64) -> Result<i64, String> {
     let mut unique = std::collections::BTreeMap::new();
     for operative in operatives {
@@ -198,7 +198,7 @@ pub fn current(
     lane: usize,
     d: &Defines,
 ) -> Result<i64, String> {
-    // `140FD0EA0` returns zero terms for a null country reference.
+    // A null country reference contributes zero terms.
     if ours == 0 {
         return Ok(0);
     }
@@ -242,7 +242,7 @@ pub fn current(
         .ok_or("target state has no neighbour roster")?
         .iter()
         .any(|id| world.state_controller(*id) == Some(ours));
-    // `CState::GetStrategicRegion@1409CCDE0` selects the template's first province.
+    // Select the template's first province.
     let first = world
         .state_order(state)?
         .first()

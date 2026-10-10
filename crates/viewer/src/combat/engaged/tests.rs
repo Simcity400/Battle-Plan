@@ -216,9 +216,9 @@ fn defended<'a>(
     }
 }
 
-/// RemoveUnitFromCombat (1413CE250) rebuilds both sides, so a unit
+/// combat unit removal rebuilds both sides, so a unit
 /// leaving the defenders may let the attackers pick up a faction joined
-/// earlier. Land cannot tell it from a round retreat (1413CE670), which
+/// earlier. Land cannot tell it from a round retreat, which
 /// rebuilds only the retreating side, so the attackers are ambiguous when
 /// the two disagree and decided when they agree.
 #[test]
@@ -280,7 +280,7 @@ fn a_viewer_change_across_a_gap_is_not_a_rebuild_now() {
     assert_eq!(history.side(62, 0), Engaged::Yes);
 }
 
-/// A naval removal is always `RemoveUnitFromCombat` (1413CE250), so a unit
+/// A naval removal is always `combat unit removal`, so a unit
 /// leaving the defenders proves the attackers rebuilt from their own
 /// units: the faction joined earlier engages them, where land's round
 /// retreat leaves the same hour ambiguous.
@@ -346,7 +346,7 @@ fn added<'a>(links: &'a BTreeMap<u32, u32>, relations: &'a Relations, added: Add
     sample
 }
 
-/// An hour whose ids are unavailable may hide a join (`AddTransferToGroup@1416084E0`
+/// An hour whose ids are unavailable may hide a join (`transfer joining`
 /// refreshes the flag), so it cannot hold a value the recorded lists contradict; and the
 /// first observation after it proves a join only against the previous hour, which it cannot
 /// compare with, so an id already seen before the gap proves nothing and a new one only
@@ -424,8 +424,8 @@ fn a_viewer_change_across_a_gap_rebuilds_nothing() {
     assert_eq!(next.side(62, 0), Engaged::Yes);
 }
 
-/// A viewer change between samples refreshes every side (140BA9890, or
-/// 14113E4B0 through 140BABC00) at its own moment, never as a load. The
+/// A viewer change between samples refreshes every side at its own moment,
+/// never as a load. The
 /// side lists the old viewer (1); the new viewer (2) shares vision with it
 /// only while allied. Viewer change then alliance: the refresh saw no
 /// alliance and the alliance refreshes nothing, so native keeps No.
@@ -473,9 +473,9 @@ fn rosters(links: &BTreeMap<u32, u32>, players: &[(i32, u32)], count: i64) -> Co
     }
 }
 
-/// 14113E4B0 refreshes every combat through 140BABC00 when it gives any
-/// controller the local player's country. The hourly rosters can only
-/// allow that: a stale flag that the refresh would change is ambiguous,
+/// Assigning any controller the local player's country refreshes every combat.
+/// The hourly rosters can only allow that: a stale flag that the refresh
+/// would change is ambiguous,
 /// never asserted, and a roster change elsewhere refreshes nothing.
 #[test]
 fn a_controller_joining_the_viewer_may_refresh_a_stale_flag() {

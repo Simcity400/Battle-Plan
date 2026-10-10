@@ -40,7 +40,7 @@ pub(super) fn compare(frame: &DecodedFrame, report: &mut Report) -> io::Result<(
                 .map(|_| ())
                 .map_err(|reason| io::Error::new(io::ErrorKind::InvalidData, reason))
         });
-        report.limitation("exact directed +2E8 pointer/nonretired-byte predicates and sparse active-domain completeness have no proved text-save counterpart; dates, symmetric WarRelations and enemy lists are not equivalent. Requires an independent matched same-boundary native/write witness, including alias/literal0, omitted and refused targets",&label);
+        report.limitation("exact directed pointer/nonretired-byte predicates and sparse active-domain completeness have no proved text-save counterpart; dates, symmetric WarRelations and enemy lists are not equivalent. Requires an independent matched same-boundary native/write witness, including alias/literal0, omitted and refused targets",&label);
         if !packet.complete_active_domain {
             report.limitation("partial observed domain: every absent target remains unknown; exhaustive direct/generic slot writers, candidate completeness and endpoint lifetime are still held",format!("{label}.complete_active_domain"));
         }

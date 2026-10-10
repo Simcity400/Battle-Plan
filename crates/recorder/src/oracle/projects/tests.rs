@@ -93,7 +93,7 @@ fn a_matching_scientist_roster_compares_counts_tokens_and_levels() {
         report
             .limitations
             .keys()
-            .any(|reason| reason.contains("14144E480"))
+            .any(|reason| reason.contains("specialization level"))
     );
 }
 
@@ -900,7 +900,7 @@ fn raid_equipment_compares_the_saved_pool_and_nukes() {
 
 const RIFLE: u64 = (41 << 32) | 70;
 const TRUCK: u64 = (42 << 32) | 70;
-/// `AddVariantQuantity@140FF7A30`'s clamp bound `L`, raw.
+/// Variant addition's clamp bound `L`, raw.
 const BOUND: i64 = 0x53e2_d620_fb40;
 
 /// The prepared fixture raid with a saved pool of `items` (variant, save
@@ -1115,7 +1115,7 @@ fn building_flags_follow_the_saved_reference_branch() {
             report
                 .limitations
                 .keys()
-                .any(|reason| reason.contains("CBuildingStatus+0x68"))
+                .any(|reason| reason.contains("the building location flags"))
         );
         report.differences.len()
     };

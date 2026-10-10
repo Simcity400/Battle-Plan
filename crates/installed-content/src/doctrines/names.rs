@@ -1,4 +1,4 @@
-//! Name projections of the three native doctrine databases.
+//! Name projections of the track, grand-doctrine, and sub-doctrine databases.
 use super::*;
 use crate::{modifiers, parser::Item};
 use std::collections::BTreeSet;
@@ -24,8 +24,8 @@ enum Node {
 }
 
 fn append(database: &mut Database, bytes: &[u8], source: &str, kind: u8, names: &KeyNames) {
-    // Tracks 1409D9E60, grand 1409C1300, sub 1409D9920; shared base
-    // 1409BF8C0 and 141517770. Names consume exactly their native reader.
+    // Tracks, grand doctrines, and sub-doctrines share base fields while
+    // name fields retain their distinct consumption rules.
     let read = native::read(
         bytes,
         native::Mode::KeepMark,
@@ -58,27 +58,27 @@ fn append(database: &mut Database, bytes: &[u8], source: &str, kind: u8, names: 
             (Node::Definition, Some(b"ai_will_do")) if kind != 2 => Shape::Object(Node::Mtth),
             (Node::Mtth, _) => native::mean_time_to_happen(field),
             (Node::Definition, Some(b"mastery")) if kind != 0 => Shape::Object(Node::Mastery),
-            // 1409D8450 copies each raw track token into the reader's value slot.
+            // Copy each raw track token into the reader's value slot.
             (Node::Definition, Some(b"track")) if kind == 1 && field.opens() => Shape::ValueList,
             (Node::Definition, Some(b"track")) if kind == 1 => Shape::One,
             (Node::Definition, Some(b"enable_tactic")) if kind != 2 => Shape::One,
             (Node::Reward | Node::Milestone, Some(b"enable_tactic")) => Shape::One,
-            // ReadDynamicTokenIdList 1403B6DD0 retains the enclosing value slot.
+            // Dynamic-token lists retain the enclosing value slot.
             (Node::Definition, Some(b"xor")) if kind == 1 => Shape::RawList,
             (Node::Definition, Some(b"rewards")) if kind == 1 => Shape::Object(Node::Rewards),
             (Node::Rewards, _) => Shape::Object(Node::Reward),
-            // Reward 1409D83F0 and milestone 1409BFC00 have one scalar each.
+            // Reward and milestone have one scalar each.
             (Node::Reward, Some(b"mastery")) => Shape::One,
             (Node::Definition, Some(b"milestones")) if kind == 0 => {
                 Shape::ObjectList(Node::Milestone)
             }
             (Node::Milestone, Some(b"required_progress")) => Shape::One,
-            // 1409C1300 -> 1409BFE50: statements reader, not a raw token list.
+            // Entries use statement reads rather than a raw token list.
             (Node::Definition, Some(b"tracks")) if kind == 0 => Shape::Statements(Node::TrackNames),
             (Node::TrackNames, _) if field.fresh || field.opens() => Shape::Skip,
             (Node::TrackNames, _) => Shape::One,
             (Node::Mastery, Some(b"multiplier")) => Shape::One,
-            // 1409D62C0/1409D66E0/1409D5EA0 write the current entry into +0xC0.
+            // Each entry updates the current value slot.
             (Node::Mastery, Some(b"categories" | b"equipment" | b"sub_units")) => Shape::ValueList,
             (Node::Definition, Some(b"effect")) if kind != 2 => Shape::Object(Node::Effect),
             (Node::Reward | Node::Milestone, Some(b"effect")) => Shape::Object(Node::Effect),
@@ -122,8 +122,8 @@ fn append(database: &mut Database, bytes: &[u8], source: &str, kind: u8, names: 
         _ => &mut database.tracks,
     };
     for item in &read.items {
-        // 14012F900/1401310E0/140131500 reuse repeated token objects;
-        // omitted fields retain the previous value, constructor names are empty.
+        // Repeated tokens reuse their objects. Omitted fields retain previous
+        // values; constructor names are empty.
         let name = destination
             .entry(Token::c_str(item.key.as_deref().unwrap_or_default()))
             .or_default();
@@ -147,18 +147,17 @@ fn set_name(name: &mut Name, field: &Item, bound: bool, source: &str) {
             parser::read_string(value)
         }
         .to_vec();
-        name.refusal = if bound
-            && (value.contains(&b'|') || value.windows(6).any(|part| part == b"token:"))
-        {
-            Some(format!(
-                "{source}: track name requires the core bound-localisation formatter (14051E570)"
-            ))
-        } else {
-            None
-        };
+        name.refusal =
+            if bound && (value.contains(&b'|') || value.windows(6).any(|part| part == b"token:")) {
+                Some(format!(
+                    "{source}: track name requires the core bound-localisation formatter"
+                ))
+            } else {
+                None
+            };
     } else {
         name.refusal = Some(format!(
-            "{source}: track bound name requires the core bound-localisation formatter (14051E570)"
+            "{source}: track bound name requires the core bound-localisation formatter"
         ));
     }
 }
@@ -168,10 +167,9 @@ pub(super) fn read(
     names: &KeyNames,
     database: &mut Database,
 ) -> io::Result<()> {
-    // Startup 14019076A loads tracks before grand (1401907D1) and sub
-    // (14019083B), so track pointer lookup sees the completed track registry.
-    // 140188440/14018B1A0 enumerate direct files. 140193720 loads immediate
-    // subdirectories first (140193540), then root; never arbitrary recursion.
+    // Load tracks before grand and sub-doctrines so track lookup sees the
+    // completed registry. Tracks and grand doctrines use direct files;
+    // sub-doctrines load immediate subdirectories before root files.
     for (directory, kind) in [
         ("common/doctrines/tracks", 2),
         ("common/doctrines/grand_doctrines", 0),
@@ -208,6 +206,8 @@ mod tests {
     use super::*;
     #[test]
     fn doctrine_names_merge_by_token_and_preserve_omitted_fields() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut db = Database::default();
         for (kind, definitions) in [
             (0, "grand={name=grand_name} GRAND={icon=unused}"),
@@ -229,6 +229,8 @@ mod tests {
 
     #[test]
     fn catalogue_specific_readers_keep_names_after_nested_fields() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut db = Database::default();
         for (kind, definitions) in [
             (
@@ -259,6 +261,8 @@ mod tests {
 
     #[test]
     fn tactic_sources_keep_pointer_occurrences_append_lists_and_bound_tracks() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut db = Database::default();
         let names = KeyNames::default();
         append(&mut db, br#"a={name={localization_key=TRACK arg={localization_key=INNER n=VALUE}}} b={} A={name=LAST}"#,
@@ -309,6 +313,8 @@ mod tests {
 
     #[test]
     fn retained_track_name_preserves_nested_binding_and_base_name_string_read() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut db = Database::default();
         append(
             &mut db,

@@ -1,4 +1,4 @@
-//! Native luminance reductions (`140FF2890`), preserving the fixed backing targets.
+//! Native luminance reductions, preserving the fixed backing targets.
 use std::{io, sync::Arc};
 
 use eframe::wgpu;
@@ -25,7 +25,7 @@ pub(super) struct Assets {
 
 pub(super) fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Result<Assets> {
     let (mut library, mut defines) = fullscreen::library(layers, map, decode);
-    // 140FF1410 registers both reductions; their blend is retained from seed.
+    // Register both reductions; their blend is retained from seed.
     let seed = library
         .load(b"gfx/FX/downsample.shader", &defines)
         .map_err(refuse)?;
@@ -60,7 +60,7 @@ impl Reductions {
             &assets.normal.source.techniques[normal.index],
         )
         .map_err(refuse)?;
-        // 140FF2890 binds only the program: seed's blend/depth/raster retain.
+        // Bind only the program: seed's blend/depth/raster retain.
         // Both variants use the NON-alpha effect's physical sampler table[0].
         // A null entry retains seed's sampler; higher registers remain
         // unsupported until the preceding frame's bind stream is reconstructed.
@@ -89,7 +89,7 @@ impl Reductions {
         source: &wgpu::TextureView,
         target: &wgpu::TextureView,
     ) -> io::Result<()> {
-        // 140FF2890 uploads 40 initialized bytes into the shared 48-byte b2:
+        // Upload 40 initialized bytes into the shared 48-byte b2:
         // inverse viewport float2 + zero float2, UVScale float2 + zero float2,
         // zero float2. Only the final register's padding is not an operand.
         let constants = [

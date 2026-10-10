@@ -1,4 +1,4 @@
-//! Advisor-backed idea lookup and stored description (1410D69C0/14128C670).
+//! Advisor-backed idea lookup and stored description.
 use super::*;
 use replay::rows::{AdvisorRoleRow, CharacterRoleTraitRow, CharacterRow};
 
@@ -14,7 +14,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .raw_country(country)
             .ok_or_else(|| format!("Countries lacks advisor country {country}"))?;
         let frame = self.context.text.frame();
-        // 1410D69C0: exact +0x30 string comparison, in +0x40 array order.
+        // exact string comparison, in array order.
         let available = frame
             .complete::<tables::AvailableAdvisors>()
             .map_err(|why| why.to_string())?;
@@ -25,8 +25,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         {
             return Ok(Some(row.character));
         }
-        // +0x28 retired records, then each character's +0xB0 tree order.
-        // 140F8A630 folds the name (140BBA1B0/14253D9F8), unlike the primary.
+        // retired records, then each character's tree order.
+        // folds the name, unlike the primary.
         let mut retired: Vec<_> = frame
             .complete::<tables::CountryRetiredCharacters>()
             .map_err(|why| why.to_string())?
@@ -56,8 +56,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(None)
     }
 
-    // 14128D5C0: template research; 14128C820: equipment from current traits;
-    // 14128FF90 rebuilds +0x260 from those traits' ordered targeted blocks.
+    // template research: equipment from current traits;
+    // rebuilds from those traits' ordered targeted blocks.
     fn advisor_idea_fragments(
         &self,
         character: &CharacterRow,
@@ -76,14 +76,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .map_err(Clone::clone)?
             .held_advisor(token, built.as_ref().map_err(String::as_str))?
             .ok_or_else(|| {
-                format!(
-                    "advisor {token} research template is absent from recorded content (14128D5C0)"
-                )
+                format!("advisor {token} research template is absent from recorded content")
             })?;
         let mut before = String::new();
         for bonus in &template.research_bonuses {
             before.push_str(&self.research_bonus_line(bonus, scopes)?);
-            before.push('\n'); // 1413CA140 appends LF unconditionally.
+            before.push('\n'); // appends LF unconditionally.
         }
         let traits = frame
             .complete::<tables::CharacterRoleTraits>()
@@ -107,7 +105,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     scopes,
                 )?);
                 for target in &trait_.targeted {
-                    // 14128C8E0 evaluates in an empty scope, then installs only
+                    // evaluates in an empty scope, then installs only
                     // that country; it does not inherit caller ROOT/FROM/PREV.
                     let country = target
                         .operand
@@ -152,7 +150,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         remove: bool,
         show: bool,
     ) -> Result<String, String> {
-        // 14128C670 -> 14128BE00 resolves the role again by folded token,
+        // resolves the role again by folded token,
         // in tree order, even when availability selected a later role.
         let frame = self.context.text.frame();
         let role = frame
@@ -168,24 +166,23 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .modifier_cache
             .require("AdvisorRoles.modifier_cache")?
             .as_ref()
-            .ok_or("AdvisorRoles.modifier_cache unavailable (CAdvisor+0x1B0)")?;
+            .ok_or("AdvisorRoles.modifier_cache unavailable")?;
         let class = if show {
-            "CShowIdeasTooltipEffect"
+            "idea tooltip"
         } else if remove {
-            "CRemoveIdeasEffect"
+            "idea removal"
         } else {
-            "CAddIdeasEffect"
+            "idea addition"
         };
-        // 14128C8E0 calls raw 14054E050: stored numbers and occupied tooltip
+        // calls raw: stored numbers and occupied tooltip
         // slots, precision 2, full mask, unit scale. Older/unavailable keys
         // leave the numeric fragment readable and retain a counted refusal.
         let numeric = match role
             .tooltip_keys
             .require("AdvisorRoles.tooltip_keys")
             .and_then(|keys| {
-                keys.as_ref().ok_or_else(|| {
-                    "AdvisorRoles.tooltip_keys capture unavailable (CAdvisor+0x218)".to_owned()
-                })
+                keys.as_ref()
+                    .ok_or_else(|| "AdvisorRoles.tooltip_keys capture unavailable".to_owned())
             }) {
             Ok(_) => self.advisor_cache_description(role)?,
             Err(why) => {
@@ -211,10 +208,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         details.push_str(&numeric);
         newline(&mut details);
         details.push_str(&targets);
-        // 14128BE00: trim, LF -> comma, colon cleanup, four/two spaces -> one.
+        // trim, LF -> comma, colon cleanup, four/two spaces -> one.
         let details = clean_modifiers(&details, true).replace("  ", " ");
         let name = self.effect_character_name(character)?;
-        // 14128C670 always uses the detailed wrapper and appends LF;
+        // always uses the detailed wrapper and appends LF;
         // scope expansion belongs to the add/remove caller, not this helper.
         self.char_native_line(
             b"EFFECT_SHOW_IDEA_TOOLTIP_DETAILED",

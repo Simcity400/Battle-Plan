@@ -12,7 +12,9 @@ fn make_database(body: &[u8]) -> (KeyNames, Database) {
 }
 
 #[test]
-fn scorer_highest_keeps_first_tie_sorted_replaces_later_score_and_uses_native_ties() {
+fn scorer_highest_keeps_first_tie_sorted_replaces_later_score_and_uses_ties() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let (names, database) = make_database(b"sample={targets={targets={BBB AAA CCC} score={base=10}} targets={targets={BBB} score={base=3}}} ties={targets={targets={CCC BBB AAA} score={base=5}}}");
     fixture.with_renderer(&mut fresh(), Content { key_names: Some(&names), country_scorers: Some(&database), ..Default::default() }, |renderer| {
@@ -25,7 +27,7 @@ fn scorer_highest_keeps_first_tie_sorted_replaces_later_score_and_uses_native_ti
         assert_eq!(evaluator.scoped_value(b"ordered^num", scopes).unwrap(), 300_000);
         assert_eq!(evaluator.scoped_country(b"ordered^2", scopes).unwrap(), Some(2));
         assert_eq!(evaluator.scoped_value(b"points^2", scopes).unwrap(), 300_000);
-        // Native map slots for 1/2/3 at eight buckets: 7/0/5 (140481090).
+        // Native map slots for 1/2/3 at eight buckets: 7/0/5.
         assert_eq!(evaluator.scoped_country(b"tied^0", scopes).unwrap(), Some(2));
         assert_eq!(evaluator.scoped_country(b"tied^1", scopes).unwrap(), Some(3));
         assert_eq!(evaluator.scoped_country(b"tied^2", scopes).unwrap(), Some(1));
@@ -34,12 +36,14 @@ fn scorer_highest_keeps_first_tie_sorted_replaces_later_score_and_uses_native_ti
 
 #[test]
 fn scorer_filters_reverse_from_for_score_and_reads_shared_temporary_array() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let (names, database) = make_database(b"sample={targets={target_array=candidates targets={AAA BBB} target_root_trigger={tag=AAA} target_trigger={FROM={tag=BBB}} score={base=1 modifier={FROM={tag=AAA} add=2}}}} changing={targets={target_array=candidates target_trigger={set_temp_variable={var=candidates^1 value=CCC.id}} score={base=1 modifier={tag=CCC add=2}}}}");
     fixture.with_renderer(&mut fresh(), Content { key_names: Some(&names), country_scorers: Some(&database), ..Default::default() }, |renderer| {
         let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
         let default = renderer.evaluator().unwrap().fresh_country_scope(None, None).unwrap();
-        assert_eq!(default.this, Scope::Country(0)); // 140528800.
+        assert_eq!(default.this, Scope::Country(0));
         assert_eq!(default.root, Scope::Country(0));
         let effects = installed_content::effect_keys::read_body(b"set_temp_variable={var=candidates^num value=1} set_temp_variable={var=candidates^0 value=BBB.id} get_highest_scored_country_temp={scorer=sample} get_sorted_scored_countries_temp={scorer=sample}", &names).unwrap();
         assert!(renderer.group(&effects, scopes, 0).is_empty());
@@ -48,7 +52,7 @@ fn scorer_filters_reverse_from_for_score_and_reads_shared_temporary_array() {
         assert_eq!(evaluator.scoped_country(b"highest_scored_country", scopes).unwrap(), Some(2));
         assert_eq!(evaluator.scoped_value(b"country_list_scores^0", scopes).unwrap(), 300_000);
         assert_eq!(evaluator.scoped_value(b"sorted_country_list^num", scopes).unwrap(), 100_000);
-        // 140C1C820 filters entry zero before reading entry one; its setter
+        // filters entry zero before reading entry one; its setter
         // changes that next element in the same description session.
         let effects = installed_content::effect_keys::read_body(b"set_temp_variable={var=candidates^num value=2} set_temp_variable={var=candidates^0 value=AAA.id} set_temp_variable={var=candidates^1 value=BBB.id} get_highest_scored_country_temp={var=changed scorer=changing}", &names).unwrap();
         assert!(renderer.group(&effects, scopes, 0).is_empty());
@@ -58,7 +62,9 @@ fn scorer_filters_reverse_from_for_score_and_reads_shared_temporary_array() {
 }
 
 #[test]
-fn invalid_scorer_is_native_noop_and_unknown_target_form_is_named_once() {
+fn invalid_scorer_is_noop_and_unknown_target_form_is_named_once() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let (names, database) = make_database(b"sample={targets={state_target=yes}}");
     let out = fixture.render_native(
@@ -85,7 +91,7 @@ fn invalid_scorer_is_native_noop_and_unknown_target_form_is_named_once() {
     assert!(
         out.refusals
             .keys()
-            .any(|why| why.contains("state_target") && why.contains("CVariableEffectBuilder")),
+            .any(|why| why.contains("state_target") && why.contains("selection mode")),
         "{:?}",
         out.refusals
     );
@@ -100,11 +106,20 @@ fn invalid_scorer_is_native_noop_and_unknown_target_form_is_named_once() {
         },
     );
     assert_eq!(out.refusals.values().sum::<usize>(), 1);
-    assert!(out.refusals.keys().any(|why| why.contains("repeated variable operand other") && why.contains("140539B50")), "{:?}", out.refusals);
+    assert!(
+        out.refusals
+            .keys()
+            .any(|why| why.contains("repeated variable operand other")
+                && why.contains("keeps fields from its earlier read")),
+        "{:?}",
+        out.refusals
+    );
 }
 
 #[test]
-fn native_score_map_rehashes_and_preserves_distinct_values() {
+fn score_map_rehashes_and_preserves_distinct_values() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut scores = ScoreMap::default();
     for country in 1..=5_000 {
         scores.insert(country, i64::from(country));

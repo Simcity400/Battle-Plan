@@ -198,8 +198,6 @@ export const ledgerScale = (family: MilitaryAirReply['family']) => family === 'a
 export const ledgerFormat = (raw: bigint | null, family: MilitaryAirReply['family']) => raw === null ? 'Not recorded' : formatFixed(raw, family === 'airLosses' ? 5 : 7, family === 'airLosses' ? 5 : 7);
 export const AIR_LEDGER_NOTE = 'Native loss bookkeeping can exceed actual wing removals. Negative amounts remain signed corrections.';
 export const LEDGER_GAP_NOTE = 'Recorded totals only. Unrecorded intervals are unknown and are not filled in.';
-// Native writer causes: 140F71120/141967CD0, 141295D10/140F718C0/141454710,
-// 140F48C00, 140C4BC40, 140F60880, 141969200; engine::air_loss_sites owns proof.
 export const airCauseName = (cause: number) => ({ 1: 'Aircraft combat', 2: 'Anti-air / raid effect', 3: 'Air accidents', 4: 'Airbase bombing', 5: 'Train anti-air', 6: 'Kamikaze anti-air' } as Record<number, string>)[cause] ?? `Native cause ${cause} (meaning not known)`;
 
 /** Draw only complete, present intervals; prefix totals never create a bridge. */

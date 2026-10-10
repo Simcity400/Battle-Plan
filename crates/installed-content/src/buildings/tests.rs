@@ -1,7 +1,7 @@
 use super::*;
 
 fn parse(input: &[u8]) -> io::Result<Buildings> {
-    let resources = ["rubber", "oil"].map(|token| crate::resources::Resource {
+    let resources = ["mineral_y", "mineral_x"].map(|token| crate::resources::Resource {
         token: token.into(),
         icon_frame: None,
     });
@@ -10,28 +10,30 @@ fn parse(input: &[u8]) -> io::Result<Buildings> {
 
 const SAMPLE: &[u8] = br#"
 buildings = {
-arms_factory = { show_on_map = 6 level_cap = { state_max = 20 } }
-naval_base = {
-    show_on_map = 1
-    show_on_map_meshes = 3
+workshop = { show_on_map = 4 level_cap = { state_max = 17 } }
+harbor_store = {
+    show_on_map = 2
+    show_on_map_meshes = 4
     always_shown = yes
     is_port = yes
-    spawn_point = naval_base_spawn
-    level_cap = { province_max = 10 }
+    spawn_point = harbor_store_spawn
+    level_cap = { province_max = 7 }
 }
-air_facility = { show_on_map = 1 need_detection = yes specialization = { specialization_air } level_cap = { state_max = 1 } }
-naval_headquarters = { show_on_map = 1 naval_headquarter = yes only_costal = yes level_cap = { province_max = 1 } }
-landmark = { show_on_map = 1 drawn_at_distance = yes level_cap = { province_max = 1 } }
-supply_node = { show_on_map = 1 supply_node = yes level_cap = { province_max = 1 } }
-infrastructure = { level_cap = { state_max = 5 } }
+signal_tower = { show_on_map = 2 need_detection = yes specialization = { survey_role } level_cap = { state_max = 3 } }
+coast_office = { show_on_map = 3 naval_headquarter = yes only_costal = yes level_cap = { province_max = 4 } }
+lookout = { show_on_map = 2 drawn_at_distance = yes level_cap = { province_max = 2 } }
+transfer_depot = { show_on_map = 3 supply_node = yes level_cap = { province_max = 5 } }
+trail_network = { level_cap = { state_max = 9 } }
 }
 spawn_points = {
-naval_base_spawn = { max = 1 type = province show_on_map_meshes = 3 }
+harbor_store_spawn = { max = 2 type = province show_on_map_meshes = 4 }
 }
 "#;
 
 #[test]
 fn icon_frames_are_scanned_and_a_differing_repeat_is_a_repeated_type() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         b"@f=4 buildings={ a={icon_frame=3} b={} c={icon_frame=@f} d={icon_frame=bad} e={icon_frame=2} e={icon_frame=5} }",
     )
@@ -47,13 +49,15 @@ fn icon_frames_are_scanned_and_a_differing_repeat_is_a_repeated_type() {
 }
 
 #[test]
-fn native_keywords_scans_and_resource_registry_control_recovery() {
+fn keywords_scans_and_resource_registry_control_recovery() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         br#"@cap=010 BUILDINGS={a={
         "show_on_map"=99 SHOW_ON_MAP=@cap show_on_map=bad
         always_shown=yes always_shown=YES tags={a} tags={b}
         local_resources_missing={show_on_map=90}
-        local_resources_OIL=1 local_resources_oil=0.5
+        local_resources_MINERAL_X=1.25 local_resources_mineral_x=0.75
     }} spawn_points={s={unknown={max=7} max=99}}"#,
     )
     .unwrap();
@@ -61,7 +65,7 @@ fn native_keywords_scans_and_resource_registry_control_recovery() {
     assert_eq!(a.show_on_map, Some(8));
     assert!(a.always_shown);
     assert_eq!(a.tags, ["a", "b"]);
-    assert_eq!(a.local_resources, [("oil".into(), 150_000)]);
+    assert_eq!(a.local_resources, [("mineral_x".into(), 200_000)]);
     // Unknown spawn fields consume one token: the inner max is exposed
     // and its close terminates this spawn, so max=99 is not a spawn field.
     assert_eq!(buildings.spawn_points["s"].max, 7);
@@ -75,6 +79,8 @@ fn native_keywords_scans_and_resource_registry_control_recovery() {
 
 #[test]
 fn building_popup_exemption_is_authored_and_defaults_false() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings =
         parse(b"buildings={ a={disable_grow_animation=yes} b={} c={disable_grow_animation=no} }")
             .unwrap();
@@ -85,6 +91,8 @@ fn building_popup_exemption_is_authored_and_defaults_false() {
 
 #[test]
 fn type_tokens_fold_ascii_and_refuse_differing_declarations() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         "buildings={CUSTOM_FACTORY={icon_frame=3} custom_factory={icon_frame=3} Ä={icon_frame=1} ä={icon_frame=2}}"
             .as_bytes(),
@@ -119,6 +127,8 @@ fn type_tokens_fold_ascii_and_refuse_differing_declarations() {
 
 #[test]
 fn slot_lookup_folds_ascii_without_changing_authored_names() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings =
         parse(b"buildings={Port={is_port=yes spawn_point=Harbour}} spawn_points={Harbour={}}")
             .unwrap();
@@ -136,10 +146,11 @@ fn slot_lookup_folds_ascii_without_changing_authored_names() {
 
 #[test]
 fn folded_slot_names_take_the_first_bucket_and_refuse_only_differing_repeats() {
-    // `140676D30` returns the first lookup entry equal under the ASCII fold; `140679740`
-    // fills the lookup with the generated buckets in template order, then the explicit
-    // buckets, and destroys an explicit bucket whose lexer token (`1424A5EE0`, folded) is a
-    // building's. So these resolve to the generated `Port` bucket.
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    // Lookup returns the first entry equal under the ASCII fold. Generated
+    // buckets precede explicit buckets, and an explicit bucket sharing a
+    // building token is discarded. These resolve to the generated `Port` bucket.
     for source in [
         b"buildings={Port={} port={} depot={}}".as_slice(),
         b"buildings={Port={} depot={}} spawn_points={port={}}",
@@ -177,34 +188,41 @@ fn folded_slot_names_take_the_first_bucket_and_refuse_only_differing_repeats() {
 
 #[test]
 fn reads_the_map_keys_and_the_redirected_port_bucket() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(SAMPLE).unwrap();
-    let naval = &buildings.types["naval_base"];
-    assert_eq!(naval.show_on_map, Some(1));
-    assert_eq!(naval.show_on_map_meshes, 3);
+    let naval = &buildings.types["harbor_store"];
+    assert_eq!(naval.show_on_map, Some(2));
+    assert_eq!(naval.show_on_map_meshes, 4);
     assert!(naval.always_shown && naval.is_port && !naval.need_detection);
-    assert!(buildings.types["landmark"].drawn_at_distance);
-    assert!(buildings.types["air_facility"].need_detection);
+    assert!(buildings.types["lookout"].drawn_at_distance);
+    assert!(buildings.types["signal_tower"].need_detection);
     assert_eq!(
-        buildings.types["air_facility"].specialization,
-        ["specialization_air"]
+        buildings.types["signal_tower"].specialization,
+        ["survey_role"]
     );
-    let headquarters = &buildings.types["naval_headquarters"];
+    let headquarters = &buildings.types["coast_office"];
     assert!(headquarters.naval_headquarter && headquarters.only_costal);
     assert!(headquarters.specialization.is_empty() && !naval.naval_headquarter);
-    assert!(buildings.types["supply_node"].supply_node);
-    assert_eq!(naval.slot_name(), "naval_base_spawn");
-    assert!(buildings.spawn_points["naval_base_spawn"].is_port);
-    assert!(buildings.spawn_points["naval_base_spawn"].provincial);
-    assert_eq!(buildings.types["infrastructure"].show_on_map, None);
+    assert!(buildings.types["transfer_depot"].supply_node);
+    assert_eq!(naval.slot_name(), "harbor_store_spawn");
+    assert!(buildings.spawn_points["harbor_store_spawn"].is_port);
+    assert!(buildings.spawn_points["harbor_store_spawn"].provincial);
+    assert_eq!(buildings.types["trail_network"].show_on_map, None);
     assert_eq!(
-        buildings.slot_candidates("naval_base_spawn").next(),
+        buildings.slot_candidates("harbor_store_spawn").next(),
         Some(naval)
     );
-    assert_eq!(buildings.slot_candidates("naval_base").next(), Some(naval));
+    assert_eq!(
+        buildings.slot_candidates("harbor_store").next(),
+        Some(naval)
+    );
 }
 
 #[test]
 fn generated_and_explicit_buckets_have_independent_defaults() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         br#"
         buildings = {
@@ -261,20 +279,27 @@ fn generated_and_explicit_buckets_have_independent_defaults() {
 
 #[test]
 fn local_resources_keep_first_order_and_sum_repeats() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
-        b"buildings={refinery={local_resources_rubber=1 local_resources_oil=-0.5 local_resources_rubber=0.25}}",
+        b"buildings={refinery={local_resources_mineral_y=1 local_resources_mineral_x=-0.5 local_resources_mineral_y=0.25}}",
     )
     .unwrap();
     assert_eq!(
         buildings.types["refinery"].local_resources,
-        [("rubber".to_owned(), 125_000), ("oil".to_owned(), -50_000)]
+        [
+            ("mineral_y".to_owned(), 125_000),
+            ("mineral_x".to_owned(), -50_000)
+        ]
     );
 }
 
 #[test]
-fn failed_native_bool_scan_retains_the_constructor_value() {
+fn failed_bool_scan_retains_the_constructor_value() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
-        b"buildings={bunker={show_on_map=2 air_base=maybe tags={a}} fort={show_on_map=1 local_resources_oil=010}}",
+        b"buildings={bunker={show_on_map=2 air_base=maybe tags={a}} fort={show_on_map=1 local_resources_mineral_x=010}}",
     ).unwrap();
     let bunker = &buildings.types["bunker"];
     assert_eq!(bunker.show_on_map, Some(2));
@@ -284,13 +309,15 @@ fn failed_native_bool_scan_retains_the_constructor_value() {
     // Script numbers read natively: a leading zero is octal.
     assert_eq!(
         buildings.types["fort"].local_resources,
-        [("oil".to_owned(), 800_000)]
+        [("mineral_x".to_owned(), 800_000)]
     );
     assert_eq!(buildings.types["fort"].raid_refused, None);
 }
 
 #[test]
 fn shared_buckets_keep_database_order_and_repeats_are_ambiguous() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         b"buildings={z={spawn_point=shared show_on_map=1} a={spawn_point=shared show_on_map=1}} spawn_points={shared={}}",
     )
@@ -316,6 +343,8 @@ fn shared_buckets_keep_database_order_and_repeats_are_ambiguous() {
 
 #[test]
 fn factory_flags_are_signed_integers_and_differing_repeats_are_ambiguous() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         b"buildings={arms={military_production=1 naval_production=0} mod_works={general_production=2 military_production=-1 military_production=3 rocket_production=-1 rocket_production=2} depot={rocket_launch_capacity=3} yard={naval_production=1} yard={naval_production=1} odd={general_production=1} odd={general_production=0} repeat={rocket_production=0} repeat={rocket_production=1} retired={rocket_production=-2}}",
     )
@@ -353,6 +382,8 @@ fn factory_flags_are_signed_integers_and_differing_repeats_are_ambiguous() {
 #[cfg(feature = "test-support")]
 #[test]
 fn factory_flags_merge_across_building_files() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4_installed_content_building_flags_{}_{:?}",
         std::process::id(),
@@ -362,11 +393,11 @@ fn factory_flags_merge_across_building_files() {
     for (file, text) in [
         (
             "00_a.txt",
-            "buildings = { air_base = { air_base = yes } arms_factory = { military_production = 1 } }",
+            "buildings = { air_base = { air_base = yes } workshop = { military_production = 1 } }",
         ),
         (
             "01_b.txt",
-            "buildings = { industrial_complex = { general_production = 1 } arms_factory = { military_production = 2 } }",
+            "buildings = { industrial_complex = { general_production = 1 } workshop = { military_production = 2 } }",
         ),
     ] {
         let path = root.join("common/buildings").join(file);
@@ -377,11 +408,8 @@ fn factory_flags_merge_across_building_files() {
     let _ = std::fs::remove_dir_all(&root);
     assert_eq!(buildings.factory_flags["air_base"], FactoryFlags::default());
     assert!(buildings.factory_flags["industrial_complex"].civilian());
-    assert_eq!(
-        buildings.factory_flags["arms_factory"].military_production,
-        2
-    );
-    assert!(buildings.ambiguous_factory_types.contains("arms_factory"));
+    assert_eq!(buildings.factory_flags["workshop"].military_production, 2);
+    assert!(buildings.ambiguous_factory_types.contains("workshop"));
     assert!(!buildings.ambiguous_factory_types.contains("air_base"));
 }
 
@@ -394,34 +422,39 @@ fn only_direct_building_files_load() {
 
 #[test]
 fn entity_names_and_variants_use_the_content_level_denominator() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(SAMPLE).unwrap();
-    let naval = &buildings.types["naval_base"];
+    let naval = &buildings.types["harbor_store"];
     assert_eq!(
-        buildings.types["arms_factory"].entity_names(),
-        ["building_arms_factory"]
+        buildings.types["workshop"].entity_names(),
+        ["building_workshop"]
     );
     assert_eq!(
         naval.entity_names(),
         [
-            "building_naval_base_1",
-            "building_naval_base_2",
-            "building_naval_base_3"
+            "building_harbor_store_1",
+            "building_harbor_store_2",
+            "building_harbor_store_3",
+            "building_harbor_store_4"
         ]
     );
     assert_eq!(
         naval.destroyed_entity_name(),
-        "building_naval_base_destroyed"
+        "building_harbor_store_destroyed"
     );
-    for (level, variant) in [(0, 0), (4, 0), (5, 1), (10, 2), (99, 2)] {
+    for (level, variant) in [(0, 0), (3, 0), (4, 1), (8, 2), (12, 3), (99, 3)] {
         assert_eq!(naval.variant_for_level(level, 15), variant);
     }
     assert_eq!(naval.variant_for_level(4, 10), 1);
-    assert_eq!(buildings.types["arms_factory"].variant_for_level(20, 15), 0);
+    assert_eq!(buildings.types["workshop"].variant_for_level(20, 15), 0);
 }
 /// Bucket names are lexer tokens: redirects, building/bucket collisions, repeats and
 /// slot lookups all match under the ASCII case fold, and store the declared spelling.
 #[test]
 fn bucket_references_match_under_the_lexers_fold() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         b"buildings={
             port={is_port=yes spawn_point=Shared}
@@ -465,6 +498,8 @@ fn bucket_references_match_under_the_lexers_fold() {
 /// even when the last declaration drops the classification the first had.
 #[test]
 fn a_differing_repeat_keeps_every_declaration() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let repeated = parse(
         b"buildings={hq={naval_headquarter=yes} dock={} hq={show_on_map=1} hq={show_on_map=1}}",
     )
@@ -483,6 +518,8 @@ fn a_differing_repeat_keeps_every_declaration() {
 
 #[test]
 fn empty_replacement_files_contribute_no_buildings() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for input in [
         b"".as_slice(),
         b"# disabled by content\n",
@@ -490,8 +527,8 @@ fn empty_replacement_files_contribute_no_buildings() {
     ] {
         assert_eq!(parse(input).unwrap(), Buildings::default());
     }
-    // The replay reads as 14067AE90 does, to the end of the text: an
-    // unclosed block or a scalar where the block belongs declares nothing.
+    // Reading continues to the end of the text: an unclosed block or a scalar
+    // where a block belongs declares nothing.
     for input in [b"buildings={".as_slice(), b"buildings=not_a_block"] {
         assert!(parse(input).unwrap().types.is_empty());
     }
@@ -499,6 +536,8 @@ fn empty_replacement_files_contribute_no_buildings() {
 
 #[test]
 fn base_maximum_prefers_positive_caps_without_reading_the_default() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         b"buildings={
             both={level_cap={state_max=9 province_max=4}}
@@ -520,6 +559,8 @@ fn base_maximum_prefers_positive_caps_without_reading_the_default() {
 
 #[test]
 fn level_caps_normalize_negative_values_and_province_above_positive_state() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         b"buildings={
             oversized={level_cap={state_max=4 province_max=6}}
@@ -548,6 +589,8 @@ fn level_caps_normalize_negative_values_and_province_above_positive_state() {
 
 #[test]
 fn repeated_level_cap_blocks_validate_before_later_assignments() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         b"buildings={
             rejected_first={
@@ -573,6 +616,8 @@ fn repeated_level_cap_blocks_validate_before_later_assignments() {
 
 #[test]
 fn failed_cap_scans_retain_the_previous_normalized_values() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         b"buildings={
             rejected={
@@ -604,6 +649,8 @@ fn failed_cap_scans_retain_the_previous_normalized_values() {
 
 #[test]
 fn differing_state_caps_refuse_repeated_type_tokens() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for source in [
         b"buildings={Depot={level_cap={state_max=3}} depot={level_cap={state_max=4}}}".as_slice(),
         b"buildings={Depot={level_cap={state_max=3}} Depot={level_cap={state_max=4}}}",
@@ -625,6 +672,8 @@ fn differing_state_caps_refuse_repeated_type_tokens() {
 
 #[test]
 fn nonpositive_caps_use_the_exact_signed_default() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings =
         parse(b"buildings={absent={} zero={level_cap={state_max=0 province_max=0}}}").unwrap();
     let defines = crate::defines::Defines::new().unwrap();

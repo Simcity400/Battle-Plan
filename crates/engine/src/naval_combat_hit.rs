@@ -1,16 +1,15 @@
-//! NNavalCombatHit::SNavalHit. Constructor1415b38b0 and tooltip1415b46d0
-//! preserve target slot/name, convoy flag, accumulated damage, denominator and
-//! final-hit flag. The denominator is not a hit counter.
+//! Retained naval-hit entry: target slot/name, convoy flag, accumulated damage,
+//! denominator and final-hit flag. The denominator is distinct from a hit count.
 use crate::capture_text::Value;
 use crate::{Memory, cnaval_combatant::field};
 
-/// Constructor instruction1415b3b10.
+/// Naval-hit entry primary vtable.
 pub const VTABLE_RVA: usize = 0x029c_7148;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Row {
     pub target_slot: u32,
-    /// 1415B38B0 copies the native std::string with no chosen byte bound.
+    /// Stored MSVC string copied using its full length.
     pub target_name: crate::capture_text::Owned,
     pub convoy: u8,
     pub damage: i64,

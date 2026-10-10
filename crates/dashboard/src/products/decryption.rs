@@ -78,11 +78,10 @@ impl DecryptionRun {
         self.decrypting() != 0 || self.amount_at(hour).is_some_and(|value| value > 0)
     }
 
-    /// Daily update 1406DAAF0 -> 140FC6AB0 -> 1413E1DE0 adds the fixed daily
-    /// share (power/count, signed IDIV at 1413E1F2D) through 1413E1430, or
-    /// decrements the active bonus countdown. Rates are learned from reads,
-    /// never assumed: every hourly value must match.
-    /// A run starts at its observed update phase; floor days retain plateaus.
+    /// The daily update adds the fixed daily share (power/count, signed division),
+    /// or decrements the active bonus countdown. Rates are learned from reads,
+    /// never assumed: every hourly value must match. A run starts at its
+    /// observed update phase; floor days retain plateaus.
     fn extend(&mut self, next: &Self) -> bool {
         let hour = next.first_hour;
         if self.last_hour.checked_add(1) != Some(hour)
@@ -404,8 +403,8 @@ impl Scan {
             .last()
             .filter(|last| last.last_hour.checked_add(1) == Some(run.first_hour));
         run.started = attempt_start(previous, &run, previous_complete, &mut state.idle_known);
-        // Activation 1413E0F20 scales amount; expiry 1413E1DE0 clears active.
-        // Every false -> true transition is a new break; a gap/unknown bounds it.
+        // Activation scales amount; expiry clears active. Every false -> true
+        // transition is a new break; a gap/unknown bounds it.
         if run.broken == Some(true) && previous.is_none_or(|last| last.broken != Some(true)) {
             let known_before = match previous {
                 Some(last) => last.broken == Some(false),
@@ -454,10 +453,9 @@ fn attempt_start(
     let previous_amount = previous
         .amount_at(previous.last_hour)
         .expect("observed amount");
-    // Start 1413E3A90 sets decrypting; stop 1413E3AD0 retains amount, including
-    // a zero-progress pause. Activation 1413E0F20 stops work and scales amount;
-    // expiry 1413E1DE0 clears active but retains that residual. Clearing stopped
-    // work (scripted amount updates through 1413E1430) also ends an attempt.
+    // Starting sets decrypting; stopping retains amount, including a zero-progress
+    // pause. Activation stops work and scales amount; expiry clears active but
+    // retains that residual. Clearing stopped work by script also ends an attempt.
     let ended = (previous.bonus_active() != 0 && run.bonus_active() == 0)
         || (previous_amount > 0 && amount <= 0 && run.decrypting() == 0 && run.bonus_active() == 0);
     if ended {
@@ -467,7 +465,7 @@ fn attempt_start(
         return previous.started.clone();
     }
     // An initial stopped zero may be paused; only known absence or an observed
-    // end proves idle. Scripted work 1413E1610 can start without the flag.
+    // end proves idle. Scripted work can start without the flag.
     // An unchanged residual after expiry is not a new start observation.
     (run.decrypting() != 0 || run.bonus_active() != 0 || (amount > 0 && amount > previous_amount))
         .then_some(CipherObservation {

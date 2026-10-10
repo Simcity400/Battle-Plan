@@ -187,7 +187,7 @@ fn append_entry(entries: &mut Vec<Entry>, site: SiteId, entry: Entry) -> Result<
     } else if entry.amount_raw == 0 {
         return Ok(());
     }
-    // 14134F8E9/14134F948 pool differences can exceed a census allowance
+    // Pool differences can exceed a census allowance
     // through repeated calls. Retain every reached row, including refusals.
     let attempted = EVENT_ATTEMPTS
         .fetch_add(1, Ordering::Relaxed)
@@ -335,7 +335,7 @@ impl Deletion {
     }
 }
 thread_local! {
-    // DeleteUnit can enter nested cleanup. Each scope restores its caller's
+    // Unit deletion can enter nested cleanup. Each scope restores its caller's
     // context without allocating or holding STORE across a native callback.
     static DELETION: Cell<Option<Deletion>> = const { Cell::new(None) };
     static WHOLE_MERGE: Cell<bool> = const { Cell::new(false) };
@@ -502,7 +502,7 @@ fn prepare_storage(memory: &impl Memory, base: usize, countries: usize) {
     EVENT_HINT.fetch_max(events, Ordering::Release);
     let events = demand();
     // Merge main/held pools can create corresponding reserve rows in
-    // addition to S existing entries (14134F8E9/948,1414F8470/1414F776F).
+    // addition to S existing entries.
     let Some(pool_bound) = population
         .division_pool_entries
         .checked_add(population.delivery_pool_entries)
@@ -673,15 +673,15 @@ fn install_prepared(store: &mut Store) {
 }
 
 fn log_capacity(countries: usize, population: native::Population, designs: usize) -> Option<usize> {
-    // One live-census sweep per family: DeleteUnit/volunteer/exile removals
-    // (1401D6210/141511023/1415015D3) each witness D divisions. Land, attrition,
-    // remainder, paradrop, merge, exile, volunteer return, capitulation escape
-    // and scripted division writers each get P actual division-pool entries
-    // (140FFDB00), never D times every globally saved design. Scripted stockpile
-    // scaling (14049B2C0) gets S actual reserve entries. Air/garrison attribute
-    // by owner (140F4E400/140FDFA80): each gets C+V from the country registry
-    // and saved-design census (1401F2A20), not their C*V cross product. Their
-    // wing/occupation populations and repeated calls in ANY family have no
+    // One live-census sweep per family: deletion/volunteer/exile removals
+    // each witness D divisions. Land, attrition, remainder, paradrop, merge,
+    // exile, volunteer return, capitulation escape
+    // and scripted division writers each get P actual division-pool entries,
+    // never D times every globally saved design. Scripted stockpile scaling
+    // gets S actual reserve entries. Air/garrison attribute by owner: each gets
+    // C+V from the country registry and saved-design census, not their C*V
+    // cross product. Their wing/occupation populations and repeated calls in
+    // ANY family have no
     // per-hour bound from these censuses; excess refuses by writer name and
     // counts SITE_OVERFLOW.
     let owners_and_designs = countries.checked_add(designs)?;
@@ -1113,7 +1113,7 @@ fn army_receiver(site: SiteId, receiver: usize) -> Result<Option<usize>, &'stati
         _ => Ok(None),
     }
 }
-// DeleteUnit@1401D6210 can flush a transferred source through other native
+// Unit deletion can flush a transferred source through other native
 // writers. Whole-merge scratch excludes that source's later bookkeeping too.
 fn whole_merge_transfer(
     memory: &impl Memory,
@@ -1361,8 +1361,8 @@ unsafe extern "system-unwind" fn air(a: usize, b: usize, c: usize, caller: usize
             .map(native::air_cause)
             .unwrap_or(native::Cause::Unknown),
     );
-    // KillAirplanes@140F4E400 accepts a negative request and adds its negation
-    // at 140F4E4F6; observe that native gain as a signed correction too.
+    // Airplane losses accept a negative request and add its negation;
+    // observe that native gain as a signed correction too.
     measure_pool(SiteId::Air, a, cause, run);
 }
 unsafe extern "system-unwind" fn garrison(a: usize, b: usize, c: usize) {
@@ -1663,7 +1663,7 @@ fn deletion_context(
     }))
 }
 
-/// DeleteUnit keeps the entry owner before it clears expeditionary ownership.
+/// Unit deletion keeps the entry owner before it clears expeditionary ownership.
 /// Its original can flush damage through another hooked writer, so no producer
 /// lock spans that call. Only the later destructor takes the residual snapshot.
 #[unsafe(naked)]
@@ -1717,7 +1717,7 @@ unsafe extern "system-unwind" fn delete(
 }
 
 // Bulk reserve credits saturate independently of their still-owned source
-// pool (140E4C550 -> 140FF7830). Retain actual credits until that source dies.
+// pool. Retain actual credits until that source dies.
 type ReturnedPoolContext = (usize, u64, u32, usize, usize, bool, u64);
 
 fn return_before(
@@ -2160,7 +2160,7 @@ unsafe extern "system-unwind" fn division_free(army: usize, flags: usize) -> usi
         && !merge_source
         && context.is_none_or(|context| !context.ignored)
     {
-        // Its destructor returns held deliveries140C5E1BC ->1414F79C0,
+        // Its destructor returns held deliveries,
         // including shared reserves outside the authenticated Merge inputs.
         observation_failed(
             SiteId::DivisionFree,
@@ -2280,7 +2280,7 @@ unsafe extern "system-unwind" fn queue(state: usize, unit: usize, caller: usize)
         }
     } else {
         // Poison, enable ordering and boundary refusal can skip a real native
-        // queue request. Its later DeleteUnit must not fabricate Unknown loss.
+        // queue request. Its later unit deletion must not fabricate Unknown loss.
         SKIPPED_QUEUE.store(true, Ordering::SeqCst);
     }
     call.run(|| unsafe { original(state, unit) });
@@ -2465,7 +2465,7 @@ impl Drop for WholeMergeScope {
     }
 }
 
-// Merge@14134ECE0 copies signed nonzero source/survivor entries, clears the
+// Merging copies signed nonzero source/survivor entries, clears the
 // survivor, saturates each retained allocation, and can round reserve credits.
 // Observe physical pools once; source pools are gone after the native call.
 struct MergeBefore {
@@ -2500,7 +2500,7 @@ fn merge_before(
     };
     let country = country?;
     // Selected main quantities transfer to the survivor's aggregate before
-    // allocation14134F8E9 and credit14134F8F3/948, both survivor-owned. Its
+    // allocation and credit, both survivor-owned. Its
     // net correction therefore belongs to that recipient, even for mixed owners.
     // Canceled delivery returns instead belong to each resolved reserve owner.
     let mut sources = 0;
@@ -2548,7 +2548,7 @@ fn merge_before(
     for &army in &store.armies[..armies] {
         let mut destination = None;
         // Destructed source families resolve their own roster country. Only
-        // reinforcement is canceled on the survivor (1414F8330/1414F7610).
+        // reinforcement is canceled on the survivor.
         native::canceled_delivery_pools(memory, base, army, army != survivor, |pool| {
             let rows = snapshot(memory, base, pool, &mut store.after, 0)?;
             if rows == 0 {

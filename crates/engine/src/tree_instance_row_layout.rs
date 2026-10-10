@@ -1,5 +1,4 @@
-//! Native tree GPU instance row; original engine type name is unproven.
-//! Presentation knowledge only, from archive/pre-rewrite-2026-09-09.
+//! Tree GPU instance row for presentation.
 
-/// Native tree GPU instance stride checked by portable_replay/native/render_stream/src/c07_trees.rs:23,2178.
+/// GPU instance stride.
 pub const STRIDE: usize = 24;

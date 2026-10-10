@@ -1,10 +1,9 @@
 //! Authenticated owned peace-action operands before history destruction.
 //! Concrete allocation sizes and vtables belong to each action's struct file.
 
-/// Raw token; 14150DD00 serializes it and 141506C80 initializes it.
+/// Raw action token, initialized at construction and serialized.
 pub const TOKEN: usize = 0x08;
-/// Cached native type name: 141506C80 initializes it; 14150D430 can load a
-/// saved override. This is not the contextual virtual demand label.
+/// Cached action type-name string with saved overrides, distinct from contextual demand labels.
 pub const CACHED_NAME: usize = 0x10;
 
 pub(crate) fn cached_name(
@@ -19,13 +18,13 @@ pub(crate) fn cached_name(
 
 use crate::{Memory, cstate_peace_action as state, read};
 
-/// Raw country references: 14150DD00 writes all three, 141506C80 initializes them.
+/// Raw country references initialized at construction and serialized.
 pub const TAKER: usize = 0x30;
 pub const GIVER: usize = 0x34;
 pub const NEGOTIATOR: usize = 0x38;
-/// Signed status; 14150C8D0 excludes exactly 3 and 4 from 140E245D0's rebuild.
+/// Signed status; settlement rebuilding excludes exactly three and four.
 pub const STATUS: usize = 0x3c;
-/// Signed cost; 14150DD00 writes it without a fixed-point conversion.
+/// Signed cost, serialized without fixed-point conversion.
 pub const COST: usize = 0x40;
 
 /// Native layouts, independent of the token spelling. Unknown vtables fail

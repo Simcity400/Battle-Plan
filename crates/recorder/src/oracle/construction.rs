@@ -67,10 +67,11 @@ macro_rules! production_fields {
 
 /// `NavalBases` against the saved port province buildings.
 ///
+/// The naval base's total and healthy levels are sums over the
 /// province's eligible port buildings, the content's `is_port` types, so they
 /// are the sums of those buildings' saved `level` and `healthy_levels`. The
-/// holder's raw country is not serialized. 140E9CFF0 saves the +0x40 country
-/// list through raw tag_string@140BA5C20, in order including repeats.
+/// holder's raw country is not serialized. The save writes the country
+/// list through raw tag text, in order including repeats.
 pub(super) fn naval_bases(
     rows: &[replay::rows::NavalBaseRow],
     saved: &BTreeMap<saved::BuildingKey, saved::Building>,
@@ -79,8 +80,8 @@ pub(super) fn naval_bases(
     raw_tags: &BTreeMap<u32, &[u8]>,
     report: &mut Report,
 ) -> io::Result<()> {
-    // 140E9D0C0 writes actual CStrategicNavy+18 rosters. A saved building
-    // alone does not prove a base: 140E96170 walks controlled provinces.
+    // The game writes the actual navy base rosters. A saved building
+    // alone does not prove a base: the game walks controlled provinces.
     let mut expected_bases = BTreeMap::<u32, Vec<_>>::new();
     for base in country_bases
         .iter()
@@ -182,7 +183,7 @@ pub(super) fn naval_bases(
     report.compared("NavalBases", count);
     report.compared("NavalBases serialized country lists", countries_count);
     report.limitation(
-        "the naval base holder's raw country is not serialized. Membership and ordered country lists are checked against every saved navy roster occurrence and levels against port buildings. 1401F2A20 omits physical country slot zero, so global bases absent from those rosters have no saved membership witness",
+        "the naval base holder's raw country is not serialized. Membership and ordered country lists are checked against every saved navy roster occurrence and levels against port buildings. The game omits physical country slot zero, so global bases absent from those rosters have no saved membership witness",
         "NavalBases",
     );
     Ok(())
@@ -252,10 +253,9 @@ pub(super) fn buildings(
             Some(&saved.partial_health),
         );
         // The active vector is not serialized. It is rebuilt from the
-        // building list (+0x38) as the positive levels in native order
-        // (`rebuild_active_buildings@1411641D0`) at the end of every status
-        // block and on every zero crossing of `set_level@1410C71A0`. It is
-        // recorded because it is the stored value the F61B40 scan reads.
+        // building list as the positive levels in native order
+        // at the end of every status block and on every level zero crossing. It is
+        // recorded because it is the stored value the building scan reads.
         value(
             report,
             &format!("{subject}.active"),
@@ -585,8 +585,8 @@ fn token<'a>(names: &'a BTreeMap<u32, &[u8]>, id: u32) -> Result<&'a [u8], &'sta
         .get(&id)
         .copied()
         .ok_or("type is absent from the recorded lexical dictionary")?;
-    // The dictionary stores the full native string length. AAC50 forwards its
-    // c_str to text-stream virtual+30; that sink's NUL handling is unproved.
+    // The dictionary stores the full string length. Token writing forwards its
+    // C-string pointer to the text stream; that sink's NUL handling is unproved.
     if literal.contains(&0) {
         return Err("type literal contains NUL and its mapping to text is unproved");
     }
@@ -604,7 +604,7 @@ fn repair_levels(report: &mut Report, subject: &str, captured: i32, saved: Optio
     }
 }
 
-/// C5B610 emits only positive amounts, in native vector order. Filtering occurs
+/// The manpower writer emits only positive amounts, in native vector order. Filtering occurs
 /// only in this comparison; the replay keeps every raw row and its ordinal.
 fn manpower(
     report: &mut Report,

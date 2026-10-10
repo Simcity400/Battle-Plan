@@ -1,6 +1,6 @@
-//! PdxShader declarations and DX11 source assembly. Engine a729:
-//! `142348F80` (file), `1423498C0` (stage), `1423497F0` (effect), `1423457F0`
-//! (include postorder), `142411430` (source), `1423F71B0` (entry lookup).
+//! PdxShader declarations and DX11 source assembly.
+//! Includes contribute declarations in child-first order; the root supplies
+//! techniques and states, and entry lookup tries common declarations first.
 //! Raw code is content, never a table of recognised effect filenames.
 
 use std::collections::BTreeSet;
@@ -39,7 +39,7 @@ pub struct Member {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConstantBuffer {
     pub index: u32,
-    /// The DX9 register; DX11 deliberately ignores it (`142411840`).
+    /// The DX9 register; DX11 deliberately ignores it.
     pub legacy_register: u32,
     pub body: String,
 }
@@ -50,7 +50,7 @@ pub struct Entry {
     pub source: Source,
 }
 
-/// A lowered filter: `lower_filter@1424110F0` treats an authored `None` as point.
+/// A lowered filter: an authored `None` becomes point filtering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Filter {
     Point,
@@ -58,8 +58,8 @@ pub enum Filter {
     Anisotropic,
 }
 
-/// Defaults from `SGfxSamplerReader::read_declaration@142348D70`. The DX11 declaration only
-/// distinguishes `Type = cube` (`142411AB0`); `3d` and `shadow` declare 2D textures.
+/// The read sampler defaults are retained. The DX11 declaration only
+/// distinguishes `Type = cube`; `3d` and `shadow` declare 2D textures.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sampler {
     pub name: String,
@@ -70,7 +70,7 @@ pub struct Sampler {
     pub mip: Filter,
     pub u: Address,
     pub v: Address,
-    /// `lower_d3d11@1423FD550` always wraps W; D3D11's null sampler clamps it.
+    /// Lowered samplers always wrap W; D3D11's null sampler clamps it.
     pub w: Address,
     pub lod_bias: f32,
     pub min_lod: i32,
@@ -135,7 +135,7 @@ pub struct Program {
 
 #[derive(Default)]
 struct File {
-    /// Each `Includes` name as the file holds it (`ReadStringList@1401426E0`): bytes, opened
+    /// Each `Includes` name as the file holds it: bytes, opened
     /// under `gfx/FX/` as they are.
     includes: Vec<Vec<u8>>,
     program: Program,
@@ -144,7 +144,7 @@ struct File {
 /// Effect sources covered by the recorded policy are verified; any other source is named
 /// in `Program::warnings`, which diagnostics must retain as for other uncovered visual assets.
 /// `effect` is the sprite's name as its bytes, and every path is opened by its bytes
-/// ([`ResolvedLayers::read_uncovered_path`]), as `PHYSFS_openRead@1424DFAC0` is given them.
+/// ([`ResolvedLayers::read_uncovered_path`]), without a text conversion.
 pub fn read(layers: &ResolvedLayers, effect: &[u8]) -> Result<Program, String> {
     read_layers(layers, effect, false)
 }
@@ -196,8 +196,8 @@ fn read_layers(layers: &ResolvedLayers, effect: &[u8], reported: bool) -> Result
 }
 
 /// Resolves each complete file through the caller's recorded content stack. Missing includes
-/// contribute nothing, as `1423457F0` does after its diagnostic. A missing root is the
-/// empty lookup record (1423F5D60); a present root still requires its backend header.
+/// contribute nothing after their diagnostic. A missing root is the empty
+/// lookup record; a present root still requires its backend header.
 pub fn read_with(
     effect: &[u8],
     read: &dyn Fn(&[u8]) -> Option<Vec<u8>>,
@@ -275,12 +275,12 @@ fn read_with_inner(
         let path = effect_path(effect);
         let mut files = Vec::new();
         let Some(bytes) = read(&path) else {
-            // LookupShaderEffectHandle@1423F5D60 returns 1435C1970 when no effect exists.
+            // A missing effect returns an empty technique record.
             // Keep this distinct from malformed present source or a failed filesystem read.
             return Ok(Program {
                 effect: name.clone(),
                 warnings: vec![format!(
-                    "effect {name:?}: missing {}; native null technique record (1423F5D60)",
+                    "effect {name:?}: missing {}; empty technique record",
                     lossy(&path)
                 )],
                 dependencies: vec![path],
@@ -293,7 +293,7 @@ fn read_with_inner(
             walk(&include(name), read, &mut seen, &mut files)?;
         }
         // States/effects belong to the root file. Only stage declarations are accumulated
-        // from includes (`1423445D0`, `1423F6E10`).
+        // from includes.
         let mut program = Program {
             effect: name.clone(),
             techniques: root.program.techniques,
@@ -306,10 +306,9 @@ fn read_with_inner(
             .iter()
             .filter(|path| !files.iter().any(|(name, _)| name == *path))
         {
-            program.warnings.push(format!(
-                "shader include {:?} not loaded (1423457F0)",
-                lossy(missing)
-            ));
+            program
+                .warnings
+                .push(format!("shader include {:?} not loaded", lossy(missing)));
         }
         for (name, file) in files {
             program.dependencies.push(name);
@@ -321,7 +320,7 @@ fn read_with_inner(
         program.common.append(root.program.common);
         program.vertex.append(root.program.vertex);
         program.pixel.append(root.program.pixel);
-        // Engine string at 142B5AB60, loaded by 142411430 through the VFS.
+        // The backend header is loaded through the recorded content stack.
         let header = "gfx/FX/defines_hlsl_dx11.fxh";
         program.header = Source {
             path: header.into(),
@@ -337,15 +336,15 @@ fn read_with_inner(
 }
 
 impl Program {
-    /// First case-insensitive match (`142344DF0`), not last declaration wins.
+    /// The first case-insensitive match wins.
     pub fn technique(&self, name: &str) -> Option<&Technique> {
         self.techniques
             .iter()
             .find(|t| t.name.eq_ignore_ascii_case(name))
     }
 
-    /// The states a technique names: the root file's first `_stricmp` match, else the reader's
-    /// defaults (`1423F7110`, `1423F7140`, `1423F7180`).
+    /// The states a technique names: the root file's first case-insensitive match,
+    /// else the reader's defaults.
     pub fn blend(&self, technique: &Technique) -> super::BlendState {
         named(&self.blends, &technique.blend)
     }
@@ -366,7 +365,7 @@ impl Program {
         }
     }
 
-    /// Last common then pixel declaration owns each physical sampler (`142345450`).
+    /// Last common then pixel declaration owns each physical sampler.
     pub fn sampler(&self, index: u32) -> Option<&Sampler> {
         self.common
             .samplers
@@ -376,9 +375,9 @@ impl Program {
             .find(|s| s.index == index)
     }
 
-    /// The native DX11 source order (`142411430`): stage define, caller then technique defines,
-    /// content header, stage samplers, common/stage buffers, common/stage structures,
-    /// common/stage code, selected main. `1423F71B0` searches common entries before stage entries.
+    /// DX11 source order: stage define, caller then technique defines, content header,
+    /// stage samplers, common/stage buffers, common/stage structures, common/stage code,
+    /// selected main. Entry lookup searches common entries before stage entries.
     pub fn hlsl(
         &self,
         technique: &Technique,
@@ -412,7 +411,7 @@ impl Program {
             name, index, cube, ..
         } in &decl.samplers
         {
-            // Strings 142B5AA08/142B5AA18, replaced only for cube: `3d` stays Texture2D.
+            // Only cube changes the texture declaration; `3d` stays Texture2D.
             let kind = if *cube { "Cube" } else { "2D" };
             out.push_str(&format!("Texture{kind} {name}_Texture : register(t{index});\nSamplerState {name}_Sampler : register(s{index});\n#define {name} CreateSampler{kind}({name}_Texture, {name}_Sampler)\n"));
         }
@@ -459,7 +458,7 @@ fn source(out: &mut String, source: &Source) {
 }
 
 // The shared native shader reader owns token walking, defaults, malformed keys and scanners.
-// This adapter only emits the backend's source spelling and records source-file provenance.
+// This adapter emits the backend's source spelling and records source-file identity.
 fn parse(path: &str, bytes: &[u8]) -> Result<File, String> {
     fn text(path: &str, bytes: &[u8]) -> Result<String, String> {
         String::from_utf8(bytes.to_vec())
@@ -619,7 +618,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn source_order_and_first_entry_follow_native() {
+    fn source_order_and_first_entry_follow_declaration_order() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let read = |path: &[u8]| {
             Some(match path {
             b"gfx/FX/test.shader" => "Includes = { a.fxh b.fxh } MainCode PS [[ float4 main() : PDX_COLOR { return 1; } ]] PixelShader = { MainCode PS [[ WRONG ]] } Effect Up { PixelShader = PS Defines = { EXTRA } }",
@@ -651,6 +652,8 @@ mod tests {
 
     #[test]
     fn only_cube_samplers_change_the_dx11_texture_type() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let program = read_with(b"gfx/FX/t.lua", &|path| {
             Some(match path {
                 b"gfx/FX/t.shader" => "PixelShader = { Samplers = { A = { Index = 0 Type = cube } B = { Index = 1 Type = 3d } C = { Index = 2 Type = shadow } } MainCode P [[ ]] } DepthStencilState Depth { DepthEnable = no } Effect Up { PixelShader = P DepthStencilState = DEPTH }",
@@ -672,7 +675,9 @@ mod tests {
     }
 
     #[test]
-    fn declarations_preserve_code_and_native_buffer_layout() {
+    fn declarations_preserve_code_and_buffer_layout() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let file = parse("test", b"VertexStruct V { float3 p : POSITION;\n@ifdef TEST\nfloat2 uv : TEXCOORD0;\n@endif\n};\nConstantBuffer(2, 9) { float4x4 matrix;\nfloat4 array[3];\n};\nCode [[ float x[2] = {1,2}; // kept\n]]\n").unwrap();
         assert_eq!(file.program.common.buffers[0].legacy_register, 9);
         assert!(file.program.common.buffers[0].body.contains("array[3];"));
@@ -686,6 +691,8 @@ mod tests {
 
     #[test]
     fn includes_contribute_declarations_but_never_replace_root_states() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let program = read_with(b"gfx/FX/mod.lua", &|path| {
             Some(match path {
                 b"gfx/FX/mod.shader" => "Includes = { child.fxh missing.fxh child.fxh } BlendState Alpha { BlendEnable = yes } Effect Up { PixelShader = P BlendState = Alpha } Effect up { PixelShader = Wrong }",
@@ -704,6 +711,8 @@ mod tests {
 
     #[test]
     fn parse_failures_name_the_effect_and_missing_main_names_the_technique() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let error =
             read_with(b"mod/broken.lua", &|_| Some(b"Code [[ \x80 ]]".to_vec())).unwrap_err();
         assert!(error.contains("mod/broken.lua"));
@@ -724,11 +733,13 @@ mod tests {
         assert!(error.contains("missing Pixel MainCode"));
     }
 
-    /// An effect name and an `Includes` name that are not UTF-8 open by their bytes, as
-    /// `PHYSFS_openRead@1424DFAC0` is given them; the U+FFFD spelling of either finds nothing.
-    /// Their text is only the label.
+    /// An effect name and an `Includes` name that are not UTF-8 open by their bytes.
+    /// The U+FFFD spelling of either finds nothing; text supplies only a diagnostic
+    /// label, leaving the path identity unchanged.
     #[test]
     fn effect_and_include_names_open_by_their_bytes() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let read = |path: &[u8]| {
             Some(match path {
                 b"gfx/FX/\x80.shader" => b"Includes = { \"\x81.fxh\" }\nMainCode P [[ float4 main() : PDX_COLOR { return 1; } ]]\nEffect Up { PixelShader = P }".to_vec(),
@@ -755,11 +766,13 @@ mod tests {
         // The lossy spelling is another path.
         let missing = read_with("gfx/FX/\u{FFFD}.lua".as_bytes(), &read).unwrap();
         assert!(missing.techniques.is_empty());
-        assert!(missing.warnings[0].contains("1423F5D60"));
+        assert!(missing.warnings[0].contains("empty technique record"));
     }
 
     #[test]
-    fn constant_array_counts_use_the_native_integer_scanner() {
+    fn constant_array_counts_use_the_integer_scanner() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let file = parse("arrays", b"ConstantBuffer(0,0) { float4 octal[010];\nfloat4 hex[0x10];\nfloat4 no_count[MACRO];\nfloat4 zero[0];\n}\n").unwrap();
         assert_eq!(
             file.program.common.buffers[0].body,
@@ -769,6 +782,8 @@ mod tests {
 
     #[test]
     fn only_sources_outside_the_covered_effect_root_are_named_unverified() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "hoi4_effect_coverage_{}_{:?}",
             std::process::id(),

@@ -1,23 +1,21 @@
 //! Scripted localisation (`[ROOT.GetName]`) evaluated over one recorded hour.
 //!
-//! CTextBase::ProcessString (1412B9CA0) expands every `[` .. first `]` of a
-//! text in a CContextLocalizationText. Each bracket starts from the saved
-//! root context (RestoreContext 1410D0900). `[(...)]` is the conditional
-//! form (1412B98C0) and `[?...]` the variable form (1412BA1F0); anything else
-//! splits at every `.`: each segment but the last promotes the scope
-//! (PromoteScope 1410CF710), the last is a property (GetPropertyText
-//! 1410CD900), whose text is processed again one level deeper, up to
-//! `NGame.MAX_SCRIPTED_LOC_RECURSION` (at the limit the text is kept as it
+//! Text processing expands every `[` .. first `]` in a localisation
+//! context. Each bracket starts from the saved root context. `[(...)]`
+//! is the conditional form and `[?...]` the variable form; anything else
+//! splits at every `.`: each segment but the last promotes the scope,
+//! and the last is a property, whose text is processed again one level
+//! deeper, up to `NGame.MAX_SCRIPTED_LOC_RECURSION` (at the limit the text
+//! is kept as it
 //! is). A `[` with no `]` after it ends the text, dropping it from the last
 //! bracket on.
 //!
-//! The views this serves (idea names 140FBCF90 -> 1410CF560, idea
-//! descriptions 140FBAE40, focus names 1402D2250, the stability breakdown
-//! 1410CF390) build a fresh CEventScope with only the country set
-//! (default_construct 140528800: ROOT, FROM and PREV are itself), so the
-//! root context is the event scope (kind 1) of that country.
+//! The views this serves (idea names and descriptions, focus names and
+//! the stability breakdown) build a fresh event scope with only the
+//! country set. ROOT, FROM and PREV are itself, so the root context is
+//! the event scope of that country.
 //!
-//! Names match without case at their exact length (`_strnicmp`, 142549958);
+//! Names match without case at their exact length;
 //! country tags and scripted localisation names match exactly. What the
 //! recording cannot answer is refused by name with the missing input.
 
@@ -115,41 +113,41 @@ pub(crate) mod random;
 
 use properties::Party;
 
-// Our backstop, not a native limit: 1402F6340 -> 1410CF560 restarts each
-// scripted entry at ProcessString depth zero.
+// Nesting backstop: each scripted entry restarts text processing at
+// depth zero, independently of the content recursion limit.
 const MAX_SCRIPTED_NESTING: usize = 10_000;
 
 fn nesting_refusal(name: &str) -> String {
     format!(
-        "scripted localisation nesting the game could never finish (native stack exhaustion): {name}, beyond {MAX_SCRIPTED_NESTING} levels (1402F6340 -> 1410CF560)"
+        "scripted localisation nesting the game could never finish (native stack exhaustion): {name}, beyond {MAX_SCRIPTED_NESTING} levels"
     )
 }
 
-/// A context object of CContextLocalizationText.
+/// A localisation context object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Object {
-    /// Kind 0, SScriptEnvironment: copied event scope and faction +0xC8.
+    /// Faction environment: copied event scope and faction.
     FactionEnvironment(Option<u64>),
-    /// Kind 17, selected by 141A83750 -> 1410D0D70.
+    /// A faction selected from the environment.
     Faction(Option<u64>),
-    /// Kind 1: the root event scope, whose country is the view's.
+    /// The root event scope, whose country is the view's.
     Event,
-    /// Kind 3: a country by canonical slot.
+    /// A country by canonical slot.
     Country(u32),
-    /// Kind 4: a state, `None` for a null state object.
+    /// A state, `None` for a null state object.
     State(Option<u32>),
-    /// Kind 15: an explicit province text object, outside CEventScope.
+    /// An explicit province text object, outside the event scope.
     Province(Option<u32>),
-    /// Kind 16: the province template's terrain ordinal, zero for null.
+    /// The province template's terrain ordinal, zero for null.
     Terrain(i32),
-    /// Kind 8: a character by id.
+    /// A character by ID.
     Character(u32),
 }
 
-/// A CEventScope link: ROOT (+0x18), FROM (+0x20) or PREV (+0x28).
+/// An event-scope link: ROOT, FROM or PREV.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Link {
-    /// The scope itself, as a default-constructed scope links (140528800).
+    /// The scope itself, as a default-constructed scope links.
     Itself,
     /// Another scope of the same [`EventScopes`], by index.
     Scope(usize),
@@ -157,66 +155,65 @@ pub enum Link {
     Unknown,
 }
 
-/// What a CEventScope holds, as text reads it.
+/// What an event scope holds, as text reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventObject {
     Country(u32),
-    /// SetCombatContext(reset=1) retains only Combat+0x60 (14052DC80 /
-    /// 14052F3F0). Its side country is not CEventScope.country+8.
+    /// A combat context retains only the combat object.
+    /// Its side country is separate from the event scope's country.
     Combat,
-    /// SetCountry/SetState without clearing, for environment localisation
-    /// (1404A5070/1404A5160 -> 1410CF4A0).
+    /// Country and state set without clearing, for environment localisation.
     CountryState {
         country: u32,
         state: u32,
     },
-    /// A state by id; SetState (14052ECE0) clears the scope's country.
+    /// A state by ID; setting it clears the scope's country.
     State(u32),
     Province(u32),
-    /// A unit leader by full reference: SetUnitLeader(reset=1, 14052EFD0)
-    /// stores its character (CUnitLeader+0xF48) at +0x50 and clears the country.
+    /// A unit leader by full reference: stores its character
+    /// and clears the country.
     UnitLeader(u64),
-    /// Active ability tooltip (1418BFCE0): SetCountry(reset=1), then
-    /// SetUnitLeader(reset=0). Country+8 and character+0x50 both survive.
+    /// Active ability tooltip: set the country with clearing, then
+    /// the unit leader without clearing. Country and character both survive.
     /// Text promotions prefer the character; variable storage and RNG
     /// identity prefer the country. Neither setter changes the self links.
     CountryUnitLeader {
         country: u32,
         leader: u64,
     },
-    /// A character by id; SetCharacter (14052DAF0) clears the country.
+    /// A character by ID; setting it clears the country.
     Character(u32),
-    /// SetIndustrialOrganisation@14052E720 clears other carried objects.
+    /// Setting an industrial organisation clears other carried objects.
     IndustrialOrganisation(u64),
-    /// SetProject@14052EBE0 copies project+8 to scope+0x90.
+    /// The project owner and ID carried by the scope.
     Project {
         owner: u32,
         id: u32,
     },
-    /// SetRaidInstance@14052E960 copies raid+8 to scope+0x88.
+    /// The raid instance reference carried by the scope.
     Raid(u64),
-    /// SetUnit@14052EDA0 copies unit+0x18 to scope+0x70.
+    /// The unit reference carried by the scope.
     Unit(u64),
 }
 
-/// One CEventScope as text reads it: its object and its links.
+/// One event scope as text reads it: its object and its links.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EventScope {
     pub this: EventObject,
     pub root: Link,
     pub from: Link,
     pub prev: Link,
-    /// CEventScope+0x0C, used by an unseeded random_list (140A9CD70).
+    /// Seed used by an unseeded random_list.
     pub random_seed: u32,
-    /// CEventScope+0x10, copied independently of the +0x0C seed.
+    /// Counter copied independently of the seed.
     pub random_counter: u32,
     /// Missing input to these lanes; copies retain it, fresh constructors clear it.
-    /// Only a native random selection needs this input (140A9CD70/1402F70C0).
+    /// Only a random selection needs this input.
     pub random_seed_refusal: Option<&'static str>,
 }
 
 impl EventScope {
-    /// A default-constructed scope (140528800) set to `this`: its ROOT, FROM
+    /// A default-constructed scope set to `this`: its ROOT, FROM
     /// and PREV are itself.
     pub fn of(this: EventObject) -> Self {
         Self {
@@ -224,7 +221,7 @@ impl EventScope {
             root: Link::Itself,
             from: Link::Itself,
             prev: Link::Itself,
-            random_seed: 1, // 140528800; setters preserve the seed words.
+            random_seed: 1, // Setters preserve the seed words.
             random_counter: 0x5ea6_ba9e,
             random_seed_refusal: None,
         }
@@ -242,15 +239,13 @@ impl EventScope {
     }
 }
 
-/// The event scopes a text is expanded in. The first is the caller's
-/// (CContextLocalizationText+0x378), which RestoreContext (1410D0900) makes
-/// active again at every bracket; ROOT, FROM and PREV promotions make the
-/// linked scope active (141A81250), so later segments follow its links.
+/// The event scopes a text is expanded in. The first is the caller's,
+/// made active again at every bracket; ROOT, FROM and PREV promotions
+/// make the linked scope active, so later segments follow its links.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventScopes {
     pub scopes: Vec<EventScope>,
-    /// The thread-local script variables set while the text is expanded
-    /// (InitializeRaidEventScope 141580600 sets these three).
+    /// The thread-local script variables set while the text is expanded.
     pub variables: ScopeVariables,
     /// Description-only stores; save follows ROOT, lookup follows FROM.
     pub tooltip_targets: std::collections::BTreeMap<usize, Vec<(Vec<u8>, EventObject)>>,
@@ -268,8 +263,8 @@ pub struct ScopeVariables {
 
 impl EventScopes {
     /// `scopes`, with no script variables set.
-    /// Fresh scopes (140528800); description completion clears temporary
-    /// globals (1401D20F0). Event-chain consumers need their own target arrays.
+    /// Fresh scopes; description completion clears temporary globals.
+    /// Event-chain consumers need their own target arrays.
     pub fn new(scopes: Vec<EventScope>) -> Self {
         Self {
             scopes,
@@ -357,7 +352,7 @@ impl<'e, 'a> ExpansionScopes<'e, 'a> {
         self.scopes.borrow()[at]
     }
 
-    /// Keep entry history and the fresh-context guard across BuildDescription.
+    /// Keep entry history and the fresh-context guard across effect descriptions.
     /// Append its graph so active entries retain their existing cursor identities.
     fn append_description<'s>(&'s self, scopes: &EventScopes) -> DescriptionScopeGuard<'s, 'e, 'a> {
         let next = Self::new(scopes);
@@ -463,10 +458,10 @@ impl Drop for DescriptionScopeGuard<'_, '_, '_> {
 pub struct ScriptedContent {
     /// `common/scripted_localisation` names ([`installed_content::scripted_localisation`]).
     pub names: installed_content::scripted_localisation::Names,
-    /// `NGame.MAX_SCRIPTED_LOC_RECURSION` (1412B9CA0 compares the depth).
+    /// `NGame.MAX_SCRIPTED_LOC_RECURSION`, compared with text processing depth.
     pub recursion: i32,
-    /// `common/country_tag_aliases` names (the tag alias database
-    /// 143316AA8), which promotion step 3 tries after the country tags.
+    /// `common/country_tag_aliases` names, which promotion step 3 tries
+    /// after the country tags.
     pub tag_aliases: std::sync::Arc<installed_content::tag_aliases::TagAliases>,
     /// The recording client's game language ([`crate::catalogue::Catalogue`]):
     /// text the game stored already localised is in it.
@@ -484,7 +479,7 @@ pub struct ScriptedContent {
 }
 
 impl ScriptedContent {
-    /// The scripted localisation names, with the files the port cannot read
+    /// The scripted localisation names, with the files the reader cannot read
     /// to their end, `NGame.MAX_SCRIPTED_LOC_RECURSION` and the tag aliases
     /// of `content`, or why they cannot be read. `recorded_language` is the
     /// recording client's language, without its `l_`.
@@ -589,7 +584,7 @@ pub struct ScriptedText<'a> {
     world: std::sync::OnceLock<Result<crate::triggers::World<'a>, String>>,
 }
 
-/// `_strnicmp` at the exact length (142549958).
+/// Case-insensitive match at the exact length.
 fn named(segment: &str, name: &str) -> bool {
     segment.eq_ignore_ascii_case(name)
 }
@@ -663,16 +658,14 @@ impl<'a> ScriptedText<'a> {
         self
     }
 
-    /// Expands `text` as ProcessString (1412B9CA0) does from depth 0. The
-    /// view's event scope is its country, as ROOT, THIS, FROM and PREV
-    /// (140528800).
+    /// Expands `text` from depth zero. The view's event scope is its
+    /// country, as ROOT, THIS, FROM and PREV.
     pub fn expand(&self, text: &str) -> Result<String, String> {
         let scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(self.root))]);
         self.expand_in(text, &scopes)
     }
 
-    /// GetIndustrialOrganisationLocalizedName@140DA44C0, in the fresh
-    /// organisation/owner-FROM scope pair (140A3B740/140A3CFE0).
+    /// Organisation name in the fresh organisation/owner-FROM scope pair.
     pub(crate) fn organisation_name(&self, reference: u64) -> Result<String, String> {
         let organisations = self
             .frame
@@ -713,11 +706,10 @@ impl<'a> ScriptedText<'a> {
             },
             EventScope::of(EventObject::Country(owner)),
         ]);
-        self.expand_in(&self.localise(key)?, &scopes) // 14146B1D0.
+        self.expand_in(&self.localise(key)?, &scopes)
     }
 
-    /// SScopeLocalizer (1402F5F40): expand in the caller's event scopes, the
-    /// first being the caller's own (raid triggers, 1413931A0).
+    /// Expand in the caller's event scopes, the first being the caller's own.
     pub fn expand_in(&self, text: &str, scopes: &EventScopes) -> Result<String, String> {
         if scopes.scopes.is_empty() {
             return Err("scripted text needs an event scope".into());
@@ -739,7 +731,7 @@ impl<'a> ScriptedText<'a> {
         self.process(text, 0, &expanded, at, Object::Event)
     }
 
-    /// Scripted entries inside BuildDescription share its active variable context.
+    /// Scripted entries inside effect descriptions share their active variable context.
     pub fn expand_in_session(
         &self,
         text: &str,
@@ -832,25 +824,25 @@ impl<'a> ScriptedText<'a> {
         }
     }
 
-    /// tag_string@140BA5C20 uses database slot zero for raw zero.
+    /// Tag lookup uses database slot zero for raw zero.
     pub(crate) fn country_tag(&self, country: u32) -> Result<&str, String> {
         if country == 0 {
             installed_content::country_names::reserved_zero_tag(self.frame)
         } else {
             self.scopes
                 .tag(country)
-                .ok_or_else(|| format!("Countries lacks tag for country {country} (140BA5C20)"))
+                .ok_or_else(|| format!("Countries lacks tag for country {country}"))
         }
     }
 
-    /// CountryTag_FormatMarkedName (140BA59E0 -> 1406E63A0 -> 1424B6FE0).
+    /// Flag-marked definite country name with its first byte capitalised.
     pub(crate) fn country_marked_name(&self, country: u32) -> Result<String, String> {
         let tag = self.country_tag(country)?;
         let name = crt_case_text(&self.names.name_with(country, "_DEF")?, true, true);
         Ok(format!("\u{12}{tag} {name}"))
     }
 
-    /// ccountry_tag::adjective (140BA5560), built at CCountry+0x30 by 140709950.
+    /// The country adjective resolved from its recorded naming inputs.
     pub(crate) fn country_adjective(&self, country: u32) -> Result<String, String> {
         self.names.name_with(country, "_ADJ")
     }
@@ -861,9 +853,9 @@ impl<'a> ScriptedText<'a> {
 
     /// Expand a caller scope whose random word is not recorded. Ordinary
     /// expressions remain usable; an unseeded multi-member random_list refuses
-    /// only when it reads that word (140A9CD70). ROOT/FROM/PREV select a
-    /// concrete context (141A81250) whose entry fallback constructs the separate
-    /// known 424242 scope (1410CD900/1410CDDF0); bare entries keep the caller scope.
+    /// only when it reads that word. ROOT/FROM/PREV select a concrete context
+    /// whose entry fallback constructs the separate known 424242 scope;
+    /// bare entries keep the caller scope.
     pub fn expand_in_without_random_seed(
         &self,
         text: &str,
@@ -881,9 +873,9 @@ impl<'a> ScriptedText<'a> {
         self.process(text, 0, &expansion, 0, Object::Event)
     }
 
-    /// An explicit province text context (kind 15, 1410CCE20), with the
-    /// caller's event scope for event promotions. Provinces are not event
-    /// scope targets (141A81250), and cannot bind scripted entries (1410CD900).
+    /// An explicit province text context, with the caller's event scope
+    /// for event promotions. Provinces are not event scope targets,
+    /// and cannot bind scripted entries.
     pub fn expand_province_in(
         &self,
         text: &str,
@@ -940,7 +932,7 @@ impl<'a> ScriptedText<'a> {
         result
     }
 
-    /// 140A7E780 expands in a fresh country event, within the same game world.
+    /// Expands in a fresh country event, within the same game world.
     fn expand_fresh_country(
         &self,
         text: &str,
@@ -973,7 +965,7 @@ impl<'a> ScriptedText<'a> {
         expanded
     }
 
-    /// ProcessString with the context's saved event scope `start`.
+    /// Process text with the context's saved event scope `start`.
     fn process(
         &self,
         text: &str,
@@ -992,7 +984,7 @@ impl<'a> ScriptedText<'a> {
                 out.push_str(rest);
                 return Ok(out);
             };
-            // No `]` after it: 1412B9E55 leaves before appending the text
+            // No `]` after it: return before appending the text
             // before the `[`.
             let Some(length) = rest[open + 1..].find(']') else {
                 return Ok(out);
@@ -1001,7 +993,7 @@ impl<'a> ScriptedText<'a> {
             out.push_str(&rest[..open]);
             if inner.len() >= 2 && inner.starts_with('(') && inner.ends_with(')') {
                 return Err(format!(
-                    "the conditional scripted text [{inner}] (1412B98C0) is not evaluated"
+                    "the conditional scripted text [{inner}] is not evaluated"
                 ));
             }
             if let Some(variable) = inner.strip_prefix('?') {
@@ -1015,8 +1007,8 @@ impl<'a> ScriptedText<'a> {
         }
     }
 
-    /// One `[A.B.Property]`, from the context's saved event scope `start`
-    /// (RestoreContext 1410D0900 before each bracket).
+    /// One `[A.B.Property]`, from the context's saved event scope `start`,
+    /// restored before each bracket.
     fn bracket(
         &self,
         inner: &str,
@@ -1038,8 +1030,7 @@ impl<'a> ScriptedText<'a> {
             .map_err(|reason| format!("[{inner}]: {reason}"))
     }
 
-    /// PromoteScope (1410CF710) for one segment; `active` is the event scope
-    /// CContextLocalizationText+0x378 holds.
+    /// Promote one segment; `active` is the context's event-scope index.
     fn promote(
         &self,
         object: Object,
@@ -1048,7 +1039,7 @@ impl<'a> ScriptedText<'a> {
         active: &mut usize,
         event_active: &mut bool,
     ) -> Result<Object, String> {
-        // Kind-0 environment selectors retain both carried fields (1410CF710).
+        // Environment selectors retain both carried fields.
         if object == Object::Event
             && let EventObject::CountryState { country, state } = scopes.scope(*active).this
         {
@@ -1063,14 +1054,14 @@ impl<'a> ScriptedText<'a> {
         match object {
             Object::FactionEnvironment(faction) => {
                 if named(segment, "Faction") {
-                    return Ok(Object::Faction(faction)); // 141A83750, selector 1004.
+                    return Ok(Object::Faction(faction));
                 }
                 if ["Building", "Province", "Combat"]
                     .iter()
                     .any(|name| named(segment, name))
                 {
                     return Err(format!(
-                        "{segment}: null faction-environment promotion (141A83750) is not ported"
+                        "{segment}: null faction-environment promotion is not implemented"
                     ));
                 }
             }
@@ -1081,9 +1072,9 @@ impl<'a> ScriptedText<'a> {
                     };
                     let raw = self.scopes.faction_first_raw(faction)?;
                     // Text keeps the actual Country0 object; event-scope clearing
-                    // is a separate native setter and is not applied here.
+                    // is a separate operation and is not applied here.
                     let country = self.scopes.raw_slot(raw)?;
-                    return Ok(Object::Country(country)); // 141A81FD0.
+                    return Ok(Object::Country(country));
                 }
             }
             Object::Country(slot) => {
@@ -1091,11 +1082,11 @@ impl<'a> ScriptedText<'a> {
                     return self.capital(slot, named(segment, "OriginalCapital"));
                 }
                 if named(segment, "Overlord") {
-                    // No overlord: logged, the context is unchanged (141A7DC60).
+                    // No overlord: logged, the context is unchanged.
                     return Ok(self.overlord(slot)?.map_or(object, Object::Country));
                 }
                 if named(segment, "FactionLeader") {
-                    // PromoteScope (141A7DC60) keeps the context when the
+                    // Promotion keeps the context when the
                     // country has no faction.
                     return Ok(match self.scopes.faction_leader_raw(slot)? {
                         Some(raw) => Object::Country(self.scopes.raw_slot(raw)?),
@@ -1112,9 +1103,7 @@ impl<'a> ScriptedText<'a> {
                     return self.state_country(id, named(segment, "Owner"));
                 }
                 if named(segment, "Occupied") {
-                    return Err(
-                        "Occupied: a state's occupier promotion (141A85580) is not ported".into(),
-                    );
+                    return Err("Occupied: a state's occupier promotion is not implemented".into());
                 }
             }
             Object::Character(id) => {
@@ -1123,8 +1112,8 @@ impl<'a> ScriptedText<'a> {
                 }
             }
             Object::Province(province) => {
-                // Province member table/dispatcher 141A83DC0 / 141A83F00:
-                // Terrain uses the template +0xA8; Controller uses +0x188.
+                // Terrain uses the province template; Controller uses
+                // the province's stored controller.
                 if named(segment, "Terrain") || named(segment, "Controller") {
                     let Some(id) = province else {
                         return Ok(object);
@@ -1155,9 +1144,9 @@ impl<'a> ScriptedText<'a> {
         if named(segment, "Player") {
             return self.local_player().map(Object::Country);
         }
-        // 141A81250 on the active scope: THIS keeps it; ROOT, FROM and PREV
-        // follow its +0x18, +0x20 and +0x28. The chosen scope becomes the
-        // active one (+0x378) and its object the context.
+        // On the active scope, THIS keeps it; ROOT, FROM and PREV follow
+        // its links. The chosen scope becomes active and its object
+        // becomes the context.
         let current = scopes.scope(*active);
         for (name, link) in [
             ("THIS", Link::Itself),
@@ -1168,7 +1157,7 @@ impl<'a> ScriptedText<'a> {
             if named(segment, name) {
                 if !*event_active && !matches!(object, Object::FactionEnvironment(_)) {
                     return Err(format!(
-                        "{segment}: null active event pointer in faction environment (1410CF710) is not ported"
+                        "{segment}: null active event pointer in faction environment is not implemented"
                     ));
                 }
                 let chosen = scopes.linked(*active, link, name)?;
@@ -1178,15 +1167,14 @@ impl<'a> ScriptedText<'a> {
             }
         }
         // 3. A country tag (exact), a character of the current country, a
-        //    state id (1410CF9C0). Each is found, proven absent, or refused.
+        //    state ID. Each is found, proven absent, or refused.
         if self.scopes.country(segment).is_some() {
-            // ResolveScriptCountryTag (140BA5D10), as a script scope.
+            // Resolve a country tag as a script scope.
             return self.scopes.resolve_tag(segment).map(Object::Country);
         }
-        // Then the tag alias database (143316AA8): AliasResolve (1407141F0)
-        // in the scope 1410CF9C0 builds for ResolveScriptCountryTag
-        // (140BA5D10): a default scope (140528800, its ROOT, FROM and PREV
-        // itself) set with clearing to the local player's country.
+        // Then the tag alias database: resolve in a default scope, with
+        // ROOT, FROM and PREV itself, set with clearing to the local
+        // player's country.
         if self.scopes.alias_entry(segment).is_some() {
             let local = self
                 .local_player()
@@ -1211,7 +1199,7 @@ impl<'a> ScriptedText<'a> {
         if !complete::<tables::Countries>(self.frame) {
             let (_, gap) = rows::<tables::Countries>(self.frame);
             return Err(format!(
-                "{segment}: whether it is a country tag (140BA53F0) is unknown: Countries {gap}"
+                "{segment}: whether it is a country tag is unknown: Countries {gap}"
             ));
         }
         if (*event_active || matches!(object, Object::Country(_)))
@@ -1236,8 +1224,8 @@ impl<'a> ScriptedText<'a> {
             }
             return Err(format!("state {segment} is unknown: States {gap}"));
         }
-        // 4. Kind 1 only: saved event targets. 1410CFF00 has its own object
-        // selector (including text kinds outside this trigger port).
+        // 4. Event context only: saved event targets use their own object
+        // selector, including text kinds unsupported by the trigger evaluator.
         if object == Object::Event {
             return self.saved_promotion(segment, scopes, *active);
         }
@@ -1249,8 +1237,8 @@ impl<'a> ScriptedText<'a> {
         Ok(object)
     }
 
-    /// 1410CFF00: local tooltip/saved, global tooltip/saved; a missing or
-    /// invalid target returns false and PromoteScope leaves its object alone.
+    /// Local tooltip/saved, then global tooltip/saved targets; a missing
+    /// or invalid target leaves the promoted object alone.
     fn saved_promotion(
         &self,
         name: &str,
@@ -1294,7 +1282,7 @@ impl<'a> ScriptedText<'a> {
         }
     }
 
-    /// GetPropertyText (1410CD900) in the promoted context.
+    /// Property text in the promoted context.
     fn property(
         &self,
         object: Object,
@@ -1304,7 +1292,7 @@ impl<'a> ScriptedText<'a> {
         event_active: bool,
     ) -> Result<String, String> {
         let property = match object {
-            // Kinds 0/17 have no scripted-entry fallback (1410CD900).
+            // Faction contexts have no scripted-entry fallback.
             Object::FactionEnvironment(_) => return Ok(String::new()),
             Object::Faction(faction) => {
                 return if named(name, "GetName") {
@@ -1328,7 +1316,7 @@ impl<'a> ScriptedText<'a> {
                     (Some(&"GetName"), Some(id)) => Some(self.state_name(id)?),
                     (Some(entry), Some(id)) => {
                         return Err(format!(
-                            "{entry} of state {id}: the native victory-point/continent text selector (141A85400) is not ported"
+                            "{entry} of state {id}: the victory-point/continent text selector is not implemented"
                         ));
                     }
                     (None, _) => None,
@@ -1336,24 +1324,24 @@ impl<'a> ScriptedText<'a> {
             }
             Object::Character(id) => self.character_property(id, name)?,
             Object::Province(province) => {
-                // 141A83EF0 registers only GetName; 141A83DD0 passes 0,
-                // disabling the state-name fallback of 140E67930.
+                // Province properties register only GetName, with the
+                // state-name fallback disabled.
                 return if named(name, "GetName") {
                     province.map_or_else(|| Ok("NULL".into()), |id| self.province_name(id))
                 } else {
-                    Ok(String::new()) // kind 15 has no entry fallback (1410CD900).
+                    Ok(String::new()) // Provinces have no entry fallback.
                 };
             }
             Object::Terrain(ordinal) => {
                 return if named(name, "GetName") {
                     self.terrain_name(ordinal)
                 } else {
-                    Ok(String::new()) // kind 16 has no entry fallback (1410CD900).
+                    Ok(String::new()) // Terrain has no entry fallback.
                 };
             }
         };
         let Some(text) = property else {
-            // A miss: a scripted localisation of that name (1410CE090), else
+            // A miss: a scripted localisation of that name, else
             // empty text.
             return self.entry(object, name, scopes, active, event_active);
         };
@@ -1376,7 +1364,7 @@ impl<'a> ScriptedText<'a> {
         )
     }
 
-    /// The country table's properties (dispatcher 141A7B350), `None` for a
+    /// The country table's properties, `None` for a
     /// name the table lacks.
     fn country_property(
         &self,
@@ -1386,7 +1374,7 @@ impl<'a> ScriptedText<'a> {
     ) -> Result<Option<String>, String> {
         let tag = self.country_tag(slot)?.to_owned();
         let names = |suffix: &str| self.names.name_with(slot, suffix);
-        // 141A7B350 cases 37..41 probe the current tag without ideology.
+        // Non-ideology properties probe the current tag without ideology.
         let non_ideology = |suffix: &str| -> Result<String, String> {
             let key = format!("{tag}{suffix}");
             if self.localisation.get(&key).is_some() {
@@ -1396,8 +1384,7 @@ impl<'a> ScriptedText<'a> {
             }
         };
         let is = |entry: &str| named(name, entry);
-        // SsoString_UppercaseFirstCharacter (1424B6FE0): the first byte's
-        // toupper in the "C" locale ([`crt_case_text`]).
+        // The first byte's toupper in the "C" locale ([`crt_case_text`]).
         let upper_first = |text: String| crt_case_text(&text, true, true);
         Ok(Some(if is("GetName") {
             names("")?
@@ -1437,7 +1424,7 @@ impl<'a> ScriptedText<'a> {
             } else {
                 group.to_owned()
             };
-            // String_ToLowerInPlace (1424B8790), the "C" locale's tolower.
+            // Lowercase with the "C" locale's tolower.
             crt_case_text(&self.localise(&key)?, false, false)
         } else if is("GetRulingParty") || is("GetRulingPartyLong") {
             self.ruling_party(slot, &tag, is("GetRulingPartyLong"))?
@@ -1477,8 +1464,8 @@ impl<'a> ScriptedText<'a> {
     fn character_property(&self, id: u32, name: &str) -> Result<Option<String>, String> {
         let is = |entry: &str| named(name, entry);
         if is("GetName") {
-            // 141A72900 case 0 copies +0x28 directly; party leaders
-            // instead use 140FB5FD0 with the token fallback.
+            // Character GetName copies the stored name directly;
+            // party leaders instead use the token fallback.
             let (characters, gap) = rows::<tables::Characters>(self.frame);
             let row = characters
                 .iter()
@@ -1501,8 +1488,7 @@ impl<'a> ScriptedText<'a> {
         Ok(None)
     }
 
-    /// CCharacter::GetDisplayName (140FB5FD0): the stored name (+0x28),
-    /// else the saved name key (+0x48) through the localiser.
+    /// The stored character name, else the saved name key through the localiser.
     fn character_name(&self, id: u32) -> Result<String, String> {
         let (characters, gap) = rows::<tables::Characters>(self.frame);
         let row = characters
@@ -1518,8 +1504,8 @@ impl<'a> ScriptedText<'a> {
             .map_err(|refusal| refusal.to_string())
     }
 
-    /// Capital (+0x1018) or OriginalCapital (+0x101C, else +0x1018): a null
-    /// state when invalid, so a property then reads `NULL`.
+    /// Capital or original capital, falling back to capital: a null state
+    /// when invalid, so a property then reads `NULL`.
     fn capital(&self, slot: u32, original: bool) -> Result<Object, String> {
         let (politics, gap) = rows::<tables::Politics>(self.frame);
         let row = politics
@@ -1546,7 +1532,7 @@ impl<'a> ScriptedText<'a> {
             .ok_or_else(|| {
                 format!("the overlord of country slot {slot} is unknown: CountryAppearance {gap}")
             })?;
-        // 141A7DC60: a positive overlord (+0x188) becomes the context; none
+        // A positive overlord becomes the context; none
         // is logged and leaves it unchanged.
         let link = match u32::try_from(row.overlord) {
             Ok(link) if link > 0 => link,
@@ -1623,9 +1609,8 @@ impl<'a> ScriptedText<'a> {
             })
     }
 
-    /// The context 141A81250 selects from an event scope: its character
-    /// (+0x50, 140529310) first, then its country (+8), then its state
-    /// (+0xA8).
+    /// Select the context from an event scope: its character first,
+    /// then its country, then its state.
     fn event_object(&self, object: EventObject, name: &str) -> Result<Object, String> {
         Ok(match object {
             EventObject::Country(slot) | EventObject::CountryState { country: slot, .. } => {
@@ -1652,25 +1637,25 @@ impl<'a> ScriptedText<'a> {
             }
             EventObject::Province(id) => {
                 return Err(format!(
-                    "{name}: province {id} is a text object, not a native event-scope target (141A81250)"
+                    "{name}: province {id} is a text object, not an event-scope target"
                 ));
             }
             EventObject::IndustrialOrganisation(_)
             | EventObject::Project { .. }
             | EventObject::Raid(_)
             | EventObject::Unit(_)
-            | EventObject::Combat => Object::State(None), // No +8/+50/+A8 (141A81250).
+            | EventObject::Combat => Object::State(None), // No country, character or state.
         })
     }
 
-    /// The local player's country as 1410CF9C0 / 141A81250 take it: CGameState+0x520
-    /// when signed-positive, else +0x524 (LocalPlayer, viewing_country),
-    /// through CountryLinks; refused by name where the hour does not say.
+    /// The local player's country when signed-positive, else the observer
+    /// country, through CountryLinks; refused by name where the hour
+    /// does not say.
     fn local_player(&self) -> Result<u32, String> {
         let (players, gap) = rows::<tables::LocalPlayer>(self.frame);
         if !complete::<tables::LocalPlayer>(self.frame) {
             return Err(format!(
-                "the local player's country (CGameState+0x520, +0x524) is not recorded this hour: LocalPlayer {gap}"
+                "the local player's country is not recorded this hour: LocalPlayer {gap}"
             ));
         }
         let [player] = players else {
@@ -1684,7 +1669,7 @@ impl<'a> ScriptedText<'a> {
         } else {
             player.observer_country
         };
-        // ResolveCountryReference (140BA56A0) maps zero to slot zero.
+        // Country-reference resolution maps zero to slot zero.
         if raw == 0 {
             return Ok(0);
         }
@@ -1694,12 +1679,11 @@ impl<'a> ScriptedText<'a> {
     }
 
     /// A character of the current country, else of the active event scope's
-    /// country (+8) when it has one (1410CF9C0 -> 1410D6BF0), whose script
+    /// country when it has one, whose script
     /// token is `segment`; `None` only where the frame proves there is none.
     /// A state, character or unit leader scope holds no country: default
-    /// construction (140528800) leaves +8 zero and SetState, SetCharacter and
-    /// set_unit_leader (14052EFD0) clear it (14052F3F0), so the search is
-    /// skipped. The active ability's nonclearing leader setter instead keeps
+    /// construction leaves it zero and setting those objects clears it, so
+    /// the search is skipped. The active ability's nonclearing leader setter keeps
     /// the country, including after a character text promotion. For a
     /// province scope the country is not known, so only a
     /// token no character has is proven no character.
@@ -1760,7 +1744,7 @@ impl<'a> ScriptedText<'a> {
                 Ok(index) if lexical[index].literal == segment.as_bytes() => {
                     if country.is_none() {
                         return Err(format!(
-                            "{segment} names character {}, and the event scope's country (+8), which 1410CF9C0 searches, is not known here",
+                            "{segment} names character {}, and the event scope's country, which character lookup searches, is not known here",
                             row.id
                         ));
                     }
@@ -1793,7 +1777,7 @@ impl<'a> ScriptedText<'a> {
         }
     }
 
-    /// GetRulingParty (14118F860) or its long form (14118F810).
+    /// The ruling party's name or its long form.
     fn ruling_party(&self, slot: u32, tag: &str, long: bool) -> Result<String, String> {
         let (politics, gap) = rows::<tables::Politics>(self.frame);
         let politics = politics
@@ -1826,7 +1810,7 @@ impl<'a> ScriptedText<'a> {
                 .localise(key)
                 .map_err(|refusal| refusal.to_string());
         }
-        // 14118EAD0 receives CPoliticalParty+0x20, not its roster owner.
+        // Party naming uses the party's tag reference, not its roster owner.
         let slot = if party.tag == 0 {
             0
         } else {
@@ -1847,7 +1831,7 @@ impl<'a> ScriptedText<'a> {
         let key = match crate::products::party_history::party_key(&naming, defines) {
             Some(key) => key,
             None => {
-                // The native getter reads signed +0x130C only after the own
+                // Read the signed original-tag reference only after the own
                 // party key misses, without the name generator's dynamic gate.
                 crate::products::party_history::party_key_with_selected_tag(
                     &naming,
@@ -1859,7 +1843,7 @@ impl<'a> ScriptedText<'a> {
                 })?
             }
         };
-        // 14118EAD0 probes `_long` only on a `_party` key it found, not on
+        // Probe `_long` only on a `_party` key found, not on
         // the group token it falls back to.
         let long_key = format!("{key}_long");
         let key = if long && key != naming.token && defines(&long_key) {
@@ -1870,9 +1854,8 @@ impl<'a> ScriptedText<'a> {
         self.localise(&key)
     }
 
-    /// GetFactionName (141A7B350 case 0x12): the faction's name, else the
-    /// executable's key `NO_FACTION` through the localiser (142230F20), which
-    /// copies it as its bytes when the content lacks it (142230940).
+    /// The faction's name, else `NO_FACTION` through the localiser,
+    /// which copies the key as its bytes when the content lacks it.
     fn faction_name(&self, slot: u32) -> Result<String, String> {
         let Some(faction) = self.scopes.faction(slot)? else {
             return self.localise(NO_FACTION);
@@ -1911,10 +1894,10 @@ impl<'a> ScriptedText<'a> {
     }
 }
 
-/// The key GetFactionName localises without a faction (141A7B350 case 0x12).
+/// The key GetFactionName localises without a faction.
 const NO_FACTION: &str = "NO_FACTION";
 
-/// The ten pronoun functions (country IDs 27-36, character 1-10).
+/// The ten pronoun properties shared by countries and characters.
 const PRONOUNS: [&str; 10] = [
     "GetSheHe",
     "GetSheHeCap",
@@ -1928,7 +1911,7 @@ const PRONOUNS: [&str; 10] = [
     "GetHerselfHimselfCap",
 ];
 
-/// GetOld* (141A7B350 cases 5-9): the property, the suffix of the current
+/// GetOld*: the property, the suffix of the current
 /// name it falls back to, and whether the first byte is uppercased.
 const OLD_NAMES: [(&str, &str, bool); 5] = [
     ("GetOldName", "", false),

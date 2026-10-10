@@ -1,0 +1,390 @@
+//! Project programs read from each country's authenticated status. Shared
+//! root entries are deduplicated by object pointer before materialization.
+
+use crate::{
+    Memory, ccountry, msvc_string, nproject_cprogram_status, read, read_slice, walk::Outcome,
+};
+
+/// Program primary vtable.
+pub const VTABLE_RVA: usize = 0x0295_ac30;
+/// Program reference-type discriminator.
+pub const REFERENCE_TYPE: u32 = 83;
+/// Program u32 reference type.
+pub const TYPE: usize = 0x08;
+/// Program u32 local ID.
+pub const ID: usize = 0x0c;
+/// Program u32 owner reference, checked against its independent copy.
+pub const OWNER_PRIMARY: usize = 0x18;
+/// Program u32 province reference, checked against its independent copy.
+pub const PROVINCE_PRIMARY: usize = 0x1c;
+/// Program MSVC building-token string.
+pub const BUILDING: usize = 0x20;
+/// Program u32 active-project handle.
+pub const ACTIVE_PROJECT_HANDLE: usize = 0x50;
+/// Active-project presence byte checked before consuming its handle.
+pub const ACTIVE_FLAG: usize = 0x54;
+/// Scientist character u32 reference type.
+pub const SCIENTIST_REFERENCE_TYPE: usize = 0x58;
+/// Scientist character u32 reference ID.
+pub const SCIENTIST_REFERENCE_ID: usize = 0x5c;
+/// Independent program owner-reference copy.
+pub const OWNER_COPY: usize = 0x170;
+/// Independent program province-reference copy.
+pub const PROVINCE_COPY: usize = 0x174;
+/// Unread prototype rewards, serialized as signed i32.
+pub const UNREAD_PROTOTYPE_REWARDS: usize = 0x178;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Row {
+    pub id: u32,
+    pub owner: u32,
+    pub province: u32,
+    pub active_project: Option<u32>,
+    /// Full CCharacter reference; zero and typed-null values remain distinct.
+    pub scientist: u64,
+    pub unread_rewards: i32,
+    pub building_start: usize,
+    pub building_len: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NameWalk {
+    pub outcome: Outcome,
+    pub bytes_len: usize,
+    pub required_bytes: usize,
+    /// Rooted program pointer slots before deduplication, for off-thread growth.
+    pub required_candidates: usize,
+}
+
+/// The caller supplies both pointer scratch and the output arena. Pointer
+/// sorting removes stale aliases in O(n log n) without a heap allocation. A
+/// candidate-capacity failure publishes unavailable and required_candidates:
+/// aliases cannot be counted as distinct missing rows before a complete census.
+/// Native owner comes from the program, independently of the country root.
+pub fn walk(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    candidates: &mut [usize],
+    output: &mut [Row],
+    names: &mut [u8],
+) -> NameWalk {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Fixed(candidates),
+        crate::walk::Buffer::Fixed(output),
+        crate::walk::Buffer::Fixed(names),
+    )
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    candidates: &mut Vec<usize>,
+    output: &mut Vec<Row>,
+    names: &mut Vec<u8>,
+) -> NameWalk {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(candidates),
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(names),
+    )
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    mut candidates: crate::walk::Buffer<'_, usize>,
+    mut output: crate::walk::Buffer<'_, Row>,
+    mut names: crate::walk::Buffer<'_, u8>,
+) -> NameWalk {
+    let mut result = NameWalk {
+        outcome: Outcome::Rows { len: 0 },
+        bytes_len: 0,
+        required_bytes: 0,
+        required_candidates: 0,
+    };
+    let read_result = (|| {
+        let countries = ccountry::Reader::new(memory, base, game_state)?;
+        let mut found_country = false;
+        for slot in 1..countries.count() {
+            let Some(country) = countries.at(slot)? else {
+                continue;
+            };
+            found_country = true;
+            let status = nproject_cprogram_status::from_country(memory, base, country, &countries)?;
+            let programs = nproject_cprogram_status::programs(memory, status)?;
+            // The original program-status roster owns candidate demand.
+            candidates.ensure(
+                result
+                    .required_candidates
+                    .checked_add(programs.count as usize)
+                    .ok_or("program candidate count overflow")?,
+            )?;
+            for index in 0..programs.count {
+                if result.required_candidates < candidates.len() {
+                    let pointer = programs
+                        .element(index, 8)
+                        .and_then(|p| read::<u64>(memory, p))
+                        .and_then(|p| usize::try_from(p).ok())
+                        .filter(|&p| p != 0)
+                        .ok_or("program pointer unreadable or null")?;
+                    candidates[result.required_candidates] = pointer;
+                }
+                result.required_candidates = result
+                    .required_candidates
+                    .checked_add(1)
+                    .ok_or("program candidate count overflow")?;
+            }
+        }
+        if !found_country {
+            return Err("program country roster contains no countries");
+        }
+        if result.required_candidates > candidates.len() {
+            result.outcome = Outcome::Unavailable {
+                reason: "program pointer scratch capacity insufficient",
+            };
+            return Ok(());
+        }
+        let candidates = &mut candidates[..result.required_candidates];
+        candidates.sort_unstable();
+        let mut len = 0_usize;
+        let mut unread_rows = 0_u32;
+        let mut previous = None;
+        for &pointer in candidates.iter() {
+            if previous == Some(pointer) {
+                continue;
+            }
+            previous = Some(pointer);
+            let (mut row, source) = read_row(memory, base, pointer)?;
+            countries.resolve(row.owner)?;
+            result.required_bytes = result
+                .required_bytes
+                .checked_add(row.building_len)
+                .ok_or("program building byte count overflow")?;
+            output.ensure(len.checked_add(1).ok_or("program row count overflow")?)?;
+            names.ensure(result.required_bytes)?;
+            if len == output.len() || row.building_len > names.len() - result.bytes_len {
+                unread_rows = unread_rows
+                    .checked_add(1)
+                    .ok_or("program row count overflow")?;
+                continue;
+            }
+            row.building_start = result.bytes_len;
+            let end = result.bytes_len + row.building_len;
+            if !read_slice(memory, source, &mut names[result.bytes_len..end]) {
+                return Err("program building bytes unreadable");
+            }
+            result.bytes_len = end;
+            output[len] = row;
+            len += 1;
+        }
+        output[..len].sort_unstable_by_key(|row| row.id);
+        if output[..len]
+            .windows(2)
+            .any(|rows| rows[0].id == rows[1].id)
+        {
+            return Err("different program objects share an id");
+        }
+        result.outcome = if unread_rows == 0 {
+            Outcome::Rows { len }
+        } else {
+            Outcome::Truncated { len, unread_rows }
+        };
+        Ok(())
+    })();
+    if let Err(reason) = read_result {
+        result.outcome = Outcome::Unavailable { reason };
+        result.bytes_len = 0;
+    }
+    result
+}
+
+fn read_row(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+) -> Result<(Row, usize), &'static str> {
+    let expected = base
+        .checked_add(VTABLE_RVA)
+        .ok_or("module address overflow")?;
+    let header = read::<[u8; 16]>(memory, pointer).ok_or("program identity unreadable")?;
+    if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected as u64 {
+        return Err("program vtable mismatch");
+    }
+    if u32::from_le_bytes(header[8..12].try_into().unwrap()) != REFERENCE_TYPE {
+        return Err("program reference type mismatch");
+    }
+    let id = u32::from_le_bytes(header[12..16].try_into().unwrap());
+    if id == 0 {
+        return Err("program id is zero");
+    }
+    let at = |offset| {
+        pointer
+            .checked_add(offset)
+            .ok_or("program address overflow")
+    };
+    let mut primary = [0; 8];
+    let mut copies = [0; 12];
+    let mut scientist = [0; 8];
+    let mut active = [0; 1];
+    let mut building = [0; 32];
+    if memory.copy_scattered(
+        [
+            at(OWNER_PRIMARY)?,
+            at(OWNER_COPY)?,
+            at(SCIENTIST_REFERENCE_TYPE)?,
+            at(ACTIVE_FLAG)?,
+            at(BUILDING)?,
+        ],
+        &mut [
+            &mut primary,
+            &mut copies,
+            &mut scientist,
+            &mut active,
+            &mut building,
+        ],
+    ) != 5
+    {
+        return Err("program fields unreadable");
+    }
+    if primary != copies[..8] {
+        return Err("program owner or province copies mismatch");
+    }
+    let owner = u32::from_le_bytes(primary[..4].try_into().unwrap());
+    let province = u32::from_le_bytes(primary[4..8].try_into().unwrap());
+    if active[0] > 1 {
+        return Err("program active presence invalid");
+    }
+    let active_project = if active[0] == 0 {
+        None
+    } else {
+        Some(
+            read::<u32>(memory, at(ACTIVE_PROJECT_HANDLE)?)
+                .ok_or("program active project unreadable")?,
+        )
+    };
+    let name_len = u64::from_le_bytes(building[16..24].try_into().unwrap());
+    let name_capacity = u64::from_le_bytes(building[24..32].try_into().unwrap());
+    if name_capacity < msvc_string::INLINE_CAPACITY || name_len > name_capacity {
+        return Err("program building string header invalid");
+    }
+    let building_len = usize::try_from(name_len).map_err(|_| "program building length overflow")?;
+    let source = if name_capacity == msvc_string::INLINE_CAPACITY {
+        at(BUILDING)?
+    } else {
+        usize::try_from(u64::from_le_bytes(building[..8].try_into().unwrap()))
+            .ok()
+            .filter(|&p| p != 0)
+            .ok_or("program building pointer invalid")?
+    };
+    if read::<u8>(
+        memory,
+        source
+            .checked_add(building_len)
+            .ok_or("program building address overflow")?,
+    ) != Some(0)
+    {
+        return Err("program building terminator unreadable or invalid");
+    }
+    Ok((
+        Row {
+            id,
+            owner,
+            province,
+            active_project,
+            scientist: u64::from_le_bytes(scientist),
+            unread_rewards: i32::from_le_bytes(copies[8..12].try_into().unwrap()),
+            building_start: 0,
+            building_len,
+        },
+        source,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::SliceMemory;
+
+    struct AbsentPayload<'a>(SliceMemory<'a>);
+    impl Memory for AbsentPayload<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            let forbidden = self.0.base + ACTIVE_PROJECT_HANDLE;
+            if address < forbidden + 4 && address.saturating_add(destination.len()) > forbidden {
+                return false;
+            }
+            self.0.copy(address, destination)
+        }
+    }
+
+    fn program() -> [u8; 0x188] {
+        let mut bytes = [0; 0x188];
+        bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+        bytes[TYPE..TYPE + 4].copy_from_slice(&REFERENCE_TYPE.to_le_bytes());
+        bytes[ID..ID + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        bytes[OWNER_PRIMARY..OWNER_PRIMARY + 4].copy_from_slice(&439_u32.to_le_bytes());
+        bytes[PROVINCE_PRIMARY..PROVINCE_PRIMARY + 4].copy_from_slice(&13413_u32.to_le_bytes());
+        let owner_province: [u8; 8] = bytes[OWNER_PRIMARY..OWNER_PRIMARY + 8].try_into().unwrap();
+        bytes[OWNER_COPY..OWNER_COPY + 8].copy_from_slice(&owner_province);
+        bytes[UNREAD_PROTOTYPE_REWARDS..UNREAD_PROTOTYPE_REWARDS + 4]
+            .copy_from_slice(&i32::MAX.to_le_bytes());
+        bytes[BUILDING..BUILDING + 3].copy_from_slice(&[b'A', 0xff, b'B']);
+        bytes[BUILDING + 16..BUILDING + 24].copy_from_slice(&3_u64.to_le_bytes());
+        bytes[BUILDING + 24..BUILDING + 32].copy_from_slice(&15_u64.to_le_bytes());
+        bytes[SCIENTIST_REFERENCE_TYPE..SCIENTIST_REFERENCE_TYPE + 8]
+            .copy_from_slice(&u64::MAX.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn absent_active_project_never_reads_payload_and_preserves_native_fields() {
+        let bytes = program();
+        let memory = AbsentPayload(SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        });
+        let (row, source) = read_row(&memory, 0, 0x1000).unwrap();
+        assert_eq!(row.id, u32::MAX);
+        assert_eq!(row.owner, 439);
+        assert_eq!(row.province, 13413);
+        assert_eq!(row.active_project, None);
+        assert_eq!(row.scientist, u64::MAX);
+        assert_eq!(row.unread_rewards, i32::MAX);
+        assert_eq!(row.building_len, 3);
+        let mut name = [0; 3];
+        assert!(read_slice(&memory, source, &mut name));
+        assert_eq!(name, [b'A', 0xff, b'B']);
+    }
+
+    #[test]
+    fn owner_copy_conflict_and_present_unreadable_payload_are_errors() {
+        let mut bytes = program();
+        bytes[OWNER_COPY] ^= 1;
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        assert_eq!(
+            read_row(&memory, 0, 0x1000),
+            Err("program owner or province copies mismatch")
+        );
+        bytes[OWNER_COPY] ^= 1;
+        bytes[ACTIVE_FLAG] = 1;
+        let memory = AbsentPayload(SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        });
+        assert_eq!(
+            read_row(&memory, 0, 0x1000),
+            Err("program active project unreadable")
+        );
+    }
+}

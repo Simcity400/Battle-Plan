@@ -894,7 +894,7 @@ fn every_licence_record_field_can_differ_on_its_own() {
     assert_eq!(report.compared_tables["ProductionLicenseRecords"], 1);
 }
 
-/// 1409BCC70 omits the order word only when it is zero, so a nonzero
+/// The game omits the order word only when it is zero, so a nonzero
 /// captured order against an omitted saved one is a real difference.
 #[test]
 fn an_omitted_name_order_is_compared_against_zero_not_waived() {
@@ -1179,7 +1179,7 @@ military_deployment_conveyor={
     compare_deployment(&frame, &saved, &links, &tokens, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(report.differences[0].contains("override_set_programmatically"));
-    // A clear +0xa8 flag without its `no` field is a real difference.
+    // A clear flag without its `no` field is a real difference.
     let mut cleared_a = lines;
     cleared_a[0].custom_flag_a = 0;
     let frame = deployment_frame(
@@ -1606,8 +1606,8 @@ fn lexical_writers_keep_exact_bytes_and_scope_unproved_nul_literals() {
 
 /// The archetype comes from the content: the type itself when it is an
 /// archetype, else its `archetype`, else its parent's. A type the content
-/// declares twice is the later declaration, reset and read again
-/// (1409E5170); names match under the lexer's fold.
+/// declares twice is the later declaration, reset and read again when
+/// names match under the lexer's fold.
 #[test]
 fn variant_archetypes_follow_the_content_equipment_types() {
     let (equipment, _) = installed_content::equipment::fixture::load(&[(
@@ -1674,6 +1674,8 @@ fn variant_archetypes_follow_the_content_equipment_types() {
 /// oracle found each "absent from the content" before the expansion.
 #[test]
 fn duplicated_archetype_variants_of_the_live_save_match_the_content() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (equipment, _) = installed_content::equipment::fixture::load(&[
         (
             "common/units/equipment/plane_airframes.txt",

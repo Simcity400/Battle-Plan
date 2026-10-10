@@ -1,4 +1,4 @@
-//! Source-ordered palette142399990 and quaternion matrix1424E7F50.
+//! Ordered animation palettes and quaternion matrices.
 use installed_content::mesh::{Animation, JointPose, NativeJoint};
 use std::io;
 
@@ -15,7 +15,7 @@ pub const IDENTITY: Matrix = [
     [0., 0., 0., 1.],
 ];
 
-///1422621F0/142399990 multiply four complete columns in this add order.
+/// Multiply four complete columns in this addition order.
 pub fn multiply(parent: Matrix, local: Matrix) -> Matrix {
     std::array::from_fn(|column| {
         std::array::from_fn(|row| {
@@ -98,7 +98,7 @@ fn parent_world(
 }
 
 /// Bind matrices stay actor-local. Attachment actors use joint world matrices,
-/// not skin matrices, through1422621F0.
+/// not skin matrices.
 pub fn actors(
     rig: &super::entity_animation::Rig,
     player: Option<&super::entity_animation::Player>,
@@ -135,17 +135,28 @@ pub fn actors(
                 },
                 |p| p.native_locals(rig, index),
             );
-            locals.and_then(|locals| {
-                let locals = locals.ok_or_else(|| io::Error::other("native skeleton has no played animation; its palette is uninitialized (142399610/142399990/14239B0B0)"))?;
-                assemble(&source.skeleton, &locals.poses, source.mesh_scale, locals.crossfade)
-            }).map_err(|e| e.to_string())
+            locals
+                .and_then(|locals| {
+                    let locals = locals.ok_or_else(|| {
+                        io::Error::other(
+                            "native skeleton has no played animation; its palette is uninitialized",
+                        )
+                    })?;
+                    assemble(
+                        &source.skeleton,
+                        &locals.poses,
+                        source.mesh_scale,
+                        locals.crossfade,
+                    )
+                })
+                .map_err(|e| e.to_string())
         };
         actors.push(Actor { world, pose });
     }
     actors
 }
 
-///1424E8D50: only the near-linear branch normalizes. Static channels never call it.
+/// Only the near-linear branch normalizes. Static channels never call it.
 pub fn slerp(a: [f32; 4], mut b: [f32; 4], t: f32) -> [f32; 4] {
     let mut dot = b[1] * a[1] + b[0] * a[0] + b[2] * a[2] + b[3] * a[3];
     if dot < 0. {
@@ -153,7 +164,6 @@ pub fn slerp(a: [f32; 4], mut b: [f32; 4], t: f32) -> [f32; 4] {
         dot = -dot;
     }
     if dot <= 0.9995 {
-        //142B7E168
         let theta = dot.acos();
         let angle = theta * t;
         let b_weight = angle.sin() / theta.sin();
@@ -170,7 +180,7 @@ pub fn slerp(a: [f32; 4], mut b: [f32; 4], t: f32) -> [f32; 4] {
     }
 }
 
-///142399990 uses double sample intervals, wraps the next index even when the
+/// The game uses double sample intervals, wraps the next index even when the
 ///playback time is clamped, and blends channels in source order.
 pub fn sample(animation: &Animation, seconds: f32, looping: bool) -> io::Result<Vec<JointPose>> {
     if !animation.fps.is_finite()
@@ -222,7 +232,7 @@ pub fn sample(animation: &Animation, seconds: f32, looping: bool) -> io::Result<
         .collect())
 }
 
-/// State crossfade is also source ordered (142399990), never name-remapped.
+/// State crossfade also follows skeleton order, never name-remapped.
 pub fn blend(a: JointPose, b: JointPose, t: f32) -> JointPose {
     JointPose {
         translation: std::array::from_fn(|i| (1. - t) * a.translation[i] + t * b.translation[i]),
@@ -233,7 +243,7 @@ pub fn blend(a: JointPose, b: JointPose, t: f32) -> JointPose {
 
 pub(super) fn local(pose: JointPose, mesh_scale: f32) -> Matrix {
     let [x, y, z, w] = pose.rotation;
-    //1424E7F50 consumes the quaternion verbatim; no normalization.
+    // The game consumes the quaternion verbatim; no normalization.
     let twice = |value: f32| value + value;
     let basis = [
         [
@@ -304,7 +314,7 @@ pub fn assemble(
     let mut joints: Vec<_> = locals
         .iter()
         .take(skeleton.len())
-        //14239A123/137/145 scale crossfade translation by joint scale;
+        // Scale crossfade translation by joint scale;
         //the single-clip branch uses meshscale.
         .map(|v| local(*v, if crossfade { v.scale } else { mesh_scale }))
         .collect();
@@ -425,7 +435,7 @@ mod tests {
             sample(&animation, 0., false).unwrap()[0].rotation,
             [0., 0., 0., 1.]
         );
-        //1424E8D50's spherical branch does not normalize a nonunit result.
+        // The game's spherical branch does not normalize a nonunit result.
         assert_eq!(
             slerp([0., 0., 0., 0.5], [0.5, 0., 0., 0.], 0.),
             [0., 0., 0., 0.5]

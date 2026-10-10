@@ -421,7 +421,7 @@ fn decode(
                 }
             }
             6 => {
-                // 140C79E70 can repeat before deferred deletion. The hook's
+                // Destruction can repeat before deferred deletion. The hook's
                 // reserved entry identifies this invocation, including nesting.
                 let entry = reader.word()?;
                 let killer = reader.word()?;
@@ -952,7 +952,7 @@ mod tests {
     }
     #[test]
     fn repeated_and_nested_destruction_observations_preserve_each_killer_and_sibling_table() {
-        // 140C79E70 -> 140CCC7F0 observes each invocation before deferred
+        // The destruction hook observes each invocation before deferred
         // deletion. Reentrant effects may complete an inner entry first.
         let first = 77;
         let division = 0x8000_0001_0000_1269;

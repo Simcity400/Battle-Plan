@@ -1,5 +1,5 @@
 //! The native fixed5 arithmetic the combat hovers reproduce. Products wrap at
-//! 64 bits before the signed division, as the game's qword code does.
+//! 64 bits before the signed division.
 
 pub(super) const ONE: i64 = 100_000;
 /// The positive sentinel the native fixed5 division returns for a zero
@@ -41,7 +41,7 @@ pub(super) fn fraction(value: i64, maximum: i64) -> Option<i64> {
     ratio(value, maximum, EXCEPTIONAL)
 }
 
-/// `CTechnology::fixed_round@1424D8760`: half away from zero.
+/// `fixed-point rounding`: half away from zero.
 pub(super) fn round(value: i64) -> i32 {
     (value.wrapping_add(if value < 0 { -50_000 } else { 50_000 }) / ONE) as i32
 }

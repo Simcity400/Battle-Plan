@@ -309,8 +309,8 @@ fn a_member_that_is_not_an_authenticated_unit_fails_every_table() {
     assert!(matches!(walk.members, Outcome::Unavailable { .. }));
     assert!(matches!(walk.groups, Outcome::Unavailable { .. }));
 
-    // The paired army vtables cannot turn a nonzero native class word into a
-    // class-zero member for CountFormationDivisions.
+    // The paired army vtables cannot turn a nonzero class word into a
+    // class-zero formation member.
     let mut bytes = fixture();
     p32(&mut bytes, D2 + 8, 13);
     let (walk, ..) = run(&bytes, [4, 4, 4]);

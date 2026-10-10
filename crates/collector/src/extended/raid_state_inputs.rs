@@ -1,6 +1,6 @@
-//! The stored operands of state-scope raid target triggers: resource amounts
-//! (`CResourceCountTrigger::GetValue@141390640`), state dynamic modifiers and
-//! state cores (`is_core_of`). One census walk fills the first four tables and
+//! The stored operands of state-scope raid target triggers: resource amounts,
+//! state dynamic modifiers and state cores (`is_core_of`). One census walk
+//! fills the first four tables and
 //! a second pass over the same census reads the cores. They are two sliced
 //! families: the
 //! state tables (`raid_state`, owner: state ID) and CountryBuildingResources

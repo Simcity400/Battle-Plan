@@ -165,6 +165,8 @@ fn render_result(scan: &ScannedProduced, refits: bool) -> ProductionSpendingRepl
 
 #[test]
 fn production_spending_empty_evidence_needs_a_complete_census_and_independent_rocket_read() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for missing in [TableId::ProductionLines, TableId::RocketProductionOutput] {
         let mut frames = day(0, Vec::new(), Some(Vec::new()));
         for frame in &mut frames {
@@ -260,6 +262,8 @@ fn rocket_counts(frames: &mut [DecodedFrame], ticks: u64, deliveries: u64) {
 
 #[test]
 fn production_spending_missing_rocket_coverage_keeps_equipment_leaf_but_refuses_combined_zero() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frames = day(
         0,
         vec![line(1, 1, 1)],
@@ -284,6 +288,8 @@ fn production_spending_missing_rocket_coverage_keeps_equipment_leaf_but_refuses_
 
 #[test]
 fn production_spending_rocket_signed_totals_survive_removal_and_share_no_design_leaf() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frames = day(
         0,
         vec![line(1, 1, 1)],
@@ -330,6 +336,8 @@ fn production_spending_rocket_signed_totals_survive_removal_and_share_no_design_
 
 #[test]
 fn production_rocket_retained_spending_refusals_preserve_deliveries_and_local_scope() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // Changed spending/instant amounts without a tick, and regressed design,
     // country and world tick counts are independently valid row encodings.
     for (scope, mode) in [(2, 0), (2, 1), (2, 2), (1, 2), (0, 2)] {
@@ -427,6 +435,8 @@ fn production_rocket_retained_spending_refusals_preserve_deliveries_and_local_sc
 
 #[test]
 fn production_rocket_retained_delivery_refusals_preserve_spending_and_stay_unknown() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (scope, changed_amount) in [(2, true), (2, false), (1, false), (0, false)] {
         let mut frames = day(0, vec![line(1, 1, 7)], Some(vec![applied(1, 1, 0, 111)]));
         rockets(&mut frames, 17, 3, true);
@@ -484,6 +494,8 @@ fn production_rocket_retained_delivery_refusals_preserve_spending_and_stay_unkno
 
 #[test]
 fn production_rocket_partial_amount_changes_do_not_invalidate_the_other_measure() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for spending_partial in [true, false] {
         let mut frames = day(0, vec![line(1, 1, 7)], Some(vec![applied(1, 1, 0, 111)]));
         rockets(&mut frames, 17, 3, true);
@@ -548,6 +560,8 @@ fn production_rocket_partial_amount_changes_do_not_invalidate_the_other_measure(
 
 #[test]
 fn production_spending_rocket_is_independent_of_equipment_census_and_delivery_exactness() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frames = day(0, vec![], None);
     rockets(&mut frames, 456_789, 0, true);
     for frame in &mut frames {
@@ -576,6 +590,8 @@ fn production_spending_rocket_is_independent_of_equipment_census_and_delivery_ex
 
 #[test]
 fn production_spending_rocket_world_owner_failure_does_not_erase_known_design_amounts() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frames = day(0, vec![], Some(vec![]));
     rockets(&mut frames, 17, 2, true);
     for frame in &mut frames {
@@ -598,6 +614,8 @@ fn production_spending_rocket_world_owner_failure_does_not_erase_known_design_am
 
 #[test]
 fn production_spending_rocket_missing_scope_and_disappearing_retained_rows_are_not_zero() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frames = day(0, vec![], Some(vec![]));
     rockets(&mut frames, 21, 2, true);
     let mut next = day(1, vec![], Some(vec![]));
@@ -670,6 +688,8 @@ fn production_spending_rocket_source_uses_content_classification_and_refuses_amb
 
 #[test]
 fn production_spending_known_country_rocket_failure_does_not_taint_another_country() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frames = day(0, vec![], Some(vec![]));
     for frame in &mut frames {
         if let TableView::Complete(TableRows::Countries(rows)) =
@@ -735,6 +755,8 @@ fn production_spending_known_country_rocket_failure_does_not_taint_another_count
 
 #[test]
 fn production_spending_protocol_zero_never_resolves_through_a_native_country_link() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frames = day(0, vec![], Some(vec![]));
     for frame in &mut frames {
         if let TableView::Complete(TableRows::CountryLinks(rows)) =
@@ -783,6 +805,8 @@ fn production_spending_protocol_zero_never_resolves_through_a_native_country_lin
 
 #[test]
 fn production_spending_uses_applied_inputs_without_delivery_or_census_repricing() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frames = day(
         0,
         vec![line(1, 1, 100_001)],
@@ -826,6 +850,8 @@ fn production_spending_uses_applied_inputs_without_delivery_or_census_repricing(
 
 #[test]
 fn production_spending_gap_ends_known_and_observation_restart_cannot_recover() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frames = day(0, vec![line(1, 1, 100_000)], Some(vec![output(1, 1, 2)]));
     frames.remove(1);
     frames.extend(day(
@@ -851,6 +877,8 @@ fn production_spending_gap_ends_known_and_observation_restart_cannot_recover() {
 
 #[test]
 fn production_spending_restart_without_gap_is_unknown_campaign_total() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frames = day(0, vec![line(1, 1, 100_000)], Some(vec![output(1, 1, 2)]));
     let mut restarted = output(1, 1, 1);
     restarted.since_hour = hour(1);
@@ -864,6 +892,8 @@ fn production_spending_restart_without_gap_is_unknown_campaign_total() {
 
 #[test]
 fn production_spending_leading_and_trailing_explicit_gaps_are_unknown() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::{branches::Gap, spool::Record};
     let mut frames = day(0, vec![line(1, 1, 100_000)], Some(vec![output(1, 1, 2)]));
     frames.drain(..4);
@@ -909,6 +939,8 @@ fn production_spending_leading_and_trailing_explicit_gaps_are_unknown() {
 
 #[test]
 fn production_spending_missing_publication_never_becomes_zero() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frames = day(0, vec![line(1, 1, 100_000)], Some(vec![output(1, 1, 2)]));
     frames.extend(day(1, vec![line(1, 1, 100_000)], None));
     frames.extend(day(
@@ -930,6 +962,8 @@ fn production_spending_missing_publication_never_becomes_zero() {
 
 #[test]
 fn production_spending_earlier_unread_precedes_a_later_explicit_gap() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::{branches::Gap, spool::Record};
     let mut frames = day(0, vec![line(1, 1, 100_000)], Some(vec![output(1, 1, 2)]));
     frames.extend(day(1, vec![line(1, 1, 100_000)], None));
@@ -956,6 +990,8 @@ fn production_spending_earlier_unread_precedes_a_later_explicit_gap() {
 
 #[test]
 fn production_spending_deleted_line_keeps_its_final_applied_input_without_a_cost_census() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frames = day(
         0,
         vec![line(1, 1, 200_000)],
@@ -1038,6 +1074,8 @@ fn production_spending_reports_invalid_variant_text_without_content() {
 
 #[test]
 fn production_spending_mod_content_domains_and_refit_naval_railway_rules_are_shared() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut lines = vec![
         line(1, 1, 100_000),
         line(2, 2, 200_000),
@@ -1076,6 +1114,8 @@ fn production_spending_mod_content_domains_and_refit_naval_railway_rules_are_sha
 
 #[test]
 fn production_spending_is_independent_of_later_census_design_mio_and_invalid_cost() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (variant, mio, cost) in [(2, 0, 100_000), (1, 99, 0), (1, 0, -1)] {
         let mut census = line(1, variant, cost);
         census.mio = mio;
@@ -1089,6 +1129,8 @@ fn production_spending_is_independent_of_later_census_design_mio_and_invalid_cos
 
 #[test]
 fn production_spending_widens_independent_native_totals_instead_of_multiplying_them_by_cost() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let lines = (1..=3).map(|id| line(id, 1, i64::MAX)).collect();
     let outputs = (1..=3)
         .map(|id| applied(id, 1, i64::MAX, i64::MAX))
@@ -1104,6 +1146,8 @@ fn production_spending_widens_independent_native_totals_instead_of_multiplying_t
 
 #[test]
 fn production_spending_signed_changes_and_instant_progress_are_independent_of_units() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut first = applied(1, 1, 2, i64::MAX);
     first.instant_raw = Recorded::Value(Some(5_000_000));
     let mut last = applied(1, 1, 3, i64::MIN);
@@ -1126,6 +1170,8 @@ fn production_spending_signed_changes_and_instant_progress_are_independent_of_un
 
 #[test]
 fn production_spending_refusal_preserves_known_deliveries() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut row = output(1, 1, 3);
     row.spent_raw = Recorded::Value(None);
     let scanned = scan(day(0, vec![line(1, 1, 100_000)], Some(vec![row])));
@@ -1139,6 +1185,8 @@ fn production_spending_refusal_preserves_known_deliveries() {
 
 #[test]
 fn production_spending_unknown_owner_with_zero_units_does_not_taint_known_units() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut row = applied(1, 1, 0, 123_456);
     row.country = 999;
     let scanned = scan(day(0, vec![], Some(vec![row])));
@@ -1151,6 +1199,8 @@ fn production_spending_unknown_owner_with_zero_units_does_not_taint_known_units(
 
 #[test]
 fn production_spending_lost_inexact_unit_row_still_withholds_its_independent_spending() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut row = applied(1, 1, 0, 123_456);
     row.exact = false;
     let mut frames = day(0, vec![line(1, 1, 1)], Some(vec![row]));
@@ -1168,6 +1218,8 @@ fn production_spending_lost_inexact_unit_row_still_withholds_its_independent_spe
 
 #[test]
 fn production_spending_every_country_5000_country_builder() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let country_count = 5_000u32;
     let countries: Vec<_> = (1..=country_count)
         .map(|id| CountryRow {

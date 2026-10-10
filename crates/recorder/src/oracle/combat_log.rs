@@ -1,5 +1,5 @@
 //! CombatLogEquipment against the save's `combat_log` blocks, which
-//! CGameState::Serialize@1401f2580 writes from the same NCombatLog managers
+//! the game state save writer writes from the same combat-log managers
 //! the reader walks: each month entry's pool, reason and date, per country
 //! and orders group, keyed by (country tag, group id, kind, month, variant).
 //!
@@ -12,8 +12,7 @@
 //! log only if its group is absent from every saved theatre's definitions.
 //! Missing theatre data cannot confirm deletion; a still-existing group or
 //! unread theatre census is a difference. Deleted logs' final rows (kept
-//! by the prune detour) are listed, not compared. The pool serializer (FFDB00)
-//! omits zero amounts
+//! by the prune detour) are listed, not compared. The pool writer omits zero amounts
 //! unless `allow_zero_entries`, so a recorded zero with no saved amount is not
 //! a difference.
 //!
@@ -246,16 +245,16 @@ pub(super) fn state(frame: &DecodedFrame, report: &mut Report) -> io::Result<()>
     }
     report.compared("CombatLogState", 0);
     report.limitation(
-        "the local playing country (CGameState+0x520) has no proven save field, and prune observation is recorder state; the header's `player` is not shown to be written from it",
+        "the local playing country has no proven save field, and prune observation is recorder state; the header's `player` is not shown to be written from it",
         "CombatLogState",
     );
     Ok(())
 }
 
-/// Division totals are saved by CArmy::Serialize@140C80E00. That writer does
-/// not persist the +0xc0 parent: COrdersGroup::Serialize@140BE8100 writes
+/// Division totals are saved by the army save writer. That writer does
+/// not persist the parent reference: the formation save writer writes
 /// member.unit references instead (save::naval_history::OrdersGroup.members).
-/// CTheatre::Serialize@140EED430 emits its army/army-group rosters. Regular
+/// The theatre save writer emits its army/army-group rosters. Regular
 /// member rosters supply the inferred split. Only a proved unsaved slot-zero regular
 /// group's reciprocal members qualify the inferred split; totals stay exact.
 pub(super) fn division_census(
@@ -354,7 +353,7 @@ pub(super) fn division_census(
     }
     report.compared("DivisionCensus", compared);
     report.limitation(
-        "CArmy::Serialize@140C80E00 omits +0xc0; COrdersGroup::Serialize@140BE8100 saves member.unit instead. Only certified unsaved slot-zero regular-group members qualify that inference; any other missing membership remains a difference",
+        "the army save writer omits the parent reference; the formation save writer saves member.unit instead. Only certified unsaved slot-zero regular-group members qualify that inference; any other missing membership remains a difference",
         "DivisionCensus: total, grouped and ungrouped counts compared through saved army member vectors; only the named certified omitted members qualify the inferred split",
     );
     Ok(())
@@ -374,7 +373,7 @@ fn saved_division_counts<'a>(
         .flat_map(|countries| countries.values())
         .flat_map(|country| &country.land)
         .flat_map(|theatre| &theatre.definitions)
-        // CArmyGroup::Serialize@140BE8070 delegates to 140BE8100's member
+        // The army group save writer delegates to the game's member
         // writer too; parent membership must not duplicate a child army's.
         .filter(|group| !group.is_army_group);
     let mut members = BTreeSet::new();

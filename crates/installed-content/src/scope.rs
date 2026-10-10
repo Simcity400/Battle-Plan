@@ -1,43 +1,27 @@
-//! Script scope targets as the game parses them.
+//! Script scope targets use ordered recognition. A trigger or effect key can name a
+//! country, a state, a chained scope or a scoped variable. [`parse`] checks these
+//! steps, returning on the first match:
 //!
-//! A trigger or effect key that names a scope (`GER = { ... }`,
-//! `ROOT.owner = { ... }`, `var:x = { ... }`, a state id) is read by the event
-//! target constructor 14146B860 (called from CEffect::ReadEffect 1405345D0,
-//! CTrigger::LoadKey 1405434F0 and the context trigger and effect), which
-//! parses the key token with 14146DB00 (eventtarget.cpp). [`parse`] follows it
-//! step by step; the order matters, since each step returns on a match:
+//! 1. A nonzero decimal prefix names a state (`5.owner` is state 5).
+//! 2. `var:` introduces a scoped variable.
+//! 3. Three-byte text can name a country tag or alias. Other text can name a character
+//!    token.
+//! 4. A scope keyword (`root`, `this`, `prev`, `from`, `owner`, `controller`,
+//!    `capital_scope`, `overlord`, `occupied`, `character`, `faction_leader`, `operation`,
+//!    `opponent`) or a zero-valued number token is retained.
+//! 5. Exact `event_target:` introduces a named target and an optional further target
+//!    after the first dot, parsed without number-token classification.
+//! 6. A keyword prefix in `prefix:value` is retained, including `mio:` and `sp:`;
+//!    `scope:` accepts only `faction`.
+//! 7. `head.rest` accepts a scope-keyword head without case and parses the rest
+//!    recursively.
 //!
-//! 1. ParseTokenInt32 (1424B0080) of the text is nonzero: a state id, the
-//!    decimal prefix only (`5.owner` is state 5).
-//! 2. The text starts with `var:` (1427BEBB4): a scoped variable
-//!    (CScopedVariable::AssignTextWithDefaultScope 140539AF0).
-//! 3. Three bytes long: a country specifier (140BA4F60 -> 140BA53F0: the
-//!    country database's tag, FindCountryIndexByTag 14070F050, or the tag
-//!    alias database 143316AA8), kept when it names one (140BA6220).
-//!    Otherwise, a name the character database (143316A88, 1406B0030) holds.
-//! 4. The token is one of the scope keywords 14146DA20 accepts (`root`,
-//!    `this`, `prev`, `from`, `owner`, `controller`, `capital_scope`,
-//!    `overlord`, `occupied`, `character`, `faction_leader`, `operation`,
-//!    `opponent`) or a number token (id 0xC) whose value is zero.
-//! 5. The text starts with `event_target:` (1427BE908, 13 bytes, compared
-//!    exactly): the named event target, and after the first `.` a further
-//!    target parsed the same way (the rest's number token is retyped 0xF).
-//! 6. `prefix:value` whose prefix is a lexer keyword (14146E4E0 through
-//!    1424A92B0): `mio:`, `sp:` and any other keyword prefix are kept;
-//!    `scope:` only with `faction`.
-//! 7. `head.rest`, where `head` is a scope keyword of step 4 (looked up
-//!    without case, 14022EAB0): `head`, then `rest` parsed the same way.
-//!
-//! Anything else is kept as [`Scope::Unknown`]: the constructor leaves the
-//! target invalid (0x4B8A) and names nothing.
-//!
-//! Keywords fold as the lexer folds them (1424A7A90); a quoted script token
-//! is id 0xF and is never a keyword (step 4), but its text still passes
-//! through steps 1-3 and 5-7, which read the text.
+//! Unmatched text stays [`Scope::Unknown`], naming no valid target. Quoted text cannot
+//! match the keyword step but still participates in text-based steps.
 
 use crate::fixed5::decimal_i32;
 
-/// The scope keywords 14146DA20 accepts, by their lexer ids.
+/// The accepted scope keywords.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Keyword {
     /// `root` (0x2C94).
@@ -69,38 +53,43 @@ pub enum Keyword {
 }
 
 impl Keyword {
-    const ALL: [(&'static str, Self); 13] = [
-        ("root", Self::Root),
-        ("this", Self::This),
-        ("prev", Self::Prev),
-        ("from", Self::From),
-        ("owner", Self::Owner),
-        ("controller", Self::Controller),
-        ("capital_scope", Self::CapitalScope),
-        ("overlord", Self::Overlord),
-        ("occupied", Self::Occupied),
-        ("character", Self::Character),
-        ("faction_leader", Self::FactionLeader),
-        ("operation", Self::Operation),
-        ("opponent", Self::Opponent),
-    ];
-
-    /// The keyword a text names, compared without case as the lexer's
-    /// lookup does (1424A7A90, 14022EAB0).
+    /// Recognises a scope selector with the lexer's ASCII case fold.
     pub fn named(text: &[u8]) -> Option<Self> {
-        Self::ALL
-            .iter()
-            .find(|(name, _)| text.eq_ignore_ascii_case(name.as_bytes()))
-            .map(|(_, keyword)| *keyword)
+        match text.to_ascii_lowercase().as_slice() {
+            b"root" => Some(Self::Root),
+            b"this" => Some(Self::This),
+            b"prev" => Some(Self::Prev),
+            b"from" => Some(Self::From),
+            b"owner" => Some(Self::Owner),
+            b"controller" => Some(Self::Controller),
+            b"capital_scope" => Some(Self::CapitalScope),
+            b"overlord" => Some(Self::Overlord),
+            b"occupied" => Some(Self::Occupied),
+            b"character" => Some(Self::Character),
+            b"faction_leader" => Some(Self::FactionLeader),
+            b"operation" => Some(Self::Operation),
+            b"opponent" => Some(Self::Opponent),
+            _ => None,
+        }
     }
 
     /// The keyword's lexer name.
     pub fn name(self) -> &'static str {
-        Self::ALL
-            .iter()
-            .find(|(_, keyword)| *keyword == self)
-            .map(|(name, _)| *name)
-            .unwrap_or_default()
+        match self {
+            Self::Root => "root",
+            Self::This => "this",
+            Self::Prev => "prev",
+            Self::From => "from",
+            Self::Owner => "owner",
+            Self::Controller => "controller",
+            Self::CapitalScope => "capital_scope",
+            Self::Overlord => "overlord",
+            Self::Occupied => "occupied",
+            Self::Character => "character",
+            Self::FactionLeader => "faction_leader",
+            Self::Operation => "operation",
+            Self::Opponent => "opponent",
+        }
     }
 }
 
@@ -135,22 +124,19 @@ pub enum Scope {
 
 /// Content facts steps 3 and 6 look up.
 pub trait Names {
-    /// Whether a three-byte text names a country tag or tag alias
-    /// (140BA53F0 then 140BA6220).
+    /// Whether three-byte text names a country tag or tag alias.
     fn is_country(&self, tag: &str) -> bool;
-    /// Whether a name is a character's token (1406B0030).
+    /// Whether a name is a character token.
     fn is_character(&self, token: &str) -> bool;
-    /// Whether a text is a lexer keyword, which a `prefix:` must be
-    /// (1424A92B0). The registry's names are content-independent; a caller
-    /// without them answers for the prefixes it knows.
+    /// Whether text is a lexer keyword, as a `prefix:` requires. Registry names are
+    /// content-independent; callers without them answer for known prefixes.
     fn is_keyword(&self, text: &str) -> bool;
 }
 
 const VARIABLE: &str = "var:";
 const EVENT_TARGET: &str = "event_target:";
 
-/// Parses one scope token as 14146DB00 does. `quoted` is the token's quoted
-/// flag (a quoted token is never a keyword, step 4).
+/// Parse one scope token. `quoted` prevents keyword recognition in step 4.
 pub fn parse(text: &str, quoted: bool, names: &impl Names) -> Scope {
     let number = crate::parser::number_token(text.as_bytes(), quoted);
     parse_token(text, number, quoted, names)
@@ -184,7 +170,7 @@ fn parse_token(text: &str, number: bool, quoted: bool, names: &impl Names) -> Sc
         };
         return Scope::EventTarget {
             name: name.to_owned(),
-            // The rest's number token is retyped 0xF (1424B0110).
+            // The rest is parsed without number-token classification.
             then: then.map(|then| Box::new(parse_token(then, false, false, names))),
         };
     }
@@ -235,42 +221,39 @@ impl std::fmt::Display for Scope {
     }
 }
 
-/// A scope a CEventScope may carry, as CTrigger::scope_compatible
-/// (140542CA0) tests it, with the bit of a trigger class's accepted-scope
-/// mask (the class's vtable +0x70) that asks for it.
+/// An evaluated scope kind and its bit in a trigger's accepted-scope mask.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ScopeKind {
-    /// 0x2: a state, the scope's state id (+0xA8) >= 1.
+    /// 0x2: a state whose id is positive.
     State,
-    /// 0x4: a country, the scope's tag (+0x8) >= 1.
+    /// 0x4: a country whose tag id is positive.
     Country,
-    /// 0x8: a character (character_resolver 140529310).
+    /// 0x8: a character.
     Character,
-    /// 0x10: a combat, the combat pointer (+0x60) set.
+    /// 0x10: a combat reference is set.
     Combat,
-    /// 0x20: the reference at +0x68/+0x6C (scope_mask_20_resolver 140529E30,
-    /// class not established).
+    /// 0x20: an unresolved reference kind.
     Reference,
-    /// 0x40: a strategic region, the pointer at +0x48 set.
+    /// 0x40: a strategic-region reference is set.
     StrategicRegion,
-    /// 0x80: an operation (1405294A0).
+    /// 0x80: an operation.
     Operation,
-    /// 0x100: a unit (1405294C0).
+    /// 0x100: a unit.
     Unit,
-    /// 0x200: an industrial organisation (140529390).
+    /// 0x200: an industrial organisation.
     IndustrialOrganisation,
-    /// 0x400: a purchase contract (140529420).
+    /// 0x400: a purchase contract.
     PurchaseContract,
-    /// 0x800: a raid instance (140529460).
+    /// 0x800: a raid instance.
     RaidInstance,
-    /// 0x1000: a special project (140529480).
+    /// 0x1000: a special project.
     Project,
-    /// 0x2000: a faction (140529350).
+    /// 0x2000: a faction.
     Faction,
 }
 
 impl ScopeKind {
-    /// Every kind, in the order 140542CA0 tests them.
+    /// Every scope kind in compatibility-check order.
     pub const ALL: [Self; 13] = [
         Self::State,
         Self::Country,
@@ -304,16 +287,15 @@ impl ScopeKind {
     }
 }
 
-/// A trigger class's accepted scopes: the mask its vtable +0x70 returns.
+/// A trigger class's accepted-scope mask.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TriggerScopes(pub u32);
 
 impl TriggerScopes {
-    /// CTrigger::scope_compatible (140542CA0): a zero mask accepts any
-    /// scope; otherwise any one accepted kind the scope carries suffices.
-    /// Bits the function does not test (0x1 and above 0x2000) accept
-    /// nothing. `carries` says whether the evaluated scope holds a kind; a
-    /// caller that cannot tell refuses before asking.
+    /// A zero mask accepts every scope. Otherwise any accepted kind carried by the
+    /// scope suffices. Untested bits (0x1 and above 0x2000) accept nothing. `carries`
+    /// reports the evaluated scope's kinds; a caller that cannot determine them refuses
+    /// before asking.
     pub fn accepts(self, carries: impl Fn(ScopeKind) -> bool) -> bool {
         self.0 == 0
             || ScopeKind::ALL
@@ -326,8 +308,8 @@ impl TriggerScopes {
 mod tests {
     use super::*;
 
-    /// 140542CA0: mask zero accepts anything; any accepted kind carried
-    /// suffices; an untested bit accepts nothing.
+    /// Mask zero accepts anything; any accepted kind carried suffices. Untested bits
+    /// accept nothing.
     #[test]
     fn trigger_scopes_accept_as_the_game_checks_them() {
         assert_eq!(ScopeKind::State.bit(), 0x2);
@@ -362,11 +344,11 @@ mod tests {
         parse(text, false, &Content)
     }
 
-    /// 14146DB00's steps in order, each returning on a match.
+    /// Scope-recognition steps return on their first match.
     #[test]
     fn scope_tokens_parse_as_the_event_target_reader_does() {
         assert_eq!(scope("123"), Scope::State(123));
-        // The decimal prefix wins before anything else (ParseTokenInt32).
+        // The decimal prefix wins before any other recognition.
         assert_eq!(scope("5.owner"), Scope::State(5));
         assert_eq!(scope("-4"), Scope::State(-4));
         assert_eq!(scope("0"), Scope::ZeroNumber("0".into()));

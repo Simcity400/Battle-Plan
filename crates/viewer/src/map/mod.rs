@@ -1,5 +1,5 @@
-//! The game-identical map pipeline ([archived rendering notes](#)). CPU-side generators live beside the passes
-//! that consume them; each module owns one intermediate or one pass.
+//! The map pipeline. CPU-side generators live beside their consuming passes; each module
+//! owns one intermediate or one pass.
 
 // counters
 mod air_participants;

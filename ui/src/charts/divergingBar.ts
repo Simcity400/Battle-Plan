@@ -1,6 +1,6 @@
 /** Bars that grow left (negative) or right (positive) from a zero line, all on one
- * scale (mock-up economy-1's surplus and shortage bars). Pure: fractions of the
- * track, for a widget to place with `left` and `width`. */
+ * scale. Pure: fractions of the track, for a widget to place with `left` and
+ * `width`. */
 
 /** Where zero sits and where a bar starts and how wide it is, as fractions of the
  * track. `negative` and `positive` are the largest magnitudes each side shows (the

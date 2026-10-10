@@ -239,7 +239,7 @@ fn ownership_transfer_verifies_count_reset_and_unexplained_decrease_fails() {
     );
     assert_eq!(report.compared_tables["ConstructionLineOutput"], 1);
     let original = frames.clone();
-    // SetOwner@1409D1710 resets the count before 1409D26D0 can lower
+    // Ownership transfer resets the count before the game can lower
     // shared levels. Independent script growth can also surround the reset.
     for level in [0, 1, 3] {
         for completed in [0, 1] {

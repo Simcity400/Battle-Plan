@@ -1140,7 +1140,7 @@ fn worker_portraits_grow_first_and_later_5000_country_rosters_entries_and_text()
 fn portrait_census_and_walk_have_no_fixed_character_limit() {
     use crate::memory::SliceMemory;
     use ccharacter_manager::{PortraitCensus, PortraitIdentity};
-    // More characters than the old 65,536 bound. Each character owns an
+    // More than 65,536 characters. Each character owns an
     // empty portrait header; objects are 16 bytes apart so the headers
     // tile one zeroed region.
     const CHARACTERS: usize = 70_000;

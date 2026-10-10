@@ -18,12 +18,12 @@ while build processes run and are marked contaminated if one appears mid-window.
 
 Plan JSON:
 {
-  "save": "perf_takeover_baseline.hoi4",
-  "expected_hour": 60826314, "expected_seed": 327447340,
+  "save": "benchmark.hoi4",
+  "expected_hour": 100, "expected_seed": 2468,
   "seconds": 30, "max_hours": 420, "repeats": 1,
   "candidates": [
     { "name": "baseline", "frozen": null },
-    { "name": "candidate", "frozen": "C:\\path\\to\\bin" }
+    { "name": "candidate", "frozen": "candidate-bin" }
   ]
 }
 "frozen" is a directory holding recorder.exe and collector.dll. "max_hours"
@@ -33,20 +33,34 @@ replay format. Missing or incomplete metrics, failed drains, drops and write
 errors fail the screen. Bare-game references do not need a metrics reader.
 A third candidate kind injects the synthetic cost-ladder DLL instead of the
 recorder: { "name": "spin4", "ladder": { "mode": "spin_ms", "param_ms": 4 } }
-(modes and parameters as documented in the ladder README; no warm-up; the DLL's
-own per-hour timings are folded into the results).
+Supply a separately built ladder.dll and ladder-inject.exe with -LadderDir;
+the DLL's own per-hour timings are folded into the results.
+.PARAMETER UiConfig
+User-calibrated menu/control coordinates; bench_ui.json is an example to recalibrate.
+.PARAMETER MenuPatch
+Pause-menu reference image for menu reloads, with its outer-window origin in MenuPatchOrigin.
+.PARAMETER GameLock
+Hold this shared lock for the full benchmark. Create its directory and owner file
+before running, then remove them after all owned game/recorder work has stopped.
+.PARAMETER CaptureRoot
+User-selected output root; defaults to LOCALAPPDATA/HOI4Replay/captures.
 .EXAMPLE
-powershell -File tools/bench.ps1 -Plan captures\bench\plan.json -Out captures\bench\run01 -MetricsTool captures\bench\metrics.exe
+powershell -File tools/bench.ps1 -Plan ./plan.json -GameExe "$(if (Test-Path Env:BATTLE_PLAN_GAME_DIR) { $env:BATTLE_PLAN_GAME_DIR } else { $env:HOI4_GAME_DIR })/hoi4.exe" -UserDirectory ./profile -Out "$env:LOCALAPPDATA/HOI4Replay/captures/bench/run01" -MetricsTool ./metrics.exe
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Plan,
     [Parameter(Mandatory = $true)][string]$Out,
-    [string]$GameExe = 'X:\SteamLibrary\steamapps\common\Hearts of Iron IV\hoi4.exe',
-    [string]$UserDirectory = 'captures\m11_20260909\userdir',
+    [Parameter(Mandatory = $true)][string]$GameExe,
+    [Parameter(Mandatory = $true)][string]$UserDirectory,
     [string]$UiConfig = '',
     [string]$MetricsTool = '',
-    [string]$LadderDir = 'captures\perf_bench_20260917\builds\ladder',
+    [string]$LadderDir = '',
+    [string]$InputShimDir = '',
+    [string]$MenuPatch = '',
+    [int[]]$MenuPatchOrigin = @(1150, 440),
+    [string]$CaptureRoot = (Join-Path $env:LOCALAPPDATA 'HOI4Replay\captures'),
+    [string]$GameLock = (Join-Path $env:TEMP 'HOI4Replay\hoi4_game.lock'),
     [int]$AttachTimeoutSeconds = 300,
     # Default: keys posted, clicks borrow the foreground briefly (the UI needs real clicks),
     # PrintWindow screenshots, game pushed behind the previous window afterwards.
@@ -62,10 +76,11 @@ Set-StrictMode -Version 1
 $ErrorActionPreference = 'Stop'
 if (-not [Environment]::Is64BitProcess) { throw 'Run bench.ps1 in 64-bit PowerShell.' }
 $Background = -not $Foreground
+$GameExe = (Resolve-Path -LiteralPath $GameExe).ProviderPath
 
-$captureRoot = 'captures\'
+$captureRoot = [IO.Path]::GetFullPath($CaptureRoot).TrimEnd([char[]]'\/') + [IO.Path]::DirectorySeparatorChar
 $Out = [IO.Path]::GetFullPath($Out)
-if (-not $Out.StartsWith($captureRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Out must be below captures.' }
+if (-not $Out.StartsWith($captureRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Out must be below CaptureRoot.' }
 $null = New-Item -ItemType Directory -Force -Path $Out
 $utf8 = New-Object Text.UTF8Encoding $false
 $spec = Get-Content -LiteralPath $Plan -Raw | ConvertFrom-Json
@@ -73,7 +88,8 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $UiConfig) { $UiConfig = Join-Path $scriptDir 'bench_ui.json' }
 $ui = Get-Content -LiteralPath $UiConfig -Raw | ConvertFrom-Json
 $smoke = Join-Path $scriptDir 'smoke.ps1'
-$script:menuPatchPath = 'captures\perf_bench_20260917\calib\menu_patch.png'
+$script:menuPatchPath = $MenuPatch
+if ($MenuPatchOrigin.Count -ne 2 -or $MenuPatchOrigin[0] -lt 0 -or $MenuPatchOrigin[1] -lt 0) { throw 'MenuPatchOrigin requires two nonnegative pixel coordinates.' }
 $script:chainStarted = $false
 $userPath = (Resolve-Path -LiteralPath $UserDirectory).ProviderPath
 $savePath = Join-Path (Join-Path $userPath 'save games') ([string]$spec.save)
@@ -94,7 +110,7 @@ foreach ($candidate in $spec.candidates) {
     }
 }
 $buildNames = @('cargo', 'rustc', 'lld-link', 'clippy-driver', 'link', 'cl')
-$lock = Join-Path $env:TEMP 'claude\hoi4_game.lock'
+$lock = [IO.Path]::GetFullPath($GameLock)
 if (-not (Test-Path -LiteralPath (Join-Path $lock 'owner'))) { throw "Take the game lock first: $lock" }
 
 # Reuse the smoke driver's read-only clock reader and guarded input helper.
@@ -109,7 +125,7 @@ if (-not ('Hoi4ClockBaseline' -as [type]) -or -not ('Hoi4ProbeInput' -as [type])
 
 # Input shim: while attached (smoke Launch injects it), the game's user32 import thunks answer from this
 # mapping so a posted click lands with the cursor, button state and focus the UI polls, with no foreground
-# borrow. Absent mapping -> the click falls back to the brief borrow. See C:\hoi4_scratch\input_shim_20260917.
+# borrow. An absent mapping falls back to the brief foreground borrow.
 $script:ShimMapping = 'Local\hoi4_inputshim_v1'
 $script:ShimMagic = [uint32]0x4D485348
 function Open-InputShim {
@@ -145,7 +161,7 @@ function Connect-Game {
     if ($games.Count -gt 1) { throw 'Two hoi4.exe processes; close one.' }
     if ($games.Count -eq 0) {
         Log 'No game running; launching the continue selection.'
-        $launch = & $smoke -Action Launch -GameExe $GameExe -UserDirectory $userPath -ContinueLastSave -Foreground:(-not $Background)
+        $launch = & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action Launch -UserDirectory $userPath -ContinueLastSave -Foreground:(-not $Background)
         $limit = [DateTime]::UtcNow.AddSeconds(300)
         do {
             Start-Sleep -Seconds 2
@@ -227,7 +243,7 @@ function Send-Move($point) {
     $x = $script:rect.Left + [int]$point[0]; $y = $script:rect.Top + [int]$point[1]
     Invoke-Focused { [Hoi4ProbeInput]::Move($script:window, [uint32]$script:game.Id, $x, $y) }
 }
-function Take-Screenshot([string]$path) { try { $null = & $smoke -Action Screenshot -GameId $script:game.Id -Out $path -Foreground:(-not $Background) } catch { Log "screenshot failed: $($_.Exception.Message)" } }
+function Take-Screenshot([string]$path) { try { $null = & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action Screenshot -GameId $script:game.Id -Out $path -Foreground:(-not $Background) } catch { Log "screenshot failed: $($_.Exception.Message)" } }
 function Set-Paused([bool]$paused) {
     for ($attempt = 0; $attempt -lt 6; $attempt++) {
         $clock = Read-Clock
@@ -278,7 +294,7 @@ function Invoke-Relaunch([string]$runDir) {
     $started = [Diagnostics.Stopwatch]::StartNew()
     $extra = @('-start_save=' + [string]$spec.save)
     if ($spec.PSObject.Properties['launch_args'] -and $spec.launch_args) { $extra += @($spec.launch_args | ForEach-Object { [string]$_ }) }   # e.g. -debug_smooth=no
-    $launch = & $smoke -Action Launch -GameExe $GameExe -UserDirectory $userPath -ExtraArgs $extra -Foreground:(-not $Background)
+    $launch = & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action Launch -UserDirectory $userPath -ExtraArgs $extra -Foreground:(-not $Background)
     Connect-Game
     $limit = [DateTime]::UtcNow.AddSeconds(240)
     do {
@@ -293,15 +309,16 @@ function Invoke-Relaunch([string]$runDir) {
     return $clock
 }
 function Test-PauseMenu([string]$runDir) {
+    if (-not $script:menuPatchPath -or -not (Test-Path -LiteralPath $script:menuPatchPath -PathType Leaf)) { throw 'Menu reload requires -MenuPatch with a calibrated pause-menu reference image.' }
     # Compare the menu's button column against the calibrated reference patch (mean abs diff over the patch).
     $shot = Join-Path $runDir ('menu_probe_' + [DateTime]::UtcNow.ToString('HHmmssfff') + '.png')
-    try { $null = & $smoke -Action Screenshot -GameId $script:game.Id -Out $shot -Foreground:(-not $Background) } catch { return $false }
+    try { $null = & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action Screenshot -GameId $script:game.Id -Out $shot -Foreground:(-not $Background) } catch { return $false }
     Add-Type -AssemblyName System.Drawing
     $ref = [Drawing.Bitmap]::FromFile($script:menuPatchPath); $img = [Drawing.Bitmap]::FromFile($shot)
     try {
         $sum = 0.0; $n = 0
         for ($y = 0; $y -lt $ref.Height; $y += 4) { for ($x = 0; $x -lt $ref.Width; $x += 4) {
-            $a = $ref.GetPixel($x, $y); $b = $img.GetPixel(1150 + $x, 440 + $y)
+            $a = $ref.GetPixel($x, $y); $b = $img.GetPixel($MenuPatchOrigin[0] + $x, $MenuPatchOrigin[1] + $y)
             $sum += [math]::Abs($a.R - $b.R) + [math]::Abs($a.G - $b.G) + [math]::Abs($a.B - $b.B); $n++
         } }
         $mad = $sum / (3.0 * $n)
@@ -465,6 +482,7 @@ function Stop-Candidate($attached, [string]$runDir) {
     return $summary
 }
 function Start-Ladder($candidate, [string]$runDir) {
+    if (-not $LadderDir) { throw 'Ladder candidates require -LadderDir with ladder.dll and ladder-inject.exe.' }
     $dll = Join-Path $LadderDir 'ladder.dll'; $inject = Join-Path $LadderDir 'ladder-inject.exe'
     if (-not (Test-Path -LiteralPath $dll) -or -not (Test-Path -LiteralPath $inject)) { throw "Ladder binaries missing under $LadderDir" }
     $script:game.Refresh()
@@ -518,7 +536,7 @@ function Stop-Ladder($ladder, [string]$runDir) {
 }
 function Get-ExactMetrics($attached, [string]$runDir, [int]$firstHour, [int]$lastHour) {
     if (-not $MetricsTool -or -not (Test-Path -LiteralPath $MetricsTool -PathType Leaf)) { throw 'The required exact-metrics reader is missing.' }
-    $replays = @(Get-ChildItem -LiteralPath $attached.recording -Filter '*.battleplan' -File -ErrorAction SilentlyContinue)
+    $replays = @(Get-ChildItem -LiteralPath $attached.recording -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in '.battleplan', '.hoi4replay' })
     if ($replays.Count -ne 1) { throw "Expected one finalized replay for exact metrics, found $($replays.Count)." }
     $expectedFrames = [int64]$lastHour - [int64]$firstHour
     if ($expectedFrames -le 0) { throw 'The measurement contains no completed game hours.' }

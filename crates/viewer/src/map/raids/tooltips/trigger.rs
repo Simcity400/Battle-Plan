@@ -35,7 +35,7 @@ impl Context<'_, '_> {
             let line = format!("{name}: {key}");
             let children = trigger.value.items();
             match key.as_str() {
-                "hidden_trigger" => {} // CHiddenTrigger slot 12 emits no text.
+                "hidden_trigger" => {} // Hidden triggers emit no text.
                 "AND" | "and" | "OR" | "or" | "NOT" | "not" => {
                     let Some(children) = children else {
                         out.push((line, Err("logical trigger requires block".into())));
@@ -45,8 +45,8 @@ impl Context<'_, '_> {
                     let or = key.eq_ignore_ascii_case("OR");
                     let heading = or || (!not && indent > 0 && children.len() >= 2);
                     if heading {
-                        // 14053F450 OR always has a heading; 14053EA10 AND
-                        // only at positive indentation with multiple children.
+                        // OR always has a heading; AND has one only with positive indentation
+                        // and multiple children.
                         let key = if or != invert {
                             "TRIGGER_OR_STARTS"
                         } else {
@@ -60,7 +60,7 @@ impl Context<'_, '_> {
                             });
                         out.push((line, result));
                     }
-                    // NOT 14053F060 toggles inversion without adding indentation.
+                    // NOT toggles inversion without adding indentation.
                     self.trigger_children(
                         children,
                         scopes,
@@ -75,7 +75,7 @@ impl Context<'_, '_> {
                     Lookup::Template(_)
                 ) =>
                 {
-                    // 14138E230: inversion == expected, then template slot 12.
+                    // Choose template slot 12 when inversion equals the expected value.
                     let expected = match trigger
                         .value
                         .scalar()
@@ -120,8 +120,8 @@ impl Context<'_, '_> {
                             if text.is_empty() {
                                 return Ok(text);
                             }
-                            // 14053FCC0 appends only a missing trailing newline,
-                            // including when custom text contains an effect description.
+                            // Append only a missing trailing newline, including when custom text
+                            // contains an effect description.
                             ensure_newlines(&mut text, 1);
                             self.trigger_prefix(trigger, scopes, invert, indent)
                                 .map(|prefix| format!("{prefix}{text}"))
@@ -140,7 +140,7 @@ impl Context<'_, '_> {
         invert: bool,
         indent: usize,
     ) -> Result<String> {
-        let mut text = "   ".repeat(indent); // 142773CD8, 14053FCC0.
+        let mut text = "   ".repeat(indent);
         if indent == 0 {
             let value = known(self.world.evaluate(std::slice::from_ref(trigger), scopes))?;
             text.push_str(&localise(
@@ -165,7 +165,7 @@ impl Context<'_, '_> {
                     .scalar()
                     .and_then(installed_content::parser::read_bool)
                     .ok_or("boolean trigger has unsupported value")?;
-                // 1403F0820/140419F50 select by inversion==authored bool.
+                // Choose by whether inversion equals the authored boolean.
                 let key = match (key.as_str(), invert == expected) {
                     ("always", true) => "TRIGGER_ALWAYS_FALSE",
                     ("always", false) => "TRIGGER_ALWAYS_TRUE",
@@ -175,7 +175,7 @@ impl Context<'_, '_> {
                 localise(self.loc, key, &[])
             }
             "has_war_with" => {
-                // 14041A470: string TAG@142738440 and COUNTRY@142728968.
+                // Bind TAG and COUNTRY as strings.
                 scalar.ok_or("has_war_with requires country")?;
                 let country = self
                     .world
@@ -209,8 +209,8 @@ impl Context<'_, '_> {
                 let Scope::Country(country) = scopes.this else {
                     return Err("special project tooltip THIS is not a country".into());
                 };
-                // 1404A1410: project name record +40 and string PROJECT;
-                // the negative key follows inversion, not completion.
+                // Read the project name record and bind PROJECT as a string; the
+                // negative key follows inversion, not completion.
                 localise(
                     self.loc,
                     if invert {
@@ -226,7 +226,7 @@ impl Context<'_, '_> {
                     return Err("custom trigger tooltip requires block".into());
                 };
                 let field = if invert { "not_tooltip" } else { "tooltip" };
-                // 141396000 defaults the negative binding to positive + "_NOT".
+                // Default the negative binding to the positive key with suffix _NOT.
                 let explicit = children.iter().rev().find(|c| key_text(c) == field);
                 let fallback = children.iter().rev().find(|c| key_text(c) == "tooltip");
                 let Some(t) = explicit.or(fallback) else {
@@ -241,7 +241,7 @@ impl Context<'_, '_> {
                 } else {
                     key.into()
                 };
-                // 1413931A0 passes the event scope to SScopeLocalizer (1402F5F40).
+                // Localize the scope name using the event scope.
                 self.scoped_text(&key, scopes)
             }
             name => Err(format!("unsupported native trigger text form {name}")),
@@ -249,7 +249,7 @@ impl Context<'_, '_> {
     }
 
     fn project_name(&self, name: &str, country: u32) -> Result<String> {
-        // 1405382B0 -> 1414700A0 looks up identity without a started/completed gate.
+        // Look up identity without a started/completed gate.
         let token = self.world.token_of(name.as_bytes())?;
         let rows = self
             .world
@@ -261,8 +261,8 @@ impl Context<'_, '_> {
                 Some(row.definition_id) == token && self.world.slot(row.owner) == Some(country)
             })
         {
-            // 1404A1410's unresolved operand is CScopedVariable+0xB0;
-            // an sp: operand leaves this constructor-default string empty.
+            // An unresolved operand uses its stored scope string; an sp: operand
+            // leaves this constructor-default string empty.
             return Ok(String::new());
         }
         self.project_tooltip_name(name, country)

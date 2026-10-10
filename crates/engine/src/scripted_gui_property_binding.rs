@@ -1,17 +1,15 @@
-//! Resolved scripted GUI property-binding record; exact engine type name unproven.
-//!
-//! Source: `extractor/native/lanes/scripted_state_flags_variables_live/src/a729_scripted_gui_runtime.rs`.
-//! The old presentation walk read these records; no hourly-state validity is claimed.
+//! Resolved scripted GUI property-binding record.
+//! No hourly-state lifetime is established.
 
-/// Property-binding record size; old read_property_bindings uses this array stride (source:50,912).
+/// Property-binding record stride.
 pub const STRIDE: usize = 0x88;
-/// Binding target pointer; old read_property_bindings reads a pointer at the row base (source:915).
+/// Binding target pointer.
 pub const TARGET: usize = 0;
-/// Authored element name, MSVC string; old read_property_bindings reads it here (source:916).
+/// Authored element-name string.
 pub const AUTHORED_ELEMENT: usize = 0x08;
-/// Authored property name, MSVC string; old read_property_bindings reads it here (source:917).
+/// Authored property-name string.
 pub const AUTHORED_PROPERTY: usize = 0x28;
-/// Resolved element name, MSVC string; old read_property_bindings reads it here (source:918).
+/// Resolved element-name string.
 pub const RESOLVED_ELEMENT: usize = 0x48;
-/// Resolved property name, MSVC string; old read_property_bindings reads it here (source:919).
+/// Resolved property-name string.
 pub const RESOLVED_PROPERTY: usize = 0x68;

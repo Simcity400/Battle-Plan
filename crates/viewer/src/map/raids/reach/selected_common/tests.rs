@@ -105,7 +105,7 @@ fn selected_current_subject_pointer_overrides_historical_subject_dates() {
             ..Default::default()
         }],
     );
-    // The installed +288 pointer still grants disclosure before future dates.
+    // The held war pointer grants disclosure before future-date checks.
     for direct in [false, true] {
         assert_eq!(subject_query(&frame, direct), Ok(true));
     }
@@ -489,9 +489,9 @@ fn selected_strait_retains_raw_zero_alias_in_logical_owner_war_gate() {
                 active: true,
             }];
         }
-        // Logical-owner war and roster-owner disclosure are separate native
-        // queries. F3B00's active matrix-zero war veto returns before its
-        // target, subject and military-access operands are demanded.
+        // Logical-owner war and roster-owner disclosure use separate queries. An
+        // active matrix-zero war veto returns before target, subject or military-access
+        // operands are demanded.
         row.forward_visibility = Some(ReverseZeroVisibilityInputs {
             war: Some([1, 0]),
             ..Default::default()
@@ -635,8 +635,8 @@ fn selected_transport_nonbase_and_current_location_guards_avoid_the_held_union()
         check(&frame, 1),
         Ok(installed_content::unit_path::selected_transport::Outputs::default())
     );
-    // E67D80 compares the area pointers before its source==target guard.
-    // Supply that independent observation; the held risk union stays absent.
+    // Compare area pointers before testing source against target. Supply that
+    // independent observation; the held risk union stays absent.
     let mut provinces = frame.complete::<tables::Provinces>().unwrap().to_vec();
     provinces
         .iter_mut()
@@ -670,6 +670,8 @@ fn selected_transport_nonbase_and_current_location_guards_avoid_the_held_union()
 
 #[test]
 fn selected_rule_warning_localises_the_native_name_and_preserves_defined_empty() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = strait_frame();
     let state_keys = BTreeMap::new();
     let rule = installed_content::adjacency_rules::parse(b"adjacency_rule = { name = fixture_rule }")
@@ -702,7 +704,7 @@ fn selected_rule_warning_localises_the_native_name_and_preserves_defined_empty()
 }
 
 #[test]
-fn selected_primary_combat_scan_keeps_order_and_border_duration_uses_its_vf12() {
+fn selected_primary_combat_scan_keeps_order_and_border_duration_uses_its_own_gate() {
     use replay::rows::{
         DivisionMovementRow, LandBorderWarInputs, LandCombatDetailsRow, LandCombatRow,
         UnitCombatReference, UnitCombatReferences,
@@ -774,11 +776,11 @@ fn selected_primary_combat_scan_keeps_order_and_border_duration_uses_its_vf12() 
 mod selected_routes;
 
 #[test]
-fn selected_naval_vf12_uses_its_own_signed_content_threshold() {
+fn selected_naval_duration_uses_its_own_signed_content_threshold() {
     use replay::rows::NavalCombatDetailsRow;
     let mut frame = strait_frame();
     *frame.tables[TableId::LandCombats.index()] = TableView::Unavailable {
-        reason: "naval vf12 must not demand land combat data".into(),
+        reason: "naval duration check must not demand land combat data".into(),
     };
     for (minimum, duration, expected) in [
         (7, 6, false),
@@ -815,7 +817,7 @@ fn selected_naval_vf12_uses_its_own_signed_content_threshold() {
 }
 
 #[test]
-fn selected_naval_vf12_refuses_missing_rows_tables_defines_and_unknown_classes() {
+fn selected_naval_duration_refuses_missing_rows_tables_defines_and_unknown_classes() {
     use replay::rows::{NavalCombatDetailsRow, TableRows};
     let mut frame = strait_frame();
     let query = |frame: &DecodedFrame, minimum: Fact<i32>, kind| {

@@ -216,8 +216,8 @@ fn co_belligerents_read_each_candidate_byte_in_both_vectors() {
 
 fn co_inputs_fixture() -> Vec<u8> {
     let mut bytes = fixture();
-    // Raw links 4/5 are aliases for canonical slots 2/3; +50 stores these
-    // links, as the live constructor's 140BA4BB0 result can.
+    // Raw links can alias canonical country slots; matrix targets retain the
+    // constructor's resolved raw link.
     links_vector(
         &mut bytes,
         GS + cgame_state::COUNTRY_LINKS,

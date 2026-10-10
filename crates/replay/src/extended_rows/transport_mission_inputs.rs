@@ -6,10 +6,10 @@ use super::*;
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TransportMissionInputs {
     pub sample_hour: i32,
-    /// Complete physical manager order, including native null slot zero when
-    /// nonempty. Empty is an originally authenticated null/empty manager,
-    /// for which GetStrategicNavy returns native null for every requested slot.
-    /// None refuses this domain independently of the receiver dictionary.
+    /// Complete physical manager order, including null slot zero when nonempty.
+    /// Empty is an authenticated null/empty manager, which supplies null
+    /// strategic navy for every requested slot. None refuses this domain
+    /// independently of the receiver dictionary.
     pub navies: Option<Vec<TransportNavy>>,
     /// Unique increasing full handles, including genuine outside-census
     /// receivers. No pointer or ordinary motion-row membership is persisted.

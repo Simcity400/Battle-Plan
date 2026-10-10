@@ -22,8 +22,8 @@ pub(super) fn equal<T: std::fmt::Debug + PartialEq>(
 }
 
 pub(super) fn compare_text(report: &mut Report, label: &str, actual: &[u8], saved: &[u8]) {
-    // Both CAF770's resource name and 1200E10's foreign source use
-    // 1424ADF40 -> 1424AF5A0: an MSVC c_str, quoted even when empty,
+    // Resource names and foreign-source strings use
+    // an MSVC c_str, quoted even when empty,
     // scanned only through the first NUL in text mode.
     let end = installed_content::parser::c_string(actual).len();
     equal(report, label, &actual[..end], saved);
@@ -146,7 +146,7 @@ fn compare_experience(
             continue;
         };
         count += 1;
-        // 141294210 compares these eight qwords against converted zero and
+        // The game compares these eight qwords against converted zero and
         // omits precisely equal values. Missing the whole status is handled
         // above, and its unconditional ninth field is required by the parser.
         for (name, actual, expected) in [
@@ -212,9 +212,9 @@ type ResourceField = (
     fn(&economy::ResourcePools) -> &economy::ResourcePool,
 );
 
-/// The nine pools CCountryResources::Write (140CAEB80) saves. `to_use`
+/// The nine pools the country resource save writer saves. `to_use`
 /// holds the first use pool, the second less the first (prefix sums
-/// 140C8ED30 subtracted by 140BBBE90) and the third.
+/// minus runtime outflow) and the third.
 const RESOURCE_FIELDS: [ResourceField; 9] = [
     ("produced", |row| row.produced, |pools| &pools.produced),
     (
@@ -243,15 +243,15 @@ const RESOURCE_FIELDS: [ResourceField; 9] = [
     ("exported", |row| row.exported, |pools| &pools.exported),
 ];
 
-const AMBIGUOUS_RESOURCE_JOIN: &str = "a resource name declared more than once (loader 140AB2ED0 appends each declaration) repeats in the saved pools, and the pool writer 140BBD5D0 omits zero amounts, so a pool with fewer occurrences than declarations cannot attribute its amounts to declarations; its nonzero amounts are compared in index order instead";
+const AMBIGUOUS_RESOURCE_JOIN: &str = "a resource name declared more than once (loader appends each declaration) repeats in the saved pools, and the pool writer omits zero amounts, so a pool with fewer occurrences than declarations cannot attribute its amounts to declarations; its nonzero amounts are compared in index order instead";
 
-/// CountryResources against the pools CCountryResources::Write (140CAEB80)
+/// CountryResources against the pools the country resource save writer
 /// saves. The collector emits one row per captured country and resource
-/// definition; that census is checked by itself, since 140BBD5D0 omits a zero
+/// definition; that census is checked by itself, since the game omits a zero
 /// amount and an all-zero row leaves no saved entry. Rows join the save by
 /// country tag and resource name (the definition's token, spelled by the
 /// lexical dictionary); an absent entry is 0. A name can own several
-/// definitions (140AB2ED0 does not deduplicate), whose nonzero amounts the
+/// definitions (the game does not deduplicate), whose nonzero amounts the
 /// writer emits in index order under the same name.
 fn compare_resources(
     frame: &DecodedFrame,
@@ -392,7 +392,7 @@ fn compare_resources(
 /// One country's definitions of one resource name against that name's saved
 /// occurrences, pool by pool. With as many occurrences as definitions every
 /// amount was written, so they pair in index order; a single definition
-/// without an occurrence is 0. With fewer, 140BBD5D0 skipped zeros and the
+/// without an occurrence is 0. With fewer, the game skipped zeros and the
 /// recorded nonzero amounts must equal the occurrences in order.
 fn compare_resource_name(
     report: &mut Report,
@@ -519,7 +519,7 @@ fn compare_exchanges(
                 required_country_tag(actual.exporter, links)?,
                 tag.as_slice(),
             );
-            // CAF770 omits receiver only for a nonpositive raw importer and
+            // the resource writer omits receiver only for a nonpositive raw importer and
             // resource only for a null descriptor pointer. Complete captured
             // rows require resolved importers and positive database descriptors.
             equal(
@@ -976,7 +976,7 @@ fn compare_fuel_award_witness(
         );
         return Ok(());
     }
-    // 1410E33D0 decrements the loaded countdown. Only a transition to zero
+    // The game decrements the loaded countdown. Only a transition to zero
     // writes/clears pending; a non-default loaded countdown is not one hour.
     let index = if last.remaining_hours == 1 {
         last.history_index
@@ -1094,8 +1094,8 @@ const LOGISTICS_BALANCE_SERIES: u32 = 16;
 const LOGISTICS_DAILY_RECORDS: i32 = 30;
 
 /// LogisticsEquipment against each country's saved `logistics` history.
-/// CLogisticsStatus::vf2@1413609d0 writes the history exactly for the
-/// countries IsCountryAIControlled rejects, the countries the reader reads,
+/// The logistics save writer writes the history exactly for the
+/// countries outside AI control, matching the reader's selection,
 /// so a country with rows and no saved history, or the reverse, is a
 /// difference. Each row compares with its index in the record at the saved
 /// daily window's `offset` (the current slot) of series 15 and 16.
@@ -1211,7 +1211,7 @@ fn compare_logistics(
     }
     report.compared("LogisticsEquipment", count);
     report.limitation(
-        "historical available_raw is a temporary operand at SetValue CALLs141360194/141360992, not a loop-history field; serializer1413609D0 writes only19 histories and never this operand. Current saved convoy/supply state cannot replace it. Validate it independently at matched native writes; all saved stock15/balance16 differences remain fatal",
+        "historical available_raw is a temporary operand at history writes, not a loop-history field; the serializer writes only 19 histories and never this operand. Current saved convoy/supply state cannot replace it. Validate it independently at matched native writes; all saved stock15/balance16 differences remain fatal",
         "LogisticsEquipment.available_raw",
     );
     report.limitation(
@@ -1321,7 +1321,7 @@ mod tests {
         },
     };
 
-    /// A `fuel_status` body in the writer's layout (1410E39B0): the scalars,
+    /// A `fuel_status` body in the writer's layout: the scalars,
     /// three consumers, the pending entry and 24 ring entries. Ring entry `i`
     /// holds fuel and other of `i + 1` native units and otherwise the values
     /// of `RING_SUMS / 24`; the pending entry holds values of its own that the
@@ -1682,8 +1682,8 @@ mod tests {
         assert!(compare_exchanges(&frame, &saved, &links, &tokens, &mut report).is_err());
     }
 
-    /// CountryResources against the saved pools of CCountryResources::Write
-    /// (140CAEB80): all nine operands, `to_use[1]` as the second use pool
+    /// CountryResources against the saved country-resource pools:
+    /// all nine operands, `to_use[1]` as the second use pool
     /// less the first, an omitted amount as zero, and a saved amount
     /// without a recorded row as a difference.
     #[test]
@@ -1850,7 +1850,7 @@ mod tests {
     }
 
     /// The collector emits a row for every captured country and resource
-    /// definition, while 140BBD5D0 omits zero amounts: a deleted all-zero
+    /// definition, while the game omits zero amounts: a deleted all-zero
     /// row leaves the save unchanged and is caught by the census alone.
     #[test]
     fn country_resources_census_detects_deleted_all_zero_rows() {
@@ -1911,8 +1911,8 @@ mod tests {
         );
     }
 
-    /// The loader 140AB2ED0 appends a repeated declaration as another
-    /// resource, and 140BBD5D0 writes each nonzero amount in index order
+    /// The loader appends a repeated declaration as another
+    /// resource, and the game writes each nonzero amount in index order
     /// under the shared name. Both definitions are compared, not refused;
     /// a pool that omitted a zero joins as a nonzero sequence under a named
     /// limitation, and unrelated resources compare as before.

@@ -1,4 +1,4 @@
-//! Derived land-window operands from the pinned native binders.
+//! Derived land-window operands from recorded combat state.
 use super::binding::{Bindings, TEXT, builtin, hide};
 use crate::{document::Document, map::tables::rows};
 use installed_content::localisation::Argument;
@@ -23,7 +23,7 @@ pub(crate) struct Condition {
 pub(crate) type Conditions = BTreeMap<u64, Condition>;
 
 /// Every division with a `Divisions` row this hour. A missing
-/// `DivisionStatus` row leaves only the maxima unknown: 1412A2AA0's
+/// `DivisionStatus` row leaves only the maxima unknown:
 /// organisation sum reads current organisation alone.
 pub(crate) fn conditions(frame: &DecodedFrame) -> io::Result<Conditions> {
     let status: BTreeMap<_, _> = rows::<tables::DivisionStatus>(frame)?
@@ -86,7 +86,7 @@ pub(crate) fn condition_gap(frame: &DecodedFrame) -> io::Result<impl Fn(u64) -> 
     })
 }
 
-/// The `NMilitary` defines 1412A26B0's early survival estimate reads. The
+/// The `NMilitary` defines early survival estimate reads. The
 /// native estimate uses the named avoid chances directly, not their complements.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ScoreDefines {
@@ -104,7 +104,7 @@ impl ScoreDefines {
         })
     }
 
-    /// The shipped values, for tests only.
+    /// Values exercised by the tests.
     #[cfg(test)]
     pub(crate) const VANILLA: Self = Self {
         avoid_with_defence: 9_000_000,
@@ -117,15 +117,14 @@ fn fixed_mul(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / 100_000
 }
 
-// 1412A2AA0 and 140C781E0 range test (`x + 0x7FFFFFFFFFFFFFFE <
-// 0xFFFFFFFFFFFFFFFD`): excludes i64::MAX, MIN and MIN + 1.
+// The exceptional range excludes i64::MAX, MIN and MIN + 1.
 fn ranged(value: i64) -> bool {
     (value as u64).wrapping_add(0x7FFF_FFFF_FFFF_FFFE) < 0xFFFF_FFFF_FFFF_FFFD
 }
 
-// 140C781E0: current HP (+0xF8) times one over maximum HP (+0x108), clamped
+// Current HP as a fraction of maximum HP, clamped
 // to [0, one]; a zero maximum or an out-of-range current HP gives one.
-// 140BECAD0 then truncates to tenths and keeps at least one tenth.
+// the game then truncates to tenths and keeps at least one tenth.
 fn coarse_strength(strength: i64, maximum: i64) -> i64 {
     let fraction = if maximum != 0 && ranged(strength) {
         strength
@@ -142,11 +141,10 @@ fn coarse_strength(strength: i64, maximum: i64) -> i64 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ScoreGap {
     /// A division without its `Divisions` row: a participant's current
-    /// organisation (vtable +0x120, 140C78810) or a firing committed
-    /// division's current HP (+0xF8).
+    /// organisation or a firing committed division's current HP.
     Division(u64),
     /// A firing committed division without its `DivisionStatus` row, whose
-    /// maximum HP (+0x108) 140C781E0 reads on the early path.
+    /// maximum HP is read on the early path.
     MaximumStrength(u64),
     /// A committed division without its `LandCombatDivisions` row.
     Member { side: u8, division: u64 },
@@ -160,7 +158,7 @@ impl ScoreGap {
                 "division {division} has no Divisions row, whose current organisation and hit points it reads"
             ),
             Self::MaximumStrength(division) => format!(
-                "committed division {division} has no DivisionStatus row, whose maximum hit points the early damage estimate reads (140C781E0)"
+                "committed division {division} has no DivisionStatus row, whose maximum hit points the early damage estimate reads"
             ),
             Self::Member { side, division } => format!(
                 "committed division {division} on side {side} has no LandCombatDivisions row"
@@ -196,7 +194,7 @@ fn early_damage(
         Ok(sum.wrapping_mul(100_000) / (targets.len() as i64 * 100_000))
     };
     let hardness = average(2)?;
-    // An attacker meets defence (+A8); a defender meets breakthrough (+B0).
+    // An attacker meets defence; a defender meets breakthrough.
     let defended = fixed_mul(average(usize::from(firing_side == 1))?, 10_000);
     let bonus = if firing_side == 0 {
         detail.attacker_bonus
@@ -242,7 +240,7 @@ fn early_damage(
         })
 }
 
-// 140551820: absent/feature-ineligible modifiers return zero; metadata bit 4
+// absent/feature-ineligible modifiers return zero; metadata bit 4
 // clamps the getter to [0,1]. Country and contextual leader use the same rule.
 // `key` indexes the recorded modifiers: 0xFB, 0x10F (width), 0x250.
 pub(super) fn modifier(context: &LandDivisionContext, key: usize, leader: bool) -> Option<i64> {
@@ -274,8 +272,8 @@ pub(super) fn division_width(row: &LandCombatDivisionRow) -> Option<i64> {
     if row.context.template == 0 {
         return Some(0);
     }
-    // 140C6E270 multiplies signed count by fixed one before width, including
-    // native qword overflow, then applies one + country10F + leader10F once.
+    // Multiply signed count by fixed one before width, preserving 64-bit
+    // overflow. Apply the combined country and leader width multiplier once.
     let base = row.width_terms.iter().fold(0_i64, |sum, term| {
         sum.wrapping_add(
             i64::from(term.count)
@@ -290,7 +288,7 @@ pub(super) fn division_width(row: &LandCombatDivisionRow) -> Option<i64> {
     Some(base.wrapping_mul(factor) / 100_000)
 }
 
-/// A unit's direction key (1413CD7E0, 141298E00): its location, or its
+/// A unit's direction key: its location, or its
 /// movement source when it stands in the combat province and has one.
 pub(super) fn direction_key(
     row: &LandCombatDivisionRow,
@@ -306,7 +304,7 @@ pub(super) fn direction_key(
     })
 }
 
-/// 141298E00's direction count over the attacker committed divisions in
+/// direction count over the attacker committed divisions in
 /// recorded order: one direction per fresh key, except positive
 /// direction-group units after the first, which fold into its direction.
 /// A missing row leaves the count unknown rather than guessed; the error
@@ -342,7 +340,7 @@ pub(super) fn direction_count(
     Ok(seen.len())
 }
 
-/// 141298D50: the width-factor term over the terrain's `combat_width`, plus
+/// the width-factor term over the terrain's `combat_width`, plus
 /// one `combat_support_width` term per direction beyond the first, all fixed5
 /// with native truncation.
 pub(super) fn total_width(
@@ -359,16 +357,14 @@ pub(super) fn total_width(
     width.wrapping_add(extra.wrapping_mul(100_000).wrapping_mul(support) / 100_000)
 }
 
-/// Border vf26 1413D6800 uses the configured base alone, with wrapped
+/// Border combat uses the configured base alone, with wrapped
 /// signed multiplication; terrain and attack directions are not operands.
 fn border_width(detail: &LandCombatDetailsRow) -> Result<i64, String> {
     let base = detail
         .border_war
         .require("LandCombatDetails.border_war")?
         .as_ref()
-        .ok_or_else(|| {
-            "LandCombatDetails.border_war is absent for the border combat (1413D6800)".to_owned()
-        })?
+        .ok_or_else(|| "LandCombatDetails.border_war is absent for the border combat".to_owned())?
         .combat_width
         .require("LandBorderWarInputs.combat_width")?;
     Ok(detail
@@ -383,17 +379,20 @@ fn width_badge(
     border_war: Option<bool>,
     ordinary: impl FnOnce() -> Result<i64, String>,
 ) -> Result<String, String> {
-    // vf26: border 1413D6800 reads +0xD8, unlike terrain/directions@141298D50.
+    // Border combat uses its recorded base width.
     match border_war {
         Some(true) => border_width(detail).map(|width| (width / 100_000).to_string()),
         Some(false) => ordinary().map(|width| (width / 100_000).to_string()),
-        None => Err("LandCombatModifiers lacks the combat class, so its native width getter (141298D50/1413D6800) is unknown".into()),
+        None => Err(
+            "LandCombatModifiers lacks the combat class, so its native width getter is unknown"
+                .into(),
+        ),
     }
 }
 
-/// Native 1412A2AA0 survival estimates, in fixed5, for the two complete sides.
+/// Survival estimates in fixed5 for the two complete sides.
 /// `participants` is the ordered full LandCombats census (not committed only).
-/// Early battles use 1412A26B0 and the verified content definition context.
+/// Early battles use damage estimates and the verified content definition context.
 pub(crate) fn side_scores<'a>(
     detail: &LandCombatDetailsRow,
     divisions: impl IntoIterator<Item = &'a LandCombatDivisionRow>,
@@ -409,8 +408,8 @@ pub(crate) fn side_scores<'a>(
     let mut scores = [0; 2];
     for side in 0..2 {
         let state = &detail.sides[side];
-        // Plain qword sums and products, as 1412A2AA0 computes them. It
-        // reads current organisation only, never a maximum.
+        // Use wrapping 64-bit sums and products over current organisation,
+        // never maximum organisation.
         let organisation = participants[side].iter().try_fold(0_i64, |sum, id| {
             Ok(sum.wrapping_add(
                 conditions
@@ -439,9 +438,9 @@ pub(crate) fn side_scores<'a>(
     Ok(scores)
 }
 
-/// 1412A2AA0: ADD/IMUL keep the low qword, then signed IDIV truncates.
-/// Only the three special fixed-point values bypass division; MOV ECX,
-/// 0xffffffff (1412A2B9A / 1412A2C35) zero-extends their positive sentinel.
+/// Sums and products wrap at 64 bits before signed division truncates.
+/// The three special fixed-point values bypass division and produce the
+/// positive 0xffffffff sentinel.
 /// Both callers supply a positive denominator, so the division cannot trap.
 fn comparison_ratio(value: i64, denominator: i64) -> i64 {
     if (value as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd {
@@ -451,7 +450,7 @@ fn comparison_ratio(value: i64, denominator: i64) -> i64 {
     }
 }
 
-// 1415C8950 selects one-based frames 1,2,3,4,5 at strict 2x/1.2x
+// the game selects one-based frames 1,2,3,4,5 at strict 2x/1.2x
 // boundaries. Negative offset makes leftward arrows end at the progress edge.
 fn heading(scores: [i64; 2], progress: i64, bar_width: f32, icon_width: f32) -> (u32, f32) {
     let mul = |value: i64, factor: i64| value.wrapping_mul(factor) / 100_000;
@@ -493,7 +492,7 @@ pub(super) fn bind(
         .map(|row| ((row.side, row.division), row))
         .collect();
     for (side, prefix) in ["attacker", "defender"].iter().enumerate() {
-        // 1415C8950 deliberately truncates, unlike the stat formatter.
+        // the game deliberately truncates, unlike the stat formatter.
         let width = army_width(&detail.sides[side].committed, side as u8, &divisions)
             .map(|width| (width / 100_000).to_string())
             .map_err(|reason| format!("Land combat {id} {prefix} army width is hidden: {reason}."));
@@ -503,9 +502,8 @@ pub(super) fn bind(
             hide(&mut out.values, &air_key);
             continue;
         }
-        // 1415C94A0 -> 1415B8200: LAND_COMBAT_CAS_INFO with LOST (type 5,
-        // the opposing combatant's +0x140 dword), STR and ORG (type 9, its
-        // +0x148 and +0x150).
+        // LAND_COMBAT_CAS_INFO uses the opposing side's losses as an integer
+        // argument and strength/organisation damage as fixed-point arguments.
         let opponent = &detail.sides[1 - side];
         let line = builtin(
             &document.icons.combat,
@@ -557,7 +555,7 @@ pub(super) fn bind(
                     Ok(count) => Ok(total_width(detail, widths, count)),
                     // Without a support width the direction count cannot matter.
                     Err(_) if widths[1] == 0 => Ok(total_width(detail, widths, 0)),
-                    Err(reason) => Err(format!("141298E00 direction count is unknown ({reason})")),
+                    Err(reason) => Err(format!("attack direction count is unknown ({reason})")),
                 },
                 None => Err(format!(
                     "province {} has no terrain category in the content",
@@ -582,7 +580,7 @@ pub(super) fn bind(
             out.withhold(
                 &["combat_heading"],
                 format!(
-                    "Land combat {id} heading is hidden: the 1412A2AA0 survival estimate is unknown because {}.",
+                    "Land combat {id} heading is hidden: the survival estimate is unknown because {}.",
                     gap.reason()
                 ),
             );
@@ -611,14 +609,14 @@ pub(super) fn bind(
         }
         (Err(name), _) | (_, Err(name)) => out.withhold(
             &["combat_heading"],
-            format!("Land combat heading is hidden: the content lacks sprite {name} (1415C8950)."),
+            format!("Land combat heading is hidden: the content lacks sprite {name}."),
         ),
     }
     out.warnings.push("Derived land values: committed widths apply recorded country/contextual-leader modifiers; ordinary combat total width takes terrain and attack directions, while border total width applies the recorded configured base; CAS damage and kills belong to the opposing side; heading uses the native early damage estimate or 24-loss mean and all participants.".into());
     Ok(())
 }
 
-/// The committed divisions' summed width (140C6E270 each), or why it is
+/// The committed divisions' summed width, or why it is
 /// unknown.
 fn army_width(committed: &[u64], side: u8, divisions: &Divisions<'_>) -> Result<i64, String> {
     committed.iter().try_fold(0_i64, |sum, unit| {
@@ -627,7 +625,7 @@ fn army_width(committed: &[u64], side: u8, divisions: &Divisions<'_>) -> Result<
             .ok_or_else(|| format!("committed division {unit} has no LandCombatDivisions row"))?;
         let width = division_width(row).ok_or_else(|| {
             format!(
-                "division {unit}'s width modifier names eligibility callback kind {}, which 140551820 is not reproduced for",
+                "division {unit}'s width modifier names eligibility callback kind {}, which the viewer does not support",
                 row.context.eligibility_callback
             )
         })?;

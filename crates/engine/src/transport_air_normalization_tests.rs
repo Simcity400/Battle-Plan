@@ -170,8 +170,8 @@ fn live_wing_entry_hints_follow_country_override_and_only_living_ace_graphs() {
     fields.put(ace + cace::ALIVE, &[1]);
     fields.word(ace + cace::TYPE_DEFINITION, kind as u64);
     fields.word(ace + cace::OWNER_COUNTRY, 0x19000);
-    // F48230/F69BC0 read wing+238; GetTypeModifiers@14060D010 returns
-    // type+38, then its accumulator+10. No modifier bodies are installed.
+    // Wing modifiers at +0x238 and ace-type modifiers at type +0x38 with
+    // accumulator +0x10. No modifier bodies are installed.
     fields.array(wing + 0x238, 0x80_0000, 3);
     fields.array(ace + cace::MODIFIERS, 0x80_0000, 7);
     fields.array(kind + 0x48, 0x80_0000, 11);

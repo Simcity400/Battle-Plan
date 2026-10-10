@@ -7,7 +7,7 @@ use replay::{
 };
 use std::{fmt, io};
 
-/// The runtime DLC feature bit 1415C5F10 tests (140BE2B10).
+/// The runtime DLC feature bit the game tests.
 const FORMATIONS_FEATURE: u32 = 1 << 17;
 
 /// Why the badge's operands are unavailable.
@@ -54,8 +54,8 @@ impl fmt::Display for Unavailable {
     }
 }
 
-/// 1415C5F10: only an army commander (category 0 or 1) with feature bit 17, a
-/// nonnull formation reference (`CArmyLeader+0x1048`), a formation leader and
+/// only an army commander (category 0 or 1) with feature bit 17, a
+/// nonnull formation reference, a formation leader and
 /// a committed HQ provider shows the badge.
 ///
 /// `Ok(0)` is a proven hidden badge; the error names the missing operand.

@@ -1010,8 +1010,8 @@ fn valid_span<T>(arena: &Arena<T>, start: usize, count: usize) -> bool {
         .is_some_and(|end| end <= arena.len && end <= arena.first.len())
 }
 
-/// Independent off-thread header hint. 140D31E20 rebuilds the native
-/// +B0/+98 vectors; their full counts and slot zero bound the target storage.
+/// Independent off-thread header hint. Rebuilt co-belligerent vectors'
+/// full counts and slot zero bound the target storage.
 /// Retain every known floor and count each failed owner independently.
 pub(crate) fn co_belligerent_demand(
     memory: &impl Memory,

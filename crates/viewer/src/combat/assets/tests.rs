@@ -28,6 +28,8 @@ fn custom_sea_declarations_follow_effective_strategic_templates() {
 
 #[test]
 fn combat_native_assets_follow_global_templates_and_scrollbars() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let windows = NativeWindows::of(gui::native::Guis {
         files: vec![
             (
@@ -68,6 +70,8 @@ fn combat_native_assets_follow_global_templates_and_scrollbars() {
 
 #[test]
 fn combat_shortcut_assets_request_the_first_keycap_without_localisation() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let windows = crate::map::native_gui::tests::windows(
         br#"guiTypes={containerWindowType={name=landcombatview
             containerWindowType={name=header
@@ -91,6 +95,8 @@ fn tga(width: u16, height: u16) -> Vec<u8> {
 
 #[test]
 fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::combat::{
         Selection, Window, binding::Bindings, gui_resources, tooltip_painter, tooltips,
     };
@@ -197,8 +203,8 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         &lazy,
     )
     .unwrap();
-    // The air binder's 1417DAA40 cascade needs loaded sheets for names that
-    // no .gui template declares. Registry facts alone used to hide both icons.
+    // The air binder's selection cascade needs loaded sheets for names that
+    // no `.gui` template declares. Registry facts alone cannot draw either icon.
     for name in [
         "GFX_navalcombat_air_icon_fixture_bomber",
         "GFX_navalcombat_air_icon_fixture_fighter",
@@ -416,6 +422,8 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
 
 #[test]
 fn combat_fonts_select_the_native_language_family() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4_combat_font_language_{}_{:?}",
         std::process::id(),
@@ -507,13 +515,15 @@ fn combat_fonts_select_the_native_language_family() {
 
 #[test]
 fn combat_resources_use_native_texture_resolution_and_shared_pages() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4_combat_resources_{}_{:?}",
         std::process::id(),
         std::thread::current().id()
     ));
     std::fs::create_dir_all(root.join("gfx")).unwrap();
-    // The native resolver sniffs bytes and prefers the same stem's .dds.
+    // The native resolver sniffs bytes and prefers the same stem's `.dds` file.
     std::fs::write(root.join("gfx/portrait.tga"), tga(8, 6)).unwrap();
     std::fs::write(root.join("gfx/portrait.dds"), tga(10, 4)).unwrap();
     let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
@@ -560,6 +570,8 @@ fn combat_resources_use_native_texture_resolution_and_shared_pages() {
 
 #[test]
 fn combat_resources_name_undefined_texture_reads() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4_combat_refused_texture_{}_{:?}",
         std::process::id(),
@@ -595,6 +607,8 @@ fn combat_resources_name_undefined_texture_reads() {
 
 #[test]
 fn combat_resources_preserve_producer_dimensions_and_named_refusals() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4_combat_unusable_sheets_{}_{:?}",
         std::process::id(),

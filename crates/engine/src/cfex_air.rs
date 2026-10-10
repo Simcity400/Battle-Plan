@@ -1,22 +1,20 @@
-//! CFEXAir active naval air slot. Constructor141962f80, update141969b60,
-//! grouped icon/count binder1417daa40 and efficiency tooltip141963700.
+//! CFEXAir active naval air slot.
 use crate::{Memory, cequipment_variant, cnaval_combatant::field, cpdx_array::Array};
 
 pub const VTABLE_RVA: usize = 0x02a0_a588;
 
-// +88 and +A8 are derived/localized presentation caches (1419660C0 and
-// 141963460 -> 140F4A4B0 -> 140BBAA50). Capture only the +0x40 wings'
-// subunit indices; the viewer localizes them in its own language.
-// +C0 is the saved damage multiplier; update141969B60 recomputes the five
-// weighted wing values at +C8..+E8. None is an input to the viewer's naval
-// aircraft display, so the recorder excludes all six values.
+// +0x88 and +0xA8 are derived localisation caches. Capture only the
+// +0x40 wings' subunit indices for viewer localisation. +0xC0 is a saved
+// damage multiplier; update recomputes five weighted wing values at
+// +0xC8..+0xE8. The naval aircraft display consumes none of these six values,
+// so the recorder excludes them.
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Row {
-    /// CSubUnitDefinition database indices for the +0x40 all-wing handles.
-    /// 141963460 derives the localized +0xA8 list from these wings.
+    /// Subunit database indices for all-wing handles at +0x40;
+    /// the presentation cache derives its localised list from these wings.
     pub wing_types: [usize; 2],
-    /// Native ordered source:0 active group,1 retained group,2 independent side.
+    /// Ordered source: 0 active group, 1 retained group, 2 independent side.
     pub source: u8,
     /// Side +0xc8 forward-group ordinal; MAX means opponent-paired-only group.
     /// Independent side planes (source 2) use zero without a group traversal.
@@ -27,7 +25,7 @@ pub struct Row {
     pub carrier_member_present: u8,
     pub carrier_state: u32,
     pub air_base: u64,
-    /// P: 141962F80/141969B60 own growable vectors at +28/+40, not inline arrays.
+    /// Growable vectors at +0x28 and +0x40, not inline arrays.
     pub wings: [[usize; 2]; 2],
     pub initial_planes: i32,
     pub current_planes: i32,
@@ -43,8 +41,8 @@ pub struct Row {
     pub efficiency: crate::naval_air_efficiency_inputs::Row,
 }
 
-/// CFEXAir retained naval damage+100, aircraft losses+118 and+130. Loader
-///141969540 and teardown141963180 preserve the three independent arrays.
+/// Retained naval damage at +0x100 and aircraft losses at +0x118/+0x130
+/// remain three independent arrays through loading and teardown.
 pub(crate) fn read_hits(
     memory: &impl Memory,
     base: usize,
@@ -247,8 +245,8 @@ pub(crate) fn read_buffer(
         *slot = match crate::creference_registry::resolve(memory, base, handle)? {
             None => u32::MAX,
             Some(secondary) => {
-                // 140F4A4B0 resolves CAirWing's +0x10 reference base, then
-                // recovers the primary object before reading its pool.
+                // Resolve the air-wing reference base, then recover the primary object
+                // before reading its pool.
                 let wing = secondary
                     .checked_sub(crate::cair_wing::SECONDARY)
                     .ok_or("naval air wing primary address underflow")?;

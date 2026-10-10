@@ -1,4 +1,4 @@
-//! Explicit CNavalMissionUnitItem bindings@14197DD40, from the actual held draw.
+//! Explicit port-item hover observers from the actual retained draw.
 
 use super::super::counter_tooltips::task_force_port::{Authored, Control, Hover, Metadata};
 use super::*;
@@ -38,7 +38,7 @@ fn control(window: &native::Element, element: &native::Element) -> Option<Contro
         {
             return Some(Control::Spotting);
         }
-        // SetTooltipHandler@14229D3A0 propagates the container's handler to
+        // The game propagates the container's handler to
         // every descendant. An additional observed object reaches the generic
         // arm, not the spotting branch's exact object-identity comparisons.
         let mut pending: Vec<_> = spotting.children.iter().collect();
@@ -103,6 +103,8 @@ mod tests {
 
     #[test]
     fn port_binder_excludes_unbound_supply_marker_counts_and_wrong_authored_kind() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let gui = native::read(
             br#"guiTypes = { containerWindowType = {
             name = w
@@ -127,6 +129,8 @@ mod tests {
 
     #[test]
     fn spotting_binder_uses_nested_lookups_and_descendants_inherit_generic_handler() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let gui = native::read(
             br#"guiTypes = { containerWindowType = {
             name = w
@@ -193,6 +197,8 @@ mod tests {
 
     #[test]
     fn port_child_can_hover_when_its_clipped_plate_is_empty() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use gui_windows::tests::{Fixture, VIEWPORT};
         use native_gui::lifecycle::Instance;
         let gui = native::read(br#"guiTypes = { containerWindowType = {

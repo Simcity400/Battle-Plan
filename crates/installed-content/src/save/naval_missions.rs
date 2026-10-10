@@ -1,15 +1,15 @@
 //! Saved counterparts of the naval mission icon operands (NavalMissionTaskForces,
 //! NavalMissionLedgers).
 //!
-//! unconditionally, `fuel` (`+0x4F8`) and `requested` (`+0x500`) only when nonzero, and one
-//! `naval_headquarter` entry per attached headquarters (`+0x728`, count `+0x734`) only when
-//! there is one. `CNavalMission::serialize@140FA9900` writes `mission` (`+0x14`) unconditionally and
-//! `num_convoys_in_regions` (`+0x40`) only when strictly positive. An omitted convoy key
-//! means nonpositive, not necessarily zero. `CFleet::serialize@140D4A390` writes
-//! `leader` (`+0xB0`) only when it differs from the runtime invalid reference.
-//! `CStrategicNavy::vt8_vf2@140E9D0C0` writes `convoy_escort_presence_history` with one ring
-//! per region id that has one, head to tail. Absence is retained so the oracle can apply these
-//! rules.
+//! The task-force writer emits `underway_replenishment` unconditionally,
+//! `fuel` and `requested` only when nonzero, and one `naval_headquarter` entry
+//! per attached headquarters only when there is one. The mission writer emits
+//! `mission` unconditionally and `num_convoys_in_regions` only when strictly
+//! positive. An omitted convoy key means nonpositive, not necessarily zero.
+//! The fleet writer emits `leader` only when it differs from the runtime
+//! invalid reference. `convoy_escort_presence_history` has one ring per region
+//! id that has one, head to tail. Absence is retained so the oracle can apply
+//! these rules.
 
 use std::{collections::BTreeMap, io};
 

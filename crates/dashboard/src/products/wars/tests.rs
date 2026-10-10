@@ -975,69 +975,9 @@ fn five_thousand_countries_have_no_population_ceiling_or_render_work() {
 }
 
 #[test]
-fn indexed_grouping_matches_native_loops_with_retired_repeats_and_factions() {
-    fn candidate(w: &World, a: u32, b: u32) -> Vec<u32> {
-        let mut side = vec![a];
-        for &x in &w.owned[&b] {
-            if x != a && !w.active(a, x) {
-                side.push(x);
-            }
-        }
-        let mut remove = BTreeSet::new();
-        let faction = |x| {
-            w.factions
-                .get(&a)
-                .is_some_and(|f| *f != 0 && w.factions.get(&x) == Some(f))
-        };
-        for i in 1..side.len() {
-            for j in i + 1..side.len() {
-                if w.active(side[i], side[j]) {
-                    let (a, b) = (faction(side[i]), faction(side[j]));
-                    if !a || b {
-                        remove.insert(i);
-                    }
-                    if !b || a {
-                        remove.insert(j);
-                    }
-                }
-            }
-        }
-        for i in remove.into_iter().rev() {
-            side.swap_remove(i);
-        }
-        side
-    }
-    fn reference(w: &World, view: u32) -> Vec<Blob> {
-        let mut out: Vec<Blob> = Vec::new();
-        for &enemy in &w.owned[&view] {
-            if !w.active(view, enemy) {
-                continue;
-            }
-            let first = candidate(w, view, enemy);
-            let mut second = candidate(w, enemy, view);
-            let mut remove = BTreeSet::new();
-            for &a in first.iter().skip(1) {
-                for (i, &b) in second.iter().enumerate().skip(1) {
-                    if !w.active(a, b) {
-                        remove.insert(i);
-                    }
-                }
-            }
-            for i in remove.into_iter().rev() {
-                second.swap_remove(i);
-            }
-            if !out.iter().any(|old| {
-                old.first.len() == first.len()
-                    && old.second.len() == second.len()
-                    && old.first.iter().all(|x| first.contains(x))
-                    && old.second.iter().all(|x| second.contains(x))
-            }) {
-                out.push(Blob { first, second });
-            }
-        }
-        out
-    }
+fn indexed_grouping_preserves_membership_properties_with_retired_repeats_and_factions() {
     let pairs = [(1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4)];
+    let mut combinations = 0;
     for bits in 0..64 {
         let edges: Vec<_> = pairs
             .iter()
@@ -1061,14 +1001,75 @@ fn indexed_grouping_matches_native_loops_with_retired_repeats_and_factions() {
                 }
             }
             for view in 1..=4 {
-                assert_eq!(
-                    w.blobs(view),
-                    reference(&w, view),
-                    "edges {bits} factions {factions} view {view}"
-                );
+                combinations += 1;
+                let groups = w.blobs(view);
+                let active_seeds: BTreeSet<_> = w.owned[&view]
+                    .iter()
+                    .copied()
+                    .filter(|&enemy| w.active(view, enemy))
+                    .collect();
+                assert_eq!(groups.is_empty(), active_seeds.is_empty());
+                assert!(groups.len() <= active_seeds.len());
+                let mut previous_seed = None;
+                for (index, group) in groups.iter().enumerate() {
+                    assert_eq!(group.first.first(), Some(&view));
+                    let enemy = *group.second.first().unwrap();
+                    assert!(active_seeds.contains(&enemy));
+                    let seed_position = w.owned[&view].iter().position(|&x| x == enemy).unwrap();
+                    assert!(previous_seed.is_none_or(|position| position < seed_position));
+                    previous_seed = Some(seed_position);
+                    for (side, owner, seed) in
+                        [(&group.first, enemy, view), (&group.second, view, enemy)]
+                    {
+                        for &country in side.iter().skip(1) {
+                            assert_ne!(country, seed);
+                            assert!(w.owned[&owner].contains(&country));
+                            assert!(
+                                side.iter().filter(|&&x| x == country).count()
+                                    <= w.owned[&owner].iter().filter(|&&x| x == country).count()
+                            );
+                        }
+                        assert!(
+                            side.iter()
+                                .all(|&a| { side.iter().all(|&b| !w.active(a, b)) })
+                        );
+                    }
+                    assert!(group.first.iter().all(|x| !group.second.contains(x)));
+                    assert!(
+                        group
+                            .first
+                            .iter()
+                            .skip(1)
+                            .all(|&a| { group.second.iter().skip(1).all(|&b| w.active(a, b)) })
+                    );
+                    for previous in &groups[..index] {
+                        assert!(
+                            previous.first.len() != group.first.len()
+                                || previous.second.len() != group.second.len()
+                                || previous.first.iter().any(|x| !group.first.contains(x))
+                                || previous.second.iter().any(|x| !group.second.contains(x))
+                        );
+                    }
+                }
             }
         }
     }
+    assert_eq!(combinations, 4_096);
+}
+
+#[test]
+fn retired_occurrences_and_repeated_members_keep_the_first_seed_arrays() {
+    let w = world(
+        &[(1, 2, 0), (2, 3, 0)],
+        &[(1, &[2, 4, 2]), (2, &[1, 3, 3, 4]), (3, &[2])],
+    );
+    assert_eq!(
+        w.blobs(1),
+        vec![Blob {
+            first: vec![1, 3, 3, 4],
+            second: vec![2],
+        }]
+    );
 }
 
 #[test]

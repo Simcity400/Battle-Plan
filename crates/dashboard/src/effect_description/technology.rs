@@ -16,10 +16,10 @@ impl Renderer<'_, '_, '_> {
             .ok_or("technology description catalogue unavailable".into())
     }
 
-    // CAddBreakthroughPoints/Progress own 140492790/140492DF0; readers
-    // 140496160/140496280 store specialization tokens and integer/fixed5
+    // add breakthrough points/Progress own; readers
+    // store specialization tokens and integer/fixed5
     // value respectively. Each row is ensured LF, then indented two spaces.
-    // Header/row keys: points 1427A9D18/1427A9D40, progress 1427A9E40/1427A9E68.
+    // Header/row keys: points, progress.
     pub(super) fn breakthrough(
         &self,
         item: &Item,
@@ -38,7 +38,7 @@ impl Renderer<'_, '_, '_> {
             .iter()
             .filter(|entry| entry.keyword_is("specialization"))
         {
-            // all@0x2B97 -> 14048F9B0 inserts in manager registration order.
+            // The all selector inserts in manager registration order.
             if entry.value_keyword().as_deref() == Some("all") {
                 for name in catalog.specializations_in_order()? {
                     tokens.push(
@@ -127,16 +127,16 @@ impl Renderer<'_, '_, '_> {
         Ok(header)
     }
 
-    // CAddFactionPowerProjectionEffect::vf7 1404ABFC0 evaluates +0x58
+    // evaluates
     // then expands in a copied environment with its faction pointer installed.
-    // ADD_FACTION_POWER_PROJECTION_EFFECT_NO_FACTION@1427B39A8.
+
     pub(super) fn faction_power_projection(
         &self,
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
         let amount = self.scoped_value(scalar_operand(item)?, scopes)?;
-        // 141174150 reads the scope's +8 country, not its state owner or
+        // reads the scope's country, not its state owner or
         // carried faction. Clearing state/character setters leave it zero.
         let faction = match scopes.this {
             Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0 => {
@@ -167,16 +167,13 @@ impl Renderer<'_, '_, '_> {
         self.expanded_with_faction_environment(&text, scopes, Some(faction))
     }
 
-    // 140493450 evaluates ReadValue@141385570's sole operand, resolves
-    // PROJECT +0x90 via 140529480, then expands without appending LF.
-    // EFFECT_ADD_SPECIAL_PROJECT_PROGRESS@1427A93B8.
+    // evaluates value parsing's sole operand, resolves
+    // PROJECT, then expands without appending LF.
+
     pub(super) fn project_progress(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let amount = self.scoped_value(scalar_operand(item)?, scopes)?;
         let Scope::Project { owner, id } = scopes.this else {
-            return Err(
-                "CAddProjectProgressRatioEffect requires the PROJECT carrier +0x90 (140529480)"
-                    .into(),
-            );
+            return Err("add_project_progress_ratio requires the PROJECT carrier".into());
         };
         let name = self.project_name(owner, id)?;
         self.char_native_text(
@@ -190,10 +187,10 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 140494060/1405381D0, reader 1404964D0: project/state/scientist/
+    // reader: project/state/scientist
     // iteration_output/show_modifiers only; iteration_output is execution-only.
-    // A null selector keeps its original operand (+0x108), without localising it.
-    // EFFECT_COMPLETE_SPECIAL_PROJECT@1427A9270; 140494060 ensures LF.
+    // A null selector keeps its original operand, without localising it.
+    // ensures LF.
     pub(super) fn complete_project(
         &mut self,
         item: &Item,
@@ -227,7 +224,7 @@ impl Renderer<'_, '_, '_> {
             scopes,
             true,
         )?;
-        // Allocator 140490F40 defaults +0x2C8 to yes. Description 140494060
+        // defaults to yes.
         // reads the template output, independently of iteration_output.
         if installed_content::parser::read_bool_field(children(item), "show_modifiers", true)
             && let Some((owner, id)) = project
@@ -238,7 +235,7 @@ impl Renderer<'_, '_, '_> {
             match self.complete_project_output(item, scopes, owner, id) {
                 Ok(output) => text.push_str(&output),
                 Err(why) => self.refuse(
-                    "CCompleteProjectEffect@?A0x9898cfbe@NProject",
+                    "project completion",
                     format!("key complete_special_project: {why}"),
                 ),
             }
@@ -249,9 +246,9 @@ impl Renderer<'_, '_, '_> {
         Ok(text)
     }
 
-    // 1404A3F20: template interior pointer project+0x20 = template+0x18
-    // (constructor 140FCADC0); complexity min/max are interior+0x18/+0x1C.
-    // EFFECT_REDUCE_SPECIAL_PROJECT_PROGRESS@1427AEFB8; no terminal LF.
+    // Project name and complexity use the selected template.
+
+    // no terminal LF.
     pub(super) fn raid_project_progress(
         &self,
         item: &Item,
@@ -291,13 +288,13 @@ impl Renderer<'_, '_, '_> {
             .defines()
             .int32("NProject", "DEFAULT_COMPLEXITY")
             .map_err(|why| why.to_string())?;
-        // constants stays None until lead I exposes World::script_constants (140327DB0).
+        // Constants remain unavailable without the shared script-constant accessor.
         let constants = None;
         let (min, max) = definition.complexity(constants, default)?;
         let denominator = i64::from(min.wrapping_add(max)).wrapping_mul(10_000_000_000) / 200_000;
         let operand = scalar_operand(item)?;
         let amount = self.scoped_value(operand, scopes)?;
-        // Inlined fixed5 division: 1404A3F20 leaves 0xFFFFFFFF for zero
+        // Fixed-point division retains the undefined-value sentinel for zero
         // denominator or one of the three undefined-value sentinels.
         let ratio = if denominator != 0
             && (amount as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd
@@ -311,7 +308,7 @@ impl Renderer<'_, '_, '_> {
                 .wrapping_mul(ratio)
                 .wrapping_mul(100),
         ) as i32;
-        // The native call evaluates +0x58 a second time for PROGRESS.
+        // Evaluate a second time for PROGRESS.
         let progress = self.scoped_value(operand, scopes)?;
         let name = self.project_name(project.owner, project.local_id)?;
         self.char_native_text(
@@ -326,23 +323,18 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 1404A43D0: first enemy province with an active special facility,
-    // in CState+0x18 order, then the first native program at that province.
-    // Stop there even if its active-project optional (+0x50/+0x54) is empty.
+    // first enemy province with an active special facility,
+    // in state order, then the first native program at that province.
+    // Stop there even if its active-project optional is empty.
     fn raid_target_project(
         &self,
         scopes: Scopes,
     ) -> Result<Option<&replay::rows::ProjectRow>, String> {
         let Scope::State(state) = scopes.this else {
-            return Err(
-                "raid_reduce_project_progress_ratio requires THIS state +0xA8 (1404A43D0)".into(),
-            );
+            return Err("raid_reduce_project_progress_ratio requires THIS state".into());
         };
         let Scope::Raid(reference) = scopes.root else {
-            return Err(
-                "raid_reduce_project_progress_ratio requires ROOT RAID +0x88 (1404A43D0/140529460)"
-                    .into(),
-            );
+            return Err("raid_reduce_project_progress_ratio requires ROOT RAID".into());
         };
         let world = self.context.world()?;
         let raid = world.raid(reference)?;
@@ -377,8 +369,8 @@ impl Renderer<'_, '_, '_> {
                     .slot(province.owner)
                     .ok_or("CountryLinks lacks raid victim province owner")?
             };
-            let enemy = world.at_war(raid.parent_slot, owner)?; // 1406F3A00, owner getter 140FD7CF0.
-            // 140E6A490 checks only the first specialization-bearing building.
+            let enemy = world.at_war(raid.parent_slot, owner)?; // owner getter.
+            // checks only the first specialization-bearing building.
             let mut facility = false;
             for row in active.get(&province.id).into_iter().flatten() {
                 let token = world
@@ -394,7 +386,7 @@ impl Renderer<'_, '_, '_> {
                     return Err(why.clone());
                 }
                 if !definition.specialization.is_empty() {
-                    // GetProvince 1410C6510 -> 141162320 tests flags bit 0.
+                    // tests flags bit 0.
                     facility = row.status_flags & 1 != 0;
                     break;
                 }
@@ -411,20 +403,19 @@ impl Renderer<'_, '_, '_> {
             let program = programs
                 .iter()
                 .filter(|row| world.slot(row.country) == Some(owner) && row.province == province.id)
-                .min_by_key(|row| row.ordinal); // 140E621E0, hourly native roster.
+                .min_by_key(|row| row.ordinal); // hourly native roster.
             let Some(project) =
                 program.and_then(|row| row.active_project.map(|id| (row.owner, id)))
             else {
-                return Ok(None); // 14142FD80; never fall through to another province/program.
+                return Ok(None); // never fall through to another province/program.
             };
             return world.project(project.0, project.1).map(Some);
         }
         Ok(None)
     }
 
-    // CTechnologyTemplateVariable 14139BDC0/14139B770/14139B4A0:
-    // named templates first; only explicit var: evaluates a native +0x3C
-    // handle. The recorded database_index (+0x38) is not that handle.
+    // named templates first; only explicit var: evaluates a native
+    // handle. The recorded database_index is not that handle.
     fn technology_template(
         &self,
         operand: &[u8],
@@ -450,7 +441,7 @@ impl Renderer<'_, '_, '_> {
         }
     }
 
-    // LocalizeForCountry 140BBA780: a defined TAG_key takes precedence;
+    // a defined TAG_key takes precedence;
     // neither the name nor the eventual technology wrapper is expanded.
     fn technology_country_name(
         &self,
@@ -459,10 +450,10 @@ impl Renderer<'_, '_, '_> {
         original: bool,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // Explicit country zero uses recorded CCountryDatabase slot zero.
+        // Explicit country zero uses recorded country database slot zero.
         let mut tag = self.tag(country)?.as_bytes().to_vec();
         if original && country > 0 {
-            // 140EC9A60 -> 140BA61F0/1406DF830. CountryAppearance.name_tag
+            // CountryAppearance.name_tag
             // already applies the native dynamic-country boundary predicate.
             let world = self.context.world()?;
             let appearance = self
@@ -492,9 +483,9 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 140EC9A60 selects a sole enabled equipment name unless the template's
-    // force_use_small_tech_layout (+0x40A) is set. 140EBDC40 constructs this
-    // roster from content; feature 0x21 is SimulationFeatures bit7 (1401AE640).
+    // selects a sole enabled equipment name unless the template's
+    // force_use_small_tech_layout is set. Content supplies this
+    // roster from content; feature 0x21 is SimulationFeatures bit7.
     fn technology_name(
         &self,
         template: &installed_content::technology::Definition,
@@ -518,13 +509,13 @@ impl Renderer<'_, '_, '_> {
         self.technology_country_name(key, country, runtime, scopes)
     }
 
-    // CSetTechnologyEffect reader 140323D80 accepts popup and technology
-    // keys only. Own 140321D70 ignores the level byte and describes in order.
-    // EFFECT_GIVE_TECHNOLOGY@14273C300.
+    // set technology effect reader accepts popup and technology
+    // keys only. The description ignores the level byte and preserves order.
+
     pub(super) fn set_technology(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let mut target = item.clone();
         target.value = installed_content::parser::Value::Scalar(b"THIS".to_vec());
-        let country = self.country_target(&target, scopes)?.unwrap_or(0); // 14052B6A0 includes state owner.
+        let country = self.country_target(&target, scopes)?.unwrap_or(0); // includes state owner.
         let mut out = String::new();
         for field in children(item)
             .iter()
@@ -546,10 +537,10 @@ impl Renderer<'_, '_, '_> {
         Ok(out)
     }
 
-    // CAddTechBonusEffect 1403208E0: technology list (+0x58) precedes
-    // deduplicated categories (+0x70); separators depend on original positions.
-    // Own fields are exactly reader 140323AC0's keys; name is not described.
-    // Both/ahead/bonus keys@14273BC60/14273BC08/14273BC38, uses@14273BBE8.
+    // technology list precedes
+    // deduplicated categories; separators depend on original positions.
+    // Own fields are exactly the reader's keys; name is not described.
+    // Separate wrappers describe both, ahead and ordinary bonus values.
     pub(super) fn technology_bonus(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let fields = children(item);
         let technology: Vec<_> = fields
@@ -590,7 +581,7 @@ impl Renderer<'_, '_, '_> {
                 }
             }
         }
-        // 14225CBD0 replaces the final comma-space by one space + AND +
+        // replaces the final comma-space by one space + AND +
         // suffix. The AND localisation supplies its own trailing space.
         if let Some(index) = list.rfind(", ") {
             let and = self.char_native_text(b"AND", &[], scopes, false)?;
@@ -670,9 +661,9 @@ impl Renderer<'_, '_, '_> {
             .transpose()
     }
 
-    // 14051E0E0/14051E1A0: null template is empty; name+0x28 plain,
-    // NAME@142727E7C, no LF. Sub's block fields are reader 14051ECD0.
-    // SET_GRAND_DOCTRINE_EFFECT@1427BAE58, SET_SUB_DOCTRINE_EFFECT@1427BAFD0.
+    // null template is empty; name plain,
+    // no LF. The sub-doctrine reader owns its block fields.
+
     pub(super) fn set_doctrine(
         &self,
         item: &Item,
@@ -701,11 +692,9 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // Shared own 14051D460, daily vf25 14051E6D0, bonus vf25 14051E7C0.
-    // Reader fallback 141468860 consumes all five filters before ReadEffect.
-    // TRACK_EFFECT_ALL_TRACKS/COMPLEX_HEADER@1427BB078/1427BB110;
-    // only keys@1427BB090/1427BB0B0/1427BB0D8/1427BB0F8;
-    // condition keys@1427BB130/1427BB150/1427BB178/1427BB1A0/1427BB1C8.
+    // Shared own, daily, bonus.
+    // Reader fallback consumes all five filters before effect parsing.
+
     pub(super) fn mastery_bonus(
         &self,
         item: &Item,
@@ -716,7 +705,7 @@ impl Renderer<'_, '_, '_> {
         let amount = field(fields, if daily { "amount" } else { "bonus" })
             .map(installed_content::modifiers::stored)
             .unwrap_or(0);
-        // Constructors 14051C900/14051C9A0 initialize +0x88 days to zero.
+        // initialize days to zero.
         let days = field(fields, "days")
             .and_then(|field| field.value.scalar())
             .map(integer)
@@ -835,9 +824,9 @@ impl Renderer<'_, '_, '_> {
         Ok(out)
     }
 
-    // CAddResearchSlotEffect::GetDescription 140320610; vf26 evaluates
-    // CScopedVariable +0x58 as int32. Zero takes the removal branch too.
-    // Add/remove/set keys@14273BEB8/14273BED8/14273BFD8.
+    // evaluates
+    // scoped variable as int32. Zero takes the removal branch too.
+    // Add, remove and set share the numeric operand.
     pub(super) fn research_slots(
         &self,
         item: &Item,
@@ -846,7 +835,7 @@ impl Renderer<'_, '_, '_> {
     ) -> Result<String, String> {
         let count = (self.scoped_value(scalar_operand(item)?, scopes)? / 100_000) as i32;
         if set {
-            // CSetResearchSlotsEffect::GetDescription 140321CA0, no LF.
+            // no LF.
             return self.char_native_text(
                 b"EFFECT_SET_RESEARCH_SLOTS",
                 &[("COUNT", Argument::Int32(count))],
@@ -862,9 +851,9 @@ impl Renderer<'_, '_, '_> {
         self.char_native_line(key, &[("COUNT", Argument::Int32(count))], scopes, false)
     }
 
-    // CInheritTechnologyEffect::GetDescription 1403216F0; country target
-    // 141384830, ordinary country name 140BA5960, COUNTRY@142728968. No LF.
-    // EFFECT_INHERIT_TECHNOLOGY@14273C4F8.
+    // country target
+    // ordinary country name. No LF.
+
     pub(super) fn inherit_technology(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let Some(country) = self
             .country_target(item, scopes)?
@@ -881,9 +870,9 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // Own 1402FCAD0/1402FE970: only +0x58's scoped value is described;
-    // VAL@14272F830, caller-scope expansion followed by an unconditional LF.
-    // Add/set keys@142730328/142730458.
+    // Only the scoped value is described;
+    // caller-scope expansion followed by an unconditional LF.
+    // Add/set.
     pub(super) fn mio_research_bonus(
         &self,
         item: &Item,
@@ -903,9 +892,9 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // CStealRandomTechBonusEffect::GetDescription 140322180 describes only
-    // instant (+0x194). The technology list belongs to selected vf9 140322220.
-    // EFFECT_STEAL_RANDOM_TECH/INSTANT@14273BAB8/14273BA90.
+    // describes only
+    // instant. The technology list belongs to selected.
+
     pub(super) fn steal_technology_bonus(
         &self,
         item: &Item,
@@ -925,9 +914,9 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // CSetFactionResearhUnlockedEffect::vf7 1404AFCB0: the inner key's
+    // the inner key's
     // REASEARCH spelling is native, and is localised without expansion.
-    // FACTION_ACCESS_TAB_REASEARCH@1427B3470.
+
     pub(super) fn faction_research_unlocked(
         &self,
         item: &Item,
@@ -935,7 +924,7 @@ impl Renderer<'_, '_, '_> {
     ) -> Result<String, String> {
         let name = self.char_native_text(b"FACTION_ACCESS_TAB_REASEARCH", &[], scopes, false)?;
         self.char_native_text(
-            // vf6 1404A8100 -> 1424AFED0 compares the token's raw text with
+            // compares the token's raw text with
             // "yes" including NUL, independent of token kind or case folding.
             if installed_content::parser::c_string(scalar_operand(item)?) == b"yes" {
                 b"FACTION_ACCESS_TAB_UNLOCK"
@@ -966,7 +955,7 @@ impl Renderer<'_, '_, '_> {
             .map_err(|why| why.to_string())
     }
 
-    // 14051D460 -> 14051E8B0; only the reached folder selector.
+    // only the reached folder selector.
     pub(super) fn mastery(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let fields = children(item);
         for field in fields {
@@ -975,7 +964,7 @@ impl Renderer<'_, '_, '_> {
                 "amount" | "folder"
             ) {
                 return Err(format!(
-                    "mastery filter {} is outside reached folder form (14051E8B0)",
+                    "mastery filter {} is outside reached folder form",
                     key(field)
                 ));
             }
@@ -985,7 +974,7 @@ impl Renderer<'_, '_, '_> {
             .unwrap_or(0);
         let folder = field(fields, "folder")
             .and_then(|item| item.value.scalar())
-            .ok_or("mastery folder form absent (14051E8B0)")?;
+            .ok_or("mastery folder form absent")?;
         let database = self
             .context
             .content
@@ -993,7 +982,7 @@ impl Renderer<'_, '_, '_> {
             .ok_or_else(|| self.content_gap("doctrines"))?;
         let folder = database
             .folder_exact(folder)?
-            .ok_or("mastery folder is absent (14051D460)")?;
+            .ok_or("mastery folder is absent")?;
         let name = self
             .context
             .localisation
@@ -1016,14 +1005,14 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 14031FCD0: folder display, authored reduction, formatted use count.
+    // folder display, authored reduction, formatted use count.
     pub(super) fn doctrine_reduction(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let fields = children(item);
-        // Native +0x58 technology and +0x70 category lists precede +0x88
-        // folders (14031FCD0); never silently omit a technology operand.
+        // Native technology and category lists precede
+        // folders; never silently omit a technology operand.
         if let Some(technology) = field(fields, "technology") {
             return Err(format!(
-                "technology {} doctrine reduction description is not ported (14031FCD0 +0x58)",
+                "technology {} doctrine reduction description is unavailable",
                 String::from_utf8_lossy(technology.value.scalar().unwrap_or_default())
             ));
         }
@@ -1039,7 +1028,7 @@ impl Renderer<'_, '_, '_> {
             folders.push(self.folder_name(item.value.scalar().unwrap_or_default())?);
         }
         if folders.is_empty() {
-            return Err("non-folder doctrine reduction is outside reached form (14031FCD0)".into());
+            return Err("non-folder doctrine reduction is outside reached form".into());
         }
         let list = match folders.as_slice() {
             [one] => one.clone(),
@@ -1050,7 +1039,7 @@ impl Renderer<'_, '_, '_> {
                     folders.join(", "),
                     self.context
                         .localisation
-                        .localise(b"AND") // Native literal at 14273BBDC, used by 14225CBD0.
+                        .localise(b"AND") // The fallback is a literal duration label.
                         .map_err(|why| why.to_string())?
                 )
             }

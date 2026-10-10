@@ -1,5 +1,4 @@
-//! Equipment designer handler; exact C++ class name remains unproven.
-//! Excluded presentation knowledge from `design_catalog_context_live/src/a729_hook.rs`.
+//! Equipment-designer presentation handler.
 
-/// Handler vtable +0xA0 current-country identity getter; a729_hook.rs:60,590-603 invoked the checked virtual slot.
+/// Current-country identity getter virtual byte offset.
 pub const CURRENT_COUNTRY_VSLOT: usize = 0xa0;

@@ -1,11 +1,11 @@
 //! Province placement for active naval combat map icons.
 //!
-//! `14127C6B0` first walks each province's ordered direct combat vector,
+//! first walks each province's ordered direct combat vector,
 //! then the global combat registry. The second pass can add an engaged combat
 //! to a sea province occupied by one of its transferred units. The two passes
 //! are independent: an unresolved transfer chain cannot erase a direct icon.
 //!
-//! The recorded transfer units are live ones only (`1415B10A0` skips a stale
+//! The recorded transfer units are live ones only ( skips a stale
 //! unit handle, and the recorder does too), so a recorded unit without a
 //! location is unresolved, not stale.
 
@@ -105,7 +105,7 @@ fn apply_call(
     let rows = out.by_province.entry(province).or_default();
     let indices = indices.entry(province).or_default();
     if let Some(&index) = indices.get(&combat) {
-        // Native +0x98 is updated on every admitted call, even a dedup hit.
+        // Advance the retained walk cursor on every admitted call, including deduplication hits.
         rows[index].ordinal = ordinal;
     } else {
         indices.insert(combat, rows.len());
@@ -147,8 +147,7 @@ fn unknown_sea_offsets(out: &mut Occurrences, kind: &dyn Fn(u32) -> Option<Provi
     }
 }
 
-/// `UpdateScreenOffset@1418E4CD0` multiplies the final native category-9
-/// ordinal by the GUI object's integer height, with positive screen Y down.
+/// Multiply the final category-nine ordinal by integer GUI height, with positive screen Y downward.
 pub(super) fn screen_y_offset(ordinal: u32, gui_height: f32) -> Option<f32> {
     if !gui_height.is_finite()
         || gui_height < 0.0
@@ -257,7 +256,7 @@ pub(super) fn derive(
     let mut spillovers = Vec::new();
     for combat in ordered {
         let primary = admitted(combat.id);
-        // `14127C6B0` tests the engagement before it walks any transfer, so a combat known to
+        // Test the engagement before it walks any transfer, so a combat known to
         // be unengaged needs none of its units resolved.
         let seen = engaged(combat.id);
         if primary == Some(false) || seen == Some(false) {

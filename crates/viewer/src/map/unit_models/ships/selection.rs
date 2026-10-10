@@ -1,4 +1,4 @@
-//! SelectShipEntity (141651870) chooses a registered definition before creating
+//! Ship model selection chooses a registered definition before creating
 //! its actor. An unsupported chosen definition must not select a later hull.
 
 use super::*;
@@ -22,8 +22,8 @@ pub(super) fn name<'t>(
                 hour.variants.get(&row.variant).copied().ok_or_else(|| {
                     format!("naval_entity: variant {} is unavailable", row.variant)
                 })?;
-            // 141651870 passes variant+1C directly, unlike the division adapter
-            // 14191A770. The explicit override never reaches these operands.
+            // Use the variant creator directly; the division adapter instead
+            // chooses a model country. The explicit override never reaches these operands.
             let country = creator_country(variant.creator_link)?;
             let (owner, token) = definition
                 .ok_or("naval_entity: ship's roster owner or Ships.class_id is unavailable")?;
@@ -46,7 +46,7 @@ pub(super) fn name<'t>(
                 country: owner,
                 token,
             };
-            // 140C2D950 rebuilds this pool from the roster owner's deployment
+            // The game rebuilds this pool from the roster owner's deployment
             // definition. Its first entry can differ from the global need.
             let requirements = assets
                 .sub_units
@@ -55,7 +55,7 @@ pub(super) fn name<'t>(
             let first = requirements.first().map(|(key, _)| key.as_str());
             let mut effective = subunit.clone();
             effective.category = row.formation_flags;
-            // 140B88E70 returns before reading the sprite when count is zero.
+            // The game returns before reading the sprite when count is zero.
             if first.is_some() {
                 effective.sprite =
                     identifier(&row.fallback_sprite, "embedded sub-unit sprite")?.to_owned();
@@ -103,7 +103,7 @@ fn choose<'t>(
     if counter.definition_valid == 0 {
         return Ok(registered(PLACEHOLDER_ENTITY)?.then(|| PLACEHOLDER_ENTITY.to_owned()));
     }
-    // 14191A580 tests the stored string's length, then lookup consumes a C
+    // The game tests the stored string's length, then lookup consumes a C
     // string. A stored NUL does not turn an explicit override into generation.
     if row.variant != 0 {
         let primary = if graphics.is_empty() {
@@ -134,7 +134,7 @@ fn choose<'t>(
             }
         }
     }
-    // CShip+E8 is tried even when its stored sprite is empty.
+    // Try the ship's own sprite even when it is empty.
     let sprite = identifier(&row.fallback_sprite, "fallback hull sprite")?;
     for name in ship_candidates(tag, sprite, row.model_number) {
         if registered(&name)? {
@@ -379,6 +379,8 @@ mod tests {
 
     #[test]
     fn owner_local_first_requirement_preserves_zero_and_differs_from_global() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use replay::{
             frame::{Metrics, TableView},
             rows::{

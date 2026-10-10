@@ -12,8 +12,8 @@ import type { AmountRun, Domain, EquipmentStockpileReply, StockVariant } from '.
 /** A country's equipment stockpile, from the recorded `Stockpiles` and production
  * lines, and its logistics record: the game's own surplus or shortage per equipment
  * type (the Logistics screen's "Stored" column) with the stock that record counted
- * (see `crates/dashboard/src/products/equipment_stockpile.rs` for what each value is
- * and the evidence). Need uses the available operand of the same native
+ * (see `crates/dashboard/src/products/equipment_stockpile.rs` for each value's
+ * meaning). Need uses the available operand of the same native
  * balance write. Older ordinary types derive it from max(0, stock); missing
  * convoy/truck/train observations keep their explicit unknown reason.
  * The game computes the balance only for player-controlled countries. */
@@ -301,7 +301,7 @@ export function balanceOperandsAt(reply: EquipmentStockpileReply, group: Pick<St
     const observed = item && runAt(item.available, hour);
     const available = observed?.amountRaw != null ? BigInt(observed.amountRaw) : null;
     const note = available != null ? null : type ? type.needNote : UNRESOLVED_NEED;
-    // Native SUB@141360174/141360972 wraps its i64 register. Recover the
+    // Availability subtraction wraps at signed i64 width. Recover the
     // same signed clamped need from the observed operand and stored result.
     const nativeAvailable = available ?? (typeStock > 0n ? typeStock : 0n);
     if (note) availableTotal = null;

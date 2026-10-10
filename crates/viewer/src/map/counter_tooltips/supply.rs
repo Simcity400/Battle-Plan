@@ -1,5 +1,5 @@
-//! Supply child footer: 1418BDBA0 -> aggregate14161CCE0 -> text14161D560.
-//! Receipts are recorded consumer amounts, never inferred from nearby hubs.
+//! Supply child footers aggregate recorded consumer receipts.
+//! Nearby hubs do not establish receipt amounts.
 
 use super::*;
 use replay::rows::{Recorded, UnitSupplyDemand, UnitSupplyInputs};
@@ -58,7 +58,7 @@ fn aggregate<'a>(members: impl IntoIterator<Item = &'a UnitSupplyInputs>) -> Agg
         }
     }
     if let Some(origins) = &mut out.origins {
-        // 14109B5D0 / 14161CA90: stable descending receipt, without an ID tiebreak.
+        // stable descending receipt, without an ID tiebreak.
         origins
             .visible
             .sort_by_key(|(_, amount)| std::cmp::Reverse(*amount));
@@ -66,7 +66,7 @@ fn aggregate<'a>(members: impl IntoIterator<Item = &'a UnitSupplyInputs>) -> Agg
     out
 }
 
-/// 1424D86F0 precision2 rounds the signed fixed5 word before localisation.
+/// The game precision2 rounds the signed fixed5 word before localisation.
 fn round_two(value: i64) -> i64 {
     let shifted = value.wrapping_add(if value > 0 { 500 } else { -500 });
     shifted.wrapping_sub(shifted % 1_000)
@@ -170,7 +170,7 @@ fn footer(
             let text = localise(context.loc, "FROM_SUPPLY_NODES", &[])
                 .and_then(|label| consumer(context, &label, origins.received, 2));
             line(context, out, "supply nodes", text);
-            // 14161E054 stops at the first receipt below 0.05 and after six rows.
+            // The game stops at the first receipt below 0.05 and after six rows.
             for &(province, value) in origins
                 .visible
                 .iter()
@@ -236,7 +236,7 @@ fn demand_text(loc: &Localisation, key: &str, demand: &UnitSupplyDemand) -> Resu
     .map(|text| format!("  {text}"))
 }
 
-/// 141622DC0 / 141622F00 keeps 140E69320's native rename/VP/state ladder.
+/// Preserve the recorded rename, victory-point and state-name ladder.
 fn province_name(context: &Context<'_>, id: i32) -> Result<String, String> {
     let id = id as u32;
     let provinces = context
@@ -347,7 +347,7 @@ pub(super) fn append(context: &Context<'_>, input: &CounterHover, out: &mut Tool
             .members
             .iter()
             .filter_map(|&id| {
-                // 1418BDBA0 resolves original full references and skips known
+                // Resolve original full references and skips known
                 // dangling ones before demanding a consumer supply packet.
                 let supply = if let Some(guns) = guns {
                     let index = guns.binary_search_by_key(&id, |row| row.gun).ok()?;
@@ -380,7 +380,7 @@ pub(super) fn append(context: &Context<'_>, input: &CounterHover, out: &mut Tool
     let mut result = Tooltip::default();
     member_footer(context, &members, &mut result);
     if !result.body.is_empty() {
-        // Ordinary1418C295F/297B appends the footer to title, independently
+        // Append the footer to title, independently
         // of the ETA/statistics body already produced by the generic handler.
         crate::combat::text::ensure_newlines(&mut out.title, 2);
         out.title.push_str(&result.body);
@@ -398,7 +398,7 @@ pub(super) fn member_footer(
     if let Some(reason) = members.iter().find_map(|member| member.as_ref().err()) {
         refuse(out, "supply detail", reason.clone());
         // An unreadable earlier member invalidates sums, but never the known
-        // last member's overwrite-only disruption operand (14161CD4D).
+        // last member's overwrite-only disruption operand.
         if let Some(Ok(last)) = members.last() {
             disruption(context, out, last.disruption);
         }

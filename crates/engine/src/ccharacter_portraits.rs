@@ -1,12 +1,8 @@
-//! Portrait-holder writer boundaries on hash-pinned a729. These observe normal
-//! execution; the recorder never calls them to obtain a value.
-//!
-//! 141389960 handles insertion/replacement, including the parser 141389ac0 and
-//! public setter 14138a0e0. 140f8a190 replaces a whole holder (definition build,
-//! character copy, officer/UI copies). 1403a5130 bulk-inserts copied entries.
-//! Constructors and destruction invalidate lifetimes, including address reuse.
-//! Entry payload+30 is a renderer cache and is not part of our recorded descriptor.
-//! Evidence: pinned hoi4re full decompiles, callers and instruction prefixes.
+//! Portrait-holder writer boundaries observing normal execution; recording
+//! never invokes them for a value. Insertion and replacement include parsing
+//! and public setters. Whole-holder copies and bulk entry copies have separate
+//! boundaries. Construction and destruction invalidate lifetimes, including
+//! address reuse. Renderer-cache payloads are excluded from recorded descriptors.
 
 pub struct MutationSite {
     pub name: &'static str,

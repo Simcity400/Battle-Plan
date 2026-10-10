@@ -1,18 +1,18 @@
-//! Carrier-airbase host handle payload consumed by the old oil-capacity walk.
+//! Carrier-airbase host handle payload consumed by the oil-capacity walk.
 //!
-//! This is expected to be a CShip, but the old resolver neither authenticates
-//! its class nor documents a primary/secondary-base adjustment. These offsets
-//! remain relative to that resolved payload until its identity is proved.
+//! The payload is expected to be a CShip, but its class and primary or secondary
+//! base adjustment are unverified. Offsets remain relative to the resolved
+//! payload until its identity is established.
 
-/// Carrier host equipment-entry array; compact_market_trade_oil_airbase_cache_value reads payload+60.
+/// Carrier host equipment-entry array.
 pub const EQUIPMENT_ENTRIES: usize = 0x60;
-/// Carrier host equipment-entry count, i32; compact_market_trade_oil_airbase_cache_value reads payload+6C.
+/// Equipment-entry count, i32.
 pub const EQUIPMENT_ENTRY_COUNT: usize = 0x6c;
-/// Carrier host capacity classifier byte; compact_market_trade_oil_capacity_divisor reads payload+628.
+/// Capacity classifier byte.
 pub const CAPACITY_CLASSIFIER: usize = 0x628;
-/// Carrier host capacity-class bit; compact_market_trade_oil_capacity_divisor uses byte bit 80 to select class 3.
+/// Classifier bit selecting capacity class three.
 pub const CAPACITY_CLASSIFIER_MASK: u8 = 0x80;
-/// Carrier host cached module-property bool byte; compact_market_trade_oil_airbase_cache_value reads payload+801.
+/// Cached module-property bool byte.
 pub const MODULE_PROPERTY_CACHE: usize = 0x801;
-/// Carrier host cache-valid bool byte; compact_market_trade_oil_airbase_cache_value tests payload+802 first.
+/// Cache-valid bool byte, tested before the cached property.
 pub const MODULE_PROPERTY_CACHE_VALID: usize = 0x802;

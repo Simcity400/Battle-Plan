@@ -128,7 +128,7 @@ pub struct FocusHistory {
     pub progress: Vec<FocusProgress>,
 }
 
-/// `CNationalFocusProgress` progress: fixed5 days of work toward the current
+/// Focus progress: fixed5 days of work toward the current
 /// focus (the daily update adds the day's focus speed; idle days bank it).
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]

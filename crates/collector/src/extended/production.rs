@@ -81,9 +81,9 @@ pub struct Capacities {
 }
 
 impl Capacities {
-    /// Advisory attach/refresh demand. CArmy::serialize@140C80E00 reaches the
-    /// embedded pool and army-owned requests; 1414FE120 walks every request
-    /// and delivery, including groups absent from the active country registry.
+    /// Advisory attach/refresh demand includes the embedded pool, army-owned
+    /// requests and every delivery, including groups absent from the active
+    /// country registry.
     pub(crate) fn presize(
         &mut self,
         memory: &impl Memory,

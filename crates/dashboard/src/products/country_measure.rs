@@ -2,8 +2,7 @@
 //! Both stored fixed5 balances share the country identity/balance walk with the
 //! Scoreboard. Runs never bridge missing values, gaps or country identity changes.
 //! Spend ticks are net drops between consecutive recorded hours, not gross spend.
-//! P: AddPoliticalPower 140B98130 writes CPoliticalStatus+0xE0;
-//! AddCommandPower 1406C3320 writes CCountry+0x1F0.
+//! Both power measures use their recorded signed fixed5 balances.
 
 use super::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, validate_countries};
 use crate::{Source, transport::json_len};

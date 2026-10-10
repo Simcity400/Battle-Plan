@@ -256,7 +256,7 @@ fn edit_manpower(
     sign: i128,
 ) {
     if let Some(land) = land {
-        // CArmyManpowerValues::GetTotal@140C5A0F0 sums native signed dwords.
+        // The manpower total sums recorded signed dwords.
         let amount = land
             .manpower
             .iter()

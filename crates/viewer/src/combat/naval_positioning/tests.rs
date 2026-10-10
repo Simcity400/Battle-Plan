@@ -383,6 +383,8 @@ fn adapter_requires_dense_witness_only_for_a_side_that_uses_its_air() {
 
 #[test]
 fn relation_scopes_preserve_zero_sortie_carrier_air_defender_positioning_and_aa() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::rows::{
         AirWingRow, NavalCombatAirBaseWingHandlesRow, NavalCombatAirEfficiency,
         NavalCombatAirEfficiencyModifier, NavalShipModifierSource, ShipCounterInputs,
@@ -504,7 +506,7 @@ fn relation_scopes_preserve_zero_sortie_carrier_air_defender_positioning_and_aa(
     let mut definitions = defines();
     definitions.summary_fixed[0] = ONE;
     definitions.summary_fixed[12] = 100 * ONE;
-    // 141609460 evaluates the opposing carrier air even when night makes
+    // the game evaluates the opposing carrier air even when night makes
     // every sortie zero. A refused static screening term must not turn that
     // known zero into a missing defender positioning or AA counter.
     let positioning = positioning_values(

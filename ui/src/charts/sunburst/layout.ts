@@ -4,7 +4,7 @@ import { CATEGORY_LIMIT } from '../palette.ts';
 import type { TooltipContent, TooltipRow } from '../tooltip';
 import { fractionSum } from '../valueAxis.ts';
 
-/** The sunburst's pure parts (spec 2.4, mock-up style-3): a tree grouped from a
+/** The sunburst's pure parts: a tree grouped from a
  * widget's items, folded so no parent has more slices than the palette has colours,
  * partitioned into rings around the slice the view is zoomed into, coloured,
  * hit-tested and stepped through with the keys. Nothing here draws. */

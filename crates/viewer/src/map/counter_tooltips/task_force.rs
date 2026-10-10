@@ -1,5 +1,5 @@
-//! Class-one arm of CUnitCounterItem::tooltip_builder@1418C00D0.
-//! Port mission items use another callback (14197C410), which has no arrival query.
+//! At-sea task-force counter tooltips.
+//! Port mission items use a separate callback without an arrival query.
 
 use super::*;
 use crate::map::unit_selection;
@@ -91,7 +91,7 @@ fn append_arrival(
                 "task force {first} ordinary route count does not match its captured path"
             ));
         }
-        // GetLastRouteProvince140BED8F0 must resolve before either ownership
+        // The game must resolve before either ownership
         // branch. A foreign first-edge query never bypasses this final gate.
         let last = *movement.path.last().expect("positive matching route count");
         if last == 0 {
@@ -133,7 +133,7 @@ pub(super) fn build(
     query: impl FnOnce(&TaskForceMapMotionRow, bool) -> Result<i64, String>,
 ) -> Tooltip {
     let mut out = Tooltip::default();
-    // The in-game idler@1416295A0 calls the handler first. CUnitCounterItem
+    // Call the map handler before the counter fallback. The counter
     // declines immediately when its representative reference does not resolve.
     // The detailed generic arm's handled byte is set only by the ETA formatter.
     let resolved = input.members.first().map_or(Ok(false), |first| {
@@ -326,6 +326,8 @@ mod tests {
 
     #[test]
     fn task_force_handled_empty_suppresses_authored_text_and_dangling_first_falls_back() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let loc: Localisation = [
             ("TITLE".into(), "authored title".into()),
             ("BODY".into(), "authored body".into()),
@@ -400,6 +402,8 @@ mod tests {
 
     #[test]
     fn task_force_detailed_fallback_follows_eta_handled_flag_not_summary_text() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use replay::rows::{
             CountryAppearanceRow, CountryRow, PoliticsRow, TaskForceCounterInputRow,
         };

@@ -276,9 +276,8 @@ pub fn month_before(hour: i32) -> Option<i32> {
 /// Exact all-type running totals with the single-stat widget's default refit
 /// selection. Reuses its bases and measured arithmetic over the cached shared
 /// production walk; missing or tainted samples stay unknown, including zero.
-/// P: delivered units are the logistics accounting call 14135F0E0's fixed5
-/// amount from ProduceEquipment (140F596C0 / 140F59ED0 / 140F5A940).
-/// The recorder observes those deliveries; the game keeps no per-line total.
+/// Delivered units are the fixed5 logistics-accounting amount. The recorder
+/// observes those deliveries; the game keeps no per-line total.
 pub(crate) struct CountryTotalRun {
     pub first_hour: i32,
     pub last_hour: i32,

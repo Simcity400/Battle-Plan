@@ -101,7 +101,7 @@ impl Captured {
         match source {
             Ok(source) => {
                 self.cells.required = source.required_slots();
-                // HasFullCountryVisibility@1406F3B00 uses the original matrix extent.
+                // Full country visibility uses the original matrix extent.
                 if growing
                     && let Err(reason) = engine::walk::Buffer::Growing(&mut self.cells.first)
                         .ensure(self.cells.required)

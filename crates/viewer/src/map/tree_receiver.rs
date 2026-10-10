@@ -1,4 +1,4 @@
-//! Tree receiver141269A30 ->1412653E0(mode1), before terrain receiver.
+//! Tree receiver ->(mode1), before terrain receiver.
 use eframe::wgpu;
 use installed_content::pdxshader::{DepthStencilState, RasterizerState, program::Stage};
 use shader_pipeline::{binding, gpu, library::Effect};
@@ -10,8 +10,8 @@ fn refuse(reason: impl Into<String>) -> io::Error {
     ))
 }
 
-/// Native b1 allocation80;141265971 writes season lerp/column zero,141265979 fade.
-/// Receiver matrix is shadow-owner+D0/+110/+150 by wrap; bytes76..79 are unknown.
+/// The 80-byte b1 allocation carries the wrap view's receiver matrix, zero season interpolation
+/// and column, and fade. Bytes 76 through 79 remain unknown.
 fn constants(matrix: [[f32; 4]; 4], fade: f32) -> Vec<u8> {
     let mut bytes = vec![0; 80];
     bytes[..64].copy_from_slice(bytemuck::bytes_of(&matrix));
@@ -41,7 +41,7 @@ impl Receiver {
             .retain(|key, _| (0..16).any(|slot| *key == binding(slot, Stage::Pixel)));
         let mut pass = gpu::Pass::packed(&compiled, &state, format, 1);
         pass.vertices = super::tree_caster::vertex_layouts(&compiled.vertex.inputs)?;
-        // Caller forces default depth; ordinary preceding caster leaves CPdxMap+60.
+        // The caller forces default depth and retains the preceding caster's raster state.
         let raster = RasterizerState::default();
         pass.primitive = gpu::primitive(&raster, wgpu::PrimitiveTopology::TriangleList).0;
         pass.depth_stencil =

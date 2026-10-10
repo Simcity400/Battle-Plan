@@ -1,5 +1,5 @@
 //! Each part of one country's displayed stability and war support over a
-//! branch, for the drill-down's parts-over-time chart (mock-up drill-1).
+//! branch, for the drill-down's parts-over-time chart.
 //!
 //! A part is what the breakdown shows at a read ([`country_stability`]): a
 //! formula term, one modifier tree line (by the identity the recorder proved,

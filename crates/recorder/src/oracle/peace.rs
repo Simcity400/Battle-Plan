@@ -274,8 +274,8 @@ fn compare_settlements(frame: &DecodedFrame, save: &Save, report: &mut Report) -
     compare_settlements_after(frame, |_| Ok(None::<&DecodedFrame>), save, report)
 }
 
-/// Queue cleanup (140BAFB00 -> 140BAFB50) precedes advancing/finalizing its first
-/// remaining conference (140E3C2B0 -> 140E2D2B0 -> 140E2E250 -> 140E30E30).
+/// Queue cleanup precedes advancing/finalizing its first
+/// remaining conference.
 /// A finalizer publication can therefore precede the resident ID's disappearance.
 fn preceding_finalizations<F: std::borrow::Borrow<DecodedFrame>>(
     branch: BranchId,

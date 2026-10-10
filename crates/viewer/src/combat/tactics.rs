@@ -1,17 +1,12 @@
-//! The native possible-tactics window, derived in playback.
+//! The possible-tactics window derived during playback.
 //!
-//! 141C5C1F0 chooses the combat side from the viewing country's membership,
-//! evaluates 141299340, sorts by viewing-country unlock then chance, and only
-//! then filters `only_show_for`. 141C5D350 binds the authored entry. The menu's
-//! open/scroll/drag state belongs to Window, never to the recording.
+//! Select the combat side from viewing-country membership, evaluate candidates,
+//! sort by unlock then chance, and filter only_show_for before binding entries.
+//! Window opening, scrolling and dragging are local presentation state.
 //!
-//! Keys and trigger names are keywords: readers dispatch on the key's token
-//! ID ([`Item::keyword`], CTextLexer::read_token 1424A7A90), so a bare key
-//! matches without case and a quoted one is no keyword. Values a reader
-//! compares by their text keep their case: `yes`/`no` (read_bool_token
-//! 1424B06E0), tactic, trait and country names. A value a reader dispatches
-//! on by token ID (a terrain, a combat modifier, an integer operand) carries
-//! its quoted flag from the content read.
+//! Keys and trigger names dispatch through [`Item::keyword`]: bare keys match
+//! without case, quoted keys are not keywords. Text operands retain their case
+//! where required; token-based operands carry the content reader's quoted flag.
 use super::{
     Selection, Values,
     binding::{Bindings, TextIcons, builtin, hide, sprite, text, token},
@@ -21,7 +16,7 @@ use dashboard::triggers::{
     Combat, Eval, Evaluator, Scope, Scopes, World, compare, shown, trigger_boolean,
 };
 use installed_content::{
-    combat_tactics::EFFECTS,
+    combat_tactics::effect_slot,
     leader_traits::LeaderTraits,
     localisation::{Argument, Localisation},
     parser::{Item, Operator, c_string},
@@ -56,11 +51,10 @@ struct Definition {
     /// (installed_content::combat_tactics).
     phase: i32,
     display_phase: i32,
-    /// The six [`EFFECTS`] as the content was read.
+    /// The six effects in [`effect_slot`] order as the content was read.
     effects: [i64; 6],
-    /// The picture's sprite: 1406B3CB0 stores the last `picture` read, and
-    /// 141C5DD20 draws that object's, so two tactics sharing a name keep
-    /// their own. An error says why the viewer has none.
+    /// The last picture sprite read for this registry entry. Tactics sharing
+    /// a name retain separate pictures. An error says why it is unavailable.
     picture: Result<String, String>,
 }
 
@@ -77,7 +71,7 @@ impl Definition {
     }
 }
 
-/// A tactic's six effects (1406B3CB0, +0x138..+0x160) in [`EFFECTS`] order.
+/// A tactic's six effects in [`effect_slot`] order.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Effects {
     pub width: i64,
@@ -110,16 +104,16 @@ struct Candidate {
 pub(crate) struct Content {
     phases: Vec<Vec<u8>>,
     registry: Vec<RegistryEntry>,
-    /// The one trait-name inventory (append_trait 140AD7890,
+    /// The one trait-name inventory (trait registration,
     /// installed_content::unit_leader::Traits::registered).
     leader_traits: Traits,
     /// The country-leader trait database (installed_content::leader_traits), which
-    /// a character's `has_trait` searches by name (140712D30) after the
+    /// a character's `has_trait` searches by name after the
     /// unit-leader traits; `None` until loaded.
     country_leader_traits: Option<Result<Arc<LeaderTraits>, String>>,
     /// The one sub-unit database read (installed_content::unit_leader::sub_units):
-    /// a definition is found without case (140AB4070), as the recorded
-    /// sub-unit token is interned (1424A7A90).
+    /// a definition is found without case, as the recorded
+    /// sub-unit token is interned.
     sub_units: SubUnits,
     /// Why the sub-unit database could not be read, if it could not.
     sub_units_unreadable: Option<String>,
@@ -144,9 +138,8 @@ impl Content {
         &self.warnings
     }
 
-    /// The building, ideology and resource names LoadKey's count triggers
-    /// find over a recorded hour, from the databases the document already
-    /// loaded.
+    /// Building, ideology and resource names used by count triggers over a
+    /// recorded hour, from the document's loaded databases.
     pub(super) fn set_count_names(&mut self, counts: CountTriggerNames) {
         Arc::make_mut(&mut self.names).counts = Some(counts);
     }
@@ -230,12 +223,9 @@ impl Content {
             .map(|traits| (self.leader_traits.clone(), traits.clone()))
     }
 
-    /// The unit-leader trait names and the sub-unit database, each from its
-    /// one reader in installed_content::unit_leader, and the scripted triggers
-    /// (installed_content::scripted_triggers), with their refusals. Scripted bodies load
-    /// after the combat tactics (14018B610: LoadScriptedTriggers 140AA8DC0
-    /// after 1406B3690), so their `phase` operands resolve against every
-    /// phase (140473850 -> 1406B35C0).
+    /// Share the one unit-leader trait and sub-unit reads, scripted triggers and
+    /// their refusals. Scripted bodies load after tactics so phase operands can
+    /// resolve against every loaded phase.
     pub(super) fn with_inventories(
         mut self,
         leader_traits: Traits,
@@ -269,8 +259,8 @@ impl Content {
     }
 
     /// The registry entry a recording names: the entry at its recorded ID
-    /// (1406B0A70 stores the database ID at +0x98), which must carry the
-    /// recorded name, and its definition when the content read proves it.
+    /// which must carry the recorded name, and its definition when the
+    /// content read proves it.
     fn entry(&self, id: i32, token: &[u8]) -> Evaluation<&Definition> {
         let name = String::from_utf8_lossy(token);
         let index = usize::try_from(id)
@@ -302,8 +292,8 @@ impl Content {
         self.entry(candidate.tactic_id, &candidate.token)
     }
 
-    /// Exact name lookup1406B11F0: entries prepend into their hash bucket;
-    /// a miss is the null tactic. A partially read registry cannot prove it.
+    /// Exact name lookup: entries prepend into their hash bucket, so later
+    /// definitions win. A miss is the null tactic; partial reads cannot prove a miss.
     fn named_id(&self, name: &[u8]) -> Evaluation<i32> {
         if let Some(why) = &self.registry_unsettled {
             return Err(format!("the tactic name registry is incomplete: {why}"));
@@ -316,9 +306,8 @@ impl Content {
             .map_or(0, |entry| entry.id))
     }
 
-    /// The picture sprite of the tactic a recording names (141C5DD20 draws
-    /// the tactic object's own), through the registry's identity and
-    /// refusal checks.
+    /// The recorded tactic's own picture sprite, subject to the registry's
+    /// identity and refusal checks.
     pub(super) fn picture(&self, id: i32, token: &[u8]) -> Evaluation<&str> {
         let definition = self.entry(id, token)?;
         definition.picture.as_deref().map_err(Clone::clone)
@@ -345,9 +334,8 @@ impl Content {
         })
     }
 
-    /// The effects of the tactic a recording names, for the land hovers
-    /// (1406B12D0, 141299190); the error names why the registry entry is
-    /// not proven.
+    /// The recorded tactic's effects for land hovers, or why its registry
+    /// entry is not proven.
     pub(super) fn effects(&self, id: i32, token: &[u8]) -> Result<Effects, String> {
         let definition = self.entry(id, token)?;
         let [
@@ -370,14 +358,14 @@ impl Content {
 }
 
 /// The sprite name a tactic's picture declares: its texture is
-/// `gfx/interface/landcombat/tactics/<picture>.dds` (141C5DD20).
+/// `gfx/interface/landcombat/tactics/<picture>.dds`.
 const PICTURE_PREFIX: &str = "combat_tactic:";
 
-/// 1406B3BD0/1406B0A70 leave the singleton's picture empty; 141C5DD20
-/// constructs the same path as for an authored picture, including `.dds`.
+/// The singleton picture is empty; construct the ordinary picture path,
+/// including its `.dds` suffix.
 pub(super) const NULL_PICTURE: &str = PICTURE_PREFIX;
 
-/// A tactic's definition as 1406B3CB0 reads it, or why the viewer cannot.
+/// A tactic's definition as the game reads it, or why the viewer cannot.
 fn definition(
     tactic: &installed_content::combat_tactics::Tactic,
     warnings: &mut Vec<String>,
@@ -389,12 +377,11 @@ fn definition(
         ));
     }
     let items = &tactic.fields;
-    // 1406B0A70 initializes +170 (active) to 1 and +171 (is_attacker) to 0.
+    // Active defaults to true and is_attacker defaults to false.
     let active = field_boolean(&name, items, "active", true, warnings);
     let attacker = field_boolean(&name, items, "is_attacker", false, warnings);
     // What the game draws for a tactic without a picture is unverified.
-    // 1406B3CB0 stores the value slot's text as a C string (+0x70): to its
-    // first NUL.
+    // Store the value slot's text up to its first NUL.
     let picture = match field(items, "picture").map(|item| &item.value) {
         None => Err(format!("tactic {name} has no picture field")),
         Some(value) => match (value.scalar(), value.c_str()) {
@@ -418,13 +405,10 @@ fn definition(
     })
 }
 
-/// A yes/no field as read_bool_field (1424ABCA0) reads each occurrence in
-/// order: read_bool_token (1424B06E0) accepts only `yes` and `no`, each
-/// compared with its terminating NUL, so the text to its first NUL; any
-/// other value is reported (1424ACEE0) and leaves the value as it was,
-/// since the tactic loader (1406B3690) never checks the reader's errors.
-/// A block here marks the tactic unproven as the content is read
-/// (installed_content::combat_tactics), so it never reaches this.
+/// Read yes/no field occurrences in order. Accept exactly `yes` or `no`
+/// through the first NUL; report other values and retain the previous value.
+/// The loader continues after those errors. A block value marks the tactic
+/// unproven in installed_content::combat_tactics before it can reach this reader.
 fn field_boolean(
     tactic: &str,
     items: &[Item],
@@ -437,7 +421,7 @@ fn field_boolean(
         match item.value.scalar().and_then(installed_content::parser::read_bool) {
             Some(value) => state = value,
             _ => warnings.push(format!(
-                "Combat tactics: tactic {tactic}'s {key} = {} is not exactly yes or no; the game logs an error and keeps {} (1424B06E0).",
+                "Combat tactics: tactic {tactic}'s {key} = {} is not exactly yes or no; the game logs an error and keeps {}.",
                 shown(&item.value),
                 if state { "yes" } else { "no" }
             )),
@@ -446,13 +430,11 @@ fn field_boolean(
     state
 }
 
-/// The name 1406B3BD0 gives the null tactic (database entry 0) before
-/// 1406B0A70 interns it; an engine constant, not content.
+/// The null tactic name is an engine constant, independent of content.
 const NULL_TACTIC_NAME: &[u8] = b"nullCombatTactic";
 
-/// 1406B0A70 interns each authored name into the global lexer and stores its
-/// token ID at +94. The recording's lexical table is that global dictionary;
-/// source-order names from matching content preserve the tactic database IDs.
+/// Intern each authored name and retain its token ID. The recording's lexical
+/// table is that global dictionary; content source order preserves database IDs.
 fn candidates(content: &Content, lexical: &[LexicalTokenRow]) -> Evaluation<Vec<Candidate>> {
     content
         .registry
@@ -541,7 +523,7 @@ impl Context<'_> {
             .map_err(|why| format!("the preferred-tactic weight defines are unavailable: {why}"))
     }
 
-    /// 141299340 scopes a side to its first primary country.
+    /// Scope a side to its first primary country.
     fn country_slot(&self) -> Evaluation<u32> {
         let raw = self.first_countries[self.side].ok_or_else(|| {
             format!(
@@ -557,8 +539,7 @@ impl Context<'_> {
         })
     }
 
-    /// A raw country link's canonical slot (ccountry_tag::canonical_slot
-    /// 140BA6240, CGameState+0x340), or why the hour cannot give it.
+    /// A raw country link's canonical slot, or why the hour cannot resolve it.
     fn canonical(&self, link: u32) -> Evaluation<u32> {
         self.aliases
             .get(&link)
@@ -582,7 +563,7 @@ impl Context<'_> {
     }
 
     /// The recorded token IDs spelling `text` without ASCII case: the lexer
-    /// looks a bare token up through a lowercased copy (1424A7A90).
+    /// looks a bare token up through a lowercased copy.
     fn token_ids(&self, text: &[u8]) -> Vec<u32> {
         self.tokens
             .iter()
@@ -604,11 +585,9 @@ impl Context<'_> {
             .country_unlocks
             .get(&slot)
             .ok_or_else(|| format!("country slot {slot} has no CountryTacticUnlocks row"))?;
-        // 1413B8CF0 compares the unlocked tactics' +94 tokens with the
-        // candidate's. The census records each unlocked tactic's +98
-        // database ID, whose token the matching registry supplies. ID 0 is
-        // the CNullCombatTactic an unknown `unlock_tactic` name appends
-        // (1406B11F0 -> 1406B3BD0); its token interns the engine's own name.
+        // Unlocked tactics compare their tokens with the candidate. Recorded unlocks
+        // hold database IDs whose tokens come from the resolved registry. ID 0 is
+        // the active null tactic, including unknown unlock names.
         unlocks.iter().try_fold(false, |found, &id| {
             if id == 0 {
                 let null = self
@@ -631,14 +610,10 @@ impl Context<'_> {
         })
     }
 
-    /// NDoctrines::CHasCombatTacticTrigger. Its reader (1404A8120) interns
-    /// the operand (add_dynamic_token 1424A6500: the token of that text in
-    /// any case, else a new one of this spelling), and Evaluate (14051F250)
-    /// looks the token's stored spelling (get_token_string 1424A7300) up
-    /// byte-for-byte among the tactic names (1406B11F0). A miss is the null
-    /// tactic (GetNullCombatTactic 1406B3BD0), which 1406B0A70 builds
-    /// active (+0x170), so the trigger holds; an active tactic holds, and
-    /// another is looked up among the scope country's unlocks (1413B8CF0).
+    /// Intern the has_tactic operand without case, retaining its first spelling,
+    /// then look up that spelling byte-for-byte among tactic names. A miss is the
+    /// active null tactic. Active tactics hold; inactive tactics require the
+    /// scoped country's unlock.
     fn has_tactic(
         &self,
         operand: &[u8],
@@ -650,16 +625,16 @@ impl Context<'_> {
             [] => {
                 return Err(match &self.tokens_complete {
                     Ok(()) => format!(
-                        "{shown} is not in the recorded lexical dictionary, though the trigger's reader interns it (1424A6500)"
+                        "{shown} is not in the recorded lexical dictionary, though the trigger's reader interns it"
                     ),
                     Err(why) => format!(
-                        "{shown} is not in the recorded lexical dictionary, which is not the whole dictionary ({why}), so the spelling the trigger looks up (1424A7300) is unknown"
+                        "{shown} is not in the recorded lexical dictionary, which is not the whole dictionary ({why}), so the spelling the trigger looks up is unknown"
                     ),
                 });
             }
             [first, second, ..] => {
                 return Err(format!(
-                    "{shown} is spelled by tokens {first} and {second} in the recorded lexical dictionary, so which the trigger's reader interns (1424A6500) is unknown"
+                    "{shown} is spelled by tokens {first} and {second} in the recorded lexical dictionary, so which the trigger's reader interns is unknown"
                 ));
             }
         };
@@ -707,13 +682,13 @@ impl Context<'_> {
         let (comparison, value) = (item.operator, &item.value);
         let symbol = String::from_utf8_lossy(comparison.text());
         let fail = |why: &str| format!("trigger {key} {symbol} {}: {why}", shown(value));
-        // 1404A8120 interns the value token as a C string.
+        // the game interns the value token as a C string.
         if name == "has_tactic" {
             let country = || match this {
                 Scope::Combat => self.country_slot(),
                 Scope::Country(slot) => Ok(slot),
                 other => Err(format!(
-                    "the trigger's scope check (140542CA0) passed in a {} scope, which holds no country (14052F3F0)",
+                    "the trigger's scope check passed in a {} scope, which holds no country",
                     evaluator.describe(other)
                 )),
             };
@@ -764,12 +739,8 @@ impl Context<'_> {
                 .map(|desired| desired == (self.side == 0))
                 .map_err(|why| fail(&why)),
             "phase" => {
-                // 140472EB0 asks vtable+58 for kind1. Both authenticated
-                // land classes, including border combat, return1 there;
-                // GetCombatTypeToken at+50 is a different discriminator.
-                // The phase ID resolved as the content was read
-                // (installed_content::combat_tactics: 140473850 -> 1406B35C0);
-                // Evaluate tests equality whatever the operator.
+                // Both admitted land classes, including border wars, support phase tests.
+                // Compare the phase ID resolved during the content read, regardless of operator.
                 operand().and_then(|operand| {
                     operand
                         .parse::<i32>()
@@ -791,11 +762,9 @@ impl Context<'_> {
                 )
             }
             "has_trait" => {
-                // The tactic scope holds no character (140529310), so the
-                // combat's unit leader's (+0x60, vf+0xE8) character
-                // (LookupCharacter 140C0EEF0): none is false, before any
-                // trait lookup. HasRetiredCharacter (14052BC80) reads the
-                // scope's character, so no retired gate applies.
+                // The tactic scope holds no character. Trait lookup instead uses the
+                // combat commander's character, with a null character returning false.
+                // Retirement tests apply to the scope character, so no retirement gate applies.
                 let presentation = &side.presentation;
                 if side.commander == 0 || presentation.character_state <= 1 {
                     return Some(Ok(false));
@@ -806,10 +775,9 @@ impl Context<'_> {
                         presentation.character_state
                     ))));
                 }
-                // The character reference's id word (+0x54 of the pair).
+                // The character reference's high word holds its ID.
                 let character = (presentation.character >> 32) as u32;
-                // GetUnitLeader (140F8A840): the recorded role leader and
-                // its assigned traits (CUnitLeader+0xDC8).
+                // Use the recorded role leader and its assigned traits.
                 evaluator
                     .character_traits(character, bytes, || {
                         Ok((presentation.character_role_leader != 0).then(|| {
@@ -823,15 +791,9 @@ impl Context<'_> {
                     .map_err(|why| fail(&why))
             }
             "is_fighting_in_terrain" => {
-                // 140473CB0 stores the first terrain, in database order,
-                // whose lexer token is the operand's (names are interned
-                // without case, 1424A7A90), else database entry 0, the null
-                // object (only logged, 141395A40). Evaluate (1404733A0)
-                // compares that pointer with the combat's terrain (+0x48).
-                // Only the null object has +0x10 clear (CTerrainDatabase::
-                // construct 140AC6860 clears it; 1414297F0 sets it on every
-                // CTerrainType).
-                // A quoted operand is token 0xF, no terrain's token.
+                // Resolve the first terrain whose token matches the operand, in database
+                // order and without case. A miss or quoted operand selects the null terrain.
+                // Compare terrain identity; only the null object lacks the terrain-present flag.
                 let valid = self.detail.stored_terrain_valid != 0;
                 let named = self
                     .terrains
@@ -860,11 +822,11 @@ impl Context<'_> {
             },
             "frontage_full" => self.frontage_full(item).map_err(|why| fail(&why)),
             "hardness" => (|| {
-                // 1404749D0 uses every participant, min for '>' and max for
+                // the game uses every participant, min for '>' and max for
                 // '<'. Its '=' path asserts rather than selecting a reduction.
                 if comparison == Operator::Equals {
                     return Err(fail(
-                        "1404749D0 asserts on '=' instead of choosing a reduction",
+                        "the game asserts on '=' instead of choosing a reduction",
                     ));
                 }
                 let greater = comparison == Operator::Greater;
@@ -879,10 +841,10 @@ impl Context<'_> {
                 }
                 numeric(actual, true)
             })(),
-            // 140473990 maps the operand's keyword ID (141440AE0), which the
+            // the game maps the operand's keyword ID, which the
             // lexer finds without case; a quoted operand is token 0xF.
             "has_combat_modifier" if item.quoted() => Err(fail(
-                "the operand is quoted, so it is token 0xF (1424A7A90) and no combat-modifier keyword 140473990 maps (141440AE0); what the trigger then holds is not reproduced",
+                "the operand is quoted, so token 0xF names no combat-modifier keyword; what the trigger then holds is not reproduced",
             )),
             "has_combat_modifier" => operand().and_then(|operand| {
                 if operand.eq_ignore_ascii_case("river_crossing") {
@@ -898,13 +860,13 @@ impl Context<'_> {
                 }
             }),
             "has_unit_type" => (|| {
-                // 1404739B0 hashes the value token as a C string
-                // (140BBA1B0).
+                // the game hashes the value token as a C string
+
                 let operand = c_bytes()?;
                 for unit in self.participants {
                     let row = self.division(*unit).map_err(|why| fail(&why))?;
                     for term in self.composition(*unit, row).map_err(|why| fail(&why))? {
-                        // 140472610's hash/string match folds ASCII case.
+                        // hash/string match folds ASCII case.
                         if term.1.eq_ignore_ascii_case(operand) {
                             return Ok(true);
                         }
@@ -933,7 +895,7 @@ impl Context<'_> {
                             artillery = artillery.wrapping_add(units);
                         }
                     }
-                    // 140FAA360 counts each grid with signed16 arithmetic.
+                    // the game counts each grid with signed16 arithmetic.
                     // This bound proves no grid can overflow despite the
                     // aggregate omitting the original grid partition.
                     if count > i64::from(i16::MAX) {
@@ -956,8 +918,7 @@ impl Context<'_> {
         })
     }
 
-    /// CFrontageFullTrigger: whether the attacker's committed divisions fill
-    /// the combat's width (141298E00).
+    /// Whether the attacker's committed divisions fill the combat width.
     fn frontage_full(&self, item: &Item) -> Evaluation<bool> {
         let side = &self.detail.sides[self.side];
         let committed = &self.detail.sides[0].committed;
@@ -967,7 +928,7 @@ impl Context<'_> {
             self.detail.province,
             &self.movement_sources,
         )
-        // 141298E00 needs every row, and the movement source of a unit in
+        // the game needs every row, and the movement source of a unit in
         // the combat province that it does not fold into an earlier
         // direction.
         .map_err(|reason| format!("the attacker's directions are unavailable: {reason}"))?;
@@ -985,12 +946,9 @@ impl Context<'_> {
         trigger_boolean(item).map(|desired| desired == full)
     }
 
-    /// CEquipmentTypeTrigger::vf23 (141390370) on the side's CLandCombatant
-    /// (vf+0x48 true): of its full unit array (+0x20, LandCombats'
-    /// attackers or defenders) the share, fixed5, whose stat block category
-    /// mask (`*(CUnit+0x138)+0x5A8`, LandCombatDivisions.categories) meets
-    /// the trigger's (+0x130): `matching * 10^10 / (units * 100000)`, 0 with
-    /// no units, 0xFFFFFFFF past its range check.
+    /// The fixed5 share of the side's full ordered unit roster whose recorded
+    /// category mask matches the trigger. Empty rosters give zero; an exceptional
+    /// scaled numerator gives the 0xFFFFFFFF sentinel.
     fn category_share(&self, mask: u64) -> Result<i64, String> {
         let mut matching = 0_i32;
         for unit in self.participants {
@@ -1019,7 +977,7 @@ impl Context<'_> {
         if row.context.template == 0 {
             return Ok(Vec::new());
         }
-        // SpawnArmyConsoleCommand140289780 can populate grids without
+        // the game can populate grids without
         // rebuilding this aggregate. Empty terms are therefore not proof
         // that a present template is empty.
         if row.width_terms.is_empty() {
@@ -1027,8 +985,8 @@ impl Context<'_> {
                 "division {unit}'s template has no verified composition aggregate"
             ));
         }
-        // 140B94FA0 rebuilds template+C0 from every active slot in all three
-        // grids via140B88BA0. These hourly width terms are also the exact
+        // Rebuild the template composition from every active slot in all three
+        // grids. These hourly width terms are also the exact
         // composition multiset; no daily template census or additional
         // capture is needed.
         row.width_terms
@@ -1056,17 +1014,13 @@ impl Context<'_> {
         if !self.unlocked(candidate, definition, slot)? {
             return Ok(0);
         }
-        // Every `trigger` block loads into the one CAndTrigger at +0xE0 and
-        // every `base` block into the one CMeanTimeToHappen at +0xA8
-        // (1406B0A70, 1406B3CB0). The content read keeps each as a block: a
-        // scalar trigger reads nothing (1405431C0) and is dropped, a scalar
-        // base leaves the text and refuses the tactic, and a scalar modifier
-        // is an empty one (installed_content::combat_tactics).
+        // Repeated trigger blocks append into one condition group, and base blocks
+        // into one weight object. Scalar triggers are dropped; scalar base values
+        // lose alignment and refuse the tactic; scalar modifiers are empty.
         if !self.check(&definition.blocks("trigger"))? {
             return Ok(0);
         }
-        // The weight's CMeanTimeToHappen, its modifiers checked in the
-        // tactic scope (1405455A0).
+        // Check the weight object's modifiers in the tactic scope.
         let mut weight = Evaluator::new(&self.world, Some(self)).mean_time_to_happen(
             "base weight",
             &definition.blocks("base"),
@@ -1084,7 +1038,7 @@ impl Context<'_> {
     }
 
     /// The country preference adds its recorded accumulator; leader preferences
-    /// take only their content define (1412A77A0).
+    /// take only their content define.
     fn preferred_weight_factor(&self, preference: usize) -> Evaluation<i64> {
         let factor = self.preference_factor(preference)?;
         if preference != 0 {
@@ -1108,7 +1062,7 @@ impl Context<'_> {
     }
 }
 
-/// The combat side the tactic scope is (1412A77A0), for the shared
+/// The combat side the tactic scope is, for the shared
 /// evaluator.
 impl Combat for Context<'_> {
     fn country(&self) -> Result<u32, String> {
@@ -1133,7 +1087,7 @@ fn side_name(side: usize) -> &'static str {
 }
 
 fn normalized_chances(weights: &[Option<i64>]) -> Vec<Option<i64>> {
-    // 141299340 sums positive weights before dividing every candidate,
+    // the game sums positive weights before dividing every candidate,
     // including locked/ineligible zeroes. Hidden-country tactics still count.
     let total = weights.iter().try_fold(0_i64, |sum, weight| {
         Some(sum.wrapping_add((*weight)?.max(0)))
@@ -1154,11 +1108,10 @@ fn normalized_chances(weights: &[Option<i64>]) -> Vec<Option<i64>> {
         .collect()
 }
 
-/// 141C5C1F0 tests the attacker's ordered primary country set (the naval
-/// progress skin, 1417DA6CB, tests the defender's): 0 when the viewer is in
-/// `primary`, else 1. Its members may be seeded or retained after the current
-/// division roster changes. An unresolved raw country cannot prove that the
-/// viewer is outside the set; `side` names the set in that refusal.
+/// Select side 0 when the viewer is in the ordered attacker primary set,
+/// otherwise side 1. The naval progress skin checks the defender set instead.
+/// Sets may retain members after roster changes. An unresolved reference cannot
+/// prove absence; the error names the affected side.
 pub(super) fn viewing_side(
     primary: &[u32],
     side: &str,
@@ -1182,9 +1135,9 @@ pub(super) fn viewing_side(
     }
 }
 
-/// A recorded or authored name localised with no arguments (142230940: a
-/// key the content lacks is its own bytes), then placed into `key`'s
-/// `$NAME$`-style argument. Each refusal is the localiser's, by name.
+/// Localise a recorded or authored name without arguments, preserving an
+/// absent key as its own bytes, then supply the result as NAME to the target
+/// key. Localisation refusals retain their names.
 fn localize_named(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -1205,7 +1158,7 @@ pub(super) fn bind(
     nato: bool,
 ) -> io::Result<()> {
     let Selection::Land(id) = selection else {
-        // Only the land view (1415C7D20) has a possible-tactics popup.
+        // Only the land view has a possible-tactics popup.
         return Ok(());
     };
     let details = rows::<tables::LandCombatDetails>(frame)?;
@@ -1621,17 +1574,16 @@ fn scripted_text<'a>(
         .map_err(Clone::clone)
 }
 
-/// Whether 141C5C1F0 lists a tactic for the viewing country `ours`.
-/// ReadCountryTag (140BA6310 -> 140BA4CA0) stores `only_show_for`'s tag as
-/// its link index, not positive for a text no tag list holds; the popup
-/// lists a tactic whose restriction is not positive for every country, and
-/// another only for its own (or the same country, 140BA60A0). A tag the
-/// hour's partial Countries lacks is unknown.
+/// Whether the game lists a tactic for the viewing country `ours`.
+/// `only_show_for` stores a country link index, with a nonpositive value for
+/// an unregistered tag. Nonpositive restrictions list the tactic for every
+/// country; positive restrictions list it only for the same country. A tag
+/// absent from the hour's partial Countries table is unknown.
 fn listed_for(definition: &Definition, context: &Context, ours: u32) -> Evaluation<bool> {
     let Some(only_show_for) = field(&definition.items, "only_show_for") else {
         return Ok(true);
     };
-    // CCountryTag::ConstructFromCString (140BA4CA0) takes the strlen.
+    // Country tags stop at the first NUL.
     let tag = c_string(only_show_for.value.scalar().unwrap_or_default());
     match (context.country_tags.get(tag), &context.countries) {
         (Some(slot), _) => Ok(*slot == ours),
@@ -1643,7 +1595,7 @@ fn listed_for(definition: &Definition, context: &Context, ours: u32) -> Evaluati
     }
 }
 
-/// One popup entry as 141C5C1F0 fills it: the unlock frame and lock, name,
+/// One popup entry as the game fills it: the unlock frame and lock, name,
 /// picture, rounded selection chance, phase and the six effect values. A
 /// value the localisation or the authored field cannot give is named with
 /// the tactic, key or field in `unavailable`, never dropped silently.
@@ -1674,8 +1626,7 @@ fn entry_values(
         hide(&mut row, "Background");
         hide(&mut row, "locked_icon");
     }
-    // A name without an entry shows as its key, as the game shows it
-    // (142230940 copies a missing top-level key).
+    // A name without a localisation entry displays the key itself.
     match localize_named(icons, loc, "HEADER", "KEY", &candidate.token) {
         Ok(name) => text(&mut row, "tactics_name", name),
         Err(reason) => withhold(
@@ -1708,9 +1659,9 @@ fn entry_values(
         hide(&mut row, "tactics_chance");
     }
     if let Some(chance) = chance {
-        // 141C5C1F0 multiplies the fixed5 chance by 100 (141C5C510), rounds
-        // half away from zero (1424D8760) and passes the low 32 bits
-        // (141C5C521) as the int argument; the six entry modifiers below use
+        // the game multiplies the fixed5 chance by 100, rounds
+        // half away from zero and passes the low 32 bits
+        // as the int argument; the six entry modifiers below use
         // ordinary localization truncation.
         let scaled = chance.wrapping_mul(100);
         let rounded = if scaled < 0 {
@@ -1733,7 +1684,7 @@ fn entry_values(
             ),
         }
     }
-    // The popup (141C5D350) shows the display phase when its ID is not
+    // The popup shows the display phase when its ID is not
     // negative, else the start phase, and hides the widget when both are
     // negative (unknown, or the `no` sentinel); IDs were resolved as the
     // content was read (installed_content::combat_tactics) against the phases read
@@ -1803,10 +1754,8 @@ fn entry_values(
         };
         // Read as the content was read (installed_content::combat_tactics), each
         // field through its native reader.
-        let slot = EFFECTS
-            .iter()
-            .position(|name| *name == source)
-            .expect("every popup value is one of the six effects");
+        let slot =
+            effect_slot(source.as_bytes()).expect("every popup value is one of the six effects");
         let raw = definition.effects[slot];
         match builtin(icons, loc, format, &[("VAL", Argument::Fixed5(raw))]) {
             Ok(label) => text(&mut row, key, label),
@@ -1821,10 +1770,10 @@ fn entry_values(
     row
 }
 
-/// The battle popup only hides its filter buttons (141C5C000); its preferred
-/// tactic explanation retains the authored text. RefreshLocalizedText@1422B60E0
+/// The battle popup only hides its filter buttons; its preferred
+/// tactic explanation retains the authored text. bound text localisation
 /// localises that text with no arguments, unlike the country/leader selection
-/// variants (141C5BE00/141C5BB80) that replace it with their chance arguments.
+/// variants that replace it with their chance arguments.
 fn preferred_description(
     values: &mut Values,
     popup: &installed_content::gui::native::Element,
@@ -1840,10 +1789,7 @@ fn preferred_description(
         return;
     };
     let label = if authored.context_aware && !authored.bound_text.nodes.is_empty() {
-        Err(
-            "uses scoped bound_text (1422B60E0), whose battle-popup localizer is unavailable"
-                .to_owned(),
-        )
+        Err("uses scoped bound_text, whose battle-popup localizer is unavailable".to_owned())
     } else {
         token(icons, loc, &authored.text)
     };
@@ -1863,7 +1809,7 @@ fn preferred_description(
 
 /// A refused popup field, as a refused window binding (binding::Bindings::
 /// bind): its text and sprite cleared and the widget hidden, so neither the
-/// authored .gui sprite nor the native walk's placeholder shows, and the reason
+/// authored `.gui` sprite nor the native walk's placeholder shows, and the reason
 /// reported by name.
 fn withhold(values: &mut Values, key: &str, unavailable: &mut BTreeSet<String>, reason: String) {
     let widget = values.entry(key.into()).or_default();
@@ -1873,15 +1819,10 @@ fn withhold(values: &mut Values, key: &str, unavailable: &mut BTreeSet<String>, 
     unavailable.insert(reason);
 }
 
-/// Match the supported executable's tactic-list sort, including equivalent-item order.
-///
-/// Native evidence: 0x141c59a10 (introsort), 0x141c58d50 (partition),
-/// 0x141c58c90 (median), 0x141c58600 (insertion), 0x141c58900 (heap build),
-/// and 0x141c596c0 (heap repair). The caller at 0x141c5c1f0 supplies len
-/// as the initial partition budget. This is deliberately not Rust's stable
-/// or unstable sort: equal-chance tactics must undergo the native rotations.
-/// `less` must be a pure strict weak ordering; for tactics this means unlocked
-/// first, then descending raw signed fixed-point chance, with no ID tie-break.
+/// Match tactic-list equivalent-item order. The initial partition budget is
+/// the list length, and equivalent tactics undergo the same rotations.
+/// `less` is a pure strict weak ordering: unlocked first, then descending signed
+/// fixed5 chance, with no ID tie-break.
 fn native_sort<T: Clone, F: Fn(&T, &T) -> bool>(values: &mut [T], less: F) {
     let len = values.len();
     sort_range(values, 0, len, len, &less);
@@ -2111,6 +2052,7 @@ mod tests {
 
     #[test]
     fn tactic_scripted_caller_keeps_viewer_nato_through_nested_effect_unit_icons() {
+        engine::executable_tables::initialize_for_tests().unwrap();
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_tactic_nato_{}_{:?}",
             std::process::id(),
@@ -2204,12 +2146,12 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// Six absent effects, each 0 (1406B0A70).
+    /// Six absent effects, each 0.
     fn no_effects() -> [i64; 6] {
         [0; 6]
     }
 
-    /// A definition with no fields, as 1406B0A70 constructs one.
+    /// A definition with no fields, as the game constructs one.
     fn plain(active: bool, attacker: bool) -> Definition {
         Definition {
             active,
@@ -2415,10 +2357,10 @@ mod tests {
         );
     }
 
-    /// The content names the tests' tactic triggers are read against
-    /// (1405434F0): the tags and character tokens they name, and the
-    /// scripted triggers `scripted` holds.
+    /// Content names used by the test triggers: tags, character tokens and
+    /// scripted trigger bodies.
     fn names(scripted: &ScriptedTriggers) -> KeyNames {
+        engine::executable_tables::initialize_for_tests().unwrap();
         let mut names = KeyNames::default();
         names.scripted = scripted.templates.keys().cloned().collect();
         names.countries = [&b"GER"[..], b"SOV", b"ENG"].map(<[u8]>::to_vec).into();
@@ -2443,11 +2385,12 @@ mod tests {
 
     /// [`parsed`] against `names`.
     fn parsed_with(text: &[u8], names: &KeyNames) -> Content {
+        engine::executable_tables::initialize_for_tests().unwrap();
         Content::from_database(installed_content::combat_tactics::parse(text, names))
     }
 
-    /// read_bool_token (1424B06E0) accepts only the exact texts; another
-    /// value keeps what the field held (the constructor default at first),
+    /// Boolean values accept only the exact texts; another value keeps
+    /// what the field held (the default at first),
     /// with a warning naming it, and a block is refused by name.
     #[test]
     fn tactic_yes_no_fields_match_their_exact_text() {
@@ -2488,10 +2431,10 @@ mod tests {
         assert_eq!(
             content.warnings[4..],
             [
-                "Combat tactics: tactic c's active = NO is not exactly yes or no; the game logs an error and keeps yes (1424B06E0).",
-                "Combat tactics: tactic c's is_attacker = YES is not exactly yes or no; the game logs an error and keeps no (1424B06E0).",
-                "Combat tactics: tactic d's active = maybe is not exactly yes or no; the game logs an error and keeps no (1424B06E0).",
-                "Combat tactics: tactic e's active = { is not exactly yes or no; the game logs an error and keeps yes (1424B06E0).",
+                "Combat tactics: tactic c's active = NO is not exactly yes or no; the game logs an error and keeps yes.",
+                "Combat tactics: tactic c's is_attacker = YES is not exactly yes or no; the game logs an error and keeps no.",
+                "Combat tactics: tactic d's active = maybe is not exactly yes or no; the game logs an error and keeps no.",
+                "Combat tactics: tactic e's active = { is not exactly yes or no; the game logs an error and keeps yes.",
             ]
         );
         assert!(
@@ -2600,6 +2543,7 @@ mod tests {
     /// chance; unsupported explanation text leaves the phase label available.
     #[test]
     fn popup_preferred_description_retains_authored_text_without_selector_arguments() {
+        engine::executable_tables::initialize_for_tests().unwrap();
         let gui = installed_content::gui::native::read(
             br#"guiTypes = { containerWindowType = {
                 name = tactics_list_view
@@ -2613,8 +2557,7 @@ mod tests {
         let popup = gui.template(b"tactics_list_view").unwrap();
         let loc: Localisation = [(
             "MOD_PREFERRED_DESC".to_owned(),
-            "The country's preferred tactic has an extra $CHANCE|H$ chance to be selected during combat."
-                .to_owned(),
+            "Preferred fixture: $CHANCE|H$ chance marker.".to_owned(),
         )]
         .into_iter()
         .collect();
@@ -2632,9 +2575,7 @@ mod tests {
         assert!(!explanation.hidden);
         assert_eq!(
             explanation.text.as_deref(),
-            Some(
-                "The country's preferred tactic has an extra  chance to be selected during combat."
-            )
+            Some("Preferred fixture:  chance marker.")
         );
         assert!(unavailable.is_empty(), "{unavailable:?}");
 
@@ -2678,7 +2619,7 @@ mod tests {
         assert_eq!(
             unavailable,
             BTreeSet::from([
-                "the preferred tactic explanation: uses scoped bound_text (1422B60E0), whose battle-popup localizer is unavailable".to_owned()
+                "the preferred tactic explanation: uses scoped bound_text, whose battle-popup localizer is unavailable".to_owned()
             ])
         );
     }
@@ -2734,12 +2675,11 @@ mod tests {
         }
     }
 
-    /// A tactic's picture is its registry entry's (1406B3CB0 stores the last
-    /// `picture` read; 141C5DD20 draws that object's): two tactics sharing a
-    /// name keep their own, a recorded token that disagrees with the entry
-    /// is refused, and a tactic whose parse left the text has no picture,
-    /// whatever `picture` the tree holds after the block. The popup reads
-    /// the same definition.
+    /// A tactic uses its registry entry's last picture. Tactics sharing a name
+    /// keep separate pictures; a recorded token that disagrees with the entry
+    /// is refused. A tactic whose parse became unsettled has no picture, even
+    /// if the parsed tree holds one after that block. The popup reads the same
+    /// definition.
     #[test]
     fn pictures_share_the_registrys_identity_and_refusals() {
         let content = parsed(
@@ -2801,7 +2741,7 @@ mod tests {
                 "is not UTF-8 before its first NUL, so its texture path cannot be formed"
             )
         );
-        // 1406B3CB0 stores the picture as a C string (+0x70).
+        // Picture text stops at the first NUL.
         assert_eq!(
             parsed(b"nul = { picture = abc\x00\xe9 }").picture(1, b"nul"),
             Ok("combat_tactic:abc")
@@ -2810,7 +2750,7 @@ mod tests {
         assert!(
             unproven
                 .starts_with("tactic lost's ID or fields cannot be read as the game reads them")
-                && unproven.contains("field `x`: LoadKey (1405434F0) reads it"),
+                && unproven.contains("field `x`"),
             "{unproven}"
         );
         assert!(
@@ -2839,7 +2779,7 @@ mod tests {
         );
         assert!(!row["tactics_icon"].hidden && row["tactics_chance"].hidden);
         // A picture whose sprite the content lacks is hidden and named, so
-        // the authored .gui sprite never shows in its place.
+        // the authored `.gui` sprite never shows in its place.
         let mut unavailable = BTreeSet::new();
         let row = entry_values(
             &crate::combat::binding::NoIcons,
@@ -2861,7 +2801,7 @@ mod tests {
         );
     }
 
-    /// The movement effect reads ReadFixed5 `%lli` (so `010` is eight whole
+    /// The movement effect reads fixed5 scanning `%lli` (so `010` is eight whole
     /// points), while the other effects read decimal.
     #[test]
     fn numeric_fields_use_their_native_readers() {
@@ -2928,7 +2868,7 @@ mod tests {
         );
         assert!(row["tactics_name"].text.is_some());
         assert!(row["combat_width_change_value"].text.is_some());
-        // A missing top-level key shows its own bytes (142230940).
+        // A missing top-level key shows its own bytes.
         assert!(
             row["tactics_chance"]
                 .text
@@ -2945,10 +2885,9 @@ mod tests {
         );
     }
 
-    /// A tactic's name is localised in the game's stored bytes before HEADER
-    /// takes it (142230F20's 0x1800-byte buffer, 142230FF5): a doubled `@@`
-    /// is one stored `@` and fits the buffer's last byte, `é` is two and is
-    /// cut, which the localiser refuses by name.
+    /// Localise the tactic name before supplying HEADER; the name uses the
+    /// 0x1800-byte buffer. A doubled @@ produces one stored @ that fits the last
+    /// byte; a two-byte character cut by the buffer is refused by name.
     #[test]
     fn tactic_names_are_bounded_in_native_bytes_before_header() {
         let fill = "a".repeat(0x17FF);
@@ -2999,9 +2938,8 @@ mod tests {
         );
     }
 
-    /// 141C5C1F0 passes the low 32 bits of the rounded percentage
-    /// (141C5C521); an out-of-range chance is shown as the game shows it,
-    /// not refused as a missing key.
+    /// Pass the low 32 bits of the rounded percentage, preserving an out-of-range
+    /// chance rather than refusing it as a missing key.
     #[test]
     fn selection_chance_keeps_the_low_32_bits_of_the_rounded_percentage() {
         let loc: Localisation = [("TACTIC_SELECTION_CHANCE", "$CHANCE$%")]
@@ -3119,9 +3057,9 @@ mod tests {
         assert_eq!(weights, [Ok(700_000), Ok(700_000)]);
     }
 
-    /// 140473CB0 resolves the operand to the first terrain in database order
+    /// the game resolves the operand to the first terrain in database order
     /// whose name folds to it, else the null object; the combat's terrain is
-    /// the null object exactly when its recorded +0x10 is clear.
+    /// the null object exactly when its recorded validity flag is clear.
     #[test]
     fn fighting_in_terrain_compares_the_resolved_terrain_object() {
         let content = content();
@@ -3163,9 +3101,9 @@ mod tests {
         );
     }
 
-    /// A bool trigger's operand (14138D3D0): a scope selector by its token
-    /// (14053E330) is refused by name; any other text is yes only when it
-    /// is `yes` to its first NUL (1424B06E0), and a failed read is `no`: a
+    /// A bool trigger's operand: a scope selector by its token
+    /// is refused by name; any other text is yes only when it
+    /// is `yes` to its first NUL, and a failed read is `no`: a
     /// mis-cased yes, an empty or quoted operand, a quoted selector name (token
     /// 0xF) and any other word.
     #[test]
@@ -3184,22 +3122,32 @@ mod tests {
         assert_eq!(evaluate("is_attacker = \"\""), Ok(false));
         assert_eq!(evaluate("is_attacker = \"ROOT\""), Ok(false));
         assert_eq!(evaluate("has_reserves = garbage"), Ok(true));
-        assert_eq!(
-            evaluate("is_attacker = Root"),
-            Err("trigger is_attacker = Root: the operand Root is a scope selector keyword (14053E330), which the trigger's reader (14138D3D0) takes instead of yes or no; what the trigger then tests is not reproduced".into())
+        let reason = evaluate("is_attacker = Root").unwrap_err();
+        assert!(
+            reason.contains("trigger is_attacker = Root")
+                && reason.contains("operand Root")
+                && reason.contains("scope selector keyword")
+                && reason.contains("not reproduced"),
+            "{reason}"
         );
-        assert_eq!(
-            evaluate("is_attacker = \"event_target:x\""),
-            Err("trigger is_attacker = event_target:x: the operand event_target:x is an event target (14053E330), which the trigger's reader (14138D3D0) takes instead of yes or no; what the trigger then tests is not reproduced".into())
+        let reason = evaluate("is_attacker = \"event_target:x\"").unwrap_err();
+        assert!(
+            reason.contains("trigger is_attacker = event_target:x")
+                && reason.contains("operand event_target:x")
+                && reason.contains("event target")
+                && reason.contains("not reproduced"),
+            "{reason}"
         );
     }
 
-    /// Terrain names are lexer tokens (140473CB0) and sub-unit names are
-    /// matched as has_unit_type matches them (140472610): both without case.
+    /// Terrain names are lexer tokens and sub-unit names are
+    /// matched as has_unit_type matches them: both without case.
     #[test]
     fn terrain_and_sub_unit_names_match_without_case() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         // The sub-unit database as installed_content::unit_leader::sub_units reads
-        // it: `YES` fails read_bool_token (1424B06E0), so `odd` keeps `no`.
+        // it: uppercase `YES` is not a boolean value, so `odd` keeps `no`.
         let mut units = SubUnits::default();
         units.read(
             b"sub_units = { artillery = { is_artillery_brigade = yes } infantry = { } \
@@ -3250,14 +3198,14 @@ mod tests {
             evaluate(&context, "is_fighting_in_terrain = forest"),
             Ok(false)
         );
-        // A quoted operand is token 0xF, no terrain's (140473CB0): the null
+        // A quoted operand is token 0xF, no terrain's: the null
         // object, which a combat on a real terrain does not hold.
         assert_eq!(
             evaluate(&context, "is_fighting_in_terrain = \"plains\""),
             Ok(false)
         );
         assert_eq!(evaluate(&context, "has_unit_type = artillery"), Ok(true));
-        // 1404739B0 hashes the operand as a C string (140BBA1B0).
+        // the game hashes the operand as a C string.
         assert_eq!(evaluate(&context, "has_unit_type = ARTILLERY\0x"), Ok(true));
         // One artillery of four sub-units: 0.25.
         assert_eq!(evaluate(&context, "has_artillery_ratio > 0.2"), Ok(true));
@@ -3309,8 +3257,8 @@ mod tests {
         assert_eq!(context.check(&plain), Ok(true));
         let shouted = trigger("HAS_COMBAT_MODIFIER=RIVER_CROSSING");
         assert_eq!(context.check(&shouted), Ok(true));
-        // A quoted operand is token 0xF, no combat-modifier keyword
-        // (140473990 -> 141440AE0), even through a variable defined quoted.
+        // Quoted operands do not resolve combat-modifier keywords, including
+        // operands reached through a quoted variable.
         for quoted in [
             "has_combat_modifier = \"river_crossing\"",
             "@m = \"RIVER_CROSSING\" has_combat_modifier = @m",
@@ -3342,12 +3290,10 @@ mod tests {
         context.weight(&candidate, definition)
     }
 
-    /// `has_tactic` interns its operand (1404A8120 -> add_dynamic_token
-    /// 1424A6500, found in any case), then looks the token's stored spelling
-    /// up byte-for-byte among the tactic names (14051F250 -> 1406B11F0): a
-    /// miss is the active null tactic (1406B3BD0), so the trigger holds; an
-    /// inactive tactic needs the country's unlock (1413B8CF0); duplicate
-    /// names select the last authored definition (hash-bucket prepend).
+    /// Intern has_tactic operands without case, preserving their first spelling.
+    /// Look up that spelling byte-for-byte; a miss is the active null tactic.
+    /// Inactive tactics need a country unlock; repeated names select the last
+    /// authored definition through hash-bucket prepend order.
     #[test]
     fn has_tactic_looks_up_the_interned_spelling() {
         let file = b"t = { trigger = { has_tactic = @operand } }\n\
@@ -3373,7 +3319,7 @@ mod tests {
             context.tokens = literals.iter().copied().collect();
             context.country_unlocks = BTreeMap::from([(1, unlocked)]);
             let definition = content.definition(&derived[0])?;
-            // HasCombatTactic's native mask is country-only. The bare combat
+            // has_tactic's native mask is country-only. The bare combat
             // setter clears its country carrier; lookup assertions use a real
             // country scope while retaining this Combat implementation.
             Evaluator::new(&context.world, Some(&context))
@@ -3391,7 +3337,7 @@ mod tests {
         // The stored spelling is the first interned, found in any case.
         assert_eq!(weigh("TACTIC_FOO", &dictionary, &[2]), Ok(100_000));
         assert_eq!(weigh("TACTIC_FOO", &dictionary, &[]), Ok(0));
-        // 1404A8120 interns the operand as a C string: to its first NUL.
+        // the game interns the operand as a C string: to its first NUL.
         assert_eq!(weigh("TACTIC_FOO\0x", &dictionary, &[]), Ok(0));
         assert_eq!(weigh("OTHER", &dictionary, &[]), Ok(100_000));
         // No tactic of that spelling: the active null tactic.
@@ -3413,9 +3359,9 @@ mod tests {
         );
     }
 
-    /// `only_show_for` (141C5C1F0): the recorded country of the tag sees
+    /// `only_show_for`: the recorded country of the tag sees
     /// the tactic, another does not; a tag no tag list holds stores a link
-    /// index that is not positive (140BA4CA0), so every country sees it;
+    /// index that is not positive, so every country sees it;
     /// with a partial Countries a tag it lacks is refused by name.
     #[test]
     fn only_show_for_follows_the_stored_link_index() {
@@ -3447,12 +3393,10 @@ mod tests {
         );
     }
 
-    /// A block under a key that makes a content count trigger or a scripted
-    /// trigger is read as their one-value readers read it (141394DF0,
-    /// 141395A40, 1424ACD40: no block skipped): its contents are the
-    /// enclosing trigger's and its `}` ends that trigger, as the content
-    /// read notes. A coded one-value trigger (`armor`, 0x2F85, found before
-    /// the equipment categories) reads its block the same way.
+    /// A block under a content count or scripted trigger uses its single-value
+    /// reader without skipping the block. Its contents become enclosing conditions,
+    /// and its closing brace ends that trigger. Coded single-value triggers follow
+    /// the same rule and take precedence over equipment category names.
     #[test]
     fn blocks_under_one_value_names_are_read_as_one_value() {
         let mut buildings = installed_content::buildings::Buildings::default();
@@ -3515,15 +3459,13 @@ mod tests {
         detail
     }
 
-    /// A modifier's `factor` and `add` are scoped variables
-    /// (CScopedVariable::vf3 140539440 -> 140539B50), evaluated when the
-    /// modifier holds (1405455A0): a constant of `-+0123456789.` text
-    /// (ParseFixed5String 1424B7050), empty text setting nothing, and any
-    /// other text a variable or scope read from the tactic scope's stores,
-    /// which this fixture does not sample, so they are refused by name; each
-    /// occurrence in order replaces the last. A block is one value token
-    /// (`{`) with no block skipped: its contents are the modifier's
-    /// conditions and its `}` ends the modifier.
+    /// Evaluate a modifier's `factor` and `add` when its conditions hold. Text
+    /// containing only signs, digits and decimal points is a fixed-point
+    /// constant; empty text leaves the value unchanged. Other text reads a
+    /// variable or scope from stores absent in this fixture, so it is refused
+    /// by name. Each occurrence replaces the last. A block supplies one `{`
+    /// value token: its contents become modifier conditions and its closing
+    /// brace ends the modifier.
     #[test]
     fn modifier_factors_are_scoped_variables() {
         let detail = skilled();
@@ -3537,7 +3479,7 @@ mod tests {
         };
         assert_eq!(weight("modifier = { ADD = 0.5 }"), Ok(150_000));
         assert_eq!(weight("modifier = { factor = 1.5 }"), Ok(150_000));
-        // ParseFixed5String, not `%i`: `010` is ten.
+        // Decimal fixed5 parsing treats `010` as ten.
         assert_eq!(weight("modifier = { factor = 010 }"), Ok(1_000_000));
         assert_eq!(
             weight("modifier = { factor = 2 factor = \"\" }"),
@@ -3561,10 +3503,10 @@ mod tests {
         );
     }
 
-    /// The weight's CMeanTimeToHappen starts at 1 (140544B60); `factor` reads
-    /// `%lli` (so `010` is eight), `base` a decimal, and days, months and
-    /// years through ParseTokenInt32 (1424B0080, so `1.5` is one); the last
-    /// field read stays, and every `base` block adds to the one object.
+    /// Weight starts at 1. `factor` parses a signed radix-aware integer
+    /// (`010` is eight), `base` a decimal, and days/months/years signed
+    /// integer tokens (`1.5` is one). The last field value remains, and every
+    /// `base` block adds to the same weight object.
     #[test]
     fn weight_base_values_follow_the_mean_time_to_happen_reader() {
         let detail = LandCombatDetailsRow::default();
@@ -3584,14 +3526,14 @@ mod tests {
         );
         assert_eq!(weight("base = { days = 1.5 }"), Ok(100_000));
         // A quoted key is no keyword (token 0xF): the weight's reader logs
-        // it as unknown (140545850).
+        // it as unknown.
         assert_eq!(weight("base = { \"factor\" = 3 }"), Ok(100_000));
     }
 
     /// Each nested reader consumes as the game's does, through weights: a
-    /// scalar trigger reads nothing (1405431C0) and a scalar modifier is an
+    /// scalar trigger reads nothing and a scalar modifier is an
     /// empty one; a block where the weight's reader takes one value is read
-    /// as `{` (ReadFixed5 fails and keeps the value), its contents as the
+    /// as `{` (fixed5 scanning fails and keeps the value), its contents as the
     /// weight's fields and its `}` ends the weight.
     #[test]
     fn malformed_blocks_weigh_as_their_readers_read_them() {
@@ -3611,12 +3553,10 @@ mod tests {
         );
     }
 
-    /// 1424AC5E0 consumes definitions before the trigger's reader sees a key
-    /// (1405431C0), so none is a condition; a comparison, spaced or compact,
-    /// resolves its operand through the file's variables and, for `phase`,
-    /// the phases read so far (140473850). CIntTrigger (14138D4E0) reads a
-    /// bare number with `%i` (`010` is eight) and a quoted one as a
-    /// ParseFixed5String constant (`"010"` is ten).
+    /// Consume definitions before reading trigger keys, so they never become
+    /// conditions. Resolve comparisons through file variables and phases read so
+    /// far. Integer triggers parse bare numbers with radix-aware integer scanning
+    /// (010 is eight) and quoted constants as decimal fixed5 (010 is ten).
     #[test]
     fn triggers_consume_definitions_and_resolve_comparisons() {
         let detail = skilled();
@@ -3640,8 +3580,8 @@ mod tests {
         // `phase > 99` names the phase `99`, ID 0: the combat's phase.
         assert_eq!(weight("phase > 99"), Ok(100_000));
         assert_eq!(weight("phase = close_combat"), Ok(0));
-        // CIntTrigger::Evaluate (14138CC70) compares a scoped constant as
-        // `(int)(value / 100000)`: `"3.5"` is 3 and `"2.9"` is 2.
+        // Integer trigger comparisons truncate a scoped fixed-point constant
+        // toward zero: `"3.5"` is 3 and `"2.9"` is 2.
         assert_eq!(weight("skill < \"3.5\""), Ok(0));
         assert_eq!(weight("skill > \"2.9\""), Ok(100_000));
     }
@@ -3748,17 +3688,15 @@ mod tests {
         context.weight(&candidate, definition)
     }
 
-    /// A key the evaluator does not reproduce goes on as CTrigger::LoadKey
-    /// (1405434F0) goes on. A quoted key (token 0xF, 1424A7A90) misses every
-    /// lookup by token ID; a bare one may be a coded trigger (the registry,
-    /// 140543E30) or a content count trigger. A scalar key naming no
-    /// scripted trigger is "Invalid trigger": the game adds no child, so the
-    /// condition is absent. With a block, the text is first a scope.
+    /// Unknown evaluator keys retain the trigger reader's lookup order. A quoted
+    /// key misses token-ID lookups; a bare key may name a coded or content count
+    /// trigger. An unmatched scalar key adds no condition. A block first attempts
+    /// scope resolution before scripted trigger lookup.
     #[test]
     fn keys_the_evaluator_does_not_reproduce_follow_the_trigger_name_fallbacks() {
         let none = || ScriptedTriggers::default();
-        // Steel is resource 3 (ResourceDefinitions, 140AB2EC0); country 10
-        // has 7 produced less 1 adjusted away (141390640).
+        // Steel is resource 3 in ResourceDefinitions; country 10
+        // has 7 produced less 1 adjusted away.
         let tables = || {
             let mut tables = empty_tables();
             tables.push((
@@ -3797,17 +3735,18 @@ mod tests {
         assert_eq!(weigh("\"is_attacker\" = no is_attacker = no"), Ok(0));
         // A bare key the registry misses and no content names.
         assert_eq!(weigh("NOTHING = yes"), Ok(100_000));
-        assert_eq!(
-            weigh("if = yes"),
-            Err("trigger if = yes: the conditional is not a block (CIfTrigger 141395B90)".into())
+        let reason = weigh("if = yes").unwrap_err();
+        assert!(
+            reason.contains("trigger if = yes") && reason.contains("conditional is not a block"),
+            "{reason}"
         );
         // Resetting the combat scope clears its country carrier. OWNER
-        // explicitly installs the side's first primary country (14146BB30).
+        // explicitly installs the side's first primary country.
         assert_eq!(weigh("Steel > 5"), Ok(0));
         assert_eq!(weigh("Steel > 6"), Ok(0));
         assert_eq!(weigh("OWNER = { Steel > 5 }"), Ok(100_000));
         assert_eq!(weigh("OWNER = { Steel > 6 }"), Ok(0));
-        // A bare key a whole dictionary lacks is token 0xF (1424A7A90): no
+        // A bare key a whole dictionary lacks is token 0xF: no
         // lookup by token finds it, and naming no scripted trigger it is
         // "Invalid trigger", no child.
         assert_eq!(weigh("absent_word = yes"), Ok(100_000));
@@ -3818,21 +3757,26 @@ mod tests {
         let content = content();
         let (detail, aliases) = (LandCombatDetailsRow::default(), BTreeMap::new());
         let context = context(&detail, &content, &aliases);
-        assert_eq!(
-            context.check(&trigger("absent_word = yes")),
-            Err("whether trigger absent_word is a token (the count lookups, 1405434F0, are keyed by token ID) is unknown: hour 1 LexicalTokens is unavailable: not sampled".into())
+        let reason = context.check(&trigger("absent_word = yes")).unwrap_err();
+        assert!(
+            reason.contains("trigger absent_word")
+                && reason.contains("token")
+                && reason.contains("unknown")
+                && reason.contains("hour 1 LexicalTokens is unavailable: not sampled"),
+            "{reason}"
         );
     }
 
     /// Scripted triggers read through the real content stack
     /// (installed_content::scripted_triggers::read): a mod layer's file replaces the
     /// vanilla file of the same path; the name is found without case and
-    /// whatever its quoting (140AA78C0); `= no` negates (14138D030); the
+    /// whatever its quoting; `= no` negates; the
     /// body's variables and phase resolve; a cycle, which the game does not
     /// guard, is refused by name. A scripted trigger takes no parameters in
-    /// this version: its value reader takes one yes/no token (14138D3D0).
+    /// this version: its value reader takes one yes/no token.
     #[test]
     fn scripted_triggers_evaluate_their_body_in_the_current_scope() {
+        engine::executable_tables::initialize_for_tests().unwrap();
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_scripted_triggers_{}_{:?}",
             std::process::id(),
@@ -3867,7 +3811,7 @@ mod tests {
         let scripted = installed_content::scripted_triggers::read(&layers).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
         // `in_opening` is no token: a bare key the dictionary lacks reaches
-        // the scripted triggers by its text (1405434F0 -> 140AA78C0).
+        // the scripted triggers by its text.
         let tokens: &[(&[u8], u32)] = &[
             (b"my_check", 0x6001),
             (b"cycle_a", 0x6002),
@@ -3885,28 +3829,25 @@ mod tests {
         assert_eq!(weigh("\"MY_CHECK\" = yes"), Ok(100_000));
         assert_eq!(weigh("My_Check = no"), Ok(0));
         assert_eq!(weigh("in_opening = yes"), Ok(100_000));
-        assert_eq!(
-            weigh("cycle_a = yes"),
-            Err("scripted trigger cycle_a: scripted trigger cycle_b: scripted trigger cycle_a calls itself (cycle_a -> cycle_b -> cycle_a): CScriptedTrigger::vf22 (14138D030) and CTrigger::Check (140540570) guard no depth, so the game recurses without end".into())
-        );
-        // A block is no scripted trigger's value: its reader (14138D3D0)
-        // resets the value to no and read_bool_token (1424B06E0) keeps it
+        let cycle = weigh("cycle_a = yes").unwrap_err();
+        assert!(cycle.contains("cycle_a -> cycle_b -> cycle_a"), "{cycle}");
+        assert!(cycle.contains("recurs"), "{cycle}");
+        // A block is no scripted trigger's value: its reader
+        // resets the value to no and boolean parsing keeps it
         // for `{`, and no block is skipped, so the block's contents are the
         // tactic trigger's own.
         assert_eq!(weigh("my_check = { x = 1 }"), Ok(0));
     }
 
-    /// The content read classifies a block's key in CTrigger::LoadKey's
-    /// order (1405434F0), as the evaluation does: a coded trigger by its
-    /// static keyword, then a scope of its text, before the scripted
-    /// triggers. So a scripted trigger named `AND` or `root` leaves
-    /// `AND = { .. }` the coded group and `ROOT = { .. }` the scope. A body
-    /// is read as the game reads it, a block under a scripted trigger's key
-    /// included (140AA8DC0 reads on from where it leaves the text), and a
-    /// template read again in a later file takes that body. A scalar group
-    /// in a body is the empty group LoadKey keeps.
+    /// Classify block keys in evaluation order: static trigger keywords, scope
+    /// names, then scripted triggers. Scripted triggers named `AND` or `root`
+    /// therefore cannot replace those group/scope meanings. Read each body
+    /// through its remaining tokens, including blocks under scripted-trigger
+    /// keys. A template read again in a later file takes that body. Scalar
+    /// groups in a body produce empty groups.
     #[test]
     fn content_blocks_follow_load_keys_order_in_every_body_read() {
+        engine::executable_tables::initialize_for_tests().unwrap();
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_scripted_order_{}_{:?}",
             std::process::id(),
@@ -3944,12 +3885,12 @@ mod tests {
         assert_eq!(weigh("AND = { is_attacker = yes }"), Ok(100_000));
         assert_eq!(weigh("ROOT = { is_attacker = yes }"), Ok(100_000));
         assert_eq!(weigh("bad = yes"), Ok(100_000));
-        // An empty NOT is true (14053E070), an empty OR false (14053E0F0).
+        // An empty NOT is true, an empty OR false.
         assert_eq!(weigh("empty = yes"), Ok(100_000));
         assert_eq!(weigh("OR = no"), Ok(0));
         assert_eq!(weigh("custom_trigger_tooltip = x AND = yes"), Ok(100_000));
-        // 141395B30 owns both binding keywords before LoadKey. The body
-        // reader handles nested localisation arguments, never conditions;
+        // Handle both binding keywords before classifying trigger keys. Their
+        // bodies contain nested localisation arguments rather than conditions;
         // neither the hazard pass nor evaluation may resolve these names
         // as the scripted triggers the content also defines.
         assert_eq!(
@@ -3974,15 +3915,11 @@ mod tests {
         assert_eq!(weigh("other = yes"), Ok(100_000));
     }
 
-    /// `has_trait`, `skill` and `tag` in a character scope (CHasTraitTrigger
-    /// 1403D7D20, CSkillTrigger 140475170, CTagTrigger 1403DCDF0): the
-    /// scope's character, found through the recorded Characters rows
-    /// (14146BB30), its unit leader (GetUnitLeader 140F8A840: CCharacter+0xA8
-    /// in UnitLeaders, else the reference at +0xC8 in CharacterOperatives),
-    /// its retired records (CountryRetiredCharacters) and its roles' traits
-    /// (CharacterRoleTraits).
+    /// Character-scope has_trait, skill and tag use recorded Characters,
+    /// UnitLeaders or CharacterOperatives, retired-character records and role traits.
     #[test]
     fn character_scopes_read_the_recorded_character() {
+        engine::executable_tables::initialize_for_tests().unwrap();
         use replay::{
             frame::{Metrics, TableView},
             rows::{
@@ -4102,8 +4039,8 @@ mod tests {
             TableId::UnitLeaders,
             TableRows::from_rows::<tables::UnitLeaders>(vec![leader(50, 1), leader(51, 4)]),
         );
-        // Definition ordinals (+0x8A4) follow append_trait's order after
-        // the null object: the repeated `Trickster` is definition 3.
+        // Definition ordinals follow trait registration after the null entry;
+        // the repeated Trickster is definition 3.
         let assigned =
             |id: u64, ordinal: u32, definition_ordinal: i32, token: &[u8]| UnitLeaderTraitRow {
                 leader_reference: (id << 32) | 7,
@@ -4122,7 +4059,7 @@ mod tests {
         );
         // Country-leader definitions are ordinals 1 (popular_figurehead),
         // 2 (captain_of_industry) and 3 (the repeated Popular_Figurehead),
-        // after the null object (1407112F0 -> 140710C80, +0x1A0).
+        // after the null object.
         let role = |character: u32, kind: u8, role: u32, token: u32, definition: Option<u32>| {
             CharacterRoleTraitRow {
                 character,
@@ -4221,10 +4158,9 @@ mod tests {
             context.weight(&candidate, definition)
         };
         let weigh = |trigger: &str| weigh_in(&detail, trigger);
-        // In the tactic scope, the combat's commander's character
-        // (1403D7D20): the first definition of the name, by identity, among
-        // the recorded role leader's traits; no retired gate (14052BC80
-        // reads the scope's character, which the tactic scope lacks).
+        // In the tactic scope, match the first trait definition by identity among
+        // the commander's role traits. Retirement reads the scope character, which
+        // the tactic scope lacks.
         assert_eq!(weigh("has_trait = Brilliant_Strategist"), Ok(100_000));
         assert_eq!(weigh("has_trait = trickster"), Ok(0));
         // A country-leader trait: none of character 1's roles holds it.
@@ -4234,13 +4170,13 @@ mod tests {
         assert_eq!(weigh_in(&plain, "has_trait = popular_figurehead"), Ok(0));
         plain.sides[0].presentation.character_state = 1;
         assert_eq!(weigh_in(&plain, "has_trait = trickster"), Ok(0));
-        // The unit leader's skill 4, compared as CIntTrigger (14138CC70).
+        // The unit leader's skill 4, compared as integer trigger.
         assert_eq!(weigh("GER_leader = { skill > 3 }"), Ok(100_000));
         assert_eq!(weigh("GER_leader = { SKILL > 4 }"), Ok(0));
         assert_eq!(weigh("GER_leader = { skill = 4 }"), Ok(100_000));
-        // Its assigned traits: the first definition of the name in any case
-        // (140ADB590 -> 140AD3E30), compared by identity (1402EF030). The
-        // leader holds the repeated `Trickster`, a later definition.
+        // Assigned traits resolve the first definition of the name without
+        // case, then compare identity. This leader holds the repeated
+        // `Trickster`, a later definition.
         assert_eq!(
             weigh("GER_leader = { has_trait = BRILLIANT_strategist }"),
             Ok(100_000)
@@ -4251,7 +4187,7 @@ mod tests {
         assert_eq!(weigh("GER_politician = { skill > 0 }"), Ok(0));
         assert_eq!(weigh("GER_politician = { skill = 0 }"), Ok(100_000));
         assert_eq!(weigh("GER_politician = { has_trait = trickster }"), Ok(0));
-        // A country-leader trait (140712D30, without case): a country-leader
+        // A country-leader trait matched without case: a country-leader
         // or an advisor role holding it.
         assert_eq!(
             weigh("GER_politician = { has_trait = Popular_Figurehead }"),
@@ -4270,7 +4206,7 @@ mod tests {
         // Content that disagrees with the recorded ordinal is refused.
         let refused = weigh("GER_miscounted = { has_trait = popular_figurehead }").unwrap_err();
         assert!(refused.contains("do not give that name"), "{refused}");
-        // Any other name: the scientist's traits, by token (14022F320),
+        // Any other name: the scientist's traits, by token,
         // whether or not a roster holds the scientist.
         assert_eq!(
             weigh("GER_scientist = { has_trait = brilliant_scientist }"),
@@ -4292,11 +4228,11 @@ mod tests {
             Ok(100_000)
         );
         assert_eq!(weigh("GER_operative = { skill > 1 }"), Ok(100_000));
-        // A character scope holds no country tag (SetCharacter 14052DAF0
-        // clears +8), so `tag = THIS` there is country link 0: false.
+        // A character scope has no country tag, so tag = THIS is country link 0.
+        // Tag = ROOT compares the unit leader's country, else the character's own.
         assert_eq!(weigh("GER_leader = { tag = THIS }"), Ok(0));
-        // `tag = ROOT` compares the unit leader's country (CUnitLeader+0x120)
-        // first, else the character's own (+0x68).
+        // `tag = ROOT` compares the unit leader's country first, else the
+        // character's own country.
         assert_eq!(weigh("GER_leader = { tag = ROOT }"), Ok(100_000));
         assert_eq!(weigh("GER_operative = { tag = ROOT }"), Ok(100_000));
         assert_eq!(weigh("GER_politician = { tag = ROOT }"), Ok(100_000));
@@ -4305,15 +4241,11 @@ mod tests {
         assert_eq!(weigh("GER_lost_agent = { skill = 0 }"), Ok(100_000));
     }
 
-    /// Scope keys (CContextTrigger, 14138C3A0): the key's text parsed as the
-    /// event target reader parses it (installed_content::scope::parse, 14146DB00),
-    /// resolved over the recorded hour (dashboard::scope, 14146BB30), and
-    /// the block checked there (14138F160). ROOT, FROM and PREV of a tactic
-    /// trigger are the tactic scope itself (1405286D0), the combat included;
-    /// a country target carries no combat (set_country 14052DD00 ->
-    /// 14052F3F0). A tag whose country owns no state is substituted from
-    /// the exact recorded original-tag buckets (1401DA520); without those
-    /// native list inputs the tag is refused by name.
+    /// Scope keys parse through installed_content::scope::parse and resolve over the
+    /// recorded hour through dashboard::scope, then check their block there.
+    /// ROOT, FROM and PREV initially mean the tactic scope, including its combat;
+    /// a country target has no combat. Tags for countries without states use
+    /// recorded original-tag buckets; missing buckets cause a named refusal.
     #[test]
     fn scope_keys_check_their_block_in_the_resolved_scope() {
         use replay::{
@@ -4373,7 +4305,7 @@ mod tests {
                     .into(),
             ),
         );
-        // Every walked store has a row; GER's `x` holds GER's own scope
+        // Every walked store has a row; GER's x holds GER's own encoded scope value.
         set(
             TableId::ScriptVariables,
             TableRows::ScriptVariables(
@@ -4440,7 +4372,7 @@ mod tests {
         // PREV inside a tag scope is the calling scope: the tactic scope.
         assert_eq!(weigh("SOV = { PREV = { is_attacker = yes } }"), Ok(100_000));
         // A country target carries no combat, so the combat trigger's scope
-        // check (mask 0x10, 140542CA0) fails and it is false.
+        // check (mask 0x10) fails and it is false.
         assert_eq!(weigh("GER = { is_attacker = yes }"), Ok(0));
         assert_eq!(weigh("GER = { NOT = { is_attacker = yes } }"), Ok(100_000));
         assert_eq!(
@@ -4462,7 +4394,7 @@ mod tests {
             ]));
         assert_eq!(weigh_in(&empty_buckets, "ENG = { tag = ENG }"), Ok(100_000));
         assert_eq!(weigh_in(&empty_buckets, "tag = ENG"), Ok(0));
-        // A `var:` key decodes the stored value (1405382B0 -> 140537A10).
+        // A `var:` key decodes the stored value.
         assert_eq!(weigh("var:x = { tag = GER }"), Ok(100_000));
         assert_eq!(weigh("var:missing = { tag = GER }"), Ok(0));
         let state = weigh("64 = { tag = GER }").unwrap_err();
@@ -4470,12 +4402,12 @@ mod tests {
             state.starts_with("trigger 64 = { ... }: state 64 has no recorded States row"),
             "{state}"
         );
-        // `tag`'s operand (141394CA0, 1413928A0): a scope selector by token
-        // (14053E330) reads that scope's country; a tag resolves as a scope
-        // key's does (140BA5D10); anything else is a scoped variable decoded
-        // to its country (EvaluateCountryTag 140536ED0).
+        // `tag`'s operand: a scope selector by token
+        // reads that scope's country; a tag resolves as a scope
+        // key's does; anything else is a scoped variable decoded
+        // to its country (country tag evaluation).
         assert_eq!(weigh("tag = ROOT"), Ok(100_000));
-        // The tag lookup takes the C string (141394CA0); bytes after its
+        // The tag lookup takes the C string; bytes after its
         // first NUL cannot turn an existing tag into a variable.
         assert_eq!(weigh("tag = \"GER\0suffix\""), Ok(100_000));
         assert_eq!(weigh("tag = \"SOV\0suffix\""), Ok(0));
@@ -4486,8 +4418,8 @@ mod tests {
             assert!(reason.contains(why), "{trigger}: {reason}");
         };
         // owner, controller and occupied read THIS's state, which a scope
-        // `tag` accepts never holds, and 140542000 tests no bit for capital
-        // or random: each is country link 0, false (1403DCDF0).
+        // `tag` accepts never holds, and the game tests no bit for capital
+        // or random: each is country link 0, false.
         for selector in ["owner", "CONTROLLER", "occupied", "capital", "random"] {
             assert_eq!(weigh(&format!("tag = {selector}")), Ok(0), "{selector}");
         }
@@ -4500,17 +4432,13 @@ mod tests {
         refused("tag = ENG", "ReservedCountryNaming native lists");
     }
 
-    /// Content count triggers (CTrigger::LoadKey 1405434F0, steps 3 to 6):
-    /// building and ideology names from the databases read through the
-    /// content stack (a mod adds a provincial building and an ideology),
-    /// the resource from ResourceDefinitions (a state's amount with the
-    /// building's content grant, crate::state_resources), each evaluated over the
-    /// recorded hour as its class's vf23 does and compared as CIntTrigger
-    /// (14138CC70) or CValueTrigger (14138D120). Each class's scope mask
-    /// (vtable +0x70) is checked first (140542CA0): a scope it does not
-    /// accept makes it false.
+    /// Count triggers use building and ideology databases from the resolved
+    /// content stack, recorded resources and state resource grants. Evaluate each
+    /// over the recorded hour with its integer or fixed5 comparison rules.
+    /// Check the trigger's scope mask first; an inadmissible scope returns false.
     #[test]
     fn count_triggers_read_the_recorded_hour_in_the_scope_they_accept() {
+        engine::executable_tables::initialize_for_tests().unwrap();
         use replay::{
             frame::{Metrics, TableView},
             rows::{
@@ -4534,7 +4462,7 @@ mod tests {
             "common/buildings/00_buildings.txt",
             "buildings = { arms_factory = { base_cost = 7200 local_resources_steel = 2 } }",
         );
-        // CBuildingTemplate reads `local_resources_<name>` only for a
+        // Building definitions read `local_resources_<name>` only for a
         // registered resource.
         write(
             "vanilla",
@@ -4847,10 +4775,8 @@ mod tests {
             |hour, trigger: &str| weigh_at(hour, &format!("OWNER = {{ {trigger} }}"));
         let weigh_country = |trigger: &str| weigh_country_at(hour, trigger);
 
-        // SetCombatContext resets the country carrier. These count masks
-        // reject the bare combat before reading its country's operands,
-        // even when the country links are incomplete. OWNER installs the
-        // combat side's first country through the native scope resolver.
+        // The bare combat scope has no country carrier. Count masks reject it
+        // before reading country operands. OWNER installs the side's first country.
         for trigger in [
             "arms_factory > 4",
             "mod_mill = 3",
@@ -4861,7 +4787,7 @@ mod tests {
             assert_eq!(weigh_at(9, trigger), Ok(0), "{trigger}");
         }
 
-        // Buildings (14138FEB0): an explicit country scope sums its owned
+        // Buildings: an explicit country scope sums its owned
         // states' state building (3 + 2) and its owned provinces' province
         // building (1 + 2); a state sums its own and its provinces'.
         assert_eq!(weigh_country("arms_factory > 4"), Ok(100_000));
@@ -4874,24 +4800,27 @@ mod tests {
         // A scoped constant operand compares by its integer part.
         assert_eq!(weigh_country("arms_factory = \"5.9\""), Ok(100_000));
 
-        // Resources (141390640): produced plus adjustment, 13 whole units,
+        // Resources: produced plus adjustment, 13 whole units,
         // at any hour (CountryResources is hourly).
         assert_eq!(weigh_country("steel > 12"), Ok(100_000));
         assert_eq!(weigh_country("steel > 13"), Ok(0));
         assert_eq!(weigh_country_at(hour + 1, "steel > 12"), Ok(100_000));
-        // A state scope (1409CC730): 15 whole units, compared by
-        // CIntTrigger::Evaluate (14138CC70).
+        // A state scope: 15 whole units, compared by
+        // integer trigger comparison.
         assert_eq!(weigh("64 = { steel > 14 }"), Ok(100_000));
         assert_eq!(weigh("64 = { STEEL > 15 }"), Ok(0));
         assert_eq!(weigh("64 = { Steel = 15 }"), Ok(100_000));
         assert_eq!(weigh("64 = { steel < 16 }"), Ok(100_000));
-        assert_eq!(
-            weigh("65 = { steel > 0 }"),
-            Err("trigger steel > 0: a resource count trigger (CResourceCountTrigger 14138C730): state 65 has no recorded resource inputs".into())
+        let reason = weigh("65 = { steel > 0 }").unwrap_err();
+        assert!(
+            reason.contains("trigger steel > 0")
+                && reason.contains("resource count trigger")
+                && reason.contains("state 65 has no recorded resource inputs"),
+            "{reason}"
         );
 
-        // Ideology support (141390530): 20000 * 100000 / 100000, fixed5,
-        // `=` compared as `>` (14138D120); a state scope is outside mask 4.
+        // Ideology support: 20000 * 100000 / 100000, fixed5,
+        // `=` compared as `>`; a state scope is outside mask 4.
         assert_eq!(weigh_country("technocracy > 0.1"), Ok(100_000));
         assert_eq!(weigh_country("Technocracy > 0.2"), Ok(0));
         assert_eq!(weigh_country("technocracy = 0.1"), Ok(100_000));
@@ -4899,14 +4828,14 @@ mod tests {
         assert_eq!(weigh_country("fascism > 0.59"), Ok(100_000));
         assert_eq!(weigh("64 = { technocracy > 0.1 }"), Ok(0));
 
-        // Equipment categories (141390370): the share of the side's units
+        // Equipment categories: the share of the side's units
         // whose stat block mask meets the category, 2 of 4, fixed5 and
-        // compared as CValueTrigger (`=` as `>`); they need the combat (mask
+        // compared as fixed5 trigger (`=` as `>`); they need the combat (mask
         // 0x10), so a country scope makes them false.
         assert_eq!(weigh("land_cruiser > 0.4"), Ok(100_000));
         assert_eq!(weigh("LAND_CRUISER > 0.5"), Ok(0));
         // `armor` is a category too, but the trigger registry holds its
-        // static keyword (0x2F85), which LoadKey finds first.
+        // static keyword, which is classified first.
         assert_eq!(
             weigh("Armor > 0.5"),
             Err("trigger Armor > 0.5: the viewer does not reproduce this trigger".into())
@@ -4918,9 +4847,12 @@ mod tests {
             weigh_with_units(hour, &[], "land_cruiser < 0.01"),
             Ok(100_000)
         );
-        assert_eq!(
-            weigh_with_units(hour, &[1, 9], "land_cruiser > 0"),
-            Err("trigger land_cruiser > 0: an equipment category trigger (CEquipmentTypeTrigger 14138C550): attacker division 9 has no LandCombatDivisions row".into())
+        let reason = weigh_with_units(hour, &[1, 9], "land_cruiser > 0").unwrap_err();
+        assert!(
+            reason.contains("trigger land_cruiser > 0")
+                && reason.contains("equipment category trigger")
+                && reason.contains("attacker division 9 has no LandCombatDivisions row"),
+            "{reason}"
         );
 
         // The other scope masks: `tag` (0x1C) is false in a state scope.
@@ -4929,7 +4861,7 @@ mod tests {
         // A bare key naming nothing is "Invalid trigger": no child.
         assert_eq!(weigh("nothing = yes"), Ok(100_000));
         // `tag = PREV` where PREV is a state: its owner
-        // (GetCountryTagOrStateOwner 14052B6A0), through the shared
+        // (scope country selection), through the shared
         // resolver; an ownerless state is link 0, false.
         assert_eq!(weigh("64 = { GER = { tag = PREV } }"), Ok(100_000));
         assert_eq!(weigh("66 = { GER = { tag = prev } }"), Ok(0));
@@ -4939,7 +4871,7 @@ mod tests {
         assert_eq!(weigh("SOV = { tag = FROM }"), Ok(0));
 
         // An owner link the hour's CountryLinks lacks is unknown, not
-        // another country (canonical_slot 140BA6240): the sums refuse it by
+        // another country (canonical country resolution): the sums refuse it by
         // name instead of shrinking.
         for (trigger, why) in [
             (
@@ -4964,7 +4896,7 @@ mod tests {
     }
 
     /// A block under a single-value trigger is taken as its value token and
-    /// not skipped (141395A40 / 141394DF0, 1424ACD40): the trigger reads
+    /// not skipped: the trigger reads
     /// `{` (no yes, so `no`), the block's contents are read as the
     /// enclosing trigger's conditions and its `}` ends that trigger
     /// (installed_content::combat_tactics). Later tactics are read as the game reads
@@ -4997,7 +4929,7 @@ mod tests {
         );
         // A quoted key is no keyword, so its block is no single value: its
         // text names no scope, trigger or scripted trigger here, so the game
-        // logs "Invalid trigger", skips the block (1424ACF90 -> 1424AD270)
+        // reports the unknown key, skips the block
         // and adds no child.
         assert_eq!(
             weight_of(
@@ -5037,10 +4969,9 @@ mod tests {
         );
     }
 
-    /// The tactic readers ask [`Item::keyword`] whether a key is a keyword
-    /// (1424A7A90: a quoted key is token 0xF, a bare one folds). A raw key
-    /// comparison outside the tests fails here; each value compare allowed
-    /// below names the address that folds it.
+    /// Tactic readers use [`Item::keyword`]: quoted keys are not keywords, bare
+    /// keys fold case. This check forbids raw key comparisons outside tests; the
+    /// listed exceptions compare values under their respective case rules.
     #[test]
     fn tactic_readers_ask_the_keyword_helper() {
         const RAW: [&str; 6] = [
@@ -5052,24 +4983,20 @@ mod tests {
             "get_all(",
         ];
         const ALLOWED: [&str; 9] = [
-            // Sub-unit names: the recorded token is interned without case
-            // (1424A7A90) and has_unit_type compares with `_stricmp`
-            // (140472610).
+            // Sub-unit names intern and compare without case.
             "match self.artillery.entry(name.to_ascii_lowercase()) {",
             ".get(&name.to_ascii_lowercase())",
             "if term.1.eq_ignore_ascii_case(operand) {",
-            // Tactic names interned into the lexer without case (1406B0A70
-            // -> 1424A7A90).
+            // Tactic names intern without case.
             ".filter(|row| row.literal.eq_ignore_ascii_case(&entry.token));",
             ".is_some_and(|literal| literal.eq_ignore_ascii_case(NULL_TACTIC_NAME));",
-            // A bool operand's other spellings of yes or no (14138D3D0).
+            // A bool operand's other spellings of yes or no.
             "_ if operand.eq_ignore_ascii_case(\"yes\") || operand.eq_ignore_ascii_case(\"no\") => Ok(false),",
-            // A terrain operand's lexer token (140473CB0).
+            // A terrain operand's lexer token.
             ".find(|name| !item.quoted() && name.eq_ignore_ascii_case(bytes));",
-            // The lexer's lookup of a bare token through a lowercased copy
-            // (1424A7A90), over the recorded dictionary.
+            // Bare-token lookup folds case over the recorded dictionary.
             ".filter(|(_, literal)| literal.eq_ignore_ascii_case(text))",
-            // A combat-modifier operand's keyword ID (140473990 -> 141440AE0).
+            // A combat-modifier operand's keyword ID.
             "if operand.eq_ignore_ascii_case(\"river_crossing\") {",
         ];
         let code = include_str!("tactics.rs")

@@ -1,8 +1,6 @@
-//! Pinned a729 power writers and their native observation points.
-//! P: hoi4re fn/asm at the VAs beside each site; image base 140000000.
-//! Writer closure is checked live by collector interval conservation, not
-//! claimed from an offset sweep. Constructors/load parsers establish baselines.
-//! Native notifications (140B9DFA0, 141142D40) do not store a government cause.
+//! Power-writer observation points. Collector interval conservation checks
+//! writer coverage; constructors and loading establish baselines. Notifications
+//! alone do not store a government cause.
 use crate::{
     Memory, ccountry, cideology_group, cpolitical_party, cpolitical_status, msvc_string, read,
 };
@@ -16,7 +14,7 @@ pub struct HookSite {
     pub commit: bool,
 }
 
-/// P: 140B98130, 140B98130; entry: RCX status, RDX signed fixed5; signal follows clamp.
+/// Entry: RCX status, RDX signed fixed5; signal follows clamping.
 pub const ADD_POLITICAL_POWER: HookSite = HookSite {
     name: "AddPoliticalPower",
     function_rva: 0xb98130,
@@ -28,7 +26,7 @@ pub const ADD_POLITICAL_POWER: HookSite = HookSite {
     commit: false,
 };
 
-/// P: 140B98220, 140B98220; entry: RCX status, RDX signed fixed5; no-deficit floor.
+/// Entry: RCX status, RDX signed fixed5; applies the no-deficit floor.
 pub const ADD_POLITICAL_POWER_NO_DEFICIT: HookSite = HookSite {
     name: "AddPoliticalPowerNoDeficit",
     function_rva: 0xb98220,
@@ -40,7 +38,7 @@ pub const ADD_POLITICAL_POWER_NO_DEFICIT: HookSite = HookSite {
     commit: false,
 };
 
-/// P: 1403638E0, 140363927; commit: RSI status, RCX evaluated target; negative target then floors to zero.
+/// Commit: RSI status, RCX evaluated target; a negative target floors to zero.
 pub const SET_POLITICAL_POWER: HookSite = HookSite {
     name: "SetPoliticalPower",
     function_rva: 0x3638e0,
@@ -52,7 +50,7 @@ pub const SET_POLITICAL_POWER: HookSite = HookSite {
     commit: true,
 };
 
-/// P: 140B98E20, 140B98E20; entry: RCX status; saves old government before party destruction.
+/// Entry: RCX status; retains the old government before party destruction.
 pub const CLEAR_POLITICS: HookSite = HookSite {
     name: "ClearPolitics",
     function_rva: 0xb98e20,
@@ -64,7 +62,7 @@ pub const CLEAR_POLITICS: HookSite = HookSite {
     commit: false,
 };
 
-/// P: 1406D61D0, 1406D61D0; entry: RCX country; CP reset at 1406D64A1, nested clear/setup observed separately.
+/// Entry: RCX country; command-power reset and nested clear/setup are observed separately.
 pub const RESET_COUNTRY: HookSite = HookSite {
     name: "ResetCountry",
     function_rva: 0x6d61d0,
@@ -76,7 +74,7 @@ pub const RESET_COUNTRY: HookSite = HookSite {
     commit: false,
 };
 
-/// P: 1406C3320, 1406C3320; entry: RCX country, RDX pointer to signed fixed5, return void.
+/// Entry: RCX country, RDX pointer to signed fixed5; returns void.
 pub const ADD_COMMAND_POWER: HookSite = HookSite {
     name: "AddCommandPower",
     function_rva: 0x6c3320,
@@ -88,7 +86,7 @@ pub const ADD_COMMAND_POWER: HookSite = HookSite {
     commit: false,
 };
 
-/// P: 140707F90, 140707F90; entry: RCX country, RDX pointer to charge; AL success, preserve full RAX.
+/// Entry: RCX country, RDX charge pointer; AL reports success, preserving full RAX.
 pub const SPEND_COMMAND_POWER: HookSite = HookSite {
     name: "SpendCommandPower",
     function_rva: 0x707f90,
@@ -100,7 +98,7 @@ pub const SPEND_COMMAND_POWER: HookSite = HookSite {
     commit: false,
 };
 
-/// P: 140707C00, 140707C00; entry: RCX country, RDX allocator, R8B charge; AL success, preserve full RAX.
+/// Entry: RCX country, RDX allocator, R8B charge; AL reports success, preserving full RAX.
 pub const ALLOCATE_COMMAND_POWER: HookSite = HookSite {
     name: "AllocateCommandPower",
     function_rva: 0x707c00,
@@ -112,7 +110,7 @@ pub const ALLOCATE_COMMAND_POWER: HookSite = HookSite {
     commit: false,
 };
 
-/// P: 1406DE290, 1406DE290; entry: RCX country, RDX allocator; nested AddCP refund, own cap.
+/// Entry: RCX country, RDX allocator; nested command-power refund with its own cap.
 pub const RELEASE_COMMAND_POWER: HookSite = HookSite {
     name: "ReleaseCommandPower",
     function_rva: 0x6de290,
@@ -124,7 +122,7 @@ pub const RELEASE_COMMAND_POWER: HookSite = HookSite {
     commit: false,
 };
 
-/// P: 1406DD930, 1406DD930; entry: RCX country, RDX definition, R8 scope, R9B charge; direct upfront subtraction then nested allocation.
+/// Entry: RCX country, RDX definition, R8 scope, R9B charge; upfront subtraction precedes nested allocation.
 pub const ACTIVATE_ABILITY: HookSite = HookSite {
     name: "ActivateAbility",
     function_rva: 0x6dd930,
@@ -136,7 +134,7 @@ pub const ACTIVATE_ABILITY: HookSite = HookSite {
     commit: false,
 };
 
-/// P: 1406EF9A0, 1406EFC6D; commit: R13 country, RCX new balance, RDX evaluated charge, R15+RBX record; one commit per paid anniversary.
+/// Commit: R13 country, RCX balance, RDX charge, R15+RBX record; one commit per paid anniversary.
 pub const ABILITY_UPKEEP: HookSite = HookSite {
     name: "AbilityUpkeep",
     function_rva: 0x6ef9a0,
@@ -148,7 +146,7 @@ pub const ABILITY_UPKEEP: HookSite = HookSite {
     commit: true,
 };
 
-/// P: 1406C6D30, 1406C6D30; entry: RCX country, RDX region, R8 allocator, R9 adjustment, fifth byte charge.
+/// Entry: RCX country, RDX region, R8 allocator, R9 adjustment, fifth byte charge.
 pub const GROUND_CREW: HookSite = HookSite {
     name: "GroundCrew",
     function_rva: 0x6c6d30,
@@ -160,7 +158,7 @@ pub const GROUND_CREW: HookSite = HookSite {
     commit: false,
 };
 
-/// P: 140B9F440, 140B9F5B6; commit: RBX status, RAX new party; before refresh/on-action.
+/// Commit: RBX status, RAX new party; precedes refresh and on-actions.
 pub const SET_RULING_PARTY: HookSite = HookSite {
     name: "SetRulingParty",
     function_rva: 0xb9f440,
@@ -172,7 +170,7 @@ pub const SET_RULING_PARTY: HookSite = HookSite {
     commit: true,
 };
 
-/// P: 140B9E500, 140B9E582; commit: RBP status, RSI new party; before refresh/on-action.
+/// Commit: RBP status, RSI new party; precedes refresh and on-actions.
 pub const FORCE_RULING_PARTY: HookSite = HookSite {
     name: "ForceRulingParty",
     function_rva: 0xb9e500,
@@ -184,7 +182,7 @@ pub const FORCE_RULING_PARTY: HookSite = HookSite {
     commit: true,
 };
 
-/// P: 140B9F5E0, 140B9F770; commit: RBP status, RCX new party; setup/dynamic reuse.
+/// Commit: RBP status, RCX new party; setup and dynamic reuse.
 pub const SETUP_POLITICS: HookSite = HookSite {
     name: "SetupPolitics",
     function_rva: 0xb9f5e0,
@@ -196,9 +194,9 @@ pub const SETUP_POLITICS: HookSite = HookSite {
     commit: true,
 };
 
-/// P: 140B9D920, 140B9DA73; loop exit: R14 status, stored final party +D0.
-/// ZF is set on loop exhaustion/empty roster; the pre-existing-party branch
-/// at 140B9DA3B reaches this site with ZF clear. No intermediate maxima emit.
+/// Loop exit: R14 status and its stored final party. ZF is set on exhaustion
+/// or an empty roster and clear for the existing-party branch. Intermediate
+/// maxima emit no event.
 pub const FALLBACK_RULING_PARTY: HookSite = HookSite {
     name: "FallbackRulingParty",
     function_rva: 0xb9d920,
@@ -210,7 +208,7 @@ pub const FALLBACK_RULING_PARTY: HookSite = HookSite {
     commit: true,
 };
 
-/// P: 140B9A1D0, 140B9AE45; observation: R13 status, RDI gross, [RBP-0x38] reduction, RAX net, R15 blockade count; before output/tooltip adjustment.
+/// Observation: R13 status, RDI gross, stack reduction, RAX net, R15 blockade count; precedes tooltip adjustment.
 pub const DAILY_POLITICAL_RATE: HookSite = HookSite {
     name: "DailyPoliticalRate",
     function_rva: 0xb9a1d0,
@@ -222,18 +220,16 @@ pub const DAILY_POLITICAL_RATE: HookSite = HookSite {
     commit: true,
 };
 
-/// Native daily AddPP call returns 140B993AC; separate timed charges return
-/// 140B99633. Daily CP applies inline-computed fixed5 at 1406DADC2.
+/// Daily political-power application, separate timed charges and inline daily command-power application.
 pub const DAILY_PP_CALLER: usize = 0xb993ac;
 pub const TIMED_PP_CALLER: usize = 0xb99633;
 pub const DAILY_CP_CALLER: usize = 0x6dadc7;
-/// 140B9A1D0: evaluated reduction remains at [RBP-0x38] when net is stored.
+/// Evaluated reduction stays in the stack operand when net is stored.
 pub const DAILY_COST_STACK_OFFSET: isize = -0x38;
 
-/// P: CALL 140B9A2CA returns 140B9A2CF, writing key-0x26 cost at [RBP-38].
-/// Tap 140B9A2D2 skips XORPS: MOVUPS [RBP+C0],XMM0 relocates seven bytes,
-/// with no RIP operand/interior target/return PC. R13 status, [RBP-38] cost
-/// and [RBP+358] daily caller 140B99362 remain unchanged (140B9A1D0 asm).
+/// Daily reduction observation after the cost call. The seven-byte patch span
+/// has no relative operand, interior target or return PC. R13 status, stack cost
+/// and daily caller remain unchanged.
 pub const DAILY_PP_MODIFIER: HookSite = HookSite {
     name: "DailyPpModifier",
     function_rva: 0xb9a1d0,
@@ -244,11 +240,10 @@ pub const DAILY_PP_MODIFIER: HookSite = HookSite {
     ],
     commit: true,
 };
-/// P: 140B98130/140B98220 asm: assert CALLs return 140B98204/140B98307.
-/// Leave their MOV RCX,[RDI+100] intact; tap subsequent ADD RSP,30 + POP RDI
-/// (five bytes), no RIP operands/interior targets/return PCs. RSP/RDI are
-/// unchanged before this span; RCX now holds the signal, unused by TLS flush.
-/// Native EmitVoidSignal@14032F1D0 and its unrelated callers stay untouched.
+/// Post-signal observation after the assertion calls. The patch spans the
+/// five-byte stack adjustment and register restore, with no relative operand or
+/// interior target. Stack and receiver remain unchanged before the span; the
+/// signal in RCX is unused by the thread-local flush.
 pub const PP_SIGNAL: HookSite = HookSite {
     name: "PpSignal",
     function_rva: 0xb98130,
@@ -274,15 +269,13 @@ pub const PP_SIGNAL_NO_DEFICIT: HookSite = HookSite {
 pub struct Owner {
     pub pointer: usize,
     pub country: u32,
-    /// P: 1406BD180 initializes the native +0x0C identity word and
-    /// 1406D61D0 can reset it; 1401DA850 publishes a new raw +08 link.
-    /// Preserve both words, without assuming the instance is monotonic.
+    /// Country identity combines the raw link and resettable instance word.
+    /// Preserve both without assuming the instance is monotonic.
     pub instance: u32,
     pub politics: Option<usize>,
 }
 
-/// 1406C3320 and upkeep@1406EF9A0 mutate CCountry+1F0 without selecting
-/// CPoliticalStatus. Authenticate only their original country identity.
+/// Command-power mutation authenticates the original country without selecting political status.
 pub fn command_owner(
     memory: &impl Memory,
     base: usize,
@@ -313,10 +306,9 @@ fn owner_identity(base: usize, pointer: usize, identity: [u8; 16]) -> Result<Own
     })
 }
 
-/// Read only native ownership, never player/human/AI status. P: CCountry
-/// identity +08/+0C and politics backlink +F90; AddPP 140B98130 uses owner
-/// +C8. P: 1406BD180 assigns +F90 from its 0x110 allocation, retaining
-/// null on allocation failure. A native null status is absence, not zero PP.
+/// Read ownership independently of player, human or AI status. Authenticate
+/// country identity and the political-status owner/backlink. A null status from
+/// allocation failure is absence, distinct from a zero political-power balance.
 pub fn country_owner(
     memory: &impl Memory,
     base: usize,
@@ -628,71 +620,69 @@ mod tests {
     }
 }
 
-/// P: direct CALL instructions in the pinned writer receipts. Return addresses
-/// identify the native charging path, never an item or a coincident table diff.
+/// Charging-path call return addresses, independent of item identity or table differences.
 pub const CHARGING_CALLERS: &[(usize, &str)] = &[
-    (0x241982, "Console"),               // 140241380
-    (0x26ecb2, "Console"),               // 14026E6E0
-    (0x2cea1b, "FocusRefund"),           // 1402CE790
-    (0x2daa9a, "Focus"),                 // 1402DA9F0
-    (0x348c42, "ScriptEffect"),          // 140348BD0
-    (0x34afc9, "ScriptEffect"),          // 14034AF40
-    (0x34b992, "ScaledScriptEffect"),    // 14034B770
-    (0x66b8e5, "Autonomy"),              // 14066B860
-    (0x66d923, "Autonomy"),              // 14066D8B0
-    (0x6c6d75, "AirAction"),             // 1406C6D30
-    (0x6c7319, "AirAction"),             // 1406C6D30
-    (0x6ddce7, "AbilityActivation"),     // 1406DD930
-    (0x6de4cf, "AllocationRefund"),      // 1406DE290
-    (0x71b05e, "Decision"),              // 14071AEB0
-    (0x71c2a7, "DecisionTimeout"),       // 14071C130
-    (0x728efb, "TargetedDecision"),      // 140728CE0
-    (0xaa2836, "Diplomacy"),             // 140AA2750
-    (0xc0bd82, "LeaderAssignment"),      // 140C0BD10
-    (0xc10ae6, "LeaderAssignment"),      // 140C10A60
-    (0xc137df, "LeaderAssignment"),      // 140C13780
-    (0xc13811, "LeaderAssignment"),      // 140C13780
-    (0xd13032, "Diplomacy"),             // 140D12DA0
-    (0xda09b7, "MioPolicy"),             // 140DA08A0
-    (0xf4ec52, "AirAction"),             // 140F4E970
-    (0xf72155, "AirAction"),             // 140F72110
-    (0xf7225c, "AirAction"),             // 140F72110
-    (0xfb9155, "Idea"),                  // 140FB8FD0
-    (0xfd4ecc, "Raid"),                  // 140FD4DE0
-    (0xfd7966, "Raid"),                  // 140FD7600
-    (0xfd797d, "Raid"),                  // 140FD7600
-    (0x10d66b1, "AdvisorRemoval"),       // 1410D64E0
-    (0x10eea93, "Diplomacy"),            // 1410EE2D0
-    (0x10eeac3, "Diplomacy"),            // 1410EE2D0
-    (0x10f1ca0, "WarJustification"),     // 1410F1C20
-    (0x10f3a90, "JoinWar"),              // 1410F2B70
-    (0x1128494, "JoinWar"),              // 1411271C0
-    (0x113bbe6, "Advisor"),              // 14113BB40
-    (0x113bc3d, "Advisor"),              // 14113BB40
-    (0x113bf98, "Advisor"),              // 14113BF10
-    (0x11415c1, "LeaderRecruitment"),    // 141141570
-    (0x1144cc8, "Advisor"),              // 141144BB0
-    (0x1144d21, "Advisor"),              // 141144BB0
-    (0x1147ed7, "PreferredTactic"),      // 141147D20
-    (0x114880f, "ScorchedEarth"),        // 1411487C0
-    (0x114ad21, "OfficerUpgrade"),       // 14114ACB0
-    (0x114aeff, "CaptainUpgrade"),       // 14114AE70
-    (0x128eb87, "Advisor"),              // 14128EA50
-    (0x128f77e, "Advisor"),              // 14128F730
-    (0x128f7a6, "Advisor"),              // 14128F730
-    (0x13417eb, "PrideOfFleet"),         // 141341790
-    (0x135207c, "LeaderPromotion"),      // 141352010
-    (0x1434c79, "Medal"),                // 141434AC0
-    (0x1830522, "LeaderTrait"),          // 1418304D0
-    (0x1837f5b, "LeaderAssignment"),     // 141837E00
-    (0x1a13cd1, "SpyMaster"),            // 141A13BB0
-    (0x1a8ed6c, "Blockade"),             // 141A8ECC0
-    (0x1b948b5, "ScientistFaction"),     // 141B94830
-    (0x1edef60, "ScientistRecruitment"), // 141EDEE70
+    (0x241982, "Console"),
+    (0x26ecb2, "Console"),
+    (0x2cea1b, "FocusRefund"),
+    (0x2daa9a, "Focus"),
+    (0x348c42, "ScriptEffect"),
+    (0x34afc9, "ScriptEffect"),
+    (0x34b992, "ScaledScriptEffect"),
+    (0x66b8e5, "Autonomy"),
+    (0x66d923, "Autonomy"),
+    (0x6c6d75, "AirAction"),
+    (0x6c7319, "AirAction"),
+    (0x6ddce7, "AbilityActivation"),
+    (0x6de4cf, "AllocationRefund"),
+    (0x71b05e, "Decision"),
+    (0x71c2a7, "DecisionTimeout"),
+    (0x728efb, "TargetedDecision"),
+    (0xaa2836, "Diplomacy"),
+    (0xc0bd82, "LeaderAssignment"),
+    (0xc10ae6, "LeaderAssignment"),
+    (0xc137df, "LeaderAssignment"),
+    (0xc13811, "LeaderAssignment"),
+    (0xd13032, "Diplomacy"),
+    (0xda09b7, "MioPolicy"),
+    (0xf4ec52, "AirAction"),
+    (0xf72155, "AirAction"),
+    (0xf7225c, "AirAction"),
+    (0xfb9155, "Idea"),
+    (0xfd4ecc, "Raid"),
+    (0xfd7966, "Raid"),
+    (0xfd797d, "Raid"),
+    (0x10d66b1, "AdvisorRemoval"),
+    (0x10eea93, "Diplomacy"),
+    (0x10eeac3, "Diplomacy"),
+    (0x10f1ca0, "WarJustification"),
+    (0x10f3a90, "JoinWar"),
+    (0x1128494, "JoinWar"),
+    (0x113bbe6, "Advisor"),
+    (0x113bc3d, "Advisor"),
+    (0x113bf98, "Advisor"),
+    (0x11415c1, "LeaderRecruitment"),
+    (0x1144cc8, "Advisor"),
+    (0x1144d21, "Advisor"),
+    (0x1147ed7, "PreferredTactic"),
+    (0x114880f, "ScorchedEarth"),
+    (0x114ad21, "OfficerUpgrade"),
+    (0x114aeff, "CaptainUpgrade"),
+    (0x128eb87, "Advisor"),
+    (0x128f77e, "Advisor"),
+    (0x128f7a6, "Advisor"),
+    (0x13417eb, "PrideOfFleet"),
+    (0x135207c, "LeaderPromotion"),
+    (0x1434c79, "Medal"),
+    (0x1830522, "LeaderTrait"),
+    (0x1837f5b, "LeaderAssignment"),
+    (0x1a13cd1, "SpyMaster"),
+    (0x1a8ed6c, "Blockade"),
+    (0x1b948b5, "ScientistFaction"),
+    (0x1edef60, "ScientistRecruitment"),
 ];
 
-/// P: synchronous charging/provenance scopes. Their pinned entry ABIs use
-/// integer/pointer arguments (at most five) and return through RAX.
+/// Synchronous charging scopes use up to five integer/pointer arguments and return through RAX.
 pub const SCOPES: &[HookSite] = &[
     HookSite {
         name: "PoliticsDaily",
@@ -703,7 +693,7 @@ pub const SCOPES: &[HookSite] = &[
             0x8d, 0xac,
         ],
         commit: false,
-    }, // P: 140B990B0
+    },
     HookSite {
         name: "ImproveRelationDaily",
         function_rva: 0xd0efa0,
@@ -713,7 +703,7 @@ pub const SCOPES: &[HookSite] = &[
             0x41, 0x14,
         ],
         commit: false,
-    }, // P: 140D0EFA0
+    },
     HookSite {
         name: "BoostPartyDaily",
         function_rva: 0xd0e970,
@@ -723,7 +713,7 @@ pub const SCOPES: &[HookSite] = &[
             0x05, 0xfd,
         ],
         commit: false,
-    }, // P: 140D0E970
+    },
     HookSite {
         name: "MioResearchDaily",
         function_rva: 0xda1380,
@@ -733,7 +723,7 @@ pub const SCOPES: &[HookSite] = &[
             0x40, 0x49,
         ],
         commit: false,
-    }, // P: 140DA1380
+    },
     HookSite {
         name: "MioProductionDaily",
         function_rva: 0xda12e0,
@@ -743,7 +733,7 @@ pub const SCOPES: &[HookSite] = &[
             0x40, 0x49,
         ],
         commit: false,
-    }, // P: 140DA12E0
+    },
     HookSite {
         name: "AddIdea",
         function_rva: 0x113c9c0,
@@ -753,7 +743,7 @@ pub const SCOPES: &[HookSite] = &[
             0x41, 0x56,
         ],
         commit: false,
-    }, // P: 14113C9C0
+    },
     HookSite {
         name: "RemoveIdea",
         function_rva: 0x11445e0,
@@ -763,7 +753,7 @@ pub const SCOPES: &[HookSite] = &[
             0x8b, 0xf9,
         ],
         commit: false,
-    }, // P: 1411445E0
+    },
     HookSite {
         name: "ReplaceIdea",
         function_rva: 0x1144e10,
@@ -773,7 +763,7 @@ pub const SCOPES: &[HookSite] = &[
             0x48, 0x83,
         ],
         commit: false,
-    }, // P: 141144E10
+    },
     HookSite {
         name: "HireAdvisor",
         function_rva: 0x113bb40,
@@ -783,7 +773,7 @@ pub const SCOPES: &[HookSite] = &[
             0x8d, 0x6c,
         ],
         commit: false,
-    }, // P: 14113BB40
+    },
     HookSite {
         name: "ReplaceAdvisor",
         function_rva: 0x1144bb0,
@@ -793,7 +783,7 @@ pub const SCOPES: &[HookSite] = &[
             0x41, 0x57,
         ],
         commit: false,
-    }, // P: 141144BB0
+    },
     HookSite {
         name: "Decision",
         function_rva: 0x71aeb0,
@@ -803,7 +793,7 @@ pub const SCOPES: &[HookSite] = &[
             0x41, 0x57,
         ],
         commit: false,
-    }, // P: 14071AEB0
+    },
     HookSite {
         name: "TargetedDecision",
         function_rva: 0x728ce0,
@@ -813,7 +803,7 @@ pub const SCOPES: &[HookSite] = &[
             0x41, 0x57,
         ],
         commit: false,
-    }, // P: 140728CE0
+    },
     HookSite {
         name: "DecisionTimeout",
         function_rva: 0x71c130,
@@ -823,7 +813,7 @@ pub const SCOPES: &[HookSite] = &[
             0x41, 0x56,
         ],
         commit: false,
-    }, // P: 14071C130
+    },
     HookSite {
         name: "Diplomacy",
         function_rva: 0x10ee2d0,
@@ -833,7 +823,7 @@ pub const SCOPES: &[HookSite] = &[
             0x8d, 0xac,
         ],
         commit: false,
-    }, // P: 1410EE2D0
+    },
     HookSite {
         name: "ScriptedDiplomacy",
         function_rva: 0xaa2750,
@@ -843,7 +833,7 @@ pub const SCOPES: &[HookSite] = &[
             0x4c, 0x24,
         ],
         commit: false,
-    }, // P: 140AA2750
+    },
     HookSite {
         name: "LeaderPromotion",
         function_rva: 0x1352010,
@@ -853,7 +843,7 @@ pub const SCOPES: &[HookSite] = &[
             0x75, 0x0a,
         ],
         commit: false,
-    }, // P: 141352010
+    },
     HookSite {
         name: "LeaderTrait",
         function_rva: 0x18304d0,
@@ -863,7 +853,7 @@ pub const SCOPES: &[HookSite] = &[
             0xd9, 0x40,
         ],
         commit: false,
-    }, // P: 1418304D0
+    },
     HookSite {
         name: "AbilityCost",
         function_rva: 0xff4c30,
@@ -873,7 +863,7 @@ pub const SCOPES: &[HookSite] = &[
             0x20, 0x57,
         ],
         commit: false,
-    }, // P: 140FF4C30
+    },
     HookSite {
         name: "CoupCompletion",
         function_rva: 0xacb850,
@@ -883,7 +873,7 @@ pub const SCOPES: &[HookSite] = &[
             0x56, 0x41,
         ],
         commit: false,
-    }, // P: 140ACB850
+    },
     HookSite {
         name: "CivilWar",
         function_rva: 0x10c8ca0,
@@ -893,7 +883,7 @@ pub const SCOPES: &[HookSite] = &[
             0x08, 0x55,
         ],
         commit: false,
-    }, // P: 1410C8CA0
+    },
     HookSite {
         name: "SetPoliticsEffect",
         function_rva: 0x363980,
@@ -903,7 +893,7 @@ pub const SCOPES: &[HookSite] = &[
             0x48, 0x83,
         ],
         commit: false,
-    }, // P: 140363980
+    },
     HookSite {
         name: "PeaceForceGovernment",
         function_rva: 0x1442850,
@@ -913,7 +903,7 @@ pub const SCOPES: &[HookSite] = &[
             0x18, 0x48,
         ],
         commit: false,
-    }, // P: 141442850
+    },
     HookSite {
         name: "SubjectGovernment",
         function_rva: 0xd10630,
@@ -923,7 +913,7 @@ pub const SCOPES: &[HookSite] = &[
             0x18, 0x89,
         ],
         commit: false,
-    }, // P: 140D10630
+    },
     HookSite {
         name: "ConsoleGovernment",
         function_rva: 0x285f60,
@@ -933,7 +923,7 @@ pub const SCOPES: &[HookSite] = &[
             0x54, 0x41,
         ],
         commit: false,
-    }, // P: 140285F60
+    },
     HookSite {
         name: "ConsoleSubject",
         function_rva: 0x2348d0,
@@ -943,7 +933,7 @@ pub const SCOPES: &[HookSite] = &[
             0x57, 0x48,
         ],
         commit: false,
-    }, // P: 1402348D0
+    },
     HookSite {
         name: "OnAction",
         function_rva: 0xa6aae0,
@@ -953,7 +943,7 @@ pub const SCOPES: &[HookSite] = &[
             0x18, 0x55,
         ],
         commit: false,
-    }, // P: 140A6AAE0
+    },
     HookSite {
         name: "Focus",
         function_rva: 0x2da9f0,
@@ -963,7 +953,7 @@ pub const SCOPES: &[HookSite] = &[
             0x41, 0x57,
         ],
         commit: false,
-    }, // P: 1402DA9F0
+    },
     HookSite {
         name: "FocusRefund",
         function_rva: 0x2ce790,
@@ -973,7 +963,7 @@ pub const SCOPES: &[HookSite] = &[
             0x48, 0x89,
         ],
         commit: false,
-    }, // P: 1402CE790
+    },
 ];
 
 /// A borrowed native literal, copied synchronously while its command/party is
@@ -996,7 +986,7 @@ impl Literal {
         Ok(())
     }
 }
-/// P: MSVC string descriptor, shared with the existing content readers.
+/// MSVC string descriptor shared with content readers.
 pub fn literal(memory: &impl Memory, address: usize) -> Result<Literal, &'static str> {
     let descriptor = msvc_string::Descriptor::read(memory, address)?;
     Ok(Literal {
@@ -1004,7 +994,7 @@ pub fn literal(memory: &impl Memory, address: usize) -> Result<Literal, &'static
         len: descriptor.len,
     })
 }
-/// P: 14118E330 / 140B9F440; ideology IDs are not lexical IDs.
+/// Ideology IDs occupy a distinct identity space from lexer IDs.
 pub fn party_literal(
     memory: &impl Memory,
     base: usize,
@@ -1081,9 +1071,8 @@ pub fn balances(
     })
 }
 
-/// P: 140B9AC84..140B9ACB4. The loaded blockade define is an integer which
-/// native code multiplies into fixed5 and divides back. Retain its overflow
-/// behaviour, rather than substituting a price from current vanilla content.
+/// The loaded integer blockade define is multiplied into fixed5 and divided
+/// back. Preserve overflow at that conversion rather than cancelling operations.
 pub fn blockade_cost(count_register: usize, loaded_define: i64) -> i64 {
     (count_register as i32 as i64)
         .wrapping_mul(loaded_define)
@@ -1092,8 +1081,7 @@ pub fn blockade_cost(count_register: usize, loaded_define: i64) -> i64 {
 }
 pub const BLOCKADE_COST_DEFINE_RVA: usize = 0x3319e30;
 
-/// Daily rate/modifier/blockade records (140B9A1D0/140B9A2D2/140B9AE45),
-/// applied PP (140B993A7) and applied CP (1406DADC2).
+/// Daily rate, modifier and blockade records, plus applied political and command power.
 pub const DAILY_RECORDS: usize = 5;
 
 /// Off-thread staging hint from live roster headers. Scripted bursts still
@@ -1125,8 +1113,7 @@ pub fn daily_record_demand(
             continue;
         };
         let owner = country_owner(memory, base, country.pointer)?;
-        // 140B990B0: one timed charge per status+08/count+14 entry.
-        // 1406EF9A0: one upkeep writer per active stride-58 ability.
+        // One timed charge per stored entry and one upkeep observation per active ability.
         let mut count = DAILY_RECORDS;
         if let Some(status) = owner.politics {
             count = count
@@ -1139,14 +1126,14 @@ pub fn daily_record_demand(
             )
             .ok_or("politics staging record demand overflow")?;
         for (offset, vtable, backlink, roster) in [
-            // 140B9A1D0 invokes outgoing relation vslot90 once per occurrence.
+            // Daily political-power calculation visits every outgoing-relation occurrence.
             (
                 ccountry::DIPLOMACY_STATUS,
                 crate::cdiplomacy_status::VTABLE_RVA,
                 crate::cdiplomacy_status::COUNTRY,
                 crate::cdiplomacy_status::OWNED_RELATIONS,
             ),
-            // 140E4F830 walks organisations, then their stride-18 assignments.
+            // Visit organisations and each ordered assignment vector.
             (
                 ccountry::PRODUCTION_STATUS,
                 crate::cproduction_status::VTABLE_RVA,
@@ -1188,7 +1175,7 @@ pub fn daily_record_demand(
                         {
                             return Err("politics staging organisation identity mismatch");
                         }
-                        // 140E4F830 can invoke both cost getters per assignment.
+                        // Each assignment can select both cost getters.
                         extra = (array(
                             pointer,
                             organisation::PRODUCTION_LINES,
@@ -1362,11 +1349,10 @@ mod capture_tests {
     }
 }
 
-/// Synchronous native operands, with SEH-guarded reads. Daily country/status
-/// lifetime (1406DACC1/1406DACC8), upkeep records (1406EFBB8..1406EFC6D) and
-/// PP stores (140B98130/140B98220) do not prove every authentication field or
-/// pointee readable. Keep the guard for all three paths and their literal copies.
-/// No pointer survives the observer or reaches a worker.
+/// Synchronous operands use SEH-guarded reads. Country/status, upkeep and
+/// power-store lifetimes alone do not establish every authentication field or
+/// pointee as readable. Guard all three paths and copied literals; no pointer
+/// survives the observer or reaches a worker.
 pub struct NativeOperands(crate::memory::LiveMemory);
 impl NativeOperands {
     /// # Safety

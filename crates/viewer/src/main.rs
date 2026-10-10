@@ -135,15 +135,15 @@ struct Options {
     /// pattern is the game's *at the same clock*: fit it against a reference
     /// frame, then score that frame with it. Every consumer of `vGlobalTime`
     /// reads it, which is the fog-of-war noise and the entity animation, and so
-    /// does the map-icon windows' GUI clock (`Time`, `CGraphics+0x32590`, the game
-    /// idler's own real-time clock, whose epoch is not recorded either).
+    /// does the map-icon windows' GUI clock (`Time`). Its real-time epoch
+    /// is not recorded either.
     presentation_time: f32,
     /// `--dump --settle <seconds>`: frames played on the presentation clock
     /// before the dump, one second apart, so entity events such as a damaged
     /// building's fire and smoke and weather particles are under way as in a
     /// running viewer. The dump then renders at `presentation_time + settle`.
     settle: f32,
-    /// `--dump --map-time <seconds>`: the map scene's own clock, which frame33840
+    /// `--dump --map-time <seconds>`: the map scene's own clock, which
     /// shows is a different one — `vGlobalTime` 547.981 and `FoWTime` 547.978
     /// against the border pass's `vTime_Transparency.x` 206.792, the river's
     /// `vTimeDirectionSeasonLerp.x` 206.822 and the water's 206.826. It drives
@@ -223,8 +223,7 @@ struct Options {
     demilitarized: BTreeSet<u32>,
     /// `--dump --debug-borders`: the game's own console toggle, which removes the gradient
     /// political fill and the border strips and leaves bare terrain. Pairing a frame with and
-    /// without it is how the fill law is measured against the game's `pairE_*_{fill,nofill}`
-    /// captures; `map::gradient` records what those measurements settled.
+    /// without it permits direct fill comparison; `map::gradient` owns the fill law.
     debug_borders: bool,
 }
 
@@ -241,14 +240,11 @@ impl Options {
     }
 
     fn parse(args: impl Iterator<Item = OsString>) -> io::Result<Self> {
-        // The game renders the reference frames at 2048x1152 (R1 section 0), so
-        // a dump matches that by default and `--upscale 1.25` scores it against
-        // the screenshots.
+        // Dumps default to 2048x1152; `--upscale 1.25` produces a 2560x1440 image
+        // for comparison with screenshots at that size.
         let mut options = Self {
             size: [2048, 1152],
-            // colour: the reference session graded its frames, so the chain is
-            // on unless `--postfx off` turns it off. The measurements behind
-            // that are in `map::post`.
+            // Apply post-processing unless `--postfx off` disables the chain.
             postfx: true,
             no_water: false,
             no_shadows: false,
@@ -801,7 +797,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         run_compare(&options, paths)?;
         return Ok(());
     }
-    let (mut config, config_error) = match Config::load() {
+    let (mut config, mut config_error) = match Config::load() {
         Ok(config) => (config, None),
         Err(error) => (Config::default(), Some(error.to_string())),
     };
@@ -810,6 +806,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(path) = &options.user_dir {
         config.user_dir = path.clone();
+    }
+    if config.resolve_options().is_ok()
+        && let Err(error) = engine::executable_tables::initialize(&config.game_dir)
+    {
+        config_error = Some(format!("Game tables: {error}"));
     }
     if let (Some(output), true) = (&options.out, options.headless_dump) {
         if let Some(error) = config_error {
@@ -889,7 +890,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         let mut train_plan = document.train_plan(&options.perspective)?;
         println!(
-            "Supply trains (recorded simulation; UNVERIFIED presentation phase): {} routes, {} mesh objects at time 0, seed 0x54524149",
+            "Supply trains (recorded simulation; unrecorded presentation phase): {} routes, {} mesh objects at time 0, seed 0x54524149",
             train_plan.route_count(),
             train_plan.field(&document.trains, 0.0).instances.len()
         );
@@ -950,7 +951,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .join("; ");
         let hour = document.playback.hour();
         // names: a headless render has no frame history, so the fade jumps
-        // straight to its settled value (R2 section 4.5).
+        // straight to its settled value.
         let fade = LayerFade::instant(camera);
         let placements = document.place_names()?;
         for warning in &placements.warnings {

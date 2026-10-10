@@ -1,6 +1,6 @@
-//! Private BEADD0 message adapter over the existing movement world.
-//! Native admission and message bytes are independent: an empty localised
-//! rejection still returns false. These facts are simulation facts; no local
+//! Selected movement message adapter over the existing movement world.
+//! Admission and message bytes are independent: an empty localised
+//! rejection still returns false. Inputs are simulation facts; no local
 //! selection, hover, cache, keyboard or interface mode is recorded.
 
 use super::{Army, Country, Fact, MoveWorld, Mover};
@@ -20,7 +20,7 @@ pub enum CommonClass {
 }
 
 /// Scalar projection of one authenticated selected class-0/13 unit.
-/// Full combats and target occupants are demanded later, in native order.
+/// Full combats and target occupants are demanded later, in encounter order.
 pub struct CommonUnit<'a> {
     pub class: CommonClass,
     pub handle: u64,
@@ -32,7 +32,7 @@ pub struct CommonUnit<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommonCombat {
     pub combat: u64,
-    /// Authenticated native class: ordinary land0, border1, naval2.
+    /// Authenticated unit class: ordinary land 0, border 1, naval 2.
     pub kind: u8,
 }
 
@@ -42,31 +42,34 @@ pub struct NativeArmyOccupant {
     pub logical_owner_raw: u32,
 }
 
-/// Missing granular facts of the existing MoveWorld. A concrete recorded
-/// adapter must refuse absent acquisition, rather than use a boolean query
-/// capture or construct native order from keyed tables.
+/// Granular facts of the existing MoveWorld. A recorded adapter must
+/// refuse absent acquisition and preserve encounter order; boolean query
+/// captures or keyed-table order cannot supply these facts.
 pub trait CommonMoveWorld: MoveWorld {
     fn canonical_country(&self, raw: u32) -> Fact<Country>;
-    /// The resolved receiver object's stored signed +8, including actual zero.
+    /// The resolved receiver's stored signed country word, including actual zero.
     fn actual_country_raw(&self, country: Country) -> Fact<u32>;
-    /// D11030/D11080 on the receiver's current status +288 pointer, with
-    /// the native ordered raw/alias endpoint tests. Historical dates cannot
-    /// certify this selected disclosure predicate.
+    /// Current subject status, with ordered raw/alias endpoint tests.
+    /// Historical dates cannot certify this selected disclosure predicate.
     fn current_subject_access(&self, _receiver: Country, _target: Country) -> Fact<bool> {
         Err("selected current subject status inputs not recorded".into())
     }
     fn controller_raw(&self, province: u32) -> Fact<u32>;
     fn state_owner_raw(&self, province: u32) -> Fact<u32>;
     fn province_state(&self, province: u32) -> Fact<Option<u32>>;
-    /// Same-pass D0 equality, independent from controller/raw alias equality.
+    /// Same-pass controller-area equality, independent of raw controller aliases.
     fn controller_area_equal(&self, from: u32, to: u32) -> Fact<bool>;
-    /// Actual relation +2E8/+49; no F3A00 self or positive-receiver gate here.
+    /// The direct relation, without self or signed-positive receiver gates.
     fn directed_war(&self, receiver: Country, target: Country) -> Fact<bool>;
     fn owner_area_equal(&self, from: u32, to: u32) -> Fact<bool> {
-        Err(format!("selected D8 identities {from}->{to} unavailable"))
+        Err(format!(
+            "selected owner-area identities {from}->{to} unavailable"
+        ))
     }
     fn controller_area(&self, province: u32) -> Fact<u32> {
-        Err(format!("selected D0 identity {province} unavailable"))
+        Err(format!(
+            "selected controller-area identity {province} unavailable"
+        ))
     }
     fn area_node(&self, label: u32) -> Fact<AreaNode> {
         Err(format!("selected area {label} graph unavailable"))
@@ -80,7 +83,8 @@ pub trait CommonMoveWorld: MoveWorld {
             unit.handle
         ))
     }
-    /// E72200: F3A90(access=true) for ordinary units; !F3A00 for exiled.
+    /// Ordinary railway units require disclosure with access; exiled
+    /// units require absence of war.
     fn railway_path_owner_admits(
         &self,
         owner_raw: u32,
@@ -91,45 +95,45 @@ pub trait CommonMoveWorld: MoveWorld {
             "selected railway path country predicate {owner_raw}->{controller_raw} exile {exiled} unavailable"
         ))
     }
-    /// Full +1A8/+1B4 combat references in native order. Existing combat-side
-    /// censuses and owner-role summaries do not establish this unit domain.
+    /// Full combat references in encounter order. Combat-side censuses
+    /// and owner-role summaries do not establish this unit domain.
     fn full_unit_combats(&self, unit: &CommonUnit<'_>) -> Fact<Vec<CommonCombat>>;
-    /// Side +20 full unit membership, separately demanded per native pass.
+    /// Full side membership, demanded separately on each pass.
     fn combat_has_unit(&self, combat: CommonCombat, unit: u64, attacking: bool) -> Fact<bool>;
-    /// Referenced combat vf12, demanded only after both commander-ban passes.
+    /// Combat minimum duration, demanded after both commander-ban passes.
     fn combat_minimum_duration(&self, combat: CommonCombat) -> Fact<bool>;
-    /// BEDEC0 current ordinary-route first, demanded after access/retreat.
+    /// Current ordinary-route first province, demanded after access/retreat.
     fn unit_route_first(&self, unit: &CommonUnit<'_>) -> Fact<Option<u32>>;
-    /// First path province versus BF0FF0. This is an offline existing-Mover
-    /// predicate, not a capture request parameter or recorded query result.
+    /// The first path province's combat predicate, computed over existing
+    /// Mover facts rather than a recorded query result.
     fn primary_path_combat(&self, unit: &CommonUnit<'_>, province: u32) -> Fact<bool>;
-    /// Borrow CProvince+E0/+EC mixed full-handle order, including repeats.
+    /// Mixed province unit handles in encounter order, including repeats.
     /// A known empty array is empty; missing capture is an error.
     fn province_units(&self, province: u32) -> Fact<&[u64]>;
-    /// Resolve only this reached handle's authenticated native class. Non-army
-    /// is known None; absent or ambiguous class census is an error.
+    /// Resolve this reached handle's authenticated class. Non-army is
+    /// known None; an absent or ambiguous class census is an error.
     fn army_occupant(&self, handle: u64, province: u32) -> Fact<Option<NativeArmyOccupant>>;
     fn occupant_retreating(&self, handle: u64) -> Fact<bool>;
     fn occupant_strength(&self, handle: u64) -> Fact<i64>;
-    /// Same-hour CUnit+C0, demanded only by the border conflict branch.
+    /// Same-hour orders group, demanded only by the border-conflict branch.
     fn unit_orders_group(&self, unit: &CommonUnit<'_>) -> Fact<u64>;
     fn ordered_enemy_raws(&self, country: Country) -> Fact<Vec<u32>>;
     /// Shared SimulationFeatures six-scalar packet, admitted at this hour.
     fn move_strength_threshold(&self) -> Fact<i64>;
     fn move_organisation_threshold(&self) -> Fact<i64>;
-    /// Existing DivisionStatus maximum_organisation (C725E0), not strength.
+    /// The recorded division status maximum organisation.
     fn maximum_organisation(&self, unit: &CommonUnit<'_>) -> Fact<i64>;
     fn unit_exiled(&self, unit: &CommonUnit<'_>) -> Fact<bool>;
     fn unit_exfiltrates(&self, unit: &CommonUnit<'_>) -> Fact<bool>;
     /// Current-hour commander selection and effective retreat bans.
     fn unit_retreat_ban(&self, unit: &CommonUnit<'_>, attacking: bool) -> Fact<bool>;
-    /// E733D0 source-to-target native neighbor-index level, source cooldown
-    /// and selected building. The inherited BF0C80 runs only after this gate.
+    /// Source-to-target railway neighbor-index level, source cooldown and
+    /// selected building. Common retreat admission runs only after this gate.
     fn railway_retreat_edge(&self, source: u32, target: u32) -> Fact<bool>;
-    /// C68800's ordered defender membership and opposing attacker locations.
+    /// Ordered defender membership and opposing attacker locations.
     fn combat_attacker_at(&self, combat: CommonCombat, target: u32) -> Fact<bool>;
-    /// DE2730 / E745D0: their area/rail graph and message-producing search,
-    /// not a counter ETA's independently selected province route.
+    /// The selected class's area or railway search and messages,
+    /// independent of the counter ETA's selected province route.
     fn selected_path(
         &self,
         unit: &CommonUnit<'_>,
@@ -137,7 +141,7 @@ pub trait CommonMoveWorld: MoveWorld {
         text: &mut String,
         content: &impl CommonMoveText,
     ) -> Fact<bool>;
-    /// BEFC40 after a failed class route (selected param5 is one).
+    /// Transport fallback after a failed selected class route.
     fn selected_transport(
         &self,
         unit: &CommonUnit<'_>,
@@ -146,7 +150,7 @@ pub trait CommonMoveWorld: MoveWorld {
         content: &impl CommonMoveText,
     ) -> Fact<bool>;
     fn railway_cooldown(&self, province: u32) -> Fact<Option<i32>>;
-    /// E765F0's raw pair count, zero cooldown and positive selected building.
+    /// Raw railway pair count, zero cooldown and positive selected building.
     fn railway_accessible(&self, province: u32) -> Fact<bool>;
 }
 
@@ -157,10 +161,10 @@ pub trait CommonMoveText {
     fn state(&self, key: &str, state: u32) -> Fact<String>;
     fn owner(&self, key: &str, raw_owner: u32) -> Fact<String>;
     fn rule(&self, key: &str, rule: &AdjacencyRule) -> Fact<String>;
-    /// Fixed5ToString(raw,0) then1402E30F0. The argument key at14272F830
-    /// is exact VAL from supported native static bytes; never spell it VALUE.
+    /// Format fixed5 with zero decimal places, then localise with the
+    /// exact argument key VAL.
     fn warning(&self, key: &str, raw: i64) -> Fact<String>;
-    /// CRailwayGun::CanEnterProvince@E73C00, DAYS bytes at14275179C.
+    /// Railway entry cooldown text with the exact argument key DAYS.
     fn days(&self, key: &str, days: i32) -> Fact<String>;
     fn transport_stock(&self, available: i32, required: i32) -> Fact<String>;
     fn transport_risk(&self, risk: i64) -> Fact<String>;
@@ -168,8 +172,8 @@ pub trait CommonMoveText {
 }
 
 impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
-    /// DE2730 selected Army vf17: D8 equality, ordered adjacent-land probes,
-    /// then the D0 graph with CMilAccessAreaCostCallback@CDF190. No text added.
+    /// Selected army route: owner-area equality, ordered adjacent-land
+    /// probes, then the controller-area graph and access cost. Adds no text.
     pub fn selected_army_path(&self, unit: &CommonUnit<'_>, to: u32) -> Fact<bool> {
         let world = self.world;
         let from = unit.army.location;
@@ -193,7 +197,7 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
             .neighbours(at)
             .ok_or("selected army source neighbours unavailable")?
         {
-            // DE27BB tests the adjacency's kind byte, independently of distance.
+            // Test the adjacency's kind byte independently of distance.
             if edge.crossing != super::NONE
                 && self
                     .graph
@@ -204,7 +208,7 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
             {
                 continue;
             }
-            // DE28D5 skips a null resolved native neighbour reference.
+            // Skip a null resolved neighbour reference.
             if edge.to == super::NONE {
                 continue;
             }
@@ -254,8 +258,8 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
         )
     }
 
-    /// E745D0 -> E72200: class13's separate A* search. The selected wrapper
-    /// consumes nonempty-path status; this body contributes no rejection text.
+    /// Selected railway route with its own A* search. The wrapper consumes
+    /// nonempty-path status; this body adds no rejection text.
     pub fn selected_railway_path(&self, unit: &CommonUnit<'_>, to: u32) -> Fact<bool> {
         use crate::province_graph::{heap_pop, heap_push};
         let graph = self.graph;
@@ -264,16 +268,16 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
             .ok_or("selected rail source undefined")?;
         let target = graph.dense(to).ok_or("selected rail target undefined")?;
         if graph.kind(unit.army.location)? & 1 == 0 || graph.kind(to)? & 1 == 0 {
-            return Err("E745D0 endpoints require native land provinces".into());
+            return Err("selected railway route endpoints require land provinces".into());
         }
-        // E74673 resolves the owner before E7467C reads exile and E725E3
-        // copies the target position, even when source and target are equal.
+        // Resolve the owner before reading exile and copying the target
+        // position, even when source and target are equal.
         self.world.canonical_country(unit.logical_owner_raw)?;
         let exile = self.world.unit_exiled_raw(unit)?;
         let [tx, ty] =
             graph.centroids[target].ok_or("selected rail target map position unavailable")?;
         let mut closed = vec![false; graph.ids.len()];
-        let mut nodes = vec![None::<(i64, i64)>; graph.ids.len()]; // native g,f
+        let mut nodes = vec![None::<(i64, i64)>; graph.ids.len()]; // accumulated and estimated costs
         let mut heap = Vec::new();
         nodes[source] = Some((0, 0));
         closed[source] = true;
@@ -290,12 +294,12 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
                 .ok_or("selected rail neighbours unavailable")?;
             for edge in neighbours {
                 let next = edge.to as usize;
-                // E6AAF0's unresolved neighbour is dereferenced by E72200.
-                // Refuse that unsupported domain explicitly instead of indexing.
+                // The railway access test needs this neighbour's province.
+                // Refuse an unresolved neighbour before indexing it.
                 let province = *graph
                     .ids
                     .get(next)
-                    .ok_or("selected rail null or undefined native neighbour")?;
+                    .ok_or("selected rail null or undefined neighbour")?;
                 if closed[next] {
                     continue;
                 }
@@ -312,18 +316,18 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
                 if self.world.demilitarized(province)? && !self.world.demilitarized(from)? {
                     continue;
                 }
-                // BEDC10 finds the FIRST matching adjacency, even on repeats.
+                // Use the first matching adjacency, including repeated records.
                 let cost = neighbours
                     .iter()
                     .find(|first| first.to == edge.to)
                     .unwrap()
                     .distance
-                    .ok_or("selected rail native adjacency distance unavailable")?;
+                    .ok_or("selected rail adjacency distance unavailable")?;
                 if cost < 0 {
                     continue;
                 }
                 let g = nodes[at].unwrap().0.wrapping_add(cost);
-                // E728D8 initializes unseen g/f to this native fixed5 sentinel.
+                // Initialise unseen g/f with the stored fixed5 search sentinel.
                 if g >= nodes[next].map_or(RAILWAY_UNSEEN_COST, |(old, _)| old) {
                     continue;
                 }
@@ -345,8 +349,8 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
                 };
                 let f = g.wrapping_add(h);
                 nodes[next] = Some((g, f));
-                // E729CE -> E72A22/E72A7A copies f into the heap entry.
-                // A later relaxation leaves earlier entries' keys unchanged.
+                // Copy f into the heap entry. A later relaxation leaves the keys
+                // of earlier entries unchanged.
                 heap_push(&mut heap, (f, next as u32));
             }
         }
@@ -362,8 +366,8 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
             && self.world.canonical_country(first)? == self.world.canonical_country(second)?)
     }
 
-    /// F3A00 receiver is the resolved current country's actual object; target
-    /// remains the passed raw reference. A canonical-zero alias is not raw zero.
+    /// The receiver is the resolved current country's actual object;
+    /// the target remains raw. A canonical-zero alias is not raw zero.
     fn raw_at_war(&self, receiver: Country, target_raw: u32) -> Fact<bool> {
         let actual = self.world.actual_country_raw(receiver)?;
         if self.raw_same(actual, target_raw)? || actual as i32 <= 0 {
@@ -373,9 +377,9 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
             .directed_war(receiver, self.world.canonical_country(target_raw)?)
     }
 
-    /// DE29C0 selected +70 call: param3/4/5 are zero. This narrow port uses
-    /// the existing Mover access primitives and exact raw/D0 gates. Root must
-    /// reuse this body for transport; it is not an additional capture scan.
+    /// Selected move access with optional gates disabled. Transport reuses
+    /// this body over existing Mover primitives and raw/controller-area facts;
+    /// it does not require another capture scan.
     fn common_class_access(&self, unit: &CommonUnit<'_>, to: u32) -> Fact<bool> {
         let army = unit.army;
         let world = self.world;
@@ -415,8 +419,8 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
         self.common_has_province_access(world.canonical_country(unit.logical_owner_raw)?, to)
     }
 
-    /// 6F09D0 mode0. +C0 state-owner raw-positive gate and both raw equality
-    /// stages are kept before relation predicates; no country-id sign guess.
+    /// Mode-0 country access. Preserve the state-owner raw-positive gate
+    /// and both raw equality stages before relation predicates.
     fn common_has_province_access(&self, owner: Country, province: u32) -> Fact<bool> {
         let world = self.world;
         let kind = self.graph.kind(province)?;
@@ -436,7 +440,7 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
             return Ok(true);
         }
         let controller = world.canonical_country(controller_raw)?;
-        // F09D0 reads +2E8/+49 directly, including an actual-zero receiver.
+        // Read the direct relation even when the receiver is actual zero.
         if world.directed_war(owner, controller)? || world.military_access(owner, controller)? {
             return Ok(true);
         }
@@ -458,8 +462,8 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
     }
 
     fn common_disengages(&self, unit: &CommonUnit<'_>, combats: &[CommonCombat]) -> Fact<bool> {
-        // BEAA60 reads defender297, its ordered full side arrays, then
-        // attacker298 and its ordered arrays. Only then does vf12 scan run.
+        // Read ordered defender side arrays, then ordered attacker side
+        // arrays. Only afterwards test combat minimum duration.
         for attacking in [false, true] {
             if self.world.unit_retreat_ban(unit, attacking)? {
                 for &combat in combats {
@@ -477,7 +481,7 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
         Ok(false)
     }
 
-    /// BF0C80, with railway vf20 E76D30's E733D0 gate first.
+    /// Common retreat access, preceded by the railway-specific edge gate.
     fn common_retreats(&self, unit: &CommonUnit<'_>, to: u32) -> Fact<bool> {
         if unit.class == CommonClass::RailwayGun
             && !self.world.railway_retreat_edge(unit.army.location, to)?
@@ -520,8 +524,8 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
             text.push_str(&content.plain("NO_ADVANCE_ALLOWED")?);
             return Ok(false);
         }
-        // Reuse R3 arithmetic unchanged. R2 makes only threshold demand lazy,
-        // matching strength-first native control flow; no second formula.
+        // Keep the threshold demand lazy after the strength check,
+        // using the shared organisation-warning arithmetic.
         advance_warning::can_advance(
             text,
             Ok(unit.army.strength),
@@ -533,7 +537,7 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
         )
     }
 
-    /// BEFA80 walks the target's mixed census, skipping non-armies/retreats.
+    /// Walk the target mixed census, skipping non-armies and retreating units.
     fn common_enemy_army(&self, unit: &CommonUnit<'_>, to: u32) -> Fact<bool> {
         for &handle in self.world.province_units(to)? {
             let Some(occupant) = self.world.army_occupant(handle, to)? else {
@@ -552,7 +556,7 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
         Ok(false)
     }
 
-    /// VF16 railway wrapper E73C00 runs before common BEADD0.
+    /// The railway entry wrapper runs before common province-entry admission.
     fn common_class_enter(
         &self,
         unit: &CommonUnit<'_>,
@@ -594,9 +598,9 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
         self.common_enter_message(unit, to, text, content)
     }
 
-    /// Selected callers DE A175 / DF8150 pass vf17(0,0,1,0,0,text).
-    /// BEABD0, class vf15 and Army C68800/Railway E73AA0 retain their
-    /// own gates before the class route and optional BEFC40 fallback.
+    /// Selected callers enable transport fallback and disable other route
+    /// options. Common admission, class admission and army/railway route gates
+    /// run before the class route and optional transport fallback.
     pub fn selected_move_message(
         &self,
         unit: &CommonUnit<'_>,
@@ -606,7 +610,7 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
     ) -> Fact<bool> {
         let army = unit.army;
         let world = self.world;
-        // Selected param5==1 bypasses BEABD0's NO_MOVE_RETREAT arm.
+        // Selected transport fallback bypasses the common no-move-retreat arm.
         if army.location != to {
             if (unit.combat_count as i32) > 0
                 && !self.common_disengages(unit, &self.common_combats(unit)?)?
@@ -621,7 +625,7 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
             if !self.common_class_enter(unit, to, text, content)? {
                 return Ok(false);
             }
-            // Army C68B40 / railway E74280 vf15's additional sea->land test.
+            // Apply the additional army or railway sea-to-land admission test.
             if self.graph.kind(army.location)? & 3 == 0
                 && self.graph.kind(to)? & 1 != 0
                 && (unit.class == CommonClass::RailwayGun
@@ -632,7 +636,7 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
         }
         if unit.class == CommonClass::Army {
             for combat in self.common_combats(unit)? {
-                // Ordinary/border vf11=ReturnOne; naval vf11 differs.
+                // Ordinary and border classes allow embarkation; the naval class differs.
                 if combat.kind != 2
                     && world.combat_has_unit(combat, unit.handle, false)?
                     && world.combat_attacker_at(combat, to)?
@@ -653,8 +657,8 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
             text.push_str(&content.plain("TRANSPORT_ACTIVE_CANT_MOVE")?);
             return Ok(false);
         }
-        // E73AA0 repeats this class test even when BEABD0 returned true
-        // directly for the current location, before either route/fallback.
+        // The railway wrapper repeats this class test even after common
+        // admission accepted the current location, before route or fallback.
         if unit.class == CommonClass::RailwayGun
             && self.graph.kind(army.location)? & 3 == 0
             && self.graph.kind(to)? & 1 != 0
@@ -662,8 +666,8 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
             return Ok(false);
         }
         if unit.class == CommonClass::Army {
-            // C68800 calls vf21 even without enemies; its text survives an
-            // accepted no-enemy path. Selected avoidEnemy (param4) is zero.
+            // Army callers demand the advance warning even without enemies;
+            // its text survives an accepted no-enemy path. Enemy avoidance is off.
             if !self.common_advance(unit, text, content)? && self.common_enemy_army(unit, to)? {
                 return Ok(false);
             }
@@ -674,9 +678,9 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
         world.selected_transport(unit, to, text, content)
     }
 
-    /// BEADD0 selected classes0/13, preserving native ordered first rejection
-    /// and exact STATE/OWNER/RULE_NAME arguments. All ordinary reasons append;
-    /// the reached army CanAdvance warning replaces the same mutable buffer.
+    /// Selected entry for classes 0/13, with ordered first rejection and
+    /// exact STATE/OWNER/RULE_NAME arguments. Ordinary reasons append; the
+    /// reached army advance warning replaces the same mutable buffer.
     pub fn common_enter_message(
         &self,
         unit: &CommonUnit<'_>,
@@ -704,8 +708,8 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
             && world.primary_path_combat(unit, first)?
             && !self.common_disengages(unit, &self.common_combats(unit)?)?
         {
-            // Known null +C0 is false-empty. The selected caller tests byte
-            // length separately, so preserve its ability to try the next unit.
+            // A known null orders group returns false with empty text. The caller
+            // tests byte length separately, preserving its chance to try the next unit.
             if world.province_state(to)?.is_some() {
                 text.push_str(&content.plain("NO_ADVANCE_IN_COMBAT")?);
             }
@@ -714,7 +718,7 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
         if world.demilitarized(to)? {
             let state = world
                 .province_state(to)?
-                .ok_or("demilitarized province has no native state")?;
+                .ok_or("demilitarized province has no state")?;
             text.push_str(&content.state("UNIT_DEMILITARIZED", state)?);
             return Ok(false);
         }
@@ -723,14 +727,14 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
         {
             let state = world
                 .province_state(to)?
-                .ok_or("border-conflict warning has no native state")?;
+                .ok_or("border-conflict warning has no state")?;
             text.push_str(&content.state("UNIT_BORDER_WAR", state)?);
             return Ok(false);
         }
         if world.impassable(to)? {
             let state = world
                 .province_state(to)?
-                .ok_or("impassable province has no native state")?;
+                .ok_or("impassable province has no state")?;
             text.push_str(&content.state("UNIT_IMPASSABLE", state)?);
             return Ok(false);
         }
@@ -747,7 +751,7 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
                     if !self.common_advance(unit, text, content)? {
                         return Ok(false);
                     }
-                    break; // Only first class0 enemy invokes vf21.
+                    break; // Only the first class-0 enemy invokes the advance warning.
                 }
             }
         }
@@ -809,8 +813,8 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
         if self.raw_same(world.actual_country_raw(owner)?, target_raw)? {
             return Ok(true);
         }
-        // F3B00 reads the direct relation after F3A90 raw/alias-self gates;
-        // it does not add F3A00's signed-positive receiver guard.
+        // Read the direct relation after raw/alias-self disclosure gates;
+        // do not add the war predicate's signed-positive receiver guard.
         if world.directed_war(owner, world.canonical_country(target_raw)?)? {
             return Ok(false);
         }
@@ -851,7 +855,7 @@ mod tests;
 
 const RAILWAY_UNSEEN_COST: i64 = 0x53e2_d620_fb40;
 
-/// E72954..E72982 integer Newton loop. Negative wrapped squares pass through.
+/// Integer Newton iteration with truncation; negative wrapped squares pass through.
 fn railway_heuristic(square: i32) -> i64 {
     let mut root = square;
     let mut next = square / 2;

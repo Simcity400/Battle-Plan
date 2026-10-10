@@ -28,19 +28,14 @@ use ts_rs::TS;
 pub const RESOURCE_DECIMALS: u8 = 5;
 /// Longest side of a returned resource icon.
 const ICON_EDGE: u32 = 48;
-/// The trade view's resource row and its icon button, the element the game gives
-/// each resource's `icon_frame`: `CTradeResourceInfoItem::CTradeResourceInfoItem@141CA4B50`
-/// opens template literal 142A4A878 and asks it for button literal 1429C0690
-/// (FindButton, vtable +0x68). Vanilla declares the row in
-/// `interface/countrytradeview.gui`; any GUI file may declare it.
+/// The trade view's resource row and its icon button, the element that receives
+/// each resource's `icon_frame`. Any GUI file may declare the row.
 const RESOURCE_ROW: &str = "resources_info_entry";
 const RESOURCE_ICON: &str = "resources_icon";
 
-/// A recorded resource, as content names and pictures it. The game keeps every
-/// declaration of a resource as its own resource, even one repeating a token
-/// (`CStrategicResourceDatabase::load_file@140AB2ED0` interns each declared key and
-/// appends a new item and key with no check for an earlier one), so resources are
-/// told apart by their native index and a repeated token is numbered.
+/// A recorded resource, as content names and pictures it. Every declaration
+/// adds its own resource, even when repeating a token. Resources are told
+/// apart by their recorded index and a repeated token is numbered.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceInfo {
@@ -193,12 +188,9 @@ fn icons(view: &ContentView) -> io::Result<(Icons, Vec<String>)> {
     ))
 }
 
-/// A resource's name as the game shows it. GetLocalizedResourceName
-/// (140BBC360), which the trade view (1415EA940), the state resource tooltip
-/// (141DADF30) and the other resource texts call, localises
-/// `PRODUCTION_MATERIALS_` (14293AF98) followed by the token upper-cased by the
-/// C runtime's toupper (1424B87F0 -> 14254F1FC), through the plain localiser
-/// (142230F20) only: brackets are glyphs ([`catalogue::View::Plain`]).
+/// A resource's name as the game shows it: `PRODUCTION_MATERIALS_` followed by
+/// the upper-cased token, through the plain localiser only. Brackets are glyphs
+/// ([`catalogue::View::Plain`]).
 /// `None`, with the reason in `warnings`, when there is no name to show.
 fn resource_name(
     localisation: &Localisation,
@@ -208,7 +200,7 @@ fn resource_name(
 ) -> Option<String> {
     let upper = installed_content::localisation::crt_case_text(token, true, false);
     let key = format!("PRODUCTION_MATERIALS_{upper}");
-    // Recovery and text share the walk; missing keys are byte copies (142230940).
+    // Recovery and text share the walk; missing keys are byte copies.
     let (name, notes) = catalogue::localised_details(
         localisation,
         &key,
@@ -523,7 +515,7 @@ mod tests {
         let sprites = installed_content::gfx::read(layers).unwrap();
         let localisation = crate::catalogue::tests::loaded(concat!(
             "l_english:\n",
-            " PRODUCTION_MATERIALS_OIL:0 \"Oil\"\n",
+            " PRODUCTION_MATERIALS_OIL:0 \"Fixture fuel\"\n",
             " PRODUCTION_MATERIALS_UNOBTAINIUM:0 \"Unobtainium\"\n",
         ));
         let guis = installed_content::gui::native::read_layers(layers).unwrap();
@@ -555,6 +547,8 @@ mod tests {
 
     #[test]
     fn a_mod_resource_takes_its_name_and_icon_from_the_mod_s_own_trade_view() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "hoi4_dashboard_modded_resources_{}",
             std::process::id()
@@ -567,7 +561,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                Some("Oil"),
+                Some("Fixture fuel"),
                 Some("PRODUCTION_MATERIALS_STEEL"),
                 Some("Unobtainium")
             ]
@@ -583,8 +577,8 @@ mod tests {
             warnings.iter().all(|warning| !warning.contains("icon")),
             "{warnings:?}"
         );
-        // An addition beside vanilla's trade view: both files register the row, and the
-        // registry keeps the last in the engine's load order (`CGui::FindGuiType`).
+        // Two files register the resource row; the registry keeps the last
+        // in the content stack's load order.
         let (resources, _) = declared(&modded(&root, false));
         assert_eq!(first_pixel(resources[2].icon.as_deref().unwrap()), BLUE);
         fs::remove_dir_all(&root).unwrap();
@@ -592,6 +586,8 @@ mod tests {
 
     #[test]
     fn a_mod_resource_icon_uses_the_padded_fractional_png_frame() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::catalogue::texture_tests::{from_url, png_bytes, texture_catalogue};
         let image = installed_content::image::Rgba8Image {
             width: 6,
@@ -637,6 +633,8 @@ mod tests {
 
     #[test]
     fn shared_texture_failures_keep_resource_names_and_report_one_cause() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
             (
                 "interface/test.gui",
@@ -700,7 +698,7 @@ mod naming_tests {
     use super::resource_name;
 
     /// The name is `PRODUCTION_MATERIALS_` and the upper-cased token through
-    /// the plain localiser (140BBC360 -> 142230F20), loaded as content loads.
+    /// the plain localiser, loaded as content loads.
     #[test]
     fn a_resource_is_named_as_the_games_resource_texts_name_it() {
         let localisation = crate::catalogue::tests::loaded(concat!(

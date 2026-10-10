@@ -1,6 +1,6 @@
 //! Authored entity-light curves evaluated on the state event clock.
-//! 1423ca2c0 composes the event node matrix after curve evaluation; 14126bbd0
-//! receives linear RGB times intensity. Curve interpolation is UNVERIFIED
+//! Event transforms follow curve evaluation; lights receive linear RGB times
+//! intensity. Curve interpolation remains unverified
 //! beyond linear segments; sampled native event timelines would settle it.
 use super::{
     entity_animation::Event,
@@ -79,7 +79,7 @@ pub struct Lights {
 }
 impl Lights {
     /// Every `light` the engine registers from `gfx/**/*.asset`, as the shared
-    /// descriptor roster holds them (`142338C30`, `1423C96F0`).
+    /// descriptor roster holds them.
     pub fn load(layers: &ResolvedLayers) -> io::Result<Self> {
         let roster = layers.descriptor_roster()?;
         let mut definitions = BTreeMap::new();
@@ -101,7 +101,6 @@ impl Lights {
                     Curve {
                         start: number(a, "start", 0.0),
                         duration: number(a, "duration", 1.0),
-                        // 142317980: repeat at +0x50.
                         repeat: installed_content::parser::read_bool_field(a, "repeat", false),
                         op: text(a, "op").to_owned(),
                         knots: values.chunks_exact(2).map(|v| [v[0], v[1]]).collect(),

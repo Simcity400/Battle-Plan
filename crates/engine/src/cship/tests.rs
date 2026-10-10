@@ -1538,8 +1538,8 @@ fn model_pool_lookahead_preserves_chunks_ties_and_every_positive_duplicate_read(
     }
 }
 
-// Append beside the existing cship tests. No helper or new suffix executes
-// inside the original model reader; all optional capture follows max-org.
+// No helper or new suffix executes inside the original model reader;
+// all optional capture follows maximum organisation.
 #[test]
 fn selected_companion_preserves_the_original_model_read_sequence_and_fault_prefix() {
     let bytes = fixture();

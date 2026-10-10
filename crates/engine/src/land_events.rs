@@ -1,29 +1,27 @@
 //! Owned native land event snapshots. No game calls and no allocation.
 //! Words are a collector-private staging protocol, never replay bytes.
 //!
-//! End-path census (a729): combat-manager update 140BA9890, explicit remove
-//! 140BAB260, invalid-side sweep 140BAB2B0, forced border-end 140BA93D0 and
-//! wrapper 140BA8710 all use RemoveCombat 140BAAF60. It invokes virtual14,
-//! then virtual7, history 140BA7AB0, then deleting virtual0. Land/border slot14
-//! targets 1412A43A0/1413D93F0; border calls the base finalizer after scripts.
-//! The only direct land/border deleting-dtor references are their secondary
-//! thunks 141295984/1413D6714. Destructors 141295990/1413D6720 do not finalize;
-//! reference-registry/save-reset teardown is therefore not an ended battle.
-//! Manager destructor 140BA7810 frees its history/vector, not combat results.
-//! HourlyUpdate 1401DCEF0 increments +0x468 via date slot1 140163E30 before
-//! updating combats. Those paths stamp the advanced hour, certified at the
-//! next hourly entry. Whether any combat-end/destruction virtual path runs
-//! before that increment remains unverified; such a path would stamp hour H.
+//! Combat update, explicit removal, invalid-side cleanup and forced border
+//! endings share the removal path. Finalization, participant detachment and
+//! history publication precede deletion; border scripts run before the base
+//! finalizer. Destructors do not finalize, so registry or save-reset teardown
+//! does not establish battle completion. The manager frees its own history
+//! and vector separately from results.
+//!
+//! Hourly combat updates follow the clock increment and stamp that advanced
+//! hour, certified at the next hourly entry. A completion path before the
+//! increment would instead stamp the preceding hour; this layout does not
+//! establish whether such a path occurs.
 use crate::{
     Memory, carmy, carmy_leader, ccountry, cgame_state, cland_border_war_combat,
     cland_border_war_combatant, cland_combat as combat, cland_combatant as side, corders_group,
     cpdx_array::Array, cprovince, cunit, cunit_leader, cunit_leader_skill, read,
 };
 
-/// Off-thread population hint for the existing staging records. Each live
-/// combat can dispatch participants/commanders and finalize result/loss/history
-/// (1412A42E0, 1412A43A0, 140BA7AB0); destruction@140C79E70 retains +1A8.
-/// Future events remain unbounded and grow the log from attempted word demand.
+/// Off-thread population hint for staging records. Each live combat can
+/// dispatch participants and commanders, then finalize results, losses and
+/// history; destruction retains its current combat references. Future event
+/// volume is unbounded and grows storage from attempted word demand.
 pub fn word_demand(memory: &impl Memory, base: usize, state: usize) -> Result<usize, &'static str> {
     let mut words = 0_usize;
     let mut add = |count| {
@@ -89,8 +87,7 @@ pub fn word_demand(memory: &impl Memory, base: usize, state: usize) -> Result<us
                 let combats = Array::read(memory, combats_at, 8)
                     .ok_or("destroyed division combat header invalid")?;
                 add(destruction_words(combats))?;
-                // 140C7A1E1 -> 140CCC7F0 supplies the selected killer in
-                // a separate collector observation for this native entry.
+                // A separate observation supplies the selected killer for this entry.
                 add(4)
             },
         )?;
@@ -106,15 +103,14 @@ fn destruction_words(combats: Array) -> usize {
 }
 
 pub const FINALIZE_RVA: usize = 0x12a43a0;
-/// CheckRoundTermination 1412A3E70 invokes this slot before removing losers;
-/// it queries loser then winner via slot29 and marks the winner's observer.
+/// Round termination invokes this dispatch before removing losers; it
+/// resolves loser then winner and marks the winner's observer.
 pub const DISPATCH_RVA: usize = 0x12a42e0;
-/// Indexed CALLs 1412A42F6/1412A4314 to combatant slot29 return here:
-/// loser then winner. Only these returns certify on-action commanders;
-/// scripts 140C0F330 may query the same resolver while dispatch TLS is active.
+/// Exact loser-then-winner commander return addresses certify on-action
+/// commanders. Scripts can query the same resolver while dispatch state is active.
 pub const DISPATCH_LEADER_RETURNS: [usize; 2] = [0x12a42fc, 0x12a431a];
-/// Exactly the slot29 verdict CALLs in DispatchLeaderOnActions. Each is six
-/// bytes (FF 90 E8 00 00 00); no resolver entry or vtable slot is patched.
+/// Six-byte verdict CALLs in on-action dispatch. Resolver entries and
+/// vtable slots are not patched.
 pub const DISPATCH_LEADER_CALLS: [usize; 2] = [0x12a42f6, 0x12a4314];
 pub const DISPATCH_LEADER_CALL_SENTINEL: [u8; 6] = [0xff, 0x90, 0xe8, 0, 0, 0];
 pub const DISPATCH_LEADER_CALL_NAMES: [&str; 2] = [
@@ -203,9 +199,8 @@ impl CombatHeader {
     }
 }
 
-/// Read only after the native finalizer returns. 1412A43A0 invokes
-/// 1413CD9F0 -> side slot11 1413CDA60 -> 140C7B370 -> 140C7BFC0,
-/// flushing pending damage. RemoveCombat@140BAAF60 deletes sides afterward.
+/// Read after finalization returns and pending damage has flushed, while
+/// sides remain alive. Removal deletes those sides afterward.
 pub struct LossesPlan {
     combat: u64,
     sides: [crate::cstats_observer::LossPlan; 2],
@@ -276,7 +271,7 @@ pub fn dispatch_inputs(
     };
     Ok((header, mask))
 }
-/// The native slot29 return, captured before on-action scripts and removal.
+/// Actual commander result, captured before scripts and participant removal.
 pub fn leader_reference(
     memory: &impl Memory,
     base: usize,
@@ -353,13 +348,13 @@ pub fn final_inputs(
     }
     Ok(out)
 }
-/// 140BABCC0 calls 140BA5C20 for a null history country; 140BA5C20 uses
-/// database tag-string slot0 through 14070F170. Its bytes are opaque content.
+/// Null history country selects the reserved database tag string.
+/// Those bytes are opaque content.
 #[derive(Clone, Copy)]
 pub struct NullTagPlan(crate::msvc_string::Descriptor);
 impl NullTagPlan {
-    /// 140BA5C20 returns state+358's raw-indexed string for nonzero tags,
-    /// independently of CountryLinks; aliases must not change its spelling.
+    /// Nonzero raw tags select stored tag strings independently of country
+    /// links; aliases must not change their spelling.
     pub fn country(memory: &impl Memory, base: usize, raw: u32) -> Result<Self, &'static str> {
         if raw == 0 {
             return Self::read(memory, base);
@@ -395,11 +390,10 @@ impl NullTagPlan {
         self.0.copy_words(memory, put)
     }
 }
-/// Read at base-finalizer exit, while the combat is alive. OnEnded 1413CD9F0
-/// invokes combatant OnCombatEnded 1413CDA60 and clears unit lists through
-/// 1413CE2C0. DetachParticipants 1412997A0 then only removes unit references
-/// through 140BF48D0 and notifies the UI through 1413CC590. History 140BA7AB0
-/// consequently sees this post-finalizer first-country projection.
+/// Read at base-finalizer exit while combat is alive. Combat-end processing
+/// flushes damage and clears unit lists; later detachment removes references
+/// and notifies presentation. History therefore uses this post-finalizer
+/// first-country projection.
 #[derive(Clone, Copy)]
 pub struct HistoryPlan {
     pub words: usize,
@@ -473,15 +467,14 @@ impl HistoryPlan {
 pub const FINALIZE_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41,
 ];
-/// Sole caller 140C7A1E1 is the destruction routine 140C79E70. Arguments are
-/// old province,new province,dying army,equipment pool,selected killer army.
-/// Deletion is deferred until 140C7A301 -> 1401D6FE0. Hourly 140C78A90
-/// continues into movement 140BF0300 -> 140BF2890 after its destruction;
-/// preserve each invocation even when the dying army handle repeats.
+/// Destruction dispatch arguments: old province, new province, dying division,
+/// equipment pool and selected killer division. Deletion is deferred; hourly
+/// movement can continue after destruction dispatch. Preserve every invocation,
+/// including repeated dying-division handles.
 pub const DESTROY_RVA: usize = 0xccc7f0;
-/// Destruction entry, before leader XP 140C05400 and history 1414344F0 can
-/// run effects 140C0E400/141434770/141438E90. Snapshot the original country
-/// choice and victim operands here; CCC7F0 later supplies the actual killer.
+/// Snapshot destruction-entry country choice and victim operands before
+/// leader experience or history can run effects. A later observation supplies
+/// the actual selected killer.
 pub const DESTRUCTION_RVA: usize = 0xc79e70;
 pub const DESTRUCTION_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41,
@@ -491,10 +484,10 @@ pub const DESTROY_SENTINEL: [u8; 16] = [
 ];
 pub const BORDER_FINALIZE_RVA: usize = 0x13d93f0;
 pub const BORDER_TERMINATE_RVA: usize = 0x13da800;
-/// Finalizer slot20 CALLs 1413D9453/1413D9463 return here, attacker then
-/// defender, before scripts. Calls from effects are not verdict queries.
+/// Attacker-then-defender finalizer verdict returns, before scripts.
+/// Calls from effects are not verdict queries.
 pub const BORDER_TERMINATE_RETURNS: [usize; 2] = [0x13d9459, 0x13d9469];
-/// Indexed a729 prologues 1413D93F0 and 1413DA800 (sixteen bytes).
+/// Border finalizer and result-handler entry bytes.
 pub const BORDER_FINALIZE_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
 ];
@@ -588,9 +581,8 @@ pub struct ResultPlan {
     progress: [i64; 2],
 }
 impl ResultPlan {
-    /// Countries must be copied before 1413CE340 rebuilds (and empties) both
-    /// sets while retreating. Commanders are observed from the actual native
-    /// resolver return instead of traversing its units a second time.
+    /// Copy countries before retreat rebuilding empties both sets. Commanders
+    /// come from actual resolver returns, avoiding a second unit traversal.
     pub fn participants(mut self) -> Self {
         self.header[0] = 3;
         self.without_candidates()
@@ -606,8 +598,8 @@ impl ResultPlan {
         }
         self
     }
-    /// Capture before ordinary FinalizeCombat. Border finalizer reaches this
-    /// same base routine after its native verdict; the hook retains that verdict.
+    /// Capture before ordinary finalization. Border finalization reaches the
+    /// same base routine after its verdict; the hook retains that verdict.
     pub fn read(
         memory: &impl Memory,
         base: usize,
@@ -631,7 +623,7 @@ impl ResultPlan {
         let pointer = header.pointer;
         let border = header.border_war();
         let (state, hour) = state_hour(memory, base)?;
-        // Sets contain raw country-tag references (1413CE340), including
+        // Sets contain raw country references, including
         // aliases. Bound their cardinality by live link IDs, not the smaller
         // canonical country-object roster; the link array includes null0.
         let limit = ccountry::Reader::new(memory, base, state)?.arrays()[1].count as usize;
@@ -763,9 +755,9 @@ impl ResultPlan {
                 }
             }
             put(u64::from(self.units[n].count));
-            // Fallback mirror assumes these vector entries are CArmy. Native
-            // resolver 14129E190 instead calls each unit's slot7. A non-CArmy
-            // entry fails the entire interval rather than inventing a leader.
+            // The fallback authenticates division vector entries. The actual resolver
+            // can dispatch other unit classes; unsupported entries refuse this interval
+            // rather than supplying an invented leader.
             for ordinal in 0..self.units[n].count {
                 let army = field::<u64>(
                     memory,
@@ -831,8 +823,8 @@ impl DestructionPlan {
         } else {
             countries.resolve(destination)?.canonical_slot
         };
-        // Exact 1406F3A00: equality/alias means not enemy; otherwise only an
-        // active CWarRelation at relation+2E8 with retired byte+49 clear.
+        // Equality or country aliases mean non-enemy. Otherwise require the
+        // selected war relation to be active with its retired byte clear.
         let enemy = if (victim.id as i32) <= 0
             || roster == destination
             || (destination != 0 && victim.canonical_slot == slot)
@@ -933,8 +925,7 @@ impl DestructionPlan {
             put(word);
         }
         for n in 0..self.combats.count {
-            // 140BF48D0 compares these entries with the combat pointer passed
-            // by DetachParticipants 1412997A0. They are pointers, not handles.
+            // Participant detachment compares combat pointers, rather than handles.
             let pointer = field::<u64>(
                 memory,
                 self.combats
@@ -955,7 +946,7 @@ impl DestructionPlan {
     }
 }
 
-/// Selected native army at CCC7F0; zero is its actual null pointer.
+/// Actual selected division pointer; zero preserves an observed null.
 pub fn killer_handle(
     memory: &impl Memory,
     base: usize,
@@ -1126,7 +1117,7 @@ mod tests {
         assert_eq!(words[1], 0x8000_0001_0000_003e);
         assert_eq!(words[6], 2);
         assert!(words.contains(&u64::from(0x8000_0001u32)));
-        // 140BA5C20 formats raw string slots, not canonical country aliases.
+        // History formats raw tag-string slots independently of country aliases.
         f.put(0x6000, &1u32.to_le_bytes());
         f.array(0x1000 + crate::cgame_state::COUNTRY_TAGS, 0x18000, 3);
         f.put(0x18020, &[0; 32]);
@@ -1163,8 +1154,8 @@ mod tests {
         let mut aliases = Vec::new();
         plan.copy(&f, 0, |word| aliases.push(word)).unwrap();
         assert_eq!(&aliases[11..17], &[5, 1, 2, 3, 4, 5]);
-        // A native unit slot7 could support another class; our fallback
-        // mirror explicitly authenticates CArmy and refuses that form.
+        // Other unit classes may support commander resolution; this fallback
+        // authenticates divisions and refuses other forms.
         f.array(0x3000 + side::UNITS, 0x7000, 1);
         f.q(0x7000, 0x8000);
         f.q(0x8000, 17);

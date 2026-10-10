@@ -1,4 +1,4 @@
-//! `1418C00D0` class 13 -> `140E74FB0`; coarse counts stay in `1418C00D0`.
+//! Railway-gun tooltips; coarse member counts stay in the counter body.
 
 use super::*;
 use replay::rows::RailwayGunCounterInputRow;
@@ -20,7 +20,7 @@ fn members<'a>(
     Ok(input
         .members
         .iter()
-        // Generic vector gather1418C2663..269C skips unresolved later refs.
+        // The generic vector gather skips unresolved later refs.
         // The dispatcher has already resolved the first representative.
         .filter_map(|id| {
             rows.binary_search_by_key(id, |row| row.gun)
@@ -53,8 +53,8 @@ fn header(
     first: &RailwayGunCounterInputRow,
     count: i32,
 ) -> Result<String, String> {
-    // 140E74FB0 uses the first original pointer, even when a different gun is
-    // the sole known member. Country is the roster owner (+1D8), not logical owner.
+    // Use the first original pointer, even when a different gun is
+    // the sole known member. Country is the roster owner, independently of the logical owner.
     let country = context.country_name(context.slot(first.roster_owner)?)?;
     if count == 1 {
         let bytes = first
@@ -62,8 +62,7 @@ fn header(
             .require("RailwayGunCounterInputs.name")?
             .as_ref()
             .ok_or("RailwayGunCounterInputs.name was unreadable when recorded")?;
-        // Slot +68 -> 140BEDEB0 returns the cached CUnit+258 string. SetName
-        // 140BF5460 records no provenance flag for arbitrary or generated text.
+        // Use the cached unit name. Recorded names do not distinguish arbitrary and generated text.
         let name = dashboard::scripted_text::stored_text(
             context.loc,
             context.recorded_language,
@@ -252,7 +251,7 @@ pub(super) fn build(
             )
         }))
         .expect("known railway guns are nonempty");
-        // 140E74FB0 appends no newline after this statistic.
+        // Append no newline after this statistic.
         append(
             &mut out,
             context,

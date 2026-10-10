@@ -1,4 +1,4 @@
-//! The registries that select CTechnologyTemplate's dynamic field readers.
+//! The registries that select a technology template's dynamic field readers.
 use std::{collections::BTreeSet, io};
 
 use crate::{
@@ -36,8 +36,8 @@ pub(super) enum Node {
     Modifier(modifiers::Node),
 }
 
-/// SSubUnitStats::vf4 (141415770/141415B80) shared by technology units
-/// and CAddUnitBonusEffect. The fixed equipment stats are 1413D22A0.
+/// Sub-unit stat readers shared by technology units and unit-bonus
+/// effects, including fixed equipment stats.
 pub(crate) enum StatKey {
     Scalar,
     Transport,
@@ -80,8 +80,8 @@ pub(crate) fn stat_key(key: Option<&[u8]>, terrains: &BTreeSet<Vec<u8>>) -> Stat
     StatKey::Unknown
 }
 
-/// GetTypeByToken (1409EB9F0 -> 1409DC660) uses the equipment name index,
-/// including aliases installed by RegisterType (1409ECF30).
+/// Equipment token lookup uses the equipment name index, including
+/// registered type aliases.
 pub(crate) fn equipment_pool_roster(database: &equipment::Database) -> BTreeSet<Vec<u8>> {
     database
         .registered_names()
@@ -92,8 +92,8 @@ pub(crate) fn equipment_pool_roster(database: &equipment::Database) -> BTreeSet<
         .collect()
 }
 
-/// CEquipmentArcheTypePool::vf4 (140FFC070): a found equipment type reads
-/// Fixed5; a miss reports the token and skips a current opening value.
+/// A found equipment type reads fixed5; a miss reports the token
+/// and skips a current opening value.
 pub(crate) fn equipment_pool_shape(
     field: &Field<'_>,
     roster: Option<(&BTreeSet<Vec<u8>>, Option<&str>)>,
@@ -105,15 +105,13 @@ pub(crate) fn equipment_pool_shape(
         return Shape::Skip;
     }
     let Some((names, gap)) = roster else {
-        return Shape::Unsettled(
-            "CEquipmentArcheTypePool 140FFC070: equipment names were not supplied".into(),
-        );
+        return Shape::Unsettled("equipment-stat reader: equipment names were not supplied".into());
     };
     if names.contains(&key) {
         Shape::One
     } else if let Some(why) = gap {
         Shape::Unsettled(format!(
-            "CEquipmentArcheTypePool 140FFC070: whether `{}` names equipment is unknown: {why}",
+            "equipment-stat reader: whether `{}` names equipment is unknown: {why}",
             String::from_utf8_lossy(&key)
         ))
     } else {
@@ -123,7 +121,7 @@ pub(crate) fn equipment_pool_shape(
 
 /// The unprojected scalar readers all consume one token. A block in the
 /// fallback needs the stat/module registry to distinguish One from error
-/// recovery (1413D22A0, 141008AA0); refuse that form, naming the field.
+/// recovery; refuse that form, naming the field.
 fn scalar(field: &Field<'_>, refused: &mut Vec<String>) -> Shape<Node> {
     if field.skips_block() {
         refused.push(format!(
@@ -135,9 +133,9 @@ fn scalar(field: &Field<'_>, refused: &mut Vec<String>) -> Shape<Node> {
 }
 
 impl Registry {
-    // SSubUnitStats 141415B80, CUnitAdjuster 141001740 and
-    // CEquipmentArcheTypePool 140FFC070. Lookup is by keyword token, not
-    // arbitrary text: quoted names do not select these dynamic readers.
+    // Sub-unit stats, unit adjusters and equipment pools look up keyword
+    // tokens, not arbitrary text: quoted names do not select these
+    // dynamic readers.
     pub fn shape(
         &self,
         node: Node,
@@ -150,8 +148,8 @@ impl Registry {
         match (node, key.as_deref()) {
             (File, Some(b"sub_units")) => Shape::Object(Units),
             (File, Some(b"critical_parts")) => Shape::Object(Parts),
-            // 140AB4070: sub_unit_categories is its own lexer loop (value slot
-            // unchanged), sub_unit_modifiers ReadStringList (1401426E0).
+            // sub_unit_categories uses its own lexer loop (value slot unchanged);
+            // sub_unit_modifiers reads a string list.
             (File, Some(b"sub_unit_categories")) => Shape::RawList,
             (File, Some(b"sub_unit_modifiers")) => Shape::List,
             (File, _) => Shape::Skip,
@@ -159,10 +157,9 @@ impl Registry {
             (Parts, _) => Shape::Object(Part),
             (Unit, Some(b"type")) if field.opens() => Shape::RawList,
             (Unit, Some(b"type")) => Shape::Current,
-            // 141008E80: categories and essential are its own lexer loops and
-            // allowed_battalion_groups 1403B6DD0 (value slot unchanged);
-            // enable_ability and critical_parts ReadStringList (1401426E0)
-            // and required_dlc 141002A00 resolve each token into +0xC0.
+            // Categories, essential and allowed_battalion_groups use their own
+            // lexer loops (value slot unchanged); enable_ability and critical_parts
+            // read string lists, and required_dlc resolves each token into its list.
             (Unit, Some(b"categories" | b"essential" | b"allowed_battalion_groups")) => {
                 Shape::RawList
             }
@@ -211,8 +208,8 @@ impl Registry {
             (Adjuster, Some(b"attack" | b"defence" | b"movement")) => Shape::One,
             (Adjuster, _) => Shape::Skip,
             (Pool, _) => equipment_pool_shape(field, Some((&self.equipment, None))).map(|()| Pool),
-            // SSupportCategoryStatMultiplier 1414157A0: category/bools,
-            // then numeric stats. Unknown stats report without block skip.
+            // Support category multipliers read category/bools, then numeric
+            // stats. Unknown stats report without block skip.
             (Battalion, _) => scalar(field, refused),
             (Modifier(node), _) => {
                 modifiers::shape(node, field, modifiers::UNKNOWN, undecided).map(Modifier)
@@ -223,9 +220,8 @@ impl Registry {
     fn apply(&mut self, bytes: &[u8]) -> io::Result<()> {
         let mut undecided = Vec::new();
         let mut refused = Vec::new();
-        // CSubUnitDatabase 140AB4070 loops to EOF; definitions themselves
-        // use CSubUnitDefinition 141008E80 / SCriticalPart 14100A130.
-        // 140AB5FA0, 140AB62F0 and 140AB66A0 construct the lexer in mode 0.
+        // The sub-unit database loops to EOF; definitions use the sub-unit
+        // and critical-part readers. Each file constructs the lexer in mode 0.
         let read = native::read(
             bytes,
             native::Mode::KeepMark,
@@ -249,8 +245,8 @@ impl Registry {
                         self.units
                             .insert(parser::c_string(key).to_ascii_lowercase());
                     }
-                    // 141008E80's type list is do-while; an empty list eats
-                    // the close as an entry. Do not accept the List replay.
+                    // The type list is do-while; an empty list eats the close as an
+                    // entry. Do not accept the List replay.
                     for field in unit.value.items().unwrap_or_default() {
                         if field.keyword_is("type")
                             && field.value.items().is_some_and(<[Item]>::is_empty)
@@ -277,8 +273,7 @@ impl Registry {
     }
 
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
-        // CEquipmentArcheTypePool::vf4 finds the key through GetTypeByToken
-        // (1409EB9F0): every registered type's name.
+        // Equipment-pool keys look up every registered equipment type name.
         let equipment = crate::equipment::Database::load_complete(layers)?;
         let mut registry = Self {
             equipment: equipment_pool_roster(&equipment),
@@ -289,7 +284,7 @@ impl Registry {
                 .collect(),
             ..Self::default()
         };
-        // 140AB5FA0: critical_parts before the unit directory's own files.
+        // Read critical_parts before the unit directory's own files.
         for folder in [
             "common/unit_tags",
             "common/units/critical_parts",

@@ -1,14 +1,12 @@
-//!
-//! Source: `extractor/native/lanes/diplomacy_intel_operatives_live/src/a30_operative_portrait_join.rs`.
-//! This resolved presentation object is excluded from hourly capture.
+//! Resolved portrait icon-entry presentation object, excluded from hourly capture.
 
-/// Icon entry availability byte; confirmed by the old exact-build icon-entry export and read_icon_entry (source:530).
+/// Icon-entry availability byte.
 pub const AVAILABLE: usize = 0;
-/// Icon entry identity discriminator, native i32; confirmed by read_icon_entry (source:533).
+/// Icon-entry signed i32 identity discriminator.
 pub const IDENTITY_KIND: usize = 4;
-/// Icon entry discriminator for an authored GFX name; confirmed by read_icon_entry's engine representation (source:534).
+/// Authored-sprite identity discriminator.
 pub const GFX_NAME: i32 = 0;
-/// Icon entry discriminator for a resolved file path; confirmed by read_icon_entry's engine representation (source:535).
+/// Resolved-file-path identity discriminator.
 pub const FILE_PATH: i32 = 1;
-/// Icon entry identity MSVC string; confirmed by read_icon_entry (source:538).
+/// Icon-entry identity MSVC string.
 pub const IDENTITY: usize = 8;

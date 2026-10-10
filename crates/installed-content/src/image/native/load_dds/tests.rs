@@ -202,8 +202,8 @@ fn bc7_force_pow2_refuses_a_zero_padded_mip_side_by_file_name() {
             if path == "gfx/thin-bc7.dds"
                 && reason.contains("pads a 10x2 image to 16x2")
                 && reason.contains("level 2 is 4x0")
-                && reason.contains("pad_power_of_two@1423F8FA0")
-                && reason.contains("create_texture@1423FB4F0")));
+                && reason.contains("power-of-two padding")
+                && reason.contains("texture creation")));
     }
 }
 
@@ -271,7 +271,7 @@ fn a_32_bit_surface_is_bgra_whatever_its_masks() {
 
 /// A 16-bit surface keeps its words: `X1R5G5B5` is promoted to opaque `A1R5G5B5`,
 /// `A1R5G5B5` keeps its top bit as alpha, and a 5-bit channel of 1 samples as `1 / 31`, not
-/// as the 8-bit `8 / 255` (`format_to_dxgi@142411320`, `build_upload_rows@1423FC160`).
+/// as the 8-bit `8 / 255`.
 #[test]
 fn sixteen_bit_forms() {
     let texels = [0x7FFF_u16, 0x001F].map(u16::to_le_bytes).concat();

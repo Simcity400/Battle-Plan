@@ -1,4 +1,4 @@
-//! Current simulation inputs for DE2730/CDF3F0 and BEAA60. No local selection.
+//! Current province-access, area-cost and retreat inputs. No local selection.
 use super::*;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -18,8 +18,8 @@ pub struct SelectedAreaNode {
     /// area+28 province ID and its native Map+238 index, not a viewer index.
     pub first_land: Option<u32>,
     pub nonsea_index: Option<i32>,
-    /// Land-only GameState+6B8 (1401CD490), used for CDF3F0's temporary area
-    /// records. Its visited bitset instead uses content-derived CMap+234.
+    /// Land-only simulation province count for temporary area records. The
+    /// visited bitset instead uses the content-derived total province count.
     pub nonsea_count: Option<u32>,
     /// Native signed area+3C; the cost callback tests nonzero.
     pub land_count: Option<i32>,
@@ -30,10 +30,10 @@ pub struct SelectedAreaNode {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SelectedUnitInputs {
     pub sample_hour: i32,
-    /// DE2730 XORs the raw exile byte with one; Boolean normalization loses it.
+    /// Access XORs the raw exile byte with one; Boolean normalization loses it.
     pub exiled: Option<u8>,
-    /// Selected C0AB20 accumulator's effective keys297/298, read separately.
-    /// Null commander gives known zeros. None refuses only the reached key.
+    /// Selected commander accumulator's effective keys 297/298, read separately.
+    /// A null commander gives known zeros. None refuses only the reached key.
     pub commander: Option<bool>,
     pub retreat: [Option<i64>; 2],
 }

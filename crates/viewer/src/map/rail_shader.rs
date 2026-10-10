@@ -1,4 +1,4 @@
-//! Native railway submission: 14159AFB0, registration 14159B9B0.
+//! Railway submission with resolved effects and retained render state.
 use std::{collections::BTreeMap, io, ops::Range, sync::Arc};
 
 use eframe::wgpu;
@@ -92,7 +92,7 @@ impl Rail {
             step: wgpu::VertexStepMode::Vertex,
             attributes,
         }];
-        // 14159AFB0 applies every authored state handle and triangle-strip topology.
+        // Apply every authored state handle and triangle-strip topology.
         let technique = &program.techniques[selection.index];
         let raster = program.rasterizer(technique);
         pass.primitive = gpu::primitive(&raster, wgpu::PrimitiveTopology::TriangleStrip).0;
@@ -139,8 +139,7 @@ impl Rail {
             .collect();
         let mut bound = Vec::new();
         for frame in inputs.frames {
-            // 14159B9B0 allocates80; 14159AFB0 initializes matrix/time/alpha72.
-            // Remaining72..79 are unknown native padding.
+            // An 80-byte allocation initializes 72 matrix/time/alpha bytes; bytes 72 through 79 remain unknown.
             let mut constants = bytemuck::bytes_of(inputs.shadow_matrix).to_vec();
             constants.extend_from_slice(bytemuck::cast_slice(&[
                 inputs.time,

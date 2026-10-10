@@ -180,8 +180,8 @@ fn recorded(divisions: &[(u64, i64, i64)], status: &[(u64, i64)]) -> Conditions 
     conditions(&frame).unwrap()
 }
 
-/// 1412A2AA0 sums current organisation only, so a division without its
-/// DivisionStatus row still scores; only the early path's 140C781E0 on
+/// the game sums current organisation only, so a division without its
+/// DivisionStatus row still scores; only the early damage estimate for
 /// a firing committed division reads its maximum hit points.
 #[test]
 fn a_missing_status_row_blocks_only_early_firing_damage() {
@@ -246,8 +246,8 @@ fn a_missing_status_row_blocks_only_early_firing_damage() {
     let without = recorded(&[(1, 100_000, 3_000_000), (2, 100_000, 6_000_000)], &full);
     assert_eq!(scores(&late, &without), Err(ScoreGap::Division(3)));
 
-    // 140C781E0: a zero maximum or an out-of-range current HP reads as
-    // full strength; a negative ratio clamps to zero, which 140BECAD0
+    // a zero maximum or an out-of-range current HP reads as
+    // full strength; a negative ratio clamps to zero, which the game
     // raises to one tenth like any ratio under a tenth.
     detail.sides[0].committed = vec![1];
     let defender = |hit_points, maximum| {
@@ -357,7 +357,7 @@ fn survival_uses_full_roster_and_rejects_early_or_missing_rows() {
     assert_eq!(scores(&detail, &[1, 3]), Err(ScoreGap::Division(3)));
     detail.sides[0].organisation_loss = [0; 24];
     assert_eq!(scores(&detail, &[1]), Ok([3_000_000_000, 6_000_000]));
-    // Sums and products wrap as 1412A2AA0's qwords do, and a sum at the
+    // Sums and products wrap as qwords do, and a sum at the
     // fixed-point range edge scores 0xFFFFFFFF instead of failing.
     detail.sides[0].organisation_loss = [0; 24];
     detail.sides[0].organisation_loss[0] = i64::MAX;
@@ -462,9 +462,7 @@ fn width_replays_direction_grouping_and_totals() {
         let divisions: Divisions<'_> = rows.iter().map(|row| ((0, row.division), row)).collect();
         direction_count(committed, &divisions, COMBAT, movement).ok()
     }
-    // Danzig proves the latch reading: the game shows 120, and the base
-    // term alone is 80, so the count is 2 with one additional-width term
-    // of 40. Distinct provinces without latched grouping count twice.
+    // Distinct provinces without latched grouping count twice.
     assert_eq!(
         count(&[row(1, 9263, 0), row(2, 389, 0)], &[1, 2], &still),
         Some(2)
@@ -491,8 +489,7 @@ fn width_replays_direction_grouping_and_totals() {
         Some(1)
     );
     assert_eq!(count(&entered, &[1, 2], &BTreeMap::from([(1, 0)])), Some(2));
-    // Danzig totals: (0 + 100000) * 8000000 / 100000 = 80 base, plus one
-    // 40 support term for the second direction = 120.
+    // Base width 80 plus one support term of 40 gives total width 120.
     let detail = LandCombatDetailsRow::default();
     let plains = [8_000_000, 4_000_000];
     assert_eq!(total_width(&detail, plains, 1), 8_000_000);

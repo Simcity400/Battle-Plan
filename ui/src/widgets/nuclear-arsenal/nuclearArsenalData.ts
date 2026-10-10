@@ -126,7 +126,7 @@ export function nuclearNumbers(reply: CountryNukesReply): CountryNukesReply {
   return { ...reply, warnings: [], types: reply.types.map(type => ({ ...type, name: null })) };
 }
 
-/** The game adds signed dwords (GetNukes@1410828A0). Keep an exact wrapping
+/** The game adds signed dwords. Keep an exact wrapping
  * difference separate from identified types, and never fill an absent ordinal. */
 export function nuclearDrillAt(model: NuclearModel, tag: string, hour: number) {
   const at = nukesAt(model, tag, hour);

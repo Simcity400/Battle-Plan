@@ -3,6 +3,8 @@ use crate::combat::binding::NoIcons;
 
 #[test]
 fn naval_convoy_chevrons_and_condition_bars_own_the_member_hover() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_gui::{
         lifecycle::Tick,
         tests::{fixture, windows},
@@ -136,7 +138,7 @@ fn naval_sunk_group_keeps_every_separator_native_newlines_and_pointer_anchor() {
         ..Default::default()
     };
     let slots = [0, 1, 2];
-    // 1417DC8D0 adds LF to every member; 1419947D0 does not insert another
+    // the game adds LF to every member; the game does not insert another
     // before the separator when the preceding non-space byte is already LF.
     for separator in ["stacked divider\n", "stacked divider"] {
         let mut localisation: Localisation = base_localisation
@@ -633,7 +635,7 @@ fn cached_ship_text_draws_in_recorded_language_and_escape_requires_context() {
     )
     .unwrap_err();
     assert!(reason.contains("stored in german"), "{reason}");
-    // 1417D3220 reserves the sunk branch for two null live references.
+    // the game reserves the sunk branch for two null live references.
     let mut still_live = ship.clone();
     still_live.live_ship = 1;
     let live_text = member_tooltip(

@@ -31,8 +31,8 @@ pub(super) const SHIP_BUCKETS: usize = 0x8_1000;
 pub(super) const SHIP_MASK: usize = 16383;
 pub(super) const WING: usize = 0xf_0000;
 pub(super) const WING_HANDLE: u64 = (1_u64 << 32) | 52;
-// CStrategicRegionTemplate vtable for the shared main/branch fixture.
-// 1415938B0 reads its custom-modifier vector.
+// Strategic-region template identity for the shared main/branch fixture.
+// Its custom-modifier vector is read by the capture.
 pub(super) const TEMPLATE_VTABLE_RVA: usize = 0x029c_5260;
 
 #[derive(Clone, Copy)]
@@ -251,7 +251,7 @@ impl Fixture {
             this.u32(region + 0x58, 0);
             this.u64(terrain_link, (IMAGE + TEMPLATE_VTABLE_RVA) as u64);
             this.u64(terrain_link + 0x130, TERRAIN as u64);
-            // Side damage matrix, baseline and one +0x288 map node per side
+            // Side damage matrix, baseline and one map node per side
             // are read by the actual CNavalCombatant details path.
             for (number, side) in [left, right].into_iter().enumerate() {
                 this.u64(side, (IMAGE + engine::cnaval_combatant::VTABLE_RVA) as u64);

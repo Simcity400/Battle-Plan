@@ -1,6 +1,6 @@
-//! Integrated hourly selected-attack operands from native14129F040/141296820.
-//! Native selectors, world association and callback lifetime remain acceptance gates.
-//! No unit selection, target grid, path cache, UI clock or displayed text.
+//! Hourly selected-attack operands from the admitted callback.
+//! Selectors, world association and callback lifetime delimit acquisition.
+//! No unit selection, target grid, path cache, UI clock or displayed text is read.
 
 use crate::{
     Memory, carmy, ccountry, cpdx_array::Array, cprovince, creference_registry,
@@ -41,7 +41,7 @@ pub struct TemplateObservation {
     pub handle: u64,
 }
 impl TemplateObservation {
-    /// B8EBD0 consumes the contained composition, not wrapper+A8.
+    /// Consumes the contained composition rather than wrapper +0xA8.
     pub fn composition(self) -> Field<usize> {
         at(self.wrapper, template::COMPOSITION)
     }
@@ -520,8 +520,8 @@ impl UnitsPacket {
             if count == 0 {
                 return Ok(Outcome::Rows { len: 0 });
             }
-            // 14129F040 visits the complete owned class0 census; the terrain
-            // domain comes from this pass's original province root.
+            // Visit the complete owned class-0 census; the terrain domain comes
+            // from this pass's original province root.
             if self.growing {
                 self.reserve(UnitCapacity {
                     rows: count,
@@ -824,7 +824,7 @@ impl GroupsPacket {
     }
 }
 
-/// Numeric141414F90 +140FFF550 only. Cached token is NOT demanded.
+/// Numerical attack and defence operands only; the cached token is not demanded.
 fn attack_terrain_from_controls(
     memory: &impl Memory,
     base: usize,

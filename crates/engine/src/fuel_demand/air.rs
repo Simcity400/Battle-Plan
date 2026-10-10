@@ -39,8 +39,8 @@ fn vtable(
     Ok(())
 }
 
-/// 140BA6240 is signed at both air-base consumers. Raw zero short-circuits
-/// translation to slot zero, including the reserved container witness.
+/// Air-base country translation uses signed references. Raw zero selects the
+/// reserved slot without translation, including its container authentication.
 pub(super) fn slot<M: Memory>(
     memory: &M,
     countries: &ccountry::Reader<'_, M>,
@@ -70,8 +70,8 @@ fn modifier(
     modifier_accumulator::requested_operand_at(memory, base, at(pointer, offset)?, key)
 }
 
-// HasModuleFlag2D0140C2B870's cache is authoritative when engaged. Otherwise
-// mirror its ordered variant/module scan without populating the game cache.
+// Use an engaged module-flag cache; otherwise scan variants and modules
+// in stored order without populating the game cache.
 fn module_flag(memory: &impl Memory, ship: usize) -> Result<bool, &'static str> {
     if field::<u8>(memory, ship, 0x802)? != 0 {
         return Ok(field::<u8>(memory, ship, 0x801)? != 0);
@@ -100,7 +100,7 @@ fn module_flag(memory: &impl Memory, ship: usize) -> Result<bool, &'static str> 
     Ok(found)
 }
 
-/// 140F49E80/141005DD0's signed i32 result; no fresh game getter call.
+/// Signed i32 capacity result; calls no game getter.
 pub(super) fn capacity(
     memory: &impl Memory,
     base: usize,
@@ -118,8 +118,7 @@ pub(super) fn capacity(
         let host = field::<u64>(memory, air_base, cair_base::HOST_REFERENCE)?;
         let ship = creference_registry::resolve(memory, base, host)?
             .ok_or("fuel demand capacity host ship reference unresolved")?;
-        // register_id140C24B40 publishes the primary CShip receiver,
-        // which 140F49E80 passes directly to both host flag getters.
+        // Host flag checks use the ship's primary registered receiver.
         vtable(memory, base, ship, crate::cship::VTABLE_RVA)?;
         kind = if field::<u8>(memory, ship, crate::cship::FORMATION_FLAGS)? & 0x80 != 0 {
             3
@@ -205,8 +204,8 @@ pub(super) fn context(
             let count = field::<i32>(memory, region, crate::cstrategic_region::PROVINCES_COUNT)?;
             result.counts[slot] = count;
             if count > 0 {
-                // 140E0CB70 only dereferences the copied manager pointer when
-                // a positive province occurrence reaches 140F04500.
+                // Follow the copied manager pointer only when a positive province
+                // occurrence reaches weather evaluation.
                 vtable(memory, base, manager, crate::cweather_manager::VTABLE_RVA)?;
                 let provinces = array(memory, region, crate::cstrategic_region::PROVINCES, 8)?;
                 if provinces.count != count as u32 {
@@ -325,8 +324,8 @@ fn inputs<M: Memory>(
         result.planes = field(memory, wing, cair_wing::PLANE_COUNT)?;
         defines::TRAINING_COST_INDEX
     } else {
-        // 140FFEC30 is a signed shifting loop, not trailing_zeros. Multi-bit
-        // values reach the highest bit when assertions do not halt the game.
+        // Mission masks use signed shifting. Multi-bit masks reach the highest
+        // bit when game assertions do not halt evaluation.
         if (result.mission_selected as i32) < 0 {
             return Err(
                 "fuel demand native mission-bit loop does not terminate for a negative mask",
@@ -337,7 +336,7 @@ fn inputs<M: Memory>(
     };
     let costs = field::<u64>(memory, base, defines::MISSION_COSTS_RVA)? as usize;
     result.mission_cost = field(memory, costs, index * 8)?;
-    // 140F4A700 reads base fuel first, then ace and owner modifiers.
+    // Read base fuel before ace and owner modifiers.
     result.base_fuel = field(memory, wing, cair_wing::BASE_FUEL)?;
     result.ace = field(memory, wing, cair_wing::ACE_REFERENCE)?;
     if result.ace != 0

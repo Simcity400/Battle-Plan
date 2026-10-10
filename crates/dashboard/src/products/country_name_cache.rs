@@ -74,8 +74,8 @@ impl CountryNameCache {
             }
             input.insert(slot, operand);
         }
-        // CCountry[0]'s three caches have independent native built bits
-        // (1401DA010 / 140709950), separate from its generator operands.
+        // The zero country's three caches have independent built bits,
+        // separate from its generator operands.
         let reserved_built = input
             .contains_key(&0)
             .then(|| {

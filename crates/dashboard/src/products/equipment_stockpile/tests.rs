@@ -14,6 +14,8 @@ fn types(text: &[u8]) -> Database {
 
 #[test]
 fn native_equipment_redefinitions_and_diagnostics_are_kept() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let units = types(
         b"equipments = { guns = { is_archetype = maybe } tanks = { is_archetype = yes type = armor } TANKS = { is_archetype = yes type = fighter } }",
     );
@@ -38,6 +40,8 @@ fn native_equipment_redefinitions_and_diagnostics_are_kept() {
 
 #[test]
 fn a_variant_s_type_groups_by_its_archetype_in_database_order_with_its_domain() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let units = types(
         br#"
         equipments = {
@@ -74,6 +78,8 @@ fn a_variant_s_type_groups_by_its_archetype_in_database_order_with_its_domain() 
 /// rules follow the recorded content stack, never vanilla names.
 #[test]
 fn a_mod_s_equipment_types_resolve_through_the_recorded_content_stack() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4_dashboard_mod_equipment_{}_{:?}",
         std::process::id(),
@@ -162,6 +168,8 @@ fn a_mod_s_equipment_types_resolve_through_the_recorded_content_stack() {
 
 #[test]
 fn need_is_derived_only_where_the_available_stock_is_the_recorded_stock() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let units = types(
         br#"
         equipments = {

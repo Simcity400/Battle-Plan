@@ -38,7 +38,7 @@ fn the_fade_matches_the_reference_camera_and_closes_the_pass_above_the_far_dista
     let defines = MapDefines::test();
     assert_eq!(tree_fade(&defines, 100.0), 1.0);
     assert_eq!(tree_fade(&defines, 250.0), 1.0);
-    // R3 section 3.3: 0.398 at the reference height 310.178.
+    // 0.398 at the reference height 310.178.
     assert!((tree_fade(&defines, 310.178) - 0.398_22).abs() < 1e-4);
     assert_eq!(tree_fade(&defines, 350.0), 0.0);
     assert_eq!(tree_fade(&defines, 400.0), 0.0);
@@ -75,7 +75,7 @@ fn every_non_zero_pixel_becomes_one_instance_on_the_brick_lattice() {
         .map(|instance| (instance.position[0], instance.position[2]))
         .collect::<Vec<_>>();
     positions.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    // Native R14 is the north-first row: row 0 has no offset, row 1
+    // Native 4 is the north-first row: row 0 has no offset, row 1
     // takes half a cell. World z still follows the bottom-up row.
     let expected = [
         (0.0, 3.0 * TEST_CELL),
@@ -326,7 +326,7 @@ fn native_lod_squares_authored_thresholds_and_stops_at_the_first_failure() {
 
 #[test]
 fn the_blend_mesh_crosses_its_last_threshold_inside_the_reference_frame() {
-    // R3 section 3.5: at the reference camera the eye-to-tile distances run
+    // at the reference camera the eye-to-tile distances run
     // about 260 to 450, `forest_dunge` stays on LOD 2 throughout and
     // `forest_dunge_blend` falls to its degenerate LOD on the farther tiles.
     let dunge = [0.0, 100.0, 200.0, 500.0];
@@ -349,6 +349,7 @@ fn tile(x: u32, z: u32) -> TreeBucket {
 
 #[test]
 fn the_lod_distance_is_measured_to_the_nearest_point_of_the_tile() {
+    // the camera's x and z are clamped into the tile's own
     // square and the height is taken from the water plane, so a camera
     // standing inside the tile is exactly `height - 9.5` away from it.
     let inside = tile(11, 6);
@@ -374,17 +375,16 @@ fn the_close_cameras_reach_the_detailed_lods_and_the_reference_camera_does_not()
     let dunge = [0.0, 100.0, 200.0, 500.0];
     let blend = [0.0, 100.0, 200.0, 300.0];
     let under = tile(11, 6);
-    // The minimum camera height, `pairD_in10`: LOD 0 for both meshes.
+    // The minimum camera height selects LOD 0 for both meshes.
     let close = [3010.01, 50.178, 1569.65 - 30.0];
     assert_eq!(bucket_lod(&under, 0.0, &dunge, 4, close), 0);
     assert_eq!(bucket_lod(&under, 0.0, &blend, 4, close), 0);
-    // `pairD_in5` at 115.293: past the first threshold, short of the second.
+    // Height 115.293 lies beyond the first threshold and below the second.
     let mid = [3009.91, 115.293, 1569.65 - 30.0];
     assert_eq!(bucket_lod(&under, 0.0, &dunge, 4, mid), 1);
     assert_eq!(bucket_lod(&under, 0.0, &blend, 4, mid), 1);
-    // `reference/03.md` at 302.960: the reading R3 section 3.5 describes,
-    // with the blend mesh sitting just inside its last threshold under the
-    // camera and falling off it on the neighbouring tiles.
+    // At this height, the blend mesh lies just inside its last LOD threshold beneath the camera and
+    // falls outside it on neighbouring tiles.
     let far = [3010.09, 302.960, 1568.21 - 30.0];
     assert_eq!(bucket_lod(&under, 0.0, &dunge, 4, far), 2);
     assert_eq!(bucket_lod(&under, 0.0, &blend, 4, far), 2);

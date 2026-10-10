@@ -1,7 +1,7 @@
-//! CFEXMember optional CLastTargetInfo. Writer141960770 copies the target
-//! group's member count, not its identity; serializer141962D40 emits2E93/2F.
+//! Optional retained last-target information. It copies the target group
+//! member count without retaining target identity.
 use crate::{Memory, cnaval_combatant::field};
-/// LEA141960892; primary table142A0A138.
+/// Last-target information primary vtable.
 pub const VTABLE_RVA: usize = 0x02a0_a138;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

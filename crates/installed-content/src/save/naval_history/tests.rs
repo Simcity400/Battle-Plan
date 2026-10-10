@@ -35,7 +35,7 @@ const ORDER_OF_BATTLE: &[u8] = br#"countries={GER={theatres={theatre={
     }}}}"#;
 
 #[test]
-fn orders_group_definitions_keep_native_order_kind_and_conditional_pointers() {
+fn orders_group_definitions_keep_saved_order_kind_and_conditional_pointers() {
     let pack = parse_text(ORDER_OF_BATTLE).unwrap();
     let theatre = &pack.theatre_countries.as_ref().unwrap()[b"GER".as_slice()].land[0];
     assert_eq!(theatre.definitions.len(), 2);
@@ -46,7 +46,7 @@ fn orders_group_definitions_keep_native_order_kind_and_conditional_pointers() {
     assert_eq!(army.motorization_level, 0);
     assert_eq!(army.leader, Some((279 << 32) | 4713));
     assert_eq!(army.leader_unit, Some((12456 << 32) | 4713));
-    // Both native unit id spaces occur and their order is preserved.
+    // Both unit id spaces occur and their order is preserved.
     assert_eq!(army.members, [(12456 << 32) | 4713, (111 << 32) | 51]);
     assert!(army.children.is_empty());
     let group = &theatre.definitions[1];
@@ -65,7 +65,7 @@ fn orders_group_definitions_keep_native_order_kind_and_conditional_pointers() {
 }
 
 #[test]
-fn orders_group_names_keep_native_presence_and_reject_malformed_fields() {
+fn orders_group_names_keep_saved_presence_and_reject_malformed_fields() {
     let original = String::from_utf8(ORDER_OF_BATTLE.to_vec()).unwrap();
     for (saved, expected) in [
         ("", None),
@@ -104,7 +104,7 @@ fn an_orders_group_without_its_unconditional_fields_is_refused() {
 }
 
 #[test]
-fn orders_group_distance_matches_the_native_nonnegative_save_predicate() {
+fn orders_group_distance_requires_nonnegative_saved_values() {
     let original = String::from_utf8(ORDER_OF_BATTLE.to_vec()).unwrap();
     for value in [0, 1, i32::MAX] {
         let text = original.replace(
@@ -172,7 +172,7 @@ fn adjacency_content() -> (Vec<u8>, Vec<u8>) {
 }
 
 #[test]
-fn railway_adjacency_keeps_native_raster_diagonal_and_authored_order() {
+fn railway_adjacency_keeps_game_raster_diagonal_and_authored_order() {
     let (definitions, bitmap) = adjacency_content();
     let authored = b"From;To;Type;Through;x;y;x;y;rule;comment\n1;5;sea;-1;-1;-1;-1;-1;CANAL;new\n2;2;impassable;-1;-1;-1;-1;-1;;self\n2;1;river;-1;-1;-1;-1;-1;;existing\n-1;-1;;-1;-1;-1;-1;-1;-1\n1;999;sea;-1;-1;-1;-1;-1;;ignored\n";
     let adjacency = RailwayAdjacency::parse(&definitions, &bitmap, Some(authored)).unwrap();
@@ -186,7 +186,7 @@ fn railway_adjacency_keeps_native_raster_diagonal_and_authored_order() {
 }
 
 #[test]
-fn railway_adjacency_refuses_content_whose_native_identity_or_storage_differs() {
+fn railway_adjacency_refuses_content_whose_game_identity_or_storage_differs() {
     let (definitions, bitmap) = adjacency_content();
     assert!(
         RailwayAdjacency::parse(&definitions, &bitmap, None)
@@ -198,7 +198,7 @@ fn railway_adjacency_refuses_content_whose_native_identity_or_storage_differs() 
     let reordered =
         b"0;0;0;0;land\n2;2;0;0;sea\n1;1;0;0;land\n3;3;0;0;lake\n4;4;0;0;land\n5;5;0;0;land\n";
     assert!(RailwayAdjacency::parse(reordered, &bitmap, None).is_err());
-    // The native loader reads a 24-bit file's pixels from byte 54 whatever
+    // The game loader reads a 24-bit file's pixels from byte 54 whatever
     // its header sizes say, and does not settle a top-down file.
     let expected = RailwayAdjacency::parse(&definitions, &bitmap, None).unwrap();
     for (offset, value) in [(10, 70_i32), (14, 56)] {
@@ -227,8 +227,8 @@ fn railway_adjacency_refuses_content_whose_native_identity_or_storage_differs() 
 
 #[test]
 fn stationed_units_and_area_representatives_keep_save_order() {
-    // EED430 writes the representatives as one unkeyed array, the form the
-    // 2026-09-11 live saves use; an empty array is a theatre without areas.
+    // Representatives are written as one unkeyed array;
+    // an empty array is a theatre without areas.
     let pack = parse_text(
         br#"countries={GER={theatres={
                 theatre={id={id=5 type=67} volunteers_theatre=SOV
@@ -385,7 +385,7 @@ fn anonymous_history_preserves_duplicates_optional_references_and_null_battle() 
 }
 
 #[test]
-fn result_handles_and_country_membership_keep_native_words_and_list_order() {
+fn result_handles_and_country_membership_keep_full_words_and_list_order() {
     let text = br#"naval_combat_result={id={id=4294967295 type=61}
             location=-1 date=1939.1.1.1 to_discard_date=1939.1.2.1
             importance=-2147483648 port_strike=yes naval_strike=no

@@ -180,12 +180,12 @@ fn areas(
             content_demanded = true;
         }
         if node.nonsea_index.is_some_and(|index| index < 0) {
-            report.limitation("CDF3F0 accepts a known negative start nonsea index as native false before demanding neighbours; the same recorded node reached as a neighbour remains unsupported. The oracle has no selected start/target and cannot certify that reach or route result", format!("{label}.node.nonsea_index negative native state"));
+            report.limitation("route traversal accepts a known negative start nonsea index as native false before demanding neighbours; the same recorded node reached as a neighbour remains unsupported. The oracle has no selected start/target and cannot certify that reach or route result", format!("{label}.node.nonsea_index negative native state"));
         }
         if let Some(index) = node.nonsea_index.filter(|index| *index >= 0) {
             content_demanded = true;
-            // CDF3F0 sizes its visited bitset from CMap+234, not the land-only
-            // GameState+6B8 (1401CD490) used for its temporary area records.
+            // Route traversal sizes its visited bitset from the graphics province table,
+            // rather than the land-only province count used for temporary area records.
             if let Some(geometry) = content {
                 let count = geometry.nonsea_indices.len();
                 if index as usize >= count {
@@ -240,20 +240,20 @@ fn areas(
         report.difference(
             "Provinces.selected_areas nonsea_count consistency",
             nonsea_counts,
-            "one GameState+6B8 value in the same capture",
+            "one land-only province count in the same capture",
         );
     } else if let Some(&count) = nonsea_counts.first()
         && let Some(geometry) = content
         && count as usize != geometry.land.len()
     {
         report.difference(
-            "Provinces.selected_areas GameState+6B8 land count",
+            "Provinces.selected_areas land count",
             count as usize,
             geometry.land.len(),
         );
     }
     if !packets.is_empty() {
-        report.limitation("D0 controller-area and D8 owner-area labels are pointer identities confined to one capture, not saved controller/owner tags. CDF3F0 first-land/nonsea indices, signed land counts and ordered repeated neighbours have no text-save counterpart. Recording joins do not prove the original pointer association, list lifetime, root census completeness or native graph order. An independent matched-hour native witness remains required", "Provinces.selected_areas internal consistency only");
+        report.limitation("Controller-area and owner-area labels are pointer identities confined to one capture, not saved controller/owner tags. route traversal first-land/nonsea indices, signed land counts and ordered repeated neighbours have no text-save counterpart. Recording joins do not prove the original pointer association, list lifetime, root census completeness or native graph order. An independent matched-hour native witness remains required", "Provinces.selected_areas internal consistency only");
     }
     if content_demanded {
         required_context("verified province geometry", &geometry)?;
@@ -298,13 +298,13 @@ fn units(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::Result<
                 report.difference(format!("{label}.saved division"), "present", "absent");
             }
         }
-        // BEAA60 exits on a nonpositive signed combat count before selecting
+        // Combat selection exits on a nonpositive signed combat count before selecting
         // a commander, so absence is legitimate for that branch.
         if row.combat_count as i32 > 0 {
             retreat(frame, report, &label, packet);
         }
-        report.limitation("CArmy::Serialize@140C80E00 calls secondary CUnit::Serialize@140BF7010; BF7459..BF746E saves primary+2AE as exile (token2D0D) only when nonzero, through Boolean writer1424AE850/1424AFDC0. Only zero/nonzero truth is independently compared. DE2730 XORs the raw byte with one; a truth match cannot certify raw nonzero magnitude", format!("{label}.exiled raw byte"));
-        report.limitation("BEAA60's C5F0E0/C0AB20 commander selection and independently effective keys297/298 are current runtime accumulators without text-save counterparts. Saved groups, traits or daily retreat flags cannot certify these values; an independent matched-hour native witness remains required", format!("{label}.commander/retreat internal checks only"));
+        report.limitation("the army writer delegates to the unit writer, which saves exile only when nonzero as Boolean truth. Only zero/nonzero truth is independently compared. The display calculation XORs the raw byte with one; a truth match cannot certify raw nonzero magnitude", format!("{label}.exiled raw byte"));
+        report.limitation("Selected commanders and effective retreat-ban modifiers are current runtime accumulators without text-save counterparts. Saved groups, traits or daily retreat flags cannot certify these values; an independent matched-hour native witness remains required", format!("{label}.commander/retreat internal checks only"));
     }
     if compared != 0 {
         report.compared("DivisionMovement.selected exile saved truth", compared);
@@ -361,7 +361,7 @@ fn enemies(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
             continue;
         };
         // Exceptional legacy rows and this suffix share the exact original
-        // +98 read. This only checks writer consistency, never save order.
+        // enemy-vector read. This only checks writer consistency, never save order.
         if row.enemies_read != 0 && row.enemies != packet.entries {
             report.difference(
                 format!("{label}.legacy shared vector"),

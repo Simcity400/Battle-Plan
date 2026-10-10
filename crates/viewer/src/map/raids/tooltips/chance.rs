@@ -1,6 +1,6 @@
-//! `141578BD0` sums mapped modifiers in authored order. The warning
-//! (`141617380`) displays its complement. Counterplay uses slot 3
-//! (`14161AC80`), skip slot 6, and the smaller output endpoint.
+//! Sum mapped modifiers in authored order; the warning displays the
+//! complement. Counterplay uses slot 3, skips slot 6, and uses the smaller
+//! output endpoint.
 
 use crate::combat::text::localise;
 use installed_content::localisation::Argument as Arg;
@@ -9,8 +9,8 @@ use installed_content::{
     raids::tooltips::{Formula, Modifier},
 };
 
-/// `14157A140`: two distinct truncating divisions, then endpoint clamp.
-/// Combining these divisions changes the native last decimal places.
+/// Use two distinct truncating divisions, then clamp endpoints. Combining
+/// the divisions changes the last decimal places.
 pub fn mapped(m: &Modifier, raw: i64) -> Result<i64, String> {
     let denominator = m.reference.wrapping_sub(m.start_reference);
     let numerator = raw
@@ -91,8 +91,8 @@ pub fn evaluate(
 }
 
 fn effect(loc: &Localisation, value: i64, thresholds: [i64; 2]) -> Result<String, String> {
-    // `141618E80`: thresholds are in percentage points; the argument is
-    // the original fixed5 fraction, not the scaled comparison operand.
+    // Thresholds are percentage points; pass the original fixed5 fraction
+    // as the argument, separate from the scaled comparison operand.
     let percent = value.wrapping_mul(10_000_000) / 100_000;
     let key = if percent < thresholds[0] {
         "RAID_SUCCESS_MODIFIER_VALUE_BAD"
@@ -101,7 +101,7 @@ fn effect(loc: &Localisation, value: i64, thresholds: [i64; 2]) -> Result<String
     } else {
         "RAID_SUCCESS_MODIFIER_VALUE_GOOD"
     };
-    // Literal at `14272F830` is VAL, including the native trailing NUL.
+    // Bind VAL including its trailing NUL.
     localise(loc, key, &[("VAL", Arg::Fixed5(value))])
 }
 
@@ -112,7 +112,7 @@ fn counterplay_text(
     value: i64,
     thresholds: [i64; 2],
 ) -> Result<String, String> {
-    let prefix = format!("success_modifier_{}", m.name); // `1429CE048`.
+    let prefix = format!("success_modifier_{}", m.name);
     let choose = |preferred: &str, fallback: &str| {
         let key = format!("{prefix}{preferred}");
         if loc.get(&key).is_some() {
@@ -122,7 +122,7 @@ fn counterplay_text(
         }
     };
     let key = choose("_counterplay", "_improvement");
-    // `141619030` logs a missing improvement key and returns empty.
+    // Log a missing improvement key and return empty text.
     let mut out = if loc.get(&key).is_some() {
         localise(loc, &key, &[])?
     } else {
@@ -131,7 +131,7 @@ fn counterplay_text(
     let negative = |value: i64| value.wrapping_mul(-100_000) / 100_000;
     let maximum = negative(m.weight.min(m.start_weight));
     let value = negative(value);
-    // `14157B9F0`: raw endpoint belonging to the smaller mapped value.
+    // Use the raw endpoint belonging to the smaller mapped value.
     let endpoint = if m.weight <= m.start_weight {
         m.reference
     } else {
@@ -149,7 +149,7 @@ fn counterplay_text(
     };
     let value = effect(loc, value, thresholds)?;
     let maximum = effect(loc, maximum, thresholds)?;
-    // 141619580: VALUE (unlike the source key's VAL), MAX (1427B5918), SOURCE.
+    // Bind VALUE (the source key uses VAL), MAX and SOURCE.
     let mut args = vec![("VALUE", Arg::Text(&value)), ("MAX", Arg::Text(&maximum))];
     let key = if source.is_empty() {
         "tooltip_raid_modifier_effect_improvement_no_source"

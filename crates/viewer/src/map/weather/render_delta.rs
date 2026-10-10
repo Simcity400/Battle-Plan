@@ -1,12 +1,7 @@
-//! CInGameIdler's render-delta producer, using this scene's graphics frames.
-//!
-//! 140DAD320 zeroes the 32 f32 samples at +824 and the cursor at +8A4.
-//! 140DBF240 overwrites the cursor's slot with current raw frame time (+18),
-//! advances modulo 32, then sorts that same storage in place (140DAC310).
-//! It sums indices 3..29 (+830..+898), divides by f32 26 (142953548), weights
-//! that mean and current raw frame time by f32 0.5 (142709C34), and clamps
-//! [0,0.5] into +8D0. 140DC95E0 supplies it to 140B481A0 after refresh.
-//! The sorted storage, including startup zeros, persists into the next frame.
+//! Filtered graphics-frame delta for this scene. Initialize 32 f32 samples and the cursor to zero.
+//! Replace the cursor sample, advance modulo 32 and sort the retained storage in place. Average
+//! indices 3 through 28, divide by 26, blend equally with the current raw frame time and clamp to
+//! zero through 0.5. Sorted samples, including startup zeros, persist into the next frame.
 
 #[derive(Default)]
 pub struct RenderDelta {

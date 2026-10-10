@@ -5,8 +5,7 @@ use crate::{
     script_constants::Constants,
 };
 
-/// SOutput at template+0x38; CProject+0x20 points to template+0x18
-/// (140FCADC0), not to the beginning of CProjectTemplate.
+/// Project output fields are read from the template output object.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Output {
     pub country_effects: Vec<Item>,
@@ -20,7 +19,7 @@ pub struct Output {
 }
 
 impl Output {
-    // 140A83400: effects and uniform output lists append on every read.
+    // Effects and uniform output lists append on every read.
     pub(super) fn read(&mut self, fields: &[Item]) {
         for field in fields {
             let destination = match field.keyword().map(|key| key.folded()).as_deref() {
@@ -56,7 +55,7 @@ fn constant(
     let bytes = field.value.read_string().unwrap_or_default();
     let text = std::str::from_utf8(crate::parser::c_string(bytes))
         .map_err(|_| "project integer constant is not UTF-8")?;
-    // 140325E90: strip exact constant: prefix, split at every dot, then
+    // Strip the exact constant: prefix, split at every dot, then
     // append the caller's keyword path (complexity min/max).
     let mut parts: Vec<_> = text
         .strip_prefix("constant:")
@@ -67,13 +66,13 @@ fn constant(
         parts.push(suffix);
     }
     constants
-        .ok_or("project integer constant catalogue is unavailable (140327DB0)")?
+        .ok_or("project integer constant catalogue is unavailable")?
         .integer(&parts)
 }
 
 impl Project {
-    /// Template+0x10; integer token first (1424B02C0), otherwise
-    /// 140327DB0's integer-only script constant, default zero (140A84200).
+    /// Integer token first, otherwise an integer-only script constant,
+    /// default zero.
     pub fn prototype_time(&self, constants: Option<&Constants>) -> Result<i32, String> {
         let mut stored = 0;
         for field in &self.prototype_time {
@@ -90,9 +89,8 @@ impl Project {
         Ok(stored)
     }
 
-    /// Template+0x30/+0x34, initialized by 140A84260 to the caller's
-    /// shared NProject.DEFAULT_COMPLEXITY define. 141453030/141453220
-    /// read scalar constants or min/max integers; 141452D60 normalizes.
+    /// Initialized to the caller's shared NProject.DEFAULT_COMPLEXITY define.
+    /// Reads scalar constants or min/max integers, then normalizes the range.
     pub fn complexity(
         &self,
         constants: Option<&Constants>,

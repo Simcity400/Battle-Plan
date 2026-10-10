@@ -1,37 +1,27 @@
-//! `NCombatLog::CStatsObserver`, embedded in `CLandCombatant+0x1b0`.
-//!
-//! Serialize@140CD1240 delegates observer
-//! +0x58 under token 0x3754 to SCombatSideData::Serialize@140CD15D0: positive
-//! manpower +8 is token 0x3750; equipment +0x18 is token 0x3753, gated by
-//! archetype allocations (140FFB8F0), not variant count. Pool serializer
-//! 140FFDB00 omits zero entries unless its allow_zero_entries flag is set.
-//! Those are observer+0x60/+0x70, not unrelated saved counters. A terminal read
-//! must follow FinalizeCombat@1412A43A0's original: base finalizer@1413CD9F0
-//! calls OnCombatEnded@1413CDA60 -> 140C7B370 -> active_damage@140C7BFC0,
-//! flushing pending losses before manager RemoveCombat@140BAAF60 deletes sides.
+//! Combat stats observer embedded in a land combatant. Serialization retains
+//! positive manpower and equipment gated by archetype allocations. Pools
+//! omit zero entries unless explicitly allowed. Terminal acquisition follows
+//! original finalization, which flushes pending losses before side deletion.
 
-/// NCombatLog::CStatsObserver primary vtable; archived offsets.rs:819, confirmed by a729 RTTI.
+/// Primary vtable.
 pub const VTABLE_RVA: usize = 0x0294_6f68;
-/// CStatsObserver cached leader-tally array; archived land_combat_detail_events_live/passive_modifier_carrier.rs:17,367.
+/// CStatsObserver cached leader-tally array.
 pub const LEADERS: usize = 0x20;
-/// CStatsObserver leader-tally u32 capacity; archived passive_modifier_carrier.rs:18,368.
+/// CStatsObserver leader-tally u32 capacity.
 pub const LEADER_CAPACITY: usize = 0x28;
-/// CStatsObserver leader-tally u32 count; archived passive_modifier_carrier.rs:19,369.
+/// CStatsObserver leader-tally u32 count.
 pub const LEADER_COUNT: usize = 0x2c;
-/// CStatsObserver contiguous SDamageDone array; archived offsets.rs:820 and `read_land_combat_side_attribution`.
+/// CStatsObserver contiguous SDamageDone array.
 pub const DAMAGE: usize = 0x38;
-/// CStatsObserver damage-array u32 capacity; archived offsets.rs:821 and attribution header reader.
+/// CStatsObserver damage-array u32 capacity.
 pub const DAMAGE_CAPACITY: usize = 0x40;
-/// CStatsObserver damage-array u32 count; archived offsets.rs:822 and attribution header reader.
+/// CStatsObserver damage-array u32 count.
 pub const DAMAGE_COUNT: usize = 0x44;
-/// Signed i32 manpower loss. AccumulateCombatLogDamage@140CCB010 adds EDI
-/// into dword [RBX+60] at 140CCB07F. active_damage@140C7BFC0 supplies removed
-/// manpower; participant_lifecycle@141299850 supplies remaining manpower.
+/// Manpower loss, signed i32, accumulated from removed and remaining
+/// participant manpower.
 pub const MANPOWER_LOSS: usize = 0x60;
-/// Embedded CEquipmentVariantPool. AccumulateCombatLogEquipmentByCategory
-/// @140CCAA10 adds to this aggregate and one category pool. AddPoolQuantities
-/// @140FF7830 uses variant pointer/i64 fixed5 pairs of stride 0x10,
-/// data at pool+0x20, signed count at +0x2C.
+/// Embedded equipment-variant pool. Category accumulation updates aggregate
+/// and category pools with pointer/i64-fixed5 pairs of stride 0x10 and signed count.
 pub const EQUIPMENT_LOSSES: usize = 0x70;
 
 use crate::memory::{RecordField, RecordLayout, RecordSources};

@@ -12,7 +12,7 @@ export function validateNavyReply(data: unknown): NativePartsRaceReply {
   return reply;
 }
 
-/** CShip +6F8 HP is fixed5 (140D5B0E0); preserve all five recorded decimals. */
+/** Hull HP is fixed5; preserve all five recorded decimals. */
 export const formatNavyValue = (value: number, options: Readonly<Record<string, OptionValue>>) =>
   options.measure === 'strength' ? formatFixed(BigInt(Math.round(value)), 5, 5).replace(/\.?0+$/, '') : value.toLocaleString('en-US');
 

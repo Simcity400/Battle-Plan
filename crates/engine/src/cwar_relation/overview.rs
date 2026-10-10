@@ -1,4 +1,4 @@
-//! Missing operands of 140D27BB0/1419730F0/1419734F0/140D0BCA0.
+//! Ordered war-overview, representative-selection and naming operands.
 //! See war_overview.md. Worker storage grows from original acquired headers.
 #[cfg(test)]
 #[path = "overview_tests.rs"]
@@ -383,8 +383,8 @@ fn copy_wars(
             wanted[1] = wanted[1]
                 .checked_add(list.count as usize)
                 .ok_or("war goal count overflow")?;
-            // CWarRelation serializer@140D19640 visits complete goal lists; reserve
-            // from these original headers before any goal is published.
+            // Serialization visits complete goal lists; reserve from the original
+            // headers before publishing any goal.
             goals.ensure(wanted[1])?;
             let mut first = 0;
             while first < list.count && used[1] + planned < goals.len() {
@@ -801,8 +801,8 @@ fn walk_cached_buffer(
             }
         }
         // Both candidate sides include retained owned occurrences. Read every
-        // viewpoint counterpart and every active seed's owned counterpart
-        // (1419728B0/1419730F0), even when that occurrence is retired.
+        // viewpoint counterpart and every active seed's owned counterpart,
+        // including retired occurrences.
         if let Some(view) = view {
             if cache.reachable.len() < countries.count() as usize {
                 score_failure.get_or_insert("war score reachability storage truncated");
@@ -897,8 +897,8 @@ fn walk_cached_buffer(
     outcomes
 }
 
-/// 140D11030/140D11080 test the local diplomacy's cached pointer's type and
-/// either endpoint against the target; retired and dates are deliberately unread.
+/// Cached subject predicate tests relation type and either endpoint against
+/// the target; retired status and dates are deliberately unread.
 fn cached_subject(
     memory: &impl Memory,
     base: usize,

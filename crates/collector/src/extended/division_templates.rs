@@ -75,9 +75,8 @@ pub struct Capacities {
 }
 
 impl Capacities {
-    /// 1406C3E60 appends to country+0x1b8/count+0x1c4. 140B94FA0 stores
-    /// grouped subunits and model representatives; 140B91170
-    /// reads the literal or fallback name. Empty outputs still visit every
+    /// Country templates retain grouped subunits, model representatives,
+    /// and the literal or fallback name. Empty outputs still visit every
     /// authenticated roster record and count its independent arena demands.
     pub(crate) fn presize(
         &mut self,

@@ -249,7 +249,7 @@ fn five_thousand_countries_resolve_and_fold() {
     assert!(points.values().all(|changes| changes.len() == 1));
 }
 
-/// 140E69830's battle picture needs one engaged entry of the province's
+/// the game's battle picture needs one engaged entry of the province's
 /// vector, of any class; an undecided entry before it leaves it undecided
 /// only when no later entry decides it.
 #[test]
@@ -470,7 +470,7 @@ fn naval_flag(index: &EngagedIndex, frame: &mut DecodedFrame, hour: Hour, viewer
 
 /// The recording player goes A (1), B (2), A while A and B ally in
 /// between, with no unit change. The client rebuilt every side for B and
-/// again for A on its return (140BA9890 → 1413CEBC0 → 1413CEBE0), so A
+/// again for A on its return, so A
 /// is engaged through its new ally at the last hour: a fixed-A view
 /// serves that, not its own held answer, and it agrees with the byte.
 #[test]
@@ -499,7 +499,7 @@ fn a_viewer_who_is_the_recording_player_takes_its_player_change_rebuilds() {
     );
     // The perspective's own history held its load-hour answer until the
     // roster moved a player into its country, which it can only take as a
-    // possible controller refresh (14113E4B0 then 140BABC00).
+    // possible controller refresh.
     let branches = pass.shared.branches.lock().unwrap();
     for (kind, combat) in [(NAVAL, 0), (LAND, 100)] {
         let points = &branches[&3].points[kind][&(combat, 0)];
@@ -655,14 +655,14 @@ fn unread_and_unnamed_hours_are_counted_through_the_pass() {
     assert!(clean.check.summary.lines()[0].contains("no naval combat side in the 1 folded hours"));
 }
 
-/// The recording client observes (`CGameState+0x520` zero, so the view is
-/// `+0x524`) and another player's `observe` moves its view from 3 to 4
-/// between hours 10 and 11. `CChangeCountryControllerCommand::Execute`
-/// (14113E4B0) refreshes every combat (140BABC00) only when the viewing
-/// country is the command's target country (14113FC98..14113FCCD), and an
+/// The recording client has no player country and uses its observer country.
+/// Another player's observer change moves that view from 3 to 4
+/// between hours 10 and 11. A controller change
+/// refreshes every combat only when the viewing
+/// country is the command's target country, and an
 /// observe's target is none, so nothing rebuilds at once: the hour-11
-/// sample still holds 3's flags, and the next tick's `CCombatManager`
-/// hourly check (140BA9890) rebuilds for 4, which hour 12 shows. Country 3
+/// sample still holds 3's flags, and the next tick's combat-manager
+/// hourly check rebuilds for 4, which hour 12 shows. Country 3
 /// allies with the attacker (2); 4 with no one. A tag switch, whose target
 /// is the new country, rebuilds at once instead.
 #[test]
@@ -708,9 +708,9 @@ fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
     let pass = fold([(3, 0, [1, 0]), (4, 0, [0, 0]), (4, 0, [0, 0])]);
     let summary = &pass.check.summary;
     assert_eq!((summary.agreements, summary.mismatches), (6, 0));
-    // The client's own `observe` (14026D810, target none) from playing 3 to
-    // observing 4 (3 annexed, so 14113F747..14113F9B7 moves the view) skips
-    // 140BABC00 as well: 3's flags at 11, 4's at 12.
+    // The client's own observer change with no target from playing 3 to
+    // observing 4 (3 annexed, so the game moves the view) skips
+    // that combat refresh as well: 3's flags at 11, 4's at 12.
     let pass = fold([(3, 0, [1, 0]), (0, 4, [1, 0]), (0, 4, [0, 0])]);
     let summary = &pass.check.summary;
     assert_eq!(
@@ -722,11 +722,11 @@ fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
 }
 
 /// The client's combat icons take their frames from its own flag
-/// (`1418E3E30` reads the client's `+0xBA` through 1413CD880), so a viewer
+/// (the icon reads the client's engaged flag), so a viewer
 /// who is the recording player at the hour is served the icon history
 /// folded over the client's flags, not the perspective's. Viewing a fixed
 /// C3: the client plays the attacker (2) at hours 10 and 11, engaged, its
-/// convoy's frame 1 set; at 12 it switches to C3 (at once, 140BABC00), not
+/// convoy's frame 1 set; at 12 it switches to C3 (at once after the controller refresh), not
 /// allied with 2, so the combat is unengaged and the icon keeps frame 1.
 /// C3's own history never saw the combat engaged.
 #[test]
@@ -771,12 +771,12 @@ fn the_recording_players_icons_keep_the_clients_carried_frame() {
 }
 
 /// A recording that joins a running game (no load) starts every flag
-/// unknown, but the client's recorded byte (`CCombatant+0xBA`) says
-/// whether it saw the combat engaged, and `1418E3E30` sets the icon frame
+/// unknown, but the client's recorded engagement byte says
+/// whether it saw the combat engaged, and the game sets the icon frame
 /// from that byte and keeps it after. The client (1) allies with the
 /// attacker (2) at hours 10 and 11 (bytes [1, 0]); the alliance ends at 11,
 /// and at 12 a defending task force leaves (a naval removal rebuilds both
-/// sides, 1413CE250), so the combat is unengaged with both sides still
+/// sides), so the combat is unengaged with both sides still
 /// holding countries: the icon keeps the frame the engaged hours set.
 #[test]
 fn a_joined_recordings_icon_keeps_the_frame_its_recorded_bytes_set() {
@@ -914,8 +914,8 @@ fn mismatch_counts_stay_exact_while_only_the_first_five_are_kept() {
     );
 }
 
-/// `1418E3E30` sets the icon's frame only
-/// while `any_side_engaged@1413CD880` holds, so an unengaged combat's icon
+/// The game sets the icon's frame only
+/// while either side is engaged, so an unengaged combat's icon
 /// keeps the frame of its last engaged hour, which the index carries. C1
 /// shares vision with the attacker (2) at the load, so combat 0 is engaged
 /// and its convoy (a live forward-group convoy on the attacking side, no
@@ -1224,7 +1224,7 @@ fn fold_for_aaa(hours: &[DecodedFrame]) -> (BTreeMap<u64, Engaged>, Provenance) 
 }
 
 /// Player 40 moving from DDD to AAA may be a controller change into the
-/// viewer's country (14113E4B0 then 140BABC00), which would refresh the
+/// viewer's country, which would refresh the
 /// flag the earlier alliance left stale: the rosters make it ambiguous,
 /// never Yes. Unrecorded rosters cannot rule it out either.
 #[test]

@@ -2,6 +2,8 @@ use super::*;
 
 #[test]
 fn missing_trait_sprite_retries_native_gui_fallback_with_registered_spelling() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::catalogue::texture_tests::{from_url, png_bytes, texture_catalogue};
     let image = installed_content::image::Rgba8Image {
         width: 2,
@@ -841,6 +843,8 @@ fn dates_and_gaps_do_not_invent_gains() {
 
 #[test]
 fn skill_ceiling_follows_every_defined_level() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let levels = (1..=5000)
         .map(|level| format!("{level}={{type=corps_commander cost=1}}"))
         .collect::<Vec<_>>()
@@ -862,7 +866,7 @@ fn captured_hidden_and_unresolved_visibility_are_withheld() {
         ..Default::default()
     };
     assert_eq!(visible(&row, None), Ok(false));
-    row.category = -1; // The executable's captured category comparison is unsigned.
+    row.category = -1; // Captured categories compare as unsigned.
     assert_eq!(visible(&row, None), Ok(true));
     row.category = 1;
     row.captured = 0;
@@ -978,7 +982,9 @@ fn coverage_tracks_each_leaders_entry_hidden_reads_and_own_gaps() {
 }
 
 #[test]
-fn scan_uses_layered_trait_skill_and_localisation_override_of_executable_rank_key() {
+fn scan_uses_layered_trait_skill_and_localisation_override_of_rank_key() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::{
         frame::TableView,
         rows::{OrdersGroupPlanRow, OrdersGroupRow, TableRows, UnitLeaderTraitRow},
@@ -994,7 +1000,7 @@ fn scan_uses_layered_trait_skill_and_localisation_override_of_executable_rank_ke
         ),
         (
             "localisation/base_l_english.yml",
-            "\u{feff}l_english:\n cc_leader:0 \"General\"\n",
+            "\u{feff}l_english:\n cc_leader:0 \"Ground Captain\"\n",
         ),
     ]);
     let addon = folder.0.join("addon");
@@ -1300,6 +1306,8 @@ fn naval_commands_join_the_roster_fleet_and_keep_observation_gaps() {
 
 #[test]
 fn requests_share_only_the_portrait_size_the_view_draws() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use base64::Engine;
     use replay::{
         frame::TableView,

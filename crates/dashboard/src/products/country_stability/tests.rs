@@ -7,7 +7,7 @@ use replay::{
 use std::sync::{Arc, atomic::AtomicBool};
 
 #[test]
-fn stability_formula_follows_the_engine_getters() {
+fn stability_formula_preserves_rounding_wrapping_and_clamps() {
     use crate::products::country_stability::formula::*;
     // Q15 conversions: rounding half up on the fraction, truncation back.
     assert_eq!(q15_to_fixed5(32_768), 100_000);
@@ -32,7 +32,7 @@ fn stability_formula_follows_the_engine_getters() {
         Some(50_000 - 25_000 + 6_750 - 10_001 + 30_000 + 2_500)
     );
     assert_eq!(war.value, war.unclamped);
-    // An offensive war without IsAtWar(mode 1) adds nothing, as at peace.
+    // An offensive war with the at-war predicate false adds nothing, as at peace.
     row.at_war = 0;
     assert_eq!(stability(&row).value, Some(79_249));
     // Clamped to the defines.

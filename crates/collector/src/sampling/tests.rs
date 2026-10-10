@@ -892,6 +892,7 @@ fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
     // One CountryIntel buffer and one held RaidAirScores table for the pool.
     bytes += shared.country_intel.allocated_bytes();
     bytes += unsafe { (&*shared.raid_air_scores.get()).as_ref().unwrap() }.allocated_bytes();
+    bytes += unsafe { &*shared.fixed_layout_buffer.get() }.capacity();
     for slot in &shared.frames {
         let frame = slot.load(Ordering::Acquire);
         assert!(!frame.is_null());

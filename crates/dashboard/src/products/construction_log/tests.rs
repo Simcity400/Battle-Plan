@@ -500,6 +500,8 @@ pub(crate) fn construction_frames(last: i32, frame: impl Fn(i32, bool) -> Decode
 
 #[test]
 fn construction_log_live_reply_warns_only_for_unproven_state_reading() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{
         LoadContext, Product,
         construction_log::{ConstructionLog, ConstructionLogParams},
@@ -895,6 +897,8 @@ fn fixture_dds(tga: &[u8]) -> Vec<u8> {
 
 #[test]
 fn construction_icons_follow_strip_direction_and_the_gui_repair_frame() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::catalogue::tests::folder_catalogue;
     use crate::products::construction_log::{ContentView, named};
     use std::collections::BTreeSet;
@@ -986,6 +990,8 @@ fn construction_icons_follow_strip_direction_and_the_gui_repair_frame() {
 
 #[test]
 fn construction_icons_use_cached_guis_and_the_native_fallback_and_refuse_unknown_decode() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::catalogue::tests::folder_catalogue;
     use crate::products::construction_log::{ContentView, named};
     use std::collections::BTreeSet;
@@ -1094,6 +1100,8 @@ fn refused_state_read_keeps_live_wording_and_is_omitted_offline() {
 
 #[test]
 fn a_modded_content_stack_names_and_pictures_its_own_buildings_and_refuses_what_it_cannot() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::construction_log::{ContentView, named};
     use std::collections::{BTreeMap, BTreeSet};
     let root = std::env::temp_dir().join(format!(

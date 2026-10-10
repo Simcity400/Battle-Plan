@@ -1,12 +1,11 @@
 //! Particle descriptors resolved by name, as the game resolves them.
 //!
-//! An entity event names a `pdxparticle` object; the object's `type` names a
-//! `particle` block. Gameplay registers startup interface files, then the remaining
-//! `interface` and `gfx` descriptors (140184620/1401826E0/140180C00), and particle
-//! blocks by their `name` from
-//! every `gfx/particles/**/*.asset`; no file name is derived from an
-//! identifier. The last registered object of an exact name wins; duplicate
-//! particle block names still have unproven precedence and are refused.
+//! An entity event names a `pdxparticle` object; its `type` names a `particle`
+//! block. Gameplay registers startup interface files, then the remaining
+//! `interface` and `gfx` descriptors. Particle blocks register by their
+//! `name` from every `gfx/particles/**/*.asset`; no filename is derived from
+//! an identifier. The last registered object of an exact name wins;
+//! duplicate particle block names have unsettled precedence and are refused.
 //! Descriptors outside the coverage roots are read unverified.
 
 use std::{collections::BTreeMap, io};
@@ -17,8 +16,8 @@ use crate::{
     parser,
 };
 
-///140184620 reads these first;1401826E0 excludes them from the ordinary walk.
-///Literal bytes1427064A0/1427064C0/1427064E0, not content-selected defaults.
+/// Startup interface files load first and are excluded from the ordinary
+/// walk. These paths are fixed loader inputs.
 const STARTUP_GFX: [&str; 3] = [
     "interface/load_screen.gfx",
     "interface/load_screen_font.gfx",
@@ -36,8 +35,8 @@ pub(crate) fn object_file_order(interface: &[String], gfx: &[String]) -> Vec<Str
             .into_iter()
             .filter(|path| !STARTUP_GFX.contains(&path.as_str())),
     );
-    //140180C00 loads these after GUI initialization.1424C9F40 preserves
-    //1424C7630's files-before-subdirectories, bytewise traversal.
+    // Load these after GUI initialization, preserving files before
+    // subdirectories and bytewise traversal within each level.
     files.extend(crate::defines::load_order(
         "gfx/",
         "gfx",
@@ -60,16 +59,16 @@ pub struct RenderDescriptor {
 
 impl RenderDescriptor {
     pub fn read(fields: &[parser::Item]) -> io::Result<Self> {
-        //1423D7990 clears both strings and initializes x/y to1.14231E470
-        //writes signed x/y and truncates file/shader to255/63 bytes.
+        // Both strings start empty and x/y start at 1. Reads store signed
+        // x/y and truncate the texture and shader paths to 255/63 bytes.
         let mut out = Self {
             texture: String::new(),
             shader: String::new(),
             tiles: [1; 2],
-            // 14231E620: +0x74B and +0x74A.
+            // Both render flags start false.
             trail: parser::read_bool_field(fields, "trail", false),
             local_space: parser::read_bool_field(fields, "local_space", false),
-            // 14231E620, key 0x25F: 1424AFED0 stores false for every value except C-string yes.
+            // Only a value equal to the C string `yes` stores true.
             billboard: fields
                 .iter()
                 .filter(|item| item.keyword_is("billboard"))
@@ -95,7 +94,7 @@ impl RenderDescriptor {
                     }
                     Some(b"x" | b"y") => {
                         let index = usize::from(item.key.as_deref() == Some(b"y"));
-                        // ReadScriptSignedInt32@1424AB970 uses the CRT %i scanner.
+                        // Use the integer prefix scanner for signed tile counts.
                         out.tiles[index] =
                             crt::scan_i32(text(&item.value, "particle texture tiles")?.as_bytes())
                                 .stored()
@@ -116,7 +115,7 @@ impl RenderDescriptor {
         Ok(out)
     }
 
-    ///142281B00 appends Trail before NoBillboard; source is always particle.lua.
+    /// Append Trail before NoBillboard; the source is always particle.lua.
     pub fn technique(&self) -> String {
         format!(
             "{}{}{}",
@@ -136,7 +135,7 @@ pub struct Particle {
     pub name: String,
     /// The `pdxparticle` object's `scale`.
     pub scale: f32,
-    ///142281570 stores the registration ordinal before the descriptor is parsed.
+    /// Store the registration ordinal before parsing the descriptor.
     pub registration: usize,
 }
 
@@ -202,9 +201,8 @@ impl Catalog {
                 if !scale.is_finite() || scale <= 0.0 {
                     return Err(invalid(format!("pdxparticle {name} has scale {scale}")));
                 }
-                //1422264C0 ->1406B1110 prepends every object to its name bucket.
-                //14226B330 ->142223D70 returns the first exact match. Constructor
-                //142281570/14227EDF0 allocates an ordinal even for a duplicate.
+                // Objects prepend to their name bucket, so lookup returns the latest
+                // exact match. Registration allocates an ordinal even for a duplicate.
                 let ordinal = self.registrations;
                 self.registrations += 1;
                 self.objects
@@ -268,7 +266,7 @@ impl Catalog {
         self.objects.keys().map(String::as_str)
     }
 
-    ///1423E88B0 takes the maximum system capacity, including replicated children.
+    /// The maximum system capacity, including replicated children.
     pub fn max_particles(&self) -> usize {
         self.max_particles
     }
@@ -278,13 +276,12 @@ fn capacity(fields: &[parser::Item]) -> io::Result<usize> {
     let mut total = 0usize;
     for value in all(fields, b"subsystem") {
         let fields = block(value, "particle subsystem")?;
-        //14232ECC0 clears hidden subsystem capacity before runtime construction.
-        // 14231E620: hide at +0x74E.
+        // Hidden subsystems have zero capacity before runtime construction.
         let hidden = parser::read_bool_field(fields, "hide", false);
         let count = if hidden {
             0
         } else {
-            //SSubsystemReader constructor14231BB90 leaves +6E8 uninitialized.
+            // Visible subsystems require an authored capacity; no default is set.
             let value = text(
                 require(fields, "max_amount", "particle capacity")?,
                 "max_amount",
@@ -294,7 +291,7 @@ fn capacity(fields: &[parser::Item]) -> io::Result<usize> {
                 .ok_or_else(|| invalid("particle max_amount requires int32"))?;
             usize::try_from(value).map_err(|_| invalid("negative particle max_amount"))?
         };
-        //1423DD4E0 adds parent_count*child_count at every recursive level.
+        // Each recursive level adds its parent count times the child capacity.
         let contribution = capacity(fields)?
             .checked_add(1)
             .and_then(|children| count.checked_mul(children))
@@ -354,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn native_capacity_replicates_children_and_takes_maximum_system() {
+    fn capacity_replicates_children_and_takes_maximum_system() {
         let mut catalog = Catalog::default();
         catalog.add_particles(br#"
             particle={name=large subsystem={max_amount=3 subsystem={max_amount=4 subsystem={max_amount=2}}} subsystem={max_amount=5}}
@@ -389,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn gameplay_registration_uses_startup_then_native_directory_order() {
+    fn gameplay_registration_uses_startup_then_directory_order() {
         let interface = [
             "interface/a/nested.gfx",
             "interface/z.gfx",
@@ -430,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn render_descriptor_preserves_native_strings_tiles_and_suffix_order() {
+    fn render_descriptor_preserves_strings_tiles_and_suffix_order() {
         let doc = parser::parse(br#"texture={file="one" file="two" shader="ModEffect" x=3 y=-2} trail=yes billboard=no local_space=yes"#).unwrap();
         let descriptor = RenderDescriptor::read(&doc.items).unwrap();
         assert_eq!(descriptor.texture, "two");

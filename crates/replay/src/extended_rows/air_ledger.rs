@@ -1,6 +1,6 @@
 use super::*;
 
-/// Exact per-write daily-history changes through `140C4D180/140C4D420`.
+/// Exact per-write daily-history changes.
 /// The key is an increasing event ordinal within this recording branch.
 /// `game_hour` dates the native application, independently of the hourly drain.
 /// Country references resolve through that frame's CountryLinks. `region`
@@ -14,7 +14,7 @@ use super::*;
 /// retains the opposite tag from the wrapper, with null for nonpositive tags.
 /// `daily_slot` is the authenticated physical daily cursor at the write,
 /// including newly allocated histories; save equality uses it across midnight.
-/// The engine writer map owns ordinal names and address evidence.
+/// The engine writer map owns ordinal names and source classification.
 /// A complete hourly table certifies zero for country/region pairs with no
 /// events. Lost and first/recovery partial intervals remain unavailable.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -48,7 +48,7 @@ typed_codec!(AirLossEventRow, 64,
     Ok(())
 });
 
-/// Exact hourly native daily-update roster predicate (`1406F35B0`).
+/// Exact hourly daily-update roster predicate.
 /// Every canonical country is present; false is distinct from a missing witness.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AirDailyRosterRow {
@@ -141,33 +141,29 @@ impl NativeValue for BuildingBombingDamageCause {
     }
 }
 
-/// One signed health removal through CBuilding::ApplyDamage@1410C6F60.
-/// ApplyBuildingBombingDamage@140F663C0 and naval damage@1419681E0 reach
-/// this shared writer; other callers retain their source classification.
-/// The key is an increasing event ordinal within this recording branch, never
-/// a building handle. `game_hour` dates the application, independently of the
-/// later hourly drain. No-wing damage retains a null attacker and its source.
-/// A wing's attacker is GetEffectiveCountryTag@140F45950, not its roster owner.
-/// `victim` is the location controller at application, which the air wrapper
-/// credits (province+0x188 / state+0xCC), rather than status+0x70 repair routing.
-/// Zero is the native reserved null-country reference (`140BA5140/140BA56A0`):
-/// retain such damage with an unknown victim identity, never a guessed country.
+/// One signed health removal through the shared building-damage writer.
+/// Air bombing and naval damage reach this writer; other callers retain
+/// their source classification. The key is an increasing event ordinal
+/// within this recording branch, never a building handle. `game_hour` dates
+/// the application, independently of the later hourly drain. No-wing damage
+/// retains a null attacker and its source. A wing's attacker is its effective
+/// country, rather than its roster owner. `victim` is the location controller
+/// at application, credited by the air wrapper, rather than the country used
+/// for repair routing. Zero is the reserved null-country reference: retain
+/// such damage with an unknown victim identity, never a guessed country.
 /// `province` distinguishes province buildings from state buildings. Type
-/// tokens resolve through recorded LexicalTokens and the effective content.
-/// A province building whose native province has no state records state zero
-/// (`get_state@1410C6520 -> 141162450`, province+0xC0); that is known absence.
-/// State-scoped buildings retain their actual state id.
+/// tokens resolve through recorded LexicalTokens and effective content.
+/// A province building whose province has no state records state zero as
+/// known absence. State-scoped buildings retain their actual state id.
 ///
-/// `amount_raw` is pre-minus-post native CBuilding health after clamps; a full
-/// level is 10,000,000 (`get_level_health@1410C64D0`). `credited_raw` is the
-/// function's returned native budget and can differ under damage modifiers.
-/// Negative modifiers can increase health (ApplyDamageStep@1410C7000);
-/// those gains remain exact negative removals rather than unavailable damage.
-/// `native_cause` preserves the source-kind word at DamageSource+0 (argument
-/// five of ApplyDamage@1410C6F60), independently of the stable caller class.
-/// This is an hourly event ledger: a complete empty
-/// table is zero events, an unavailable interval is unknown. Its first branch
-/// interval and every interval after a lost event are unavailable.
+/// `amount_raw` is pre-minus-post building health after clamps; a full level
+/// is 10,000,000. `credited_raw` is the returned damage budget and can differ
+/// under damage modifiers. Negative modifiers can increase health; those
+/// gains remain exact negative removals rather than unavailable damage.
+/// `native_cause` preserves the source-kind word independently of the stable
+/// caller class. This is an hourly event ledger: a complete empty table is
+/// zero events, an unavailable interval is unknown. Its first branch interval
+/// and every interval after a lost event are unavailable.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct BuildingBombingDamageRow {
     pub id: u64,

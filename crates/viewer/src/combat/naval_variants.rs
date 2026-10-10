@@ -1,4 +1,4 @@
-//! CEquipmentVariant::GetDisplayName (140BCB030), shared by active and retained hits.
+//! Equipment variant display names shared by active and retained-result hovers.
 use super::binding::TextIcons;
 use crate::{
     document::Document,
@@ -32,10 +32,10 @@ impl<'a> Names<'a> {
     }
 }
 
-/// 140BCB030 returns a nonempty saved CEquipmentVariant+0x28 name verbatim.
-/// Otherwise it localises its effective definition's +0x18 key for origin
-/// (or creator) country, through the stacked equipment and recorded lexicon.
-/// Finally it appends +0x48 only when +0x24 permits it.
+/// Return a nonempty saved variant name verbatim. Otherwise localise the
+/// effective definition's key for the origin (or creator) country, through
+/// the stacked equipment and recorded lexicon. Append the suffix only when
+/// its recorded flag permits it.
 pub(super) fn name(
     row: &VariantDefinitionRow,
     icons: &dyn TextIcons,
@@ -81,7 +81,7 @@ pub(super) fn name(
         };
         let tag =
             if country == 0 {
-                // CCountryDatabase ctor 14070E670 installs this null-country tag.
+                // The null country has this fallback tag.
                 "---"
             } else {
                 let linked = context

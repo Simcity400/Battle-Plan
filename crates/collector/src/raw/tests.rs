@@ -2734,7 +2734,7 @@ fn repeated_takes_serve_in_record_order_then_repeat_the_last() {
 
 #[test]
 fn bulk_spans_serve_enclosed_unaligned_sub_ranges() {
-    // S3: moved walks issue bulk copies (session 0x34/0x40 headers,
+    // The walks issue bulk copies (session headers,
     // players 64 B string pairs, map order vectors) wider than the
     // walk's scattered reads (4 B keys, 8 B words, 1 B flags inside).
     // `Recorded` serves any request fully enclosed in one bulk span,
@@ -2782,10 +2782,8 @@ fn bulk_spans_serve_enclosed_unaligned_sub_ranges() {
 
 #[test]
 fn take_inner_rejects_noncanonical_addresses_as_faults_pre_copy() {
-    // Live crash runs resolved to ASCII-derived noncanonical sources:
-    // run 1 `rdx=0x00726f746361665f` ("_factor\0") and run 2
-    // `rdx=0x6f746361665f7374` ("ts_facto"). `take_inner` must record the
-    // same fault the typed walk produces for an unreadable source, before
+    // Noncanonical sources must produce the same fault the typed walk
+    // produces for an unreadable source, before
     // any guarded copy runs (a crash cannot happen in tests; the traced
     // memory proves no copy was attempted).
     use std::cell::Cell;
@@ -2947,7 +2945,7 @@ fn repeated_failed_reads_keep_their_place_and_do_not_fall_back_to_bulk() {
 #[test]
 fn canonical_gate_matches_engine_vectors_and_keeps_valid_data() {
     // The collector gate duplicates `engine::memory`'s check without a new
-    // public API; both must agree on the live crash vectors and on valid
+    // public API; both must agree on noncanonical pointer cases and on valid
     // game-like addresses. Overflow and empty spans keep `Memory` semantics.
     assert!(!is_canonical_range(0x0072_6f74_6361_665f, 8));
     assert!(!is_canonical_range(0x6f74_6361_665f_7374, 8));

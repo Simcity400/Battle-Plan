@@ -144,8 +144,8 @@ fn items_record_whether_their_value_is_quoted() {
     assert_eq!(quoted, [true, false, true, false, false, false]);
 }
 
-/// 1424A7A90 gives a quoted key token 0xF without the keyword lookup and
-/// folds a bare one; a key starting with a digit or `-` is never looked up.
+/// Quoted keys bypass keyword lookup, while bare keys fold case. Keys starting with a
+/// digit or `-` are never looked up.
 #[test]
 fn keys_keep_their_token_kind_and_only_bare_keys_are_keywords() {
     let document =
@@ -161,173 +161,45 @@ fn keys_keep_their_token_kind_and_only_bare_keys_are_keywords() {
     }
 }
 
-/// The content readers ask [`Item::keyword`] whether a key is a keyword
-/// (1424A7A90: a quoted key is token 0xF, a bare one folds). A raw key
-/// comparison in their code outside the tests fails here unless it is
-/// allowed below with the address that makes it a text compare.
+/// Grammar fields fold bare keywords, while quoted fields use authored-name dispatch.
 #[test]
-fn content_readers_ask_the_keyword_helper() {
-    const READERS: [(&str, &str); 10] = [
-        ("division_names.rs", include_str!("../division_names.rs")),
-        ("ideas.rs", include_str!("../ideas.rs")),
-        ("leader_traits.rs", include_str!("../leader_traits.rs")),
-        ("modifiers.rs", include_str!("../modifiers.rs")),
-        ("terrain.rs", include_str!("../terrain.rs")),
-        ("script_files.rs", include_str!("../script_files.rs")),
-        ("characters.rs", include_str!("../characters.rs")),
-        ("ideologies.rs", include_str!("../ideologies.rs")),
-        (
-            "modifier_definitions.rs",
-            include_str!("../modifier_definitions.rs"),
-        ),
-        (
-            "scripted_localisation.rs",
-            include_str!("../scripted_localisation.rs"),
-        ),
-    ];
-    const RAW: [&str; 6] = [
-        "key.as_deref() ==",
-        "key.as_deref() !=",
-        "eq_ignore_ascii_case(",
-        "to_ascii_lowercase(",
-        ".get(b\"",
-        "get_all(",
-    ];
-    // (file, line text) with why it compares text, not a keyword.
-    const ALLOWED: &[(&str, &str)] = &[
-        // A group name: 1409B4370 finds it by the folded hash 140BBA1B0
-        // and `_stricmp` (14253D9F8).
-        ("division_names.rs", "key.to_ascii_lowercase()"),
-        // A trait name: 140710200 compares its hash and `_stricmp`
-        // (14253D9F8), selecting the first match in load order.
-        ("leader_traits.rs", "let name = token.to_ascii_lowercase();"),
-        (
-            "leader_traits.rs",
-            "let name = found.token.to_ascii_lowercase();",
-        ),
-        // An idea group's name as the token registry keys it
-        // (add_dynamic_token 1424A65A0 -> 1424A5EE0 folds A-Z).
-        (
-            "ideas.rs",
-            "(!matches!(name.first(), Some(b'0'..=b'9' | b'-'))).then(|| name.to_ascii_lowercase())",
-        ),
-        // An idea a repeated group names again: 140FC0E90's `_stricmp`.
-        (
-            "ideas.rs",
-            "self.ideas[*index].token.eq_ignore_ascii_case(&idea.token)",
-        ),
-        // A modifier definition's name in the token registry (1405FF750
-        // -> 1424A65A0, folded, StringView_CompareNoCase 1424B6750).
-        (
-            "modifier_definitions.rs",
-            "self.by_name.get(&key.as_bytes().to_ascii_lowercase())",
-        ),
-        (
-            "modifier_definitions.rs",
-            "let name = definition.token.as_bytes().to_ascii_lowercase();",
-        ),
-        // A category name: FindTerrainByHashedName (1403BCA00).
-        (
-            "terrain.rs",
-            ".position(|category| category.name.eq_ignore_ascii_case(name))",
-        ),
-        // A file path's extension, not a key.
-        ("script_files.rs", "let lower = path.to_ascii_lowercase();"),
-        ("characters.rs", "let lower = path.to_ascii_lowercase();"),
-        // A character token CCharacterTemplateDatabase interns
-        // (add_dynamic_token 1424A6500, folded).
-        (
-            "characters.rs",
-            "parser::c_string(item.key.as_deref().unwrap_or_default()).to_ascii_lowercase()",
-        ),
-        // A recorded template's tag, a dynamic token (1424A65A0 ->
-        // 1424A5EE0 folds A-Z).
-        (
-            "characters.rs",
-            ".filter(|roles| roles.tag.eq_ignore_ascii_case(&built.tag))",
-        ),
-        (
-            "characters.rs",
-            "if !built.tag.eq_ignore_ascii_case(character) {",
-        ),
-        // Advisor identity is hashed text (140606100, 1406A6460,
-        // 1406A6EC0), not a parser keyword. Character references are
-        // dynamic tokens (1424A65A0); keep the authored spellings.
-        (
-            "characters.rs",
-            "self.character.eq_ignore_ascii_case(&other.character)",
-        ),
-        (
-            "characters.rs",
-            "&& self.slot.eq_ignore_ascii_case(&other.slot)",
-        ),
-        (
-            "characters.rs",
-            "&& self.idea_token.eq_ignore_ascii_case(&other.idea_token)",
-        ),
-        (
-            "characters.rs",
-            "let identity = idea_token.to_ascii_lowercase();",
-        ),
-        (
-            "characters.rs",
-            ".contains(&idea_token.to_ascii_lowercase())",
-        ),
-        (
-            "characters.rs",
-            ".filter(|role| role.idea_token.eq_ignore_ascii_case(idea_token));",
-        ),
-        (
-            "characters.rs",
-            "let identity = role.idea_token.to_ascii_lowercase();",
-        ),
-        ("characters.rs", "token.to_ascii_lowercase(),"),
-        (
-            "characters.rs",
-            ".insert(token.to_ascii_lowercase(), token.to_owned());",
-        ),
-        // 1413DBE40 keys country-leader roles by the registered ideology
-        // token, whose text is folded by 1424A6500 -> 1424A65A0.
-        ("characters.rs", "ideology.to_ascii_lowercase(),"),
-        // The modifier a key names (1406042A0): the lexer folds a bare
-        // key (1424A7A90), FindTokenNoCase a quoted one (1424A7060).
-        ("modifiers.rs", "name: key.to_ascii_lowercase(),"),
-        // Its registry lookup: FindTokenNoCase 14022EC40 folds ASCII
-        // before comparing, for built-in and scripted names alike.
-        (
-            "modifiers.rs",
-            ".any(|name| name.as_bytes().eq_ignore_ascii_case(key))",
-        ),
-        (
-            "modifiers.rs",
-            "if effects.modifiers.contains(&key.to_ascii_lowercase()) {",
-        ),
-        // Stored dynamic token (140A38190 -> 1424A6500).
-        (
-            "ideologies.rs",
-            "let key = crate::parser::c_string(&field.key.text).to_ascii_lowercase();",
-        ),
-        // An ideology group's number by its token, a dynamic token
-        // (140A38190 -> 1424A6500 -> 1424A65A0 folds A-Z).
-        ("ideologies.rs", ".get(&token.to_ascii_lowercase())"),
-    ];
-    let mut raw = Vec::new();
-    for (file, source) in READERS {
-        let code = source.split("#[cfg(test)]").next().unwrap_or_default();
-        for line in code.lines().map(str::trim) {
-            if !line.starts_with("//")
-                && RAW.iter().any(|pattern| line.contains(pattern))
-                && !ALLOWED.contains(&(file, line))
-            {
-                raw.push(format!("{file}: {line}"));
-            }
-        }
-    }
-    assert!(raw.is_empty(), "raw key comparisons: {raw:#?}");
+fn content_dispatch_distinguishes_keywords_from_authored_names() {
+    let traits = crate::leader_traits::parse(
+        b"LEADER_TRAITS={synthetic_trait={COMMAND_POWER=0.35 \"command_power\"=0.75}}",
+        &crate::key_names::KeyNames::default(),
+    );
+    assert_eq!(traits.refused, None);
+    assert_eq!(traits.traits.len(), 1);
+    let found = &traits.traits[0];
+    assert_eq!(found.command.len(), 1);
+    assert_eq!(found.command[0].name, "command_power");
+    assert_eq!(found.command[0].value, 35_000);
+    assert_eq!(found.modifiers.values.len(), 1);
+    assert_eq!(found.modifiers.values[0].name, "command_power");
+    assert_eq!(found.modifiers.values[0].value, 75_000);
+
+    let bare = crate::ideologies::parse(b"IDEOLOGIES={synthetic={TYPES={branch={}}}}");
+    assert_eq!(bare.len(), 1);
+    assert_eq!(bare[0].types, ["branch"]);
+    let quoted_field = crate::ideologies::parse(b"ideologies={synthetic={\"types\"={branch={}}}}");
+    assert_eq!(quoted_field.len(), 1);
+    assert!(quoted_field[0].types.is_empty());
+    assert!(crate::ideologies::parse(b"\"ideologies\"={synthetic={}}").is_empty());
 }
 
-/// 1424A7A90 makes `<`, `>` and `=` single-character tokens that end a
-/// bare token, and 1424AC5E0 accepts each as the operator.
+/// Keyword matching folds ASCII only, preserving authored non-ASCII bytes.
+#[test]
+fn keyword_identity_preserves_non_ascii_and_quoted_text() {
+    let document = parse(b"Name=one \"name\"=two N\xc4ME=three n\xe4me=four").unwrap();
+    assert!(document.items[0].keyword_is("name"));
+    assert!(!document.items[1].keyword_is("name"));
+    assert_eq!(document.items[2].keyword().unwrap().folded(), b"n\xc4me");
+    assert_eq!(document.items[3].keyword().unwrap().folded(), b"n\xe4me");
+    assert_ne!(document.items[2].keyword(), document.items[3].keyword());
+}
+
+/// `<`, `>` and `=` are single-character tokens ending a bare token, and each is
+/// accepted as an operator.
 #[test]
 fn comparisons_are_keys_with_their_operator_and_value_token() {
     let document = parse(b"t = { skill>@x phase > 99 a<\"010\" b >= 5 c = d } < 3").unwrap();
@@ -373,9 +245,9 @@ fn comparisons_are_keys_with_their_operator_and_value_token() {
     assert_eq!(document.items[1].value.scalar(), Some(b"<".as_slice()));
 }
 
-/// 1424A7A90 gives the number id 0xC to a bare token starting with a
-/// digit or `-`, or made of digits, `-` and `.` up to its first NUL, so
-/// one starting with a NUL; text with no byte is the id-0 slot.
+/// A bare token is numeric when it starts with a digit or `-`, or its C-string text
+/// contains only digits, `-` and `.`. A leading NUL therefore makes a number token; a
+/// slot with no byte stays the initial token kind.
 #[test]
 fn number_tokens_follow_the_lexer() {
     for (text, quoted, number) in [
@@ -402,8 +274,7 @@ fn number_tokens_follow_the_lexer() {
     }
 }
 
-/// The readers stop at the end-of-file token as at `}` (1424A9730,
-/// 1409B9A20, 1401426E0), wherever the end falls.
+/// Reader loops stop at EOF like `}`, wherever the end falls.
 #[test]
 fn the_end_of_a_script_file_closes_what_it_leaves_open() {
     for source in [

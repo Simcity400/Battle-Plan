@@ -1,5 +1,5 @@
-//! Stored army-group child-front geometry (1412427A0 / 141246280).
-//! The first path province's controller area, not UI state, selects the small-area guard.
+//! Stored army-group child-front geometry. The first path province's controller
+//! area selects the small-area guard independently of UI state.
 
 use super::{PlanRow, Row, TYPE_LINE, Visit, grow_payload, plan_field};
 use crate::{
@@ -11,7 +11,7 @@ use crate::{
     walk::Outcome,
 };
 
-/// COrderInstance::SChildFrontData, serialized by1410371A0; stride72.
+/// Serialized child-front record; stride 72 bytes.
 const ENTRY_VTABLE_RVA: usize = 0x0296_fa98;
 const DATA: usize = 0x380;
 const STRIDE: usize = 0x48;
@@ -105,10 +105,10 @@ impl Scratch {
             return Ok(None);
         }
         owner.state = 4;
-        // Reuse exactly the same-pass OOB producer's full +230/16B observation,
-        // including failure. Its exact-span source cannot serve a new +23C/4B
-        // request. 141246280 uses the header's final signed count as loop bound;
-        // the vector's pointer/capacity validation is not this scalar's demand.
+        // Reuse the same-pass OOB producer's full +230/16B observation, including
+        // failure. Its exact-span source cannot serve a new +23C/4B request. The
+        // header's final signed count bounds the loop; vector pointer/capacity
+        // validation is not this scalar's demand.
         let address = root
             .pointer()
             .checked_add(carmy_group::MEMBER_DATA)
@@ -321,9 +321,8 @@ pub fn walk(
                                         memory,
                                         base,
                                         array,
-                                        // 141246280 passes stored[i].group directly
-                                        // to the first-match span scan, so every
-                                        // demanded match is at or before i.
+                                        // The stored group is passed directly to the first-match span scan, so
+                                        // every demanded match is at or before the current index.
                                         array.count.min(count as u32),
                                         scratch,
                                         output,

@@ -1,11 +1,10 @@
 //! Callback-local demand for border-event targeted-decision descriptions.
 //!
-//! The 1413D69D0 marker resolves each border side's win/lose identifier and
-//! describes immediate/single-option bodies only when option count is below
-//! two. Branches and scope selections are conservatively unioned: recording a
-//! matching decision for another country is cheap; executing effects is wrong.
-//! Unsupported effect classes are not described by the viewer, so their
-//! subtrees demand nothing. Native pointers never survive the capture callback.
+//! Resolve each side's win/lose identifier. Describe immediate and single-option
+//! bodies only when the option count is below two. Union branches and scope
+//! selections conservatively; extra matching decisions are safe to record.
+//! Unsupported effect subtrees demand nothing. Game pointers never survive the
+//! capture callback.
 
 use crate::{
     Memory, cevent, cgame_state, cland_border_war_combat as combat,
@@ -14,53 +13,53 @@ use crate::{
     read_slice, walk::Outcome,
 };
 
-/// CEvent/CEventOption RTTI; 14116A440/14116A610 constructors.
+/// Event and event-option vtables.
 const EVENT_VTABLE: usize = 0x0298_2fb8;
 const OPTION_VTABLE: usize = 0x0298_2f18;
-/// 1413D69D0 packs type 0x32 with the resolved event identifier.
+/// Packed event reference type combined with the resolved identifier.
 const EVENT_TYPE: u32 = 0x32;
-/// 14116B330 selects the embedded option; 141527890 selects its CEffect.
+/// Embedded option and its effect selector.
 const IMMEDIATE: usize = 0x118;
 const OPTION_EFFECT: usize = 0x120;
-/// CEffect RTTI and CIfEffect's attached else, read by 141381970.
+/// Effect vtables and attached else-branch field.
 const EFFECT_VTABLE: usize = 0x027b_e4c0;
 const IF_VTABLE: usize = 0x027b_e590;
 const ELSE: usize = 0xb0;
-/// CRemoveTargetedDecisionEffect RTTI; 14038BF60 resolves its name at +58.
+/// Targeted-decision removal vtable and name field.
 const REMOVE_VTABLE: usize = 0x0275_e4c0;
 const DECISION_NAME: usize = 0x58;
 
-/// The supported description classes' pinned RTTI vtables, all CEffect bases.
-/// These are executable facts, not authored effect keys or a content census.
+/// Supported effect-description vtables. These authenticate objects and do
+/// not enumerate authored effect keys or content.
 const DESCRIBED: &[usize] = &[
     EFFECT_VTABLE,
     IF_VTABLE,
     REMOVE_VTABLE,
-    0x0275_1ff8, // CAddPoliticalPowerEffect: 140376050.
-    0x0275_9db8, // CAddArmyExperienceEffect: 140370FF0.
-    0x0275_8bf8, // CAddStabilityEffect: 140377DF0.
-    0x0275_8dc8, // CAddWarSupportEffect: 1403797B0.
-    0x0275_35f8, // CAddStateClaimEffect: 140378010.
-    0x0275_31f8, // CTransferStateEffect: 140398680.
-    0x0276_02d0, // CStartBorderWarEffect: 140395AE0.
-    0x0275_8f98, // CDeclareWarEffect: 14037E9B0.
-    0x0275_6b70, // CAnnexCountryEffect: 1403799D0.
-    0x027b_2a08, // CAddToFactionEffect: 1404AC450.
-    0x027b_b520, // NDoctrines::CAddMasteryEffect: 14051D460.
-    0x0273_bc98, // CAddDoctrineCostReduction: 14031FCD0.
-    0x0275_1c20, // CAddTimedIdeaEffect: 140378970.
-    0x0275_6450, // CCountryEventEffect: 14037BDC0 (title only).
-    0x0276_0fa8, // CDeleteTemplateAndItsUnits: 14037EC90.
-    0x0275_f568, // CClearVariableEffect: 140176EE0.
-    0x0275_61c8, // CSetCountryFlagEffect: 140176EE0.
-    0x0275_6378, // CClearCountryFlagEffect: 140176EE0.
-    0x0273_7a40, // CClearStateFlagEffect: 140176EE0.
-    0x0275_a188, // CSaveEventTargetAsEffect: 14038D670.
-    0x0299_f6f8, // CContextEffect: 141381200.
-    0x0275_76e8, // CEveryStateEffect: 140312880.
-    0x0299_fcb8, // CHiddenEffect: 1413818F0.
-    0x0299_fd88, // CEffectTooltipEffect: 140532780.
-    0x0299_ff28, // CCustomEffectTooltipEffect: 1413832B0.
+    0x0275_1ff8,
+    0x0275_9db8,
+    0x0275_8bf8,
+    0x0275_8dc8,
+    0x0275_35f8,
+    0x0275_31f8,
+    0x0276_02d0,
+    0x0275_8f98,
+    0x0275_6b70,
+    0x027b_2a08,
+    0x027b_b520,
+    0x0273_bc98,
+    0x0275_1c20,
+    0x0275_6450,
+    0x0276_0fa8,
+    0x0275_f568,
+    0x0275_61c8,
+    0x0275_6378,
+    0x0273_7a40,
+    0x0275_a188,
+    0x0299_f6f8,
+    0x0275_76e8,
+    0x0299_fcb8,
+    0x0299_fd88,
+    0x0299_ff28,
 ];
 
 /// Validated native bytes, usable only inside this quiescent callback.
@@ -290,8 +289,8 @@ fn acquire(reader: &mut Reader<'_, impl Memory>, game_state: usize) -> Result<()
     Ok(())
 }
 
-/// Native _stricmp name comparison (14253D9F8), through the first NUL.
-/// A non-ASCII comparison needs the recording client's unrecorded locale.
+/// Case-insensitive comparison through the first NUL. Non-ASCII comparison
+/// requires the recording client's unrecorded locale.
 pub fn matches(memory: &impl Memory, token: Token, bytes: &[u8]) -> Result<bool, &'static str> {
     let mut chunk = [0; 128];
     let mut first = 0;
@@ -517,7 +516,7 @@ fn token(memory: &impl Memory, address: usize) -> Result<Token, &'static str> {
     Ok(Token { address, len })
 }
 
-/// Passive 1401F03A0 resolution, preserving suffix wrapping at 1424B8700.
+/// Passive event resolution retaining signed suffix wrapping.
 fn event_id(memory: &impl Memory, base: usize, name: Token) -> Result<Option<u32>, &'static str> {
     let mut identifier = [0; 128];
     let buffered = name.len <= identifier.len();

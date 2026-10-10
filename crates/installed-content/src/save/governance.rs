@@ -17,13 +17,13 @@ pub struct Pack {
     pub doctrine: Option<Vec<DoctrineStatus>>,
 }
 
-/// One saved `NDoctrines::CCountryDoctrineStatus` (writer 1413BA360).
+/// One saved country doctrine status.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DoctrineStatus {
-    /// Token 0x289A; 140BA6770 omits a non-positive country reference.
+    /// The writer omits a non-positive country reference.
     pub country: Option<Vec<u8>>,
-    /// Token 0x3357: the +0x28 tactic vector as each tactic's +0x98 database
-    /// ID in vector order. The writer omits an empty vector.
+    /// Enabled tactics as database IDs in vector order.
+    /// The writer omits an empty vector.
     pub enable_tactic: Vec<i32>,
 }
 
@@ -44,13 +44,13 @@ pub struct Country {
 pub struct Politics {
     pub parties: BTreeMap<Vec<u8>, Decimal>,
     /// Each party's country leaders in native vector order, keyed like
-    /// `parties`. `CPoliticalParty::vf2@141191FA0` writes `country_leader`
-    /// only for a nonzero leader count (+0x7c), so omission is an empty list.
+    /// `parties`. The party writer emits `country_leader` only for a
+    /// nonzero leader count, so omission is an empty list.
     pub leaders: BTreeMap<Vec<u8>, Vec<PartyLeader>>,
     /// Each party's naming, keyed like `parties`.
     pub names: BTreeMap<Vec<u8>, PartyName>,
     pub ideas: Vec<Vec<u8>>,
-    /// 140BA12D0 writes repeated 0x346C entries in roster order.
+    /// The politics writer emits repeated timed-idea entries in roster order.
     pub timed_ideas: Vec<TimedIdea>,
     pub ruling_party: Option<Vec<u8>>,
     pub last_election: Option<SavedDate>,
@@ -58,15 +58,15 @@ pub struct Politics {
     pub elections_allowed: Option<bool>,
 }
 
-/// CTimedIdea::vf2@140BA1580 writes the literal idea and stored signed days.
+/// One saved timed idea: its literal token and stored signed days.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimedIdea {
     pub token: Vec<u8>,
     pub days: i32,
 }
 
-/// A party's naming as `CPoliticalParty::vf2@141191FA0` writes it: `default`
-/// (+0x68), then, only when it is false, `name` (+0x28) and `long_name` (+0x48).
+/// A party's saved naming: `default`, then, only when it is false,
+/// `name` and `long_name`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PartyName {
     /// `None` when the save omits `default`.
@@ -75,12 +75,12 @@ pub struct PartyName {
     pub keys: Option<(Vec<u8>, Vec<u8>)>,
 }
 
-/// CCountryLeader role.
+/// One anonymous `country_leader` entry from a country-leader role.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PartyLeader {
-    /// The role's ideology token (leader+0x140, then +0x10).
+    /// The role's ideology token.
     pub ideology: Vec<u8>,
-    /// The parent CCharacter's reference words (`*(leader+8)+8`): id and type.
+    /// The parent character's reference words: id and type.
     /// A null parent is written as the zeroed invalid reference, `{0, 0}`.
     pub character: (u32, u32),
 }
@@ -90,7 +90,7 @@ pub struct Focus {
     pub current: Option<Vec<u8>>,
     pub continuous: Option<Vec<u8>>,
     pub progress: Option<Decimal>,
-    /// Writer 2DC4E0 emits false only for a zero native byte.
+    /// The focus writer emits false only for a zero stored byte.
     pub paused: Option<bool>,
     pub completed: Vec<CompletedFocus>,
 }
@@ -104,7 +104,7 @@ pub struct CompletedFocus {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Research {
-    /// 140ED02A0 filters instances independently, retaining native order and repeated keys.
+    /// The technology writer filters instances independently, retaining saved order and repeated keys.
     pub technologies: Vec<(Vec<u8>, Technology)>,
     /// Saved array order and repeated idle/technology keys remain intact.
     pub slots: Vec<ResearchSlot>,
@@ -130,11 +130,11 @@ pub struct Decisions {
     pub taken: Vec<Vec<u8>>,
     /// Source positions: re-enable, remove, timed, targeted, targeted-timed.
     pub containers: [Vec<Decision>; 5],
-    /// Status +0x148, written in order by 14072BE70 as repeated `random_item`.
+    /// Saved decision status entries, written in order as repeated `random_item`.
     pub random_items: Vec<DecisionRandomItem>,
 }
 
-/// 14072C2E0 always writes the definition token, signed count and signed target.
+/// The random-item writer always emits the definition token, signed count and signed target.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecisionRandomItem {
     pub token: Vec<u8>,
@@ -184,7 +184,7 @@ pub struct PowerBalance {
     pub trending: Vec<u8>,
     pub countries: Vec<Vec<u8>>,
     pub overrides: Vec<PowerBalanceOverride>,
-    /// 140E44350 writes each +0x50 source's +0x1A8 name, in order.
+    /// The power-balance writer emits each modifier source's name, in order.
     pub modifiers: Vec<Vec<u8>>,
 }
 
@@ -239,7 +239,7 @@ fn parse_politics(items: &[Item]) -> io::Result<Politics> {
     let mut parties = BTreeMap::new();
     let mut leaders = BTreeMap::new();
     let mut names = BTreeMap::new();
-    // BA12D0 omits parties/ideas exactly for empty native arrays.
+    // The politics writer omits parties/ideas exactly for empty arrays.
     for party in optional_block(items, b"parties")?.unwrap_or_default() {
         let token = party
             .key
@@ -260,7 +260,7 @@ fn parse_politics(items: &[Item]) -> io::Result<Politics> {
         ideas: list(items, b"ideas")?,
         timed_ideas: items
             .iter()
-            // Token 0x346C: repeated timed_idea blocks witnessed in PL_R362_H60828108.
+            // Repeated timed_idea blocks retain their roster order.
             .filter(|item| item.keyword_is("timed_idea"))
             .map(|item| {
                 let fields = block(&item.value)?;
@@ -289,13 +289,13 @@ fn party_name(items: &[Item]) -> io::Result<PartyName> {
         (Some(false), Some(name), Some(long_name)) => Some((name, long_name)),
         (Some(false), _, _) => {
             return Err(invalid(
-                "141191FA0 writes name and long_name whenever default is false",
+                "party writer emits name and long_name whenever default is false",
             ));
         }
         (_, None, None) => None,
         _ => {
             return Err(invalid(
-                "141191FA0 writes name and long_name only when default is false",
+                "party writer emits name and long_name only when default is false",
             ));
         }
     };
@@ -311,7 +311,7 @@ fn party_leaders(items: &[Item]) -> io::Result<Vec<PartyLeader>> {
     };
     if entries.is_empty() {
         return Err(invalid(
-            "141191FA0 writes country_leader only for a nonzero leader count",
+            "party writer emits country_leader only for a nonzero leader count",
         ));
     }
     entries
@@ -399,8 +399,8 @@ fn parse_research(items: &[Item]) -> io::Result<Research> {
 
 fn parse_decisions(items: &[Item]) -> io::Result<Decisions> {
     let mut containers: [Vec<Decision>; 5] = Default::default();
-    // 72BE70 writes the five source vectors in this order. The two targeted
-    // save labels are distinct from the names in the superseded old reader.
+    // The decision writer saves the five source vectors in this order;
+    // the two targeted containers have distinct saved labels.
     for (kind, key) in [
         b"decision_to_re_enable".as_slice(),
         b"decision_to_remove",
@@ -628,7 +628,7 @@ pub(super) fn parse_with_countries(
     })
 }
 
-/// CDoctrineSystem::vf2 (140D6C880) writes every status row, omitting the
+/// The doctrine writer emits every status row, omitting the
 /// whole `countries` block only for an empty doctrine array.
 fn parse_doctrine(items: &[Item]) -> io::Result<Vec<DoctrineStatus>> {
     optional_block(items, b"countries")?
@@ -886,7 +886,7 @@ mod tests {
     }
 
     #[test]
-    fn party_leaders_keep_native_order_and_the_null_character_reference() {
+    fn party_leaders_keep_saved_order_and_the_null_character_reference() {
         // The writer's own layout, including its unkeyed entry blocks.
         let pack = parse_text(
             b"countries={AAA={politics={parties={

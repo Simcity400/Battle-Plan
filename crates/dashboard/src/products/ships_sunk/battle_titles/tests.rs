@@ -151,6 +151,8 @@ fn partial_province_tables_keep_proven_points_and_missing_titles_are_counted() {
 
 #[test]
 fn selected_title_names_keep_current_original_reserved_and_rename_operands() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::{
         container::Replay,
         rows::{

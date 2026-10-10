@@ -1,4 +1,4 @@
-//! Selected travel 140DCC3E0 / 140DCB2E0. Target and selection stay local.
+//! Selected travel. Target and selection stay local.
 
 use super::{Arg, Class, Context, Localisation, Tooltip, Unit, line, localise, refuse};
 use crate::map::division_eta::{CounterPreview, CounterQueries, CounterUnit};
@@ -59,8 +59,9 @@ fn counter_unit(unit: Unit) -> CounterUnit {
     }
 }
 
-/// +190 remembers its first matching unit, even null/nonland. A second matching
-/// unit clears only the return pointer: +188 replaces hours, never its route.
+/// The retained-route query remembers its first matching unit, even null or
+/// nonland. A second clears only the returned unit pointer; duration queries
+/// replace hours without replacing that route.
 fn selection_travel(
     class: Class,
     selected: &[Unit],
@@ -108,8 +109,8 @@ fn selection_travel(
     result
 }
 
-/// +188 admits the first unit at each of twelve distinct nonnull sources.
-/// It does not demand LAND. First-unit query failures cannot promote duplicates.
+/// Admit the first unit at each of twelve distinct nonnull sources without
+/// demanding LAND. First-unit query failures cannot promote duplicates.
 fn fallback_hours(
     selected: &[Unit],
     source: &mut impl FnMut(Unit) -> Result<Option<u32>, String>,

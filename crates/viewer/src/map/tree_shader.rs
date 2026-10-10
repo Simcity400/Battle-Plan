@@ -1,4 +1,4 @@
-//! Lit tree1412653E0(mode0), selected by graphics+18; caller141268C60.
+//! Lit-tree submission selected by the tree graphics setting.
 use eframe::wgpu;
 use installed_content::pdxshader::{DepthStencilState, RasterizerState, program::Stage};
 use shader_pipeline::{binding, gpu, library::Effect};
@@ -15,8 +15,8 @@ pub fn technique(high: bool) -> &'static str {
     if high { "tree" } else { "tree_low_gfx" }
 }
 
-///1412653E0 clears the matrix and writes zero seasons in lit mode too.
-/// Its80-byte allocation has an unknown tail at76..79.
+/// Lit mode clears the matrix and writes zero seasons. Its 80-byte allocation retains an unknown
+/// tail at bytes 76 through 79.
 fn constants(fade: f32) -> Vec<u8> {
     let mut bytes = vec![0; 80];
     bytes[72..76].copy_from_slice(&fade.to_le_bytes());
@@ -51,7 +51,7 @@ impl Lit {
             .retain(|key, _| (0..16).any(|slot| *key == binding(slot, Stage::Pixel)));
         let mut pass = gpu::Pass::packed(&compiled, &state, format, samples);
         pass.vertices = super::tree_caster::vertex_layouts(&compiled.vertex.inputs)?;
-        //141268C60 sets CPdxMap+60; depth retains renderer+90 restored by rivers/rails.
+        // Use the tree raster state and retain renderer depth restored by rivers and railways.
         let raster = RasterizerState::default();
         pass.primitive = gpu::primitive(&raster, wgpu::PrimitiveTopology::TriangleList).0;
         pass.depth_stencil =

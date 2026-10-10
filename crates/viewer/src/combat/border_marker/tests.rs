@@ -99,6 +99,8 @@ fn border_marker_membership_and_event_scopes_use_native_alias_and_copy_links() {
 
 #[test]
 fn border_marker_multi_option_enemy_event_appears_only_under_win() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let events = installed_content::events::parse(
         b"add_namespace=s country_event={id=s.5 title=VICTORY option={name=A} option={name=B}} country_event={id=s.6 title=DEFEAT option={name=A} option={name=B}}",
         "events/synthetic.txt",
@@ -313,6 +315,8 @@ fn with_effects(loc: &Localisation, run: impl FnOnce(&EffectContext<'_, '_>)) {
 
 #[test]
 fn border_marker_event_native_effects_or_title_follow_option_count() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let events = installed_content::events::parse(b"add_namespace=s country_event={id=s.1 title={text=IGNORED text=TITLE trigger={always=no}} immediate={custom_effect_tooltip=FIRST hidden_effect={custom_effect_tooltip=HIDDEN} add_political_power=2} option={name=A effect_tooltip={custom_effect_tooltip=SECOND}}}", "events/synthetic.txt", &installed_content::key_names::KeyNames::default());
     let mut event = events.get(b"S.01").unwrap().clone();
     let base = localisation();
@@ -436,6 +440,8 @@ fn border_marker_empty_enemy_description_has_no_enemy_heading_and_counts_failure
 
 #[test]
 fn covered_events_keep_supported_operative_text_and_refuse_missing_scoped_readers() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4-covered-border-events-{}-{:?}",
         std::process::id(),

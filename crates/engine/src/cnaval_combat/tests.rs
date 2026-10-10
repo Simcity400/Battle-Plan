@@ -635,9 +635,8 @@ fn detail_storage_grows_once_from_original_counts_with_equal_faults_and_reads() 
     }
 }
 
-/// Format-23 live session: 302 hours failed with "naval plane identity or group
-/// mismatch". External waves (14160DFE0/14160D930) keep one CFEXAir in both
-/// side+E0 and the side's first group +58, with +8 naming that group.
+/// External waves keep one air slot in both the side array and its first
+/// group array, with the owner pointer naming that group.
 #[test]
 fn side_external_planes_keep_their_first_group_owner() {
     const PLANE: usize = 0xa900;
@@ -1114,10 +1113,11 @@ fn combat_payload_faults_preserve_all_participants_but_identity_faults_do_not() 
     assert_eq!(capture.participants, capture.combats);
 }
 
-/// The mixed registry is walked to its own count: at 50,000 divisions the land combats
-/// alone pass any fixed bound, so twice 4,096 entries, one in 1,024 naval, blank no naval
-/// table. Naval rows past the caller's capacity are counted unread, the demand the
-/// collector grows from.
+/// The mixed registry is walked to its own count even when land combats in a
+/// 50,000-division world dominate it. This fixture has more than twice 4,096
+/// entries and one naval combat per 1,024 entries; sparse naval membership
+/// must still produce its rows. Naval rows past caller capacity are counted
+/// unread, providing the demand for the collector to grow storage.
 #[test]
 fn a_registry_past_4096_combats_is_walked_whole_and_truncates_by_demand() {
     const REGISTRY: usize = 0x10000;
@@ -1316,12 +1316,11 @@ fn walk_whole_mode(
     (capture, rows[0].clone(), ships, len, required)
 }
 
-/// CNavalCombatant::Serialize@14160FF40 and CFEXGroup::Serialize@141C58360 walk the forward
-/// groups, member vectors and plane vectors to their own counts, so the walk has no bound of
-/// its own on them: 8,193 groups a side, 65,537 members a vector and 16,385 planes a vector
-/// are read whole. Ship rows grow from empty storage one read member at a time; a plane
-/// arena too short leaves the combat unread with its exact demand, and the next hour's
-/// arena, grown to that demand, reads it.
+/// Forward groups, members and planes use their own counts without chosen
+/// population bounds. The synthetic fixture has 8,193 groups per side,
+/// 65,537 members per vector and 16,385 planes per vector. Ship storage
+/// grows from empty one acquired member at a time. Short plane storage
+/// withholds the combat with exact demand; grown storage admits it next pass.
 #[test]
 fn groups_members_and_planes_past_the_old_bounds_are_read_whole() {
     const ARRAY: usize = 0x80000;

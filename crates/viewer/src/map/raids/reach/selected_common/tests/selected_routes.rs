@@ -98,8 +98,8 @@ fn selected_army_route_actual_zero_war_uses_the_current_borrowed_owner() {
             },
         ],
     );
-    // A successful D8/F09D0 early return must not demand access, factions,
-    // subjects, raw exile or the D0 search graph. The war cell is independent.
+    // A successful original-location early return must not demand access,
+    // factions, subjects, raw exile or the search graph. The war cell is independent.
     for table in [
         TableId::RelationLinks,
         TableId::FactionMembers,
@@ -247,6 +247,8 @@ fn selected(frame: &mut DecodedFrame, value: Recorded<Option<SelectedUnitInputs>
     );
 }
 fn retreat_definitions(frame: &mut DecodedFrame) {
+    engine::executable_tables::initialize_for_tests()
+        .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let keys = replay::fixed_layout::RETREAT_BANS.keys;
     put::<tables::ModifierDefinitions>(
         frame,
@@ -263,8 +265,7 @@ fn retreat_definitions(frame: &mut DecodedFrame) {
         keys.iter()
             .map(|&index| LexicalTokenRow {
                 token: index,
-                literal: engine::modifier_keys::ALL
-                    .iter()
+                literal: engine::modifier_keys::all()
                     .find(|key| key.index == index)
                     .unwrap()
                     .name
@@ -337,7 +338,7 @@ fn selected_retreat_uses_independent_current_values_and_known_null_commander() {
             .is_err()
         );
     }
-    // Class13 vf8 ReturnZero is known before any Army/daily packet or layout.
+    // Class 13 returns zero before reading an army/daily packet or layout.
     *frame.tables[TableId::DivisionMovement.index()] = TableView::Unavailable {
         reason: "must remain unreached".into(),
     };

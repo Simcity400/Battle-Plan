@@ -1,59 +1,58 @@
-//! CReferencedDivisionTemplate identity and retained model preferences.
+//! Referenced division-template identity and retained model preferences.
 
-/// CReferencedDivisionTemplate vtable; old offsets.rs:639, pinned RTTI COL at RVA2CB8218 confirms the actual class name.
+/// Primary vtable.
 pub const VTABLE_RVA: usize = 0x0293_8f70;
-/// CReferencedDivisionTemplate reference type; old offsets.rs:640 and template reader.
+/// CReferencedDivisionTemplate reference type.
 pub const REFERENCE_TYPE: u32 = 52;
-/// CReferencedDivisionTemplate u32 type word; old offsets.rs:641 and template reader.
+/// CReferencedDivisionTemplate u32 type word.
 pub const TYPE: usize = 0x08;
-/// Skips the fog reveal of this template's divisions: `GetDivisionRevealSkipFlag@140C79AA0`
-/// reads CArmy+0x3B8's byte here for `radar_group::fog_consumer@141606390`.
+/// Division fog-reveal skip byte read from the selected template.
 pub const REVEAL_SKIP: usize = 0x234;
-/// CReferencedDivisionTemplate u32 id; old offsets.rs:642 and template reader.
+/// CReferencedDivisionTemplate u32 id.
 pub const ID: usize = 0x0c;
-/// CReferencedDivisionTemplate contained composition storage; old UZ func_140c6f080.decompile.c returns template+18, no RTTI base there.
+/// Contained composition storage, separate from a base subobject.
 pub const COMPOSITION: usize = 0x18;
-/// CReferencedDivisionTemplate name MSVC string; old recorder_host/native_design_catalog.rs:492 receives registry primary pointer.
+/// CReferencedDivisionTemplate name MSVC string.
 pub const NAME: usize = 0x20;
-/// Composition+0x28 fallback localisation key; GetDisplayName@140B91170.
+/// Composition fallback localisation key.
 pub const NAME_KEY: usize = COMPOSITION + 0x28;
-/// CReferencedDivisionTemplate grid dimensions, columns low16/rows high16; old native_design_catalog.rs:493-495.
+/// CReferencedDivisionTemplate grid dimensions, columns low16/rows high16.
 pub const GRID_DIMENSIONS: usize = 0x60;
-/// CReferencedDivisionTemplate regiment CSubUnitDefinition pointer-vector data; old native_design_catalog.rs:500.
+/// CReferencedDivisionTemplate regiment CSubUnitDefinition pointer-vector data.
 pub const REGIMENT_DATA: usize = 0x68;
-/// CReferencedDivisionTemplate regiment u32 count; old native_design_catalog.rs:500, row stride8.
+/// CReferencedDivisionTemplate regiment u32 count.
 pub const REGIMENT_COUNT: usize = 0x74;
-/// CReferencedDivisionTemplate support CSubUnitDefinition pointer-vector data; old native_design_catalog.rs:503.
+/// CReferencedDivisionTemplate support CSubUnitDefinition pointer-vector data.
 pub const SUPPORT_DATA: usize = 0x88;
-/// CReferencedDivisionTemplate support u32 count; old native_design_catalog.rs:501-503, row stride8.
+/// CReferencedDivisionTemplate support u32 count.
 pub const SUPPORT_COUNT: usize = 0x94;
-/// CReferencedDivisionTemplate regimental-support definition pointer-vector data; old native_design_catalog.rs:505, primary pointer.
+/// CReferencedDivisionTemplate regimental-support definition pointer-vector data.
 pub const REGIMENTAL_SUPPORT_DATA: usize = 0xa8;
-/// CReferencedDivisionTemplate regimental-support u32 count; old native_design_catalog.rs:505, row stride8 not contained composition pairs.
+/// CReferencedDivisionTemplate regimental-support u32 count.
 pub const REGIMENTAL_SUPPORT_COUNT: usize = 0xb4;
-/// CReferencedDivisionTemplate excluded CEquipmentVariant pointer-vector data; division_presentation_inputs.rs:105-132.
+/// Excluded equipment-variant pointer-array data.
 pub const EXCLUDED_VARIANT_DATA: usize = 0x140;
-/// CReferencedDivisionTemplate exclusion u32 capacity; division_presentation_inputs.rs:107.
+/// Excluded variant-array capacity, u32.
 pub const EXCLUDED_VARIANT_CAPACITY: usize = 0x148;
-/// CReferencedDivisionTemplate exclusion u32 count; division_presentation_inputs.rs:108.
+/// Excluded variant-array count, u32.
 pub const EXCLUDED_VARIANT_COUNT: usize = 0x14c;
-/// CReferencedDivisionTemplate u32 priority; old native_design_catalog.rs:507.
+/// CReferencedDivisionTemplate u32 priority.
 pub const PRIORITY: usize = 0x1a4;
-/// CReferencedDivisionTemplate lock-regime snapshot byte; old native_design_catalog.rs:507, no boolean collapse.
+/// Raw lock-regime byte retained without boolean collapse.
 pub const LOCK_REGIME: usize = 0x1cc;
-/// CReferencedDivisionTemplate token289A country operand i32; old native_design_catalog/native_inputs.rs:37 and template_country_inputs.
+/// CReferencedDivisionTemplate token289A country operand i32.
 pub const COUNTRY_OPERAND_289A: usize = 0x1ec;
-/// CReferencedDivisionTemplate token3ABE country operand i32; old native_design_catalog/native_inputs.rs:38 and template_country_inputs.
+/// CReferencedDivisionTemplate token3ABE country operand i32.
 pub const COUNTRY_OPERAND_3ABE: usize = 0x1f4;
-/// CReferencedDivisionTemplate raw model-category u64; division_presentation_inputs.rs:151, meaningful only when presence byte is set.
+/// Raw model category, u64, meaningful only when its presence byte is set.
 pub const MODEL_CATEGORY: usize = 0x200;
-/// CReferencedDivisionTemplate category-presence byte; division_presentation_inputs.rs:147.
+/// Model-category presence byte.
 pub const MODEL_CATEGORY_PRESENT: usize = 0x208;
-/// CReferencedDivisionTemplate MSVC entity-name string; division_presentation_inputs.rs:144, engine-owned bytes preserved.
+/// Model entity-name string; retain exact engine-owned bytes.
 pub const MODEL_ENTITY: usize = 0x210;
-/// CReferencedDivisionTemplate lock byte; old native_design_catalog.rs:507 preserves its nonzero test.
+/// Lock byte tested for nonzero.
 pub const LOCKED: usize = 0x235;
-/// CReferencedDivisionTemplate obsolete flag byte, bit0; old native_design_catalog.rs:507.
+/// CReferencedDivisionTemplate obsolete flag byte, bit0.
 pub const OBSOLETE_FLAGS: usize = 0x236;
 
 use crate::{
@@ -66,27 +65,25 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// Contained composition +190, consumed by 140B90370 for the counter sprite.
+/// Stored composition priority subunit used by the counter sprite.
 pub const PRIORITY_UNIT: usize = COMPOSITION + 0x190;
-/// Contained composition +198, preferred by category getter 140B8F7F0.
+/// Stored composition preferred category subunit.
 pub const CATEGORY_UNIT: usize = COMPOSITION + 0x198;
-/// Contained composition +1A0, the 3D-model representative RecalculateDerivedStats
-/// (140B94FA0) stores; 140B91150 returns it before falling back to 140B90370.
+/// Stored representative model subunit selected before priority fallback.
 pub const VISUAL_REPRESENTATIVE: usize = COMPOSITION + 0x1a0;
-/// Contained composition +A8/+B4: the (CSubUnitDefinition*, i32 count) entries
-/// 140B94FA0 groups from the three grids, which 141918950 and 141919100 score.
+/// Contained composition equipment counts grouped from the three grids
+/// and used by model scoring.
 pub const SUBUNIT_COUNTS: usize = COMPOSITION + 0xa8;
 /// A grouped entry: definition pointer, then its signed count.
 pub const SUBUNIT_COUNT_STRIDE: usize = 0x10;
-/// Contained composition +1A8, saved by 140B977F0 token34ED and consumed by 1418C4B50.
+/// Stored composition active-weight operand, serialized and used by counters.
 pub const CUSTOM_ICON: usize = COMPOSITION + 0x1a8;
 /// Contained composition +1AC, token3525; controls custom-icon use under NATO settings.
 pub const CUSTOM_ICON_NATO: usize = COMPOSITION + 0x1ac;
-/// Contained composition +1B0, the signed count added with native i32 wrapping
-/// by CountFormationDivisions@140FF4770 after GetDivisionTemplate@140C6F080.
-/// The existing hourly fixed span already contains this word.
+/// Contained composition signed count added with i32 wrapping for formation
+/// division counts. The hourly fixed span already contains this word.
 pub const FORMATION_DIVISION_COUNT: usize = COMPOSITION + 0x1b0;
-/// Contained composition +218, first nonzero override in category getter 140B8F7F0.
+/// First nonzero composition category override.
 pub const UNIT_TYPE_OVERRIDE: usize = COMPOSITION + 0x218;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -127,10 +124,10 @@ pub struct IconRow {
     /// Raw composition count for the ability's late-join denominator. It is
     /// independent of the model fields and retains its signed native value.
     pub formation_division_count: Option<i32>,
-    /// Independently acquired GetDisplayName operands in the caller's name arena.
+    /// Independently acquired display-name operands in the caller's name arena.
     pub display_name: Option<DisplayName>,
-    /// 140B91150's result: +0x1A0, else the priority getter's. Token zero is
-    /// the null object, which draws no model. Its count is unused.
+    /// Stored representative model or priority fallback. Token zero is the null
+    /// object and draws no model; its count is unused.
     pub representative: SubunitCount,
     /// The stored grouped entries, in native order.
     pub counts: Span,
@@ -174,7 +171,7 @@ pub struct Walk {
     pub outcome: Outcome,
     pub bytes_len: usize,
     pub required_bytes: usize,
-    /// GetDisplayName@140B91170 uses the fallback key only for an empty literal.
+    /// Display naming uses the fallback key only when literal text is empty.
     pub required_name_bytes: usize,
     /// Definition memo slots that would hold every definition at half load.
     pub required_memo: usize,
@@ -639,9 +636,8 @@ impl Tokens for Definitions<'_> {
     }
 }
 
-/// 140B90370's fallback when +0x190 is null: regiment cell (0,0) when
-/// 140FAA3F0's low-16-bit real-unit count is nonzero, else the null singleton.
-/// The native wrap is kept.
+/// Fallback priority subunit: first regiment cell when the low-16-bit real-
+/// unit count is nonzero, otherwise null singleton. Preserve wrapping.
 fn fallback_priority_unit(
     memory: &impl Memory,
     base: usize,
@@ -832,7 +828,7 @@ fn visit_templates(
     Ok(())
 }
 
-/// 140B90370's sub-unit: the stored priority unit, else its fallback.
+/// Priority subunit or its fallback.
 fn selected_unit(
     memory: &impl Memory,
     base: usize,
@@ -1098,9 +1094,9 @@ pub struct DisplayName {
     pub fallback_key: Option<Span>,
 }
 
-/// Called only after visit_templates authenticated this exact wrapper in the
-/// admitted world read. 140B91170 receives wrapper+18: its literal is wrapper+20,
-/// fallback key wrapper+40. The current icon country already carries +1D4.
+/// Called only after the exact wrapper authenticates in this world read.
+/// Display naming selects literal text and fallback key from that wrapper;
+/// the current icon country already carries its selector.
 #[cfg(test)]
 fn display_name(
     memory: &impl Memory,
@@ -1221,8 +1217,7 @@ fn walk_icons_inner(
                 owner = Some(country);
                 memo.begin_country();
             }
-            // What the counter draws, as L3a reads it: a failure here fails
-            // the hour's table.
+            // Counter drawing operands; a failure here fails the hour's table.
             let selected = selected_unit(
                 memory,
                 base,
@@ -1336,7 +1331,7 @@ fn walk_icons_inner(
                 {
                     return Ok(false);
                 }
-                // 140B91150: +0x1A0, else the priority getter's result.
+                // Stored representative model, then priority fallback.
                 row.representative = match word(record, icon(VISUAL_REPRESENTATIVE)) as usize {
                     0 => memo.identify(memory, base, selected)?,
                     representative => memo.identify(memory, base, representative)?,

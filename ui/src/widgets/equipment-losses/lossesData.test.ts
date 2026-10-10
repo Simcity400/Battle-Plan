@@ -500,12 +500,12 @@ test('Combat Log keeps land states and exposes shared air destruction coverage s
   assert.deepEqual(destructionLegend(data, whole, TOKENS).map(item => item.label), ['Recorded: 4 hours', 'Unknown: 6 hours — A drain was lost.']);
 });
 
-test('an app label keeps the game sentence in its tooltip, never a template with fill-ins', () => {
+test('an app label keeps resolved source text in its tooltip, never a template with fill-ins', () => {
   const data = reply();
-  data.causes[0].name = { key: 'TOTAL_SHIPS_LOST', template: 'Total number of ships we have lost', text: 'Sunk ships' };
+  data.causes[0].name = { key: 'FIXTURE_RESOLVED_LOSS_HINT', template: 'A completed source label for this loss category', text: 'Sunk ships' };
   const notes = (tree: ReturnType<typeof treeAt>) => lossDetails(tree.children.find(node => node.label === 'Sunk ships')!, data, 105).map(row => `${row.label}: ${row.value}`).join(' ');
-  assert.match(notes(treeAt(data, 105)), /Game text: Total number of ships we have lost/);
-  data.causes[0].name = { key: 'LEDGER_CHART_DAMAGED_CONVOYS', template: 'Lost Convoys: $NUM|H$', text: 'Sunk ships' };
+  assert.match(notes(treeAt(data, 105)), /Game text: A completed source label for this loss category/);
+  data.causes[0].name = { key: 'FIXTURE_PENDING_LOSS_HINT', template: 'Synthetic category amount: $AMOUNT|H$', text: 'Sunk ships' };
   assert.doesNotMatch(notes(treeAt(data, 105)), /Game text/);
 });
 

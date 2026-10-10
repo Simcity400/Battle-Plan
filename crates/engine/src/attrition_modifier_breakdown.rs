@@ -1,10 +1,9 @@
-//! Passive formatter trees requested by own-army attrition 140C65DC0.
+//! Passive formatter trees requested by own-army attrition.
 //!
-//! 14054D0F0 walks accumulator children (+0x18), preserving each occurrence,
-//! and reads CModifier's stored display string (+0x48). Country attrition uses
-//! depth 2, so nonzero interior labels are retained as well as leaf labels.
-//! Only requested (accumulator, key) pairs are captured. Source depth and scale
-//! remain on the army's operands; they do not change the stored tree identity.
+//! Traversal preserves each accumulator-child occurrence and reads stored modifier
+//! display strings. Country attrition uses depth two, retaining nonzero interior
+//! labels and leaf labels. Only requested accumulator/key pairs are captured.
+//! Source depth and scale stay on army operands and do not change tree identity.
 
 use crate::{
     Memory, cpdx_array::Array, modifier_accumulator, modifier_definition, msvc_string, read,

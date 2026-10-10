@@ -5,22 +5,21 @@ use crate::{
     modifier_definition, read, read_slice, walk::Outcome,
 };
 
-/// CCombatTactic primary vtable; archived offsets.rs:809, confirmed by a729 RTTI.
+/// Tactic primary vtable.
 pub const VTABLE_RVA: usize = 0x027d_0058;
-/// CCombatTactic MSVC string token; archived offsets.rs:811 and `compact_country_preferred_tactic_row`.
+/// Token string.
 pub const TOKEN: usize = 0x10;
-/// CCombatTactic MSVC string name; archived offsets.rs:812 and side-detail tactic identity read.
+/// Name string.
 pub const NAME: usize = 0x30;
-/// CCombatTactic i32 database id; archived offsets.rs:813 and preferred-tactic identity read.
+/// Database id, i32.
 pub const ID: usize = 0x98;
+/// Countered tactic id compared with the opposing tactic id.
 pub const COUNTER_ID: usize = 0x90;
-/// CCombatTactic u32 modifier-metadata key; archived tactic_weight.rs:29 and preferred-tactic weight reader.
+/// Modifier-metadata key, u32.
 pub const MODIFIER_KEY: usize = 0x174;
-/// Combat-tactics database singleton that GetCombatTacticsDatabase
-/// (1406B0FC0) reads and lazily creates; the recorder never creates it.
+/// Tactic-database singleton, lazily created by the game; recording never creates it.
 pub const DATABASE_RVA: usize = 0x0331_88c0;
-/// Database CPdxArray of tactic pointers in ID order; index 0 is the null
-/// entry. 1406B0FC0 zeroes it at +10 on construction.
+/// Tactic-pointer array in id order, with a null entry at index zero.
 pub const DATABASE_ENTRIES: usize = 0x10;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -75,9 +74,9 @@ fn selection(
     Ok((pointer, Some(tactic_id)))
 }
 
-/// [`preferred`] without the token bytes, for a reader that needs only the
-/// selection and its weight: the land tactic weight (1412A77A0) reads no name,
-/// so no name length can make it unavailable.
+/// [`preferred`] without token bytes for consumers needing only selection
+/// and weight. Weight evaluation reads no name, so name length cannot
+/// make it unavailable.
 pub fn preferred_identity(
     memory: &impl Memory,
     base: usize,

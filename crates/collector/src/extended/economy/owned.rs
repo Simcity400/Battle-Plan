@@ -223,7 +223,7 @@ impl Captured {
         }
         let started = qpc();
         let supply = if job.log.worker_growth_enabled() {
-            // 140EB08F0 walks the full +0x10/+0x1c checksum vector.
+            // Supply checksums retain the full vector.
             // Decode sizes from its already-owned header, never live memory.
             sprovince_supply_data::walk_growing(
                 &recorded,

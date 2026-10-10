@@ -1,25 +1,9 @@
-//! A raid's own equipment pool (`CRaidInstance+0x110`, a
-//! `CEquipmentVariantPool`) and its nuke count (`+0x150`), which
-//! `CRaidInstance::CanExecute@140FD6550` passes to
-//! colour a prepared raid's arrow READY or PREPARING. The same pool is
-//! `CalculateRaidUnitSpeed@141453880`'s `+0x130`/`+0x13C` (items `+0x20`,
-//! count `+0x2C` of the pool).
-//!
-//! Two arrays of the pool are read. The items (`+0x20`, 16-byte
-//! `(variant, amount)` entries) are what the save writes. The per-archetype
-//! totals (`+0x08`, count `+0x14`, [`allocation_equipment_row`] entries: the
-//! archetype `CEquipmentType*` at `+0`, the raw total at `+0x10`) are what the
-//! requirement check reads: `CheckRaidEquipmentRequirements` asks
-//! `CEquipmentVariantPool::GetArchetypeQuantity@140FF97C0` for each required
-//! archetype, which scans this array by the archetype id (`+0x418`) and
-//! returns the entry's `+0x10`. `CEquipmentVariantPool::AddVariantQuantity@140FF7A30`
-//! adds each quantity to the item and to its archetype's total, clamping each
-//! running sum to `±0x53E2D620FB40` separately, so a total is not always the
-//! sum of its items and is read, not rebuilt. An archetype is recorded by its
-//! token (`CEquipmentType+8`), as StockpileArchetypes records the country
-//! stockpile's.
-//!
-//! No engine function is called.
+//! Raid-owned equipment pool and nuke count used by prepared-raid admission
+//! and raid speed. Two pool arrays are acquired: exact variant/amount items and
+//! stored per-archetype totals. Requirement selection matches archetype IDs and
+//! uses those totals. Item and archetype running sums clamp independently, so
+//! totals cannot always be reconstructed from items. Archetypes are recorded by
+//! their lexer tokens. No game function is called.
 
 use crate::{
     Memory, allocation_equipment_row, cequipment_type, cequipment_variant, cequipment_variant_pool,
@@ -108,9 +92,7 @@ pub struct Walk {
     pub required_archetypes: usize,
 }
 
-/// Whether a raid's pool is recorded: before launch (phases 1 to 3, where
-/// `CanExecute` colours its arrow) and while it flies
-/// ([`raid_speed_inputs::live`]).
+/// Record pools before launch in phases one to three and while flying ([`raid_speed_inputs::live`]).
 pub fn recorded(raid: &Raid, hour: i32) -> bool {
     (craid_instance::PHASE_ASSEMBLING..=craid_instance::PHASE_PREPARED).contains(&raid.phase)
         || raid_speed_inputs::live(raid.phase, raid.outcome, raid.end_hour, hour)

@@ -1,3 +1,3 @@
-//! CConferenceLiberatedParticipant's primary identity.
-/// a729 RTTI and constructors 141441730/1414417A0.
+//! Liberated-country peace participant identity.
+/// Primary vtable.
 pub const VTABLE_RVA: usize = 0x029a_b980;

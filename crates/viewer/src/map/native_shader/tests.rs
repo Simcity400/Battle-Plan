@@ -6,7 +6,7 @@ use std::{
 };
 mod models;
 mod parts;
-// CSpriteType::initialize_animations@14222B5F0 supplies these native define families.
+// Supply these native define families.
 fn is_gui_effect(name: &str) -> bool {
     name.ends_with(".shader")
         && (name.starts_with("buttonstate")
@@ -77,15 +77,6 @@ pub(crate) fn device() -> (
         pollster::block_on(adapter.request_device(&crate::render::device_descriptor(&adapter)))
             .unwrap();
     (serial, device, queue)
-}
-
-fn render(
-    device: &eframe::wgpu::Device,
-    queue: &eframe::wgpu::Queue,
-    pipeline: &gpu::Pipeline,
-    draw: &gpu::Draw,
-) -> Vec<u8> {
-    render_with(device, queue, |pass| pipeline.draw(pass, draw))
 }
 
 pub(crate) fn render_with(

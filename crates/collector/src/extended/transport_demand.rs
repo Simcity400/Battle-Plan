@@ -220,8 +220,8 @@ fn air(
         state,
         |root| {
             let regions = (|| {
-                // GetRegionalAirWingArray@140C44FA0 and RegisterMission@140C4E360
-                // index +0x98's nested headers at 0x18, not their 16-byte payload.
+                // Regional-wing and mission registration index nested array
+                // headers rather than their 16-byte payload.
                 let stride = engine::cpdx_array::STRIDE;
                 let outer = array(
                     memory,
@@ -264,7 +264,7 @@ fn air(
                 }
                 Ok(())
             })();
-            // 140F96470 consumes original +E0 factors with strideA0, word+80.
+            // Consume the original factor array at its declared record stride.
             let factors = array(memory, root.address, 0xe0, 0xa0)
                 .and_then(|factors| add(&mut demand[3], factors.count as usize));
             for result in [regions, factors] {

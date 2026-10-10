@@ -43,12 +43,12 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) ->
             });
             if let LaunchNavalBases::Bases(bases) = &packet.naval_bases {
                 report.limitation(
-                    "CNavalBase::Write@140E9CFF0 does not serialize the holder's raw country word; exact holder bits and object membership require matched native/write/consumer witnesses",
+                    "the naval base save writer does not serialize the holder's raw country word; exact holder bits and object membership require matched native/write/consumer witnesses",
                     format!("{LABEL}.naval_bases: {} recorded occurrences", bases.len()),
                 );
             } else {
                 report.limitation(
-                    "native-null launch provider (1406ECBF0/140E92F70): the save absence check cannot certify the runtime pointer or 140E6DA70/140E6D340 consumer behavior",
+                    "native-null launch provider: the save absence check cannot certify the runtime pointer or the consuming calculations",
                     format!("{LABEL}.naval_bases: native null; saved actual0 base-absence comparison required"),
                 );
             }
@@ -82,7 +82,7 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) ->
                 ),
             }
             report.limitation(
-                "CCountry::Write@14070C580 does not serialize the +0x478 owned-state array; saved State owners cannot certify its exact IDs, count, order or repeats",
+                "the country save writer does not serialize the owned-state array; saved State owners cannot certify its exact IDs, count, order or repeats",
                 format!("{LABEL}.owned_states: {} occurrences require matched native/write/consumer witnesses", states.len()),
             );
         }
@@ -231,7 +231,7 @@ fn saved_bases(
         report.compared("reserved launch native-null saved absence", 1);
     } else if expected_aliases == 0 {
         report.limitation(
-            "CGameState::Write@1401F2A20 starts at physical slot one; an authenticated census with no positive physical actual0 occurrence provides no saved reserved-navy payload",
+            "the game state save writer starts at physical slot one; an authenticated census with no positive physical actual0 occurrence provides no saved reserved-navy payload",
             format!("{LABEL}.naval_bases: matched native/write/consumer witness required"),
         );
     }

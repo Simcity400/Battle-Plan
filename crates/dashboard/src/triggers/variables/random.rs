@@ -1,10 +1,10 @@
-//! TLS variable RNG, distinct from CEventScope's iterator seed (140537810).
+//! TLS variable RNG, distinct from event scopes' iterator seed.
 
 use super::*;
 use crate::scripted_text::{EventObject, EventScope, random};
 
 impl Evaluator<'_, '_> {
-    /// 1405354A0: lazy failures preserve descriptions that never consume RNG.
+    /// Lazy failures preserve descriptions that never consume RNG.
     /// The native outer context fixes THIS/FROM before nested checks enter scopes.
     pub(in crate::triggers) fn initialize_variable_random(&self, scopes: Scopes) {
         if self.temps_written().is_some() {
@@ -41,7 +41,7 @@ impl Evaluator<'_, '_> {
             (this, from)
         } else {
             if scopes.unknown.from {
-                return Err("variable RNG FROM scope is unknown (1405354A0/140536DF0)".into());
+                return Err("variable RNG FROM scope is unknown".into());
             }
             let object = super::super::event_scopes::event_object;
             (
@@ -49,12 +49,16 @@ impl Evaluator<'_, '_> {
                 EventScope::of(object(scopes.from.unwrap_or(scopes.this))?),
             )
         };
-        // BeginScopedVariableRandomSeed selects country, state, character,
+        // Variable seed initialisation selects country, state, character,
         // combat leader, then GLOBAL; it does not select the MIO/project store.
         let store = match this.this {
-            EventObject::Combat => return Err("bare combat variable RNG needs its combat leader seed, not the side country store (1405354A0/140529EE0)".into()),
-            EventObject::Country(country) | EventObject::CountryState { country, .. }
-                | EventObject::CountryUnitLeader { country, .. }
+            EventObject::Combat => return Err(
+                "bare combat variable RNG needs its combat leader seed, not the side country store"
+                    .into(),
+            ),
+            EventObject::Country(country)
+            | EventObject::CountryState { country, .. }
+            | EventObject::CountryUnitLeader { country, .. }
                 if self.variable_scope_has_country(country)? =>
             {
                 Store::Country(country)
@@ -66,7 +70,9 @@ impl Evaluator<'_, '_> {
             }
             EventObject::Character(id) => Store::Character(id),
             EventObject::UnitLeader(reference)
-                | EventObject::CountryUnitLeader { leader: reference, .. } => Store::Character(
+            | EventObject::CountryUnitLeader {
+                leader: reference, ..
+            } => Store::Character(
                 self.world()
                     .unit_leader(reference)?
                     .ok_or("variable RNG unit leader is not recorded")?
@@ -75,15 +81,15 @@ impl Evaluator<'_, '_> {
             _ => Store::Global,
         };
         let seed = self.world().variable_seed(store)?;
-        // +0x20 is immediate FROM (not ROOT). Arithmetic narrows to u32.
+        // Use immediate FROM (not ROOT). Arithmetic narrows to u32.
         let seed = seed
             .wrapping_add(self.variable_scope_hash(this)?.wrapping_mul(13))
             .wrapping_add(self.variable_scope_hash(from)?.wrapping_mul(17));
         Ok(i64::from(seed))
     }
 
-    // Scope identities use canonical slots, while the native +8 gate uses
-    // the signed raw country reference (1405354A0/140529EE0).
+    // Scope identities use canonical slots, while the country-presence gate uses
+    // the signed raw country reference.
     pub(in crate::triggers) fn variable_scope_has_country(
         &self,
         country: u32,
@@ -97,7 +103,7 @@ impl Evaluator<'_, '_> {
         }
     }
 
-    /// GetConstSeed@140529EE0 -> 140536DF0; fall back to scope+0x0C.
+    /// Use the object's identity seed, falling back to the stored scope seed.
     fn variable_scope_hash(&self, scope: EventScope) -> Result<u32, String> {
         let hash = match scope.this {
             EventObject::Country(country)
@@ -135,9 +141,9 @@ impl Evaluator<'_, '_> {
                 ((reference >> 32) as u32).wrapping_mul(0x79d)
             }
             EventObject::Province(_) => {
-                return Err("province is not a native variable RNG scope (140529EE0)".into());
+                return Err("province is not a variable RNG scope".into());
             }
-            _ => scope.require_random_seed()?, // No PROJECT+0x90 branch in 140529EE0.
+            _ => scope.require_random_seed()?, // Projects have no identity-seed branch.
         };
         Ok(hash)
     }
@@ -146,7 +152,7 @@ impl Evaluator<'_, '_> {
         self.world()
             .character(id)?
             .ok_or("variable RNG character is not recorded")?;
-        // HashReferenceHandle@14220A010 swaps type/id words; ccharacter::read
+        // Reference hashing swaps type/id words; ccharacter::read
         // validates the hard-coded native type before publishing Characters.
         let reference = u64::from(id) << 32 | u64::from(engine::ccharacter::REFERENCE_TYPE);
         Ok(super::super::scripted_localisation::reference_hash(
@@ -157,16 +163,16 @@ impl Evaluator<'_, '_> {
     pub(super) fn next_variable_random(&self, scopes: Scopes) -> Result<i64, String> {
         let isolated = self.checking.get() == 0 && self.description_depth.get() == 0;
         if isolated {
-            self.local_temps.borrow_mut().clear(); // 140544190 opens a fresh TLS context.
+            self.local_temps.borrow_mut().clear(); // Open a fresh TLS context.
             self.clear_temp_writer();
         }
         self.initialize_variable_random(scopes);
         let value = self.temp(b"random_seed", scopes)?.unwrap();
         let seed = self.raw(value)? as u32;
-        // 140537810 fixes this counter from the low word, not its stored high word.
+        // The counter is fixed from the low word, not its stored high word.
         let counter = 0x5ea6_ba9f_u32.wrapping_sub(seed);
         let fraction = random::scoped_draw(seed, counter) % ONE as i32;
-        // 1403B7C30 mixes seed+1 and seed+2 with that same counter, swaps
+        // Mix seed+1 and seed+2 with that same counter, swap
         // their positions, and clears only bit 63 before storing the TLS value.
         let next = (u64::from(random::scoped_word(seed.wrapping_add(1), counter)) << 32
             | u64::from(random::scoped_word(seed.wrapping_add(2), counter)))

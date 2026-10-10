@@ -171,8 +171,8 @@ fn fixture(output: &str) -> (Fixture, Folder) {
                 ..Default::default()
             },
         ]));
-    // ResolveCharacter evaluates the operand as a scoped variable before
-    // its named-character fallback (140536B10). A recorded empty store
+    // Character resolution evaluates the operand as a scoped variable before
+    // its named-character fallback. A recorded empty store
     // proves that no variable shadows either registered scientist token.
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
@@ -194,11 +194,13 @@ fn render(fixture: &Fixture, body: &str) -> Description {
     fixture.render_native(body, &mut fresh(), content.view(None))
 }
 
-// Reach witness common/decisions/sia.txt:1736; default show_modifiers=yes.
+// Output blocks default show_modifiers to yes.
 #[test]
 fn template_output_header_unlocks_limits_and_module_country_gate() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(
-        "enable_subunits={mod_unit limit={always=yes}} enable_equipments={mod_equipment} enable_equipment_modules={mod_module mod_forbidden_module} enable_subunits={mod_unit limit={always=no}} ",
+        "enable_equipment_modules={mod_forbidden_module mod_module} enable_subunits={mod_unit limit={always=yes}} enable_equipments={mod_equipment} enable_subunits={mod_unit limit={always=no}}",
     );
     let output = render(&fixture, "complete_special_project=sp:mod_project");
     assert_eq!(
@@ -210,6 +212,8 @@ fn template_output_header_unlocks_limits_and_module_country_gate() {
 
 #[test]
 fn subunit_unlock_duplicate_keeps_its_first_limit_before_admission() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(
         "enable_subunits={limit={always=no} mod_unit} enable_subunits={limit={always=yes} mod_unit}",
     );
@@ -220,10 +224,12 @@ fn subunit_unlock_duplicate_keeps_its_first_limit_before_admission() {
 
 #[test]
 fn country_effects_use_fresh_owner_root_and_prev() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture("country_effects={custom_effect_tooltip=PROJECT_COUNTRY}");
     let output = render(
         &fixture,
-        // 1404964D0 -> 14048FD40 reads reward/option statements, not output effects.
+        // reads reward/option statements, not output effects.
         "complete_special_project={project=sp:mod_project show_modifiers=yes iteration_output={mod_reward=mod_option}}",
     );
     assert_eq!(
@@ -235,19 +241,23 @@ fn country_effects_use_fresh_owner_root_and_prev() {
 
 #[test]
 fn country_output_from_link_preserves_the_project_carrier() {
-    // air_projects.txt:98 enters FROM; 141A26600 installs the project there.
-    let (fixture, _folder) = fixture("country_effects={FROM={add_project_progress_ratio=0.5}}");
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    // enters FROM; installs the project there.
+    let (fixture, _folder) = fixture("country_effects={FROM={add_project_progress_ratio=0.37}}");
     let output = render(&fixture, "complete_special_project=sp:mod_project");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
     assert_eq!(
         output.text,
-        "Complete Project AAA\n  Output\n  Project context Project AAA Progress Project AAA 0.50\n\n"
+        "Complete Project AAA\n  Output\n  Project context Project AAA Progress Project AAA 0.37\n\n"
     );
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
 #[test]
-fn scientist_fallback_uses_native_roster_order_and_fresh_character_root() {
+fn scientist_fallback_uses_roster_order_and_fresh_character_root() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture("scientist_effects={custom_effect_tooltip=PROJECT_SCIENTIST}");
     let output = render(&fixture, "complete_special_project=sp:mod_project");
     assert_eq!(
@@ -267,7 +277,9 @@ fn scientist_fallback_uses_native_roster_order_and_fresh_character_root() {
 }
 
 #[test]
-fn effects_keep_native_country_scientist_facility_order() {
+fn effects_keep_country_scientist_facility_order() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(
         "country_effects={custom_effect_tooltip=PROJECT_COUNTRY} scientist_effects={custom_effect_tooltip=PROJECT_SCIENTIST} facility_state_effects={custom_effect_tooltip=PROJECT_FACILITY}",
     );
@@ -281,6 +293,8 @@ fn effects_keep_native_country_scientist_facility_order() {
 
 #[test]
 fn unrostered_scientist_refusal_preserves_country_output() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture(
         "country_effects={custom_effect_tooltip=PROJECT_COUNTRY} scientist_effects={custom_effect_tooltip=PROJECT_SCIENTIST}",
     );
@@ -304,11 +318,13 @@ fn unrostered_scientist_refusal_preserves_country_output() {
         output.text,
         "Complete Project AAA\n  Output\n  Country AAA/AAA\n\n"
     );
-    assert_eq!(output.refusals, BTreeMap::from([("synthetic effect CCompleteProjectEffect@?A0x9898cfbe@NProject: key complete_special_project: unrostered character 7 scientist holder (CCharacter+0xC0, 1404909E0) is unrecorded".into(),1)]));
+    assert_eq!(output.refusals, BTreeMap::from([("synthetic effect project completion: key complete_special_project: unrostered character 7 scientist holder is unrecorded".into(),1)]));
 }
 
 #[test]
 fn facility_selector_precedes_specialization_and_injects_stored_province_id() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) =
         fixture("facility_state_effects={custom_effect_tooltip=PROJECT_FACILITY}");
     let output = render(
@@ -331,6 +347,8 @@ fn facility_selector_precedes_specialization_and_injects_stored_province_id() {
 
 #[test]
 fn project_output_reuses_equipment_and_subunit_bonus_formatters() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture(
         "equipment_bonus={mod_equipment={soft_attack=0.2}} sub_unit_bonus={mod_unit={soft_attack=0.1}} enable_equipments={mod_equipment}",
     );

@@ -2,6 +2,8 @@ use super::*;
 
 #[test]
 fn tooltip_projection_retains_effects_modifiers_and_real_balance_category_binding() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "effect-decision-tooltips-{}-{}",
         std::process::id(),
@@ -46,7 +48,9 @@ fn tooltip_projection_retains_effects_modifiers_and_real_balance_category_bindin
 }
 
 #[test]
-fn decision_projection_preserves_native_names_seed_and_highlight_inputs() {
+fn decision_projection_preserves_names_seed_and_highlight_inputs() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut database = Database::default();
     append(
         &mut database,
@@ -103,11 +107,13 @@ fn decision_projection_preserves_native_names_seed_and_highlight_inputs() {
 
 #[test]
 fn tooltip_projection_preserves_targeted_modifier_boundaries_and_order() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut database = Database::default();
     append(&mut database, b"category={sample={targeted_modifier={tag=BBB political_power_gain=0.1} targeted_modifier={tag=ROOT political_power_gain=0.2}}}",
         "synthetic/decisions.txt", &[b"category".to_vec()].into(), &KeyNames::default());
     let decision = database.decision(b"sample").unwrap().unwrap();
-    // 140399827/140399BF6 walks each native CStaticModifier, not one merged body.
+    // Walk each static modifier separately rather than one merged body.
     assert_eq!(decision.targeted_modifier.len(), 2);
     assert_eq!(
         decision.targeted_modifier[0][0].value.scalar(),
@@ -135,6 +141,8 @@ fn tooltip_projection_preserves_targeted_modifier_boundaries_and_order() {
 
 #[test]
 fn empty_highlight_target_retains_presence_without_refusing_membership_lookup() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut database = Database::default();
     append(&mut database, br#"category = {
         empty = { highlight_states = { highlight_state_targets = {} } }
@@ -161,7 +169,9 @@ fn empty_highlight_target_retains_presence_without_refusing_membership_lookup() 
 }
 
 #[test]
-fn content_stack_uses_effective_files_and_native_first_definitions() {
+fn content_stack_uses_effective_files_and_first_definitions() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "effect-content-{}-{}",
         std::process::id(),
@@ -217,7 +227,9 @@ fn content_stack_uses_effective_files_and_native_first_definitions() {
 }
 
 #[test]
-fn decision_icons_use_native_triggered_text_occurrence_and_unknown_rules() {
+fn decision_icons_use_triggered_text_occurrence_and_unknown_rules() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut database = Database::default();
     append(
         &mut database,

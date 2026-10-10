@@ -1,4 +1,4 @@
-/** Logs as the signed-off style shows them (mock-up style-5): HTML rows, newest
+/** Logs: HTML rows, newest
  * first, optional month dividers, a comfortable or compact density, virtualised so
  * a campaign's thousands of rows stay cheap. Pure: the list component (`LogList`)
  * draws what these compute, and a widget keeps only what its rows mean. */

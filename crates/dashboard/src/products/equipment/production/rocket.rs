@@ -20,7 +20,7 @@ struct Row {
     previous: Option<RocketProductionOutputRow>,
 }
 
-// 140F5C188 / 140F5C1F9 retain signed amounts; exact changes need an observed event.
+// Amounts remain signed; exact changes need an observed event.
 fn consistent(
     previous: &RocketProductionOutputRow,
     row: &RocketProductionOutputRow,

@@ -2,7 +2,7 @@
 
 `collector` is the Windows x64 DLL the [recorder](../recorder/README.md) injects into the supported HOI4 process. It captures native state and hands owned data to off-thread decoding and replay output.
 
-Read the [shared rules](../../AGENTS.md). Native layouts, guarded reads and evidence belong in [engine](../engine/README.md), schemas and cadence in [replay](../replay/README.md), and content resolution in [installed-content](../installed-content/README.md). Per-capture behaviour and addresses stay beside code.
+Read the [shared rules](../../AGENTS.md). Native layouts and guarded reads belong in [engine](../engine/README.md), schemas and cadence in [replay](../replay/README.md), and content resolution in [installed-content](../installed-content/README.md). Per-capture behaviour stays beside code.
 
 ## Source map
 
@@ -21,9 +21,11 @@ Read the [shared rules](../../AGENTS.md). Native layouts, guarded reads and evid
 
 ## How it works
 
+The loader worker prepares the process-wide executable tables from the verified game module and its shipped documentation before publishing hooks. Modifier spelling checks use scratch storage sized from those tables before callback admission; callbacks perform no metadata loading or allocation.
+
 Hourly callback → acquisition jobs → owned buffers → decode/conversion → diff/encode → recoverable spool. `DllMain` defers initialization to a worker outside the loader lock.
 
-The hook enters `CGameState::HourlyUpdate` before the clock advances; the sample is the settled end of the labelled hour. Every live read, including worker reads, finishes before the trampoline runs. There is no stable interval after it. The boundary holds the simulation thread, not every native writer: retain consistency guards for concurrent caches and dictionaries, refusing overlapping changes without waiting or retrying.
+The hook enters the hourly update before the clock advances; the sample is the settled end of the labelled hour. Every live read, including worker reads, finishes before the trampoline runs. There is no stable interval after it. The boundary holds the simulation thread, not every native writer: retain consistency guards for concurrent caches and dictionaries, refusing overlapping changes without waiting or retrying.
 
 Campaign text, cadence identity and retained loss text are prepared from the native stored length by the loader/spool. A callback parks for longer text preparation before reading its payload; preparation uses queue leases and a try-only spool gate so frame backpressure can still drain. Observer identity epochs advance only on exact full-byte campaign changes. Optional clock polling is advisory; a parked capture's required destination is checked capture storage. Clock faults and advisory misses are named and counted in status.
 

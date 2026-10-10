@@ -1,6 +1,6 @@
 //! Retained native locator records, projected from already parsed content.
 //!
-//! Binary import14224E890 keeps the first root `locator` block, all children
+//! Binary import keeps the first root `locator` block, all children
 //! and duplicate names, float-only p/q, and a source-order parent ordinal.
 //! It scales p alone and consumes q without normalization. Entity records
 //! retain their declaration-time array and parent ordinal through clones;
@@ -23,13 +23,13 @@ pub struct Locator {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LookupMode {
-    /// Entity_AttachChild14226E490 keeps the last entity match.
+    /// Child attachment keeps the last entity match.
     Attachment,
-    /// A dummy child cannot reach the binary/joint fallback (14226E490).
+    /// A dummy child cannot reach the binary/joint fallback.
     AttachmentDummy,
-    /// Naval GetLocator14227AB70 keeps the first entity match.
+    /// Naval locator lookup keeps the first entity match.
     Naval,
-    /// State event enqueue14226EF30 asks the native mesh first.
+    /// State event enqueue asks the native mesh first.
     Event,
 }
 
@@ -40,7 +40,7 @@ pub enum Binding<'a> {
 }
 
 impl Binding<'_> {
-    /// 1422621F0/142262330: an absent played palette leaves joint attachments
+    /// An absent played palette leaves joint attachments
     /// at the actor root and locators in root space. A present palette uses
     /// the current joint matrix, never a skin/bind
     /// matrix. A present but unavailable pose remains a named refusal when
@@ -80,7 +80,7 @@ impl Binding<'_> {
 }
 
 /// Binary names are Latin1 projections; script strings retain UTF8 bytes.
-/// Native1422F5340/14239AFB0 compare those original bytes, not decoded text.
+/// Locator lookup compares those original bytes, not decoded text.
 fn latin1_equals_bytes(stored: &str, query: &[u8]) -> bool {
     stored
         .chars()
@@ -98,7 +98,7 @@ fn script_parent(skeleton: &[NativeJoint], name: &str) -> Option<usize> {
 fn invalid(name: &str, field: &str, why: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
-        format!("binary mesh locator {name:?}: 1 refused {field}: {why} (14224E890)"),
+        format!("binary mesh locator {name:?}: 1 refused {field}: {why}"),
     )
 }
 
@@ -177,7 +177,7 @@ pub fn binary(
 /// Native registration resolves entity parents once. The flattened content
 /// roster carries that origin mesh with a clone-copied locator array. A
 /// changed mesh with a parent name needs its original ordinal, never a name
-/// lookup in the child's current skeleton (14227CEF0/14226ED70).
+/// lookup in the child's current skeleton.
 pub fn entity(
     entries: &[(String, mesh::Locator)],
     skeleton: &[NativeJoint],
@@ -190,7 +190,7 @@ pub fn entity(
                 && locator.origin_mesh.as_deref() != current_mesh)
                 .then(|| {
                     format!(
-                        "native entity locator {name:?}: 1 refused parent ordinal from registration mesh {:?} after pdxmesh changed to {current_mesh:?} (14227CEF0/14226ED70)",
+                        "native entity locator {name:?}: 1 refused parent ordinal from registration mesh {:?} after pdxmesh changed to {current_mesh:?}",
                         locator.origin_mesh
                     )
                 });

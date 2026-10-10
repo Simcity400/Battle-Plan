@@ -1,11 +1,12 @@
 use super::*;
 use crate::parser::Operator;
 
-/// 141395B30 dispatches both bindings to 142390E40. Its block reader
-/// 1423912A0 reads argument keys recursively, consuming definitions;
+/// Both bindings read recursive argument keys, consuming definitions;
 /// argument names that also name triggers are never conditions.
 #[test]
 fn custom_tooltip_bindings_read_localisation_before_conditions() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"t = { trigger = { custom_trigger_tooltip = { \
             tooltip = { localization_key = POSITIVE \
@@ -24,7 +25,7 @@ fn custom_tooltip_bindings_read_localisation_before_conditions() {
     assert_eq!(conditions.len(), 2, "{conditions:?}");
     assert!(conditions[0].keyword_is("skill"));
     assert_eq!(conditions[0].value.scalar(), Some(b"2".as_slice()));
-    // A quoted key is not one of the binding keywords (1424A7A90).
+    // A quoted key is not one of the binding keywords.
     assert!(conditions[1].key_quoted);
     assert_eq!(
         conditions[1].key.as_deref(),
@@ -32,11 +33,13 @@ fn custom_tooltip_bindings_read_localisation_before_conditions() {
     );
 }
 
-/// CFormattedLocalization::vf3 (142393E90) reads only the current
-/// value. A block on localization_key is not skipped: the next key is
-/// still the enclosing binding's, including a definition there.
+/// A localisation key reads only the current value. Its block is not
+/// skipped, so the next key still belongs to the enclosing binding,
+/// including a definition there.
 #[test]
-fn a_localisation_key_block_keeps_its_native_parse_boundary() {
+fn a_localisation_key_block_keeps_its_parse_boundary() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"t = { trigger = { custom_trigger_tooltip = { \
             tooltip = { @threshold = 2 localization_key = { argument = KEY } \
@@ -59,13 +62,15 @@ fn a_localisation_key_block_keeps_its_native_parse_boundary() {
     );
 }
 
-/// LoadBody (1405431C0) hands LoadKey every key 1424AC5E0 reads, one
-/// read without an operator included, with the value slot as the last
-/// read left it: `OR {` takes `{` as its operator and keeps the slot's
-/// `{` (from `trigger = {`), so the group reads the tokens after it as
-/// its body. Likewise a modifier's `factor` goes to 140545820.
+/// Every key reaches trigger dispatch, including keys read without an
+/// operator, with the value slot as the last read left it. `OR {` takes
+/// `{` as its operator and retains the earlier opening value, so the
+/// group reads the following tokens as its body. A modifier
+/// `factor` likewise reaches its one-value reader.
 #[test]
 fn a_key_without_an_operator_goes_to_its_trigger_reader() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"t = { trigger = { Or { is_attacker = yes } } attacker = 0.1 }",
         &KeyNames::default(),
@@ -88,6 +93,8 @@ fn a_key_without_an_operator_goes_to_its_trigger_reader() {
 
 #[test]
 fn ids_follow_every_named_non_phase_entry_in_source_order() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"phases={ opening breakthrough }\n\
           tactic_alpha={ active=yes }\n\
@@ -122,13 +129,14 @@ fn ids_follow_every_named_non_phase_entry_in_source_order() {
     assert!(database.logged.is_empty(), "{:?}", database.logged);
 }
 
-/// CPersistent::Read (1424A9730) reads a `name = value` tactic's fields
-/// from the tokens after it, up to the next `}`; a block on a field
-/// 1406B3CB0 reads as one value is read as `{`, its contents as the
-/// tactic's fields and its `}` ends the tactic. An unknown key's block
-/// is skipped (1424AD270).
+/// A scalar tactic declaration reads fields from the following tokens
+/// to the next `}`. A block on a one-value field contributes its `{`
+/// as the value, its contents as tactic fields, and its `}` ends the
+/// tactic. Unknown-key blocks are skipped.
 #[test]
 fn a_single_value_tactic_reads_the_rest_of_the_file() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"phases = { opening }\n\
           first = { active = { is_attacker = yes } unknown = { x = 1 } }\n\
@@ -166,11 +174,12 @@ fn a_single_value_tactic_reads_the_rest_of_the_file() {
     );
 }
 
-/// `phases` and both `no` sentinels are compared by their text, exactly
-/// (1406B3875, 1406B3D9C, 14047389A); field and trigger keys are
-/// keywords and fold.
+/// `phases` and both `no` sentinels compare their text exactly; field
+/// and trigger keys are keywords and fold.
 #[test]
 fn phases_and_no_match_their_exact_text_while_keys_fold() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"phases = { NO opening }\n\
           PHASES = { }\n\
@@ -198,13 +207,14 @@ fn phases_and_no_match_their_exact_text_while_keys_fold() {
     assert!(database.unsupported.is_empty());
 }
 
-/// ReadStringList (1401426E0) reads every token of `phases` to `}`,
-/// `=` included; a variable name that is not UTF-8 is a name like any
-/// other (a 0xFF byte would end the text: the lexer's `char` -1). A value
-/// without a key at the top level is a key to 1424AC5E0, which consumes
-/// the next token as its operator.
+/// Every token of `phases` through `}` is stored, including `=`.
+/// Variable names need not be UTF-8; a 0xFF byte ends lexer text.
+/// An anonymous top-level value acts as a key and consumes the next
+/// token as its operator.
 #[test]
 fn unreadable_entries_are_named_and_mark_later_ids_unproven() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"first = { }\n\
           @\xe9 = 2\n\
@@ -242,11 +252,13 @@ fn unreadable_entries_are_named_and_mark_later_ids_unproven() {
     );
 }
 
-/// A file variable takes no tactic ID and is no field; references read
-/// its value. A second definition of a taken name reads nothing more
-/// (1424AC830): its `=` goes to the next key.
+/// File variables take no tactic ID and are not fields; references read
+/// their values. A duplicate definition consumes nothing further, so
+/// its `=` becomes the next key.
 #[test]
 fn file_variables_take_no_id_and_resolve_in_fields() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"@weight = 4\n\
           tactic_example = { base = { factor = @weight } @inner = 2 limit = @inner }\n\
@@ -299,6 +311,8 @@ fn file_variables_take_no_id_and_resolve_in_fields() {
 /// `phase = @p` and the list agree on the phase's name.
 #[test]
 fn phase_lists_resolve_file_variables() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"@p = breakthrough
           phases = { opening @p }
@@ -319,6 +333,8 @@ fn phase_lists_resolve_file_variables() {
 /// unmatched field is unknown.
 #[test]
 fn phase_fields_resolve_in_read_order() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"phases = { opening no }\n\
           early = { phase = opening display_phase = later }\n\
@@ -346,6 +362,8 @@ fn phase_fields_resolve_in_read_order() {
 /// phase registered before it, and -1 for `no` or a later phase.
 #[test]
 fn phase_keys_fold_and_triggers_resolve_in_read_order() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"phases = { opening }\n\
           early = { PHASE = opening DISPLAY_PHASE = opening \
@@ -388,6 +406,8 @@ fn phase_keys_fold_and_triggers_resolve_in_read_order() {
 
 #[test]
 fn raw_name_bytes_and_nested_fields_survive_parsing() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"tactic_\xe9={ allowed={ scripted=value } active=no }",
         &KeyNames::default(),
@@ -399,13 +419,15 @@ fn raw_name_bytes_and_nested_fields_survive_parsing() {
     assert_eq!(fields[0].key.as_deref(), Some(b"allowed".as_slice()));
 }
 
-/// The six effects as 1406B3CB0 reads them: keys fold, the last one
-/// wins, `attacker_movement_speed` scans `%lli` (`010` is eight) and
-/// the others read any text as 1424B8600 does ('e' is a digit to it, six
-/// places are taken unscaled). A repeated name is a second tactic with
-/// its own values; a quoted key is no keyword.
+/// Effect keys fold and the last value wins. `attacker_movement_speed`
+/// uses an integer scan (`010` is eight); other effects use decimal
+/// fixed5 conversion, accepting any text and taking six decimal places
+/// unscaled. Duplicate tactic names retain separate values, and quoted
+/// keys are not keywords.
 #[test]
-fn effects_follow_each_fields_native_reader() {
+fn effects_follow_each_fields_reader() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         br#"@bonus = 0.25
             tactic_a = { ATTACKER = @bonus Combat_Width = 0.1 attacker_movement_speed = 010 }
@@ -422,7 +444,7 @@ fn effects_follow_each_fields_native_reader() {
     // An undefined reference is its own text, which reads zero.
     assert_eq!(effects(2)[4], 0);
     assert_eq!((effects(4)[5], effects(4)[4]), (203_300, 1));
-    // A quoted "@bonus" is text, never a reference (1424AB540).
+    // A quoted "@bonus" is text, never a reference.
     assert_eq!(effects(5), [0; 6]);
     assert!(
         database.logged.iter().any(|line| line
@@ -435,10 +457,11 @@ fn effects_follow_each_fields_native_reader() {
     assert!(database.tactics.iter().all(|t| t.unproven.is_none()));
 }
 
-/// ReadFixed5 (1424ABB10) reports a value that does not scan and leaves
-/// the field as it was, so an earlier assignment stands.
+/// A failed fixed5 scan reports the value and retains the earlier assignment.
 #[test]
 fn an_unscannable_movement_value_keeps_the_previous_one() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"t = { attacker_movement_speed = 0.5 ATTACKER_MOVEMENT_SPEED = fast }",
         &KeyNames::default(),
@@ -447,19 +470,20 @@ fn an_unscannable_movement_value_keeps_the_previous_one() {
     assert_eq!(
         database.logged,
         [
-            "tactic t's ATTACKER_MOVEMENT_SPEED = fast does not scan (1424B0480): the game reports it (1424ACEE0) and the field keeps its previous value"
+            "tactic t's ATTACKER_MOVEMENT_SPEED = fast does not scan: the game reports it and the field keeps its previous value"
         ]
     );
 }
 
-/// The file's one reader and its variables: a chain resolves when
-/// defined and names keep their case (1424AC830); a definition in a
-/// tactic body holds for the rest of the file; `phases` is a string list
-/// (1401426E0) that defines nothing; `@(1+1)` is the reference `@` and
-/// then `(`, `1+1` and `)` read as keys, the last consuming the tactic's
-/// `}`.
+/// One reader owns each file's variables. Chains resolve when defined
+/// and names retain case; definitions inside tactics remain in scope.
+/// `phases` is a string list that registers nothing. `@(1+1)` reads as
+/// reference `@` followed by keys `(`, `1+1`, and `)`, with the last
+/// consuming the tactic's `}`.
 #[test]
 fn tactic_variables_follow_the_game_reader() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         br#"@w = 0.1
             @W = 0.2
@@ -487,13 +511,14 @@ fn tactic_variables_follow_the_game_reader() {
     assert!(database.tactics.iter().all(|t| t.unproven.is_none()));
 }
 
-/// The tactic's `trigger` (a CAndTrigger, 1405431C0) and `base` (a
-/// CMeanTimeToHappen, 140545850) are read by key on the file's reader,
-/// so their definitions register in document order and their values
-/// resolve; an unknown field is skipped (1424ACF90 -> 1424AD270) and
-/// defines nothing. A comparison keeps its operator (+0x78).
+/// A tactic trigger and weight read keys on the same file reader,
+/// registering definitions and resolving values in document order.
+/// Unknown fields skip their blocks and register nothing. Comparisons
+/// retain their operators.
 #[test]
 fn definitions_inside_trigger_and_base_register() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"t = { attacker = @late trigger = { OR = { @late = 0.1 always = yes } phase = no } \
           base = { factor = 1 modifier = { @weight = 0.2 factor = 2 } } unknown = { @skipped = 1 x = 1 } } \
@@ -531,15 +556,15 @@ fn definitions_inside_trigger_and_base_register() {
     );
 }
 
-/// LoadBody (1405431C0) hands `x`, read without an operator (it
-/// consumes `@y`), the stale `{`: what LoadKey makes of `x` decides what
-/// it reads. Naming nothing, it is RecordError, whose skip tests the
-/// `@y` it consumed, so nothing more is read and `@y` is never defined;
-/// a scope reads the tokens after it as its body. Where the names cannot
-/// tell, the tactic being read is unproven by name and no later tactic
-/// is read.
+/// A key `x` read without an operator consumes `@y` and retains the
+/// stale opening value. Trigger dispatch then determines consumption.
+/// An invalid key skips against the consumed `@y`, registering nothing;
+/// a scope reads following tokens as its body. Ambiguous names leave
+/// the current tactic unproven and prevent reading later tactics.
 #[test]
 fn a_key_without_an_operator_is_read_as_what_it_names() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let text = b"s = { attacker = 0.1 } t = { trigger = { x @y = 1 } } u = { attacker = @y }";
     let database = parse(text, &KeyNames::default());
     assert!(
@@ -561,17 +586,19 @@ fn a_key_without_an_operator_is_read_as_what_it_names() {
     assert_eq!(database.tactics[0].unproven, None);
     let reason = database.tactics[1].unproven.clone().unwrap();
     assert!(
-        reason.contains("field `x`: LoadKey (1405434F0) reads it"),
+        reason.contains("field `x`: trigger dispatch reads it"),
         "{reason}"
     );
     assert_eq!(database.unsupported, [reason]);
 }
 
-/// 1405431C0 calls slot 6 after 1424AC5E0 even without an operator.
-/// Bodies use the stale value; 1424AD270 skips on the current token.
-/// Exercise both tactics' dispatch and content readers' Shape::Trigger.
+/// Body dispatch uses the retained value even without an operator;
+/// error recovery skips against the current token. Exercise both tactic
+/// dispatch and content readers using `Shape::Trigger`.
 #[test]
 fn missing_operators_dispatch_scopes_classes_and_invalid_keys_in_both_readers() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let names = KeyNames {
         countries: [b"ABC".to_vec()].into(),
         ..KeyNames::default()
@@ -634,10 +661,12 @@ fn missing_operators_dispatch_scopes_classes_and_invalid_keys_in_both_readers() 
     }
 }
 
-/// Embedded collection filters use the same CReader and LoadKey
-/// (1405434F0), including its content names, as the enclosing body.
+/// Embedded collection filters share their enclosing reader and trigger
+/// dispatch, including content names.
 #[test]
 fn collection_filters_keep_names_in_tactics_and_scripted_triggers() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let condition = "collection_size = { input = { input = collection:territories operators = { limit = { CONTROLLER = { always = yes } } } name = filtered } value = 0 }";
     let names = KeyNames::default();
     let tactics = parse(
@@ -655,15 +684,14 @@ fn collection_filters_keep_names_in_tactics_and_scripted_triggers() {
     assert!(triggers.templates[b"check".as_slice()].body.is_ok());
 }
 
-/// Each nested reader consumes as its native reader does: the weight's
-/// one-value fields and unknown keys never skip a block (140545850), so
-/// a block there ends the weight early; a block under a trigger the
-/// viewer evaluates is read as the enclosing trigger's children
-/// (141395A40 / 141394DF0 -> 1424ACD40, no skip) and its `}` ends that
-/// trigger. The reading goes on as the game's does and is noted; later
-/// tactics are read.
+/// A weight's one-value fields and unknown keys do not skip blocks, so
+/// a block there ends the weight early. A block on a one-value trigger
+/// becomes the enclosing trigger's children, and its `}` ends that
+/// trigger. Reading continues with diagnostics and retains later tactics.
 #[test]
 fn nested_readers_follow_their_own_consumption() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for text in [
         &b"s = { } a = { base = { factor = { factor = 2 } } } b = { }"[..],
         b"s = { } a = { BASE = { Mystery = { x = 1 } } } b = { }",
@@ -702,13 +730,14 @@ fn nested_readers_follow_their_own_consumption() {
     );
 }
 
-/// A weight modifier's `factor` and `add` go to the CMTTHModifier's own
-/// key reader (140545820), a scoped variable taking one value token
-/// (140539440 -> 140539B50) with no block skipped: a block there is read
-/// as `{`, its contents as the modifier's conditions, and its `}` ends
-/// the modifier, so what follows is the weight's again.
+/// A weight modifier's `factor` and `add` each read one scoped-variable
+/// value without skipping a block. A block contributes `{` as its value,
+/// its contents as modifier conditions, and its `}` ends the modifier;
+/// following fields belong to the weight again.
 #[test]
 fn a_modifier_factor_block_ends_the_modifier() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"a = { base = { modifier = { FACTOR = { is_attacker = yes } skill > 2 } attacker = 0.1 }\n\
           b = { base = { modifier = { add = { has_reserves = yes } } }\n", &KeyNames::default(),
@@ -742,13 +771,14 @@ fn a_modifier_factor_block_ends_the_modifier() {
     assert!(database.tactics.iter().all(|t| t.unproven.is_none()));
 }
 
-/// A scalar `trigger` is logged by CTrigger::LoadBody (1405431C0 ->
-/// 1424ACF90), which consumes nothing: its tactic keeps its other
-/// fields. A scalar `modifier` is a modifier without a condition, and
-/// the weight logs an unknown command. A quoted key is no keyword
-/// (token 0xF): its block is skipped and defines nothing.
+/// A scalar trigger reports an error and consumes nothing, retaining
+/// other tactic fields. A scalar modifier has no condition; the weight
+/// reports an unknown command. Quoted keys skip their blocks and
+/// register nothing.
 #[test]
 fn a_scalar_trigger_is_a_local_error() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"a = { trigger = { always = yes } Trigger = yes attacker = 0.1 \
                 base = { modifier = yes factor = 2 note = 1 } } \
@@ -763,11 +793,11 @@ fn a_scalar_trigger_is_a_local_error() {
     assert_eq!(
         database.logged,
         [
-            "combat_tactics.txt line 1: field `Trigger` is `yes` where its trigger reads a block: \"Non assign trigger is not enclosed in {}\" is reported (1405431C0) and nothing is read; read as the game reads it",
-            "combat_tactics.txt line 1: field `modifier` is `yes` where its trigger reads a block: \"Non assign trigger is not enclosed in {}\" is reported (1405431C0) and nothing is read; read as the game reads it",
-            "tactic a's Trigger = yes is not a block: the game's trigger reader (1405431C0) logs an error (1424ACF90) and reads no condition from it",
-            "tactic a's base's modifier = yes is not a block: the game's modifier reader (1405431C0) logs an error (1424ACF90) and keeps a modifier with no condition, factor 1 and add 0",
-            "tactic a's base's note = 1: the weight's reader (140545850) logs an unknown command and reads on",
+            "combat_tactics.txt line 1: field `Trigger` is `yes` where its trigger reads a block: the missing block is reported and nothing is read; read as the game reads it",
+            "combat_tactics.txt line 1: field `modifier` is `yes` where its trigger reads a block: the missing block is reported and nothing is read; read as the game reads it",
+            "tactic a's Trigger = yes is not a block: the trigger reader reports an error and reads no condition from it",
+            "tactic a's base's modifier = yes is not a block: the modifier reader reports an error and keeps a modifier with no condition, factor 1 and add 0",
+            "tactic a's base's note = 1: the weight reader reports an unknown command and reads on",
             "tactic b's defender names the variable @hidden, which is not defined before it, so the game reads that text as the value",
         ]
     );
@@ -788,12 +818,13 @@ fn a_scalar_trigger_is_a_local_error() {
     assert_eq!((b.effects[2], b.effects[4]), (20_000, 0));
 }
 
-/// 1424AC5E0 consumes a definition before handing the next key to the
-/// trigger's reader (1405431C0), at any depth: none is a condition. A
-/// comparison's operand, spaced or compact, is resolved as a phase
-/// (140473850 -> 1406B35C0) and through the file's variables.
+/// Definitions are consumed before the next trigger key at any depth
+/// and never become conditions. Spaced and compact comparison operands
+/// resolve through file variables and phase lookup.
 #[test]
 fn consumed_definitions_are_no_conditions_and_comparisons_resolve() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"phases = { 99 opening }\n\
           t = { trigger = { @x = yes is_attacker = @x OR = { @y = 1 phase>99 } } \
@@ -829,12 +860,12 @@ fn consumed_definitions_are_no_conditions_and_comparisons_resolve() {
     assert_eq!(shown(modifier), ["factor=2", "PHASE<1"]);
 }
 
-/// `meta_trigger`'s `text` is copied raw (141408C80): nothing in it
-/// defines. A key that names nothing is "Invalid trigger" (1405434F0):
-/// RecordError skips its block (1424ACF90 -> 1424AD270), nothing in it
-/// read or defined.
+/// Raw `meta_trigger` text registers no definitions. An invalid trigger
+/// key skips its block without reading or registering its contents.
 #[test]
 fn meta_text_is_raw_and_an_invalid_key_skips_its_block() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"t = { trigger = { meta_trigger = { text = { @hidden = 1 } x = y } \
                 any_unit = { infantry @skipped = 1 } } attacker = @hidden defender = @skipped }",
@@ -850,11 +881,12 @@ fn meta_text_is_raw_and_an_invalid_key_skips_its_block() {
     assert_eq!(database.tactics[0].effects[4], 0);
 }
 
-/// A group given a scalar is the empty group LoadKey keeps (1405434F0,
-/// its LoadBody reading no child), at any depth of a tactic trigger or a
-/// weight modifier; keys fold.
+/// A scalar group retains an empty group at any depth of a tactic
+/// trigger or weight modifier; keys fold.
 #[test]
 fn scalar_groups_are_the_empty_groups_the_game_keeps() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"t = { trigger = { AND = yes OR = { or = no } Not = yes CUSTOM_TRIGGER_TOOLTIP = x \"and\" = yes } \
                 base = { modifier = { or = no } } }", &KeyNames::default(),
@@ -867,7 +899,7 @@ fn scalar_groups_are_the_empty_groups_the_game_keeps() {
     );
     assert_eq!(trigger[2].value, Value::Block(Vec::new()));
     assert_eq!(trigger[3].value, Value::Block(Vec::new()));
-    // A quoted key is token 0xF, no group.
+    // A quoted key is no group.
     assert_eq!(trigger[4].value.scalar(), Some(b"yes".as_slice()));
     let modifier = database.tactics[0].fields[1].value.items().unwrap()[0]
         .value
@@ -886,11 +918,12 @@ fn scalar_groups_are_the_empty_groups_the_game_keeps() {
     );
 }
 
-/// ReadStringList stores each phase through ReadStringInto (1401426E0
-/// -> 1424ABB50): the text to its first NUL, and a text holding a line
-/// feed as `Unreadable String` (reported, 1424ACEE0).
+/// Phase text ends at its first NUL; text with a line feed uses the
+/// shared unreadable-string value and reports a diagnostic.
 #[test]
-fn phase_names_are_stored_as_read_string_into_stores_them() {
+fn phase_names_keep_first_nul_text_and_line_feed_fallback() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let database = parse(
         b"phases = { open\x00ing \"line\nfeed\" }",
         &KeyNames::default(),
@@ -901,9 +934,8 @@ fn phase_names_are_stored_as_read_string_into_stores_them() {
     );
 }
 
-/// The tactic file's reader dispatches through `Field::keyword`
-/// (1424A7A90: a quoted key is token 0xF, a bare one folds); its one
-/// text compare, `phases` (1406B3875), is an exact byte match.
+/// The source check enforces `Field::keyword` dispatch: quoted keys
+/// are not keywords and bare keys fold. `phases` compares exact bytes.
 #[test]
 fn the_tactic_reader_asks_the_keyword_helper() {
     const RAW: [&str; 6] = [

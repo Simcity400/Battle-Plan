@@ -1,25 +1,19 @@
 //! Stored supply-footer operands shared by authenticated divisions, railway guns and task forces.
 //!
-//! `CUnitCounterItem::tooltip_builder@1418C00D0` appends `1418BDBA0` for the
-//! low-supply child, after the source owner's shared-vision gate (`1406F3A90`).
-//! Each member resolves to its `CSupplyConsumer` secondary base, `CUnit+0x10`,
-//! and `14161CCE0` reads the amounts below. `14161D560` formats their aggregate;
-//! it does not reconstruct them from supply nodes, weather or the stored ratio.
+//! The supply footer follows the owner's shared-vision gate and reads stored
+//! amounts from each member's supply-consumer base. The aggregate is not rebuilt
+//! from supply nodes, weather or the stored ratio.
 //!
-//! Reset `14121BAD0` clears receipts, origins and all three demand pairs before
-//! calling the consumer's consumption getter. Division getter `140C657B0`
-//! writes the division pair; other consumer classes can populate other pairs.
-//! State allocation (`141200B80`, `1412055C0`, `140EA0080`) and air allocation
-//! (`141205840`, `14120F2B0`) add their amounts. `1419F7530` inserts or adds an
-//! origin's requested/received amounts, preserving the native array order, and
-//! `1419F77F0` adds total receipts, capped at the asked amount. Disruption is
-//! reset by `141219350` and increased by air-strike application `140F612F0`.
+//! Reset clears receipts, origins and demand pairs before asking each consumer
+//! for consumption. Division consumers fill their own demand pair; other classes
+//! can fill the other pairs. State and air allocation add amounts, origin entries
+//! preserve their stored order, and total receipts cannot exceed the amount asked.
+//! Disruption is reset separately and increased by air strikes.
 //!
-//! `CSupplyConsumer::Serialize@140EBB270` saves only positive disruption under
-//! token 0x4CF2 (`disrupted_supply`); `ReadToken@140EB5150` restores its full
-//! signed fixed5 word. An omitted save token proves only nonpositive disruption.
-//! The other operands are unsaved caches and need a matched native-memory
-//! witness. This reader neither invokes the game nor creates a new unit census.
+//! Saves emit only positive disruption and restore its full signed fixed5 value.
+//! Omission therefore proves only nonpositive disruption. Other operands are
+//! unsaved caches with independent availability. This reader invokes no game
+//! operations and uses the caller's existing unit census.
 
 use crate::{Memory, cpdx_array::Array, memory::RecordLayout, memory::RecordSources, read};
 
@@ -37,7 +31,7 @@ pub const SHIP_COUNT: usize = 0xa0;
 pub const SHIP_DEMAND: usize = 0xa8;
 pub const DISRUPTION: usize = 0xb0;
 
-/// Native distributed-supply records (`1419F7530`), not supply-node objects.
+/// Stored distributed-supply records, separate from supply-node objects.
 pub const ORIGIN_STRIDE: usize = 0x30;
 pub const ORIGIN_REQUESTED: usize = 0x10;
 pub const ORIGIN_RECEIVED: usize = 0x18;
@@ -201,8 +195,8 @@ fn capture_origins(
     let header = read::<[u8; 16]>(memory, address).ok_or(Failure::Unreadable)?;
     let array = Array::from_header(header, ORIGIN_STRIDE).ok_or(Failure::InvalidOrigins)?;
     let count = array.count as usize;
-    // 1419F7530 retains every native ordered origin; grow from the original
-    // header before its payload, preserving the later consistency witness.
+    // Retain every stored origin in order; grow from the original header
+    // before its payload, preserving the later consistency check.
     origins.ensure(count).map_err(|_| Failure::Allocation)?;
     if count > origins.len() {
         return Err(Failure::OriginsCapacity { required: count });

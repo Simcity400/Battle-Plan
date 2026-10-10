@@ -618,6 +618,7 @@ fn only_provinces_in_view_are_created_and_recreation_restarts_the_clock() {
     assert_ne!(after[0].1.animation_epoch, before);
 }
 
+/// A province's buildings are created while the camera admits its box,
 /// ten units past the view's side planes included.
 #[test]
 fn buildings_just_past_the_view_edge_are_created() {
@@ -833,6 +834,8 @@ fn one_row_frame(row: BuildingRow, byte: Option<u8>) -> (DecodedFrame, Vision) {
 
 #[test]
 fn a_ruin_with_its_own_mesh_keeps_variant_selector_zero_across_levels() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let types = buildings::parse(
             b"buildings={ arms_factory={ show_on_map=1 show_on_map_meshes=2 has_destroyed_mesh=yes level_cap={ state_max=20 } } }", &installed_content::key_names::KeyNames::default(),
         )
@@ -859,7 +862,7 @@ fn a_ruin_with_its_own_mesh_keeps_variant_selector_zero_across_levels() {
     let (low, high) = (entity(2), entity(14));
     assert!(low.destroyed && high.destroyed);
     assert_eq!((low.healthy.variant, high.healthy.variant), (0, 1));
-    // 1416648D0 passes selector 0 for this ruin whatever its level, so a
+    // The game passes selector 0 for this ruin whatever its level, so a
     // level change neither recreates it nor spends the creation allowance.
     assert_eq!(low.ruined, high.ruined);
     assert_eq!((low.ruined.variant, low.ruined.definition), (0, 2));
@@ -867,6 +870,8 @@ fn a_ruin_with_its_own_mesh_keeps_variant_selector_zero_across_levels() {
 
 #[test]
 fn the_fog_loop_hides_below_fifty_and_keeps_the_undecided() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = one_slot_assets(
         &types(),
         BTreeMap::from([(("arms_factory".to_owned(), 0), 0)]),
@@ -909,6 +914,8 @@ fn the_fog_loop_hides_below_fifty_and_keeps_the_undecided() {
 
 #[test]
 fn the_level_uses_the_content_denominator() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let types = types();
     let factory = &types.types["arms_factory"];
     for (level, slots) in [(0, 0), (-3, 0), (1, 1), (4, 2), (10, 4), (20, 6), (99, 6)] {
@@ -1038,6 +1045,8 @@ fn assets_of(ordered: Vec<BuildingType>) -> MapBuildingAssets {
 
 #[test]
 fn province_sites_are_indexed_and_ambiguous_facility_tokens_are_refused() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut types = types();
     let factory = types.types.get_mut("arms_factory").unwrap();
     factory.air_base = true;
@@ -1131,6 +1140,8 @@ fn buildings_frame(tokens: TableView, types: &[u32]) -> (DecodedFrame, Vision) {
 /// Type 0 is none, so it is neither drawn nor refused.
 #[test]
 fn building_rows_refuse_their_unnamed_type_tokens_by_reason() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = MapBuildingAssets::assemble(
         ModelLibrary::default(),
         &types(),
@@ -1230,13 +1241,13 @@ fn health_thresholds_come_from_the_content() {
 #[test]
 fn health_state_preserves_native_wrapping_and_exceptional_words() {
     let defines = defines();
-    // 1410C5FE0: the partial multiplication wraps to -400,000, whose
+    // The partial multiplication wraps to -400,000, whose
     // truncating division is zero. Widening it would incorrectly choose idle.
     assert_eq!(
         health_state(1, 0, i64::MAX - 3, &defines),
         (false, true, false)
     );
-    // 1416648D0: adding a healthy level crosses the signed 64-bit boundary.
+    // Adding a healthy level crosses the signed 64-bit boundary.
     assert_eq!(health_state(2, 1, i64::MAX, &defines), (true, false, false));
     let sentinel = Defines {
         damaged: 0xffff_ffff + 1,

@@ -2,6 +2,8 @@ use super::super::super::tests::{assets, frame, positive_frame};
 use super::*;
 #[test]
 fn controller_flag_uses_native_control_and_three_codepoints() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use dashboard::products::country_flags::FlagChoice;
     with_context(|context| {
         for tag in ["GER", "ÄØ中", "ABCD"] {
@@ -15,6 +17,7 @@ fn controller_flag_uses_native_control_and_three_codepoints() {
             if tag == "ABCD" {
                 assert_eq!(
                     result,
+                    Err("controller flag tag is not three codepoints".into())
                 );
             } else {
                 assert_eq!(
@@ -103,7 +106,7 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
             building_location: 3,
             ..Default::default()
         };
-        // Country zero has CURRENT=0 in 140FD0EA0. Equality reveals the project.
+        // Country zero has CURRENT=0. Equality reveals the project.
         match (
             required,
             first_project,
@@ -128,6 +131,8 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
 
 #[test]
 fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_name() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use super::super::super::tests::put;
     for narrative in [None, Some("narrative"), Some("")] {
         for country_override in [true, false] {
@@ -320,6 +325,8 @@ fn scripted_content_with_files(
 
 #[test]
 fn raid_custom_trigger_nested_effect_icons_follow_the_viewer_nato_toggle() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use super::super::super::tests::put;
     let (scripted, root) = scripted_content_with_files(&[
         ("common/units/test.txt", "sub_units={syn_unit={}}"),
@@ -433,6 +440,8 @@ fn triggers(text: &str) -> installed_content::triggers::Triggers {
 }
 #[test]
 fn trigger_inversion_indentation_custom_override_and_named_unsupported_leaf() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     with_context(|context| {
         let scope = Scopes::of(Scope::Country(2));
         let text = context.trigger_text(
@@ -568,6 +577,8 @@ fn raid_tooltip_regression_special_project_requirement_uses_native_name_and_inve
 
 #[test]
 fn custom_tooltip_uses_shared_scope_expansion_and_native_negative_key() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     with_context(|context| {
         let scopes = Scopes {
             root: Scope::Country(2),
@@ -581,8 +592,8 @@ fn custom_tooltip_uses_shared_scope_expansion_and_native_negative_key() {
             "test",
         );
         assert_eq!(text[0].1.as_deref(), Ok("+GER/10/ENG/GER\n"));
-        // An ordinary positive country supplies no naming data for the
-        // separate CCountry[0] object. Its missing singleton stays a refusal.
+        // An ordinary positive country supplies no naming data for reserved
+        // country zero. Its missing singleton stays a refusal.
         let zero = context.trigger_text(
             &triggers("custom_trigger_tooltip={tooltip=scoped always=yes}"),
             Scopes {
@@ -596,7 +607,7 @@ fn custom_tooltip_uses_shared_scope_expansion_and_native_negative_key() {
                 .1
                 .as_ref()
                 .unwrap_err()
-                .contains("ReservedCountryNaming has no singleton row for CCountry[0]")
+                .contains("ReservedCountryNaming has no singleton row")
         );
         let text = context.trigger_text(
             &triggers("NOT={custom_trigger_tooltip={tooltip=scoped always=yes}}"),
@@ -613,6 +624,8 @@ fn custom_tooltip_uses_shared_scope_expansion_and_native_negative_key() {
 /// through them is refused rather than guessed.
 #[test]
 fn custom_tooltip_chains_follow_the_raid_scopes_links() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     with_context(|context| {
         let raid = Scopes {
             from: Some(Scope::Country(1)),
@@ -733,6 +746,8 @@ fn state_name_uses_the_stored_owner_name_in_the_recording_language_only() {
 }
 #[test]
 fn phase_progress_uses_preparation_override_and_refuses_missing_flying_inputs() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     with_context(|context| {
         let kind = RaidType {
             tooltip: installed_content::raids::tooltips::Definition {

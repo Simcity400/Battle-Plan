@@ -1,7 +1,7 @@
-//! Consumers of the fixed literals in `engine::modifier_keys` and
-//! `engine::fixed_layout::TOKENS`. Recording refuses a family's tables when
+//! Consumers of fixed modifier and token identities. Expected names come from
+//! verified executable metadata. Recording refuses a family's tables when
 //! the built-in modifier layout or one of its tokens fails; playback checks
-//! its own literals against the recording. Dynamic modifier keys are not
+//! the expected names against the recording. Dynamic modifier keys are not
 //! constrained.
 
 use crate::{
@@ -42,7 +42,7 @@ pub const MOVEMENT: Family = Family {
     tables: &[TableId::DivisionEtaInputs],
 };
 
-/// Current-hour class-0 counter action operands, `140C79B70`.
+/// Current-hour class-0 counter action operands.
 pub const STRATEGIC_ACTION: Family = Family {
     name: "division strategic action",
     keys: &[
@@ -92,7 +92,7 @@ pub const TRANSPORT_RISK: Family = Family {
     tables: &[],
 };
 
-/// F49710/F4B6E0 uses a separate air-wing, ace and country modifier graph.
+/// Air normalization uses a separate wing, ace and country modifier graph.
 /// Guard its reached leaves independently from the naval receiver family.
 pub const TRANSPORT_AIR: Family = Family {
     name: "selected transport air normalization",
@@ -101,8 +101,8 @@ pub const TRANSPORT_AIR: Family = Family {
     tables: &[],
 };
 
-/// `141927730` reads the current variant's stat 0x3E through this token.
-/// Its guard withholds only a railway gun's ETA suffix, preserving the row.
+/// The railway-gun tooltip reads the current variant's stat 0x3E through
+/// this token. Its guard withholds only the ETA suffix, preserving the row.
 pub const RAILWAY_SPEED: Family = Family {
     name: "railway gun speed",
     keys: &[],
@@ -153,8 +153,8 @@ pub const ATTRITION: Family = Family {
     ],
 };
 
-/// 14129F040's cached region attack uses the native 0xAD modifier slot.
-/// Field-local capture and playback guard; no table-wide refusal.
+/// Cached region attack uses modifier slot 0xAD. Field-local capture and
+/// playback guard; no table-wide refusal.
 pub const SELECTED_ATTACK_WEATHER_ATTACK: Family = Family {
     name: "selected attack weather attack",
     keys: &[keys::ARMY_ATTACK_FACTOR],
@@ -162,7 +162,7 @@ pub const SELECTED_ATTACK_WEATHER_ATTACK: Family = Family {
     tables: &[],
 };
 
-/// 14129F040's cached region breakthrough uses the native 0x1DD slot.
+/// Cached region breakthrough uses modifier slot 0x1DD.
 pub const SELECTED_ATTACK_WEATHER_BREAKTHROUGH: Family = Family {
     name: "selected attack weather breakthrough",
     keys: &[keys::BREAKTHROUGH_FACTOR],
@@ -170,7 +170,7 @@ pub const SELECTED_ATTACK_WEATHER_BREAKTHROUGH: Family = Family {
     tables: &[],
 };
 
-/// 14129F040's country night term uses native 0x103.
+/// Country night term uses modifier slot 0x103.
 pub const SELECTED_ATTACK_NIGHT: Family = Family {
     name: "selected attack night",
     keys: &[keys::LAND_NIGHT_ATTACK],
@@ -178,7 +178,7 @@ pub const SELECTED_ATTACK_NIGHT: Family = Family {
     tables: &[],
 };
 
-/// 14129F040's country/state fort term uses native 0x272.
+/// Country/state fort term uses modifier slot 0x272.
 pub const SELECTED_ATTACK_FORT: Family = Family {
     name: "selected attack fort",
     keys: &[keys::LAND_BUNKER_EFFECTIVENESS_FACTOR],
@@ -262,8 +262,7 @@ pub const NAVAL_AIR: Family = Family {
     tables: &[TableId::NavalCombatDetails],
 };
 
-/// 14160A7B0/141609460's side trees and 14195C7D0/141963700's
-/// ship/carrier trees, selected by the hourly reader's native hover keys.
+/// Side and ship/carrier trees, selected by the hourly reader's hover keys.
 pub const NAVAL_BREAKDOWNS: Family = Family {
     name: "naval modifier breakdowns",
     keys: &engine::naval_ship_modifier_breakdown::KEYS,
@@ -271,9 +270,9 @@ pub const NAVAL_BREAKDOWNS: Family = Family {
     tables: &[TableId::NavalModifierBreakdowns],
 };
 
-/// The combat window's positioning recomputation: surface detection and the
-/// carrier sortie keys, read through the ship modifier port of 140C29020,
-/// which also reads the weather and critical keys.
+/// The combat window's positioning recomputation: surface detection and
+/// carrier sortie keys, read through the ship modifier calculation, which
+/// also reads weather and critical keys.
 pub const NAVAL_POSITIONING: Family = Family {
     name: "naval positioning modifiers",
     keys: &[
@@ -288,7 +287,7 @@ pub const NAVAL_POSITIONING: Family = Family {
 };
 
 /// The combat window's anti-air recomputation, through the same ship
-/// modifier port.
+/// modifier calculation.
 pub const NAVAL_ANTI_AIR: Family = Family {
     name: "naval anti-air modifiers",
     keys: &[
@@ -346,9 +345,8 @@ pub const STATE_RESOURCES: Family = Family {
     tables: &[TableId::StateResourceInputs],
 };
 
-/// The raid launch gate's daily range getters: `GetModifiedMapRange@140F49440`
-/// (key 5 on the country and, in AceRangeInputs, on the ace and its type) and
-/// `GetRaidUnitRangeLimit@141453E10`.
+/// The raid launch gate's daily range terms: key 5 on the country and,
+/// in AceRangeInputs, on the ace and its type, plus the raid unit range limit.
 pub const RAID_LAUNCH: Family = Family {
     name: "raid launch",
     keys: &[keys::AIR_RANGE_FACTOR, keys::NAVAL_COMMANDO_RAID_DISTANCE],
@@ -356,7 +354,7 @@ pub const RAID_LAUNCH: Family = Family {
     tables: &[TableId::RaidCountryInputs, TableId::AceRangeInputs],
 };
 
-/// `CCountry::CanAffordCommandPower@1406F0380`'s capacity pair.
+/// The command-power affordability gate's capacity pair.
 pub const COMMAND_POWER: Family = Family {
     name: "command power",
     keys: &[keys::MAX_COMMAND_POWER, keys::MAX_COMMAND_POWER_MULT],
@@ -364,11 +362,9 @@ pub const COMMAND_POWER: Family = Family {
     tables: &[TableId::CountryCommandPower],
 };
 
-/// The ace country modifiers every raid reads live, recorded hourly per
-/// country beside the command power pair: 0x25a on an ace's owner
-/// (`CAce::scaled_modifier@14060DDF0`) and 0x72 on a wing's country (the ace
-/// terms of `GetModifiedMapRange@140F49440` and
-/// `CAirWing::GetAceModifiedMaxSpeed@140F4B5E0`).
+/// Ace country modifiers every raid reads live, recorded hourly per
+/// country beside the command-power pair: 0x25a on an ace's owner and 0x72
+/// on a wing's country, used by ace range and maximum-speed terms.
 pub const COUNTRY_ACE_MODIFIERS: Family = Family {
     name: "country ace modifiers",
     keys: &[keys::AIR_ACE_BONUSES_FACTOR, keys::ACE_EFFECTIVENESS_FACTOR],
@@ -376,8 +372,8 @@ pub const COUNTRY_ACE_MODIFIERS: Family = Family {
     tables: &[TableId::CountryCommandPower],
 };
 
-/// `CalculateRaidUnitSpeed@141453880`'s ace speed terms: key 2 on the ace and
-/// its type. Its country terms are [`COUNTRY_ACE_MODIFIERS`]'.
+/// Raid unit ace-speed terms: key 2 on the ace and its type. Country terms
+/// come from [`COUNTRY_ACE_MODIFIERS`].
 pub const RAID_UNIT_SPEED: Family = Family {
     name: "raid unit speed",
     keys: &[keys::AIR_MAXIMUM_SPEED_FACTOR],
@@ -385,9 +381,8 @@ pub const RAID_UNIT_SPEED: Family = Family {
     tables: &[TableId::RaidSpeedInputs],
 };
 
-/// `COrderInstance::GetRequiredInvasionPreparationHours@141016930`'s naval
-/// invasion terms: 0x1a on the country, the relation and the leader, 0x184
-/// on the country, 0x1ce on the relation.
+/// Naval invasion preparation terms: 0x1a on the country, relation and
+/// leader, 0x184 on the country, 0x1ce on the relation.
 pub const INVASION_PREPARATION: Family = Family {
     name: "invasion preparation",
     keys: &[
@@ -399,8 +394,8 @@ pub const INVASION_PREPARATION: Family = Family {
     tables: &[TableId::InvasionPreparations],
 };
 
-/// `141016930`'s type4 preparation terms in ArmyOrderPlans.execution.
-/// A field-local refusal preserves the stored route and progress prefix.
+/// Type4 preparation terms in ArmyOrderPlans.execution. A field-local
+/// refusal preserves the stored route and progress prefix.
 pub const PARADROP_PREPARATION: Family = Family {
     name: "paradrop preparation",
     keys: &[keys::AIR_INVASION_PREPARATION, keys::AIR_INVASION_PREP_DAYS],
@@ -408,8 +403,8 @@ pub const PARADROP_PREPARATION: Family = Family {
     tables: &[],
 };
 
-/// `140BEE920`'s country/commander transport-weight terms, reached by
-/// `14101DC30`. Refusal stays in DivisionMovement.order_transport.
+/// Country/commander transport-weight terms reached by order transport
+/// calculation. Refusal stays in DivisionMovement.order_transport.
 pub const PARADROP_TRANSPORT: Family = Family {
     name: "paradrop transport weight",
     keys: &[keys::PARATROOPER_WEIGHT_FACTOR],
@@ -417,9 +412,9 @@ pub const PARADROP_TRANSPORT: Family = Family {
     tables: &[],
 };
 
-/// The naval mission icon's active counts and efficiencies (140FA2AC0,
-/// 140F99450, 140F98DE0): combined task-force keys, mission-owner escort,
-/// roster-owner weather and expeditionary/roster-owner underway range.
+/// Naval mission icon active counts and efficiencies: combined task-force
+/// keys, mission-owner escort, roster-owner weather and
+/// expeditionary/roster-owner underway range.
 pub const NAVAL_MISSIONS: Family = Family {
     name: "naval mission active counts and efficiencies",
     keys: &engine::naval_mission_inputs::COUNTRY_KEYS,
@@ -452,7 +447,7 @@ pub const ORACLE_FIXED15: Family = Family {
     tables: &[],
 };
 
-/// Success operands read by 14157C670, 140F49710, 140F4D130.
+/// Success operands for raid, bombing and mission calculations.
 pub const RAID_SUCCESS: Family = Family {
     name: "raid success operands",
     keys: &[
@@ -476,7 +471,7 @@ pub const RAID_SUCCESS: Family = Family {
     tables: &[TableId::RaidTooltipOperands],
 };
 
-/// `1411DED90/140C07140` counterintelligence and `1413E3350` cryptology.
+/// Counterintelligence and cryptology terms.
 pub const RAID_INTEL: Family = Family {
     name: "raid target intel",
     keys: &[keys::INTELLIGENCE_AGENCY_DEFENSE, keys::CRYPTO_STRENGTH],
@@ -546,10 +541,15 @@ pub const FAMILIES: &[Family] = &[
     ORACLE_INFRASTRUCTURE,
 ];
 
-/// Playback authenticates its own modifier literals, even in a recording made
-/// before the recorder checked them. A partial or absent table is not evidence.
+/// Playback authenticates expected modifier names against recorded definitions.
+/// A partial or absent table is not evidence of a matching layout.
 pub fn validate_recording(frame: &DecodedFrame, family: Family) -> Result<(), String> {
     let validate = || -> Result<(), String> {
+        if !engine::executable_tables::is_initialized() {
+            return Err(
+                "executable metadata unavailable; configure a supported game installation".into(),
+            );
+        }
         let definitions = frame
             .complete::<tables::ModifierDefinitions>()
             .map_err(|e| e.to_string())?;
@@ -563,10 +563,7 @@ pub fn validate_recording(frame: &DecodedFrame, family: Family) -> Result<(), St
         {
             return Err(format!("modifier definition gap ({gap:#x}) is registered"));
         }
-        for key in keys::ALL
-            .iter()
-            .filter(|key| family.keys.contains(&key.index))
-        {
+        for key in keys::all().filter(|key| family.keys.contains(&key.index)) {
             let failure = |reason| format!("{} ({:#x}): {reason}", key.name, key.index);
             let row = definitions
                 .binary_search_by_key(&key.index, |row| row.index)
@@ -594,7 +591,9 @@ mod tests {
     };
 
     fn fixture() -> DecodedFrame {
-        let mut keys = keys::ALL.to_vec();
+        engine::executable_tables::initialize_for_tests()
+            .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+        let mut keys = keys::all().collect::<Vec<_>>();
         keys.sort_unstable_by_key(|key| key.index);
         let mut frame = DecodedFrame {
             branch: 1,
@@ -678,34 +677,24 @@ mod tests {
 
     #[test]
     fn families_cover_exactly_the_checked_literals() {
-        for key in keys::ALL {
+        for key in keys::ALL_INDICES {
             assert!(
-                FAMILIES
-                    .iter()
-                    .any(|family| family.keys.contains(&key.index)),
-                "uncovered key {}",
-                key.name
+                FAMILIES.iter().any(|family| family.keys.contains(key)),
+                "uncovered key {key:#x}"
             );
         }
-        for token in engine::fixed_layout::TOKENS {
+        for token in engine::fixed_layout::TOKEN_IDS {
             assert!(
-                FAMILIES
-                    .iter()
-                    .any(|family| family.tokens.contains(&token.id)),
-                "uncovered token {}",
-                token.name
+                FAMILIES.iter().any(|family| family.tokens.contains(token)),
+                "uncovered token {token:#x}"
             );
         }
         for family in FAMILIES {
             for index in family.keys {
-                assert!(keys::ALL.iter().any(|key| key.index == *index));
+                assert!(keys::ALL_INDICES.contains(index));
             }
             for id in family.tokens {
-                assert!(
-                    engine::fixed_layout::TOKENS
-                        .iter()
-                        .any(|token| token.id == *id)
-                );
+                assert!(engine::fixed_layout::TOKEN_IDS.contains(id));
             }
         }
     }
@@ -737,15 +726,7 @@ mod tests {
                     .literal = b"renumbered_by_patch".to_vec();
                 let refusal = validate_recording(&frame, family).unwrap_err();
                 assert!(refusal.contains(family.name));
-                assert!(
-                    refusal.contains(
-                        keys::ALL
-                            .iter()
-                            .find(|expected| expected.index == key)
-                            .unwrap()
-                            .name
-                    )
-                );
+                assert!(refusal.contains(keys::name(key).unwrap()));
                 assert!(refusal.contains("different script name"));
             }
         }
@@ -759,7 +740,7 @@ mod tests {
         );
         assert_eq!(NAVAL_BREAKDOWNS.tables, [TableId::NavalModifierBreakdowns]);
         for key in NAVAL_BREAKDOWNS.keys {
-            assert!(keys::ALL.iter().any(|expected| expected.index == *key));
+            assert!(keys::ALL_INDICES.contains(key));
         }
     }
 

@@ -1,4 +1,4 @@
-//! CEquipmentUpgradesInstance, pinned a729; embedded at CEquipmentVariant+68.
+//! CEquipmentUpgradesInstance, embedded at CEquipmentVariant+0x68.
 
 use crate::{
     Memory, cequipment_upgrade, cequipment_variant,
@@ -8,18 +8,17 @@ use crate::{
     walk::Outcome,
 };
 
-/// CEquipmentUpgradesInstance primary vtable; executable RTTI confirms old AIR_VARIANT_UPGRADE_CONTAINER identity.
+/// CEquipmentUpgradesInstance primary vtable.
 pub const VTABLE_RVA: usize = 0x027a_b628;
-/// CEquipmentUpgradesInstance entry vector data; read_compact_air_variant_upgrade_entries reads variant+70, instance+8.
+/// CEquipmentUpgradesInstance entry vector data.
 pub const ENTRIES: usize = 0x08;
 /// CEquipmentUpgradesInstance entry-vector u32 capacity; legacy variant+78 normalizes to instance+10.
 pub const ENTRIES_CAPACITY: usize = 0x10;
 /// CEquipmentUpgradesInstance entry-vector u32 count; legacy variant+7C normalizes to instance+14.
 pub const ENTRIES_COUNT: usize = 0x14;
 
-/// The upgrade is named by `definition_token`: CEquipmentUpgrade's
-/// constructor 1415251B0 copies the authored key into its name and adds the
-/// token from that same string, so the name is content and is not copied.
+/// `definition_token` names the upgrade. Its authored name and token come
+/// from the same content key; capture records the token.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub variant: u64,

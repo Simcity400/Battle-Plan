@@ -101,8 +101,7 @@ fn parse_with_tokens(
                     invalid("technology token is not UTF-8"),
                 )
             })?;
-            // CTechnologyTemplate+0x3B0 parent overrides its display-name
-            // key (140AC3C70, 140AC1980, 140AC1830).
+            // A technology template's parent overrides its display-name key.
             let parent = technology
                 .value
                 .items()
@@ -130,8 +129,8 @@ fn parse_with_tokens(
                         .filter(|i| i.keyword_is("position"))
                     {
                         let values = position.value.items().unwrap_or_default();
-                        // 1402C7A50 has fixed-length recovery, not a list.
-                        // These are the two forms for which List is identical.
+                        // Fixed-length recovery, not a list. These are the two forms for
+                        // which List is identical.
                         let valid = values.len() == 2 && values.iter().all(Item::number)
                             || values.len() == 6
                                 && values[0].value_keyword().as_deref() == Some("x")
@@ -160,8 +159,8 @@ fn parse_with_tokens(
                         limits.push(equipment.value.items().unwrap_or_default().to_vec());
                         continue;
                     }
-                    // 140AC3C70 has a special, evaluated `limit` branch in
-                    // this raw loop. Its conditional early exit is not a list.
+                    // This raw loop has a special, evaluated `limit` branch.
+                    // Its conditional early exit is not a list.
                     if equipment.value_keyword().as_deref() == Some("limit")
                         || matches!(equipment.kind, native::Kind::Open | native::Kind::Equals)
                     {
@@ -187,8 +186,7 @@ fn parse_with_tokens(
                 }
             }
             let fields = technology.value.items().unwrap_or_default();
-            // 140AC3C70 uses read_bool_field 1424ABCA0; a failed value keeps
-            // the preceding assignment (read_bool_token 1424B06E0).
+            // A failed boolean value keeps the preceding assignment.
             let force_small = parser::read_bool_field(fields, "force_use_small_tech_layout", false);
             display_keys.insert(
                 token.to_owned(),
@@ -238,12 +236,11 @@ pub struct EquipmentName {
 }
 
 impl PresentationName {
-    /// Full GetLocalizedName 140EC9A60 uses one native admitted child unless
-    /// template+0x40A forces the template key. 140AC3C70 checks limits at
-    /// content load in a fresh empty scope 140528800, then stores accepted
-    /// names at template+0x278/count+0x284. 140EBDC40 resolves those names and
-    /// applies the validity/category/DLC gate before filling instance+0x68.
-    /// Classifier propagation 140EC19C0 does not recheck these limits.
+    /// The full localized name uses one admitted child unless the small-layout
+    /// flag forces the template key. Limits are checked at content load in a
+    /// fresh empty scope, then accepted names are stored. Runtime resolution
+    /// applies the validity/category/DLC gate before filling the instance.
+    /// Classifier propagation does not recheck these limits.
     pub fn name(
         &self,
         evaluate: impl FnMut(&[Item]) -> Result<bool, String>,
@@ -257,8 +254,8 @@ impl PresentationName {
         })
     }
 
-    /// Admission is shared by names and descriptions. Description 140EC51F0
-    /// counts non-duplicate children separately, then selects the first child.
+    /// Admission is shared by names and descriptions. Descriptions count
+    /// non-duplicate children separately, then select the first child.
     pub fn children(
         &self,
         mut evaluate: impl FnMut(&[Item]) -> Result<bool, String>,
@@ -270,8 +267,8 @@ impl PresentationName {
         let mut children = Vec::new();
         let mut accepted = BTreeSet::new();
         for candidate in &self.equipment {
-            // A false limit exits this authored field's whole loop 140AC3C70;
-            // later checks in that field cannot restore its admission.
+            // A false limit exits this authored field's whole loop; later
+            // checks in that field cannot restore its admission.
             let mut admitted = true;
             for limit in &candidate.limits {
                 if !evaluate(limit).map_err(|why| {
@@ -287,9 +284,9 @@ impl PresentationName {
             if !admitted {
                 continue;
             }
-            // Template names deduplicate by folded authored token 1404548E0;
-            // distinct aliases may resolve to the same pointer and still
-            // occupy two runtime children in 140EBDC40.
+            // Template names deduplicate by folded authored token; distinct
+            // aliases may resolve to the same pointer and still occupy two
+            // runtime children.
             if accepted.insert(candidate.name.to_ascii_lowercase())
                 && let Some(name) = resolve(&candidate.name)?
             {
@@ -319,7 +316,7 @@ impl Database {
         let mut presentation_names = BTreeMap::new();
         let mut equipment_warnings = Vec::new();
         let mut inventory_warnings = Vec::new();
-        // 140AC1BA0 enumerates this directory without recursion.
+        // Enumerate this directory without recursion.
         for path in layers.directory_files("common/technologies", ".txt")? {
             match parse_with_tokens(&layers.read(&path)?, &registry, &names, &mut tokens) {
                 Ok((definitions, display_names, notes)) => {
@@ -385,11 +382,9 @@ fn read_templates_with_tokens(
     let mut refused = Vec::new();
     let mut leading_limit = true;
     let modifier_registry = &|key: &[u8]| modifiers::registered(key, Some(names));
-    // CTechnologyDatabase 140ABCFC0 (EOF loop), CTechnologyTemplate
-    // 140AC3960 / 140AC3C70. All dynamic content names come from layers.
-    // CTechnologyDatabase::LoadDirectory (140AC1BA0) constructs each file's
-    // lexer in mode 0 (1424A6370).
-    // CTechnologyTemplate::vf4 140AC3C70 passes country scope at 140AC582B.
+    // Read the database to EOF. All dynamic content names come from layers.
+    // Each file constructs its lexer in mode 0. Technology fields pass
+    // country scope to their trigger and effect readers.
     let read = native::read_in_effect_scope(
         input,
         native::Mode::KeepMark,
@@ -444,8 +439,8 @@ fn read_templates_with_tokens(
                     Shape::Statements(Uniform)
                 }
                 (Technology, Some(b"enable_subunits")) => Shape::One,
-                // 140AB8A50 / 140A83900 accept limit until the first anonymous
-                // statement (140A835F0); other assignments use only the value.
+                // Accept limit until the first anonymous statement; other
+                // assignments use only the value.
                 (Uniform, Some(b"limit")) if leading_limit => Shape::Trigger,
                 (Uniform, _) => {
                     if field.key.text.is_empty() {
@@ -460,9 +455,8 @@ fn read_templates_with_tokens(
                         Shape::Skip
                     }
                 }
-                // 140AC3C70 peeks for a leading limit (on_research_complete_limit,
-                // +0x470), then CEffect::ReadScript (140534280) reads the body only
-                // when the value slot is `{`.
+                // Peek for a leading on_research_complete limit, then read the
+                // effect body only when the value slot is `{`.
                 (Technology, Some(b"on_research_complete")) => Shape::LimitedBody(Effect),
                 (Effect, _) => crate::effect_keys::shape(Some(names), field).map(|()| Effect),
                 (Technology, Some(b"parent" | b"enable_tactic")) => Shape::Current,
@@ -488,7 +482,7 @@ fn read_templates_with_tokens(
                         | b"xp_boost_cost",
                     ),
                 ) => Shape::One,
-                // 140636690 checks subunits, then categories, before CModifier.
+                // Check subunits, then categories, before modifiers.
                 (Technology, Some(key))
                     if registry.units.contains(key) || registry.categories.contains(key) =>
                 {
@@ -503,12 +497,12 @@ fn read_templates_with_tokens(
                 .map(Modifier),
                 (Path, Some(b"leads_to_tech" | b"research_cost_coeff" | b"ignore_for_layout")) => {
                     Shape::One
-                } // 140AC3B00
-                (Folder, Some(b"name")) => Shape::One, // 140AC39C0
-                // 1402C7A50: the lexer's tokens, the value slot unchanged.
+                }
+                (Folder, Some(b"name")) => Shape::One,
+                // The lexer's tokens, the value slot unchanged.
                 (Folder, Some(b"position")) if field.opens() => Shape::RawList,
                 (Folder | Path, _) => Shape::Skip,
-                (Scalars | Building, _) => Shape::One, // 1413B04D0 and inline loops
+                (Scalars | Building, _) => Shape::One, // Scalar fields read one value.
                 (Mtth, _) => native::mean_time_to_happen(field),
                 (Modifier(node), _) => {
                     modifiers::shape(node, field, modifier_registry, &mut undecided).map(Modifier)
@@ -522,9 +516,9 @@ fn read_templates_with_tokens(
     (read, undecided, refused)
 }
 
-/// A technology that enables equipment: its id and its `parent`, the alternate
-/// name the game's technology template keeps at `CTechnologyTemplate+0x3b0` (read
-/// id for names and equipment icons (`string_reader_140b3d930`).
+/// A technology that enables equipment: its id and its `parent`, the
+/// alternate name read from the scalar `parent` and used instead of the
+/// id for names and equipment icons.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Enabler {
     pub id: String,
@@ -642,9 +636,8 @@ pub struct Enablers {
 }
 
 impl Enablers {
-    /// The one technology that enables `key` (`string_source_scan@140b36c60` uses a
-    /// technology only when exactly one enables the type): none when no or several
-    /// plain entries name it; `Err` when a scripted entry may add one, so how many
+    /// The one technology that enables `key`: none when no or several plain
+    /// entries name it; `Err` when a scripted entry may add one, so how many
     /// enable it is not known.
     pub fn single(&self, key: &str) -> Result<Option<&Enabler>, String> {
         let key = fold_token(key);
@@ -670,17 +663,17 @@ impl Enablers {
     }
 }
 
-/// For each equipment type, every technology whose `enable_equipments` names it,
-/// in technology id order (the game's icon fallback uses a technology only when
-/// exactly one enables the type, `string_source_scan@140b36c60`). Files are read in
-/// layer and path order, a later technology of the same id replacing an earlier one.
+/// For each equipment type, every technology whose `enable_equipments` names
+/// it, in technology id order. The game's icon fallback uses a technology
+/// only when exactly one enables the type. Files are read in layer and path
+/// order, a later technology of the same id replacing an earlier one.
 ///
-/// Equipment and technology ids are lexer tokens, so both are compared as the lexer
-/// identifies them (`ASCII token fold`: only ASCII A–Z fold, `AddDynamicToken@1424A65A0`):
-/// the map is keyed by the folded equipment key, `enable_equipments = { TANK_1 }`
-/// names the type `tank_1`, and `Tank_Tech` redefines `tank_tech`. A technology keeps
-/// the spelling of its last definition. A scripted entry refuses only what that
-/// technology could enable ([`Enablers::single`]).
+/// Equipment and technology ids are lexer tokens, compared with ASCII A-Z
+/// folding. The map is keyed by the folded equipment key: an uppercase type
+/// entry matches its lowercase spelling, and a mixed-case technology id
+/// redefines its lowercase spelling. A technology keeps the spelling of its
+/// last definition. A scripted entry refuses only what that technology could
+/// enable ([`Enablers::single`]).
 pub fn read_enablers(layers: &ResolvedLayers) -> io::Result<Enablers> {
     let paths = layers.directory_files("common/technologies", ".txt")?;
     let mut technologies: BTreeMap<String, (String, Enables)> = BTreeMap::new();
@@ -727,6 +720,8 @@ mod tests {
     #[cfg(feature = "test-support")]
     #[test]
     fn tokens_keep_database_order_replacement_and_refused_inventory_notes() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         struct TempRoot(std::path::PathBuf);
         impl Drop for TempRoot {
             fn drop(&mut self) {
@@ -813,6 +808,8 @@ mod tests {
 
     #[test]
     fn completion_name_projection_uses_template_single_child_and_load_time_limits() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (links, display, _) = parse_with_registry(br#"technologies={plain={} renamed={parent=mod_parent} equipment={enable_equipments={mod_equipment}} forced={parent=mod_parent enable_equipments={mod_equipment} force_use_small_tech_layout=yes} conditional={enable_equipments={limit={always=yes} mod_equipment}}}"#, &units::Registry::default(), &KeyNames::default()).unwrap();
         let name = |key: &str| {
             display[key]
@@ -850,6 +847,8 @@ mod tests {
 
     #[test]
     fn invalid_parent_refuses_only_its_presentation_and_keeps_equipment_links() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let input = b"technologies={\
             before={enable_equipments={before_equipment}} \
             invalid={parent=\x80 enable_equipments={invalid_equipment}} \
@@ -868,7 +867,7 @@ mod tests {
         assert_eq!(parse_equipment(input, &KeyNames::default()).unwrap(), links);
 
         // Shape::Current stores `{`; its nested fields are technology fields
-        // and their `}` closes the technology (1424A9730, 140AC3C70).
+        // and their `}` closes the technology.
         let block = b"technologies={\
             before={enable_equipments={before_equipment}} \
             after={parent=after_name enable_equipments={after_equipment}} \
@@ -888,7 +887,9 @@ mod tests {
     }
 
     #[test]
-    fn malformed_small_layout_boolean_keeps_the_last_native_value() {
+    fn malformed_small_layout_boolean_keeps_the_last_value() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         for (values, expected) in [
             (&["invalid"][..], false),
             (&["yes", "invalid"][..], true),
@@ -937,6 +938,8 @@ mod tests {
 
     #[test]
     fn completion_name_deduplicates_authored_tokens_but_preserves_alias_children() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (_, display, _) = parse_with_registry(
             br#"technologies={same={enable_equipments={one ONE}} aliases={enable_equipments={one alias}}}"#,
             &units::Registry::default(), &KeyNames::default(),
@@ -961,6 +964,8 @@ mod tests {
 
     #[test]
     fn completion_name_limit_prefix_short_circuits_and_resets_between_fields() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let p = PresentationName {
             template: "template".into(),
             force_small: false,
@@ -1007,9 +1012,11 @@ mod tests {
 
     #[test]
     fn effect_bodies_follow_the_brace_guard_and_leading_limit() {
-        // 140AC3C70 peeks for a leading limit and reads it as a trigger; then
-        // 140534280 reads the body only when the value slot, as that left it,
-        // is `{`. The one technology's unlock, by case:
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        // Peek for a leading limit and read it as a trigger; then read the
+        // body only when the value slot, as that left it, is `{`. The one
+        // technology's unlock, by case:
         let link = |body: &str| {
             let text = format!("technologies={{t={{{body}}}}}");
             parse_equipment(text.as_bytes(), &KeyNames::default())
@@ -1030,8 +1037,8 @@ mod tests {
             Some("two")
         );
         // `limit = no`, or a limit whose last value is `yes`, leaves that value
-        // in the slot: LoadBody and ReadScript report it and the fields after
-        // it are the technology's.
+        // in the slot: trigger and effect body readers report it and the fields
+        // after it are the technology's.
         assert_eq!(
             link("on_research_complete={limit=no enable_equipments={custom_equipment}}").as_deref(),
             Some("custom_equipment")
@@ -1060,7 +1067,9 @@ mod tests {
     }
 
     #[test]
-    fn native_keywords_references_and_list_appends() {
+    fn keywords_references_and_list_appends() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let links = parse_equipment(br#"@e=one TECHNOLOGIES={a={"enable_equipments"=wrong enable_equipments={@e} enable_equipments={ONE}} b={enable_equipments={one} enable_equipments={two}}}"#, &KeyNames::default()).unwrap();
         assert_eq!(links["a"].as_deref(), Some("one"));
         assert_eq!(links["b"], None);
@@ -1068,6 +1077,8 @@ mod tests {
 
     #[test]
     fn conditional_unlock_preserves_following_fields_and_names_unsafe_tails() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let links = parse_equipment(br#"technologies={a={enable_equipments={limit={always=yes} one} research_cost=1} b={enable_equipments={two}}}"#, &KeyNames::default()).unwrap();
         assert_eq!(links["a"], None);
         assert_eq!(links["b"].as_deref(), Some("two"));
@@ -1089,6 +1100,8 @@ mod tests {
 
     #[test]
     fn dynamic_reader_dispatch_uses_the_recorded_registry() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut registry = units::Registry::default();
         registry.units.insert(b"custom_unit".to_vec());
         registry.terrains.insert(b"custom_terrain".to_vec());
@@ -1109,6 +1122,8 @@ mod tests {
 
     #[test]
     fn modifier_registry_decides_unknown_block_recovery() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let input = b"technologies={t={category_leg_infantry={@lost=2} enable_equipments={one}}} lost=@lost";
         let mut names = KeyNames::default();
         let units = units::Registry::default();
@@ -1136,6 +1151,8 @@ mod tests {
 
     #[test]
     fn equipment_localisation_follows_only_an_unambiguous_authored_unlock() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let links = parse_equipment(
             br#"technologies = {
             @cost = 1
@@ -1161,6 +1178,8 @@ mod tests {
     }
     #[test]
     fn enablers_list_each_technology_once_with_its_parent_and_mark_scripts() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let parsed = parse_enablers(
             br#"technologies = {
             infantry_weapons1 = { enable_equipments = { infantry_equipment_1 } }
@@ -1258,6 +1277,8 @@ mod tests {
     #[cfg(feature = "test-support")]
     #[test]
     fn a_mod_technology_replaces_vanilla_under_the_lexer_fold() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "hoi4_installed_content_enablers_{}_{:?}",
             std::process::id(),
@@ -1302,6 +1323,8 @@ mod tests {
     #[cfg(feature = "test-support")]
     #[test]
     fn a_technology_redefined_in_another_case_is_one_technology() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "hoi4_installed_content_enablers_case_{}_{:?}",
             std::process::id(),

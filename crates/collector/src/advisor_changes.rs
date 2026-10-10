@@ -78,7 +78,7 @@ fn character_map(character: usize) -> usize {
         .unwrap_or(0)
 }
 fn role_map(role: usize) -> usize {
-    // Native receiver is a live CAdvisor, but still guard the metadata read.
+    // Native receiver is a live advisor, but still guard the metadata read.
     // On failure revoke every certificate rather than guess its owner.
     let memory = unsafe { engine::memory::LiveMemory::new() };
     let owner = role
@@ -236,8 +236,7 @@ impl Hooks {
     }
 }
 
-// Signatures checked against pinned decompiles and native call sites. The
-// callbacks preserve every argument and return, and never call readers/getters
+// The callbacks preserve every argument and return, and never call readers/getters
 // in the game. Role-owner lookup is guarded metadata, not an engine call.
 macro_rules! callback {
     ($name:ident, $site:expr, ($($arg:ident:$ty:ty),*) -> $ret:ty, $map:expr) => {

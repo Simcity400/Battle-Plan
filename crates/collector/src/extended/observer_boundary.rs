@@ -167,8 +167,8 @@ impl ObserverRequest {
         }
     }
 }
-// HourlyUpdate1401DCEF0 enters DailyUpdate1401D4390 at hour %24==23;
-// DailyProductionUpdate140E527A0 then visits the current +58/+70/+88 queues.
+// The hourly update enters the daily update at hour %24==23;
+// daily production then visits the current production queues.
 // Prepare at that parked boundary, and on first/load/recovery boundaries,
 // rather than relying on a wall-clock poll while the simulation runs rapidly.
 fn prepare_outputs_at(hour: i32, continuous: bool, recovery: bool) -> bool {

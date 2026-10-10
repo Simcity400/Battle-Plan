@@ -2,7 +2,7 @@
 use super::*;
 use crate::value::value_struct;
 
-/// CNameGroupMember generator operands (1409B5640 / 1409B4C40), never its +0x60 cache.
+/// Name generator operands, rather than the cached display name.
 /// `custom` keeps +0x88 bytes shown by the generator, including its stored
 /// programmatic fallback for a null group; `group` is a content key.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

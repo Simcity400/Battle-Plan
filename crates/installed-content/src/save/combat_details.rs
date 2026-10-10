@@ -3,14 +3,14 @@ use super::*;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LandDetails {
-    /// The enclosing save key is border_war_combat (1413DAC80), not land_combat.
+    /// The enclosing save key is border_war_combat, not land_combat.
     pub border_war: bool,
     pub terrain: Option<Vec<u8>>,
     pub sides: [LandSide; 2],
-    /// Present only for the border-war serializer 1413DAC80.
+    /// Present only for the border-war serializer.
     pub transfer_state: Option<bool>,
-    /// Border serializer 1413DAC80 always writes the signed fixed5 primary
-    /// +0xD8 as `combat_width` (token 0x2CCF), including zero.
+    /// The border-war serializer always writes the signed fixed5
+    /// `combat_width`, including zero.
     pub combat_width: Option<Decimal>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -21,12 +21,12 @@ pub struct LandSide {
     pub air_counts: Vec<i32>,
     pub anti_air: Option<Decimal>,
     pub air_kills: Option<i32>,
-    /// Air STR/ORG, ground STR/ORG, prevented STR/ORG; 1412a8760 omits <=0.
+    /// Air STR/ORG, ground STR/ORG, prevented STR/ORG; the writer omits <=0.
     pub damage: [Option<Decimal>; 6],
     pub organisation_loss: Option<Vec<Decimal>>,
     pub organisation_loss_index: Option<u32>,
     pub organisation_loss_count: Option<u32>,
-    /// CLandBorderWarCombatant::Serialize@1413DAD10.
+    /// Country saved for a border-war combatant.
     pub border_country: Option<Vec<u8>>,
     pub border_state: Option<i32>,
     pub border_win_event: Option<Vec<u8>>,
@@ -146,10 +146,10 @@ pub struct NavalDetails {
     pub group_counts: [u32; 2],
     pub member_positions: [BTreeMap<u32, [u32; 3]>; 2],
     pub retired: [Vec<NavalCombatParticipant>; 2],
-    /// 14160ff40 writes disengage only when the native byte is nonzero.
+    /// The naval writer emits disengage only when the stored byte is nonzero.
     pub retreating: [Option<bool>; 2],
-    /// CNavalCombatant::Serialize@14160FF40 writes +0x158/+0x160,
-    /// the 6x6 +0x168 matrix and the optional +0x288 token map.
+    /// The naval writer saves original health, total damage,
+    /// the 6x6 damage-history matrix and the optional damage-by-type map.
     pub original_health: [Option<Decimal>; 2],
     pub total_damage: [Option<Decimal>; 2],
     pub damage_history: [Option<Vec<Decimal>>; 2],
@@ -312,8 +312,8 @@ pub(super) fn naval_member(items: &[Item]) -> io::Result<NavalMemberDetails> {
             }
             let damage = block(&item.value)?;
             damage_entries.push(NavalDamage {
-                // AddReceivedDamage 14195C390 stores the null reference when the source
-                // object is null; CFEXAir 1419675D0 passes null for planes without a carrier.
+                // Received damage stores the null reference when its source object is
+                // null; planes without a carrier supply a null source.
                 ship: null_permitted_handle(
                     field(damage, b"ship")?
                         .ok_or_else(|| invalid("naval damage lacks source ship"))?,
@@ -416,6 +416,7 @@ pub struct NavalPlane {
     pub casualties: i32,
     pub time_duration: i32,
     pub country: Vec<u8>,
+    /// `-1.1.1.1` is the initial date: no external wave yet.
     pub date: SavedDate,
     pub flags: [bool; 2],
     pub name: Vec<u8>,

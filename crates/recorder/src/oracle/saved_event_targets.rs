@@ -1,4 +1,4 @@
-//! Ordered saved-global registry: header writer 1401F2A20, row writer 14052F780.
+//! Ordered saved-global registry: header writer, row writer.
 use super::{Report, complete, counters::eq, country_tag};
 use installed_content::save::saved_event_targets::Target;
 use replay::{
@@ -33,7 +33,7 @@ fn compare_rows(
             None
         };
         let label = format!("saved_event_target[{}]", r.ordinal);
-        // 14052F780 omits name for ID 0, which 140F43E10 assigns to the
+        // The game omits name for ID 0, which the game assigns to the
         // first interned string. The recorded name still serves lookup.
         let name = if r.live & GlobalSavedEventTargetRow::UNSAVED_NAME != 0 {
             b"".as_slice()
@@ -83,11 +83,14 @@ fn compare_rows(
         );
     }
     report.compared("GlobalSavedEventTargets", rows.len().min(saved.len()));
-    report.limitation("raw reference identities and strategic-region IDs are not recorded; live kinds compare by saved key presence. Dead or scalar-shadowed references may still be saved (14052F780)", "GlobalSavedEventTargets.live");
-    report.limitation("reference liveness and character GetUnitLeader are runtime lookups, not saved fields (14052BE50, 140F8A840)", "GlobalSavedEventTargets.live/character_leader");
-    report.limitation("non-positive country words are not serialized; aliases compare through CountryLinks to the emitted tag (14052F780)", "GlobalSavedEventTargets.country");
+    report.limitation("raw reference identities and strategic-region IDs are not recorded; live kinds compare by saved key presence. Dead or scalar-shadowed references may still be saved", "GlobalSavedEventTargets.live");
     report.limitation(
-        "combatant pointer is asserted unpersistable and emits no field (14052F780)",
+        "reference liveness and character-to-leader are runtime lookups, not saved fields",
+        "GlobalSavedEventTargets.live/character_leader",
+    );
+    report.limitation("non-positive country words are not serialized; aliases compare through CountryLinks to the emitted tag", "GlobalSavedEventTargets.country");
+    report.limitation(
+        "combatant pointer is asserted unpersistable and emits no field",
         "GlobalSavedEventTargets.live.combatant",
     );
     Ok(())

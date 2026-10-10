@@ -185,9 +185,9 @@ fn the_body_range_is_the_engines_and_not_the_shipped_palette() {
 }
 
 #[test]
-fn the_width_map_matches_the_captured_native_rails() {
-    // Native rail separations, independent of screenshot colour and bank falloff.
-    for (index, captured) in [
+fn palette_indices_determine_ribbon_widths() {
+    // Ribbon width depends on palette index independently of colour and bank falloff.
+    for (index, expected) in [
         (3u8, 1.11_f32),
         (4, 1.28),
         (6, 1.62),
@@ -197,8 +197,8 @@ fn the_width_map_matches_the_captured_native_rails() {
         (11, 2.47),
     ] {
         assert!(
-            (width_for_index(index) - captured).abs() < 0.0005,
-            "index {index}: {} against {captured}",
+            (width_for_index(index) - expected).abs() < 0.0005,
+            "index {index}: {} against {expected}",
             width_for_index(index)
         );
     }
@@ -278,6 +278,8 @@ fn river_height_bilinearly_filters_bytes_before_scaling() {
 
 #[test]
 fn junction_partition_keeps_every_marker_and_orders_both_keys() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for count in [0, 1, 32, 33, 41, 42, 264, 1024] {
         let mut items: Vec<_> = (0..count).map(|i| (i, 0, 1 + (i % 7 == 0) as u8)).collect();
         sort_junctions(&mut items);
@@ -332,7 +334,7 @@ fn a_ribbon_carries_the_tangent_the_uv_and_the_end_fade() {
         (across - width_for_index(6)).abs() < 1e-3,
         "ribbon is {across} wide"
     );
-    // The captured along-flow coordinate is the point index, independent of arc length.
+    // The along-flow coordinate is the point index, independent of arc length.
     let step = mesh.vertices[42].uv_tangent[1] - left.uv_tangent[1];
     assert_eq!(step, 1.0);
     assert_eq!(left.uv_tangent[1], 20.0);

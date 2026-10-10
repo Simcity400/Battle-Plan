@@ -139,8 +139,8 @@ fn primary_live_ships_deduplicate_task_force_and_count_convoys_separately() {
     assert_eq!(sides[1], SideGrid::default());
 }
 
-/// reached only as an opponent adds no task force or convoy, and two such groups sharing a
-/// member index are not a repeated forward position.
+/// Opponent-only groups contribute no task force or convoy. Repeated member indices across them do
+/// not repeat a forward position.
 #[test]
 fn paired_only_groups_are_not_walked() {
     let paired = |slot, ship, live_ship, live_convoy, group_member| NavalCombatShipRow {

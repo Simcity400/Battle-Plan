@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn the_native_wrapped_distance_gives_fixed5_pixels() {
-    // 1424DAE00 stops once the square is within a hundredth of the input
+    // The square root stops once its square is within a hundredth of the input
     // (value * 1000 / 100000), so a root sits near, not at, the true one.
     let close = |value: i64, expected: i64| (value - expected).abs() * 10_000 <= expected;
     // x 95 and 5 on a 100-wide map are 10 apart across the wrap.

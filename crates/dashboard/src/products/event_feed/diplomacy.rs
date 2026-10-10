@@ -149,9 +149,9 @@ fn project_groups(
             }
         }
     }
-    // CWarRelation::clear_link (140D12D10) removes both status links. A complete
-    // following observation only proves that the countries are no longer at
-    // war; it does not identify a peace treaty, annexation or release cause.
+    // Removing a war relation clears both status links. A complete following
+    // observation only proves the countries are no longer at war; it does not
+    // identify a peace treaty, annexation or release cause.
     let mut peace = BTreeMap::<(i32, String), BTreeSet<String>>::new();
     for run in groups.wars.iter() {
         let Some(hour) = run.last_hour.checked_add(1).filter(|hour| *hour <= last) else {
@@ -183,8 +183,8 @@ fn project_groups(
             faction: None,
         });
     }
-    // CreateWarRelation (140D0B3D0) shares the declaration/join writer. Group's
-    // exact relation start is recorded; counterparties aggregate by country/hour.
+    // The relation start is shared by declarations and joins. Group's exact
+    // relation start is recorded; counterparties aggregate by country/hour.
     let mut starts = BTreeMap::<(i32, i32, String), BTreeSet<String>>::new();
     for start in groups.war_starts.iter() {
         let read_hour = groups.war_start_reads.get(start).copied();
@@ -361,20 +361,12 @@ pub(super) fn scan(
                 }
             }
             let continuous = *since.get_or_insert(hour);
-            // P: collector::spooling projects every authenticated ccountry::walk
-            // row into Countries, with no owned-state filter. walk walks every
-            // non-null canonical CGameState country slot; zero-state CCountry
-            // objects are therefore still recorded. Annex effect 14034D200
-            // reaches transfer/cleanup 1406C73C0; its final gated 1407008A0
-            // call removes core-state flags, not the country object or its
-            // CGameState roster slot. Presence is not existence.
-            // P: GetCountryIdeologyGroupIndex (140D2BD20), called by
-            // CHasCivilWarTrigger (1403D3670), tests CCountry+0x484 > 0.
-            // walk_counter_inputs reads OWNED_STATES+0xC (0x484); collector
-            // extended::country_counters writes that count without filtering.
-            // I: >0 -> 0 is "ceased to exist" by this supplying read; the cause
-            // and exact transition hour are absent. A fresh-save annexation oracle
-            // must still verify object lifetime and the count transition in play.
+            // Countries includes every non-null canonical country slot, with no
+            // owned-state filter. A country with no states can therefore remain
+            // recorded after annexation; presence is not existence.
+            // CountryCounterInputs supplies the unfiltered owned-state roster count.
+            // A positive-to-zero transition means ceased to exist by this supplying
+            // read; the cause and exact transition hour are absent.
             if slot_read(&decoded.metrics, TableId::CountryCounterInputs, hour) {
                 if let Ok(rows) = decoded.complete::<tables::CountryCounterInputs>() {
                     out.observed.insert(TableId::CountryCounterInputs);
@@ -435,12 +427,10 @@ pub(super) fn scan(
                     out.refuse("existenceRead", "Country existence", "Owned-state-count reads are incomplete; transitions through them are unknown.")?;
                 }
             }
-            // P: relation factory (140D0A6D0) identifies CGuaranteeRelation.
-            // CDiplomaticRelationEffect::Execute (140355190) passes scope first
-            // and target second to inherited initializer 140D10580 (vtable+0x58),
-            // which stores +0x10/+0x14 unchanged. The owner-slice can
-            // come from either status vector; it never reverses this direction.
-            // CRelation::Serialize (140D19260) stores first/second and start_date.
+            // Guarantee effects pass scope first and target second; relation
+            // initialization retains that direction. The owner-slice can come from
+            // either status vector and never reverses it. The relation stores
+            // first/second and start_date.
             if let (Ok(rows), Ok(reads)) = (
                 decoded.complete::<tables::RelationTuples>(),
                 decoded.complete::<tables::SliceReads>(),

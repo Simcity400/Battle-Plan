@@ -396,7 +396,7 @@ impl LazyFlags {
 
     /// [`Self::resolve`] with every candidate decided first, on this thread: the flag the
     /// candidates resolve to as it would be had the set been built whole at load, as the
-    /// engine builds its flag atlases (`CGameGraphics::BuildFlagAtlases@140B31570`), so a frame
+    /// engine builds its flag atlases, so a frame
     /// never draws a stand-in for a flag that is not decoded yet.
     pub fn acquire(&self, candidates: &[&str]) -> Option<(usize, [f32; 4])> {
         let queued = {

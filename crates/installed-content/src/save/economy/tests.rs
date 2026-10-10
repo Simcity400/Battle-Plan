@@ -163,7 +163,7 @@ fn fuel_refuses_layouts_its_writer_cannot_produce() {
 }
 
 #[test]
-fn fuel_text_preserves_full_quantity_range_without_native_bit_claim() {
+fn fuel_text_preserves_full_quantity_range_without_raw_bit_claim() {
     let quantity = FuelQuantity::parse(b"281474976710656.00000").unwrap();
     assert_eq!(quantity.decimal_numerator, 28_147_497_671_065_600_000);
     assert_eq!(
@@ -261,7 +261,7 @@ fn experience_keeps_zero_omissions_separate_from_missing_status() {
 }
 
 #[test]
-fn experience_refuses_non_native_decimals_and_duplicate_channels() {
+fn experience_refuses_unwritable_decimals_and_duplicate_channels() {
     for fields in [
         "num_armies_for_training=0 army_experience=0.00001",
         "num_armies_for_training=0.00001",
@@ -278,7 +278,7 @@ fn experience_refuses_non_native_decimals_and_duplicate_channels() {
 }
 
 #[test]
-fn supply_preserves_native_word_bits_order_alias_tags_and_zero_levels() {
+fn supply_preserves_saved_word_bits_order_alias_tags_and_zero_levels() {
     let document = parser::parse(
         br#"
         settings={
@@ -606,8 +606,7 @@ fn logistics_refuses_layouts_its_writer_cannot_produce() {
     }
 }
 
-/// The pools as CCountryResources::Write (140CAEB80) emits them: each
-/// nonzero amount by resource name, fixed5 through 1424AE590, and
+/// Saved pools retain each nonzero fixed5 amount by resource name, and
 /// `to_use` as three unkeyed pools.
 #[test]
 fn country_resource_pools_keep_every_written_pool() {
@@ -656,8 +655,8 @@ fn country_resource_pools_keep_every_written_pool() {
     }
 }
 
-/// A name declared twice is two resources (loader 140AB2ED0 appends
-/// each declaration); the writer 140BBD5D0 repeats the name, one entry
+/// A name declared twice is two resources (the loader appends each
+/// declaration); the writer repeats the name, one entry
 /// per nonzero index in index order. Both occurrences are kept in order.
 #[test]
 fn repeated_resource_names_keep_every_occurrence_in_written_order() {

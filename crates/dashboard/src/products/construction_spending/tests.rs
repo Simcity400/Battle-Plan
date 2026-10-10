@@ -271,6 +271,8 @@ fn construction_output_reads_only_at_cadence_and_accounts_for_5000_country_owner
 
 #[test]
 fn construction_spending_groups_a_mod_building_type_named_from_the_mod_layer() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{
         construction_log::{ContentView, names_in, tests::timed_scan as scan},
         construction_spending::{SpentStep, leaves},

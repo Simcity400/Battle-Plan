@@ -179,7 +179,7 @@ fn progress_uses_only_the_first_native_eta_edge() {
     path.numerator = i64::MIN;
     assert_eq!(progress(&path, Some(&row), Some(1)), Some(0xffff_ffff));
     assert_eq!(progress(&path, None, Some(1)), None);
-    // BEDCC0 does not skip a same-province first hop. Its authored
+    // Progress does not skip a same-province first hop. Its authored
     // no-adjacency distance still divides the numerator.
     assert_eq!(progress(&path, Some(&row), Some(2)), Some(0xffff_ffff));
     assert_eq!(progress(&path, Some(&row), None), None);

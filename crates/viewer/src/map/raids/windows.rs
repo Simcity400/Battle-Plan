@@ -1,15 +1,11 @@
-//! Raid icon windows, bound by Reload@141E71BF0 and updated by SetFrameState@141E71F70
-//! and ApplyOffers@141E75100. Preparing an hour never changes a presented instance.
+//! Raid icon window bindings and updates. Preparing an hour never changes
+//! a presented instance.
 
 use super::*;
 
-// Rebuild@1418D83B0, literal@142A014B0.
 const BUTTON_CONTAINER: &str = "raid_map_icon_button_container";
-// Reload@141E71BF0, literal@142A014D0.
 const FRAME: &str = "raid_map_icon_frame";
-// Reload@141E71BF0, literal@142A729B8.
 const GLYPH: &str = "raid_map_icon_button";
-// Reload@141E71BF0, literal@142A729A8.
 const PLUS: &str = "plus_icon";
 
 #[derive(Default)]
@@ -64,8 +60,7 @@ struct Controls<'a> {
 }
 
 fn controls(root: &native::Element) -> Result<Controls<'_>, String> {
-    // Rebuild@1418D83B0 uses FindChildContainerByName@1422A54E0; Reload@141E71BF0
-    // uses recursive control@1422A4D60 and icon@1422A7170 lookups inside it.
+    // Find the named child container, then recursively find its controls and icons.
     let container = root
         .find_recursive(native::Kind::Container, BUTTON_CONTAINER.as_bytes())
         .ok_or_else(|| format!("no container named {BUTTON_CONTAINER}"))?;
@@ -89,7 +84,7 @@ fn update(
     controls: Controls<'_>,
     resources: &dyn native_gui::Resources,
 ) -> Result<(), String> {
-    // vslot+0x2D8 in SetFrameState@141E71F70, then vslot+0xB0, one-based.
+    // Set the frame and one-based sprite index in order.
     instance.set_sprite(
         root,
         controls.frame,
@@ -98,10 +93,10 @@ fn update(
     )?;
     instance.set_frame(root, controls.frame, icon.frame.wrapping_add(1) as i32)?;
     if icon.frame == 0 {
-        // ApplyOffers@141E75100 enables/disables the frame only.
+        // Offers enable or disable the frame only.
         instance.control(root, controls.frame)?.enabled = Some(icon.enabled);
     } else {
-        // Owned refresh@141E72980 and enemy refresh@141E770E0 enable the glyph.
+        // Own and incoming refreshes enable the glyph.
         instance.control(root, controls.glyph)?.enabled = Some(true);
     }
     let glyph = icon
@@ -188,7 +183,7 @@ impl PreparedRaids {
                 owners: &owners,
             },
             Box::new(|instance, root| {
-                // Reload@141E71BF0 initially hides plus_icon and sets its hide bit.
+                // Initially hide plus_icon and set its hide bit.
                 let plus = controls(root)?.plus;
                 instance.hide(root, plus)?;
                 instance.set_hide_flag(root, plus, true)
@@ -209,9 +204,9 @@ impl PreparedRaids {
             },
             &mut report.reasons,
         );
-        // 140B2F270 sorts and reverse-attaches the visible windows before GUI
-        // paint; 142226CC0 tests that paint list backwards. Pool/live order can
-        // differ after a camera move or slot reuse, so hover follows our draw rank.
+        // Sort and reverse-attach visible windows before GUI painting; hit-test
+        // the paint list backwards. Pool/live order can differ after camera moves
+        // or slot reuse, so hover follows draw rank.
         drawn.sort_by_key(|drawn| placed[&drawn.owner].0);
         let mut count = 0;
         for drawn in drawn {
@@ -448,16 +443,22 @@ mod tests {
 
     #[test]
     fn raid_tooltip_regression_active_hover_loads_substituted_target_icon() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         hover_tooltip(false);
     }
 
     #[test]
     fn raid_tooltip_regression_disabled_offer_hover_loads_diagnostic_icon() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         hover_tooltip(true);
     }
 
     #[test]
     fn native_raid_draw_and_hover_follow_the_map_anchor() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = draw_resources();
         let windows = native_gui::tests::windows(DRAW_GUI);
         let context = crate::map::native_resources::Context {
@@ -510,6 +511,8 @@ mod tests {
 
     #[test]
     fn raid_tooltip_regression_overlap_tracks_paint_order_after_camera_move() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = draw_resources();
         let windows = native_gui::tests::windows(DRAW_GUI);
         let context = crate::map::native_resources::Context {
@@ -598,6 +601,8 @@ mod tests {
 
     #[test]
     fn raid_tooltip_regression_overlapping_buildings_keep_the_hovered_targets_native_state() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use super::super::tests::{frame, put, registered_command_power};
         use installed_content::localisation::Localisation;
         use replay::rows::Recorded;
@@ -754,8 +759,8 @@ mod tests {
                 scripted_content: &Err("no scripted substitutions in this fixture".into()),
                 flag_exists: &|_| true,
             });
-            // 140FD1BB0 uses the building's state via 1410C6520/141162450;
-            // a building-only target does not query its province's VP name.
+            // Use the building's state. A building-only target does not query its
+            // province's victory-point name.
             assert!(
                 tooltip
                     .title
@@ -795,6 +800,8 @@ mod tests {
 
     #[test]
     fn missing_native_raid_controls_are_named_and_counted_for_each_owner() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = draw_resources();
         let windows = native_gui::tests::windows(
             br#"guiTypes = { containerWindowType = {
@@ -848,6 +855,8 @@ mod tests {
 
     #[test]
     fn a_reused_raid_window_withholds_a_missing_or_undecided_glyph() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = draw_resources();
         let windows = native_gui::tests::windows(DRAW_GUI);
         let context = crate::map::native_resources::Context {
@@ -907,6 +916,8 @@ mod tests {
 
     #[test]
     fn native_raid_bindings_find_nested_inherited_controls() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = draw_resources();
         let windows = native_gui::tests::windows(br#"guiTypes = { containerWindowType = {
           name = raid_map_icon size = { width = 100 height = 80 }
@@ -945,8 +956,8 @@ mod tests {
         let native_gui::PartKind::Sprite { geometry, .. } = &frame.kind else {
             panic!("frame is a sprite");
         };
-        // CButtonType::vf10@14235A0D0 inherits the sprite only; the derived
-        // control keeps its own default position and orientation.
+        // Inherit only the sprite; the derived control retains its own default
+        // position and orientation.
         assert_eq!(&geometry.rect[..2], &[0., 0.]);
         assert!(
             layout

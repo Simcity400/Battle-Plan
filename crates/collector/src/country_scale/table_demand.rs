@@ -96,8 +96,8 @@ pub(crate) fn presize(
         }
     };
     // These empty-output walks count every original occurrence while skipping
-    // body fields. CFleet::serialize@140D4A390 retains +B8/+C4 native order;
-    // air pool census uses CStrategicAirManager::country_entry@1406ECA90.
+    // body fields. Fleet members retain their stored order; the air pool
+    // census follows each country entry.
     accept(
         1,
         rows(engine::cair_wing::walk(memory, base, state, &mut []))
@@ -110,7 +110,7 @@ pub(crate) fn presize(
     {
         accept(2, rows(outcome).map(|count| map.raise_naval(index, count)));
     }
-    // Checksum@140EB08F0 uses all non-sentinel +10/+1C supply slots.
+    // The supply census uses every non-sentinel supply slot.
     accept(
         3,
         rows(engine::sprovince_supply_data::walk(

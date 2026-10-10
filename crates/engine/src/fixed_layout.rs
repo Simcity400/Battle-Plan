@@ -1,18 +1,16 @@
-//! The fixed-index contract of one attachment. Built-in modifier registrations
-//! and static lexer tokens are process-static: `140552CB0` registers built-ins
-//! at startup, `1405FF750` appends dynamic keys above the gap and `1424A87E0`
-//! computes the static token maximum once. A consistent check is therefore
-//! final for the attachment; an interrupted one is repeated on a later hour.
-//! It runs in the hourly callback, not at injection: a recorder waiting for
-//! the game injects during startup, while registration may still be running.
+//! Fixed-index contract for one attachment. Built-in modifier registrations
+//! and static tokens are process-static. Dynamic definitions append beyond the
+//! gap. A consistent check is final for the attachment; an interrupted check
+//! is repeated on a later hour. Checking runs hourly because an attachment
+//! made during startup can precede completed registration.
 
 use crate::{
     Memory, cbuilding_database, cpdx_lexer, cresearch_slot, modifier_definition as definition,
     modifier_keys, msvc_string, read,
 };
 
-/// Default row between built-ins and dynamic definitions (`140548F00`;
-/// `1405FF750` registers from 0x29a + 1). A layout sentinel, not a content count.
+/// Default row between built-ins and dynamic definitions; a layout sentinel
+/// rather than a content count.
 pub const GAP: u32 = 0x29a;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,39 +19,26 @@ pub struct Token {
     pub name: &'static str,
 }
 
-/// Static lexer tokens the executable hard-codes and readers compare by id.
-/// Dynamic ids follow load order, so each must be static and spell its name.
-/// Each cites its binding in the static token registrar `140082CB0`.
-pub const TOKENS: &[Token] = &[
-    // Registered at 1400EB6AC.
-    Token {
-        id: cbuilding_database::INFRASTRUCTURE_TOKEN,
-        name: "infrastructure",
-    },
-    // Registered at 14010DE6A and 14010DEA3, respectively.
-    Token {
-        id: crate::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN,
-        name: "nuclear_bomb",
-    },
-    Token {
-        id: crate::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN,
-        name: "thermonuclear_bomb",
-    },
-    // Registered at 1400A6D6C and 140088997, respectively.
-    Token {
-        id: cresearch_slot::IDLE_HANDLE,
-        name: "empty",
-    },
-    Token {
-        id: cpdx_lexer::FIXED15_TOKEN,
-        name: "long_float",
-    },
-    // Registered at 1400EA1E1; stat 0x3E maps here in 140632AC0.
-    Token {
-        id: crate::railway_gun_speed::MAXIMUM_SPEED_TOKEN,
-        name: "maximum_speed",
-    },
+/// Narrow static lexer-token identities compared by fixed-index readers.
+/// Dynamic IDs follow load order, so these dependencies must remain static.
+pub const TOKEN_IDS: &[u32] = &[
+    cbuilding_database::INFRASTRUCTURE_TOKEN,
+    crate::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN,
+    crate::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN,
+    cresearch_slot::IDLE_HANDLE,
+    cpdx_lexer::FIXED15_TOKEN,
+    crate::railway_gun_speed::MAXIMUM_SPEED_TOKEN,
 ];
+
+pub fn tokens() -> impl Iterator<Item = Token> + Clone {
+    TOKEN_IDS.iter().map(|&id| Token {
+        id,
+        name: crate::executable_tables::get()
+            .keywords
+            .by_id(id)
+            .expect("fixed token identity is present in verified executable metadata"),
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Failure {
@@ -74,8 +59,8 @@ impl std::fmt::Display for Failure {
 pub struct Report {
     pub static_token_maximum: u32,
     pub gap: Result<(), &'static str>,
-    pub modifiers: [Result<(), &'static str>; modifier_keys::NAMES.len()],
-    pub tokens: [Result<(), &'static str>; TOKENS.len()],
+    pub modifiers: [Result<(), &'static str>; GAP as usize],
+    pub tokens: [Result<(), &'static str>; TOKEN_IDS.len()],
 }
 
 impl Report {
@@ -94,7 +79,7 @@ impl Report {
             index: GAP,
             reason,
         });
-        let rows = modifier_keys::NAMES
+        let rows = modifier_keys::names()
             .iter()
             .zip(&self.modifiers)
             .enumerate()
@@ -109,16 +94,13 @@ impl Report {
     }
 
     fn token_failures(&self) -> impl Iterator<Item = Failure> + Clone + '_ {
-        TOKENS
-            .iter()
-            .zip(&self.tokens)
-            .filter_map(|(token, result)| {
-                result.err().map(|reason| Failure {
-                    name: token.name,
-                    index: token.id,
-                    reason,
-                })
+        tokens().zip(&self.tokens).filter_map(|(token, result)| {
+            result.err().map(|reason| Failure {
+                name: token.name,
+                index: token.id,
+                reason,
             })
+        })
     }
 
     /// The failure that refuses a consumer of modifier `keys` and static
@@ -141,16 +123,15 @@ const _: () = assert!(definition::TOKEN == definition::INDEX + 4);
 /// `Err` means the check could not complete consistently: the table or
 /// dictionary was unreadable, or a writer changed either meanwhile. All reads
 /// are guarded.
-pub fn check(memory: &impl Memory, base: usize) -> Result<Report, &'static str> {
+pub fn check(memory: &impl Memory, base: usize, buffer: &mut [u8]) -> Result<Report, &'static str> {
     let (dictionary, witness) = cpdx_lexer::TokenNames::witnessed(memory, base)?;
     let table = definition::table(memory, base)?;
-    let mut buffer = [0; longest_name()];
     let mut spells = |token: u32, name: &str| -> Result<bool, &'static str> {
         let text = dictionary.text(memory, token)?;
         if text.len() != name.len() {
             return Ok(false);
         }
-        text.copy(memory, &mut buffer)?;
+        text.copy(memory, buffer)?;
         Ok(&buffer[..name.len()] == name.as_bytes())
     };
     let gap = match table.element(GAP, definition::STRIDE) {
@@ -165,8 +146,8 @@ pub fn check(memory: &impl Memory, base: usize) -> Result<Report, &'static str> 
             }
         }
     };
-    let mut modifiers = [Ok(()); modifier_keys::NAMES.len()];
-    for (key, (result, &name)) in modifiers.iter_mut().zip(modifier_keys::NAMES).enumerate() {
+    let mut modifiers = [Ok(()); GAP as usize];
+    for (key, (result, &name)) in modifiers.iter_mut().zip(modifier_keys::names()).enumerate() {
         let key = key as u32;
         let Some(address) = table.element(key, definition::STRIDE) else {
             *result = Err("definition row missing");
@@ -183,8 +164,8 @@ pub fn check(memory: &impl Memory, base: usize) -> Result<Report, &'static str> 
         }
     }
     let static_token_maximum = witness.static_maximum();
-    let mut tokens = [Ok(()); TOKENS.len()];
-    for (result, token) in tokens.iter_mut().zip(TOKENS) {
+    let mut tokens = [Ok(()); TOKEN_IDS.len()];
+    for (result, token) in tokens.iter_mut().zip(self::tokens()) {
         if token.id > static_token_maximum {
             *result = Err("exceeds the static token maximum");
         } else if !spells(token.id, token.name)? {
@@ -203,23 +184,15 @@ pub fn check(memory: &impl Memory, base: usize) -> Result<Report, &'static str> 
     })
 }
 
-const fn longest_name() -> usize {
-    let mut result = 0;
-    let mut index = 0;
-    while index < modifier_keys::NAMES.len() {
-        if modifier_keys::NAMES[index].len() > result {
-            result = modifier_keys::NAMES[index].len();
-        }
-        index += 1;
-    }
-    index = 0;
-    while index < TOKENS.len() {
-        if TOKENS[index].name.len() > result {
-            result = TOKENS[index].name.len();
-        }
-        index += 1;
-    }
-    result
+/// Text storage required for a complete fixed-layout check. Prepare it before
+/// publishing capture hooks; the check never grows its caller-owned buffer.
+pub fn longest_name() -> usize {
+    modifier_keys::names()
+        .iter()
+        .map(|name| name.len())
+        .chain(tokens().map(|token| token.name.len()))
+        .max()
+        .unwrap_or(0)
 }
 
 fn gap_bytes() -> [u8; definition::STRIDE] {
@@ -242,6 +215,17 @@ mod tests {
     use super::*;
     use std::{cell::Cell, collections::BTreeMap};
 
+    fn initialize_tables() {
+        crate::executable_tables::initialize_for_tests()
+            .expect("fixed-layout tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+    }
+
+    fn check(memory: &impl Memory, base: usize) -> Result<Report, &'static str> {
+        initialize_tables();
+        let mut buffer = vec![0; super::longest_name()];
+        super::check(memory, base, &mut buffer)
+    }
+
     const TABLE: usize = 0x10000;
     const NAMES: usize = 0x400000;
     const TEXT: usize = 0x600000;
@@ -259,6 +243,7 @@ mod tests {
             );
         }
         fn new() -> Self {
+            initialize_tables();
             let mut result = Self(BTreeMap::new());
             let mut header = [0; 16];
             header[..8].copy_from_slice(&(TABLE as u64).to_le_bytes());
@@ -273,7 +258,7 @@ mod tests {
             lexer[60..64].copy_from_slice(&0x6001_u32.to_le_bytes());
             result.put(cpdx_lexer::INITIALIZED_RVA, &lexer);
             result.maximum(0x5000);
-            for (index, &name) in modifier_keys::NAMES.iter().enumerate() {
+            for (index, &name) in modifier_keys::names().iter().enumerate() {
                 let index = index as u32;
                 let mut row = [0; 8];
                 row[..4].copy_from_slice(&index.to_le_bytes());
@@ -284,7 +269,7 @@ mod tests {
                 );
                 result.name(KEY_TOKENS + index, name.as_bytes());
             }
-            for token in TOKENS {
+            for token in tokens() {
                 result.name(token.id, token.name.as_bytes());
             }
             result
@@ -324,7 +309,7 @@ mod tests {
         let valid = check(&fixture, 0).unwrap();
         assert!(valid.is_verified());
         assert_eq!(valid.static_token_maximum, 0x5000);
-        for (index, &name) in modifier_keys::NAMES.iter().enumerate() {
+        for (index, &name) in modifier_keys::names().iter().enumerate() {
             let index = index as u32;
             let mut wrong = name.as_bytes().to_vec();
             wrong[0] = b'!';
@@ -332,7 +317,7 @@ mod tests {
             let report = check(&fixture, 0).unwrap();
             assert!(!report.is_verified());
             assert_eq!(report.modifiers.iter().filter(|r| r.is_err()).count(), 1);
-            for key in [modifier_keys::ALL[0].index, modifier_keys::NAVY_ORG] {
+            for key in [modifier_keys::ALL_INDICES[0], modifier_keys::NAVY_ORG] {
                 let failure = report.failure(&[key], &[]).unwrap();
                 assert_eq!((failure.name, failure.index), (name, index));
                 assert!(failure.to_string().contains("different script name"));
@@ -373,7 +358,8 @@ mod tests {
 
     #[test]
     fn inconsistent_rows_fail_and_short_reads_repeat_the_check() {
-        let key = modifier_keys::ALL[0];
+        initialize_tables();
+        let key = modifier_keys::all().next().unwrap();
         let address = TABLE + key.index as usize * definition::STRIDE + definition::INDEX;
         for offset in 0..8 {
             let mut fixture = Fixture::new();
@@ -401,7 +387,8 @@ mod tests {
 
     #[test]
     fn static_tokens_must_spell_their_name_within_the_inclusive_maximum() {
-        for (position, token) in TOKENS.iter().enumerate() {
+        initialize_tables();
+        for (position, token) in tokens().enumerate() {
             let mut fixture = Fixture::new();
             // A token exactly at the inclusive static maximum is accepted,
             // even with later dynamic tokens in the reverse dictionary.
@@ -475,14 +462,16 @@ mod tests {
 
     #[test]
     fn registry_has_unique_indices_and_names_and_excludes_gap() {
-        assert_eq!(modifier_keys::NAMES.len(), GAP as usize);
-        for (index, name) in modifier_keys::NAMES.iter().enumerate() {
+        initialize_tables();
+        assert_eq!(modifier_keys::names().len(), GAP as usize);
+        for (index, name) in modifier_keys::names().iter().enumerate() {
             assert!(!name.is_empty());
-            assert!(!modifier_keys::NAMES[..index].contains(name));
+            assert!(!modifier_keys::names()[..index].contains(name));
         }
-        for (i, key) in modifier_keys::ALL.iter().enumerate() {
+        let keys: Vec<_> = modifier_keys::all().collect();
+        for (i, key) in keys.iter().enumerate() {
             assert!(
-                modifier_keys::ALL[..i]
+                keys[..i]
                     .iter()
                     .all(|other| other.index != key.index && other.name != key.name)
             );

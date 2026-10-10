@@ -1,4 +1,4 @@
-//! Weather comparisons follow F0D8E0, F0DBB0 and F0DDC0. The serializers
+//! Weather comparisons follow the weather manager writer, the weather region writer and the weather writer. The serializers
 //! preserve fixed5 words but encode byte flags only as zero/nonzero truth.
 
 use std::{collections::BTreeMap, io};
@@ -16,11 +16,11 @@ pub(super) fn compare(frame: &DecodedFrame, saved: &Save, report: &mut Report) -
         compare_regions(frame, saved, report)
     });
     report.limitation(
-        "the save holds neither the snow ceiling +0x1f8 nor permanent snow +0x30; a load recomputes both from content",
+        "the save holds neither the snow ceiling nor permanent snow; a load recomputes both from content",
         "WeatherRegions.max_snow, WeatherProvinces.permanent_snow: census only",
     );
     report.limitation(
-        "weather Boolean serializer AFDC0 preserves zero/nonzero truth only; nonzero native byte values are indistinguishable in text saves",
+        "the weather boolean writer preserves zero/nonzero truth only; nonzero native byte values are indistinguishable in text saves",
         "WeatherRegions.light_rain, heavy_rain, snow, blizzard, sandstorm, arctic_water; WeatherProvinces.raw_mud",
     );
     if provinces && regions {
@@ -70,7 +70,7 @@ fn compare_provinces(frame: &DecodedFrame, saved: &Save, report: &mut Report) ->
     let mut compared_provinces = 0;
     if let Some(expected) = &saved.weather.provinces {
         for (ordinal, expected) in expected.iter().enumerate() {
-            // F0D8E0 emits every slot from zero to count, in array order.
+            // The weather manager writer emits every slot from zero to count, in array order.
             // This also rejects repeated keys without collapsing their data.
             dense_slot(ordinal, expected.slot, "saved weather provinces")?;
             let label = format!("weather province {}", expected.slot);
@@ -87,7 +87,7 @@ fn compare_provinces(frame: &DecodedFrame, saved: &Save, report: &mut Report) ->
                 );
             }
             sparse_scalar(report, &label, "snow", actual.snow, expected.snow.as_ref());
-            // 140F0DBB0 always emits temperature through 1424AE590, even
+            // The game always emits temperature, even
             // when zero. Absence is malformed/missing evidence, not zero.
             if let Some(&temperature) = report.recorded(
                 &actual.temperature,
@@ -123,15 +123,15 @@ fn compare_provinces(frame: &DecodedFrame, saved: &Save, report: &mut Report) ->
     }
     report.compared("WeatherProvinces", compared_provinces);
     report.limitation(
-        "the manager serializer F0D8E0 omits the display byte arrays +0x310/+0x328; a load rebuilds them from the passes",
+        "the weather manager writer omits the display byte arrays; a load rebuilds them from the passes",
         "WeatherProvinces.display_snow, display_mud: census only",
     );
     report.limitation(
-        "the manager serializer F0D8E0 omits the stored day/night array +0x370; these simulation values require a matched native read witness",
+        "the weather manager writer omits the stored day/night array; these simulation values require a matched native read witness",
         "WeatherProvinces.local_hour, night_factor: census only",
     );
     report.limitation(
-        "the manager serializer 140F0D8E0 omits the graphics grid +388/+390, refresh interval +300 and refresh identity +340; retained boundary and local fade require matched native graphics witnesses",
+        "the manager serializer omits the graphics grid, refresh interval and refresh identity; retained boundary and local fade require matched native graphics witnesses",
         "WeatherProvinces.display: runtime-only; no text-save equality claim",
     );
     Ok(())
@@ -201,7 +201,7 @@ fn sparse_scalar(
     captured: i64,
     saved: Option<&Decimal>,
 ) {
-    // F0DBB0 tests each complete i64 before emission, omitting exactly zero.
+    // The weather region writer tests each complete i64 before emission, omitting exactly zero.
     let expected = saved.map_or(0, |value| value.raw);
     report.scalar_checks += 1;
     if captured != expected {
@@ -210,7 +210,7 @@ fn sparse_scalar(
 }
 
 fn truth(report: &mut Report, label: &str, captured: u8, saved: Option<bool>) {
-    // F0DBB0/F0DDC0 omit exactly zero; AFDC0 spells every nonzero byte as yes.
+    // The region and weather writers omit exactly zero; boolean writing spells every nonzero byte as yes.
     let expected = saved.unwrap_or(false);
     if (captured != 0) != expected {
         report.difference(label, captured, expected);

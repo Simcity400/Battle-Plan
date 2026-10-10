@@ -1,10 +1,10 @@
-//! Anonymous anchor-selector hash bucket; layout name is descriptive, not RTTI.
+//! Anchor-selector hash bucket.
 
-/// Anchor-selector bucket stride; old attach_log.rs:140728 and select_secondary advances without wrapping.
+/// Anchor-selector bucket stride; traversal advances without wrapping.
 pub const STRIDE: usize = 0x18;
-/// Probe marker, u8; old attach_log.rs:140742 and select_secondary consumes bucket+4.
+/// Probe marker, u8, at bucket +4.
 pub const MARKER: usize = 0x04;
-/// Province selector key, u32; old attach_log.rs:140743 and select_secondary consumes bucket+8.
+/// Province selector key, u32, at bucket +8.
 pub const KEY: usize = 0x08;
-/// Selector value, native u64 tested for nonzero; old attach_log.rs:140744 and select_secondary consumes bucket+0x10.
+/// Selector value, u64, at bucket +0x10; tested for nonzero.
 pub const VALUE: usize = 0x10;

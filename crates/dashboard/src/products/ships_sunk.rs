@@ -1,8 +1,8 @@
 //! Named ship sinkings from the shared retained-history scan. The event date
-//! comes from fill_common@140C1E960, independently of the daily supplying read.
-//! A battle is the victim task force's first combat reference, not a retained
-//! result foreign key. Drawn battle titles resolve through the native region/VP
-//! selector and the current recorded PlaceNames ladder.
+//! is recorded independently of the daily supplying read. A battle is the victim
+//! task force's first combat reference, not a retained result foreign key. Drawn
+//! battle titles resolve through the region/VP selector and the current recorded
+//! PlaceNames ladder.
 
 use super::{
     BranchParams, LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, country_groups::HourSpan, sinkings,
@@ -179,8 +179,8 @@ fn named(
         let mut name = None;
         let mut icon = None;
         if let (Some(cat), Some(units), Some(literal)) = (cat, &units, &key) {
-            // 140AB5EE0 resolves the runtime token against the common/units
-            // database; matching preserves its first registered spelling.
+            // Resolve the runtime token against the unit database;
+            // matching preserves its first registered spelling.
             match units.token_name(&installed_content::tokens::Token::c_str(literal.as_bytes())) {
                 Ok(spelling) if !spelling.is_empty() => {
                     let spelling = spelling.to_owned();
@@ -189,8 +189,8 @@ fn named(
                     if cat.localisation.get(&spelling).is_some() {
                         name = cat.localised(&spelling, View::Plain);
                     }
-                    // SelectUnitTypeIconSprite@140B367C0 with param_5=0 uses
-                    // definition +0x18; exe prefix@1429344D0 and suffix@1429344A8.
+                    // Request the definition's medium unit icon using its registered
+                    // spelling with the standard sprite prefix and suffix.
                     let sprite_name = format!("GFX_unit_{spelling}_icon_medium");
                     match cat.sprites.find(&sprite_name) {
                         Ok(Some(sprite)) => {
@@ -283,8 +283,8 @@ fn named(
         for province in wanted {
             cancelled(flag)?;
             match memberships.get(&province).map(Vec::as_slice) {
-                // CStrategicRegion::GetName@140E0EB10 reads the content
-                // template's name key; no vanilla region ID/key is assumed.
+                // Strategic-region names use the content template's name key;
+                // no vanilla region ID/key is assumed.
                 Some([region]) => {
                     if let Some(name) = cat.localised(&region.name_key, View::Plain) {
                         out.places.insert(province, name);
@@ -302,9 +302,9 @@ fn named(
                 ),
             }
         }
-        // Constructors@140C1DF70/140C1DE60 copy ship names without their keys;
-        // cause_constructor@140C1E220 also stores translated cause text.
-        // PLAN #164 applies to all these localised-or-literal fields.
+        // Ship names are copied without their keys; cause records also store
+        // translated cause text. The recording-language guard applies to
+        // all these localised-or-literal fields.
         for ship in &scan.ships {
             for (bytes, what) in [
                 (&ship.entry.ship_name, "ship name"),
@@ -378,8 +378,8 @@ fn reply(
         } else if entry.assisted_kill != 0 {
             ShipSinkingCause::Assisted
         } else {
-            // combat_source_constructor@140C1DF70 clears both flags. An
-            // unresolved attribution country does not change this record kind.
+            // Combat-source records clear both flags. An unresolved attribution
+            // country does not change this record kind.
             ShipSinkingCause::Hostile
         };
         let province = (entry.province_present != 0).then_some(entry.province);

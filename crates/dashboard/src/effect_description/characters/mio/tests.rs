@@ -10,12 +10,12 @@ const MIO: u64 = 79 | 1 << 32;
 const EFFECTS: [(&str, &str, &str); 2] = [
     (
         "unlock_mio_trait_tooltip",
-        "NIndustrialOrganisation::CTraitTooltipEffect",
+        "MIO trait tooltip",
         "Unlock Owner trait AAA\n",
     ),
     (
         "complete_mio_trait",
-        "NIndustrialOrganisation::CUnlockTraitEffect",
+        "MIO trait completion",
         "Complete Owner trait AAA\n",
     ),
 ];
@@ -29,7 +29,7 @@ fn fixture() -> (Fixture, Folder) {
         ),
         (
             "common/military_industrial_organization/organizations/test.txt",
-            "synthetic_mio={trait={token=synthetic_convoy_production name=SYN_TRAIT equipment_bonus={soft_attack=0.1 supply_consumption=-0.2 reliability=0} organization_modifier={political_power_gain=0.3 custom_modifier_tooltip=RAW_BODY}} trait={token=synthetic_prussia_trait} trait={token=production_gap name=SYN_TRAIT equipment_bonus={soft_attack=0.1} production_bonus={production_capacity_factor=0.30006 production_cost_factor=-0.00001} organization_modifier={political_power_gain=0.3 custom_modifier_tooltip=RAW_BODY}} trait={token=numeric_zero name=SYN_TRAIT equipment_bonus={soft_attack=0.1} organization_modifier={political_power_gain=0}} initial_trait={name=INITIAL}} inherited_mio={include=synthetic_mio}",
+            "synthetic_mio={trait={token=synthetic_convoy_production name=SYN_TRAIT equipment_bonus={soft_attack=0.14 supply_consumption=-0.07 reliability=0} organization_modifier={political_power_gain=0.23 custom_modifier_tooltip=RAW_BODY}} trait={token=synthetic_empty_trait} trait={token=production_gap name=SYN_TRAIT equipment_bonus={soft_attack=0.14} production_bonus={production_capacity_factor=0.30006 production_cost_factor=-0.00001} organization_modifier={political_power_gain=0.23 custom_modifier_tooltip=RAW_BODY}} trait={token=numeric_zero name=SYN_TRAIT equipment_bonus={soft_attack=0.14} organization_modifier={political_power_gain=0}} initial_trait={name=INITIAL}} inherited_mio={include=synthetic_mio}",
         ),
         (
             "localisation/test_l_english.yml",
@@ -39,7 +39,7 @@ fn fixture() -> (Fixture, Folder) {
                 " EFFECT_MIO_COMPLETE_TRAIT:0 \"Complete $TRAIT$ [Root.GetTag]\"\n",
                 " EFFECT_MIO_UNLOCK_POLICY:0 \"Policy $NAME$\"\n",
                 " SYN_TRAIT:0 \"Base trait\"\n AAA_SYN_TRAIT:0 \"Owner trait\"\n",
-                " synthetic_mio_synthetic_prussia_trait:0 \"Prussia\"\n",
+                " synthetic_mio_synthetic_empty_trait:0 \"Unmodified trait\"\n",
                 " STAT_ARMY_SOFT_ATTACK:0 \"Soft\"\n STAT_ARMY_SUPPLY_CONSUMPTION:0 \"Supply\"\n",
                 " STAT_MODIFIER_DIFF:0 \"+$VALUE|2$\"\n STAT_MODIFIER_DIFF_NEG:0 \"-$VALUE|2$\"\n",
                 " PP:0 \"Power\"\n RAW_BODY:0 \"Raw [Root.GetTag]\"\n",
@@ -76,7 +76,7 @@ fn fixture() -> (Fixture, Folder) {
             },
             LexicalTokenRow {
                 token: 12,
-                literal: b"synthetic_prussia_trait".to_vec(),
+                literal: b"synthetic_empty_trait".to_vec(),
             },
             LexicalTokenRow {
                 token: 13,
@@ -112,37 +112,43 @@ fn scopes() -> EventScopes {
     EventScopes::new(vec![scope, EventScope::of(EventObject::Country(1))])
 }
 
-// common/characters/NOR.txt:639: block operand with show_modifiers=yes.
+// A block operand explicitly enables modifier text.
 #[test]
 fn unlock_mio_trait_tooltip() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
-        "unlock_mio_trait_tooltip={trait=synthetic_convoy_production show_modifiers=yes}",
+        "unlock_mio_trait_tooltip={show_modifiers=yes trait=synthetic_convoy_production}",
         &mut scopes(),
         Content::default(),
     );
     assert_eq!(
         out.text,
-        "Unlock Owner trait AAA (Soft+0.10, Supply--0.20, Power: \u{11}G+0.30\u{11}!\nRaw [Root.GetTag])\n"
+        "Unlock Owner trait AAA (Soft+0.14, Supply--0.07, Power: \u{11}G+0.23\u{11}!\nRaw [Root.GetTag])\n"
     );
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// common/national_focus/bulgaria.txt:1356: scalar under every MIO.
+// A scalar selects a trait without modifiers.
 #[test]
 fn complete_mio_trait() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
-        "complete_mio_trait=synthetic_prussia_trait",
+        "complete_mio_trait=synthetic_empty_trait",
         &mut scopes(),
         Content::default(),
     );
-    assert_eq!(out.text, "Complete Prussia AAA ()\n");
+    assert_eq!(out.text, "Complete Unmodified trait AAA ()\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 #[test]
 fn mio_missing_traits_keep_raw_token_and_show_modifiers_can_be_disabled() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     for (body, expected) in [
         (
@@ -181,6 +187,8 @@ fn mio_missing_traits_keep_raw_token_and_show_modifiers_can_be_disabled() {
 
 #[test]
 fn mio_catalogue_is_cached_once_per_stack() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, folder) = fixture();
     let content = fixture
         .catalogue
@@ -192,7 +200,7 @@ fn mio_catalogue_is_cached_once_per_stack() {
         folder
             .0
             .join("common/military_industrial_organization/organizations/test.txt"),
-        "synthetic_mio={trait={token=synthetic_prussia_trait name=WRONG}}",
+        "synthetic_mio={trait={token=synthetic_empty_trait name=WRONG}}",
     )
     .unwrap();
     assert!(std::ptr::eq(
@@ -205,16 +213,18 @@ fn mio_catalogue_is_cached_once_per_stack() {
             .unwrap()
     ));
     let out = fixture.render(
-        "complete_mio_trait=synthetic_prussia_trait",
+        "complete_mio_trait=synthetic_empty_trait",
         &mut scopes(),
         Content::default(),
     );
-    assert_eq!(out.text, "Complete Prussia AAA ()\n");
+    assert_eq!(out.text, "Complete Unmodified trait AAA ()\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 #[test]
 fn mio_repeated_trait_and_valid_boolean_assignments_keep_the_last_value() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     for body in [
         "unlock_mio_trait_tooltip={trait=unknown_trait trait=synthetic_convoy_production show_modifiers=no show_modifiers=yes}",
@@ -223,7 +233,7 @@ fn mio_repeated_trait_and_valid_boolean_assignments_keep_the_last_value() {
         let out = fixture.render(body, &mut scopes(), Content::default());
         assert_eq!(
             out.text,
-            "Unlock Owner trait AAA (Soft+0.10, Supply--0.20, Power: \u{11}G+0.30\u{11}!\nRaw [Root.GetTag])\n"
+            "Unlock Owner trait AAA (Soft+0.14, Supply--0.07, Power: \u{11}G+0.23\u{11}!\nRaw [Root.GetTag])\n"
         );
         assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
     }
@@ -231,6 +241,8 @@ fn mio_repeated_trait_and_valid_boolean_assignments_keep_the_last_value() {
 
 #[test]
 fn mio_production_bonus_uses_q15_rounding_and_quantized_zero_sign() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     for (key, _, header) in EFFECTS {
         let out = fixture.render(
@@ -241,7 +253,7 @@ fn mio_production_bonus_uses_q15_rounding_and_quantized_zero_sign() {
         assert_eq!(
             out.text,
             format!(
-                "{} (Soft+0.10, Capacity: \u{11}G+30.00%\u{11}!, Cost: \u{11}G-0.00%\u{11}!, Power: \u{11}G+0.30\u{11}!\nRaw [Root.GetTag])\n",
+                "{} (Soft+0.14, Capacity: \u{11}G+30.00%\u{11}!, Cost: \u{11}G-0.00%\u{11}!, Power: \u{11}G+0.23\u{11}!\nRaw [Root.GetTag])\n",
                 header.trim_end_matches('\n')
             ),
             "{key}"
@@ -258,7 +270,9 @@ fn mio_production_bonus_uses_q15_rounding_and_quantized_zero_sign() {
 }
 
 #[test]
-fn mio_production_percent_keeps_native_sign_rounding_and_wrapping() {
+fn mio_production_percent_keeps_sign_rounding_and_wrapping() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (value, bad_positive, expected) in [
         (30_006, false, "\u{11}G+30.00%\u{11}!"),
         (29_999, false, "\u{11}G+30.00%\u{11}!"),
@@ -280,7 +294,9 @@ fn mio_production_percent_keeps_native_sign_rounding_and_wrapping() {
 }
 
 #[test]
-fn mio_policy_uses_the_same_native_production_bonus_formatter() {
+fn mio_policy_uses_the_same_production_bonus_formatter() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let mut database = installed_content::industrial_organisations::Database::default();
     database.policies.read_file(
@@ -319,6 +335,8 @@ fn mio_policy_uses_the_same_native_production_bonus_formatter() {
 
 #[test]
 fn mio_inherited_organisation_block_refuses_only_that_fragment() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::LexicalTokens(tokens)) =
         &mut *fixture.frame.tables[TableId::LexicalTokens.index()]
@@ -326,7 +344,7 @@ fn mio_inherited_organisation_block_refuses_only_that_fragment() {
         unreachable!()
     };
     tokens[0].literal = b"inherited_mio".to_vec();
-    for (key, class, header) in EFFECTS {
+    for (key, label, header) in EFFECTS {
         let out = fixture.render(
             &format!("{key}={{trait=synthetic_convoy_production}}"),
             &mut scopes(),
@@ -335,13 +353,13 @@ fn mio_inherited_organisation_block_refuses_only_that_fragment() {
         assert_eq!(
             out.text,
             format!(
-                "{} (Soft+0.10, Supply--0.20)\n",
+                "{} (Soft+0.14, Supply--0.07)\n",
                 header.trim_end_matches('\n')
             ),
             "{key}"
         );
         assert_eq!(out.refusals, [(
-            format!("synthetic effect {class}: MIO organization_modifier inheritance needs shared ModifierAccumulator_CopyAssign tooltip-table copying (140A417D0/14054A5B0)"), 1,
+            format!("synthetic effect {label}: MIO organization_modifier inheritance needs shared modifier tooltip-table copying"), 1,
         )].into_iter().collect());
         let out = fixture.render(
             &format!("{key}={{trait=synthetic_convoy_production show_modifiers=no}}"),
@@ -355,11 +373,13 @@ fn mio_inherited_organisation_block_refuses_only_that_fragment() {
 
 #[test]
 fn mio_organisation_eligibility_or_formatter_error_keeps_bonus_fragments() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] =
         TableView::Complete(TableRows::ModifierDefinitions(vec![]));
     for (trait_key, why) in [
-        // The cached tooltip makes IsEffectivelyEmpty succeed before FormatDescription fails.
+        // The cached tooltip keeps the block nonempty before modifier formatting fails.
         (
             "synthetic_convoy_production",
             "idea modifier political_power_gain has no recorded definition",
@@ -369,16 +389,16 @@ fn mio_organisation_eligibility_or_formatter_error_keeps_bonus_fragments() {
             "trait modifier political_power_gain has no recorded definition",
         ),
     ] {
-        for (key, class, header) in EFFECTS {
+        for (key, label, header) in EFFECTS {
             let out = fixture.render(
                 &format!("{key}={{trait={trait_key}}}"),
                 &mut scopes(),
                 Content::default(),
             );
             let bonuses = if trait_key == "numeric_zero" {
-                "Soft+0.10"
+                "Soft+0.14"
             } else {
-                "Soft+0.10, Supply--0.20"
+                "Soft+0.14, Supply--0.07"
             };
             assert_eq!(
                 out.text,
@@ -387,7 +407,7 @@ fn mio_organisation_eligibility_or_formatter_error_keeps_bonus_fragments() {
             );
             assert_eq!(
                 out.refusals,
-                [(format!("synthetic effect {class}: {why}"), 1)]
+                [(format!("synthetic effect {label}: {why}"), 1)]
                     .into_iter()
                     .collect()
             );
@@ -397,6 +417,8 @@ fn mio_organisation_eligibility_or_formatter_error_keeps_bonus_fragments() {
 
 #[test]
 fn mio_effective_empty_gate_uses_the_recorded_feature_mask() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::ModifierDefinitions(definitions)) =
         &mut *fixture.frame.tables[TableId::ModifierDefinitions.index()]
@@ -417,7 +439,7 @@ fn mio_effective_empty_gate_uses_the_recorded_feature_mask() {
     );
     assert_eq!(
         out.text,
-        "Unlock Owner trait AAA (Soft+0.10, Supply--0.20, Raw [Root.GetTag])\n"
+        "Unlock Owner trait AAA (Soft+0.14, Supply--0.07, Raw [Root.GetTag])\n"
     );
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     let out = fixture.render(
@@ -425,7 +447,7 @@ fn mio_effective_empty_gate_uses_the_recorded_feature_mask() {
         &mut scopes(),
         Content::default(),
     );
-    assert_eq!(out.text, "Unlock Owner trait AAA (Soft+0.10)\n");
+    assert_eq!(out.text, "Unlock Owner trait AAA (Soft+0.14)\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     let TableView::Complete(TableRows::SimulationFeatures(features)) =
         &mut *fixture.frame.tables[TableId::SimulationFeatures.index()]
@@ -438,7 +460,7 @@ fn mio_effective_empty_gate_uses_the_recorded_feature_mask() {
         &mut scopes(),
         Content::default(),
     );
-    // Eligible zero entries force a separator even when FormatLine is empty.
-    assert_eq!(out.text, "Unlock Owner trait AAA (Soft+0.10,)\n");
+    // Eligible zero entries force a separator even when the formatted line is empty.
+    assert_eq!(out.text, "Unlock Owner trait AAA (Soft+0.14,)\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }

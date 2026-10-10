@@ -99,8 +99,8 @@ fn rocket_rounds_up_and_caps_while_gun_returns_one() {
     assert_eq!(scenario_plane_count(Base::Gun, 10, 0), 1);
 }
 
-/// `140F631E0` multiplies the rounded-up quotient back by 100000
-/// (`IMUL@140F63260`, wrapping) and divides again before narrowing. At the
+/// The game multiplies the rounded-up quotient back by 100000
+/// (wrapping) and divides again before narrowing. At the
 /// top of the range that product wraps: 92233720368548 * 100000 becomes
 /// negative, the second quotient's low 32 bits are 702313053 and the wing's
 /// 100 planes are the smaller. Without the wrap the count would be the low

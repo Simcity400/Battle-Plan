@@ -1,5 +1,4 @@
-//! Visibility projection of COrganisationTemplate (ReadKey@140A44C00).
-//! Directory literal 1427076A8, loaded by CBuildingDatabase::load@14018B610.
+//! Visibility projection of industrial organisation templates from the content stack.
 use crate::{
     ResolvedLayers,
     key_names::KeyNames,
@@ -62,7 +61,7 @@ impl Database {
             &mut |reader, field| match reader {
                 Reader::File => {
                     let name = field.key.c_str().to_ascii_lowercase();
-                    // Startup 140167C50 keeps the first token; 1424ACF90 skips duplicates.
+                    // Startup keeps the first token and skips duplicate bodies.
                     if seen.insert(name.clone()) {
                         current = Some(name);
                         Shape::Object(Reader::Template)
@@ -78,24 +77,24 @@ impl Database {
                 }
                 Reader::Template => {
                     if field.key.is_keyword("visible") {
-                        Shape::Trigger // +0x2C8, 140A44C00, mask 0x200.
+                        Shape::Trigger // Visibility conditions use country scope.
                     } else if field.key.is_keyword("include") {
-                        Shape::One // Dynamic token +0x10, 140A44C00.
+                        Shape::One // Included template token.
                     } else if field.key.is_keyword("delete_included_values") {
-                        Shape::List // Token list +0x18, 1403B7180.
+                        Shape::List // Fields whose inherited values are deleted.
                     } else if field.key.is_keyword("name") {
-                        Shape::One // 140A44C00 +0x30.
+                        Shape::One // Display name.
                     } else if field.key.is_keyword("initial_trait") {
-                        Shape::Object(Reader::InitialTrait) // 140A44C00 +0xB0.
+                        Shape::Object(Reader::InitialTrait) // Initial trait display fields.
                     } else {
                         Shape::SkipIfOpen // Other template fields do not decide visibility.
                     }
                 }
                 Reader::InitialTrait => {
                     if field.key.is_keyword("name") {
-                        Shape::One // 140A41020 +0x18.
+                        Shape::One // Initial trait name.
                     } else if field.key.is_keyword("delete_included_values") {
-                        Shape::List // 140A41020 +0x3B0.
+                        Shape::List // Deleted inherited initial trait fields.
                     } else {
                         Shape::SkipIfOpen
                     }
@@ -105,7 +104,7 @@ impl Database {
         self.notes.extend(duplicate_notes);
         for (item, notes) in read.items.into_iter().zip(read.item_misreads) {
             let name = c_string(item.key.as_deref().unwrap_or_default()).to_ascii_lowercase();
-            // Skipped entries remain in the tree; keep the first definition (140167C50).
+            // Skipped entries remain in the tree; keep the first definition.
             if self.templates.contains_key(&name) || self.refusals.contains_key(&name) {
                 continue;
             }
@@ -217,7 +216,7 @@ impl Database {
         })
     }
 
-    /// Include passes 140A45170/140A417D0 preserve nonempty local values and
+    /// Include passes preserve nonempty local values and
     /// reparent the copied initial trait to the child organisation.
     pub fn display_fields(&self, token: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
         let mut token = token.to_ascii_lowercase();
@@ -228,7 +227,7 @@ impl Database {
         let mut deleted_initial = false;
         loop {
             if !visited.insert(token.clone()) {
-                return Err("MIO include cycle (140A417D0)".into());
+                return Err("MIO include cycle".into());
             }
             let template = self.template(&token)?;
             if name.is_empty() && !deleted_name {
@@ -266,7 +265,7 @@ pub fn read(layers: &ResolvedLayers, names: &KeyNames) -> io::Result<Database> {
             *note = format!("{path}: {note}");
         }
     }
-    // CBuildingDatabase::load 14018B610, directory literal 142707790.
+    // Policies load after organisation templates.
     for path in crate::script_files::paths(
         layers,
         "common/military_industrial_organization/policies/",

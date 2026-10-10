@@ -28,9 +28,9 @@ struct AirGroup<'a> {
     planes: Vec<&'a NavalCombatPlane>,
 }
 
-/// 1417D9C60 visits the forward groups' active-air arrays before the ship
-/// arrays. 1417D9510 joins a plane with the first entry having the same
-/// CEquipmentType+0x418 registration ID and equivalent country.
+/// Visit the forward groups' active-air arrays before the ship arrays. Join
+/// a plane with the first entry having the same equipment registration ID
+/// and equivalent country.
 fn air_group_slot(groups: &[AirGroup<'_>], side: u8, model: usize, owner: u32) -> Option<usize> {
     groups
         .iter()
@@ -44,12 +44,9 @@ fn display_air_plane(plane: &NavalCombatPlane) -> bool {
         && plane.carrier_state & 4 == 0
 }
 
-/// 1419660C0 obtains +0x88 from CAirBase::GetDisplayName@140C44FC0:
-/// CState::display_name@1409CC380 for a state base, otherwise the host
-/// CShip::GetName@140C29A20. 141963460 builds distinct +0xA8 short names
-/// from the ordered +0x40 wings via 140F4A4B0/140BBAA50.
-/// I: 1419663F0 only appends wings and 141966030 rebuilds the list; no
-/// +0x40 removal path is known that would leave a stale +0xA8 name.
+/// Air-base display names use the state name for a state base, otherwise the
+/// host ship name. Wing short names are distinct and retain wing order.
+/// Wing additions and list rebuilds keep this name list current.
 fn air_presentation(
     document: &Document,
     frame: &DecodedFrame,
@@ -63,7 +60,7 @@ fn air_presentation(
     let base = bases
         .get(&plane.air_base)
         .copied()
-        .ok_or_else(|| format!("CFEXAir base {} has no AirBases row", plane.air_base))?;
+        .ok_or_else(|| format!("naval air base {} has no AirBases row", plane.air_base))?;
     let name = if let Some(id) = base.state {
         let states = rows::<tables::States>(frame).map_err(|error| error.to_string())?;
         if !states.is_complete() {
@@ -107,11 +104,11 @@ fn air_presentation(
             loc,
             &document.recorded_language,
             &ship.name,
-            "naval air-base host CShip::GetName",
+            "naval air-base host ship name",
         )?
     };
     if plane.wings[1].len() != plane.wing_types.len() {
-        return Err("CFEXAir wing handles and type indices differ in length".into());
+        return Err("plane wing handles and type indices differ in length".into());
     }
     let sub_units = document
         .icons
@@ -123,26 +120,26 @@ fn air_presentation(
     for (&handle, &index) in plane.wings[1].iter().zip(&plane.wing_types) {
         if index == u32::MAX {
             return Err(format!(
-                "historical CFEXAir wing {handle} no longer resolves to its type"
+                "historical plane wing {handle} no longer resolves to its type"
             ));
         }
         let wing = wings
             .get(&handle)
             .copied()
-            .ok_or_else(|| format!("CFEXAir wing {handle} has no AirWings row"))?;
+            .ok_or_else(|| format!("plane wing {handle} has no AirWings row"))?;
         let selector = if wing.country_override > 0 {
             wing.country_override as u32
         } else {
             wing.owner
         };
         let country = countries.get(&selector).copied().ok_or_else(|| {
-            format!("CFEXAir wing {handle} country {selector} has no Countries row")
+            format!("plane wing {handle} country {selector} has no Countries row")
         })?;
         let tag = std::str::from_utf8(&country.tag)
-            .map_err(|_| format!("CFEXAir wing {handle} country tag is not UTF-8"))?;
+            .map_err(|_| format!("plane wing {handle} country tag is not UTF-8"))?;
         let key = sub_units
             .name(index)
-            .ok_or_else(|| format!("CFEXAir wing {handle} subunit index {index} is absent"))??;
+            .ok_or_else(|| format!("plane wing {handle} subunit index {index} is absent"))??;
         let short = super::naval_air_tooltips::wing_short_name(loc, tag, key)?;
         if !names.contains(&short) {
             names.push(short);
@@ -172,10 +169,10 @@ fn air_icon_widget(name: Option<String>, side: u8) -> Widget {
     Widget {
         hidden: name.is_none(),
         sprite: name,
-        // 1417CEAF0's side byte is 1 for left and 0 for right; 1417DAA40
-        // sends byte+1 to CIcon. Native GUI bound frames are one based.
+        // The left side uses frame 2 and the right uses frame 1.
+        // Bound GUI frames are one based.
         frame: Some(if side == 0 { 2 } else { 1 }),
-        // 1417DAA40 sets this dynamic hover after constructing the row.
+        // the game sets this dynamic hover after constructing the row.
         hover_owned: true,
         ..Widget::default()
     }
@@ -427,8 +424,8 @@ fn air_entries(
         if let Ok(name) = sprite_name {
             candidates.push(format!("GFX_navalcombat_air_icon_{name}"));
         }
-        // 1417DAA40's country, archetype, definition.sprite cascade is tested
-        // against the effective .gfx registry, never a vanilla name list.
+        // country, archetype, definition.sprite cascade is tested
+        // against the effective `.gfx` registry, never a vanilla name list.
         let found = candidates.into_iter().find_map(|name| {
             document
                 .icons
@@ -439,8 +436,8 @@ fn air_entries(
         let (name, size) = if let Some((name, size)) = found {
             (Some(name), size)
         } else {
-            // 1417DAA40 with lStack_350 == 0 hides only CIcon. The row and
-            // its counts retain the navalcombat.gui template's own size.
+            // An absent drawable hides only the icon. The row and its counts retain
+            // their authored template size.
             out.refuse(format!("Naval combat {id} air group model {} icon is hidden: no stacked naval air icon resolves from its country, archetype and definition sprite.", group.model + 1));
             let size = document
                 .icons
@@ -472,7 +469,7 @@ fn air_entries(
                             &document.icons.combat.naval_air_groups,
                             document.icons.combat.naval_defines.as_ref(),
                         )
-                        .ok_or("141963700 carrier efficiency operands are unavailable")?;
+                        .ok_or("carrier efficiency operands are unavailable")?;
                     let defines = document
                         .icons
                         .combat
@@ -484,7 +481,7 @@ fn air_entries(
                         breakdown_layout.as_ref().map_err(Clone::clone)?;
                         let member = joins
                             .carrier_member(group.side, first)
-                            .ok_or("141963700 linked carrier member is unavailable")?;
+                            .ok_or("linked carrier member is unavailable")?;
                         let trees = breakdown_index
                             .as_ref()
                             .ok_or("NavalModifierBreakdowns is incomplete")?;
@@ -540,8 +537,8 @@ fn air_entries(
                         efficiency_suffixes.push(String::new());
                         continue;
                     }
-                    // 1417D2430 chooses the first +0x40 wing whose resolved air
-                    // base has no +0x68 state before asking 141965010 for text.
+                    // Select the first wing in the active second list whose resolved
+                    // air base has no state before constructing its text.
                     let wings = wing_index.as_ref().ok_or("AirWings are incomplete")?;
                     let bases = base_index.as_ref().ok_or("AirBases are incomplete")?;
                     let eligible = plane.wings[1].iter().any(|handle| {
@@ -564,7 +561,7 @@ fn air_entries(
                             &document.icons.combat.naval_air_groups,
                             document.icons.combat.naval_defines.as_ref(),
                         )
-                        .ok_or("141965010 carrier efficiency operands are unavailable")?;
+                        .ok_or("carrier efficiency operands are unavailable")?;
                     efficiency_suffixes.push(super::naval_air_tooltips::carrier_org_suffix(
                         final_efficiency,
                         organisation_ratio,
@@ -616,7 +613,7 @@ fn air_entries(
                 None
             }
         };
-        // 1417DAA40 sums current and max(initial,current) in signed i32.
+        // the game sums current and max(initial,current) in signed i32.
         let current = group
             .planes
             .iter()
@@ -626,9 +623,8 @@ fn air_entries(
         });
         let low_efficiency = (|| {
             for plane in &group.planes {
-                // 1417DAA40 reads CFEXAir+0x40, the active second wing
-                // vector. A missing resolved wing or base is skipped by the
-                // native reference walk; incomplete tables make it unknown.
+                // Walk the active second wing list. Skip missing resolved wings
+                // or bases; incomplete tables make the result unknown.
                 for handle in &plane.wings[1] {
                     let wings = wing_index
                         .as_ref()
@@ -654,7 +650,7 @@ fn air_entries(
                         &document.icons.combat.naval_air_groups,
                         document.icons.combat.naval_defines.as_ref(),
                     )
-                    .ok_or("141965010 efficiency operands are unavailable")?;
+                    .ok_or("efficiency operands are unavailable")?;
                     if efficiency < 50_000 {
                         return Ok::<_, &'static str>(true);
                     }
@@ -698,8 +694,8 @@ pub(super) fn bind(
     }
 }
 
-// 14195ED00 uses the same display-box predicate as carrier sortie modifiers:
-// 140C2B7E0 tests both the ship and its positive equipment pool's bits 22/37.
+// the game uses the same display-box predicate as carrier sortie modifiers:
+// the game tests both the ship and its positive equipment pool's bits 22/37.
 pub(super) fn column(row: &NavalCombatShipRow, pool_flags: u64) -> Option<&'static str> {
     match super::naval_air_groups::display_box(row, pool_flags) {
         1 => Some("screen"),
@@ -718,7 +714,7 @@ fn pool_flags(
     models: &BTreeMap<u64, &replay::rows::ShipModelRow>,
     incomplete: Option<&str>,
 ) -> Result<u64, String> {
-    // These branches of 14195ED00 do not depend on the equipment predicate.
+    // These branches of the game do not depend on the equipment predicate.
     if !matches!(row.state, 1 | 2 | 8)
         || row.live_convoy != 0
         || row.live_ship == 0
@@ -752,7 +748,7 @@ struct GroupKey {
 }
 fn key(row: &NavalCombatShipRow, owner: u32, unknown: bool, pool_flags: u64) -> Option<GroupKey> {
     let column = column(row, pool_flags)?;
-    // 1417D9730 collapses all unseen incoming entries in their box. Otherwise
+    // the game collapses all unseen incoming entries in their box. Otherwise
     // it compares cached formation/subunit/convoy, country aliases and damage.
     Some(GroupKey {
         side: row.side,
@@ -824,7 +820,7 @@ fn active(
         }
         crate::table_access::Available::Unavailable { reason } => Some((*reason).to_owned()),
     };
-    // Incoming live ships whose owner's sharing (1406F3A90) the hour cannot
+    // Incoming live ships whose owner's sharing the hour cannot
     // decide, by missing input: their box is unknown, so they are omitted.
     let mut undecided: BTreeMap<SharingUnknown, usize> = BTreeMap::new();
     for row in members {
@@ -843,7 +839,7 @@ fn active(
             Ok(pool) => pool,
             Err(reason) => {
                 out.refuse(format!(
-                    "NavalCombatShips slot {} combat box is withheld: {reason} (140C2B7E0).",
+                    "NavalCombatShips slot {} combat box is withheld: {reason}.",
                     row.battle_slot
                 ));
                 continue;
@@ -870,11 +866,11 @@ fn active(
     }
     for (cause, ships) in &undecided {
         out.warnings.push(format!(
-            "NavalCombatShips: {ships} incoming ships of combat {id} omitted: whether the viewer sees them (1406F3A90 for their owner) is unknown, {}.",
+            "NavalCombatShips: {ships} incoming ships of combat {id} omitted: whether the viewer sees them (their owner's shared vision) is unknown, {}.",
             cause.describe()
         ));
     }
-    // 1417D9C60 -> 1417CC070 sorts each combat box after grouping. More
+    // the game sorts each combat box after grouping. More
     // numerous groups precede smaller ones; the final native pointer tie is
     // transient, so retain recorded insertion order for otherwise equal keys.
     groups.sort_by_key(|(key, members)| {
@@ -987,7 +983,7 @@ fn active(
                             );
                         }
                         Err((slot, reason)) => out.warnings.push(format!(
-                            "NavalCombatShips slot {slot}: its maximum organisation (140C29DF0) is unknown: {reason}; its group's organisation bar is omitted."
+                            "NavalCombatShips slot {slot}: its maximum organisation is unknown: {reason}; its group's organisation bar is omitted."
                         )),
                     }
                 }
@@ -1032,7 +1028,7 @@ fn active(
                 "escape_icon_right"
             };
             show(&mut values, icon);
-            // 1417DBBE0 places the escape icon at the bar's final x plus the
+            // the game places the escape icon at the bar's final x plus the
             // icon's authored x; CENTER_UP alone would add half the ship width.
             values.entry(icon.into()).or_default().offset[0] =
                 escape_bar_x(asset[0], document) - asset[0] / 2.0;
@@ -1065,29 +1061,22 @@ fn active(
     }
     out.warnings
         .retain(|w| !w.starts_with("NavalCombatShips: live HP/org bars"));
-    out.warnings.push("Format-22 naval rows: native state/formation/equipment/reveal boxes, source0 and retained source1 slots, normalized-state/subunit/formation/country/damaged grouping, copied sprites, native sorted group counts, mean strength/organisation and escape progress are bound. Organisation maxima apply recorded modifiers46/47/27e with default-leader and HQ sources; missing terms in complete captured sources mean zero. Sunk entries follow the content grid's slots (1417D05D0). UNVERIFIED: pride tint, incoming-entry relation edge cases and remaining flag/text geometry require live comparison.".into());
+    out.warnings.push("Format-22 naval rows: native state/formation/equipment/reveal boxes, source0 and retained source1 slots, normalized-state/subunit/formation/country/damaged grouping, copied sprites, native sorted group counts, mean strength/organisation and escape progress are bound. Organisation maxima apply recorded modifiers46/47/27e with default-leader and HQ sources; missing terms in complete captured sources mean zero. Sunk entries follow the content grid's slots. Pride tint, incoming-entry relation edge cases and remaining flag/text geometry remain unverified.".into());
     Ok(())
 }
 
-/// 1417D05D0 advances sunk entries by the grid's authored slot direction and
-/// limits. Fighting boxes instead supply explicit pixel offsets (1417D0380).
+/// the game advances sunk entries by the grid's authored slot direction and
+/// limits. Fighting boxes instead supply explicit pixel offsets.
 pub(super) fn entry_offset(column: &str, x: f32, y: f32) -> Option<[f32; 2]> {
     (column != "sunk").then_some([x, y])
 }
-/// 1417DBBE0 sets the one-based icon frame to `(left ^ reversed) + 1`, where
-/// `left` is the column's side byte (1 for the attacker's left column) and a
-/// group is reversed when any member is escaping (8) or state 16. Fitting both
-/// frames of the shipped strips to pairJ_naval_5.png agrees: ENG's fighting
-/// submarines use frame 1 (MAE 34.5 against 43.0), the escaping one frame 0,
-/// ROM's escaping convoy frame 1 (13.6 against 49.6) and its sunk convoy 0.
+/// The icon uses one-based frame 1 or 2 according to the column side,
+/// reversed when any group member is escaping (8) or in state 16.
 pub(super) fn icon_frame(side: u8, reversed: bool) -> u32 {
     u32::from(side == 0) ^ u32::from(reversed)
 }
-/// A combat-box entry's x inside its 100-wide UPPER_RIGHT grid. 1417D0380
-/// passes `-(1 - width) / 2` (C division) as the item position. pairJ_naval_5
-/// puts the 48-wide submarines at grid + 77 and the 52-wide convoy at + 75,
-/// which is `100 - trunc((width - 1) / 2)`; the grid's own right-format
-/// arithmetic is UNVERIFIED beyond these two widths.
+/// A combat-box entry is right-aligned inside its 100-wide UPPER_RIGHT grid.
+/// Its offset subtracts half of width minus one using truncating integer division.
 pub(super) fn combat_box_x(width: f32) -> f32 {
     100.0 - ((width - 1.0) * 0.5).trunc()
 }
@@ -1103,7 +1092,7 @@ pub(super) fn escape_bar_x(width: f32, document: &Document) -> f32 {
 fn fixed_ratio(value: i64, maximum: i64) -> i128 {
     i128::from(value) * 100_000 / i128::from(maximum)
 }
-/// 140C29DF0's maximum organisation, or which operand refuses it.
+/// maximum organisation, or which operand refuses it.
 pub(super) fn organisation_maximum(row: &NavalCombatShipRow) -> Result<i64, String> {
     if row.live_ship == 0 {
         if row.live_convoy == 0 {
@@ -1118,9 +1107,8 @@ pub(super) fn organisation_maximum(row: &NavalCombatShipRow) -> Result<i64, Stri
             ))
         };
     }
-    // 140C29DF0 -> 140C28730 calls 140C29020 with commander=0, which
-    // selects the task force's default commander rather than combat leader.
-    // The rest of the captured sources, including HQ12..15, still contribute.
+    // Use the task force's default commander for maximum organisation.
+    // Other recorded sources, including the HQ scopes, still contribute.
     let mut context = row.weapon_context.clone();
     context.sources.retain(|s| !matches!(s.scope, 9 | 10));
     for source in &mut context.sources {
@@ -1132,10 +1120,7 @@ pub(super) fn organisation_maximum(row: &NavalCombatShipRow) -> Result<i64, Stri
     }
     let modifier = |key: u32| {
         super::naval_environment::modifier(&context, key).ok_or_else(|| {
-            let name = engine::modifier_keys::ALL
-                .iter()
-                .find(|known| known.index == key)
-                .map_or("an unnamed key", |known| known.name);
+            let name = engine::modifier_keys::name(key).unwrap_or("an unnamed key");
             format!(
                 "naval_environment::modifier gives no {name} ({key:#x}) from its recorded weapon-context sources"
             )
@@ -1169,14 +1154,11 @@ fn center_icon(values: &mut Values, key: &str, name: &str, width: f32, document:
             (width / 2.0).trunc() - width / 2.0 - (asset[0] / 2.0).trunc();
     }
 }
-/// 1417DBBE0: the attacker's left column writes the country flag into
+/// the attacker's left column writes the country flag into
 /// `desc_left` and the count into `desc_right`; the right column swaps them.
 /// `desc_left` keeps its authored x (-8, left format). `desc_right` moves to
 /// `authored x + icon width - maxWidth` so its right-aligned text ends 8 px
 /// past the icon. The flag text is the inline 0x12 country marker.
-/// pairJ_naval_5.png: ENG's flag starts at icon - 8 and its count ends at
-/// icon + 56; ROM's count "1" starts at icon - 8 and its flag ends 8 px past
-/// the icon.
 pub(super) fn descriptions(
     out: &mut Bindings,
     values: &mut Values,

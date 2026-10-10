@@ -5,7 +5,7 @@ use installed_content::{
 };
 use replay::rows::{WeatherProvinceRow, WeatherRegionRow};
 
-/// 140F06980 / 140F04F70: independent weather flags, first matching thermal range.
+/// Independent weather flags, first matching thermal range.
 pub(super) fn row(
     loc: &Localisation,
     ranges: &[TemperatureRange; 4],
@@ -75,8 +75,8 @@ pub(super) fn row(
     if fragments.is_empty() {
         fragments = format!("\u{11}Y{} \u{11}!", localise(loc, "weather_none", &[])?);
     }
-    // 140DECEA0 copies fragments into TEXT, then 140DECF4C appends the result.
-    // A missing nested WEATHER key is empty (142230940), not a TEXT alias.
+    // Copy fragments into TEXT, then append the result.
+    // A missing nested WEATHER key is empty, not a TEXT alias.
     let temperature = localise(
         loc,
         "PROV_TOOLTIP_TEMPERATURE",

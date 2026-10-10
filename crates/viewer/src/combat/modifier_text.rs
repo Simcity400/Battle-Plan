@@ -1,9 +1,5 @@
-//! Native modifier description lines, rebuilt from the recorded definition
-//! table and authored content: `modifier_accumulator::FormatDescription`
-//! (14054E050) -> 14054F6D0 -> value text 14054FE50, names through
-//! `modifier_definition::GetLocalizedName` (1405505D0), numbers through
-//! `Fixed5ToString` (1424B6200 -> `format_fixed5` 1424B89F0) and
-//! `FormatFixed5Percent` (142259590). Nothing here is recorded text.
+//! Modifier descriptions from recorded definition tables and authored content.
+//! Names use localisation; numbers use fixed-point and percentage formatting.
 use super::{
     binding::{TextIcons, builtin, token, token_with},
     fixed::{ONE, mul},
@@ -19,9 +15,9 @@ use std::{
     io,
 };
 
-/// 140551820's clamp of the getter to [0, 1].
+/// clamp of the getter to [0, 1].
 const CLAMP: u32 = 1 << 4;
-/// 14054F6D0 prints the entry even when its value is zero.
+/// the game prints the entry even when its value is zero.
 const SHOW_ZERO: u32 = 1 << 8;
 
 /// Why a modifier description cannot be rebuilt exactly.
@@ -31,13 +27,10 @@ pub(crate) enum Refusal {
     /// missing or lacks the named row, so names cannot be resolved or
     /// eligibility is unknown.
     Tables(String),
-    /// Two recorded tokens whose names differ only in case, which the
-    /// executable cannot hold: no two static keywords registered by
-    /// register_authored_keys (140082CB0 -> 1424AFC10) fold to the same
-    /// name, and a dynamic token is added only when no token folds to its
-    /// name (1424A65A0 compares with StringView_CompareNoCase 1424B6750).
-    /// The recording is inconsistent with the game, so which token the
-    /// lexer would find is unknown.
+    /// Two recorded tokens whose names differ only in case. Static keyword
+    /// names are unique after folding; a dynamic token is added only when
+    /// no existing token folds to its name. These rows violate that
+    /// uniqueness, so the lexer result is unknown.
     Ambiguous(String),
     /// A localisation key refused, naming the key and why.
     Localisation(String),
@@ -51,7 +44,7 @@ impl std::fmt::Display for Refusal {
             Refusal::Tables(reason) => write!(f, "{reason}"),
             Refusal::Ambiguous(name) => write!(
                 f,
-                "the recorded lexical tokens name the modifier {name} twice in different cases, which the game's token table (1430AECD0) never holds (1424A65A0 adds no token whose folded name it has, and no two static keywords fold alike), so the recording is inconsistent"
+                "the recorded lexical tokens name the modifier {name} twice in different cases, which the game's token table never holds (folded names are unique), so the recording is inconsistent"
             ),
             Refusal::Localisation(reason) | Refusal::NotText(reason) => f.write_str(reason),
         }
@@ -66,12 +59,10 @@ pub(crate) const NAME_INDEX_TABLES: &[replay::rows::TableId] = &[
     replay::rows::TableId::LexicalTokens,
 ];
 
-/// Script name to definition index (`None`: two recorded tokens fold to the
-/// name, which the game never holds), or why the tables cannot give one. Keyed by the ASCII-lowercased
-/// name: the lexer finds a token without case (1424A7A90 lowercases a bare
-/// token, hashes it with a case-folding FNV-1a and compares with
-/// StringView_CompareNoCase 1424B6750 in the token table 1430AECD0), and the
-/// recorded dictionary is that table.
+/// Script name to definition index (`None` when two recorded tokens fold to
+/// the name), or why the tables cannot give one. Keys use ASCII-lowercase names;
+/// the lexer uses case-folding FNV-1a and case-insensitive comparison against the
+/// recorded dictionary.
 pub(crate) type NameIndex = Result<BTreeMap<Vec<u8>, Option<u32>>, Refusal>;
 
 /// The document's cache of [`NameIndex`], built on first use.
@@ -97,17 +88,11 @@ fn index_names(frame: &DecodedFrame) -> io::Result<NameIndex> {
         )));
     };
     // Only registered rows are recorded (the native table keeps a default gap
-    // at 0x29A before the dynamic keys 1405FF750 appends), so a definition is
+    // at 0x29A before the dynamic keys the game appends), so a definition is
     // found by its recorded index, never by its position.
     //
-    // 1406042A0 maps the name's token to a definition through the token map
-    // (14054FDB0), which every modifier_definition::Register (14054A990)
-    // assigns through operator[] (140548A80): the last registration of a
-    // token wins. The static registrar 140552CB0 registers each of its 667
-    // token ids under one index only, before any content, and
-    // FindOrRegisterDynamicModifierDefinition (1405FF750) registers a token
-    // only when it maps to nothing yet, at the next index past 0x29A. Rows
-    // sharing a token therefore keep the highest index, the last registered.
+    // Names resolve through their tokens. The last registration of a token wins,
+    // so rows sharing a token keep the highest index.
     let mut by_token: BTreeMap<u32, u32> = BTreeMap::new();
     for row in definitions.iter().filter(|row| row.token != 0) {
         let index = by_token.entry(row.token).or_insert(row.index);
@@ -221,7 +206,7 @@ impl<'frame> Definitions<'frame> {
     }
 
     /// `Ok(None)`: no definition has the name, so the native reader
-    /// (1406042A0) reports it and drops it. The name folds as the lexer
+    /// reports it and drops it. The name folds as the lexer
     /// folds it ([`NameIndex`]).
     pub(super) fn index(&self, name: &str) -> Result<Option<u32>, Refusal> {
         let Ok(names) = self.names.as_ref() else {
@@ -247,8 +232,8 @@ impl<'frame> Definitions<'frame> {
             })
     }
 
-    /// `modifier_definition::IsEligible`: an unselected feature is always
-    /// eligible; a null callback makes every selected feature ineligible.
+    /// An unselected feature is always eligible; a null callback makes every
+    /// selected feature ineligible.
     fn eligible(&self, row: &ModifierDefinitionRow) -> Result<bool, Refusal> {
         if row.feature_selector == 0 {
             return Ok(true);
@@ -274,7 +259,7 @@ impl<'frame> Definitions<'frame> {
 pub(super) struct Block {
     pub(super) values: BTreeMap<u32, i64>,
     pub(super) hidden: BTreeSet<u32>,
-    /// The custom tooltip keys (+0x68), listed in their slot order.
+    /// The custom tooltip keys, listed in their slot order.
     pub(super) custom_tooltips: Vec<Vec<u8>>,
     /// An `added_modifier` child.
     pub(super) added: bool,
@@ -282,7 +267,7 @@ pub(super) struct Block {
 
 impl Block {
     /// The block the reader built from authored entries
-    /// ([`installed_content::modifiers::Modifiers`], 1406031A0: one entry per
+    /// ([`installed_content::modifiers::Modifiers`]): one entry per
     /// modifier in source order, its last value, hidden by name); names
     /// without a definition are returned, dropped as the game drops them.
     pub(super) fn build(
@@ -312,7 +297,7 @@ impl Block {
         Ok((block, dropped))
     }
 
-    /// Whether 1410079E0 keeps a sub-unit's block: custom tooltip keys, a
+    /// Whether the game keeps a sub-unit's block: custom tooltip keys, a
     /// child, or an entry whose definition is eligible.
     pub(super) fn kept(&self, definitions: &Definitions<'_>) -> Result<bool, Refusal> {
         if !self.custom_tooltips.is_empty() || self.added {
@@ -326,11 +311,10 @@ impl Block {
         Ok(false)
     }
 
-    /// Weather-event entries in the naval window use 140552B00 with
-    /// include mask 1 and exclude mask 0 (141D8A3B0). It scans every
-    /// accumulator entry, including hidden ones, for a nonzero effective
-    /// value whose definition category mask (+0x64) includes bit 0 and
-    /// whose feature selector (+0x68) is eligible (140551820).
+    /// Weather-event entries use include mask 1 and exclude mask 0. Scan
+    /// every accumulator entry, including hidden ones, for a nonzero
+    /// effective value whose category mask includes bit 0 and whose feature
+    /// selector is eligible.
     pub(super) fn has_category_one(&self, definitions: &Definitions<'_>) -> Result<bool, Refusal> {
         for (&index, &raw) in &self.values {
             let row = definitions.row(index)?;
@@ -349,9 +333,9 @@ impl Block {
         Ok(false)
     }
 
-    /// 14054E050 with the trait description's arguments: precision 2, no
-    /// colour, "\n" separators, `include_mask`, `scale`, and `prefix` before
-    /// each line's name. 14054F6D0 tests the definition's +0x64 category.
+    /// Format trait descriptions at precision 2 without colour, with newline
+    /// separators, `include_mask`, `scale`, and `prefix` before each line's
+    /// name. Filter by the definition's category mask.
     pub(super) fn describe(
         &self,
         definitions: &Definitions<'_>,
@@ -366,7 +350,7 @@ impl Block {
         for (&index, &raw) in &self.values {
             let row = definitions.row(index)?;
             let eligible = definitions.eligible(row)?;
-            // 140551820: ineligible reads zero, bit 4 clamps to [0, 1].
+            // ineligible reads zero, bit 4 clamps to [0, 1].
             let value = if !eligible {
                 0
             } else if row.flags & CLAMP != 0 {
@@ -375,7 +359,7 @@ impl Block {
                 raw
             };
             let value = mul(value, scale);
-            // 14054F6D0: shown or nonzero, in an included category that
+            // shown or nonzero, in an included category that
             // no excluded mask (none) removes, and eligible.
             if !((row.flags & SHOW_ZERO != 0 || value != 0)
                 && row.category_mask & include_mask != 0
@@ -395,7 +379,7 @@ impl Block {
             text.push_str(": ");
             text.push_str(&value_text(row, value, 2, false, false, icons, loc)?);
         }
-        // The key set in slot order; 14054E050 skips an empty key.
+        // The key set in slot order; the game skips an empty key.
         for key in self.custom_tooltips.iter().filter(|key| !key.is_empty()) {
             if !text.is_empty() && !text.ends_with('\n') {
                 text.push('\n');
@@ -417,8 +401,8 @@ fn text<'a>(row: &ModifierDefinitionRow, what: &str, bytes: &'a [u8]) -> Result<
     })
 }
 
-/// 1405505D0: the name key, with `$ARG$` when the definition stores one.
-/// A key the content lacks shows as itself (142230940).
+/// the name key, with `$ARG$` when the definition stores one.
+/// A key the content lacks shows as itself.
 fn name(
     row: &ModifierDefinitionRow,
     icons: &dyn TextIcons,
@@ -434,7 +418,7 @@ fn name(
     token_with(icons, loc, key.as_bytes(), arguments).map_err(Refusal::Localisation)
 }
 
-/// 14054FE50: sign, number or yes/no, colour and postfix. `precision` is
+/// sign, number or yes/no, colour and postfix. `precision` is
 /// the caller's cap; `plus` forces a sign; `invert` flips good and bad.
 pub(crate) fn value_text(
     row: &ModifierDefinitionRow,

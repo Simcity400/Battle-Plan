@@ -1,0 +1,44 @@
+//! Limited-use technology bonus. Applied ids belong to the technology;
+//! speed and ahead reductions each select their maximum independently.
+use crate::{Memory, read, research_inputs::Text};
+
+/// Limited-use technology bonus primary vtable.
+pub const VTABLE_RVA: usize = 0x0295_e470;
+pub const NAME: usize = 0x10;
+pub const ID: usize = 0x30;
+pub const AHEAD_REDUCTION: usize = 0x68;
+pub const SPEED_BONUS: usize = 0x70;
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Value {
+    pub id: i32,
+    pub name: Text,
+    pub ahead_reduction_raw: i64,
+    pub speed_bonus_raw: i64,
+}
+
+pub(crate) fn value(
+    memory: &impl Memory,
+    pointer: usize,
+    id: i32,
+    growing: bool,
+) -> Result<Value, &'static str> {
+    let descriptor = crate::msvc_string::Descriptor::read(
+        memory,
+        pointer.checked_add(NAME).ok_or("bonus address overflow")?,
+    )?;
+    let name = Text::from_descriptor(memory, descriptor, growing)?;
+    let operands = read::<[u8; 16]>(
+        memory,
+        pointer
+            .checked_add(AHEAD_REDUCTION)
+            .ok_or("bonus address overflow")?,
+    )
+    .ok_or("research bonus values unreadable")?;
+    Ok(Value {
+        id,
+        name,
+        ahead_reduction_raw: i64::from_le_bytes(operands[..8].try_into().unwrap()),
+        speed_bonus_raw: i64::from_le_bytes(operands[8..].try_into().unwrap()),
+    })
+}

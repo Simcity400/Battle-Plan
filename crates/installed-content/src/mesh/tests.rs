@@ -94,7 +94,7 @@ fn entity_numeric_fields_follow_the_crt_prefix_scan() {
     );
 }
 
-fn native_skeleton_root(skeletons: Vec<Vec<Node>>) -> Node {
+fn skeleton_root(skeletons: Vec<Vec<Node>>) -> Node {
     Node {
         children: vec![Node {
             name: "object".into(),
@@ -116,7 +116,7 @@ fn native_skeleton_root(skeletons: Vec<Vec<Node>>) -> Node {
 }
 
 #[test]
-fn native_skeleton_keeps_source_order_and_first_nonempty_allocation() {
+fn skeleton_keeps_source_order_and_first_nonempty_allocation() {
     let joint = |name: &str, index, parent| Node {
         name: name.into(),
         properties: vec![
@@ -129,7 +129,7 @@ fn native_skeleton_keeps_source_order_and_first_nonempty_allocation() {
         ],
         ..Node::default()
     };
-    let root = native_skeleton_root(vec![
+    let root = skeleton_root(vec![
         vec![],
         vec![joint("z", 9, 258), joint("a", 0, -1)],
         vec![joint("ignored", 1, 0)],
@@ -146,7 +146,7 @@ fn native_skeleton_keeps_source_order_and_first_nonempty_allocation() {
         result[0].inverse_bind,
         [1., 2., 3., 4., 5., 6., 7., 8., 9., 5., 5.5, 6.]
     );
-    let root = native_skeleton_root(vec![
+    let root = skeleton_root(vec![
         vec![Node {
             name: "unfilled".into(),
             ..Node::default()
@@ -164,7 +164,7 @@ fn native_skeleton_keeps_source_order_and_first_nonempty_allocation() {
 }
 
 #[test]
-fn native_skeleton_names_and_missing_parent_follow_byte_fields() {
+fn skeleton_names_and_missing_parent_follow_byte_fields() {
     let mut node = Node {
         name: "é".repeat(35),
         properties: vec![
@@ -173,12 +173,12 @@ fn native_skeleton_names_and_missing_parent_follow_byte_fields() {
         ],
         ..Node::default()
     };
-    let result = native_skeleton(&native_skeleton_root(vec![vec![node.clone()]]), 2.).unwrap();
+    let result = native_skeleton(&skeleton_root(vec![vec![node.clone()]]), 2.).unwrap();
     assert_eq!(result[0].name, "é".repeat(31));
     assert_eq!(result[0].parent, 255);
     node.properties[1].1 = Value::Floats(vec![1.; 11]);
     assert!(
-        native_skeleton(&native_skeleton_root(vec![vec![node]]), 1.)
+        native_skeleton(&skeleton_root(vec![vec![node]]), 1.)
             .unwrap_err()
             .to_string()
             .contains("fewer than12 tx floats")
@@ -262,14 +262,14 @@ pub(super) fn roster_of(name: &str, base: &[(&str, &[u8])], overlay: &[(&str, &[
     roster
 }
 
-/// `LoadAssets` reads every `gfx/**/*.asset` in `Vfs_EnumerateRecursive`
+/// The roster reads every `gfx/**/*.asset` in recursive directory
 /// order (each directory's files, then its subdirectories, across
 /// layers); a clone copies its parent as then registered or is dropped,
 /// and a repeated name is replaced unless its `version` is lower than the
 /// stored one, a clone storing its parent's.
 #[cfg(feature = "test-support")]
 #[test]
-fn the_roster_registers_entities_as_load_assets_does() {
+fn the_roster_registers_entities_in_declaration_order() {
     let roster = roster_of(
         "entities",
         &[
@@ -367,11 +367,11 @@ fn a_clone_of_an_unreadable_name_may_be_declared_there_too() {
 }
 
 /// A clone's attachments replace the parent's of the same name where
-/// they stand and append new ones (`14227CEF0`), as vanilla
-/// `units_infantry.asset:144` needs: its parent's rifles 1, 2, 4, 3 keep
-/// that order when the clone declares them 1, 4, 2, 3. An unnamed one
-/// matches by joint. A mesh override no `pdxmesh` registers keeps the
-/// parent's mesh (142272140) and is logged; a redefinition's keeps its
+/// they stand and append new ones. Parent handles 1, 2, 4, 3 keep that
+/// order when the clone declares them 1, 4, 2, 3. The replacement changes
+/// each held value without moving its slot. An unnamed one matches by
+/// joint. A mesh override no `pdxmesh` registers keeps the parent's
+/// mesh and is logged; a redefinition's keeps its
 /// own.
 #[cfg(feature = "test-support")]
 #[test]
@@ -543,7 +543,7 @@ fn the_roster_keeps_the_last_animation_that_loads() {
     assert_eq!(file("walk"), "gfx/models/walk.anim");
     assert_eq!(file("run"), "gfx/models/sub/run.anim");
     assert_eq!(file("same"), "gfx/models/same.anim");
-    // The last light of a name rewrites the record (1423C96F0).
+    // The last light of a name rewrites the record.
     let lamp = &roster.lights["lamp"];
     assert_eq!(last_text(lamp, "intensity").as_deref(), Some("2"));
 }
@@ -1053,7 +1053,7 @@ fn material_keeps_missing_shader_and_source_override_distinct() {
 }
 
 #[test]
-fn material_overrides_follow_native_first_match_and_raw_child_order() {
+fn material_overrides_follow_first_match_and_raw_child_order() {
     let bytes = Builder::new()
         .node(1, "object")
         .node(2, "shape")
@@ -1153,47 +1153,44 @@ fn meshsettings_keep_unnamed_rows_signed_wildcards_and_last_field_writes() {
 }
 
 #[test]
-fn the_gfx_grammar_maps_a_mapobject_name_to_its_mesh_and_scale() {
+fn the_gfx_grammar_maps_an_object_name_to_its_mesh_and_scale() {
     let descriptors = parse_descriptors(
         br#"
         objectTypes = {
             pdxmesh = {
-                name = "mapobject_29"
-                file = "gfx/models/mapitems/trees/beech.mesh"
-                scale = 1.2
+                name = "survey_marker"
+                file = "gfx/models/fixtures/marker.mesh"
+                scale = 0.625
             }
             pdxmesh = {
-                name = "house"
-                file = "gfx/models/buildings/city_4_01.mesh"
+                name = "display_stand"
+                file = "gfx/models/fixtures/stand.mesh"
                 meshsettings = {
-                    name = "city_4_01_LODShape0"
-                    index = 1
-                    texture_diffuse = "city_d.dds"
-                    shader = "PdxMeshSnow"
+                    name = "stand_panel"
+                    index = 2
+                    texture_diffuse = "panel_color.dds"
+                    shader = "FixtureSurface"
                 }
             }
         }
         "#,
-        "gfx/entities/trees.gfx",
+        "gfx/entities/fixtures.gfx",
     )
     .unwrap();
-    let resolved = descriptors.resolve("mapobject_29").unwrap();
+    let resolved = descriptors.resolve("survey_marker").unwrap();
+    assert_eq!(resolved.definition.file, "gfx/models/fixtures/marker.mesh");
+    assert!((resolved.scale - 0.625).abs() < 1e-6);
+    let stand = &descriptors.meshes["display_stand"];
+    assert_eq!(stand.scale, 1.0);
     assert_eq!(
-        resolved.definition.file,
-        "gfx/models/mapitems/trees/beech.mesh"
-    );
-    assert!((resolved.scale - 1.2).abs() < 1e-6);
-    let house = &descriptors.meshes["house"];
-    assert_eq!(house.scale, 1.0);
-    assert_eq!(
-        house.settings,
+        stand.settings,
         vec![MeshSetting {
-            name: "city_4_01_LODShape0".into(),
-            index: 1,
-            diffuse: Some("city_d.dds".into()),
+            name: "stand_panel".into(),
+            index: 2,
+            diffuse: Some("panel_color.dds".into()),
             normal: None,
             specular: None,
-            shader: Some("PdxMeshSnow".into()),
+            shader: Some("FixtureSurface".into()),
             shader_file: None,
         }]
     );
@@ -1221,7 +1218,7 @@ fn an_entity_follows_its_mesh_and_its_clone_chain() {
     // A cyclic clone chain terminates instead of looping.
     assert!(descriptors.resolve("loop_a").is_none());
     // An entity that declares its own mesh still inherits the clone's
-    // scale: this is `GER_infantry_entity` over `infantry_rifle_entity`.
+    // scale from the parent whose mesh it overrides.
     let own = descriptors.resolve("own_mesh").unwrap();
     assert_eq!(own.definition.file, "a.mesh");
     assert!((own.scale - 1.6).abs() < 1e-6);
@@ -1318,8 +1315,8 @@ fn a_rest_pose_composes_its_translation_rotation_and_scale() {
     assert!(wild.inverse().is_none());
 }
 
-/// Two joints, three frames. `root` animates nothing, `vehicle` animates
-/// `t` and `q`, so only `vehicle` appears in the `[samples]` streams.
+/// Two joints, three frames. `root` animates nothing, `slider` animates
+/// `t` and `q`, so only `slider` appears in the `[samples]` streams.
 fn animation_bytes() -> Vec<u8> {
     Builder::new()
         .node(1, "info")
@@ -1329,22 +1326,22 @@ fn animation_bytes() -> Vec<u8> {
         .node(2, "root")
         .strings("sa", &[""])
         .floats("t", &[0.0, 0.0, 0.0])
-        .floats("q", &[0.0, 0.0, 0.0, -1.0])
-        .floats("s", &[1.0])
-        .node(2, "vehicle")
-        .strings("sa", &["tq"])
-        .floats("t", &[0.0742, 0.0, 1.25571])
         .floats("q", &[0.0, 0.0, 0.0, 1.0])
-        .floats("s", &[0.7])
+        .floats("s", &[1.0])
+        .node(2, "slider")
+        .strings("sa", &["tq"])
+        .floats("t", &[1.0, 0.0, 2.0])
+        .floats("q", &[0.0, 0.0, 0.0, 1.0])
+        .floats("s", &[0.5])
         .node(1, "samples")
-        // Frame-major: frame 0 repeats the `[info]` values, as every
-        // shipped file does, then the joint walks along +x.
+        // Frame-major: frame 0 repeats the `[info]` values, then the
+        // joint walks along +x while its other coordinates stay fixed.
         .floats(
             "t",
             &[
-                0.0742, 0.0, 1.25571, // frame 0
-                1.0742, 0.0, 1.25571, // frame 1
-                2.0742, 0.0, 1.25571, // frame 2
+                1.0, 0.0, 2.0, // frame 0
+                2.0, 0.0, 2.0, // frame 1
+                3.0, 0.0, 2.0, // frame 2
             ],
         )
         .floats(
@@ -1365,9 +1362,9 @@ fn an_animation_info_block_decodes_its_rest_pose() {
     assert_eq!(animation.samples, 3);
     assert_eq!(animation.joints.len(), 2);
     assert_eq!(animation.joints[1].channels, "tq");
-    let rest = animation.rest("vehicle").unwrap();
-    assert_eq!(rest.translation, [0.0742, 0.0, 1.25571]);
-    assert!((rest.uniform_scale() - 0.7).abs() < 1e-5);
+    let rest = animation.rest("slider").unwrap();
+    assert_eq!(rest.translation, [1.0, 0.0, 2.0]);
+    assert!((rest.uniform_scale() - 0.5).abs() < 1e-5);
     assert!(animation.rest("absent").is_none());
 }
 
@@ -1378,20 +1375,20 @@ fn the_samples_block_is_frame_major_over_the_joints_that_declare_the_channel() {
     assert_eq!(animation.channel_joints(), [1, 1, 0]);
     // Frame 0 is the `[info]` block, which is what a still hour draws.
     assert_eq!(
-        animation.local("vehicle", FIRST_FRAME),
-        animation.rest("vehicle")
+        animation.local("slider", FIRST_FRAME),
+        animation.rest("slider")
     );
     assert_eq!(
-        animation.local("vehicle", 2).unwrap().translation,
-        [2.0742, 0.0, 1.25571]
+        animation.local("slider", 2).unwrap().translation,
+        [3.0, 0.0, 2.0]
     );
     // A channel the joint does not animate keeps its rest value at every
     // frame, and so does every channel of a joint with no channels at all.
-    assert!((animation.local("vehicle", 2).unwrap().uniform_scale() - 0.7).abs() < 1e-5);
+    assert!((animation.local("slider", 2).unwrap().uniform_scale() - 0.5).abs() < 1e-5);
     assert_eq!(animation.local("root", 2), animation.rest("root"));
     // A frame past the end falls back to the rest pose rather than
     // reading another joint's samples.
-    assert_eq!(animation.local("vehicle", 99), animation.rest("vehicle"));
+    assert_eq!(animation.local("slider", 99), animation.rest("slider"));
     assert_eq!(animation.local("absent", 0), None);
 }
 
@@ -1501,8 +1498,8 @@ fn a_palette_under_no_animation_leaves_every_vertex_in_its_bind_pose() {
 
 #[test]
 fn a_joint_with_an_unusable_inverse_bind_takes_the_identity() {
-    // `artillery_frame.mesh` writes an all-zero `tx` and
-    // `GER_infantry.mesh` writes 1e12 on one diagonal; neither inverts.
+    // An all-zero `tx` and an overflowing diagonal both lack a usable
+    // inverse, so each takes the same identity fallback.
     let bytes = Builder::new()
         .node(1, "object")
         .node(2, "s")

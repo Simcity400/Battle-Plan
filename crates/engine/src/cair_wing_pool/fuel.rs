@@ -1,14 +1,12 @@
-//! Passive CAirWingPool simulation fuel, pinned a729.
+//! Passive wing-pool simulation fuel used by simulation and carrier tooltips.
+//! No game function, UI state or stored forecast is executed or reconstructed.
+//! Products and divisions retain signed wrapping i64 order. Current mission
+//! state is independent of the saved active byte.
 //!
-//! Current140F46340 and maximum140F46E40 serve simulation callers as well as
-//! the carrier tooltip. No native function, UI state, or stored forecast is
-//! executed/reconstructed here. Every product/division keeps the native signed
-//! wrapping i64 order. Current mission+A4 is independent of saved active+B0.
-//!
-//! The caller supplies authenticated pool/definition/member observations from
-//! the same stopped registration walk. Begin one Reader per admitted pass;
-//! its caller-owned memo storage is cleared on construction. Nothing allocates
-//! during fixed acquisition; worker buffers grow before publication. No pointers escape through Packet.
+//! The caller supplies authenticated pool, definition and member observations
+//! from the same stopped registration walk. Begin one Reader per admitted pass;
+//! construction clears caller-owned memos. Fixed acquisition allocates nothing;
+//! worker buffers grow before publication. No game pointers escape in Packet.
 
 use crate::{
     Memory, air_fuel_defines as defines, air_mission, cace, cair_base, cair_wing, ccountry,
@@ -52,21 +50,21 @@ fn grow_memo<T: Default + Copy>(
 
 const P: i64 = defines::FIXED_SCALE;
 const SENTINEL: i64 = u32::MAX as i64;
-/// Both native fuel getters request key19E; registration1405974AB names it
-/// air_fuel_consumption_factor. CAce14060DDF0 also requests owner key25A.
+/// Fuel modifiers requested by both pool getters, with the independent
+/// owner modifier used for ace scaling.
 const FUEL_KEY: u32 = 0x19e;
 const ACE_KEY: u32 = crate::modifier_keys::ACE_EFFECTIVENESS_FACTOR;
-///140F46E40 scans exactly the first18 costs, even when content has more.
+/// The maximum getter scans the first eighteen costs even when content has more.
 const MAXIMUM_MISSIONS: usize = 18;
-///140F46340's active branch reads mission+E0 = primary wing+170.
+/// Current fuel's active branch reads the mission target province.
 const MISSION_PLANES: usize = 0x170;
-///141005DD0 selects these four content-defined capacities by native base type.
+/// Four content-defined capacities selected by base type.
 const SUBTYPE_CAPACITIES: usize = 0x600;
-///140C2B870 checks this pair; a dirty value scans modules without consulting801.
+/// Module-property cache pair; dirty state scans modules without consulting validity.
 const SHIP_CARRIER_CACHE: usize = 0x801;
-///140C2B870 follows variant+B8/C4's module entries, then definition+2D0.
+/// Module entries and each selected definition's capacity contribution.
 const MODULE_CARRIER_FLAG: usize = 0x2d0;
-///140F04500's manager coefficients and native province-record direction vector.
+/// Weather manager coefficients and province-record direction vector.
 const FORECAST_COEFFICIENTS: usize = 0x350;
 const FORECAST_HOURS: usize = 24;
 const FORECAST_VECTOR_BYTES: usize = FORECAST_HOURS * 24;
@@ -274,8 +272,8 @@ impl<'a, M: Memory> Reader<'a, M> {
     }
 
     fn reserve_wings(&mut self, count: usize) -> Result<(), &'static str> {
-        // 140F46340/140F46E40 visit every copied pool member. At most one
-        // ace and forecast key is reached by each occurrence in this pass.
+        // Both fuel getters visit every copied pool member. Each occurrence can
+        // reach at most one ace key and forecast key in this pass.
         self.wing_demand = self
             .wing_demand
             .checked_add(count)
@@ -301,9 +299,9 @@ impl<'a, M: Memory> Reader<'a, M> {
         let _ = self.wing_observation(pool, wing, false);
     }
 
-    /// Share the ORIGINAL +7C attempt with F47350's carrier plane sum.
+    /// Share the original plane-count attempt with the carrier plane sum.
     /// Failed current/maximum fuel branches cannot heal a failed plane read;
-    /// only a genuinely unreached +7C leaf is acquired once on this demand.
+    /// only an unreached plane-count leaf is acquired once on this demand.
     pub fn wing_with_planes(
         &mut self,
         pool: &mut PoolRead,
@@ -401,8 +399,8 @@ impl<'a, M: Memory> Reader<'a, M> {
             cair_wing::MISSION + air_mission::CURRENT_TYPE,
         )?;
         let (count, index) = if current != 0 {
-            // FFEC30 arithmetic-shifts until zero. Negative masks do not
-            // terminate; multi-bit masks violate its native assertion.
+            // The mission-index helper arithmetic-shifts until zero. Negative masks
+            // do not terminate; multi-bit masks violate its assertion.
             if current < 0 || !(current as u32).is_power_of_two() {
                 return Err("carrier current mission is not one positive bit");
             }
@@ -636,9 +634,9 @@ impl<'a, M: Memory> Reader<'a, M> {
             if field::<u8>(self.memory, host, cship::FORMATION_FLAGS)? & 0x80 != 0 {
                 3
             } else {
-                //140C2B870's valid cache may remain stale; preserve it exactly.
-                // Its dirty branch recomputes from all stored variant/module
-                // occurrences, independent of equipment amounts, without writes.
+                // A valid cache may be stale; preserve it exactly. Dirty state recomputes
+                // all stored variant and module occurrences without writes, independently
+                // of equipment amounts.
                 let valid: u8 = field(self.memory, host, SHIP_CARRIER_CACHE + 1)?;
                 let special = if valid != 0 {
                     field::<u8>(self.memory, host, SHIP_CARRIER_CACHE)?
@@ -663,7 +661,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                 cair_base::CAPACITY,
             )?))
         } else {
-            //141005DD0's IsAir assertion precedes subtype capacity dispatch.
+            // The air-type assertion precedes subtype capacity dispatch.
             if flags & 0x1f_0037_fc00 == 0 {
                 return Err("carrier training subtype is not air");
             }
@@ -816,7 +814,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             return Err("carrier forecast region census mismatch");
         }
         let provinces = array(self.memory, region, cstrategic_region::PROVINCES, 8)?;
-        //140E0CB70's empty division returns unsigned32 sentinel, not zero.
+        // An empty division returns the unsigned u32 sentinel rather than zero.
         if provinces.count == 0 {
             return Ok([SENTINEL; FORECAST_HOURS]);
         }
@@ -916,7 +914,7 @@ fn current_term(modified: i64, weight: i64, mission_cost: i64) -> i64 {
     (modified.wrapping_mul(weight) / P).wrapping_mul(mission_cost) / P
 }
 fn maximum_term(planes: i32, modified: i64, weight: i64, cost: i64) -> i64 {
-    //140F46FCA..FD5 includes multiply100000 before division. Do not cancel it.
+    // Retain the multiplication by 100000 before division; do not cancel it.
     let amount = i64::from(planes).wrapping_mul(modified).wrapping_mul(P) / P;
     (amount.wrapping_mul(weight) / P).wrapping_mul(cost) / P
 }
@@ -929,7 +927,7 @@ fn capacity_gate(planes: i32, capacity: i32, threshold: i64) -> bool {
     }
 }
 fn province_forecast(vector: [i64; 3], coefficients: [i64; 3], subtract: i64, scale: i64) -> i64 {
-    //140F04500 sums X, Z, Y separately truncated terms, then subtracts/scales.
+    // Sum separately truncated X, Z and Y terms, then subtract and scale.
     let value = (coefficients[0].wrapping_mul(vector[0]) / P)
         .wrapping_add(coefficients[2].wrapping_mul(vector[2]) / P)
         .wrapping_add(coefficients[1].wrapping_mul(vector[1]) / P);

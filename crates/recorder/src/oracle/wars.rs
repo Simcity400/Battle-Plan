@@ -1,4 +1,4 @@
-//! Ordered 140D19640 goal references joined to 1415CE460 goal objects.
+//! Ordered goal references joined to goal objects.
 #[cfg(test)]
 mod tests;
 use std::{

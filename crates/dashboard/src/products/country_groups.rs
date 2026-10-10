@@ -15,14 +15,9 @@
 //! stack and its bound localisation. Name runs end across gaps independently
 //! of roster completeness; an unresolved name keeps its reason.
 //!
-//! A faction's leader is its member at order zero. The engine keeps the leader
-//! first in the faction's member vector (`engine::cfaction::MEMBERS`,
-//! `engine::cfaction_system::MemberRow::ordinal`), the save writes the members in
-//! that order (`installed_content::save::Faction::members`), and the fresh-save oracle
-//! compares every recorded ordinal with the save's order (`compare_factions` in
-//! the recorder). A 1936 save lists each faction's leader first (GER, ENG, SOV,
-//! JAP). An hour whose order-zero member the links cannot name has no known
-//! leader, and that faction's roster is incomplete then.
+//! A faction's leader is its member at order zero. The recorded member ordinal
+//! preserves the roster's order. An hour whose order-zero member the links
+//! cannot name has no known leader, and that faction's roster is incomplete then.
 
 use super::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, country_history::CountryIdentityRun};
 use crate::{
@@ -509,8 +504,8 @@ impl NameOperands {
         )
         .and_then(|text| {
             let plain = catalogue::plain_text(&text)?;
-            // 140D77360 / 14238F090 can return known empty text;
-            // nonempty rich text still needs a plain representation.
+            // Faction naming can return known empty text; nonempty rich text
+            // still needs a plain representation.
             if !text.is_empty() && plain.is_empty() {
                 Err("Faction name has no plain display text".into())
             } else {

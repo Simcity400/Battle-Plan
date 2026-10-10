@@ -4,8 +4,8 @@ use replay::rows::NavalCombatShipRow;
 
 const ONE: i64 = 100_000;
 
-/// 141608FF0 visits every live CShip occurrence in the registered forward
-/// groups, without filtering member state or detection. 140C2AD30 uses the
+/// the game visits every live ship occurrence in the registered forward
+/// groups, without filtering member state or detection. the game uses the
 /// task force's default commander rather than the combat leader for keys
 /// 0x88/0x89. The base lookup joins the shared hourly ShipModels census.
 pub(super) fn calculate(

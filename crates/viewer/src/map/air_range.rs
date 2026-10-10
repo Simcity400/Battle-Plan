@@ -18,7 +18,7 @@ pub(super) trait Sources {
     fn ace(&self, handle: u64) -> Result<Option<&AceRangeInputRow>, String>;
 }
 
-/// `CAirWing::GetModifiedMapRange@140F49440`.
+/// Modified map range for an air wing.
 pub(super) fn wing_range(
     wing: &AirWingRow,
     defines: Defines,
@@ -40,8 +40,7 @@ pub(super) fn wing_range(
             .ace(wing.ace)?
             .ok_or("a wing's ace has no AceRangeInputs row")?;
         if ace.alive != 0 {
-            // `CAce::scaled_modifier@14060DDF0(ace, 5)`. The ace country
-            // modifiers are CountryCommandPower's, read hourly.
+            // Ace country modifiers are read hourly from CountryCommandPower.
             let owner = sources.command_power(ace.canonical_slot)?;
             let scaled = ace.range.wrapping_mul(ace_scale(ace, defines, sources)?) / 100_000;
             let scaled = registered(owner.ace_effectiveness_factor, "ace_effectiveness_factor")?
@@ -61,7 +60,7 @@ pub(super) fn wing_range(
     Ok(base.wrapping_mul(factor.wrapping_add(air)) / 100_000)
 }
 
-/// The ace's wing is its `CAce+0xE8`, as of the country's daily read.
+/// The bonus shrinks with the ace's daily recorded wing size.
 pub(super) fn ace_scale(
     ace: &AceRangeInputRow,
     defines: Defines,
@@ -82,12 +81,14 @@ pub(super) fn ace_scale(
     })
 }
 
-/// `x + 0x7FFF_FFFF_FFFF_FFFE < 0xFFFF_FFFF_FFFF_FFFD`.
+/// Accept signed 64-bit values except the maximum, minimum and minimum plus one. This range
+/// validity check does not convert fixed5 sentinels.
 pub(super) fn finite(value: i64) -> bool {
     (value as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd
 }
 
-/// `x * 100000 / MAP_SCALE_PIXEL_TO_KM`, or `0xFFFFFFFF`.
+/// Scale by 100000 with wrapping multiplication, then divide by the map pixel-to-km scale.
+/// Invalid values or a zero scale return 0xFFFFFFFF.
 pub(super) fn to_map(value: i64, scale: i64) -> i64 {
     if scale == 0 || !finite(value) {
         0xffff_ffff

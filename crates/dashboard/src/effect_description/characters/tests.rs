@@ -29,11 +29,11 @@ fn fixture() -> (Fixture, Folder) {
             "localisation/test_l_english.yml",
             concat!(
                 "\u{feff}l_english:\n",
-                " AAA:0 \"Alpha\"\n BBB:0 \"Beta\"\n AAA_DEF:0 \"alpha\"\n BBB_DEF:0 \"beta\"\n",
+                " AAA:0 \"Aurora\"\n BBB:0 \"Basin\"\n AAA_DEF:0 \"aurora\"\n BBB_DEF:0 \"basin\"\n",
                 " EFFECT_SET_LEADER_NATIONALITY:0 \"Nationality $NAME$/$COUNTRYDEF$ [Root.GetTag]\"\n",
                 " EFFECT_RETIRE_CHARACTER:0 \"Retire $NAME$/$COUNTRY$ [Root.GetTag]\"\n",
                 " EFFECT_CAPTURE_GENERAL:0 \"Capture $NAME$/$COUNTRY_NAME_DEF$ [Root.GetTag]\"\n",
-                " BBB_ADJ:0 \"Beta adjective\"\n",
+                " BBB_ADJ:0 \"Basin adjective\"\n",
                 " EFFECT_ADD_NATIONALITY_TO_OPERATIVE:0 \"Nationality $NAME$/$CODENAME$/$NATIONALITY$ [Root.GetTag]\"\n",
             ),
         ),
@@ -108,21 +108,25 @@ fn character_scopes() -> EventScopes {
     EventScopes::new(vec![character, EventScope::of(EventObject::Country(1))])
 }
 
-// Scalar witness: common/decisions/_debug_decisions.txt:665.
+// A scalar country selects nationality.
 #[test]
 fn set_nationality() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
         "set_nationality=BBB",
         &mut character_scopes(),
         Content::default(),
     );
-    assert_eq!(out.text, "Nationality Current name/beta AAA\n");
+    assert_eq!(out.text, "Nationality Current name/basin AAA\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 #[test]
 fn nationality_character_selector_uses_root_roster_then_current_fallback() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     for (selector, name) in [
         ("synthetic_other", "Other name"),
@@ -136,7 +140,7 @@ fn nationality_character_selector_uses_root_roster_then_current_fallback() {
         );
         assert_eq!(
             out.text,
-            format!("Nationality {name}/beta AAA\n"),
+            format!("Nationality {name}/basin AAA\n"),
             "{:?}",
             out.refusals
         );
@@ -144,39 +148,45 @@ fn nationality_character_selector_uses_root_roster_then_current_fallback() {
     }
 }
 
-// common/decisions/bul.txt:2278. Authored boolean is execution-only.
+// The retirement boolean is execution-only.
 #[test]
 fn retire() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render("retire=yes", &mut character_scopes(), Content::default());
-    assert_eq!(out.text, "Retire Current name/Alpha [Root.GetTag]\n");
+    assert_eq!(out.text, "Retire Current name/Aurora [Root.GetTag]\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// common/decisions/_debug_decisions.txt:22.
+// A scalar country selects the capturer.
 #[test]
 fn capture_by() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
         "capture_by=BBB",
         &mut character_scopes(),
         Content::default(),
     );
-    assert_eq!(out.text, "Capture Army name/beta [Root.GetTag]");
+    assert_eq!(out.text, "Capture Army name/basin [Root.GetTag]");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// CCaptureGeneralEffect::ReadEffect 1402F8640 consumes country/province;
-// the province is execution-only, and target is an unexpected native key.
+// The block reads country/province; province is execution-only
+// and target is an unexpected key.
 #[test]
 fn capture_by_block_reads_country_without_target_leak() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     for (body, expected) in [
         (
-            "capture_by={country=BBB province=17}",
-            "Capture Army name/beta [Root.GetTag]",
+            "capture_by={country=BBB province=29}",
+            "Capture Army name/basin [Root.GetTag]",
         ),
-        ("capture_by={target=BBB province=17}", ""),
+        ("capture_by={target=BBB province=29}", ""),
     ] {
         let out = fixture.render(body, &mut character_scopes(), Content::default());
         assert_eq!(out.text, expected, "{body}");
@@ -184,11 +194,13 @@ fn capture_by_block_reads_country_without_target_leak() {
     }
 }
 
-// 1402F8130 and 140374C60 require a signed positive capturer/nationality.
-// Selectors capital/random keep country zero (1405336C0); linked states
-// instead supply their owner through 14052B6A0, state +0xC8.
+// Require a signed positive capturer or nationality.
+// Capital/random selectors keep country zero, while linked states
+// supply their owner.
 #[test]
-fn country_target_zero_and_state_owner_follow_native_character_gates() {
+fn country_target_zero_and_state_owner_follow_character_gates() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     for category in [0, 3] {
         if let TableView::Complete(TableRows::UnitLeaders(rows)) =
@@ -228,12 +240,14 @@ fn country_target_zero_and_state_owner_follow_native_character_gates() {
         EventScope::of(EventObject::State(2)),
     ]);
     let out = fixture.render("capture_by=ROOT", &mut graph, Content::default());
-    assert_eq!(out.text, "Capture Army name/alpha [Root.GetTag]");
+    assert_eq!(out.text, "Capture Army name/aurora [Root.GetTag]");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 #[test]
 fn referenced_leader_uses_matching_recorded_handle_or_refuses_its_missing_name() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::CharacterOperatives.index()] =
         TableView::Complete(TableRows::CharacterOperatives(vec![
@@ -258,7 +272,7 @@ fn referenced_leader_uses_matching_recorded_handle_or_refuses_its_missing_name()
         &mut character_scopes(),
         Content::default(),
     );
-    assert_eq!(out.text, "Capture Army name/beta [Root.GetTag]");
+    assert_eq!(out.text, "Capture Army name/basin [Root.GetTag]");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 
     if let TableView::Complete(TableRows::UnitLeaders(rows)) =
@@ -273,13 +287,15 @@ fn referenced_leader_uses_matching_recorded_handle_or_refuses_its_missing_name()
     );
     assert_eq!(out.text, "");
     assert_eq!(out.refusals, BTreeMap::from([(
-        "synthetic effect CCaptureGeneralEffect: key capture_by: character 7 referenced unit leader name (+0x40, 140C16FB0) not recorded".to_owned(),
+        "synthetic effect capture_by: key capture_by: character 7 referenced unit leader name not recorded".to_owned(),
         1
     )]));
 }
 
 #[test]
 fn unit_leader_scope_resolves_its_character_role() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let mut leader = EventScope::of(EventObject::UnitLeader((5_u64 << 32) | 55));
     leader.root = Link::Scope(1);
@@ -290,13 +306,15 @@ fn unit_leader_scope_resolves_its_character_role() {
     );
     assert_eq!(
         out.text,
-        "Retire Current name/Alpha [Root.GetTag]\nCapture Army name/beta [Root.GetTag]"
+        "Retire Current name/Aurora [Root.GetTag]\nCapture Army name/basin [Root.GetTag]"
     );
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 #[test]
 fn add_nationality() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     // Native early gate: an army leader is not an operative.
     let out = fixture.render(
@@ -310,6 +328,8 @@ fn add_nationality() {
 
 #[test]
 fn valid_operative_refuses_unrecorded_codename_by_class_and_field() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
         TableView::Complete(TableRows::UnitLeaders(vec![UnitLeaderRow {
@@ -326,7 +346,7 @@ fn valid_operative_refuses_unrecorded_codename_by_class_and_field() {
         Content::default(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect CAddNationalityToOperativeEffect: key add_nationality: operative codename (COperativeLeader+0x1030, 140C06040) not recorded".to_owned(), 1)]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect add_nationality: key add_nationality: operative codename not recorded".to_owned(), 1)]));
     let out = fixture.render(
         "capture_by=BBB",
         &mut character_scopes(),
@@ -336,10 +356,12 @@ fn valid_operative_refuses_unrecorded_codename_by_class_and_field() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// Format-98 registry-only +0x40 is the actual selected role, not another
-// character's display name (140F8A840 -> 1402F8130).
+// The format-98 registry-only name belongs to the selected role
+// rather than another character's display name.
 #[test]
 fn capture_by_uses_format98_referenced_name_and_capture_status() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
         TableView::Complete(TableRows::UnitLeaders(vec![]));
@@ -359,7 +381,7 @@ fn capture_by_uses_format98_referenced_name_and_capture_status() {
         &mut character_scopes(),
         Content::default(),
     );
-    assert_eq!(out.text, "Capture Referenced general/beta [Root.GetTag]");
+    assert_eq!(out.text, "Capture Referenced general/basin [Root.GetTag]");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     if let TableView::Complete(TableRows::CharacterOperatives(rows)) =
         &mut *fixture.frame.tables[TableId::CharacterOperatives.index()]
@@ -372,13 +394,15 @@ fn capture_by_uses_format98_referenced_name_and_capture_status() {
         Content::default(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect CCaptureGeneralEffect: key capture_by: character 7 referenced unit leader name (+0x40, 140C16FB0) capture unavailable".into(), 1)]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect capture_by: key capture_by: character 7 referenced unit leader name capture unavailable".into(), 1)]));
 }
 
-// common/decisions/_debug_decisions.txt:724, scalar country;
-// NAME/CODENAME/NATIONALITY@140374C60, expanded with no appended LF.
+// Substitute NAME, CODENAME and NATIONALITY for a scalar country,
+// then expand without appending LF.
 #[test]
 fn add_nationality_uses_format98_selected_codename() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     for custom in [Vec::new(), b"Chosen name".to_vec()] {
         if let TableView::Complete(TableRows::UnitLeaders(rows)) =
@@ -402,7 +426,7 @@ fn add_nationality_uses_format98_selected_codename() {
         assert_eq!(
             out.text,
             format!(
-                "Nationality Army name/{}/Beta adjective AAA",
+                "Nationality Army name/{}/Basin adjective AAA",
                 if custom.is_empty() {
                     "Nightjar"
                 } else {
@@ -414,13 +438,14 @@ fn add_nationality_uses_format98_selected_codename() {
     }
 }
 
-// common/decisions/_debug_decisions.txt:511. ResolveArmy@140529260
-// is null outside UNIT; the carrier no longer drops this reference.
+// Army resolution is null outside UNIT; the carrier retains the reference.
 #[test]
 fn add_history_entry_is_empty_without_unit_reference() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
-        "add_history_entry={key=synthetic_history subject=\"Custom String\" allow=yes}",
+        "add_history_entry={key=synthetic_history subject=\"Training record\" allow=yes}",
         &mut character_scopes(),
         Content::default(),
     );
@@ -428,10 +453,11 @@ fn add_history_entry_is_empty_without_unit_reference() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// common/raids/land_infiltration_custom.txt:218. ResolveRaidInstance
-// 140529460 is null outside RAID; 1404A2FB0 emits only a diagnostic.
+// Raid resolution is null outside RAID; no description is produced.
 #[test]
 fn add_raid_history_entry_is_empty_without_raid_reference() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
         "add_raid_history_entry=yes",
@@ -444,6 +470,8 @@ fn add_raid_history_entry_is_empty_without_raid_reference() {
 
 #[test]
 fn absent_character_is_empty_and_stored_name_does_not_use_saved_key() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
     let out = fixture.render(
@@ -465,12 +493,14 @@ fn absent_character_is_empty_and_stored_name_does_not_use_saved_key() {
         &mut character_scopes(),
         Content::default(),
     );
-    assert_eq!(out.text, "Nationality /beta AAA\n");
+    assert_eq!(out.text, "Nationality /basin AAA\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 #[test]
 fn character_and_leader_names_keep_recording_language_rule() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     std::sync::Arc::make_mut(&mut fixture.catalogue.localisation).language =
         "synthetic_other_language".into();
@@ -490,6 +520,8 @@ fn character_and_leader_names_keep_recording_language_rule() {
 
 #[test]
 fn named_character_selector_uses_retired_roster_after_active() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::CountryCharacters.index()] =
         TableView::Complete(TableRows::CountryCharacters(vec![]));
@@ -506,12 +538,14 @@ fn named_character_selector_uses_retired_roster_after_active() {
         &mut character_scopes(),
         Content::default(),
     );
-    assert_eq!(out.text, "Nationality Other name/beta AAA\n");
+    assert_eq!(out.text, "Nationality Other name/basin AAA\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 #[test]
 fn missing_executable_localisation_name_is_named_and_counted() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
     let out = fixture.render(
@@ -523,7 +557,7 @@ fn missing_executable_localisation_name_is_named_and_counted() {
     assert_eq!(
         out.refusals,
         BTreeMap::from([(
-            "synthetic effect CAddAceEffect: key add_ace: native character localisation key EFFECT_ADD_ACE is not defined".into(),
+            "synthetic effect add_ace: key add_ace: native character localisation key EFFECT_ADD_ACE is not defined".into(),
             1,
         )]),
     );
@@ -531,6 +565,8 @@ fn missing_executable_localisation_name_is_named_and_counted() {
 
 #[test]
 fn character_lookup_keeps_country_five_thousand() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::Countries(countries)) =
         &mut *fixture.frame.tables[TableId::Countries.index()]
@@ -581,6 +617,6 @@ fn character_lookup_keeps_country_five_thousand() {
         &mut scopes,
         Content::default(),
     );
-    assert_eq!(out.text, "Nationality Other name/beta TFW\n");
+    assert_eq!(out.text, "Nationality Other name/basin TFW\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }

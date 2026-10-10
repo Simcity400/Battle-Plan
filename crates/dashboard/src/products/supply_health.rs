@@ -1,41 +1,36 @@
 //! Division supply-icon states, counted at their hourly reads.
 //!
-//! P: HasLowSupply@140C789E0 returns false for naval transfer (+2F8 pointer),
-//! otherwise effective supply < NMilitary.LOW_SUPPLY. Getter@140C78780 reads
-//! signed qwords +40 received fixed5 fraction, +600 maximum and +610 remaining
-//! grace (fixed5 hours). Maximum writer@140C803D0 starts with SUPPLY_GRACE
-//! (integer hours) * 100000; prepare_hourly_update@140C79330 passes +610/+608
-//! to hourly grace updater@1414D2470. We read stored values, never recreate
+//! Low supply is false for naval transfers, otherwise effective supply is below
+//! NMilitary.LOW_SUPPLY. Its signed i64 operands are the received fixed5 fraction
+//! and maximum/remaining grace in fixed5 hours. Maximum grace starts as
+//! SUPPLY_GRACE integer hours * 100000. We read stored values, never recreate
 //! their update or make them fresher. DivisionLandInputs copies these exact
-//! signed i64 operands and naval-transfer presence from the authenticated
-//! DivisionSeed (engine::carmy), keyed by full u64 handle, hourly in cadence.rs.
+//! operands and naval-transfer presence from the authenticated DivisionSeed
+//! (engine::carmy), keyed by full u64 handle, hourly in cadence.rs.
 //!
-//! P: Icon updater@1416A6070 calls HasLowSupply at1416A6B3D. False substitutes
-//! fixed5 one, true reads +40. Strict < VERY_LOW (1416A6B53) selects frame 3,
-//! then strict < LOW (1416A6BBA) selects frame 2. Otherwise the gate at
-//! 1416A6C12 selects frame 1 or hides the icon. Tooltip@141691B40 uses
-//! the same gate at141693F31 for ARMY_UNIT_SUPPLY_DESC_OK/BAD and displays the
-//! effective fraction. There is no separate native zero-supply enum. The chart
-//! calls very-low frame 3 "No supply", frames 1/2 "Strained", hidden
-//! "In supply": grace can cover low received supply; frame 3 need not mean zero.
-//! Even unusual mod thresholds retain the icon's comparison order.
+//! The icon substitutes fixed5 one when supply is not low; otherwise it uses the
+//! received fraction. Strict < VERY_LOW selects frame 3, then strict < LOW selects
+//! frame 2. Otherwise the supply gate selects frame 1 or hides the icon.
+//! The tooltip uses the same gate for ARMY_UNIT_SUPPLY_DESC_OK/BAD and displays
+//! the effective fraction. There is no separate zero-supply enum. The chart calls
+//! very-low frame 3 "No supply", frames 1/2 "Strained", hidden "In supply": grace
+//! can cover low received supply; frame 3 need not mean zero. Even unusual mod
+//! thresholds retain the icon's comparison order.
 //!
-//! LOW_SUPPLY: loader1409062C0 -> fixed5 reader14205D560, global143319958.
-//! SUPPLY_GRACE: loader14091BB30 -> integer reader14205B690, i32 global1433191C0
-//! read at140C78799. NGraphics.SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD and
-//! SUPPLY_UNIT_COUNTER_LOW_THRESHOLD: loaders140868BC0/1408687A0 -> f32 reader
-//! 14205B9E0, globals14331B144/14331B0AC. The icon's f32 MULSS/ADDSS/SUBSS/
-//! CVTTSS2SI conversion is shared by installed_content::defines::fixed5. Every value
-//! resolves through the recorded content stack; province supply is no proxy.
+//! LOW_SUPPLY is fixed5; SUPPLY_GRACE is integer hours.
+//! NGraphics.SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD and
+//! SUPPLY_UNIT_COUNTER_LOW_THRESHOLD are f32 inputs. Their staged fixed5
+//! conversion is shared by installed_content::defines::fixed5. Every value resolves
+//! through the recorded content stack; province supply is no proxy.
 //!
 //! Owner: positive signed expeditionary_owner, else roster_owner, through
-//! CountryLinks, matching DivisionCensus and Army size. Execute@1410F4750
-//! preserves the sender with140BF4F70 before AddArmy@1406C6480 changes its host
-//! roster (140BF5480/140BF5290). No player/AI filtering. Incomplete Divisions or
-//! country links, unresolved owners, or any owned division without this hour's
-//! land inputs breaks the country's whole stack. Zero divisions is an exact
-//! zero denominator, not a 100% share. metadata::slot_read dates every operand;
-//! equal consecutive reads compress into runs without crossing gaps.
+//! CountryLinks, matching DivisionCensus and Army size. Expeditionary transfer
+//! preserves the sender before changing the host roster. No player/AI filtering.
+//! Incomplete Divisions or country links, unresolved owners, or any owned
+//! division without this hour's land inputs breaks the country's whole stack.
+//! Zero divisions is an exact zero denominator, not a 100% share.
+//! metadata::slot_read dates every operand; equal consecutive reads compress
+//! into runs without crossing gaps.
 //!
 //! Cost fixture: 5,000 countries, 50,000 divisions, 78,840 hourly reads. Each
 //! division has a staggered 48-hour disruption every 30 days, with hourly grace

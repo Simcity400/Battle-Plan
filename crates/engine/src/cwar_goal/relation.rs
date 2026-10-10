@@ -1,19 +1,19 @@
-//! CWarGoal's ordered relation references and the operands BuildWarName reads.
+//! Ordered relation-goal references and their naming operands.
 use crate::{
     Memory, ccountry, cpdx_array::Array, creference_registry, cstate, cwar_goal_type, read,
 };
 
-/// Primary vtable installed by constructors 1415CB8A0/1415CBDD0/1415CBE80.
+/// Primary goal vtable.
 pub const VTABLE_RVA: usize = 0x029c_9468;
-/// Registered u64 reference; Serialize@1415CE720.
+/// Registered u64 reference.
 pub const HANDLE: usize = 8;
-/// Embedded goal data, SerializeData@1415CE460.
+/// Embedded goal actor.
 pub const ACTOR: usize = 0x38;
 pub const RECIPIENT: usize = 0x3c;
 pub const TYPE: usize = 0x40;
-/// CState* array, first entry names STATE (BuildWarName@140D0BCA0).
+/// Ordered state-pointer array; the first entry supplies the state naming operand.
 pub const STATES: usize = 0x48;
-/// Country-reference array, first entry names COUNTRY and COUNTRY_ADJ.
+/// Ordered country references; the first supplies country-name and adjective operands.
 pub const COUNTRIES: usize = 0x60;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

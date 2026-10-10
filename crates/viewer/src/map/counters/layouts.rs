@@ -1,4 +1,4 @@
-//! Counter templates selected by CUnitCounterItem::constructor@1418BE360.
+//! Content-resolved counter templates and supported child draw forms.
 
 use super::*;
 use crate::map::native_gui;
@@ -57,7 +57,6 @@ pub(super) fn child(
     owner: &str,
     missing: &mut Vec<String>,
 ) -> io::Result<Child> {
-    // BindControls@1418C70C0: local FindButton@1422A4A20 or FindIcon@1422A6FD0.
     let Some(element) = root.find(kind, name) else {
         missing.push(format!("{owner}.{name}"));
         return Ok(Child {
@@ -81,7 +80,7 @@ pub(super) fn child(
             icon.rotation,
         ),
         native::Fields::Button(button) => {
-            // CButtonStandard::ctor@1422BA900: sprite/quadTextureSprite, anchor, scale and
+            // sprite/quadTextureSprite, anchor, scale and
             // positive frame; an absent/nonpositive frame keeps Up's strip index 0.
             for (unsupported, field) in [
                 (button.center_position, "centerPosition"),
@@ -92,7 +91,7 @@ pub(super) fn child(
             ] {
                 if unsupported {
                     return Err(invalid(format!(
-                        "{}: counter batch cannot draw button {field} (CButtonStandard::ctor@1422BA900)",
+                        "{}: counter batch cannot draw button {field}",
                         element.path
                     )));
                 }
@@ -132,7 +131,6 @@ pub(super) fn text_child(
     owner: &str,
     missing: &mut Vec<String>,
 ) -> io::Result<TextChild> {
-    // BindControls@1418C70C0: local FindInstantTextBox@1422A7520.
     let Some(element) = root.find(native::Kind::TextBox, name) else {
         missing.push(format!("{owner}.{name}"));
         return Ok(TextChild {
@@ -162,7 +160,7 @@ pub(super) fn text_child(
             base[0] + text.position[0].wrapping_add(anchor[0]) as f32,
             base[1] + text.position[1].wrapping_add(anchor[1]) as f32,
         ],
-        // CInstantTextObject::ctor@1422D7A00 makes absent/zero (1422E4F40) a signed 200.
+        // The game makes absent/zero a signed 200.
         max_width: if text.max_width == 0 {
             200.0
         } else {
@@ -211,7 +209,6 @@ pub(super) fn ability_grid(
     missing: &mut Vec<String>,
     unsupported: &mut Vec<String>,
 ) -> io::Result<Option<AbilityGrid>> {
-    // BindControls@1418C70C0: local FindGridBox@1422A8970.
     let Some(element) = land.find(native::Kind::Grid, "active_abilities") else {
         missing.push(format!("{LAND_WINDOW}.active_abilities"));
         return Ok(None);
@@ -224,7 +221,6 @@ pub(super) fn ability_grid(
         return Ok(None);
     };
     let Some(icon) = item
-        // CActiveAbilityItem::ctor@1418BE190: local FindIcon@1422A6FD0.
         .find(native::Kind::Icon, "active_ability")
         .and_then(native::Element::icon)
     else {
@@ -261,7 +257,7 @@ pub(super) fn ability_grid(
         icon_at: icon.position,
         scale: icon.scale,
         from_centre,
-        // CIconType::property_reader@142358910 stores this flag; origo is not an icon key.
+        // Store this flag; origo is not an icon key.
         centred: icon.center_position,
     }))
 }
@@ -273,7 +269,7 @@ pub(super) fn land_counter(
     use native::Kind::{Button, Icon};
     let land = window(guis, LAND_WINDOW)?;
     let hq_offset = match land
-        // BindControls@1418C70C0: FindInstance@1422A7F10, exact position-name check.
+        // exact position-name check.
         .find_instance("unit_counter_hq_x_offset")
         .and_then(native::Element::position_type)
     {
@@ -313,7 +309,6 @@ pub(super) fn land_counter(
 pub(super) fn column_layout(guis: &native::Guis) -> io::Result<ColumnLayout> {
     let stack = window(guis, STACK_WINDOW)?;
     stack
-        // BindStack@141900EC0: local FindGridBox@1422A8970.
         .find(native::Kind::Grid, "units_box")
         .ok_or_else(|| invalid(format!("{STACK_WINDOW} has no units_box")))?;
     let offset = guis
@@ -332,6 +327,8 @@ mod tests {
 
     #[test]
     fn counter_action_land_child_loads_its_authored_sprite() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let windows = gui_windows::NativeWindows::read(
             br#"guiTypes={containerWindowType={name=unit_counter_navy}
                 containerWindowType={name=naval_combat_mapicon}
@@ -347,6 +344,8 @@ mod tests {
 
     #[test]
     fn counter_action_centred_child_keeps_the_land_layout() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let gui = native::read(
             br#"guiTypes={containerWindowType={name=unit_counter
             iconType={name=onmap_action_icon spriteType=GFX_synthetic_actions
@@ -363,6 +362,8 @@ mod tests {
 
     #[test]
     fn counter_layout_refusals_are_independent_and_do_not_abort_loading() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let source = br#"guiTypes={
             containerWindowType={name=unit_counter size={width=76 height=24}}
             containerWindowType={name=unit_counter_railway_gun size={width=100% height=24}}
@@ -387,6 +388,8 @@ mod tests {
 
     #[test]
     fn counter_templates_use_the_native_registry_and_accept_eof() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let guis = native::Guis {
             files: vec![
                 (
@@ -421,7 +424,7 @@ mod tests {
         assert_eq!(layouts.land.as_ref().unwrap().size, [82.0, 28.0]);
         assert_eq!(layouts.land.as_ref().unwrap().plate.sprite, "GFX_mod");
         assert_eq!(layouts.land.as_ref().unwrap().plate.at, [4.0, 7.0]);
-        // The absent/zero width takes ctor@1422D7A00's 200; other values keep signed bits.
+        // The absent/zero width takes the game's 200; other values keep signed bits.
         assert_eq!(layouts.land.as_ref().unwrap().count.max_width, 200.0);
         let land = window(&windows.guis, LAND_WINDOW).unwrap();
         let width = |name| {
@@ -439,6 +442,8 @@ mod tests {
 
     #[test]
     fn counter_lookup_keeps_native_kind_and_window_local_depth() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let guis = native::Guis {
             files: vec![(
                 MAPICONS_GUI.into(),
@@ -476,6 +481,8 @@ mod tests {
 
     #[test]
     fn counter_text_grid_and_ability_lookups_are_window_local() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let guis = native::Guis {
             files: vec![(
                 MAPICONS_GUI.into(),
@@ -515,7 +522,7 @@ mod tests {
                 .to_string()
                 .contains("units_box")
         );
-        // A local grid still cannot bind an icon nested in the item window (1418BE190).
+        // A local grid still cannot bind an icon nested in the item window.
         let mut root = root.clone();
         let mut grid = root.children[1].children[1].clone();
         grid.path = "unit_counter.active_abilities".into();
@@ -530,6 +537,8 @@ mod tests {
 
     #[test]
     fn counter_button_lookup_rejects_icon_and_checkbox_arrays() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         for kind in ["iconType", "checkboxType"] {
             let guis = native::read(format!(
                 "guiTypes={{containerWindowType={{name=test {kind}={{name=count_bg spriteType=GFX_wrong}}}}}}"
@@ -550,6 +559,8 @@ mod tests {
 
     #[test]
     fn unported_counter_button_draw_forms_are_refused_by_name() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         for (field, name) in [
             ("centerPosition=yes", "centerPosition"),
             ("rotation=1", "rotation"),
@@ -570,7 +581,7 @@ mod tests {
             .unwrap_err()
             .to_string();
             assert!(why.contains("test.count_bg") && why.contains(name), "{why}");
-            assert!(why.contains("1422BA900"), "{why}");
+            assert!(why.contains("button"), "{why}");
         }
     }
 }

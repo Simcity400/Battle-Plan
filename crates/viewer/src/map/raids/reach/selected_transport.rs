@@ -1,5 +1,5 @@
-//! BEFC40 consumes only reached hourly facts. A missing nested graph refuses
-//! the complete requested transport fragment; it never supplies zero risk.
+//! Consume only reached hourly transport facts. A missing nested graph
+//! refuses the complete requested fragment, never supplying zero risk.
 use super::*;
 use installed_content::unit_path::selected_transport::{
     self as law, Admission, AdmissionInputs, Transfer, Unit,
@@ -127,15 +127,15 @@ impl<'w, 'a> Moves<'w, 'a> {
         let rows = self.table::<tables::CountryAppearance>()?;
         let index = rows
             .binary_search_by_key(&actual, |row| row.country)
-            .map_err(|_| "selected transport original CConvoys receiver missing")?;
+            .map_err(|_| "selected transport original convoy receiver missing")?;
         let value = replay::transport_convoys::current(
             &rows[index].transport_convoys,
             self.world.frame().hour,
         )
         .map_err(str::to_owned)?;
-        // BEFC40 tests raw equality first, including raw zero, then aliases
-        // only when both references are nonzero. Other logical owners use
-        // their independent signed +1288 field, never C970 or reservations.
+        // Test raw equality first, including raw zero, then aliases only when both
+        // references are nonzero. Other logical owners use their independent signed
+        // field, separate from counter selection or reservations.
         if roster == logical || (roster != 0 && logical != 0 && self.slot(roster)? == slot) {
             let priority = value
                 .priority
@@ -172,8 +172,8 @@ impl<'w, 'a> Moves<'w, 'a> {
         } else {
             province
         };
-        // FA1CB0 rejects a missing target sea. FA1E90 keeps the original
-        // source land province when its port-sea lookup was null.
+        // Reject a missing target sea. Keep the original source land province
+        // when its port-sea lookup is null.
         let resolved = if sea == 0 && source { province } else { sea };
         if resolved == 0 {
             return Ok(None);
@@ -191,7 +191,7 @@ impl<'w, 'a> Moves<'w, 'a> {
         let Some(target) = self.transport_sea_region(target, false)? else {
             return Ok(false);
         };
-        // FA1E90 uses ACTUAL unit+1F0 independently of E67D80 source mode.
+        // Use actual unit location independently of the caller's source mode.
         let source = match class {
             CommonClass::Army => {
                 self.division(handle)?
@@ -206,8 +206,8 @@ impl<'w, 'a> Moves<'w, 'a> {
         let missions = self.transport_missions()?;
         let search = missions.naval_search().map_err(str::to_owned)?;
         let (_, logical) = self.transport_owners(class, handle)?;
-        // FA1E90 selects roster-owner +1D8 for GetStrategicNavy, even when
-        // the logical owner used by the adjacency rule/risk is different.
+        // Select the roster owner for strategic navy, even when the logical owner
+        // used by adjacency and risk differs.
         let (roster, _) = self.transport_owners(class, handle)?;
         let navy = self.slot(roster)?;
         let content = self.assets.moves.as_ref().map_err(Clone::clone)?;
@@ -264,7 +264,7 @@ fn selected_unit(unit: Unit) -> (CommonClass, u64) {
     match unit {
         Unit::Army(handle) => (CommonClass::Army, handle),
         Unit::RailwayGun(handle) => (CommonClass::RailwayGun, handle),
-        Unit::Other => unreachable!("E67D80 filters other classes before their inputs"),
+        Unit::Other => unreachable!("selected movement filters other classes before their inputs"),
     }
 }
 impl law::MessageInputs for MessageInputs<'_, '_, '_> {
@@ -334,8 +334,8 @@ impl installed_content::unit_path::selected_transport_risk::Inputs for RiskInput
                     .ok_or("transport risk army orders group missing")?
                     .orders_group
             }
-            // The railway vf70 callback borrows its current CUnit+C0 only
-            // if the border-conflict gate reaches it.
+            // The railway callback borrows its current unit area only if the
+            // border-conflict gate reaches it.
             CommonClass::RailwayGun => 0,
         };
         let unit = Army {
@@ -492,7 +492,7 @@ impl AdmissionInputs for Inputs<'_, '_, '_> {
             .transport_unit(self.class, self.handle)
             .map_err(|_| "selected transport current-hour unit packet unavailable")?
             .coastal_template
-            .ok_or("selected transport real-template B8EBD0 predicate refused")
+            .ok_or("selected transport coastal-template predicate refused")
     }
     fn transfer(&mut self) -> law::Fact<Option<Transfer>> {
         match self
@@ -524,12 +524,12 @@ impl AdmissionInputs for Inputs<'_, '_, '_> {
     fn military_access(&mut self) -> law::Fact<bool> {
         self.moves
             .transport_access(self.class, self.handle, self.target)
-            .map_err(|_| "selected transport F3A90 current receiver access refused")
+            .map_err(|_| "selected transport current receiver access refused")
     }
     fn sea_route(&mut self) -> law::Fact<bool> {
         self.moves
             .transport_sea_route(self.class, self.handle, self.target)
-            .map_err(|_| "selected transport FA1CB0/FA1E90 native naval search inputs refused")
+            .map_err(|_| "selected transport naval search inputs refused")
     }
 }
 

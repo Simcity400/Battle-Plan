@@ -1,10 +1,11 @@
 use super::*;
 
-/// A refused tactic picture clears the sprite bound before it and hides
-/// the widget; an undeclared portrait sprite leaves the widget as it was
-/// (1422E6410). Both are named and counted.
+/// A refused tactic picture clears its earlier sprite and hides the widget.
+/// An undeclared portrait sprite preserves the widget. Both are named and counted.
 #[test]
 fn a_refused_portrait_or_tactic_picture_hides_the_earlier_sprite() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut out = Bindings::default();
     let has = |name: &str| name == "GFX_known" || name == "combat_tactic:tactic_a";
     sprite(&mut out.values, "leader", "GFX_earlier".into());
@@ -34,7 +35,7 @@ fn a_refused_portrait_or_tactic_picture_hides_the_earlier_sprite() {
     assert_eq!(
         refused,
         [
-            "Combat portrait leader: the content does not declare sprite GFX_missing, so the game's sprite setter (1422E6410) keeps the widget's previous image; the viewer shows the window's own sprite",
+            "Combat portrait leader: the content does not declare sprite GFX_missing, so the game's sprite setter keeps the widget's previous image; the viewer shows the window's own sprite",
             "Combat tactic picture tactic is hidden: the content lacks sprite combat_tactic:tactic_b for tactic b",
         ]
     );
@@ -108,6 +109,8 @@ fn exile_operand_refusal_hides_only_badge_and_keeps_commander_portrait() {
 
 #[test]
 fn null_tactic_keeps_authored_art_and_counters_the_real_defender() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut out = Bindings::default();
     for prefix in ["attacker", "defender"] {
         hide(&mut out.values, &format!("{prefix}_tactic"));

@@ -181,6 +181,8 @@ mod tests {
 
     #[test]
     fn wrap_copies_sum_without_losing_later_passes() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (total, parts) = pass_times(
             &["start", "terrain", "water", "terrain", "water", "post"],
             &[0, 1_000, 3_000, 7_000, 15_000, 31_000],
@@ -192,6 +194,8 @@ mod tests {
 
     #[test]
     fn each_group_ends_at_its_own_mark_and_never_wraps() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let labels = ["start", "shadow", "terrain", "post"];
         // A 10 ns period: 1,000 ticks are 0.01 ms.
         let (total, parts) = pass_times(&labels, &[1_000, 101_000, 91_000, 301_000], 10.0);

@@ -1,18 +1,17 @@
-//! Raw CArmy operands consumed by CCombatantEntry::Update (1415C7E00) and
-//! its modifier-icon builder (1415CA660). No displayed statistic is composed.
+//! Raw army operands for combatant updates and modifier icons.
+//! No displayed statistic is composed here.
 
 use crate::{Memory, carmy, cpdx_array::Array, csub_unit_definition, cunit, read, read_slice};
 
-/// Stat-block armour and piercing operands, consumed together by 1415CA660.
+/// Armour and piercing operands consumed together by modifier icons.
 pub const ARMOUR: usize = 0x298;
-/// Anti-air operand passed to 141297FD0 by 1415CA660.
+/// Anti-air operand consumed by modifier icons.
 pub const AIR_ATTACK: usize = 0x220;
-/// The division's `CNameGroupMember`: 140C72F00 returns its generated +0x60
-/// name, which committed 1415BA240 and reserve 1415BAC10 entries draw.
+/// Generated division-name member used by committed and reserve entries.
 pub const NAME_GROUP_MEMBER: usize = 0x340;
-/// 141298E00 groups attacking units with a positive value here into one direction.
+/// Positive values group attacking units into one direction.
 pub const DIRECTION_GROUP: usize = 0x4a8;
-/// Raw contextual keys used by width140C6E270 and reinforcement140C6D610.
+/// Raw contextual keys requested by width and reinforcement consumers.
 pub const CONTEXT_MODIFIER_KEYS: [u32; 3] = [
     crate::modifier_keys::LAND_REINFORCE_RATE,
     crate::modifier_keys::COMBAT_WIDTH_FACTOR,
@@ -35,14 +34,15 @@ pub struct ContextModifier {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ContextRow {
     pub template: u64,
-    /// Selected native context source:0 absent,1 leader+408,2 leader+4C8.
+    /// Selected context source: zero is absent, one uses the leader field at
+    /// +0x408, and two uses the leader field at +0x4c8.
     pub leader_modifier_kind: u8,
     pub country_modifiers: [ContextModifier; 3],
     pub leader_modifiers: [ContextModifier; 3],
     /// Per-key raw flags and feature selector, in CONTEXT_MODIFIER_KEYS order.
     pub modifier_metadata: [[u32; 2]; 3],
     pub feature_flags: u32,
-    /// Zero:null eligibility callback; one:authenticated1401AE190 flags getter.
+    /// Zero means a null eligibility callback; one means the authenticated flags getter.
     pub eligibility_callback: u8,
     /// Cached movement speed operand; reinforcement applies current terrain etc.
     pub base_speed: i64,
@@ -63,19 +63,18 @@ pub struct Row {
     /// key did not fit it; its bytes were counted for growth and the division
     /// is omitted this hour.
     pub naming: Option<crate::cname_group_member::Inputs>,
-    /// Committed strength bar multiplies raw [`carmy::STRENGTH_FACTOR`] (140C6F8B0).
+    /// Committed strength bars multiply the raw [`carmy::STRENGTH_FACTOR`].
     pub strength_combat_factor: i64,
-    /// Fuel icon 140C6F960: CArmy+620 and stat+120, raw fixed5; the define
-    /// comes from the content.
+    /// Fuel-icon raw fixed5 operands; its define comes from effective content.
     pub fuel_inputs: [i64; 2],
     /// Defense, breakthrough, hardness, soft attack, hard attack; all raw fixed5.
     pub stat_values: [i64; 5],
     pub armour: i64,
     pub piercing: i64,
     pub air_attack: i64,
-    /// Direct stat-block +D0 getter 140BEE1B0, used for initiative.
+    /// Direct stat-block initiative operand.
     pub reconnaissance: i64,
-    /// Initiative operand at stat+E0 used by reinforcement getter140C6D610.
+    /// Initiative operand used by reinforcement.
     pub initiative: i64,
     /// Full direct formation leader handle; zero if unit has no group/leader.
     pub commander: u64,
@@ -83,13 +82,9 @@ pub struct Row {
     pub scales: [i64; 4],
     /// Raw CUnit+0x4A8 latch word for the direction count.
     pub direction_group: i32,
-    /// The equipment category mask of the unit's stat block
-    /// (`*(CUnit+0x138)+0x5A8`), which CEquipmentTypeTrigger::vf23
-    /// (141390370) ANDs with a category trigger's mask (140F731B0) for each
-    /// unit of a CLandCombatant (+0x20). A division's block is its own
-    /// (CUnit ctor 140BE9620 -> 141003A50 zeroes it; update_active_stats
-    /// 140C7DEB0 -> CalculateStatsFromEquipment 140B8BBE0 leaves it), so it
-    /// is recorded as stored rather than derived from content.
+    /// Stored equipment-category mask of the unit stat block. Category triggers
+    /// intersect it with their mask for each combatant unit. A division owns its
+    /// block, so capture the stored value rather than derive it from content.
     pub categories: u64,
 }
 
@@ -163,8 +158,8 @@ pub fn capture_stats(
     result
 }
 
-/// 1415C7E00's original division operands, retaining worker growth through
-/// 1409B5640 naming without another name-header observation.
+/// Original division operands; workers grow name storage without another
+/// name-header observation.
 pub fn capture_stats_buffer(
     memory: &impl Memory,
     base: usize,
@@ -292,20 +287,18 @@ fn naming(
     )
 }
 
-/// `CReferencedDivisionTemplate+0x1F8`, the saved origin type: 0 master host,
-/// 1 subject, 2 exile. `CArmy::IsExiled` (140C79AC0) tests it for exactly 2.
+/// Saved template origin type: zero master host, one subject, two exile.
+/// Only exactly two means exiled.
 pub const TEMPLATE_ORIGIN_TYPE: usize = 0x1f8;
-/// The origin `CArmy::IsExiled` (140C79AC0) compares `+0x1F8` with.
+/// Template origin value selecting the exile path.
 pub const EXILE_ORIGIN: i32 = 2;
-/// `+0x1F4` is the template country when positive, else `+0x1EC` (140C770A0).
+/// Positive template country wins over the fallback country.
 pub const TEMPLATE_COUNTRY: usize = 0x1f4;
 pub const TEMPLATE_COUNTRY_FALLBACK: usize = 0x1ec;
-/// The occupier set 14129FAD0/14129FB60 search: a `CPdxArray<u32>` at the
-/// exile country's diplomacy status (`CCountry+0xF88`) plus 0x140.
+/// Raw country-reference occupier set in the exile country's diplomacy status.
 pub const OCCUPIER_SET: usize = 0x140;
 
-/// The operands 1415CA660's exile frames 14 and 15 read for one committed
-/// division whose template is exiled (origin [`EXILE_ORIGIN`]).
+/// Exile-frame operands for a committed division with [`EXILE_ORIGIN`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ExileRow {
     pub origin_type: i32,
@@ -320,7 +313,7 @@ pub struct ExileRow {
 /// One committed division's exile acquisition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Exile {
-    /// No template, or one whose origin is not [`EXILE_ORIGIN`] (140C79AC0).
+    /// No template, or a template whose origin differs from [`EXILE_ORIGIN`].
     Absent,
     /// Spans index the destination slice the caller supplied.
     Row(ExileRow),
@@ -378,8 +371,8 @@ pub fn capture_exile(
     capture_exile_buffer(memory, countries, pointer, crate::walk::Buffer::Fixed(tags))
 }
 
-/// 14129FAD0/14129FB60 consume these lists in full. Growing worker storage
-/// reserves from their original headers before copying either payload.
+/// Consumers use the full occupier lists. Workers reserve from original
+/// headers before copying either payload.
 pub fn capture_exile_buffer(
     memory: &impl Memory,
     countries: &crate::ccountry::Reader<'_, impl Memory>,
@@ -400,8 +393,8 @@ pub fn capture_exile_buffer(
         origin_type: word(TEMPLATE_ORIGIN_TYPE - TEMPLATE_COUNTRY_FALLBACK),
         ..ExileRow::default()
     };
-    // 140C79AC0: a nonnull template is exiled exactly when its origin is 2;
-    // every other value takes the ordinary-owner path.
+    // A nonnull template is exiled exactly when its origin is two; every
+    // other value takes the ordinary-owner path.
     if row.origin_type != EXILE_ORIGIN {
         return Ok(Exile::Absent);
     }
@@ -428,10 +421,9 @@ pub fn capture_exile_buffer(
             limit,
         )?
     };
-    // 14129FAD0/14129FB60 resolve the exile country (140BA56A0) and read its
-    // diplomacy status with no null test, so an exiled division's country
-    // always resolves in the game: a failure here is a read or identity
-    // fault and fails the division with its reason.
+    // An exiled division's country resolves before its diplomacy status is
+    // read in the game. Resolution or identity failure therefore fails the
+    // division with its reason, rather than supplying an empty set.
     let object = countries.resolve(country)?;
     let status = u64::from_le_bytes(bytes::<8>(
         memory,
@@ -478,8 +470,8 @@ pub fn capture_modifiers(
     )
 }
 
-/// 1415CA660 traverses the complete +170/+17C vector. Its acquired signed
-/// count alone sizes worker storage; a chosen modifier limit is not native.
+/// Traverse the complete modifier vector. Its acquired signed count sizes
+/// worker storage without a chosen modifier limit.
 pub fn capture_modifiers_buffer(
     memory: &impl Memory,
     base: usize,
@@ -741,8 +733,8 @@ fn template_width(
     let start = arena.len();
     let terms = (|| {
         crate::allocation::reserve_push_batch(arena, count).map_err(|_| "allocation failed")?;
-        // 140C6E270 visits every template +C0/+CC entry. A bounded copy batch
-        // controls stack use, not the native number of subunit occurrences.
+        // Visit every template subunit entry. Copy batches bound stack use,
+        // without limiting occurrence count.
         let mut packed = [0; 64 * 16];
         for first in (0..count).step_by(64) {
             let batch = (count - first).min(64);
@@ -794,8 +786,7 @@ pub(crate) struct TemplateWidth {
     terms: Result<crate::combat_sources::Run, &'static str>,
 }
 
-/// 140551820 searches the signed +C count with no chosen count limit. This
-/// existing raw census retains that full extent in64-entry copies.
+/// Search the complete signed modifier count in 64-entry copies.
 fn context_modifiers(
     memory: &impl Memory,
     pointer: usize,

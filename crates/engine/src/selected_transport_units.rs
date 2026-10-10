@@ -1,9 +1,9 @@
-//! Original-unit borrower for raw weight and B8EBD0 coastal predicate.
-//! Borrow selected_attack originals before retire_attack_native, then retire
-//! every pointer memo before the authentic callback finishes. No unit UI state.
-//! 140BEFA60 reads stat+2B8; 140B8EBD0 walks real composition+A8/+B4
-//! stride16 and tests member+5C0 OR 141007750's signed +5A4 ==2F9C.
-//! These are stored operands, never an infantry/support reconstruction.
+//! Original-unit borrower for raw weight and the coastal predicate.
+//! Borrow selected-attack originals, then retire pointer memos before the
+//! admitted callback ends. Weight is read from stat +0x2B8. The coastal
+//! predicate walks composition +0xA8/+0xB4, stride 16, and tests member
+//! +0x5C0 or signed +0x5A4 equal to 0x2F9C. These are stored operands
+//! rather than a reconstructed unit composition.
 
 use crate::{Memory, cpdx_array::Array, read, selected_attack::OriginalObservation};
 
@@ -12,7 +12,7 @@ const WEIGHT: usize = crate::csub_unit_definition::TRANSPORT_WEIGHT;
 // Composition-relative +A8/+B4 pairs, NOT wrapper-relative +A8 stride8.
 const GROUPED_MEMBERS: usize = 0xa8;
 const STRIDE: usize = 16;
-// B8EBD0 reads +5C0 first, then 141007750 compares signed32 +5A4 ==2F9C.
+// The coastal predicate reads +0x5C0 first, then tests signed +0x5A4 against 0x2F9C.
 const COASTAL_FLAG: usize = crate::csub_unit_definition::CAN_EXFILTRATE_FROM_COAST;
 const CATEGORY_TOKEN: usize = 0x5a4;
 const COASTAL_ALTERNATIVE_TOKEN: i32 = 0x2f9c;
@@ -254,10 +254,10 @@ pub enum Transfer {
     },
 }
 
-/// BEFC40 consumes the original CUnit+2F8 selector, then +24 and (only for
-/// zero status) E11870's saved +54 province ID. +24 is the signed combat
-/// reference count, saved by E14640 under token2916 `combat`. A refusal does not
-/// erase the authenticated identity. Never retry an original selector failure.
+/// Transport status uses the original unit +0x2F8 selector, then the signed
+/// combat reference count at +0x24. Only zero count reaches saved province
+/// ID +0x54. The count is saved with token 0x2916. Refusal retains identity;
+/// never retry an original selector failure.
 pub(crate) fn transfer(
     memory: &impl Memory,
     base: usize,

@@ -1277,7 +1277,7 @@ impl<M: Memory> Memory for Prefetched<'_, M> {
         outputs: &mut [&mut [u8]; N],
     ) -> usize {
         let completed = self.memory.copy_scattered(addresses, outputs);
-        // Recognize this reader's exact CCharacter::View field batch. Role
+        // Recognize this reader's exact character view field batch. Role
         // payload batches must not be interpreted as character map headers.
         if N == 7
             && completed == N

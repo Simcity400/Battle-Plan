@@ -1,10 +1,9 @@
-//! The per-country character object (CCountryCharacters at CCountry
-//! +0xff0): each country's appointed advisors (+0x58) in native order, with
-//! the advisor's character, idea token and slot, daily in its own slot (the
-//! advisor roles are read every hour, so also at that slot); each country's
-//! active-character records (+0x10, CountryCharacters) and retired ones
-//! (+0x28, CountryRetiredCharacters), hourly, in one walk; and the character
-//! manager's advisor idea-token set (AdvisorTokens), hourly.
+//! Each country's appointed advisors in native order, with the advisor's
+//! character, idea token and slot, daily in its own slot (the advisor roles
+//! are read every hour, so also at that slot); each country's active-character
+//! records (CountryCharacters) and retired ones (CountryRetiredCharacters),
+//! hourly, in one walk; and the character manager's advisor idea-token set
+//! (AdvisorTokens), hourly.
 use crate::{
     sampling::qpc,
     spooling::{table, table_iter, unavailable},

@@ -15,7 +15,7 @@ export function percentRuns(runs: readonly FixedRun[], decimals: number): Run[] 
   return runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour, value: fixedNumber(run.valueRaw, decimals) * 100, breakBefore: run.startsSegment }));
 }
 
-/** An exact fraction as percent with one decimal (the signed-off look);
+/** An exact fraction as percent with one decimal;
  * `signed` adds a plus to positive parts. */
 export function formatPercent(raw: string, decimals: number, signed = false): string {
   const text = formatFixed(BigInt(raw) * 100n, decimals, 1);
@@ -90,8 +90,8 @@ export function lineName(line: BreakdownLine): { name: string; recorded: boolean
 const abs = (raw: string) => { const value = BigInt(raw); return Number(value < 0n ? -value : value); };
 const tone = (raw: string): TooltipRow['tone'] => BigInt(raw) > 0n ? 'positive' : BigInt(raw) < 0n ? 'negative' : undefined;
 
-/** The breakdown of one measure as tooltip rows, as signed off (mock-up
- * politics-1): its name as a heading, each nonzero term signed, the modifier
+/** The breakdown of one measure as tooltip rows:
+ * its name as a heading, each nonzero term signed, the modifier
  * term replaced by its tree lines (the game's order), whatever the lines do not
  * add up to as its own row, any limit the range imposed, and the total.
  * `recorded` tells whether a row shows the game's own text. */

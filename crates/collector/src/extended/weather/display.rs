@@ -16,7 +16,7 @@ pub(super) fn observe_capacity(
     failures: &crate::country_scale::DemandFailures,
 ) -> Result<usize, &'static str> {
     failures.observe((|| {
-        // 140F07A00/140F0D6F0 quarter the native map dimensions. The
+        // The display grid uses a quarter of the map dimensions. The
         // retained last row/column occupies width+height-1 bytes per plane.
         let [width, height] = cweather_manager::display_grid_size(memory, base)?;
         let bytes = (width as usize)

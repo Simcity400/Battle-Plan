@@ -107,6 +107,14 @@ impl Capacities {
     }
 }
 
+fn layout_buffer_len() -> usize {
+    #[cfg(test)]
+    if !engine::executable_tables::is_initialized() {
+        return 0;
+    }
+    engine::fixed_layout::longest_name()
+}
+
 pub struct Captured {
     rows: CaptureRows<railway_gun_counter_inputs::Row>,
     combat_references: Arena<engine::cunit::MapCombatReference>,
@@ -118,6 +126,7 @@ pub struct Captured {
     named_bonuses: Vec<usize>,
     required_named_bonuses: usize,
     fixed_layout: Option<engine::fixed_layout::Report>,
+    fixed_layout_buffer: Vec<u8>,
     supply_origins: Arena<engine::cunit_supply_inputs::Origin>,
     /// First-combat answers for this capture's guns. The gun job runs apart from the
     /// division movement packet, so it keeps its own memo, sized off-thread.
@@ -126,17 +135,29 @@ pub struct Captured {
 impl Captured {
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
-        Self::with_capacities(&Capacities {
-            rows: 0,
-            paths: 0,
-            names: 0,
-            named_bonuses: 0,
-            supply_origins: 0,
-            combat_references: 0,
-        })
+        Self::with_capacities_and_layout(
+            &Capacities {
+                rows: 0,
+                paths: 0,
+                names: 0,
+                named_bonuses: 0,
+                supply_origins: 0,
+                combat_references: 0,
+            },
+            false,
+        )
     }
 
     pub fn with_capacities(capacity: &Capacities) -> Self {
+        Self::with_capacities_and_layout(capacity, true)
+    }
+
+    fn with_capacities_and_layout(capacity: &Capacities, prepare_layout: bool) -> Self {
+        let layout_bytes = if prepare_layout {
+            layout_buffer_len()
+        } else {
+            0
+        };
         Self {
             rows: CaptureRows::new(capacity.rows),
             combat_references: Arena::new(capacity.combat_references),
@@ -148,6 +169,7 @@ impl Captured {
             named_bonuses: owned_vec(default_vec(capacity.named_bonuses)),
             required_named_bonuses: 0,
             fixed_layout: None,
+            fixed_layout_buffer: owned_vec(default_vec(layout_bytes)),
             supply_origins: Arena::new(capacity.supply_origins),
             combats: FirstCombatMemo::try_new(capacity.rows)
                 .map_err(crate::allocation::io)
@@ -177,6 +199,7 @@ impl Captured {
             + self.fresh_observations.capacity()
                 * std::mem::size_of::<railway_gun_counter_inputs::FreshEtaObservations>()
             + self.named_bonuses.capacity() * std::mem::size_of::<usize>()
+            + self.fixed_layout_buffer.capacity()
             + self.supply_origins.allocated_bytes()
     }
 
@@ -191,6 +214,7 @@ impl Captured {
         grow_vec(&mut self.fresh_observations, capacity.rows);
         grow_capacity(&mut capacity.named_bonuses, self.required_named_bonuses);
         grow_vec(&mut self.named_bonuses, capacity.named_bonuses);
+        grow_vec(&mut self.fixed_layout_buffer, layout_buffer_len());
         self.supply_origins.grow(&mut capacity.supply_origins);
         let _ = self
             .combats
@@ -245,6 +269,7 @@ impl Captured {
                 required: 0,
             },
             layout: &mut self.fixed_layout,
+            layout_buffer: &mut self.fixed_layout_buffer,
             supply_origins: Buffer::Growing(&mut self.supply_origins.first),
             supply_origins_len: 0,
             required_supply_origins: 0,

@@ -192,7 +192,7 @@ fn compare_ships(
     }
     report.compared("SunkShips", row.entries.len().min(saved.sunk_ships.len()));
     report.limitation(
-        "class definition name bytes are not serialized by C1F090; the independently recorded lexical dictionary verifies the class token spelling",
+        "class definition name bytes are not serialized by the ship writer; the independently recorded lexical dictionary verifies the class token spelling",
         "SunkShips.class_name / attribution_class_name",
     );
     Ok(())
@@ -216,11 +216,11 @@ fn compare_ship(
     ] {
         if let Some(expected) = expected {
             let field = format!("{label}.{field}");
-            // C1F090 names use ADF40 -> AF5A0, which consumes c_str.
+            // Ship names use quoted text serialization, which consumes c_str.
             let actual = serialized_text(report, &field, actual);
             equal(report, field, actual, expected.as_slice());
         } else {
-            report.limitation("C1F090 can omit name bytes under its writer mode; absence does not prove an empty native string", format!("{label}.{field}"));
+            report.limitation("the ship writer can omit name bytes under its writer mode; absence does not prove an empty native string", format!("{label}.{field}"));
         }
     }
     equal(
@@ -277,8 +277,8 @@ fn compare_ship(
                 "sunk ship class uses the fixed15 formatter token, not a directly serialized lexical spelling",
             ));
         }
-        // C1F090 writes both class tokens unconditionally through ADCE0.
-        // AAC50 passes the lexical c_str to stream+30, but the concrete sink's
+        // The ship writer emits both class tokens unconditionally through the token writer.
+        // The token writer passes the lexical c_str to the stream, but the concrete sink's
         // termination behavior is not proved by the retained formatter alone.
         let field = format!("{label}.{field}");
         if literal.contains(&0) {
@@ -302,7 +302,7 @@ fn compare_ship(
         if let Some(expected) = expected {
             equal(report, format!("{label}.{field}"), actual, expected);
         } else {
-            report.limitation("C1F090 omits null or unresolved equipment/source references; absence does not verify their raw native words", format!("{label}.{field}"));
+            report.limitation("the ship writer omits null or unresolved equipment/source references; absence does not verify their raw native words", format!("{label}.{field}"));
         }
     }
     let province = flag(actual.province_present)?.then_some(actual.province);
@@ -416,7 +416,7 @@ fn compare_results(
         report.difference(format!("naval result {id}"), "present", "absent");
     }
     report.compared("NavalResults", compared);
-    report.limitation("CD73D0 does not serialize winner/loser side selectors, subtype or readiness; captured raw fields are not verified by inferred battle outcomes", "NavalResults");
+    report.limitation("the naval-result writer does not serialize winner/loser side selectors, subtype or readiness; captured raw fields are not verified by inferred battle outcomes", "NavalResults");
     report.limitation(
         "the province bucket order is not serialized; only its density is checked",
         "NavalResults.province_ordinal",
@@ -478,7 +478,7 @@ fn compare_members(
                         sunk_by.len() as u64,
                     );
                 } else {
-                    report.limitation("1962D80 omits cached_info.sunk_by when empty or suppressed by writer mode; absence does not verify the raw snapshot string length", label);
+                    report.limitation("the cached-ship writer omits cached_info.sunk_by when empty or suppressed by writer mode; absence does not verify the raw snapshot string length", label);
                 }
             }
         }

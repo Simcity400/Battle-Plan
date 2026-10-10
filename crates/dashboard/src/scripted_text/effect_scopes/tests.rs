@@ -14,6 +14,8 @@ fn frame() -> DecodedFrame {
 
 #[test]
 fn template_fallback_uses_recorded_language_and_template_country() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "",
         " force:0 \"Default Force\"\n GER_force:0 \"Intervention Force\"\n",
@@ -69,6 +71,8 @@ fn template_fallback_uses_recorded_language_and_template_country() {
 
 #[test]
 fn entry_conditions_use_deep_links_and_description_variable_session() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "entry = { name = Deep text = { trigger = { FROM.FROM = { tag = SOV } check_variable = { temp_var:x = 7 } } localization_key = YES } text = { localization_key = NO } }",
         " YES:0 \"yes\"\n NO:0 \"no\"\n",
@@ -106,6 +110,8 @@ fn entry_conditions_use_deep_links_and_description_variable_session() {
 
 #[test]
 fn text_target_priority_matches_trigger_context_and_saved_only_predicate() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue("", "");
     let content = catalogue.scripted_content().unwrap();
     content.set_synthetic_environment(Default::default());
@@ -135,6 +141,8 @@ fn text_target_priority_matches_trigger_context_and_saved_only_predicate() {
 
 #[test]
 fn balance_nested_description_inherits_the_active_variable_session() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/test.lua",

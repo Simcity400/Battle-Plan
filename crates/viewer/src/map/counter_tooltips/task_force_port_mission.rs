@@ -1,11 +1,8 @@
-//! Port-counter strike-force status: 14197AFE0 -> 14197A6D0 in build
-//! 1.19.2.0.a729, executable SHA256
-//! 870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad.
+//! Port-counter strike-force status.
 //!
-//! 141976180 builds combat power from genuine ship operands; 1419765B0 scores it,
-//! 141976A80 decides exact readiness, and 141976450 uses 14197A0E0's deterministic
-//! range for coarse intel. Products wrap at 64 bits before truncating division.
-//! Neither unit selection nor a client tooltip/animation cache is an input.
+//! Ship operands establish combat power, score and readiness. Coarse intel uses
+//! a deterministic endpoint range. Products wrap at 64 bits before truncating
+//! division. Unit selection and client tooltip or animation caches are not inputs.
 
 use super::*;
 use replay::rows::{
@@ -18,7 +15,7 @@ const DIVISION_REFUSED: i64 = 0xffff_ffff;
 
 #[derive(Clone, Debug)]
 struct Guns {
-    /// Native indices: heavy 0, torpedo 1, light 2 (14195F4B0).
+    /// Native indices: heavy 0, torpedo 1, light 2.
     cooldown: [i64; 3],
     minimum: i64,
 }
@@ -56,7 +53,7 @@ impl Defines {
                 .expect("three slots admitted");
             Ok::<_, io::Error>(Guns {
                 cooldown,
-                // Registry loader 14093F0A0 applies this lower bound.
+                // Apply the registry's lower bound.
                 minimum: d.fixed5("NNavy", "MIN_GUN_COOLDOWN")?.max(1_000),
             })
         })()
@@ -75,7 +72,7 @@ impl Defines {
                 *out = d.fixed5("NNavy", key)?;
             }
             Ok::<_, io::Error>(ScoreDefines {
-                // Registry loader 140953D40, unlike the six unclamped weights.
+                // This registry value clamps; the six weights do not.
                 screening_ratio: d
                     .fixed5("NNavy", "SCREEN_RATIO_FOR_FULL_SCREENING_FOR_CAPITALS")
                     .map(|value| value.max(1_000))
@@ -87,7 +84,7 @@ impl Defines {
         Self {
             guns,
             score,
-            // Integer loaders 14093A840 / 14093B540 clamp to 0..100.
+            // Integer content values clamp to 0..100.
             estimate_width: [
                 "INTEL_LEVEL_LOW_STRENGTH_ESTIMATE_HALF_RANGE_PERCENTAGE",
                 "INTEL_LEVEL_MEDIUM_STRENGTH_ESTIMATE_HALF_RANGE_PERCENTAGE",
@@ -97,7 +94,7 @@ impl Defines {
                     .map(|v| v.clamp(0, 100))
                     .map_err(|e| e.to_string())
             }),
-            // Fixed loaders 14089AE60 / 14089A7C0 / 14089AB10 clamp each
+            // Fixed-point content values clamp each
             // independently; do not sort thresholds authored out of order.
             likelihood: [
                 "NAVAL_STRIKE_FORCE_ATTACK_LIKELYHOOD_THR_VERY_LIKELY",
@@ -139,8 +136,8 @@ fn rate(cooldown: i64) -> i64 {
     }
 }
 
-/// Only members read by 1419765B0. The aggregate's +0/+38/+40/+48/+70/+78
-/// are never consumed by either reached readiness chain and are not recorded.
+/// Combat-power aggregate operands used by the readiness score. Unread fields
+/// do not establish a substitute for a missing reached operand.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Power {
     ships: i32,
@@ -226,8 +223,8 @@ fn mix(mut value: u32) -> u32 {
     ((value >> 8) ^ value) & 0x7fff_ffff
 }
 
-/// 14197A0E0: deterministic endpoint range, seeded by the target's signed
-/// reference id (+1C), with native overlapping 31-bit draws packed at bit 30.
+/// Deterministic endpoint range, seeded by the target's signed reference id,
+/// with overlapping 31-bit draws packed at bit 30.
 fn fuzzy_range(base: i64, width: i32, seed: i32) -> (i64, i64) {
     let seed = seed as u32;
     let mut a = seed.wrapping_mul(0x7eb8_da44);
@@ -372,7 +369,7 @@ fn probability_status(probability: i64, d: &Defines) -> Result<(Status, bool), S
     ))
 }
 
-/// 140FA3080 walks target ships first, then the stored exclusion list. A
+/// Walk target ships first, then the stored exclusion list. A
 /// decisive match does not consume later faults; an earlier fault prevents a
 /// later match from being considered. The comparison is exact native bytes.
 fn permits_types<'a>(
@@ -753,7 +750,7 @@ pub(super) fn append(context: &Context<'_>, target: u64, visibility: u16, out: &
     }
 }
 
-/// 14197C4FB selects the first matching searching entry, preserving order and
+/// Select the first matching searching entry, preserving order and
 /// decisive prefixes. Native dereferences a null/dangling searcher before the
 /// ownership test; that is a named fault boundary, never an entry to skip.
 fn searcher(context: &Context<'_>, first: u64) -> Result<Option<u64>, String> {
@@ -780,14 +777,14 @@ fn searcher(context: &Context<'_>, first: u64) -> Result<Option<u64>, String> {
             .ok_or_else(|| format!("searching reference slot {ordinal} is unreadable"))?;
         if reference == 0 {
             return Err(format!(
-                "native searching slot {ordinal} reference {reference} is null or dangling (14197C53A)"
+                "native searching slot {ordinal} reference {reference} is null or dangling"
             ));
         }
         match entry.resolves {
             Some(true) => (),
             Some(false) => {
                 return Err(format!(
-                    "native searching slot {ordinal} reference {reference} is null or dangling (14197C53A)"
+                    "native searching slot {ordinal} reference {reference} is null or dangling"
                 ));
             }
             None => {

@@ -1,4 +1,4 @@
-//! Current numerical sources of F97BF0 radar, reciprocal navy intel and weather.
+//! Current numerical radar, reciprocal navy intel and weather sources.
 //! Complete original arrays are factorized by owner and region. No selected
 //! country pair, native pointer or carried sliced-intel observation is stored.
 use super::*;
@@ -25,7 +25,7 @@ value_struct!(TransportSpottingContext {
 pub struct TransportSpottingOwner {
     pub owner_slot: u32,
     pub owner_raw_id: u32,
-    /// CEE3A0's signed target +484 gate, independently observed this hour.
+    /// Signed target owned-state-count gate, independently observed this hour.
     pub target_owned_states: Option<i32>,
     pub radar: Option<TransportRadarCounts>,
     pub navy_intel: Option<TransportNavyIntel>,
@@ -37,7 +37,7 @@ value_struct!(TransportSpottingOwner {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TransportRadarCounts {
-    /// 141091B70 tests equality to zero, not signed nonpositive.
+    /// The radar gate tests equality to zero, not signed nonpositive.
     pub signed_count: i32,
     /// None refuses the original body, including unsupported negative counts.
     pub counts: Option<Vec<i32>>,
@@ -66,7 +66,7 @@ pub struct TransportSpottingRegion {
     pub runtime_slot: Option<i32>,
     /// Stored signed region +24, from the same original +18 header as sample.
     pub signed_province_count: Option<i32>,
-    /// F96470's original (hour-43800000)%count CProvince*, authenticated by ID.
+    /// Province at `(hour - 43800000) % count`, authenticated by ID.
     pub sampled_province: Option<u32>,
     /// None is refusal; Some(None) is native null; Some(Some(v)) is effective2A.
     pub weather_detection: Option<Option<i64>>,

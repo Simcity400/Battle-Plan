@@ -1,4 +1,4 @@
-//! Numeric branch of CTextBase::ProcessString@1412B9CA0 (1412BA1F0).
+//! Numeric scripted-localisation expressions.
 
 use super::*;
 
@@ -16,7 +16,7 @@ impl<'a> ScriptedText<'a> {
             .map_or((expression, None), |(operand, format)| {
                 (operand, Some(format.as_bytes()))
             });
-        // Localisation stores authored `@` as its flag control; 1412BA1F0
+        // Localisation stores authored `@` as its flag control; evaluation
         // replaces the first such byte before the scoped-variable reader.
         let normalized;
         let operand = if operand.contains('\u{12}') {
@@ -26,11 +26,11 @@ impl<'a> ScriptedText<'a> {
             operand
         };
         let within = |why| format!("[?{expression}]: {why}");
-        // EvaluateVariable first intercepts flag-age operands (1410CEA30).
+        // Evaluation first intercepts flag-age operands.
         // They are not ordinary variables even when the store has that key.
         if operand.ends_with(":days") || operand.ends_with(":days_left") {
             return Err(within(
-                "flag-age variable localisation (1410CEA30) is not reproduced".into(),
+                "flag-age variable localisation is not reproduced".into(),
             ));
         }
         admission::admit(self, operand, scopes, start).map_err(within)?;
@@ -113,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn reached_numeric_directives_share_native_fixed5_formatting() {
+    fn reached_numeric_directives_share_fixed5_formatting() {
         let (catalogue, _folder, frame) = fixture("", " TARGET:0 \"[?target@ROOT|0]\"\n");
         let text = ScriptedText::new(
             &frame,
@@ -185,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn random_selection_keeps_native_literal_numeric_text() {
+    fn random_selection_keeps_literal_numeric_text() {
         let (catalogue, _folder, frame) = fixture(
             r#"
             defined_text = { name = Roll text = { random_list = {
@@ -267,7 +267,7 @@ mod tests {
             assert!(
                 text.expand("[?flag:days|0]")
                     .unwrap_err()
-                    .contains("1410CEA30")
+                    .contains("flag-age variable localisation")
             );
         }
         *frame.tables[TableId::ScriptVariables.index()] = TableView::Unavailable {

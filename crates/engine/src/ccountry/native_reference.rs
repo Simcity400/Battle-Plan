@@ -1,13 +1,12 @@
-//! Pass-owned observations for `140BA56A0` / `140BA6240` country references.
+//! Pass-owned country-reference observations. Raw zero and a readable nonzero
+//! link to zero select authenticated physical slot zero. Positive slots retain
+//! every ordinary Reader::at check. Paired country lookup uses the same rules
+//! without changing the positive-only Reader API.
 //!
-//! Raw zero and a readable nonzero link to zero select the authenticated
-//! physical slot zero. Positive slots retain every ordinary `Reader::at`
-//! identity check. The locally paired lookup in `140E174F0` -> `140BA5580`
-//! has the same law. This does not change the positive-only `Reader` API.
-//! Storage is prepared off acquisition and reset once for the held pass;
-//! worker acquisitions may grow from original headers and distinct queries.
-//! borrowed contexts never retain a Reader or source across worker loans.
-//! Source fixtures are provided; live/save/performance acceptance is separate.
+//! Prepare storage off acquisition and reset it once for the held pass. Workers
+//! may grow from original headers and distinct queries. Borrowed contexts never
+//! retain Reader or source across worker loans. Synthetic coverage is separate
+//! from live, save and performance acceptance.
 
 use std::{
     cell::{Cell, RefCell},
@@ -338,8 +337,8 @@ impl<'a, M: Memory> NativeReferenceContext<'a, M> {
         if let Ok([_, links]) = result {
             self.memo.link_required.set(links.count as usize);
         }
-        // 140BA6240 indexes the full original +340/+34C link domain. Grow
-        // before resolving any link, retaining the observed headers on failure.
+        // Resolve the full original link domain. Grow storage before any link
+        // resolution and retain observed headers on failure.
         let result = result.and_then(|arrays| {
             if self.memo.worker_growth {
                 let mut links = self.memo.links.borrow_mut();

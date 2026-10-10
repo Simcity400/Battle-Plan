@@ -1,14 +1,11 @@
-//! CTaskForce vector summary@140D58A90, called by the class-one counter.
-//! The coarse arm is separate (1418C11BA); neither arm reads client selection.
+//! Task-force vector summaries for detailed and coarse counters.
+//! Neither summary reads client selection.
 //!
-//! Ship+0x88 is the copied sub-unit lexer token, not a category or history ID.
-//! CopyAssign@140B87080 retains definition+0x18/+0x58C (ship+0x98/+0x60C).
-//! Country clone@140CF9AD0, rebuild@141005F00, load@140C2CE60 and refit@140C24460
-//! copy that identity. Tech/deployment helpers@141929CC0/141929BF0 and ship
-//! recalculation@140C2D950 change stats, not identity. The recorded signed index
-//! selects that original spelling from SubUnits, including a later rejected-name
-//! definition unlocked as a country-local clone. A lexer token cannot distinguish
-//! those definitions. The copied null definition has index zero and empty name.
+//! Recorded ship identity retains the original sub-unit spelling across cloning,
+//! loading, refitting and stat recalculation. Its signed index selects the original
+//! `SubUnits` definition, including country-local clones of rejected-name definitions.
+//! A lexer token alone cannot distinguish those definitions. A null definition has
+//! index zero and an empty name.
 
 use super::*;
 use crate::map::{counter_order, naval_count_approx};
@@ -27,7 +24,7 @@ fn members<'a>(context: &Context<'a>, ids: &[u64]) -> Result<Vec<Member<'a>>, St
         .complete::<tables::TaskForces>()
         .map_err(|e| e.to_string())?;
     ids.iter()
-        // 1418C24CC/1418C119C append only resolved task-force references.
+        // Append only resolved task-force references.
         // Complete absence establishes a dangling reference; an incomplete
         // census above cannot. The caller separately admits its first member.
         .filter_map(|&id| {
@@ -239,7 +236,7 @@ fn ship_type(sub_units: &SubUnits, model: &ShipModelRow) -> Result<(i32, String)
 fn type_database(sub_units: &SubUnits) -> Result<&SubUnits, String> {
     if sub_units.registered().any(|name| name.contains(&0)) {
         // The existing database reader retains whole authored keys whereas
-        // 140AB4070 registers C strings. Such keys can change later indices.
+        // Register C strings. Such keys can change later indices.
         return Err("sub-unit registration with embedded-NUL keys is unsupported".into());
     }
     Ok(sub_units)
@@ -302,7 +299,7 @@ fn type_range(
     if visibility >= 250 {
         return (count, count);
     }
-    // 140D59361 tests raw bit 6 only, unlike the header's carrier-inclusive count.
+    // Test raw bit 6 only, unlike the header's carrier-inclusive count.
     let minimum = if flags & counter_order::CAPITAL_FLAG != 0 {
         if total_ships > 3 {
             defines.medium_min_capitals
@@ -337,8 +334,7 @@ fn composition(
 ) -> Result<String, String> {
     let mut ordered = groups.values().collect::<Vec<_>>();
     let mut missing = None;
-    // Same MSVC insertion/runs32/buffered-merge instantiation as 140D4E190,
-    // 140D4D2E0/140D4E5F0. In particular null/null variants reverse ties.
+    // The stable insertion and buffered-merge sort reverses ties between null variants.
     crate::map::msvc_stable_sort::sort(&mut ordered, |a, b| {
         if missing.is_some() {
             return false;
@@ -347,7 +343,7 @@ fn composition(
             Ok(less) => less,
             Err(reason) => {
                 missing = Some(format!(
-                    "ship types {} and {} 140BC88A0 comparison: {reason}",
+                    "ship types {} and {} comparison: {reason}",
                     a.name, b.name
                 ));
                 false
@@ -800,6 +796,8 @@ mod tests {
 
     #[test]
     fn copied_type_index_distinguishes_later_rejected_names_and_preserves_original_spelling() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut units = SubUnits::default();
         units.read(
             b"sub_units = { Custom_Destroyer = {} 1rejected = {} }",
@@ -844,6 +842,8 @@ mod tests {
 
     #[test]
     fn nul_declaration_keys_refuse_index_derivation_instead_of_selecting_a_later_prefix() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut units = SubUnits::default();
         units.read(
             b"sub_units = { \"custom\0tail\" = {} custom = {} }",
@@ -948,12 +948,14 @@ mod tests {
             (2, group(&b, "second", 1, 1, 1)),
         ]);
         let reason = composition(&groups, Err("unreached equipment content")).unwrap_err();
-        assert!(reason.contains("140BC88A0"));
+        assert!(reason.contains("comparison"));
         assert!(reason.contains("first") && reason.contains("second"));
     }
 
     #[test]
     fn current_variant_depth_orders_exact_modded_composition() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let content = crate::map::model_selection::Content::from_test_documents(&[br"
             equipments = {
                 mod_root = { is_archetype = yes type = destroyer }

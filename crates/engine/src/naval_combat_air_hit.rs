@@ -1,8 +1,7 @@
-//! NNavalCombatHit::SAirHit retained aircraft-loss entry. Constructor1415b3880,
-//! writer1415b3be0 and tooltip1415b43f0 establish the complete 0x18-byte layout.
+//! Retained naval aircraft-loss entry with a complete 0x18-byte layout.
 use crate::{Memory, cequipment_variant, cnaval_combatant::field};
 
-/// Constructor instruction1415b3886.
+/// Aircraft-loss entry primary vtable.
 pub const VTABLE_RVA: usize = 0x029c_7198;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

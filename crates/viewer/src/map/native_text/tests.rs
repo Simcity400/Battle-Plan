@@ -51,7 +51,7 @@ fn laid(text: &str, limits: Limits) -> (String, Vec<i32>) {
     (laid.text.iter().collect(), laid.widths)
 }
 
-///1422894D0 distinguishes an empty parsed icon name from the nonempty frame selector |1.
+/// The game distinguishes an empty parsed icon name from the nonempty frame selector |1.
 #[test]
 fn empty_inline_icon_name_skips_even_a_defined_empty_stem() {
     let calls = std::cell::Cell::new(0);
@@ -116,8 +116,8 @@ fn lines_break_as_the_game_breaks_them() {
     assert_eq!(laid("AV\nx", limits(100)), ("AV\nx".into(), vec![12, 7]));
 }
 
-/// Tooltip prewrap's final flag copies literal leading spaces (`1422861E0`,
-/// `142283E90`, `142287190`). Hard LF and formatting prefixes retain their own text.
+/// Tooltip prewrap preserves literal leading spaces after soft line feeds.
+/// Hard line feeds and formatting prefixes retain their own text.
 #[test]
 fn tooltip_soft_wrap_preserves_literal_leading_spaces() {
     let indent = Limits {
@@ -155,7 +155,7 @@ fn tooltip_soft_wrap_preserves_literal_leading_spaces() {
     );
 }
 
-/// `142285B10` reads the space through the normal descriptor lookup: its `?`
+/// Read the space through the normal descriptor lookup: its `?`
 /// fallback supplies the advance, or a missing descriptor leaves advance zero.
 #[test]
 fn tooltip_indent_uses_space_descriptor_fallback() {
@@ -259,7 +259,7 @@ fn special_sequences_have_their_widths() {
     );
 }
 
-/// `text_icon_lookup@14162E880`: `GFX_` and the stem, then the bare stem; the suffix's
+/// `GFX_` and the stem, then the bare stem; the suffix's
 /// frame index.
 #[test]
 fn icon_names_split_at_the_first_bar() {
@@ -341,7 +341,7 @@ fn the_draw_colours_and_places_glyphs() {
     assert_eq!(glyph(6).1, [105, 25]);
 }
 
-/// An icon's frame quad (`14162EFE0`): the texture's width over its frames by its height,
+/// An icon's frame quad : the texture's width over its frames by its height,
 /// the frame's `u` span clamped above at 1 and not below; a flag 10 by 7 five below the
 /// glyph line, 12 on; an undefined icon takes nothing; currency reads uninitialised memory.
 #[test]
@@ -405,7 +405,10 @@ fn icons_and_flags_draw_where_the_font_puts_them() {
         start: &|_, _| 0,
     };
     let error = draw(&Mono, &sprite, &laid, true, &placement, &colors).unwrap_err();
-    assert!(error.contains("HEAP_ZERO_MEMORY"), "{error}");
+    assert_eq!(
+        error,
+        "shows a currency or number sprite (0x14, 0x1A), whose record reads an uninitialised allocation: the game reads uninitialised memory"
+    );
 }
 
 #[test]

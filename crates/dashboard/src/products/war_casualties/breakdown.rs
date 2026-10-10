@@ -1,6 +1,6 @@
-//! Exact known losses, grouped by the same native viewpoint episodes as Wars.
-//! CWarRelation::AddCasualties@140D04B50 combines land, sea and air losses.
-//! Its unknown fields have no enemy or domain; neither is invented here.
+//! Exact known losses, grouped by the same viewpoint episodes as Wars.
+//! Casualty totals combine land, sea and air losses. Their unknown fields
+//! have no enemy or domain; neither is invented here.
 
 use super::*;
 use crate::products::wars::{WarName, WarRelationKey, Wars, WarsParams, WarsReply};

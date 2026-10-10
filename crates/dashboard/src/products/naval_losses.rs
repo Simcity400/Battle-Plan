@@ -225,8 +225,8 @@ fn value(
         if params.period == NavalPeriod::Running {
             at(&events.convoy_running, hour)
         } else {
-            // Writer@1401CAE90 keeps the loss month, but the bucket's amount is
-            // known only from its supplying read. Never backfill a later read.
+            // The loss month is retained, but the bucket's amount is known only
+            // from its supplying read. Never backfill a later read.
             bucket
                 .and_then(|m| events.convoy_months.get(&m))
                 .map_or(0, |points| at(points, hour))
@@ -296,8 +296,8 @@ fn reply_with_histories(
         }) else {
             continue;
         };
-        // Positive native retention is measured in whole years (1401D7560),
-        // so the first read's retained vector covers its entire current month.
+        // Positive retention is measured in whole years, so the first read's
+        // retained vector covers its entire current month.
         let from = if params.period == NavalPeriod::Month {
             month(first).and_then(month_start).unwrap_or(first)
         } else {

@@ -1,10 +1,7 @@
-//! The recorded operands of the triggers a character scope evaluates:
-//! `tag` (`CTagTrigger::Evaluate@1403DCDF0`), `skill`
-//! (`CSkillTrigger::GetValue@140475170`) and `has_trait`
-//! (`CHasTraitTrigger::Evaluate@1403D7D20`). The tactic evaluator and the
-//! shared trigger evaluator ([`crate::triggers`]) both read a character
-//! through these tables: its unit leader (`CCharacter::GetUnitLeader@140F8A840`,
-//! UnitLeaders or CharacterOperatives), its retired records
+//! The recorded operands of the `tag`, `skill` and `has_trait` triggers in
+//! a character scope. The tactic evaluator and the shared trigger evaluator
+//! ([`crate::triggers`]) both read a character through these tables: its unit
+//! leader (UnitLeaders or CharacterOperatives), its retired records
 //! (CountryRetiredCharacters) and its roles' traits (CharacterRoleTraits).
 
 use crate::state_resources::Links;
@@ -30,9 +27,8 @@ pub struct Tables<'a> {
     retired: Result<&'a [CountryCharacterRow], String>,
 }
 
-/// GetUnitLeader (140F8A840) of a character: the unit leader at
-/// CCharacter+0xA8 (UnitLeaders), else the one its reference at +0xC8
-/// resolves to (CharacterOperatives).
+/// A character's direct unit leader (UnitLeaders), else its resolved
+/// referenced leader (CharacterOperatives).
 #[derive(Clone, Copy)]
 pub enum UnitLeader<'a> {
     Direct(&'a UnitLeaderRow),
@@ -40,7 +36,7 @@ pub enum UnitLeader<'a> {
 }
 
 impl UnitLeader<'_> {
-    /// CUnitLeader+0xE7C; 3 is an operative.
+    /// The leader category; 3 is an operative.
     pub fn category(self) -> i32 {
         match self {
             Self::Direct(row) => row.category,
@@ -48,7 +44,7 @@ impl UnitLeader<'_> {
         }
     }
 
-    /// CUnitLeader+0x120, the raw country reference.
+    /// The raw country reference.
     pub fn owner(self) -> u32 {
         match self {
             Self::Direct(row) => row.owner,
@@ -56,18 +52,17 @@ impl UnitLeader<'_> {
         }
     }
 
-    /// CUnitLeader::GetSkillLevel (140C0A4A0), which dereferences the skill
-    /// object (+0xE60).
+    /// The skill level, which requires a recorded skill object.
     pub fn skill(self) -> Evaluation<i32> {
         match self {
             Self::Direct(row) if row.skill_status == 0 => Err(format!(
-                "unit leader {} has no skill object (UnitLeaders skill_status 0), which GetSkillLevel (140C0A4A0) dereferences",
+                "unit leader {} has no skill object (UnitLeaders skill_status 0), which the skill read requires",
                 row.id
             )),
             Self::Direct(row) => Ok(row.skill_level),
             Self::Referenced(row) => row.skill_level.ok_or_else(|| {
                 format!(
-                    "character {}'s referenced unit leader has no skill object, which GetSkillLevel (140C0A4A0) dereferences",
+                    "character {}'s referenced unit leader has no skill object, which the skill read requires",
                     row.character
                 )
             }),
@@ -75,10 +70,8 @@ impl UnitLeader<'_> {
     }
 }
 
-/// What a character's `has_trait` looks names up in: the unit-leader
-/// traits (FindTraitByName 140ADB590), the country-leader traits
-/// (FindCountryLeaderTraitByName 140712D30) and the lexer (1424A7060) for
-/// a scientist trait.
+/// The name sources for a character's `has_trait`: unit-leader traits,
+/// country-leader traits and the lexer for a scientist trait.
 pub struct TraitNames<'a> {
     pub units: &'a Traits,
     pub country_leaders: Result<&'a LeaderTraits, String>,
@@ -133,17 +126,16 @@ impl<'a> Tables<'a> {
             .ok_or_else(|| format!("character {character} has no Characters row"))
     }
 
-    /// GetUnitLeader (140F8A840): CCharacter+0xA8, whose leader UnitLeaders
-    /// records (`character_id`, +0xF4C), else the reference at +0xC8
-    /// (CharacterOperatives) when the registry holds its object; `None` for
-    /// neither.
+    /// The direct leader recorded by UnitLeaders' `character_id`, else
+    /// the referenced leader recorded by CharacterOperatives when resolved;
+    /// `None` for neither.
     pub fn unit_leader(&self, character: u32) -> Evaluation<Option<UnitLeader<'a>>> {
         let leaders = self.unit_leaders.as_ref().map_err(Clone::clone)?;
         let mut found = leaders.iter().filter(|row| row.character_id == character);
         if let Some(leader) = found.next() {
             if found.next().is_some() {
                 return Err(format!(
-                    "character {character} has more than one UnitLeaders row, and CCharacter+0xA8 holds one unit leader"
+                    "character {character} has more than one UnitLeaders row, and a character holds one direct unit leader"
                 ));
             }
             return Ok(Some(UnitLeader::Direct(leader)));
@@ -157,13 +149,9 @@ impl<'a> Tables<'a> {
             .map(UnitLeader::Referenced))
     }
 
-    /// CTagTrigger::Evaluate (1403DCDF0) in a character scope, whose combat
-    /// (+0x60) SetCharacter (14052DAF0 -> 14052F3F0) cleared: the country of
-    /// the character's unit leader (ability_caster_resolver 1405294F0 ->
-    /// GetUnitLeader, CUnitLeader+0x120), else the character's own
-    /// (CCharacter::country_reference 140A5BF80, +0x68, Characters.country),
-    /// 0 being false, compared with the tagged slot as the same country
-    /// (140BA60A0).
+    /// `tag` in a character scope without carried combat: the country of
+    /// the character's unit leader, else Characters.country. Zero is false;
+    /// other references compare canonically with the tagged slot.
     pub fn tag(
         &self,
         character: u32,
@@ -177,21 +165,16 @@ impl<'a> Tables<'a> {
         Ok(country != 0 && canonical(country)? == tagged)
     }
 
-    /// CSkillTrigger's value (140475170) in a character scope: the scope has
-    /// no combat, so the character's unit leader's GetSkillLevel (140C0A4A0:
-    /// +0xE60 -> +0x1B8), 0 without a unit leader, compared by
-    /// CIntTrigger::Evaluate (14138CC70).
+    /// `skill` in a character scope without carried combat: the unit
+    /// leader's skill level, or zero without a unit leader.
     pub fn skill(&self, character: u32) -> Evaluation<i32> {
         self.unit_leader(character)?
             .map_or(Ok(0), UnitLeader::skill)
     }
 
-    /// HasRetiredCharacter (14052BC80) -> IsRetired (140F8FAD0): retired
-    /// when the country (+0x68, `Characters.country`) is at or below 0, or
-    /// when a record of that country's retired array (CCountryCharacters+0x28,
-    /// CountryRetiredCharacters) has the character's name token (+0x18;
-    /// 1410D7A30 -> 1410D1130, whose comparator 141A883F0 takes a null
-    /// record as token 0).
+    /// Retired when Characters.country is signed-nonpositive, or when
+    /// that country's CountryRetiredCharacters has the character's name
+    /// token. A null retired record compares as token zero.
     pub fn retired(
         &self,
         character: u32,
@@ -217,11 +200,8 @@ impl<'a> Tables<'a> {
         Ok(false)
     }
 
-    /// CHasTraitTrigger::Evaluate (1403D7D20) in a character scope: the
-    /// scope's character (character_resolver 140529310), which passes only
-    /// as an operative (GetUnitLeader 140F8A840, category +0xE7C of 3) or
-    /// when not retired (HasRetiredCharacter 14052BC80 reads the same scope
-    /// character).
+    /// `has_trait` in a character scope: the character passes the gate
+    /// only as an operative (leader category 3) or when not retired.
     pub fn has_trait(
         &self,
         character: u32,
@@ -257,21 +237,13 @@ impl<'a> Tables<'a> {
         })
     }
 
-    /// 1403D7D20 past its character gate, for the character's unit leader's
-    /// assigned trait definitions (`assigned`: `None` without a unit
-    /// leader). FindTraitByName (140ADB590 -> 140AD3E30) takes the first
-    /// definition of the operand's name in any case; a unit-leader trait
-    /// with a unit leader is held when an assigned trait is that definition
-    /// (1402EF030 compares the pointers; the recorded `definition_ordinal`,
-    /// +0x8A4, names the definition, and a repeated name is another one).
-    /// Otherwise a country-leader trait (FindCountryLeaderTraitByName
-    /// 140712D30: the first definition of the name, a real one) is held when
-    /// an advisor role's (+0xB0 -> CAdvisor+0xC8) or country-leader role's
-    /// (+0x98 -> CCountryLeader+0x50) array holds that definition, compared
-    /// by its database ordinal (+0x1A0, CharacterRoleTraits' `definitions`),
-    /// so a later definition of the name does not count; any other name when
-    /// the scientist's (+0xC0 -> CScientist+0x30) holds the scientist trait
-    /// of its token (14022F320).
+    /// Trait membership after the character gate. Unit-leader names use
+    /// the first case-insensitive definition and compare its recorded
+    /// `definition_ordinal` against `assigned` (`None` without a leader).
+    /// Otherwise the first country-leader definition compares by ordinal
+    /// against advisor and country-leader roles' CharacterRoleTraits;
+    /// a later definition with the same name does not count. Other names
+    /// compare by token against the scientist role's traits.
     pub fn character_traits(
         &self,
         character: u32,
@@ -285,19 +257,20 @@ impl<'a> Tables<'a> {
             return Ok(assigned.contains(&ordinal));
         }
         let shown = String::from_utf8_lossy(operand);
-        let country_leaders = names.country_leaders.as_ref().map_err(|why| {
-            format!("the country-leader traits (140712D30) are unavailable: {why}")
-        })?;
+        let country_leaders = names
+            .country_leaders
+            .as_ref()
+            .map_err(|why| format!("the country-leader traits are unavailable: {why}"))?;
         let rows = self.role_traits.as_ref().map_err(Clone::clone)?;
         let own = || rows.iter().filter(move |row| row.character == character);
         let name = std::str::from_utf8(operand)
             .map_err(|_| format!("trait {shown} is not UTF-8, as a trait name is"))?;
         match country_leaders.first_ordinal(name) {
             Err(gap) => Err(format!(
-                "whether {shown} is a country-leader trait (140712D30), and which definition, is unknown: {gap}"
+                "whether {shown} is a country-leader trait, and which definition, is unknown: {gap}"
             )),
             // The first definition of the name, by identity: its database
-            // ordinal (+0x1A0), which a later definition of the name lacks.
+            // ordinal, which a later definition of the name lacks.
             Ok(Some(ordinal)) => {
                 let token = names.lexer.token_of(operand)?;
                 holds_country_leader_trait(
@@ -308,7 +281,7 @@ impl<'a> Tables<'a> {
                     token,
                 )
             }
-            // The scientist trait database is keyed by the token (14022F320).
+            // The scientist trait database is keyed by the token.
             Ok(None) => Ok(names.lexer.token_of(operand)?.is_some_and(|token| {
                 own().any(|row| {
                     row.kind == CharacterRoleTraitRow::SCIENTIST && row.tokens.contains(&token)
@@ -318,7 +291,7 @@ impl<'a> Tables<'a> {
     }
 }
 
-/// 1403D7D20 and 140B9D6D0 compare trait pointers, recorded as ordinals.
+/// Compare trait definition identities, recorded as ordinals.
 pub(crate) fn holds_country_leader_trait<'a>(
     rows: impl Iterator<Item = &'a CharacterRoleTraitRow>,
     traits: &LeaderTraits,
@@ -337,7 +310,7 @@ pub(crate) fn holds_country_leader_trait<'a>(
                     .is_some_and(|found| found.token.eq_ignore_ascii_case(name))
             {
                 return Err(format!(
-                    "character {} holds trait {name}'s token as definition {definition}, which the content's country-leader traits do not give that name, so which definition 140712D30 finds is unknown",
+                    "character {} holds trait {name}'s token as definition {definition}, which the content's country-leader traits do not give that name, so which definition the name lookup finds is unknown",
                     row.character
                 ));
             }

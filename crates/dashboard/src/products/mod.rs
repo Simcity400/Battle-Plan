@@ -110,7 +110,7 @@ pub(crate) fn check_reply_budget<T: Serialize>(reply: &T) -> io::Result<()> {
     Ok(())
 }
 
-/// Native fixed64 finite domain, GetNukes@1410828A0: excludes the three
+/// The fixed64 finite domain excludes the three
 /// infinity/undefined sentinels while preserving every signed finite value.
 pub(crate) fn finite_fixed64(raw: i64) -> bool {
     (raw as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd
@@ -305,8 +305,7 @@ pub fn validate_countries(branch_id: &str, tags: &[String]) -> Result<(), &'stat
 
 /// The one check for a requested country tag, shared by products and the map.
 /// Tags are lookup keys compared with recorded tags, never paths. Definition
-/// validity belongs to the content loader (`CCountryDatabase` load_tags,
-/// `14070e900`); requests refuse only emptiness and NUL.
+/// validity belongs to the content loader; requests refuse only emptiness and NUL.
 pub fn validate_tag(tag: &str) -> Result<(), &'static str> {
     if tag.is_empty() || tag.contains('\0') {
         return Err("Invalid country tag");

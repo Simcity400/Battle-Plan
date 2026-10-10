@@ -251,11 +251,11 @@ fn named_arrows_record_their_name_strings_and_lines_record_none() {
     for offset in NAME_STRINGS {
         image.u64(SECOND + offset + 0x18, 15);
     }
-    image.bytes(SECOND + NAME_STRINGS[0], b"o_operation\0");
+    image.bytes(SECOND + NAME_STRINGS[0], b"fixture_key\0");
     image.u64(SECOND + NAME_STRINGS[0] + 0x10, 11);
     image.bytes(SECOND + NAME_STRINGS[1], b"o_x\0");
     image.u64(SECOND + NAME_STRINGS[1] + 0x10, 3);
-    let unique = b"South Sudetenland\0";
+    let unique = b"Synthetic Heights\0";
     image.bytes(0x70000, unique);
     image.u64(SECOND + NAME_STRINGS[4], 0x70000);
     image.u64(SECOND + NAME_STRINGS[4] + 0x10, 17);
@@ -288,10 +288,10 @@ fn named_arrows_record_their_name_strings_and_lines_record_none() {
         names[start..start + len].to_vec()
     };
     let named = plans.iter().find(|row| row.instance == u32::MAX).unwrap();
-    assert_eq!(text(named, 0), b"o_operation");
+    assert_eq!(text(named, 0), b"fixture_key");
     assert_eq!(text(named, 1), b"o_x");
     assert_eq!(text(named, 2), b"");
-    assert_eq!(text(named, 4), b"South Sudetenland");
+    assert_eq!(text(named, 4), b"Synthetic Heights");
     assert_eq!(result.names, 11 + 3 + 17);
     let line = plans.iter().find(|row| row.instance == 0).unwrap();
     assert_eq!(line.names, [(0, 0); 6]);
@@ -638,7 +638,7 @@ fn plan_dependents_are_hinted_one_batch_before_their_reads() {
         }
         let text = TEXTS + index * 0x100;
         let unique = order + NAME_STRINGS[4];
-        image.bytes(text, b"Operation Barbarossa\0");
+        image.bytes(text, b"Synthetic Plan Alpha\0");
         image.u64(unique, text as u64);
         image.u64(unique + crate::msvc_string::LENGTH, 20);
         image.u64(unique + crate::msvc_string::CAPACITY, 31);
@@ -1847,15 +1847,15 @@ fn plan_fixture() -> (MemoryImage, [usize; 2]) {
     for offset in NAME_STRINGS {
         image.u64(SECOND + offset + crate::msvc_string::CAPACITY, 15);
     }
-    image.bytes(SECOND + NAME_STRINGS[0], b"o_operation\0");
+    image.bytes(SECOND + NAME_STRINGS[0], b"fixture_key\0");
     image.u64(SECOND + NAME_STRINGS[0] + crate::msvc_string::LENGTH, 11);
-    let unique = b"South Sudetenland";
-    image.bytes(UNIQUE, b"South Sudetenland\0");
+    let unique = b"Synthetic Heights";
+    image.bytes(UNIQUE, b"Synthetic Heights\0");
     image.u64(SECOND + NAME_STRINGS[4], UNIQUE as u64);
     image.u64(SECOND + NAME_STRINGS[4] + crate::msvc_string::LENGTH, 17);
     image.u64(SECOND + NAME_STRINGS[4] + crate::msvc_string::CAPACITY, 31);
-    let group_name = b"Heeresgruppe Mitte, 2. Armee";
-    image.bytes(GROUP_NAME, b"Heeresgruppe Mitte, 2. Armee\0");
+    let group_name = b"Synthetic Army Group Epsilon";
+    image.bytes(GROUP_NAME, b"Synthetic Army Group Epsilon\0");
     image.u64(GROUP + corders_group::NAME, GROUP_NAME as u64);
     image.u64(
         GROUP + corders_group::NAME + crate::msvc_string::LENGTH,
@@ -1940,8 +1940,8 @@ fn gathered_reads_match_per_field_reads_rows_and_failure_precedence() {
     const UNIQUE: usize = PLAN_UNIQUE;
     const GROUP_NAME: usize = PLAN_GROUP_NAME;
     let (image, payloads) = plan_fixture();
-    let unique = b"South Sudetenland";
-    let group_name = b"Heeresgruppe Mitte, 2. Armee";
+    let unique = b"Synthetic Heights";
+    let group_name = b"Synthetic Army Group Epsilon";
     let mut groups = [corders_group::Root::default(); 8];
     let mut visits = vec![Visit::default(); 16];
     let census = walk(
@@ -2255,7 +2255,7 @@ fn census_plan_records_give_the_plan_walks_own_rows_and_failures() {
     assert_eq!(clean.orders, Outcome::Rows { len: 3 });
     assert_eq!(clean.groups, Outcome::Rows { len: 1 });
     assert_eq!(clean.assigned.len(), 3);
-    assert!(clean.names.ends_with(b"South Sudetenland"));
+    assert!(clean.names.ends_with(b"Synthetic Heights"));
     assert_eq!(clean, run(&image, None, false).0);
     for order in [FIRST, SECOND, CHILD] {
         assert!(
@@ -2446,7 +2446,7 @@ fn type_driven_name_records_match_per_field_reads_for_every_order_type() {
     ] {
         let mut image = fixture();
         image.u64(BASE + registry::INVALID_REFERENCE_RVA, u64::MAX);
-        image.bytes(UNIQUE, b"Operation Barbarossa\0");
+        image.bytes(UNIQUE, b"Synthetic Plan Alpha\0");
         for order in orders {
             image.u32(order + TYPE, kind as u32);
             for offset in NAME_STRINGS {
@@ -2513,7 +2513,7 @@ fn type_driven_name_records_match_per_field_reads_for_every_order_type() {
         assert_eq!(clean.0, Outcome::Rows { len: 3 }, "type {kind}");
         let reads = name_reads(&image);
         if named_type(kind) {
-            let text = b"Operation Barbarossa";
+            let text = b"Synthetic Plan Alpha";
             assert!(
                 clean.2.windows(text.len()).any(|w| w == text),
                 "type {kind}"

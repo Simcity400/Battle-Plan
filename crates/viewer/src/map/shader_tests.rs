@@ -2,10 +2,9 @@
 //! or game content, so a WGSL error fails `cargo test` instead of the first render.
 use eframe::wgpu::naga;
 
-/// Several WARP devices used at once in one process fault inside `d3d10warp.dll` (probed
-/// 2026-09-26: 5 of 6 runs with three concurrent devices, 0 of 6 with one device shared by three
-/// threads). The viewer creates one device per process, so only tests need this. Every GPU test
-/// takes it before requesting its adapter, so no second device exists while another test runs.
+/// Concurrent WARP devices in one process can fault. The viewer shares one device per
+/// process; GPU tests take this lock before requesting an adapter to prevent overlapping
+/// test devices.
 pub(super) static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn validate(name: &str, source: &str) {
@@ -26,7 +25,6 @@ fn standalone_map_shaders_validate() {
         ("post_copy", include_str!("post_copy.wgsl")),
         ("texture_unpack", include_str!("texture_unpack.wgsl")),
         ("sprites", super::sprites::SHADER),
-        ("exact sprites", super::sprites::EXACT_SHADER),
     ] {
         validate(name, source);
     }

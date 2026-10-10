@@ -176,7 +176,7 @@ fn advisor_modifier_cache_distinguishes_not_recorded_from_native_unavailable() {
     for (cache, reason) in [
         (
             Recorded::Value(Some(AdvisorModifierCache::default())),
-            "CAdvisor::vf2@1412902F0 saves traits and the own modifier block, not the independently rebuilt +0x1A0 modifier cache",
+            "the advisor save writer saves traits and the own modifier block, not the independently rebuilt modifier cache",
         ),
         (
             Recorded::Value(None),
@@ -275,8 +275,8 @@ fn operative_codename_oracle_checks_both_hosts_and_saved_omissions() {
     assert_eq!(report.compared_tables["CharacterOperatives codenames"], 1);
     assert_eq!(report.compared_tables["UnitLeaders codenames"], 1);
     assert!(report.limitations.keys().any(|reason| {
-        reason.contains("140C0D920 saves name from +0x20")
-            && reason.contains("localized +0x40 string")
+        reason.contains("the unit-leader writer saves the stored name")
+            && reason.contains("localized string")
     }));
     let change = |pack: &mut intel::Pack, value| {
         pack.countries
@@ -376,7 +376,8 @@ fn operative_name_and_codename_compatibility_gaps_are_named_and_counted() {
             !report
                 .limitations
                 .keys()
-                .any(|reason| reason.contains("explicitly unavailable") || reason.contains("+0x40"))
+                .any(|reason| reason.contains("explicitly unavailable")
+                    || reason.contains("localized string"))
         );
     }
 }
@@ -574,7 +575,7 @@ fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
 
 #[test]
 fn character_tables_are_compared_at_every_hour() {
-    // compare() needs no freshness gate while the family is hourly.
+    // compare needs no freshness gate while the family is hourly.
     for table in [
         TableId::Characters,
         TableId::CountryLeaderRoles,
@@ -1247,7 +1248,7 @@ fn reserved_trait_formatter_fails_both_tables_after_independent_experience_compa
     else {
         unreachable!()
     };
-    // Character token values use ADF40's quoted string path, so this
+    // Character token values use the quoted string path, so this
     // native id still denotes the ordinary dictionary spelling there.
     rows[0].name_token_id = 0x167;
     let TableView::Complete(TableRows::UnitLeaderTraits(rows)) =

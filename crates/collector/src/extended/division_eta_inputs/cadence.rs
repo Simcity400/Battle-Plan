@@ -35,8 +35,8 @@ impl Witness {
         if route.count == 0 {
             return Ok(false);
         }
-        // SetMovementTarget (140bf5730) and AssignUnitMovementRoute (140be87d0)
-        // rewrite the route in place, so compare its contents, not its header.
+        // Changes to the movement target or route rewrite it in place,
+        // so compare its contents, not its header.
         let count = route.count as usize;
         if count > self.route.len() {
             let additional = count - self.route.len();
@@ -412,7 +412,7 @@ mod tests {
                 }
                 if fresh {
                     match change {
-                        // SetMovementTarget can refill the same buffer at the same length.
+                        // A movement-target change can refill the same buffer at the same length.
                         0 => path[4] += 1,
                         1 => unit.movement_target = Some(7),
                         2 => unit.location = Some(8),

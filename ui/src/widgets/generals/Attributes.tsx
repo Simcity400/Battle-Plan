@@ -1,6 +1,6 @@
 import { barFraction } from '../../charts/table/logic';
 
-/** The mock-up's compact value-and-bar grid belongs to this scoreboard. */
+/** The compact value-and-bar grid belongs to this scoreboard. */
 export function AttributesHeader({ names }: { names: readonly string[] }) {
   return <span className="leader-attributes" aria-label="Attributes">{names.map((name, i) =>
     <span key={i} title={name}>{name}</span>)}</span>;

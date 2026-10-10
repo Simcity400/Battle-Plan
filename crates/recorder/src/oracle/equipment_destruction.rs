@@ -1,6 +1,6 @@
 //! Event self-check and exact saved-unit absence witnesses.
-//! CArmy::Serialize 140C80E00 saves the remaining pool; CUnit::Serialize
-//! 140BF7010 calls 14220B400, which saves both full-handle words.
+//! The army save writer saves the remaining pool; the unit save writer
+//! saves both full-handle words.
 use super::{Report, complete, country_context, invalid, required_country_tag};
 use installed_content::save::Save;
 use replay::{
@@ -69,7 +69,7 @@ pub fn compare(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
             .ok_or_else(|| invalid("EquipmentDestruction signed amount sum overflows"))?;
         *causes.entry(row.cause.as_str()).or_insert(0_usize) += 1;
     }
-    // Pool serializers (140FFDB00) retain balances, not events; production,
+    // Pool serializers retain balances, not events; production,
     // replenishment, upgrades and transfers prevent an exact pool-delta oracle.
     // Pre/post and pre-free fixtures check amounts, but coordinated live runs
     // must still verify hook coverage and ownership; no save difference is waived.
@@ -81,7 +81,7 @@ pub fn compare(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
     }
     if native_gains != 0 {
         // active_damage writes the signed pre/post difference to Combat Log
-        // (140C7C341 -> 140FFD520; 140C7C4C8 -> 140CCA810), but other causes
+        // but other causes
         // have no saved event counter and the log is not this table's scope.
         report.limitation("native pool gains are recorded as negative net removals, so these rows correct earlier totals rather than counting losses", format!("EquipmentDestruction.amount_raw: {native_gains} negative aggregate rows are native gain corrections"));
     }
@@ -166,7 +166,7 @@ pub(super) fn compare_deletions(
     if live_handles.is_some() {
         report.compared("DivisionEquipmentDeletions.current_census", rows.len());
     }
-    // ReadMember@14150FE60/141500AB0 holds volunteer/exile armies outside
+    // Roster reading holds volunteer/exile armies outside
     // country rosters; preceding-census owners compare only with unchanged
     // expeditionary status, and witnesses never apportion aggregate losses.
     if !rows.is_empty() {
@@ -358,9 +358,9 @@ fn compare_previous_census_with_history(
     for (disposition, count) in transferred_before_census {
         report.limitation("a witnessed transfer may return and be deleted before a roster census, or be deleted as a transfer-held orphan", format!("DivisionEquipmentDeletions.{disposition}: {count} transfer-held deletion witnesses absent from the preceding census"));
     }
-    // Deployment/scripted AddArmy (141421BE2/141421C06/140352940) and overrun
-    // (140BF2F4B/140C78CEA) have no census barrier. Orphan transfer cleanup
-    // (1414FF6E0/14150E151) can delete a held identity without a roster census.
+    // Deployment/scripted army creation and overrun
+    // have no census barrier. Orphan transfer cleanup
+    // can delete a held identity without a roster census.
     for (disposition, count) in unseen {
         let reason = if matches!(disposition, "division_destroyed" | "division_overrun") {
             "a division may be wiped or overrun before its first complete census, so its prior identity is unverified"
@@ -459,7 +459,7 @@ fn compare_previous_census_with_history(
     {
         report.limitation("unavailable witness intervals and incomplete census history cannot certify intervening deletions or reappearance", format!("DivisionEquipmentDeletions: {} active transfers; {} incomplete witness intervals; {} incomplete censuses; {} unrecorded hours", active.len(), history.incomplete_witness_intervals, history.incomplete_censuses, history.unrecorded_hours));
     }
-    // Divisions.reveal_skip follows GetDivisionRevealSkipFlag@140C79AA0.
+    // Divisions.reveal_skip follows the division reveal-skip test.
     if fake != 0 {
         report.limitation("fake-intel census entries are deception objects whose lifecycle has no gameplay loss witness", format!("DivisionEquipmentDeletions: {fake} fake-intel census entries excluded"));
     }

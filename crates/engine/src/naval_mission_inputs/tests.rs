@@ -601,7 +601,7 @@ fn region_weather_reads_the_indexed_record_or_nothing_outside_the_array() {
             Value::default()
         ]
     );
-    // GetRegionWeatherModifier returns null past the array: nothing is added.
+    // A region past the weather array has no object and contributes nothing.
     region_weather(&memory, &weather, 2, &mut out).unwrap();
     assert_eq!(out, [Value::default(); 4]);
 }

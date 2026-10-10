@@ -1,4 +1,4 @@
-//! CLandCombatMapIcon::BuildTooltip@1418AC1D0, normal (non-debug) hover.
+//! land combat marker hover, normal (non-debug) hover.
 use super::{
     binding::{TextIcons, builtin},
     engaged::Engaged,
@@ -20,7 +20,7 @@ use replay::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
-// Executable literals at 1418AC1D0 and 1413CCBC0.
+// Localisation keys for the marker heading and outcome.
 super::text::tooltip_keys! {
     LAND_COMBAT_TOOLTIP_NO_INTEL = "LAND_COMBAT_TOOLTIP_NO_INTEL",
     LAND_COMBAT_TOOLTIP_ATTACKER = "LAND_COMBAT_TOOLTIP_ATTACKER",
@@ -34,7 +34,7 @@ super::text::tooltip_keys! {
     COMBAT_LAST_MORE_THAN_DAY = "COMBAT_LAST_MORE_THAN_DAY",
 }
 
-/// 1413CCBC0: strict wrapped fixed5 comparisons. In an overflow where both
+/// strict wrapped fixed5 comparisons. In an overflow where both
 /// tests hold, attacker membership wins; otherwise either membership makes
 /// the text relative to the viewer. Neutral viewers get the absolute side.
 fn outcome(scores: [i64; 2], member: [bool; 2]) -> (&'static str, i32) {
@@ -64,10 +64,10 @@ fn outcome(scores: [i64; 2], member: [bool; 2]) -> (&'static str, i32) {
     } else {
         i64::from(u32::MAX)
     };
-    (key, super::fixed::round(fixed)) // 1424D8760, then low int32.
+    (key, super::fixed::round(fixed)) // Round, then keep the low signed 32 bits.
 }
 
-/// 141A1D590 consumes the primary list in order, doing no sorting or
+/// the game consumes the primary list in order, doing no sorting or
 /// deduplication here: the recorded list is the native country's set.
 pub(super) fn countries(
     ids: &[u32],
@@ -88,8 +88,8 @@ fn seen(
     member: [bool; 2],
     name: &impl Fn(u32) -> Result<String, String>,
 ) -> Result<String, String> {
-    // Empty UI selection makes 140C72F60 empty; 1418AC1D0 still adds LF.
-    // The viewer has no selected native units or native debug-tooltip flag.
+    // With no selected units, the selection text is empty but retains its newline.
+    // The viewer has no selected units or debug-tooltip flag.
     let mut text = String::from("\n");
     for (key, roster, ids) in [
         (
@@ -113,13 +113,13 @@ fn seen(
                 ("COUNTRIES", Argument::Text(&names)),
             ],
         )?);
-        text.push('\n'); // 1418AC1D0 appends a literal LF after each side.
+        text.push('\n'); // the game appends a literal LF after each side.
     }
     text.push_str(&outlook(icons, loc, scores, member)?);
     Ok(text)
 }
 
-/// The common outcome/duration tail of 1413CCBC0.
+/// The common outcome and duration tail.
 pub(super) fn outlook(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -151,8 +151,7 @@ pub(crate) fn hit(hits: &[super::Hit], point: [f32; 2]) -> Option<(u64, [f32; 4]
     }
 }
 
-// CountryTagListContainsEquivalent@1406D7F90 -> 140BA60A0: primary or
-// secondary membership, direct references resolving to the same country.
+// Primary or secondary membership; direct references resolve to the same country.
 pub(super) fn membership(
     sides: &LandCombatSideRow,
     viewer: u32,
@@ -181,7 +180,7 @@ pub(super) fn membership(
     ])
 }
 
-// 1413CD880: either cached side engaged; unknown is not no-intel.
+// either cached side engaged; unknown is not no-intel.
 pub(super) fn intel(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -317,7 +316,7 @@ impl Cache {
             Ok(std::mem::take(&mut text.body))
         })();
         match result {
-            // BuildTooltip@1418AC1D0 writes only its third (delayed) output.
+            // hover text construction writes only its third (delayed) output.
             Ok(body) => text.body = body,
             Err(why) => {
                 text.refused.insert(format!("land marker {id}: {why}"), 1);

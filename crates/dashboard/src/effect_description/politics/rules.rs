@@ -1,6 +1,6 @@
 use super::*;
 use installed_content::{
-    power_balance::RULES,
+    power_balance::rules,
     scope::{Keyword, Scope as Parsed},
     scripted_triggers::Template,
 };
@@ -9,7 +9,6 @@ use installed_content::{
 mod tests;
 
 impl Renderer<'_, '_, '_> {
-    // Own 140393260 / 140392590; list 140325CC0 / 140325AF0.
     pub(in crate::effect_description) fn politics_rules(
         &self,
         item: &Item,
@@ -18,13 +17,13 @@ impl Renderer<'_, '_, '_> {
     ) -> Result<String, String> {
         let fields = children(item);
         for item in fields {
-            if !(RULES.iter().any(|(name, _, _, _)| item.keyword_is(name))
+            if !(rules().iter().any(|(name, _, _, _)| item.keyword_is(name))
                 || ["icon", "desc", "override"]
                     .iter()
                     .any(|name| item.keyword_is(name))
                 || (party && item.keyword_is("ideology")))
             {
-                return Err(format!("unknown rule {} (14062EDC0)", key(item)));
+                return Err(format!("unknown rule {}", key(item)));
             }
         }
         let mut text = if party {
@@ -32,18 +31,18 @@ impl Renderer<'_, '_, '_> {
                 field(fields, "ideology").and_then(|item| item.value.scalar()),
                 scopes,
             )?;
-            let name = self.localised(&ideology, &[], scopes, false)?; // 140616BC0.
+            let name = self.localised(&ideology, &[], scopes, false)?;
             self.localised(
-                b"EFFECT_SET_PARTY_RULE", // 14275AE80; IDEOLOGY@142750150.
+                b"EFFECT_SET_PARTY_RULE",
                 &[("IDEOLOGY", Argument::Text(&name))],
                 scopes,
                 true,
             )?
         } else {
-            self.localised(b"EFFECT_SET_RULE", &[], scopes, true)? // 14275ACC8.
+            self.localised(b"EFFECT_SET_RULE", &[], scopes, true)?
         };
-        // 14062C6C0(index, false, true): ignore desc/override; compare +0x30.
-        for &(name, loc, _, fulfilled) in RULES {
+        // Ignore desc/override; compare each value with its fulfilled state.
+        for &(name, loc, _, fulfilled) in rules() {
             if let Some(item) = field(fields, name) {
                 let value = item
                     .value
@@ -51,15 +50,15 @@ impl Renderer<'_, '_, '_> {
                     .and_then(installed_content::parser::read_bool)
                     .unwrap_or(false);
                 text.push_str(&self.rule_prefix(value == fulfilled, scopes)?);
-                text.push(' '); // 142700920.
+                text.push(' ');
                 text.push_str(&self.localised(loc.as_bytes(), &[], scopes, false)?);
-                text.push_str(".\n"); // 14271CCC0.
+                text.push_str(".\n");
             }
         }
         Ok(text)
     }
 
-    // Own 1403769B0 / 14038AFB0. usage_desc is postload-only (1403A6540).
+    // usage_desc is postload-only.
     pub(in crate::effect_description) fn politics_relation_rule(
         &self,
         item: &Item,
@@ -68,10 +67,10 @@ impl Renderer<'_, '_, '_> {
         template: Option<&Template>,
     ) -> Result<String, String> {
         let fields = children(item);
-        let mut rule = &RULES[0];
-        let mut value = false; // Constructor 14032C410.
+        let mut rule = &rules()[0];
+        let mut value = false;
         for item in fields {
-            if let Some(known) = RULES.iter().find(|(name, _, _, _)| item.keyword_is(name)) {
+            if let Some(known) = rules().iter().find(|(name, _, _, _)| item.keyword_is(name)) {
                 rule = known;
                 value = item
                     .value
@@ -80,17 +79,14 @@ impl Renderer<'_, '_, '_> {
                     .unwrap_or(false);
             } else if !(item.keyword_is("target")
                 || item.keyword_is("trigger")
-                // Only the add reader consumes usage_desc (+0x98, 1403AF060).
+                // Only the add reader consumes usage_desc.
                 || (!remove && item.keyword_is("usage_desc")))
             {
-                return Err(format!(
-                    "unknown relation rule {} (1403AF060/1403B4150)",
-                    key(item)
-                ));
+                return Err(format!("unknown relation rule {}", key(item)));
             }
         }
         let trigger = field(fields, "trigger");
-        // Postload 1403A7170 tests the decoded specifier (140BA6220), not
+        // tests the decoded specifier, not
         // target presence. Invalid strings and scope selectors permit a template.
         let explicit = trigger.is_none() || self.relation_has_country_specifier(fields)?;
         let target = if explicit && field(fields, "target").is_some() {
@@ -112,7 +108,7 @@ impl Renderer<'_, '_, '_> {
                         installed_content::scripted_triggers::Lookup::Template(template) => template,
                         installed_content::scripted_triggers::Lookup::Missing => {
                             return Err(format!(
-                                "scripted relation target {name} is absent from recorded content (1403A7170)"
+                                "scripted relation target {name} is absent from recorded content"
                             ));
                         }
                     }
@@ -124,21 +120,21 @@ impl Renderer<'_, '_, '_> {
         };
         let origin = self.country_name(self.current_country(scopes)?, false)?;
         let header = if remove {
-            b"EFFECT_REMOVE_RELATION_RULE_OVERRIDE".as_slice() // 14275B158.
+            b"EFFECT_REMOVE_RELATION_RULE_OVERRIDE".as_slice()
         } else {
-            b"EFFECT_ADD_RELATION_RULE_OVERRIDE".as_slice() // 14275B020.
+            b"EFFECT_ADD_RELATION_RULE_OVERRIDE".as_slice()
         };
         let mut text = self.localised(
             header,
             &[
                 ("ORIGIN", Argument::Text(&origin)),
                 ("TARGET", Argument::Text(&target)),
-            ], // 14275B018/1427528E4.
+            ],
             scopes,
             true,
         )?;
         text.push_str(&self.rule_prefix(value, scopes)?);
-        text.push_str(&self.localised(rule.1.as_bytes(), &[], scopes, false)?); // 14062D120; no separator/LF.
+        text.push_str(&self.localised(rule.1.as_bytes(), &[], scopes, false)?); // no separator/LF.
         Ok(text)
     }
 
@@ -146,7 +142,7 @@ impl Renderer<'_, '_, '_> {
         let mut specified = false;
         for item in fields.iter().filter(|item| item.keyword_is("target")) {
             let operand = installed_content::parser::c_string(item.value.scalar().unwrap_or_default());
-            // ParseScopeSelector 140530BB0 stores flags without touching +0x80.
+            // Scope-selector parsing stores flags without changing the bound name.
             if item.value_keyword().is_some_and(|word| {
                 [
                     "root",
@@ -169,7 +165,7 @@ impl Renderer<'_, '_, '_> {
                 .content
                 .key_names
                 .ok_or_else(|| self.content_gap("effect key names"))?;
-            // AssignCountrySpecifierFromString 140BA53F0: exact tag, then alias
+            // exact tag, then alias
             // token. A missing/empty name resets both selector alternatives.
             specified = names.countries.contains(operand)
                 || names.aliases.contains(&operand.to_ascii_lowercase());
@@ -177,7 +173,7 @@ impl Renderer<'_, '_, '_> {
         Ok(specified)
     }
 
-    // Template vf12 14053EA10, called with inversion=false, indent=0, mode=2.
+    // Template, called with inversion=false, indent=0, mode=2.
     pub(in crate::effect_description) fn politics_rule_target(
         &self,
         body: &[Item],
@@ -188,9 +184,9 @@ impl Renderer<'_, '_, '_> {
 
     fn rule_prefix(&self, fulfilled: bool, scopes: Scopes) -> Result<String, String> {
         let key = if fulfilled {
-            b"TRIGGER_FULLFILLED_PREFIX".as_slice() // 14275B048.
+            b"TRIGGER_FULLFILLED_PREFIX".as_slice()
         } else {
-            b"TRIGGER_UNFULLFILLED_PREFIX".as_slice() // 14275B068.
+            b"TRIGGER_UNFULLFILLED_PREFIX".as_slice()
         };
         self.localised(key, &[], scopes, false)
     }
@@ -206,7 +202,7 @@ impl Renderer<'_, '_, '_> {
         Ok(items)
     }
 
-    // CTrigger::BuildChildTooltips 14053FCC0; mode=2 suppresses Check/prefix.
+    // mode=2 suppresses Check/prefix.
     fn rule_trigger_body(
         &self,
         fields: &[Item],
@@ -230,7 +226,7 @@ impl Renderer<'_, '_, '_> {
         indent: usize,
         mode: u8,
     ) -> Result<String, String> {
-        let mut text = "   ".repeat(indent); // 142773CD8.
+        let mut text = "   ".repeat(indent);
         if (indent == 0 || mode == 1) && mode != 2 {
             let fulfilled = self
                 .evaluator()?
@@ -251,7 +247,7 @@ impl Renderer<'_, '_, '_> {
         mode: u8,
     ) -> Result<String, String> {
         if item.keyword_is("not") {
-            // CNotTrigger vf12 14053F060 flips inversion and resets mode.
+            // not trigger flips inversion and resets mode.
             return self.rule_trigger_body(children(item), scopes, !inverted, indent, 0);
         }
         if item.keyword_is("and") || item.keyword_is("or") {
@@ -260,7 +256,7 @@ impl Renderer<'_, '_, '_> {
             if !or && (indent == 0 || count < 2) {
                 return self.rule_trigger_body(children(item), scopes, inverted, indent, mode);
             }
-            // CAndTrigger 14053EA10 / COrTrigger 14053F450.
+
             let heading = if or != inverted {
                 b"TRIGGER_OR_STARTS".as_slice()
             } else {
@@ -283,7 +279,7 @@ impl Renderer<'_, '_, '_> {
             return Ok(text);
         }
         if item.keyword_is("custom_trigger_tooltip") || item.keyword_is("custom_override_tooltip") {
-            // Own 1413931A0; descendants vf12 140176EE0 are empty.
+            // descendants are empty.
             let fields = children(item);
             let positive = field(fields, "tooltip")
                 .and_then(|item| item.value.scalar())
@@ -292,14 +288,18 @@ impl Renderer<'_, '_, '_> {
             let negative;
             let operand = if inverted {
                 if let Some(item) = explicit {
-                    item.value.scalar().ok_or("CCustomOverrideTooltipTrigger not_tooltip bound arguments are not ported (141395B30)")?
+                    item.value.scalar().ok_or(
+                        "custom_override_tooltip not_tooltip bound arguments are not ported",
+                    )?
                 } else {
-                    negative = [positive, b"_NOT"].concat(); // 141396000.
+                    negative = [positive, b"_NOT"].concat();
                     &negative
                 }
             } else {
                 if field(fields, "tooltip").is_some_and(|item| item.value.scalar().is_none()) {
-                    return Err("CCustomOverrideTooltipTrigger tooltip bound arguments are not ported (141395B30)".into());
+                    return Err(
+                        "custom_override_tooltip tooltip bound arguments are not ported".into(),
+                    );
                 }
                 positive
             };
@@ -315,11 +315,11 @@ impl Renderer<'_, '_, '_> {
             return Ok(text);
         }
         if item.keyword_is("has_country_flag") {
-            // CFlagTrigger own 141393260 -> CCountryFlagTrigger 140430D90.
+            // flag trigger own.
             let flag = if let Some(fields) = item.value.items() {
                 if let Some(item) = fields.iter().find(|item| !item.keyword_is("flag")) {
                     return Err(format!(
-                        "CCountryFlagTrigger field {} description is not ported (141393260)",
+                        "has_country_flag field {} description is unavailable",
                         key(item)
                     ));
                 }
@@ -335,11 +335,11 @@ impl Renderer<'_, '_, '_> {
                 .is_some_and(|at| at > 0)
             {
                 return Err(format!(
-                    "CCountryFlagTrigger dynamic flag {} description is not ported (141390890)",
+                    "has_country_flag dynamic flag {} description is unavailable",
                     String::from_utf8_lossy(flag)
                 ));
             }
-            let country = self.expanded("[THIS.GetNameWithFlag]", scopes)?; // Shared 140BA59E0/1406E63A0 path.
+            let country = self.expanded("[THIS.GetNameWithFlag]", scopes)?;
             let prefix = if inverted {
                 b"TRIGGER_COUNTRY_FLAG_NOT_SET".as_slice()
             } else {
@@ -357,20 +357,26 @@ impl Renderer<'_, '_, '_> {
                 &[("FLAG", Argument::Text(&flag))],
                 scopes,
                 true,
-            )?); // FLAG@142943A20.
+            )?);
             own.push('\n');
             let mut text = self.rule_trigger_prefix(item, scopes, inverted, indent, mode)?;
             text.push_str(&own);
             return Ok(text);
         }
         if item.keyword_is("is_on_continent") {
-            // Own 14046CBA0; reader 140471500 interns the scalar token.
+            // reader interns the scalar token.
             let operand = item.value.c_str().map_err(|why| why.to_string())?;
             let content = self.politics_content()?;
-            let continent = content.continents.as_ref().map_err(Clone::clone)?.iter()
+            let continent = content
+                .continents
+                .as_ref()
+                .map_err(Clone::clone)?
+                .iter()
                 .find(|name| name.eq_ignore_ascii_case(operand))
-                .ok_or_else(|| format!("CIsOnContinentTrigger continent {operand} is absent from recorded content (140AAE420)"))?;
-            // LocalizeForCurrentCountry 140BBA630 -> 140BBA780; no scope expansion.
+                .ok_or_else(|| {
+                    format!("is_on_continent continent {operand} is absent from recorded content")
+                })?;
+            // no scope expansion.
             let prefixed = format!("{}_{continent}", self.tag(self.context.perspective)?);
             let name = self.localised(
                 if self.context.localisation.get(&prefixed).is_some() {
@@ -387,8 +393,8 @@ impl Renderer<'_, '_, '_> {
                     b"TRIGGER_IS_NOT_ON_CONTINENT"
                 } else {
                     b"TRIGGER_IS_ON_CONTINENT"
-                }, // 14279BC00 / 14279BBE8.
-                &[("CONTINENT", Argument::Text(&name))], // 14279BBD8.
+                },
+                &[("CONTINENT", Argument::Text(&name))],
                 scopes,
                 false,
             )?;
@@ -396,17 +402,14 @@ impl Renderer<'_, '_, '_> {
             text.push_str(&own);
             return Ok(text);
         }
-        // CContextTrigger 14138D980; use the one scope parser and evaluator.
+        // use the one scope parser and evaluator.
         let evaluator = self.evaluator()?;
         let parsed =
             installed_content::scope::parse(&key(item), item.key_quoted, evaluator.world().recorded());
         if item.value.items().is_some() && !matches!(parsed, Parsed::Unknown(_)) {
-            let entered = evaluator.enter_scope(&parsed, scopes)?.ok_or_else(|| {
-                format!(
-                    "CContextTrigger target {} resolves no scope (14146BB30)",
-                    key(item)
-                )
-            })?;
+            let entered = evaluator
+                .enter_scope(&parsed, scopes)?
+                .ok_or_else(|| format!("context trigger target {} resolves no scope", key(item)))?;
             let name = match parsed {
                 Parsed::Keyword(
                     keyword @ (Keyword::Owner
@@ -435,12 +438,12 @@ impl Renderer<'_, '_, '_> {
                         Scope::State(state) => self.state_name(state)?,
                         _ => {
                             return Err(format!(
-                                "CContextTrigger target {} name is not ported (141390A70)",
+                                "context trigger target {} name is not ported",
                                 key(item)
                             ));
                         }
                     };
-                    format!("\u{11}Y{name}\u{11}!") // FormatEventTargetTooltip 141390A70.
+                    format!("\u{11}Y{name}\u{11}!")
                 }
             };
             let count = self.rule_trigger_items(children(item))?.len();
@@ -462,7 +465,7 @@ impl Renderer<'_, '_, '_> {
             return Ok(text);
         }
         Err(format!(
-            "target trigger {} native description is not ported (CTrigger vf21/vf12 14053FCC0)",
+            "target trigger {} description is unavailable",
             key(item)
         ))
     }

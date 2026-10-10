@@ -3,10 +3,9 @@ use std::io;
 use super as native;
 use crate::fields::invalid;
 
-/// The sprite of a window's own button, through the native GUI registry
-/// (FindGuiType 142247660, container_factory 142246270, FindButton 1422A4A20).
-/// Every file is read in native order, including EOF closure and later
-/// replacements; no fixed GUI filename or independent registry is used.
+/// The sprite of a window's own button, found through the shared GUI template registry and
+/// local button lookup. Files follow the game's order, EOF closure and later replacements; no
+/// fixed GUI filename or independent registry is used.
 pub fn window_button_sprite(
     guis: &native::Guis,
     window: &str,
@@ -102,11 +101,10 @@ pub fn kept_container_window<'a>(
     Ok((path, element))
 }
 
-/// The localisation keys of a kept container's direct text boxes, through
-/// the native GUI registry. Each (child, field) requests `text` or
-/// `pdx_tooltip`; missing, empty or refused fields keep their own reason.
-/// The first child of a name must be an `instantTextBoxType`, as the
-/// container's one name map keeps it (CContainerWindowType::parse_field@1422FAF80).
+/// The localisation keys of a kept container's direct text boxes through the shared GUI
+/// registry. Each (child, field) requests `text` or `pdx_tooltip`; missing, empty or refused
+/// fields retain their own reason. The first child of a name in the container's map must be an
+/// `instantTextBoxType`.
 pub fn window_texts(
     guis: &native::Guis,
     window: &str,
@@ -230,6 +228,9 @@ mod tests {
 
         #[test]
         fn window_texts_are_the_kept_windows_own_text_keys() {
+            engine::executable_tables::initialize_for_tests().expect(
+                "BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests",
+            );
             let vanilla = combat_log_gui("COMBAT_LOG_LOSS_REASON_COMBAT", "instantTextBoxType");
             let layers = stack("vanilla", &[&[("interface/combatlogview.gui", &vanilla)]]);
             let (texts, warnings) = texts(&layers);
@@ -247,6 +248,9 @@ mod tests {
 
         #[test]
         fn a_mod_replacing_the_file_or_redeclaring_the_window_names_its_own_keys() {
+            engine::executable_tables::initialize_for_tests().expect(
+                "BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests",
+            );
             let vanilla = combat_log_gui("COMBAT_LOG_LOSS_REASON_COMBAT", "instantTextBoxType");
             let replaced = combat_log_gui("MOD_LOST_IN_BATTLE", "instantTextBoxType");
             let layers = stack(

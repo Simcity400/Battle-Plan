@@ -1715,9 +1715,8 @@ mod tests {
         assert_eq!(c.names.len, 2 * (b"prefix_key".len() + 2));
     }
 
-    /// No writer of the order or group names marks a change
-    /// (`msvc_string::assign_bytes_candidate@140129790` rewrites a heap
-    /// buffer in place when the new text fits), so every hour reads the
+    /// No writer of the order or group names marks a change: a heap buffer
+    /// is rewritten in place when the new text fits, so every hour reads the
     /// stored bytes again. A capture reused across hours records each state
     /// byte for byte as a fresh capture of the same memory does: an
     /// unchanged hour, a same-length rename in the same buffer, a length

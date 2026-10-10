@@ -43,11 +43,11 @@ pub struct Production {
 pub struct BuildingConstruction {
     pub production: Production,
     pub building_type: Vec<u8>,
-    /// CBuildingReference location, -1 for a country target.
+    /// Building-reference location, -1 for a country target.
     pub target_location: i32,
-    /// BA6770 emits only a signed-positive reference; location targets omit it.
+    /// The writer emits only a signed-positive reference; location targets omit it.
     pub target_country: Option<Vec<u8>>,
-    /// F594E0 emits only positive repair counts; omission proves <= 0.
+    /// The writer emits only positive repair counts; omission proves <= 0.
     pub repair_levels: Option<i32>,
 }
 
@@ -58,7 +58,7 @@ pub struct RailwayConstruction {
     pub target_level: i32,
     pub cancelled: bool,
     pub current_segment: i32,
-    /// Save spelling is remaining_hours; native 19F0B70 computes remaining work.
+    /// Save spelling is remaining_hours; the value measures remaining work.
     pub remaining_cost: Decimal,
     pub route: Vec<u32>,
 }
@@ -68,9 +68,9 @@ pub struct OccupationSettings {
     pub country: Vec<u8>,
     pub garrison_template: Option<u64>,
     pub default_law: Option<Vec<u8>>,
-    /// 140FEAE70 (secondary +0x18) writes primary +0x60 in this order.
+    /// Occupied-country entries in the order written by the settings writer.
     pub occupied: Vec<Vec<u8>>,
-    /// Occupied-country membership and the nullable +0xA0 law pointer (140FEA660).
+    /// Occupied-country membership and each nullable occupation-law pointer.
     pub group_laws: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
@@ -78,7 +78,7 @@ pub struct OccupationSettings {
 pub struct StateOccupationLaw {
     pub controller: Vec<u8>,
     pub occupied: Vec<u8>,
-    /// Literal integer key, including zero; not a guessed CState association.
+    /// Literal integer key, including zero; not a guessed state association.
     pub state: u32,
     pub law: Vec<u8>,
 }
@@ -92,11 +92,11 @@ pub struct StateGarrison {
     pub strength_ratio: Decimal,
     pub garrison_required: Decimal,
     pub serialized_flag: bool,
-    /// C5B610 serializes positive rows only, retaining their relative order.
+    /// The manpower writer serializes positive rows only, retaining their relative order.
     pub manpower: Vec<Manpower>,
-    /// 140FEB450 always writes both objects. Absence is retained for the oracle.
+    /// The garrison writer always writes both equipment objects. Absence is retained for the oracle.
     pub equipment: Option<super::production::Pool>,
-    /// 140FFDA90 writes nonzero token/amount entries in native order.
+    /// The equipment-need writer saves nonzero token/amount entries in native order.
     pub equipment_need: Option<Vec<(Vec<u8>, Decimal)>>,
 }
 
@@ -109,7 +109,7 @@ pub struct Manpower {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StateResistance {
     pub state: u32,
-    /// F87B70 emits only a signed-positive country link.
+    /// The resistance writer emits only a signed-positive country link.
     pub country: Option<Vec<u8>>,
     pub level: Decimal,
     pub speed: Decimal,
@@ -129,15 +129,13 @@ pub struct CountryCollaboration {
 /// (one-based resource database index, amount) elements in native order.
 pub type BuildingOverride = (Vec<u8>, Vec<(i32, Decimal)>);
 
-/// A country's `resources` block as `CCountryResources::Write@140CAEB80`
-/// writes it, reduced to what the raid state inputs read.
+/// A country's saved `resources` block, reduced to what the raid state
+/// inputs read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CountryResources {
-    /// Each `origin`'s `state` (`CResourceOrigin + 0x80`, written by
-    /// `Serialize@140CAF880` only when not null), in native order.
+    /// Each `origin`'s `state`, written only when not null, in native order.
     pub origin_states: Vec<u32>,
-    /// `modify_building_resources` (`+0x7a0`, read back by `140CAA0C0`) in
-    /// native order. An entry can be empty.
+    /// `modify_building_resources` in native order. An entry can be empty.
     pub building_overrides: Vec<BuildingOverride>,
 }
 
@@ -145,8 +143,8 @@ pub struct CountryResources {
 pub struct Pack {
     pub state_buildings: BTreeMap<BuildingKey, Building>,
     pub province_buildings: BTreeMap<BuildingKey, Building>,
-    /// A country's offsite buildings (CCountry +0x1350), which 70C580 writes
-    /// as the country's `buildings` block (token 0x2f59) and omits when empty,
+    /// A country's offsite buildings, which the writer saves as its
+    /// `buildings` block and omits when empty,
     /// so a country without one has none. They have no location: `location`
     /// is zero.
     pub country_buildings: BTreeMap<OffsiteKey, Building>,
@@ -158,9 +156,9 @@ pub struct Pack {
     pub country_reserve_manpower: BTreeMap<Vec<u8>, Vec<Manpower>>,
     pub state_resistance: BTreeMap<u32, StateResistance>,
     pub country_collaboration: BTreeMap<(Vec<u8>, Vec<u8>), CountryCollaboration>,
-    /// A state's `resources` block: its own `CState + 0x1b8` pool by name.
+    /// A state's `resources` block: its own pool by name.
     pub state_resources: BTreeMap<(u32, Vec<u8>), Decimal>,
-    /// A state's `dynamic_modifier` block: its `CState + 0x788` container in order.
+    /// A state's `dynamic_modifier` block: its modifier container in order.
     pub state_dynamic_modifiers: BTreeMap<u32, Vec<super::governance::DynamicModifier>>,
     /// Each country's `resources` block, when it has one.
     pub country_resources: BTreeMap<Vec<u8>, CountryResources>,
@@ -228,7 +226,7 @@ fn false_omitted(items: &[Item], key: &[u8]) -> io::Result<bool> {
 }
 
 fn production(country: &[u8], queue_ordinal: u32, items: &[Item]) -> io::Result<Production> {
-    // 14A36A0 omits these three values exactly when their native integer is zero.
+    // The production writer omits these three values exactly when their stored integer is zero.
     Ok(Production {
         id: typed_handle(field(items, b"id")?.ok_or_else(|| invalid("production line lacks id"))?)?,
         country: country.to_vec(),
@@ -239,7 +237,7 @@ fn production(country: &[u8], queue_ordinal: u32, items: &[Item]) -> io::Result<
         produced: zero_omitted_fixed(items, b"produced")?,
         priority: number(items, b"priority")?,
         amount: number(items, b"amount")?,
-        // Embedded CGameDate primary +50/raw +58/CPersistent +60.
+        // Creation date retains its saved calendar representation.
         created_date: GameDate::parse(&required_bytes(items, b"created_date")?)?,
     })
 }
@@ -254,7 +252,7 @@ fn railway(country: &[u8], ordinal: u32, items: &[Item]) -> io::Result<RailwayCo
             route.push(integer(scalar(&item.value)?)?);
         }
     }
-    // 19F0F20 emits all four numeric values unconditionally; cancel is bool.
+    // The railway writer emits all four numeric values unconditionally; cancel is bool.
     Ok(RailwayConstruction {
         production: production(country, ordinal, items)?,
         base_level: number(items, b"base")?,
@@ -293,7 +291,7 @@ fn manpower(items: &[Item], key: &[u8]) -> io::Result<Vec<Manpower>> {
 fn occupation(country: &[u8], items: &[Item], pack: &mut Pack) -> io::Result<()> {
     let settings = OccupationSettings {
         country: country.to_vec(),
-        // FEAE70 emits token 0x3142 only for a nonnull template pointer.
+        // The settings writer emits the template only for a nonnull pointer.
         garrison_template: field(items, b"division_template_id")?
             .map(typed_handle)
             .transpose()?,
@@ -513,7 +511,7 @@ pub(super) fn parse_with_countries(
                             return Err(invalid("duplicate full railway construction handle"));
                         }
                     }
-                    // CRailwayGunRepairLine: no construction table records
+                    // Railway-gun repair lines: no construction table records
                     // it; its position still counts toward later ordinals.
                     Some(b"railway_gun") => {}
                     _ => {
@@ -537,7 +535,7 @@ pub(super) fn parse_with_countries(
                 .insert(country.to_vec(), country_resources(block(value)?)?);
         }
         if let Some(value) = field(fields, b"collaboration")? {
-            // Country 70C580 and status13E08A0 use the same literal at two levels.
+            // The country and status writers use the same literal at two levels.
             if let Some(value) = field(block(value)?, b"collaboration")? {
                 for item in block(value)? {
                     let target = item
@@ -630,8 +628,8 @@ pub(super) fn parse_with_countries(
     Ok(pack)
 }
 
-/// Initial CStateTemplate resource declarations from the independently verified
-/// content. They are not the runtime CState resource pool serialized by a save.
+/// Initial state-history resource declarations from the independently verified
+/// content. They are not the runtime state resource pool serialized by a save.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BaseResources {
     pub rows: BTreeMap<(u32, Vec<u8>), (u32, i64)>,
@@ -639,8 +637,8 @@ pub struct BaseResources {
 }
 
 impl BaseResources {
-    /// Initial resources already read by CStateTemplate's native replay
-    /// (140AAF580): ordered, repeated blocks appended, decimal i32 amounts.
+    /// Initial resources already read by the state-history reader:
+    /// ordered, repeated blocks appended, decimal i32 amounts.
     pub fn add_state_history(&mut self, state: &crate::states::StateDefinition) -> io::Result<()> {
         let state_id = state.id;
         if !self.states.insert(state_id) {

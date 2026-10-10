@@ -67,7 +67,7 @@ const RIBBON_ALPHA = 0.55;
 const RIBBON_HOT = 0.8;
 const RIBBON_DIM = 0.12;
 
-/** A Sankey of sources (left) to targets (right) on Canvas 2D (mock-up style-6):
+/** A Sankey of sources (left) to targets (right) on Canvas 2D:
  * ribbons sized by value that grow, shrink, appear and vanish as playback moves,
  * nodes that glide to their new places, and inside each node a fixed ribbon order,
  * so nothing jumps. Hovering a ribbon or a node dims the rest and shows its tooltip,

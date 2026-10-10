@@ -15,12 +15,12 @@ fn fixture() -> (Fixture, Folder) {
         ),
         (
             "common/technologies/synthetic.txt",
-            // 140AC3C70 leaves a leading limit's last value in the shared slot.
+            // leaves a leading limit's last value in the shared slot.
             // Empty inline limits keep `{`; external limits supply the gate.
             concat!(
                 "technology_folders={ignored_folder={}} technology_categories={mod_category mod_other} technologies={",
                 "mod_tech={parent=mod_parent enable_equipments={mod_equipment}} mod_small={parent=mod_parent force_use_small_tech_layout=yes enable_equipments={mod_equipment}} ",
-                "mod_callback={mod_unit={soft_attack=0.1} enable_equipments={missing_equipment mod_equipment} enable_equipment_modules={mod_module mod_module mod_second_module mod_denied_module} max_level=3 enable_building={building=mod_lab} enable_subunits={limit={always=yes} mod_unit} enable_tactic=mod_tactic enable_tactic=MOD_TACTIC on_research_complete_limit={always=yes} on_research_complete={limit={} custom_effect_tooltip=TECH_COMPLETE} modifier={custom_modifier_tooltip=TECH_MODIFIER}} ",
+                "mod_callback={mod_unit={soft_attack=0.17} enable_equipments={missing_equipment mod_equipment} enable_equipment_modules={mod_module mod_module mod_second_module mod_denied_module} max_level=5 enable_building={building=mod_lab} enable_subunits={limit={always=yes} mod_unit} enable_tactic=mod_tactic enable_tactic=MOD_TACTIC on_research_complete_limit={always=yes} on_research_complete={limit={} custom_effect_tooltip=TECH_COMPLETE} modifier={custom_modifier_tooltip=TECH_MODIFIER}} ",
                 "mod_conditional={on_research_complete_limit={always=no} on_research_complete={limit={} custom_effect_tooltip=TECH_COMPLETE} enable_subunits={limit={always=no} mod_unit} enable_subunits={limit={always=yes} mod_unit}} ",
                 "mod_repeated={enable_building={building=mod_lab} enable_building={building=mod_lab level=2} enable_building={building=mod_store level=3} enable_building={building=MOD_LAB level=4} enable_tactic=mod_tactic enable_tactic=mod_tactic enable_tactic=mod_other_tactic enable_tactic=mod_tactic}}"
             ),
@@ -32,7 +32,7 @@ fn fixture() -> (Fixture, Folder) {
         ),
         (
             "common/units/equipment/synthetic.txt",
-            // 1409E5170 attaches a block's limit to every module in that block.
+            // attaches a block's limit to every module in that block.
             "equipments={mod_equipment={is_archetype=yes type=infantry}} equipment_modules={limit={always=yes} mod_module={allowed={tag=AAA}} mod_second_module={allowed={always=yes}}} equipment_modules={limit={always=no} mod_denied_module={allowed={always=yes}}}",
         ),
         (
@@ -57,7 +57,7 @@ fn fixture() -> (Fixture, Folder) {
         ),
         (
             "common/special_projects/projects/synthetic.txt",
-            "mod_project={specialization=mod_science prototype_time=200 complexity={min=2 max=4}}",
+            "mod_project={specialization=mod_science prototype_time=160 complexity={min=3 max=5}}",
         ),
         (
             "common/buildings/synthetic.txt",
@@ -74,7 +74,7 @@ fn fixture() -> (Fixture, Folder) {
                 " EFFECT_STEAL_RANDOM_TECH:0 \"Steal [Root.GetTag]\"\n EFFECT_STEAL_RANDOM_TECH_INSTANT:0 \"Steal instantly [Root.GetTag]\"\n",
                 " FACTION_ACCESS_TAB_REASEARCH:0 \"Research [Root.GetTag]\"\n FACTION_ACCESS_TAB_UNLOCK:0 \"Unlock $NAME$\"\n FACTION_ACCESS_TAB_LOCK:0 \"Lock $NAME$\"\n",
                 " mod_category:0 \"Category\"\n AAA_mod_category:0 \"Alpha category [Root.GetTag]\"\n mod_other:0 \"Other\"\n mod_parent:0 \"Parent\"\n AAA_mod_parent:0 \"Alpha parent\"\n mod_equipment:0 \"Equipment\"\n AAA_mod_equipment:0 \"Alpha equipment\"\n",
-                " EFFECT_GIVE_TECHNOLOGY:0 \"Give $NAME$\"\n AND:0 \"and \"\n EFFECT_TECH_BONUS_USES:0 \"$USES|0$ uses\"\n",
+                " EFFECT_GIVE_TECHNOLOGY:0 \"Give $NAME$\"\n AND:0 \"plus \"\n EFFECT_TECH_BONUS_USES:0 \"$USES|0$ uses\"\n",
                 " EFFECT_ADD_TECH_BONUS_BONUS_ONLY:0 \"Bonus $BONUS|2$/$USES$:$LIST$\"\n EFFECT_ADD_TECH_BONUS_AHEAD_ONLY:0 \"Ahead $AHEAD|2$/$USES$:$LIST$\"\n EFFECT_ADD_TECH_BONUS:0 \"Both $AHEAD|2$/$BONUS|2$/$USES|0$:$LIST$\"\n",
                 " mod_folder_name:0 \"Folder\"\n mod_track_name:0 \"Track\"\n mod_grand_name:0 \"Grand\"\n mod_sub_name:0 \"Sub\"\n",
                 " SET_SUB_DOCTRINE_EFFECT:0 \"Set sub $NAME$\"\n SET_GRAND_DOCTRINE_EFFECT:0 \"Set grand $NAME$\"\n ADD_DAILY_MASTERY_EFFECT:0 \"Daily $AMOUNT|2$/$DAYS|0$\"\n ADD_MASTERY_BONUS_EFFECT:0 \"Mastery bonus $BONUS|2$/$DAYS|0$\"\n",
@@ -217,10 +217,13 @@ fn fixture() -> (Fixture, Folder) {
     (fixture, folder)
 }
 
-macro_rules! ported {
+macro_rules! description_case {
     ($name:ident, $body:expr, $expected:expr) => {
         #[test]
         fn $name() {
+            engine::executable_tables::initialize_for_tests().expect(
+                "BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests",
+            );
             let (fixture, _folder) = fixture();
             let content = fixture
                 .catalogue
@@ -235,96 +238,97 @@ macro_rules! ported {
     };
 }
 
-// Inventory witness forms, with synthetic content identifiers/localisation.
-// common/decisions/afg.txt:445; _debug_decisions.txt:170; raj_goe.txt:1833.
-ported!(
+// Bonus, category, project and raid examples exercise their operand forms.
+
+description_case!(
     add_tech_bonus,
-    "add_tech_bonus={name=mod_name bonus=0.75 uses=1 category=mod_category}",
-    "Bonus 0.75/1 uses:Alpha category [Root.GetTag]\n"
+    "add_tech_bonus={category=mod_category uses=3 bonus=0.42 name=mod_name}",
+    "Bonus 0.42/3 uses:Alpha category [Root.GetTag]\n"
 );
-ported!(
+description_case!(
     set_technology,
     "set_technology={mod_tech=1 popup=no}",
     "Give Alpha parent\n"
 );
-ported!(
+description_case!(
     add_research_slot,
-    "add_research_slot=1",
-    "Add 1 [Root.GetTag]\n"
+    "add_research_slot=4",
+    "Add 4 [Root.GetTag]\n"
 );
-// common/decisions/cog.txt:1275; jap.txt:6912.
-ported!(
+
+description_case!(
     add_breakthrough_progress,
-    "add_breakthrough_progress={specialization=mod_science value=0.1}",
-    "Progress:\n  Alpha science [Root.GetTag]:0.10\n"
+    "add_breakthrough_progress={value=0.28 specialization=mod_science}",
+    "Progress:\n  Alpha science [Root.GetTag]:0.28\n"
 );
-ported!(
+description_case!(
     add_mastery_bonus,
-    "add_mastery_bonus={bonus=0.15 days=180 name=mod_bonus track=mod_track}",
-    "Mastery bonus 0.15/180 track Track"
+    "add_mastery_bonus={track=mod_track bonus=0.32 name=mod_bonus days=41}",
+    "Mastery bonus 0.32/41 track Track"
 );
-// common/decisions/cze.txt:66; national_focus/australia_taog.txt:9468.
-ported!(inherit_technology, "inherit_technology=BBB", "Inherit Beta");
-ported!(
+
+description_case!(inherit_technology, "inherit_technology=BBB", "Inherit Beta");
+description_case!(
     add_mio_research_bonus,
-    "add_mio_research_bonus=0.05",
-    "MIO add 0.05 AAA\n"
+    "add_mio_research_bonus=0.14",
+    "MIO add 0.14 AAA\n"
 );
-// common/operations/00_operations.txt:1955.
-ported!(
+
+description_case!(
     steal_random_tech_bonus,
-    "steal_random_tech_bonus={folder=electronics_folder folder=industry_folder bonus=3.0 name=mod_name target=FROM dynamic=yes instant=yes uses=1}",
+    "steal_random_tech_bonus={instant=yes target=FROM dynamic=yes name=mod_name folder=mod_folder folder=sample_extra_folder bonus=1.8 uses=4}",
     "Steal instantly AAA"
 );
-// national_focus/china_nationalist_sea.txt:10341/:10009; afghanistan.txt:10561.
-ported!(set_sub_doctrine, "set_sub_doctrine=mod_sub", "Set sub Sub");
-ported!(
+
+description_case!(set_sub_doctrine, "set_sub_doctrine=mod_sub", "Set sub Sub");
+description_case!(
     add_daily_mastery,
-    "add_daily_mastery={amount=0.5 days=100 name=mod_name track=mod_track}",
-    "Daily 0.50/100 track Track"
+    "add_daily_mastery={days=73 track=mod_track name=mod_name amount=0.65}",
+    "Daily 0.65/73 track Track"
 );
-ported!(set_research_slots, "set_research_slots=2", "Slots 2");
-// national_focus/argentina.txt:1111; italy.txt:4219; russia.txt:6499.
-ported!(
+description_case!(set_research_slots, "set_research_slots=6", "Slots 6");
+
+description_case!(
     add_breakthrough_points,
     "add_breakthrough_points={specialization=mod_science value=1}",
     "Points:\n  Alpha science [Root.GetTag]:1\n"
 );
-ported!(
+description_case!(
     set_grand_doctrine,
     "set_grand_doctrine=mod_grand",
     "Set grand Grand"
 );
-ported!(
+description_case!(
     add_faction_power_projection,
     "add_faction_power_projection=100",
     "Projection 100 AAA"
 );
-// events/ire events (ireland).txt:16173; scripted_effects/00_faction_scripted_effects.txt:125.
-ported!(
+
+description_case!(
     set_mio_research_bonus,
     "set_mio_research_bonus=var:mod_bonus",
     "MIO set 0.25 AAA\n"
 );
-ported!(
+description_case!(
     set_faction_research_unlocked,
     "set_faction_research_unlocked=yes",
     "Unlock Research AAA"
 );
-ported!(
+description_case!(
     faction_research_quoted_yes_uses_raw_token_text,
     "set_faction_research_unlocked=\"yes\"",
     "Unlock Research AAA"
 );
-ported!(
+description_case!(
     faction_research_uppercase_yes_stays_locked,
     "set_faction_research_unlocked=YES",
     "Lock Research AAA"
 );
 
-// Reached authored forms: national_focus/italy.txt:4407 and decisions/sia.txt:1736.
 #[test]
 fn add_project_progress_ratio() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -337,25 +341,25 @@ fn add_project_progress_ratio() {
         id: 7,
     })]);
     let output = fixture.render_native(
-        "add_project_progress_ratio=0.5",
+        "add_project_progress_ratio=0.36",
         &mut scopes,
         content.view(None),
     );
-    assert_eq!(output.text, "Progress Alpha project AAA 0.50");
+    assert_eq!(output.text, "Progress Alpha project AAA 0.36");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
-ported!(
+description_case!(
     complete_special_project,
     "complete_special_project=sp:mod_project",
     "Complete Alpha project AAA\n  Output\n"
 );
-ported!(
+description_case!(
     complete_project_hidden_output,
     "complete_special_project={project=sp:mod_project show_modifiers=no}",
     "Complete Alpha project AAA\n"
 );
-ported!(
+description_case!(
     complete_project_null_selector_keeps_literal,
     "complete_special_project=sp:missing",
     "Complete sp:missing\n"
@@ -464,9 +468,9 @@ fn render_raid(fixture: &Fixture) -> Description {
         },
         EventScope::of(EventObject::Raid(RAID)),
     ]);
-    // common/raids/air_raids.txt:188: victim_effects enters target_state first.
+    // victim_effects enters target_state first.
     let items = installed_content::effect_keys::read_body(
-        b"raid_reduce_project_progress_ratio=0.05",
+        b"raid_reduce_project_progress_ratio=0.03",
         content.key_names.unwrap(),
     )
     .unwrap();
@@ -475,14 +479,18 @@ fn render_raid(fixture: &Fixture) -> Description {
 
 #[test]
 fn raid_reduce_project_progress_ratio() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = raid_fixture();
     let output = render_raid(&fixture);
-    assert_eq!(output.text, "Delay Project BBB 0.05/333 days");
+    assert_eq!(output.text, "Delay Project BBB 0.03/120 days");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
 #[test]
 fn raid_stops_at_first_enemy_facility_even_when_its_program_is_idle() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = raid_fixture();
     if let TableView::Complete(TableRows::RaidFacilities(rows)) =
         &mut *fixture.frame.tables[TableId::RaidFacilities.index()]
@@ -496,6 +504,8 @@ fn raid_stops_at_first_enemy_facility_even_when_its_program_is_idle() {
 
 #[test]
 fn raid_skips_friendly_facilities() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = raid_fixture();
     if let TableView::Complete(TableRows::WarRelations(rows)) =
         &mut *fixture.frame.tables[TableId::WarRelations.index()]
@@ -507,32 +517,32 @@ fn raid_skips_friendly_facilities() {
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
-ported!(
+description_case!(
     research_slot_removal_zero,
     "add_research_slot=0",
     "Remove 0\n"
 );
-ported!(
+description_case!(
     technology_handle_uses_handle_not_database_index,
     "set_technology={var:mod_handle=0}",
     "Give Alpha parent\n"
 );
-ported!(
+description_case!(
     technology_bonus_runtime_equipment_name,
     "add_tech_bonus={technology=mod_tech bonus=0.5 uses=2}",
     "Bonus 0.50/2 uses:Alpha equipment\n"
 );
-ported!(
+description_case!(
     technology_bonus_both_passes_integer_uses,
     "add_tech_bonus={technology=mod_small category=mod_category category=MOD_CATEGORY ahead_reduction=1 bonus=0.5 uses=2}",
-    "Both 1.00/0.50/2:Alpha parent and Alpha category [Root.GetTag]\n"
+    "Both 1.00/0.50/2:Alpha parent plus Alpha category [Root.GetTag]\n"
 );
-ported!(
-    mastery_complex_filter_native_order,
+description_case!(
+    mastery_complex_filter_order,
     "add_daily_mastery={amount=1 folder=mod_folder grand_doctrine=mod_grand sub_doctrine=mod_sub track=mod_track track_index=2}",
     "Daily 1.00/0 conditions:\nFolder Folder\nGrand Grand\nSub Sub\nTrack Track\nIndex 2"
 );
-ported!(
+description_case!(
     breakthrough_all_keeps_token_slot_order,
     "add_breakthrough_points={specialization=all specialization=mod_science value=1}",
     "Points:\n  Other science:1\n  Alpha science [Root.GetTag]:1\n"
@@ -540,6 +550,8 @@ ported!(
 
 #[test]
 fn technology_catalogue_is_cached_once_per_stack() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, folder) = fixture();
     let scripted = fixture.catalogue.scripted_content().unwrap();
     let content = scripted.effects().unwrap();
@@ -558,10 +570,12 @@ fn technology_catalogue_is_cached_once_per_stack() {
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
-// Reached tech_effect|... in naval_projects.txt:3441 and philippines.txt:8846.
-// Callback flags 0,1,1 omit prose, time, prerequisites and debug-only AI detail.
+// tech_effect pipes omit prose, timing and requirements.
+// Callback flags omit prose, time, prerequisites and debug-only AI detail.
 #[test]
-fn bound_technology_effect_keeps_native_body_order_and_fresh_completion_scope() {
+fn bound_technology_effect_keeps_body_order_and_fresh_completion_scope() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -585,12 +599,12 @@ fn bound_technology_effect_keeps_native_body_order_and_fresh_completion_scope() 
     assert_eq!(
         output.text,
         concat!(
-            "\u{13}GFX_mod_unit_icon_small|1 Alpha unit\n   Soft:0.10\n",
+            "\u{13}GFX_mod_unit_icon_small|1 Alpha unit\n   Soft:0.17\n",
             "Equipment:\u{11}HAlpha equipment\u{11}!\n",
             "Modules:\u{11}HZero module\u{11}!, \u{11}HZero second\u{11}!\n",
-            "Buildings:\u{11}HLab\u{11}! (Level 3)\n",
+            "Buildings:\u{11}HLab\u{11}! (Level 5)\n",
             "Subunits:\u{11}HAlpha unit\u{11}!\n",
-            // 140EC5F90 appends the CEffect body verbatim, then one LF.
+            // appends the effect body verbatim, then one LF.
             "Complete AAA/AAA\n",
             "Tactics:\u{11}HAlpha tactic\u{11}!\n",
             "Modifier [Root.GetTag]\n"
@@ -601,6 +615,8 @@ fn bound_technology_effect_keeps_native_body_order_and_fresh_completion_scope() 
 
 #[test]
 fn bound_technology_effect_combines_limits_and_accepts_unresearched_status() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -619,6 +635,8 @@ fn bound_technology_effect_combines_limits_and_accepts_unresearched_status() {
 
 #[test]
 fn bound_technology_module_gate_uses_caller_country_and_names_use_reserved_zero_tag() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -650,6 +668,8 @@ fn bound_technology_module_gate_uses_caller_country_and_names_use_reserved_zero_
 
 #[test]
 fn bound_technology_effect_missing_identity_is_empty_but_missing_recording_refuses() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::ResearchTechnologies.index()] =
         TableView::Complete(TableRows::ResearchTechnologies(Vec::new()));
@@ -689,6 +709,8 @@ fn bound_technology_effect_missing_identity_is_empty_but_missing_recording_refus
 
 #[test]
 fn faction_power_projection_expands_with_recorded_membership() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::Factions.index()] =
         TableView::Complete(TableRows::Factions(vec![FactionRow {
@@ -718,7 +740,9 @@ fn faction_power_projection_expands_with_recorded_membership() {
 }
 
 #[test]
-fn bound_technology_modifier_recording_failure_preserves_other_native_fragments() {
+fn bound_technology_modifier_recording_failure_preserves_other_fragments() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] = TableView::Unavailable {
         reason: "synthetic fault".into(),
@@ -758,6 +782,8 @@ fn bound_technology_modifier_recording_failure_preserves_other_native_fragments(
 
 #[test]
 fn bound_technology_unavailable_building_content_preserves_later_unlocks() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -793,6 +819,8 @@ fn bound_technology_unavailable_building_content_preserves_later_unlocks() {
 
 #[test]
 fn bound_technology_repeated_building_and_tactic_compare_final_definition_pointer() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -808,8 +836,8 @@ fn bound_technology_repeated_building_and_tactic_compare_final_definition_pointe
     assert_eq!(
         output.text,
         concat!(
-            "Buildings:\u{11}HLab\u{11}! (Level 1) and \u{11}HLab\u{11}! (Level 2), \u{11}HStore\u{11}! (Level 3) and \u{11}HLab\u{11}! (Level 4)\n",
-            "Tactics:\u{11}HAlpha tactic\u{11}! and \u{11}HAlpha tactic\u{11}!, \u{11}HAlpha other tactic\u{11}! and \u{11}HAlpha tactic\u{11}!\n"
+            "Buildings:\u{11}HLab\u{11}! (Level 1) plus \u{11}HLab\u{11}! (Level 2), \u{11}HStore\u{11}! (Level 3) plus \u{11}HLab\u{11}! (Level 4)\n",
+            "Tactics:\u{11}HAlpha tactic\u{11}! plus \u{11}HAlpha tactic\u{11}!, \u{11}HAlpha other tactic\u{11}! plus \u{11}HAlpha tactic\u{11}!\n"
         )
     );
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);

@@ -2,6 +2,8 @@ use super::*;
 
 #[test]
 fn every_trait_trigger_skips_invalid_key_definitions() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for field_name in [
         "allowed",
         "prerequisites",

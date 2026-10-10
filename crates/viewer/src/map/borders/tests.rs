@@ -53,6 +53,8 @@ fn two_provinces_trace_one_polyline_on_pixel_crack_midpoints() {
 
 #[test]
 fn an_island_traces_a_closed_loop() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut ids = vec![1_u32; 64];
     for y in 3..5 {
         for x in 3..5 {

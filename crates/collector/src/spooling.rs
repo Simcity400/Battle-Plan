@@ -6340,6 +6340,8 @@ mod tests {
 
     #[test]
     fn fixed_layout_refusal_survives_daily_carry_and_independent_keyframes() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
         use replay::frame::FrameDecoder;
         let (mut campaign, _) = campaign();
         let branch = campaign.observe(None, 0, Some(1)).unwrap();
@@ -6347,8 +6349,8 @@ mod tests {
         let mut report = engine::fixed_layout::Report {
             static_token_maximum: 0x6000,
             gap: Ok(()),
-            modifiers: [Ok(()); engine::modifier_keys::NAMES.len()],
-            tokens: [Ok(()); engine::fixed_layout::TOKENS.len()],
+            modifiers: [Ok(()); engine::fixed_layout::GAP as usize],
+            tokens: [Ok(()); engine::fixed_layout::TOKEN_IDS.len()],
         };
         report.modifiers[key as usize] = Err("definition token spells a different script name");
         let mut decoder = FrameDecoder::new();
@@ -7463,6 +7465,8 @@ mod tests {
     #[test]
     fn shared_attack_scalars_are_masked_after_spool_carry_and_survive_delta_and_independent_keyframes()
      {
+        engine::executable_tables::initialize_for_tests()
+            .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
         use replay::frame::FrameDecoder;
         use replay::rows::{
             CountryAttackInputs, CountryCounterInputRow, ProvinceAttackInputs, Recorded,
@@ -7538,8 +7542,8 @@ mod tests {
         let valid = engine::fixed_layout::Report {
             static_token_maximum: 0x6000,
             gap: Ok(()),
-            modifiers: [Ok(()); engine::modifier_keys::NAMES.len()],
-            tokens: [Ok(()); engine::fixed_layout::TOKENS.len()],
+            modifiers: [Ok(()); engine::fixed_layout::GAP as usize],
+            tokens: [Ok(()); engine::fixed_layout::TOKEN_IDS.len()],
         };
         let mut bad = valid;
         bad.modifiers[engine::modifier_keys::LAND_NIGHT_ATTACK as usize] =

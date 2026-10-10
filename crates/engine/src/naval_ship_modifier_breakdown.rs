@@ -1,8 +1,6 @@
-//! Native child trees for live naval combat hovers. 14195C7D0 and 141963700
-//! call 14195EEC0, whose ship route is 140C29020 -> 140C230A0 ->
-//! 14054D0F0; the convoy route is 1415B4BB0 -> 14054D0F0. Side screening
-//! and positioning use 14160A7B0/141609460 -> 1415B4BB0. Only live combat
-//! sides, escaping members and drawable carrier air reach this reader.
+//! Child modifier trees for live naval combat hovers. Ship, convoy, screening
+//! and positioning descriptions select different sources. Only live sides,
+//! escaping members and drawable carrier air reach this reader.
 
 use crate::{
     Memory, ccountry, cfex_air, cfex_member, cnaval_combat, cnaval_combatant, cpdx_array::Array,
@@ -13,12 +11,10 @@ use crate::{
 mod demand;
 pub use demand::{Demand, demand};
 
-/// NNavy::COMBAT_INITIAL_DURATION native global read by 14195C7D0 and
-/// loaded by 14092B4B0; 140C29020 uses it for early combat sources.
+/// Loaded initial-combat-duration global selecting early combat sources.
 pub const COMBAT_INITIAL_DURATION_RVA: usize = 0x0331_d1ac;
 
-/// Native hover keys reached by 1415B4BB0/140C230A0, sorted for one
-/// 140551820 accumulator census per node.
+/// Hover keys sorted for one accumulator census per node.
 pub const KEYS: [u32; 9] = [
     modifier_keys::SORTIE_EFFICIENCY,
     modifier_keys::NAVAL_RETREAT_SPEED_AFTER_INITIAL_COMBAT,
@@ -107,7 +103,7 @@ pub struct Request {
 pub struct RawNode {
     pub children: u32,
     pub name: [usize; 2],
-    /// Effective 140551820 values in [`KEYS`] order; absent keys are zero.
+    /// Effective values in [`KEYS`] order; absent keys are zero.
     pub values: [i64; KEYS.len()],
 }
 
@@ -259,7 +255,7 @@ fn census_requested_roots(
     }
 }
 
-/// 14160C6D0's forward-list predicate for the country-only 0x1B3 hover.
+/// Forward-list submarine eligibility for the country-only hover key.
 fn eligible_submarine(members: &[cfex_member::DetailsRow], side: u8) -> bool {
     members.iter().any(|member| {
         member.member.side == side
@@ -271,9 +267,8 @@ fn eligible_submarine(members: &[cfex_member::DetailsRow], side: u8) -> bool {
     })
 }
 
-/// 141609460 and 14160A7B0 call 1415B4BB0 for each live side. The latter
-/// walks country, weather, terrain/ocean and commander sources in this order.
-/// 0x1B3 passes null province and commander, so it has country only.
+/// Each live side selects country, weather, terrain/ocean and commander
+/// sources in order. Key 0x1B3 supplies no province or commander and uses country only.
 fn side_trees<const TERMINAL: bool>(
     emit: &mut impl FnMut(Request) -> Result<(), &'static str>,
     memory: &impl Memory,
@@ -303,8 +298,7 @@ fn side_trees<const TERMINAL: bool>(
         if field::<i32>(memory, side, 0x48)? == 0 {
             continue;
         }
-        // CCombatant+0x38 is the head pointer, not the raw tag. The first
-        // node's +0 word is the selector 1415B4BB0 resolves.
+        // The side head points to a node; its first raw tag selects the country.
         let country_head = field::<u64>(memory, side, 0x38)? as usize;
         let country_link: u32 = field(memory, country_head, 0)?;
         let country = ccountry::Reader::new(memory, base, game_state)?.resolve(country_link)?;
@@ -315,14 +309,12 @@ fn side_trees<const TERMINAL: bool>(
             field::<u64>(memory, game_state, crate::cgame_state::WEATHER_MANAGER)? as usize;
         let regions = Array::read(memory, at(weather, 0x40)?, 0x160)
             .ok_or("naval side breakdown weather region array invalid")?;
-        // 140F04E40 returns null outside the live region array; 1415B4BB0
-        // simply omits that optional weather source.
+        // A region outside the live array omits the optional weather source.
         let region_at = regions.element(region, 0x160);
         let terrain =
             naval_ship_modifier_inputs::terrain_with_policy::<TERMINAL>(memory, base, definition)?;
         let current_leader = field::<u64>(memory, side, cnaval_combatant::COMMANDER)? as usize;
-        // 1416094A5 calls the opposite-side getter with this side in RCX;
-        // 1416094B1 saves its +0x110, then 14160969A passes it for 0x5A.
+        // Positioning key 0x5A uses the opposite side's stored ship-ratio operand.
         let opposite_offset = if side_index == 0 {
             cnaval_combat::DEFENDER
         } else {
@@ -335,10 +327,9 @@ fn side_trees<const TERMINAL: bool>(
             return Err("naval side breakdown opposite identity mismatch");
         }
         let opposing_leader = field::<u64>(memory, opposite, cnaval_combatant::COMMANDER)? as usize;
-        // 14160A7B0 discards the 0x1B1 description. Its 0x1B3 branch
-        // requires 14160C6D0's eligible-submarine count to be zero. The
-        // capital-screening condition is recomputed on demand by the hover,
-        // so its stored scalar is not a safe capture gate.
+        // Capital-screening discards the 0x1B1 description and selects 0x1B3 only
+        // when the eligible-submarine count is zero. The hover recomputes this gate;
+        // its stored scalar cannot safely select capture.
         let keys = [
             (!eligible_submarine(members, side_index as u8)).then_some(0x1b3),
             Some(0x1b2),
@@ -407,13 +398,11 @@ fn side_trees<const TERMINAL: bool>(
     Ok(())
 }
 
-// Candidate unions for sizing: all ship escape branches (14195C7D0), plus
-// the two carrier selectors (141963700) when the side has active carrier air.
+// Sizing union: all ship escape branches and both selectors for active carrier air.
 const SHIP_ESCAPE_KEYS: &[u32] = &[0x59, 0x5b, 0x5c];
 const SHIP_CARRIER_ESCAPE_KEYS: &[u32] = &[0x24, 0x59, 0x5b, 0x5c, 0x1b6];
 
-/// The keys selected by 14195C7D0. The initial-duration define is read from
-/// its signed native global; 14092B4B0 loads that value from NNavy.
+/// Escape-hover keys; the initial-duration define is read from its signed global.
 fn keys(member: &cfex_member::DetailsRow, duration: i32, initial: i32) -> &'static [u32] {
     if member.member.state != 8 {
         return &[];
@@ -675,11 +664,9 @@ fn capture_requested_root(
     Ok(())
 }
 
-/// FormatModifierBreakdown@14054D0F0 receives depth -1 from both
-/// 1415B4BB0 and 140C230A0: its full native tree must be captured. Each
-/// distinct accumulator is traversed once; only requested keys are read
-/// from its sorted entry array in that visit. Zero subtrees are pruned after
-/// capture, outside the hourly block.
+/// Descriptions request the full retained tree. Each distinct accumulator
+/// is traversed once, reading only requested keys from its sorted array.
+/// Zero subtrees are pruned after capture, outside hourly acquisition.
 fn capture_root(
     memory: &impl Memory,
     base: usize,
@@ -713,8 +700,7 @@ fn capture_root(
         if address == 0 || buffers.stack[..depth].iter().any(|f| f.address == address) {
             return Err("naval modifier null node or ancestor cycle");
         }
-        // 14054D0F0 visits the full retained depth. Worker scratch grows here;
-        // fixed count-only fixtures retain their checked call-stack fallback.
+        // Visit the full retained depth, growing worker scratch or using the checked fixture fallback.
         if !buffers.stack.ensure(
             depth
                 .checked_add(1)
@@ -799,8 +785,7 @@ fn capture_node(
             values[selection.positions[i]] = selection.metadata[i].effective(raw[i].raw);
         }
     }
-    // With depth -1, 14054D0F0 prints only nonzero leaf values. An
-    // interior node and an all-zero leaf never need display bytes.
+    // Only nonzero leaves need display bytes; interior and all-zero nodes do not.
     let name_first = buffers.text_required;
     let name_len = if children.count == 0 && values.iter().any(|&value| value != 0) {
         let name_address = at(address, 0x48)?;
@@ -860,13 +845,10 @@ struct Ancestor<'a> {
     parent: Option<&'a Ancestor<'a>>,
 }
 
-/// Native retention is governed by accumulator+0xAC: 14054AD00/14054AF60
-/// clone with depth-1; 1405FFDE0 -> 1406000C0 stops cloning at zero.
-/// Copy-preserving 1406000C0 uses each child's retained depth, not a global
-/// numerical bound. Hover 14054D0F0 receives -1 and walks all retained levels.
-/// Ordinary jobs run only on acquisition workers (explicit 4 MiB reserve in
-/// collector::acquisition); each descent checks actual reservation headroom,
-/// with no chosen tree-depth cap or heap allocation.
+/// Retained depth governs child cloning. Copying follows each child's stored
+/// depth rather than a global numerical bound; hovers walk every retained level.
+/// Ordinary jobs run on acquisition workers with a 4 MiB stack reservation.
+/// Each descent checks actual headroom without a chosen depth cap or heap allocation.
 #[inline(never)]
 #[allow(
     clippy::too_many_arguments,
@@ -936,7 +918,7 @@ fn convoy<const TERMINAL: bool>(
     if field::<u64>(memory, side, 0)? != at(base, cnaval_combatant::VTABLE_RVA)? as u64 {
         return Err("naval escape convoy side identity mismatch");
     }
-    // 14195EEC0 returns zero without invoking 1415B4BB0 for an empty side.
+    // An empty side returns zero without selecting description roots.
     if field::<i32>(memory, side, 0x48)? == 0 {
         return Ok(());
     }

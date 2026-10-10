@@ -1,4 +1,4 @@
-//! Native value (14054FE50) and cached breakdown (14054D0F0) text.
+//! Modifier value and cached breakdown text.
 use installed_content::fixed5::{fixed5_percent, fixed5_to_string};
 use replay::rows::{ModifierBreakdownNode, ModifierDefinitionRow, check_tree};
 
@@ -64,7 +64,7 @@ pub struct Breakdown<'a> {
     pub suffix: &'a str,
 }
 
-/// 14054D0F0: no aggregate at nonzero depth; zero leaves vanish. Child
+/// No aggregate at nonzero depth; zero leaves vanish. Child
 /// text is trimmed, then gets a newline, the caller's prefix and suffix.
 /// Recursion clears prefix/suffix; an explicit stack has no depth cap.
 pub fn breakdown(
@@ -101,7 +101,7 @@ pub fn breakdown(
         let Some(parent) = stack.last_mut() else {
             return Ok(text);
         };
-        // Trim@1424B7400 uses the four bytes at 142B7B148.
+        // Trim only newline, tab, carriage return and space.
         let text = text.trim_matches(['\n', '\t', '\r', ' ']);
         if !text.is_empty() {
             if top {
@@ -121,7 +121,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn depth_zero_and_nested_prefix_suffix_follow_the_native_walk() {
+    fn depth_zero_and_nested_prefix_suffix_preserve_breakdown_order() {
         let node = |children, value, name: &[u8]| ModifierBreakdownNode {
             children,
             value,

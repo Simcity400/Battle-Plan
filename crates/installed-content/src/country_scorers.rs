@@ -1,5 +1,4 @@
-//! Country scorer database (143316C48), loaded from `common/scorers/country`
-//! by 14018B610 -> 1401870F0; readers 140A94FA0 and 140A951D0.
+//! Country scorer definitions loaded from `common/scorers/country`.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -17,8 +16,8 @@ use crate::{
     triggers::Triggers,
 };
 
-/// CScriptTargets members (140C1D730). Arrays and explicit targets are
-/// separate native arrays, so their authored interleaving does not decide order.
+/// Script targets keep arrays and explicit targets separately, so their
+/// authored interleaving does not determine selection order.
 #[derive(Clone, Debug, Default)]
 pub struct ScriptTargets {
     pub arrays: Vec<Vec<u8>>,
@@ -65,7 +64,7 @@ impl Database {
         }
     }
 
-    /// 140A939A0: the first definition stays; a duplicate's body is skipped.
+    /// The first definition stays; a duplicate's body is skipped.
     pub fn read_file(&mut self, input: &[u8], names: &KeyNames) {
         let mut seen: BTreeSet<Vec<u8>> = self.entries.keys().cloned().collect();
         let mut shaper = Shaper::new(Some(names));
@@ -88,7 +87,7 @@ impl Database {
                 Node::Scorer => match field.keyword().as_deref() {
                     Some(b"targets") => Shape::Object(Node::Entry),
                     _ => Shape::Unsettled(format!(
-                        "country scorer field {} is unported (140A94FA0)",
+                        "country scorer field {} is unported",
                         String::from_utf8_lossy(field.key.c_str())
                     )),
                 },
@@ -107,7 +106,7 @@ impl Database {
                     }
                     Some(b"score") => Shape::Object(Node::Trigger(TriggerNode::Mtth)),
                     _ => Shape::Unsettled(format!(
-                        "country scorer target field {} is unported (140A951D0)",
+                        "country scorer target field {} is unported",
                         String::from_utf8_lossy(field.key.c_str())
                     )),
                 },
@@ -187,7 +186,7 @@ fn entry(item: &Item) -> Entry {
             Some(b"state_target") => out
                 .targets
                 .unported
-                .push("state_target selection mode (140C1D730)".into()),
+                .push("state_target selection mode".into()),
             _ => {}
         }
     }

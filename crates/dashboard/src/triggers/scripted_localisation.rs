@@ -1,17 +1,18 @@
-//! The scriptable weights used by CRandomLocList::Resolve (140A9CD70).
+//! The scriptable weights used by random localisation lists.
 
 use installed_content::scripted_localisation::{RandomList, RandomMember};
 
 use super::{Scopes, eval::Evaluator, world::fixed_round};
 use crate::state_resources::ONE;
 
-/// 141581FF0's final fixed5 multiplication and 1424D8760 rounding.
+/// Final fixed5 multiplication and whole-unit rounding.
 pub(crate) fn constant_weight(member: &RandomMember) -> i32 {
     fixed_round(ONE.wrapping_mul(member.weight) / ONE) as i32
 }
 
 impl Evaluator<'_, '_> {
-    /// are never checked. Additions accumulate into the base, factors into
+    /// Random localisation modifier conditions are never checked.
+    /// Additions accumulate into the base, factors into
     /// a separate product; a zero factor stops before later operands.
     pub fn localisation_weight(
         &self,
@@ -40,7 +41,7 @@ impl Evaluator<'_, '_> {
     }
 
     /// An explicit list seed is the low u32 of the raw fixed5 operand
-    /// (140A9CF27), with the scope object's identity added (140529EE0).
+    /// with the scope object's identity added.
     pub fn localisation_seed(
         &self,
         list: &RandomList,
@@ -57,47 +58,58 @@ impl Evaluator<'_, '_> {
         let identity = match scopes.this {
             super::Scope::Country(slot) => slot.wrapping_mul(31),
             super::Scope::CountryLeader { country, .. }
-                if self.variable_scope_has_country(country)? => country.wrapping_mul(31),
+                if self.variable_scope_has_country(country)? =>
+            {
+                country.wrapping_mul(31)
+            }
             super::Scope::State(id) if (id as i32) > 0 => id.wrapping_mul(59),
             super::Scope::State(_) | super::Scope::Province(_) => 0,
             super::Scope::Leader(reference)
-                | super::Scope::CountryLeader { leader: reference, .. } => {
-                match self.world().unit_leader(reference)? {
-                    Some(leader) => reference_hash((u64::from(leader.character_id) << 32) | u64::from(leader.character_type)),
-                    None => 0,
-                }
-            }
+            | super::Scope::CountryLeader {
+                leader: reference, ..
+            } => match self.world().unit_leader(reference)? {
+                Some(leader) => reference_hash(
+                    (u64::from(leader.character_id) << 32) | u64::from(leader.character_type),
+                ),
+                None => 0,
+            },
             super::Scope::Character(id) => {
                 if self.world().character_exists(id)? {
                     // The pinned character reference kind is shared with
-                    // the authenticated engine reader (1406AB520 registers
-                    // characters); only the instance id is content/runtime.
-                    reference_hash((u64::from(id) << 32) | u64::from(engine::ccharacter::REFERENCE_TYPE))
+                    // the authenticated engine reader; only the instance id
+                    // is content/runtime.
+                    reference_hash(
+                        (u64::from(id) << 32) | u64::from(engine::ccharacter::REFERENCE_TYPE),
+                    )
                 } else {
                     0
                 }
             }
             super::Scope::IndustrialOrganisation(reference) => {
                 self.world().industrial_organisation(reference)?;
-                ((reference >> 32) as u32).wrapping_mul(82) // 140529EE0, object+0x0C.
+                ((reference >> 32) as u32).wrapping_mul(82) // Organisation instance id.
             }
             super::Scope::Unit(reference) => {
                 self.world().unit(reference)?;
-                ((reference >> 32) as u32).wrapping_mul(3) // 140529EE0: unit+0x1C.
+                ((reference >> 32) as u32).wrapping_mul(3) // Unit instance id.
             }
             super::Scope::Raid(reference) => {
                 self.world().raid(reference)?;
-                ((reference >> 32) as u32).wrapping_mul(0x79d) // 140529EE0: raid+0x0C.
+                ((reference >> 32) as u32).wrapping_mul(0x79d) // Raid instance id.
             }
-            // 140529EE0 has no project arm: validity false, no identity add.
+            // Projects have no seed identity: validity false, no identity add.
             super::Scope::Project { .. } => 0,
-            super::Scope::Combat => return Err("random_list seed: the combat scope's native reference identity (140529EE0) is not given".into()),
+            super::Scope::Combat => {
+                return Err(
+                    "random_list seed: the combat scope's reference identity is not given".into(),
+                );
+            }
         };
         Ok(Some((value as u32).wrapping_add(identity)))
     }
 }
 
-/// HashReferenceHandle (14220A010): word swap, wrapping u64 multiplication,
+/// Reference hashing: word swap, wrapping u64 multiplication,
 /// then high XOR low. UnitLeaders records the character's complete handle.
 pub(super) fn reference_hash(reference: u64) -> u32 {
     let product = reference.rotate_left(32).wrapping_mul(0x4963_1a45);

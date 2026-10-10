@@ -330,6 +330,8 @@ fn air_fixture() -> paradrop_counts::tests::Fixture {
 
 #[test]
 fn accepted_wing_capacity_threshold_and_duplicate_unit_demand_change_execution() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = air_fixture();
     let root = order(1, super::super::TYPE_MOVE);
     let defs = defines();
@@ -391,6 +393,8 @@ fn accepted_wing_capacity_threshold_and_duplicate_unit_demand_change_execution()
 
 #[test]
 fn signed_invalid_source_and_ineligible_units_skip_later_demand_operands() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = air_fixture();
     let root = order(1, super::super::TYPE_MOVE);
     let mut orders = fixture

@@ -1,0 +1,60 @@
+//! Runtime DLC feature-mask operands, distinct from the content roster.
+//! The legacy game-state word is not treated as an equivalent runtime mask.
+//! This module describes predicates without calling the game.
+
+/// Runtime DLC mask, u32.
+pub const MASK_RVA: usize = 0x0331_6e78;
+/// Mask predicate; every requested bit must be present, with truth in the low byte.
+pub const HAS_MASK_RVA: usize = 0x001a_e870;
+/// Feature predicate; selects requirements by feature ID, with truth in the low byte.
+pub const HAS_FEATURE_RVA: usize = 0x001a_e640;
+/// Feature ID required by equipment-loss bookkeeping.
+pub const EQUIPMENT_LOSSES_FEATURE: u32 = 3;
+/// Runtime bit tested for equipment-loss bookkeeping.
+pub const EQUIPMENT_LOSSES_MASK: u32 = 0x0000_0002;
+/// Byte-exact compiled-name lookup; unmatched names return a zero mask.
+pub const MASK_FOR_NAME_RVA: usize = 0x001a_dd20;
+/// Deployed-HQ ability feature ID.
+pub const DEPLOYED_HQ_ABILITY_FEATURE: u32 = 0x39;
+/// Related feature ID with an independently unspecified meaning.
+pub const OTHER_THUNDER_FEATURE: u32 = 0x3a;
+/// Runtime bit required by both related feature IDs.
+pub const THUNDER_AT_OUR_GATES: u32 = 0x0002_0000;
+/// Narrow compiled DLC-name and mask dependencies.
+pub const NAME_MASKS: &[(&str, u32)] = &[
+    ("Poland: United and Ready", 0x0000_0001),
+    ("Together for Victory", EQUIPMENT_LOSSES_MASK),
+    ("Death or Dishonor", 0x0000_0004),
+    ("Waking the Tiger", 0x0000_0008),
+    ("Man the Guns", 0x0000_0010),
+    ("La Resistance", 0x0000_0020),
+    ("Battle for the Bosporus", 0x0000_0040),
+    ("No Step Back", 0x0000_0080),
+    ("By Blood Alone", 0x0000_0100),
+    ("Axis Armor Pack", 0x0000_0200),
+    ("Arms Against Tyranny", 0x0000_0400),
+    ("Trial of Allegiance", 0x0000_0800),
+    ("Expansion Pass 1: Supporter Pack", 0x0000_1000),
+    ("Gotterdammerung", 0x0000_2000),
+    ("Graveyard of Empires", 0x0000_4000),
+    ("No Compromise, No Surrender", 0x0000_8000),
+    ("Peace For Our Time", 0x0001_0000),
+    ("Thunder at Our Gates", 0x0002_0000),
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn equipment_losses_uses_feature_three_and_the_named_runtime_mask() {
+        assert_eq!(EQUIPMENT_LOSSES_FEATURE, 3);
+        assert_eq!(
+            NAME_MASKS
+                .iter()
+                .find(|(name, _)| *name == "Together for Victory")
+                .map(|(_, mask)| *mask),
+            Some(EQUIPMENT_LOSSES_MASK)
+        );
+    }
+}

@@ -1,4 +1,4 @@
-//! The original ordered D5AF10 -> C23D90 -> C3E1D0 -> F47350 graph.
+//! Ordered carrier-fill graph.
 //!
 //! Inputs borrow the current hour's original task-force, model and air passes.
 //! An ordinal is an occurrence, not a set member: the native dense containers,
@@ -35,8 +35,8 @@ pub trait Inputs {
         pool_ordinal: u32,
         wing_ordinal: u32,
     ) -> Fact<i32>;
-    /// Production borrows the original F47350 sum, sharing +7C attempts with
-    /// the existing fuel observer. Default fixtures fold original occurrences.
+    /// Production borrows the observed pool-plane sum, sharing plane-count
+    /// read attempts with the fuel observer. Default fixtures fold occurrences.
     fn pool_planes(&mut self, base: u64, container: u32, pool: u32) -> Fact<i32> {
         let wings = count(self.wing_count(base, container, pool))?;
         let mut total = 0_i32;
@@ -51,7 +51,7 @@ fn count(value: Fact<i32>) -> Fact<u32> {
     u32::try_from(value?).map_err(|_| "negative original carrier graph count")
 }
 
-/// C2B7E0's exact short-circuit predicate over an already observed model loan.
+/// Short-circuit carrier predicate over an already observed model loan.
 pub fn is_carrier(ship: Ship) -> Fact<bool> {
     let flags = ship.formation_flags?;
     if flags & (1_u64 << 22) != 0 {
@@ -64,7 +64,7 @@ pub fn is_carrier(ship: Ship) -> Fact<bool> {
     Ok((flags | positive) & (1_u64 << 37) != 0)
 }
 
-/// F47350 and C3E1D0 sum signed wing+7C values, with i32 native wrapping.
+/// Sum stored signed wing plane counts with i32 wrapping.
 fn planes<I: Inputs>(inputs: &mut I, base: u64) -> Fact<i32> {
     let containers = count(inputs.registered_container_count(base))?;
     let mut total = 0_i32;
@@ -77,7 +77,7 @@ fn planes<I: Inputs>(inputs: &mut I, base: u64) -> Fact<i32> {
     Ok(total)
 }
 
-/// D5AF10's wrapping sum of every original SHIPS C23D90 fill.
+/// Wrapping sum of carrier fill for every original ship occurrence.
 pub fn fill_sum<I: Inputs>(inputs: &mut I) -> Fact<i64> {
     let ships = count(inputs.original_ship_count())?;
     let mut sum = 0_i64;

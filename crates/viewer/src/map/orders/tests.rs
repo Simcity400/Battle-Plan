@@ -242,8 +242,8 @@ fn front_span_uses_section_ids_and_inclusive_pairs_without_clamping() {
         plan.segment_end = end;
         assert_eq!(front_pairs(&plan, &front), Some(FrontSpan::Destroyed));
     }
-    // A start after the end, even past the section, is an empty span
-    // (14123EEF0 tests only the signs and the end).
+    // A start after the end, even past the section, is an empty span: only
+    // the signs and end are checked.
     for start in [1, 5] {
         plan.segment_start = start;
         plan.segment_end = 0;
@@ -525,7 +525,7 @@ fn allied_roots_follow_country_occurrences_and_allow_cross_country_groups() {
             theatre_ordinal: Some(0),
             ..Default::default()
         },
-        // Native141242380 removes this country guard when allied is on.
+        // Allied plans remove this country guard.
         OrdersGroupRow {
             handle: 200,
             country: 3,
@@ -826,7 +826,7 @@ fn ribbon_uses_fixed_smoothed_controls_and_interpolates_between_them() {
         field.draws[0].native_strips,
         std::iter::once(0..512).collect::<Vec<_>>()
     );
-    // 141254C00 truncates each fixed5 product before converting to float.
+    // Truncate each fixed5 product before converting to float.
     assert_eq!(field.vertices[2].position[0], 10.00002);
     assert_eq!(field.vertices[2].position[1], 1.0);
     assert_eq!(field.vertices[4].position[1], 4.0);

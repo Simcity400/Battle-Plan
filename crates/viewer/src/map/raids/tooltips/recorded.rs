@@ -126,16 +126,14 @@ fn known(eval: Eval) -> Result<bool> {
     }
 }
 
-/// The CEventScopes a custom trigger tooltip's text is expanded in.
+/// Event scopes used to expand custom trigger-tooltip text.
 ///
-/// The raid condition chain starts
-/// in a default-constructed scope (140528800) whose FROM, when set, is
-/// another default-constructed scope of the target (140A8D3F0 ->
-/// 141580600), so every link of both is known. Inside a scope change (a
-/// PREV is set, or THIS is not ROOT) only the linked scopes' objects are
-/// known, not their own links.
+/// The raid condition chain starts in a default scope; FROM, when set, is
+/// another default scope for the target, so all links of both are known.
+/// Inside a scope change (PREV set or THIS different from ROOT), only linked
+/// objects are known, not their own links.
 fn event_scopes(scopes: Scopes) -> EventScopes {
-    // 140A8D3F0 -> 141580600 builds raids from default scopes (140528800).
+    // Build raid conditions from default scopes.
     let target = |scope| match scope {
         Scope::Country(slot) => EventObject::Country(slot),
         Scope::State(id) => EventObject::State(id),
@@ -200,8 +198,7 @@ fn event_scopes(scopes: Scopes) -> EventScopes {
         };
         std::iter::once(current).chain(linked).collect()
     };
-    // The target variables stay set while the condition's text is built
-    // (141580600 sets them for the raid scope's whole evaluation).
+    // Keep target variables set throughout the condition-text evaluation.
     let mut graph = EventScopes::new(list);
     graph.variables = ScopeVariables {
         target_state: scopes.target_state,
@@ -240,7 +237,7 @@ impl Context<'_, '_> {
         }
     }
     fn type_name(&self, kind: &RaidType) -> Result<String> {
-        // GetLocalizedName@140A8E3B0; prefix bytes at 14292A768.
+        // Localize the raid-type name key with its prefix.
         localise(self.loc, &format!("raid_type_{}", kind.name), &[])
     }
     fn state_name(&self, state: u32) -> Result<String> {
@@ -345,8 +342,7 @@ impl Context<'_, '_> {
                 .as_ref()?
                 .get(index)
                 .ok_or("target terrain ordinal absent")?;
-            // 140FD1D50 calls CGameItem::id_copy@140616BC0, which localises
-            // the category token; NAME is the plain location.
+            // Localize the category token; NAME is the plain location.
             return localise(
                 self.loc,
                 "PROV_TOOLTIP_LOCATION_STATE",
@@ -364,7 +360,7 @@ impl Context<'_, '_> {
         } else {
             self.target_name(scope, Some(kind))?
         };
-        // String arguments TYPE@142734318 and TARGET@1427528E4.
+        // Bind TYPE and TARGET as string arguments.
         localise(
             self.loc,
             "raid_inst_item_desc",
@@ -482,7 +478,7 @@ impl Context<'_, '_> {
                     .token(token)?
                     .ok_or("ongoing project definition token is absent")?;
                 let key = std::str::from_utf8(key).map_err(|e| e.to_string())?;
-                // The reader authenticates the selected project's +1C against
+                // The reader authenticates the selected project's owner against
                 // this program owner; no daily project-history join is needed.
                 let owner = self
                     .world
@@ -507,9 +503,8 @@ impl Context<'_, '_> {
         if let Some(reason) = &project.refusal {
             return Err(format!("special project {default}: {reason}"));
         }
-        // 140FCDDF0 -> 140A81BB0/14146B580: nonempty narrative name,
-        // otherwise template+238 (140A852A0); then TAG_key. 140FCADC0
-        // stores template+18 at project+20: name record is template+1F0.
+        // Use a nonempty narrative name, otherwise the template name, then the
+        // tag-specific key. Join the recorded project template to its name record.
         let key = project
             .name
             .as_deref()
@@ -529,8 +524,8 @@ impl Context<'_, '_> {
         };
         let scopes = Scopes::of(Scope::Country(country));
         let text = self.scoped_text(selected, scopes)?;
-        // 1416151F0 takes record +40: 140A81510 appends the default
-        // in parentheses when keys differ; 140A81880 only wraps yellow.
+        // Read the inherited name record, appending its default in parentheses
+        // when keys differ; plain formatting only wraps yellow.
         if selected == default {
             Ok(format!("\u{11}Y{text}\u{11}!"))
         } else {
@@ -665,8 +660,9 @@ impl Context<'_, '_> {
             .find(|choice| self.world.slot(choice.raw) == Some(country))
             .ok_or("controller flag operands are absent")?;
         choice.key(self.flag_exists)?;
-        // DrawInlineFlag@1402EEFF0 resolves the tag through this hour's native small atlas.
+        // Resolve the tag through this hour's small flag atlas.
         if choice.tag.chars().count() != 3 {
+            return Err("controller flag tag is not three codepoints".into());
         }
         Ok(format!("{}{}", crate::map::native_text::FLAG, choice.tag))
     }
@@ -685,8 +681,8 @@ impl Context<'_, '_> {
                 (u64::from(r.id) << 32 | u64::from(r.reference_type)) == scope.leader_reference
             })
             .ok_or("captive leader is absent from UnitLeaders")?;
-        // 141612FC0 reads +40. Its sole naming setter 140C16FB0 localises
-        // the saved +20 input, recorded as inherited_text_a (not script ID).
+        // Read the inherited name record. Naming localizes the saved input,
+        // recorded as inherited_text_a rather than a script ID.
         localise(
             self.loc,
             std::str::from_utf8(&leader.inherited_text_a).map_err(|e| e.to_string())?,

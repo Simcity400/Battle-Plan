@@ -1,5 +1,5 @@
 //! Retained country/design rocket totals from the shared production log.
-//! Spending (140F5C150) and DELIVERY (140F5C245) settle independently on normal
+//! Spending and delivery settle independently on normal
 //! native return. Publication shares the equipment output slot, with no census
 //! dependency or line handle. Failed world/load coverage stays unavailable.
 use super::output_continuity::{self, Progress, Reasons, State};

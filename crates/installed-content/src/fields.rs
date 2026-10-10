@@ -24,7 +24,7 @@ pub(crate) fn text<'a>(value: &'a Value, what: &str) -> io::Result<&'a str> {
 /// A scalar parsed as a finite decimal number.
 pub(crate) fn number(value: &Value, what: &str) -> io::Result<f32> {
     let scalar = text(value, what)?;
-    // CReader::ReadFloat@1424AB9D0 uses the CRT %f scanner (14029D000).
+    // Float fields use the shared C-runtime `%f` scanner.
     let parsed = crt::scan_f32(scalar.as_bytes())
         .ok_or_else(|| invalid(format!("{what} is not a number: {scalar:?}")))?;
     if !parsed.is_finite() {
@@ -35,9 +35,8 @@ pub(crate) fn number(value: &Value, what: &str) -> io::Result<f32> {
 
 /// A `yes` or `no` flag; anything else is an error rather than a default.
 pub(crate) fn boolean(value: &Value, what: &str) -> io::Result<bool> {
-    // Adjacency permissions (141536E70) use read_bool_field; CSize's
-    // preserve_aspect_ratio (1422EF100 -> 1422F0760) uses read_bool_token.
-    // Keep this adapter's named refusal when its consumer cannot follow a read.
+    // Boolean fields and standalone tokens share exact yes/no conversion. Keep this
+    // adapter's named refusal when its consumer cannot follow a read.
     let scalar = text(value, what)?;
     crate::parser::read_bool(scalar.as_bytes())
         .ok_or_else(|| invalid(format!("{what} is not yes or no: {scalar:?}")))
@@ -84,8 +83,7 @@ pub(crate) fn scalar_list(value: &Value, what: &str) -> io::Result<Vec<u32>> {
             .value
             .scalar()
             .ok_or_else(|| invalid(format!("{what} holds a non-scalar entry")))?;
-        // CAdjacencyRule::vf4@141536C50 uses ReadScriptInt32Array@1401F91B0: a zeroed slot
-        // is appended before ReadScriptSignedInt32@1424AB970 scans each token.
+        // Append a zeroed slot before scanning each signed integer token.
         list.push(crt::scan_i32(scalar).stored().unwrap_or(0) as u32);
     }
     Ok(list)

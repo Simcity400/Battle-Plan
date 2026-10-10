@@ -1,5 +1,5 @@
-//! `141020BE0 -> 141020D50 -> 140C3D550`, reached only by a long Full
-//! paradrop label or an active execution prerequisite. Current-frame joins stay lazy.
+//! Transport counts, reached only by a long Full paradrop label or an active
+//! execution prerequisite. Current-frame joins stay lazy.
 
 use std::cell::OnceCell;
 
@@ -48,7 +48,7 @@ impl<'a> Context<'a> {
         order: &ArmyOrderRow,
         group: Option<&OrdersGroupRow>,
     ) -> Result<transport_counts::AcceptedTotals, String> {
-        // The stored +B8 is signed. A missing source reaches nothing else.
+        // The stored source province is signed. A missing source reaches nothing else.
         if (order.paradrop_target as i32) < 1 {
             return Ok(transport_counts::AcceptedTotals::default());
         }
@@ -71,7 +71,7 @@ impl<'a> Context<'a> {
         if source.state == 0 {
             return Ok(transport_counts::AcceptedTotals::default());
         }
-        // GetAirBaseForCountry uses the one shared manager, ordinary kind0.
+        // Use the shared air-base manager with ordinary kind zero.
         let base = self
             .frame
             .complete::<tables::AirBases>()
@@ -112,7 +112,7 @@ impl<'a> Context<'a> {
         } else {
             0
         };
-        // Invalid IDs substitute CProvince slot zero, which has no region.
+        // Invalid province IDs use reserved slot zero, which has no region.
         let valid_destination = (destination as i32) > 0
             && self
                 .content
@@ -191,8 +191,8 @@ impl<'a> Context<'a> {
         )
     }
 
-    /// F4E0E0/FFDCD0 resolve the base's host before reading its task force.
-    /// The witness distinguishes a registry miss from an absent roster row.
+    /// Resolve the base host before reading its task force. The witness
+    /// distinguishes a registry miss from an absent roster row.
     fn host_force(&self, base: u64, host: u64) -> Result<Option<&TaskForceRow>, String> {
         if host == 0 {
             return Ok(None);

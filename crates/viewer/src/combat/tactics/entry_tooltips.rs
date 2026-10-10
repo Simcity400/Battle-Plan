@@ -1,12 +1,11 @@
-//! CTacticsListEntry's provider (141C5B520), distinct from the selected tactic.
-//! 1406B2E30 builds the main effects/counters and delayed requirements;
-//! 141C5AEA0 replaces only the main string for a lock. 141299340 appends
-//! 1412A77A0's side-specific condition and weight details to the delayed string.
+//! Popup-entry hover providers, distinct from the selected tactic.
+//! Build main effects and counters plus delayed requirements; a lock replaces
+//! only the main string. Side conditions and weights extend the delayed text.
 use super::super::tooltips::{Described, hover_text, set_hover, tactic_description};
 use super::*;
 use installed_content::fixed5::fixed5_percent;
 
-/// 1406B3690 resolves the last countered_by text against the completed registry.
+/// the game resolves the last countered_by text against the completed registry.
 /// Buckets prepend entries, so repeated names resolve to their last definition.
 /// A missing dependency is the null tactic and leaves the initialized ID zero.
 fn counter_id(content: &Content, definition: &Definition) -> Evaluation<i32> {
@@ -20,8 +19,8 @@ fn counter_id(content: &Content, definition: &Definition) -> Evaluation<i32> {
     content.named_id(name)
 }
 
-/// 1406B26A0 calls the existing stat formatter with both side flags set,
-/// which selects the tactic's authored is_attacker polarity (1406B12D0).
+/// Format stats with both side flags set, selecting the tactic's authored
+/// is_attacker polarity.
 pub(super) fn main(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -106,7 +105,7 @@ fn append(
     }
 }
 
-/// 141C5AEA0's source strings are ordered, may repeat, and each has a leading LF.
+/// source strings are ordered, may repeat, and each has a leading LF.
 pub(super) fn locked(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -130,8 +129,7 @@ pub(super) fn locked(
     Ok(text)
 }
 
-/// The tooltip sums signed weights, unlike the list's normalization, which
-/// sums only positive weights (1412A77A0 versus 141299340).
+/// The tooltip sums signed weights; list normalization sums only positive ones.
 #[allow(clippy::too_many_arguments)] // Native side context, list weights and text/refusal resources.
 pub(super) fn status(
     icons: &dyn TextIcons,
@@ -163,7 +161,7 @@ pub(super) fn status(
             weight
                 .wrapping_mul(100_000)
                 .checked_div(total)
-                .ok_or("selection chance division would trap (1412A77A0)")?
+                .ok_or("selection chance division would trap")?
         };
         Ok(fixed5_percent(chance, 2, true))
     });
@@ -283,7 +281,7 @@ pub(super) fn requirements(
 ) -> Evaluation<String> {
     let mut text = builtin(icons, loc, "TACTICS_ACTIVATION_REQUIREMENTS", &[])?;
     text.push('\n');
-    // IndentNonEmptyLines1424B7850, two spaces after native BuildTooltip.
+    // Indent each nonempty requirement line by two spaces.
     let body = body.map(|body| {
         let mut indented = String::new();
         for line in body.split_inclusive('\n') {

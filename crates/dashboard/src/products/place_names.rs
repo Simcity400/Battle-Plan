@@ -1,19 +1,17 @@
 //! Names for province/hour and state/hour pairs, at each row's read hour.
 //!
-//! NCombatLogView::CCombatItem::UpdateDisplay@1416E07C0 reads the recorded
-//! province id (+0x440) and uses 140E69320: a nonempty raw CProvince+0x40
-//! override through localisation (even an empty result), then ResolveVictoryPointLocalization
-//! @140E68E30's state-owner original-or-own tag + `_VICTORY_POINTS_<id>`,
+//! Province names try a nonempty recorded override through localisation
+//! (even an empty result), then the state-owner original-or-own tag plus
+//! `_VICTORY_POINTS_<id>`,
 //! then `VICTORY_POINTS_<id>`. Only defined victory-point keys are used.
-//! State display_name@1409CC380 prefers the stored custom+0x38 and
-//! owner+0xE8 strings, then the content template. set_state_name@140310B50
-//! localises the custom string; SetOwner@1409D1710 -> 1409D3770 stores the
-//! localised owner-qualified string only at an owner change or load. Those
+//! State names prefer the stored custom and owner-qualified strings, then
+//! the content template. Custom strings are localised when assigned, and
+//! owner-qualified strings only at an owner change or load. Those
 //! strings are never reconstructed from today's owner or a different language.
 //! A nonempty victory-point name is the battle name; otherwise use the state's
 //! display name, without prefixing a province id or appending another name.
-//! Provinces without a state use their strategic-region name (battle name ladder
-//! 0x140E69320, CProvince+0xC8); region membership/names use installed_content::regions.
+//! Provinces without a state use their strategic-region name;
+//! region membership/names use installed_content::regions.
 //! Land requests use the approved primary name -> state -> unnamed ladder:
 //! empty primary names try the state, and state-less provinces stay unnamed.
 //! A known primary name needs no state-name lookup. Unresolved names remain null;
@@ -190,7 +188,7 @@ fn name_at(
     if let Ok(Some(name)) = &province_name
         && (!land || !name.is_empty())
     {
-        // 140E69320 returns successful empty localisation unchanged.
+        // Preserve successful empty localisation.
         return (Some(name.clone()), None);
     }
     if province.state == 0 {
@@ -235,7 +233,7 @@ fn name_at(
                 scripted_text::StateNameUsage::Place,
             )
         });
-    // 1409CC380 returns template text even when it is empty; absence of
+    // Template text remains valid when empty; absence of
     // recorded/template inputs remains an error, distinct from that result.
     match (province_name, state_name) {
         (Ok(_), Ok(state)) => (Some(state), None),

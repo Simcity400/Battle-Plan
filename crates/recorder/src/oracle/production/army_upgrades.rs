@@ -21,7 +21,7 @@ pub(super) fn compare_army_upgrades(
     complete &= report.attempt("ArmyUpgradeLinks", |_| check_army_upgrade_links(frame));
     report.limitation("delivery progress is serialized only for status1; inactive progress is absent in both the captured row contract and save", "ArmyUpgradeDeliveries.progress_raw");
     report.limitation("delivery allow_zero_entries is serialized as a boolean and cannot certify nonzero raw byte values beyond truthiness", "ArmyUpgradeDeliveries.allow_zero_entries");
-    report.limitation("FE3F0 omits a null request equipment pointer; the native reader currently makes that request table unavailable, preserving the absent save handle without inventing a variant", "ArmyUpgradeRequests.equipment");
+    report.limitation("the upgrade-request writer omits a null request equipment pointer; the native reader currently makes that request table unavailable, preserving the absent save handle without inventing a variant", "ArmyUpgradeRequests.equipment");
     if complete {
         Ok(())
     } else {
@@ -64,7 +64,7 @@ fn compare_army_upgrade_groups(
                 equal(report, format!("{label}.priority"), actual.priority, expected.priority.unwrap_or(1));
             }
             (None, Some(_)) => report.difference(&label, "absent army group", "present nonempty group"),
-            (Some(_), None) => report.limitation("FE0B0 omits an upgrade group when both child vectors are empty; an empty captured group's priority is not serialized", &label),
+            (Some(_), None) => report.limitation("the upgrade-group writer omits an upgrade group when both child vectors are empty; an empty captured group's priority is not serialized", &label),
             (None, None) => {},
         }
     }

@@ -1,5 +1,5 @@
 //! FactionTheatres against each saved faction's `icon` and `pings.regions`.
-//! `WriteTheaters@14193BD20` walks the native theatre array in order, so the
+//! the theatre writer walks the native theatre array in order, so the
 //! saved list position is the recorded ordinal.
 
 use std::{collections::BTreeMap, io};
@@ -107,7 +107,7 @@ pub(super) fn compare(
     }
     report.compared("FactionTheatres", compared);
     report.limitation(
-        "the theatre +0x88 hidden-pin set saves as token 0x2C8C, read as `hidden` (the spelling of that token for the event, idea-category and achievement readers); no inspected save had a nonempty set",
+        "the theatre hidden-pin set saves as token 0x2C8C, read as `hidden` (the spelling of that token for the event, idea-category and achievement readers); no inspected save had a nonempty set",
         "FactionTheatres.hidden_for",
     );
     report.limitation(

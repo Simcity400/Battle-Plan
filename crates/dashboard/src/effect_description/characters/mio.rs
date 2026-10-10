@@ -2,16 +2,14 @@ use super::*;
 use installed_content::mio_traits::TraitName;
 
 impl Renderer<'_, '_, '_> {
-    // CTraitTooltipEffect 1402FF8F0 / CUnlockTraitEffect 1402FFE10 call
-    // 1413978B0; EFFECT_MIO_UNLOCK_TRAIT@1427315B0 and
-    // EFFECT_MIO_COMPLETE_TRAIT@14272FCB8 substitute TRAIT, then expand.
+    // Trait tooltip and completion descriptions substitute TRAIT, then expand.
     pub(in crate::effect_description) fn char_mio_trait(
         &mut self,
         item: &Item,
         scopes: Scopes,
         complete: bool,
     ) -> Result<String, String> {
-        // ReadValue 141385770 or ReadKey 140301200 -> 141398390.
+        // Accept either the scalar value or the trait field.
         let operand = item
             .value
             .scalar()
@@ -27,9 +25,9 @@ impl Renderer<'_, '_, '_> {
             .map_err(|_| "MIO trait token is not UTF-8")?;
         let world = self.context.world()?;
         let mut definition = None;
-        let mut name = token.to_owned(); // LexerToken_CopyAssign 14015A1E0 keeps authored bytes.
-        // 141397DB0 -> 140529390: missing MIO/ordinary trait returns the raw
-        // lexer spelling, never localises it. Native setters clear other arms;
+        let mut name = token.to_owned(); // Keep the authored spelling.
+        // A missing MIO or ordinary trait returns the raw lexer spelling,
+        // without localisation. Scope setters clear the other arms;
         // the shared graph retains each full handle.
         if let Scope::IndustrialOrganisation(reference) = scopes.this
             && reference != 0
@@ -46,8 +44,8 @@ impl Renderer<'_, '_, '_> {
                 .as_ref()
                 .map_err(Clone::clone)?;
             if let Some(trait_) = catalogue.trait_definition(organisation, token)? {
-                // GetLocalizedName 140A405B0 uses recorded lexer spellings
-                // and owner country +0x120; the name itself stays plain.
+                // Use recorded lexer spellings and the owner country for localisation.
+                // The name itself stays plain.
                 let owner = if row.owner == 0 {
                     0
                 } else {
@@ -86,30 +84,30 @@ impl Renderer<'_, '_, '_> {
             scopes,
             true,
         )?;
-        // Factories 1402F9CF0/1402F9E20 default +0xA0 show_modifiers to yes.
+        // show_modifiers defaults to yes.
         let show = installed_content::parser::read_bool_field(children(item), "show_modifiers", true);
         if show && let Some(trait_) = definition {
             let class = if complete {
-                "NIndustrialOrganisation::CUnlockTraitEffect"
+                "MIO trait completion"
             } else {
-                "NIndustrialOrganisation::CTraitTooltipEffect"
+                "MIO trait tooltip"
             };
-            // 1413978B0 appends one complete parenthetical to this header.
+            // Append one complete parenthetical to the header.
             let body = self.char_mio_modifiers(&trait_, scopes, class);
-            text.push_str(" ("); // 14270C624.
+            text.push_str(" (");
             text.push_str(&body);
-            text.push(')'); // 14270BE94; even when the body is empty.
+            text.push(')'); // Even when the body is empty.
         }
-        // 1413978B0: LF only for a nonempty result lacking terminal LF.
+        // Append LF only for a nonempty result lacking a terminal LF.
         if !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');
         }
         Ok(text)
     }
 
-    // 140A3FB60(...,1): comma separator@14270EC00; no equipment-type or
-    // organisation-name headings. 140634360 removes zero bonuses in stored
-    // order. This raw body is appended AFTER the wrapper's scope expansion.
+    // Use comma separators without equipment-type or organisation headings.
+    // Remove zero bonuses in stored order. Append this raw body
+    // after expanding the wrapper's scope.
     fn char_mio_modifiers(&mut self, trait_: &TraitName, scopes: Scopes, class: &str) -> String {
         let mut text = self.char_mio_bonus_list(&trait_.bonuses, scopes, class);
         let kept = if let Some(why) = &trait_.modifier_inheritance_refusal {
@@ -135,8 +133,8 @@ impl Renderer<'_, '_, '_> {
                 },
             ) {
                 Ok(body) => {
-                    // 140A3FEFE adds a separator before FormatDescription even if
-                    // native visibility later makes its result empty.
+                    // Add a separator before formatting even if visibility
+                    // later makes the description empty.
                     if !text.is_empty() {
                         text.push_str(", ");
                     }
@@ -147,7 +145,7 @@ impl Renderer<'_, '_, '_> {
                 }
             }
         }
-        text.trim_matches([' ', '\t', '\n', '\r']).to_owned() // 1424B7400; four bytes@142B7B148.
+        text.trim_matches([' ', '\t', '\n', '\r']).to_owned() // Trim these four whitespace bytes.
     }
 
     fn char_mio_bonus_list(
@@ -162,8 +160,8 @@ impl Renderer<'_, '_, '_> {
                 if let Some(index) = installed_content::equipment::stat_index(bonus.name.as_bytes()) {
                     self.char_equipment_stat_difference(index, bonus.value, scopes)
                 } else if installed_content::mio_traits::is_production_stat(&bonus.name) {
-                    // ProductionStat constructor 140079F20 prefixes BONUS_ and
-                    // uppercases the native token; 141483A20 appends ': '.
+                    // Prefix BONUS_ and uppercase the token for its label.
+                    // Append a colon and space after the label.
                     let key = format!("BONUS_{}", bonus.name.to_ascii_uppercase());
                     let label = self.char_native_text(key.as_bytes(), &[], scopes, false)?;
                     let bad_positive = matches!(
@@ -171,13 +169,13 @@ impl Renderer<'_, '_, '_> {
                         "production_cost_factor"
                             | "production_resource_need_factor"
                             | "production_resource_penalty_factor"
-                    ); // native flags 3, others 2.
+                    ); // Cost and resource penalties treat positive values as bad.
                     Ok(format!(
                         "{label}: {}",
                         mio_production_percent(bonus.value, bad_positive)
                     ))
                 } else {
-                    Ok(String::new()) // 140630A10: no recognized bonus yields no text.
+                    Ok(String::new()) // No recognised bonus yields no text.
                 }
             })();
             match part {
@@ -189,14 +187,14 @@ impl Renderer<'_, '_, '_> {
         parts.join(", ")
     }
 
-    // 140A3C380 walks the policy's grouped bonus map, then its modifier cache.
-    // The short form 140A3C1E0 trims and replaces literal LFs with ", ".
+    // Walk the policy's grouped bonus map, then its modifier cache.
+    // The short form trims and replaces literal LFs with commas and spaces.
     pub(in crate::effect_description) fn char_mio_policy_modifiers(
         &mut self,
         policy: &installed_content::industrial_organisations::policies::Policy,
         scopes: Scopes,
     ) -> String {
-        let class = "NIndustrialOrganisation::CUnlockPolicyTooltipEffect";
+        let class = "MIO policy tooltip";
         let mut parts = Vec::new();
         for (group, bonuses) in &policy.groups {
             let name = match self.localised(group, &[], scopes, false) {
@@ -207,7 +205,7 @@ impl Renderer<'_, '_, '_> {
                 }
             };
             let body = self.char_mio_bonus_list(bonuses, scopes, class);
-            parts.push(format!("\u{11}Y{name}\u{11}! {body}")); // 142700920 space.
+            parts.push(format!("\u{11}Y{name}\u{11}! {body}"));
         }
         let mut text = parts.join(", ");
         let kept = match self.char_trait_modifier_kept(&policy.organisation_modifiers) {
@@ -241,9 +239,9 @@ impl Renderer<'_, '_, '_> {
     }
 }
 
-// 140630A10 converts fixed5 to Q15 before 141483BF0 chooses sign/colour.
-// 142259470 wraps the magnitude's percent multiply, then 1424B5FF0 uses
-// the exact binary scale 2^-15 (14291F350) and snprintf %.2f (142A26C48).
+// Convert fixed5 to Q15 before choosing sign and colour.
+// The magnitude's percent multiplication wraps, then formatting uses
+// the exact binary scale 2^-15 and two decimal places.
 fn mio_production_percent(value: i64, bad_positive: bool) -> String {
     let value = replay::fixed_point::fixed5_to_q15(value);
     let (sign, colour) = match value.signum() {

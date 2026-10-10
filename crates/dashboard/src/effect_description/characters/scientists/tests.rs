@@ -13,21 +13,21 @@ fn fixture() -> (Fixture, Folder) {
         ),
         (
             "common/special_projects/specialization/test.txt",
-            "specialization_nuclear={} specialization_air={}",
+            "specialization_synthetic_energy={} specialization_synthetic_lift={}",
         ),
         (
             "common/scientist_traits/test.txt",
             concat!(
-                "scientist_trait_bright={name=BRIGHT_NAME} ",
-                "scientist_trait_fast_learner={modifier={custom_modifier_tooltip=TRAIT_TOOLTIP}} ",
-                "scientist_trait_scoped={modifier={research_speed_factor=0.25 custom_modifier_tooltip=TRAIT_TOOLTIP}}"
+                "syn_observant={name=BRIGHT_NAME} ",
+                "syn_practiced={modifier={custom_modifier_tooltip=TRAIT_TOOLTIP}} ",
+                "syn_scoped={modifier={research_speed_factor=0.25 custom_modifier_tooltip=TRAIT_TOOLTIP}}"
             ),
         ),
         (
             "localisation/test_l_english.yml",
             concat!(
                 "\u{feff}l_english:\n AAA:0 \"Alpha\"\n BBB:0 \"Beta\"\n",
-                " specialization_nuclear:0 \"Physics\"\n AAA_specialization_nuclear:0 \"Alpha physics\"\n specialization_air:0 \"Air\"\n",
+                " specialization_synthetic_energy:0 \"Physics\"\n AAA_specialization_synthetic_energy:0 \"Alpha physics\"\n specialization_synthetic_lift:0 \"Air\"\n",
                 " SCIENTIST_ADD_XP_SPECIALIZATION_EFFECT:0 \"XP$XP|0$/$SPECIALIZATION$ [Root.GetTag]\"\n",
                 " SCIENTIST_ADD_LEVEL_SPECIALIZATION_EFFECT:0 \"Level$LEVELS|0$/$SPECIALIZATION$ [Root.GetTag]\"\n",
                 " SPECIAL_PROJECT_INJURE_SCIENTIST_FOR_DAYS:0 \"Injury$DAYS|0$/[Root.GetName]/[From.GetName]/[Prev.GetName]\"\n",
@@ -36,8 +36,8 @@ fn fixture() -> (Fixture, Folder) {
                 " EFFECT_GENERATE_SCIENTIST_CHARACTER_TRAIT:0 \"$TRAIT_NAME$\"\n",
                 " EFFECT_REMOVE_SCIENTIST_ROLE:0 \"Remove $NAME$/[Root.GetTag]\"\n",
                 " EFFECT_ADD_SCIENTIST_ROLE:0 \"Add $CHARACTER$/[Root.GetTag]\"\n",
-                " BRIGHT_NAME:0 \"Bright\"\n scientist_trait_fast_learner:0 \"Quick\"\n TRAIT_TOOLTIP:0 \"Tooltip[Root.GetTag]\"\n",
-                " scientist_trait_scoped:0 \"Scope\"\n SCIENTIST_SCOPE:0 \"Research [Root.GetTag]\\nFrom [From.GetTag]\"\n"
+                " BRIGHT_NAME:0 \"Bright\"\n syn_practiced:0 \"Quick\"\n TRAIT_TOOLTIP:0 \"Tooltip[Root.GetTag]\"\n",
+                " syn_scoped:0 \"Scope\"\n SCIENTIST_SCOPE:0 \"Research [Root.GetTag]\\nFrom [From.GetTag]\"\n"
             ),
         ),
     ]);
@@ -109,60 +109,70 @@ fn caller() -> EventScopes {
     ])
 }
 
-// Authored witness: common/national_focus/czechoslovakia_mu.txt:15139.
+// Specialisation experience uses the selected country's name.
 #[test]
 fn add_scientist_xp() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
-        "add_scientist_xp={experience=500 specialization=specialization_nuclear}",
+        "add_scientist_xp={specialization=specialization_synthetic_energy experience=275}",
         &mut caller(),
         Content::default(),
     );
-    assert_eq!(out.text, "Alice XP500/Alpha physics [Root.GetTag]");
+    assert_eq!(out.text, "Alice XP275/Alpha physics [Root.GetTag]");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// Authored witness: common/national_focus/germany.txt:19061.
+// Specialisation levels omit the character name.
 #[test]
 fn add_scientist_level() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
-        "add_scientist_level={specialization=specialization_air level=1}",
+        "add_scientist_level={specialization=specialization_synthetic_lift level=4}",
         &mut caller(),
         Content::default(),
     );
-    assert_eq!(out.text, "Level1/Air [Root.GetTag]");
+    assert_eq!(out.text, "Level4/Air [Root.GetTag]");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// Authored witness: common/special_projects/projects/land_projects.txt:1464.
+// Injury text uses a fresh character scope.
 #[test]
 fn injure_scientist_for_days() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
-        "injure_scientist_for_days=60",
+        "injure_scientist_for_days=13",
         &mut caller(),
         Content::default(),
     );
-    assert_eq!(out.text, "Injury60/Alice/Alice/Alice\n");
+    assert_eq!(out.text, "Injury13/Alice/Alice/Alice\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// Authored witness: common/national_focus/china_nationalist_sea.txt:14313.
+// Trait order is preserved; starting skills are execution-only.
 #[test]
 fn generate_scientist_character() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
-    let out = fixture.render("generate_scientist_character={portrait_tag_override=AAA traits={scientist_trait_bright scientist_trait_fast_learner} skills={specialization_naval=2}}", &mut caller(), Content::default());
-    assert_eq!(out.text, "Generate(Bright, Quick)/AAA");
+    let out = fixture.render("generate_scientist_character={portrait_tag_override=AAA traits={syn_practiced syn_observant} skills={specialization_synthetic_shapes=6}}", &mut caller(), Content::default());
+    assert_eq!(out.text, "Generate(Quick, Bright)/AAA");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// Authored witness: common/special_projects/projects/land_projects.txt:1506.
+// A scalar trait selects its name and modifier body.
 #[test]
 fn add_scientist_trait() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
-        "add_scientist_trait=scientist_trait_fast_learner",
+        "add_scientist_trait=syn_practiced",
         &mut caller(),
         Content::default(),
     );
@@ -174,10 +184,12 @@ fn add_scientist_trait() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// 140493BF5 -> 14054E520: full 32-bit category mask, caller-scope expansion;
-// 1424B7850 indents every nonempty resulting line by two spaces.
+// Use the full 32-bit category mask and caller scope;
+// indent every nonempty resulting line by two spaces.
 #[test]
 fn scientist_trait_uses_full_category_mask_and_caller_scope() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::LexicalTokens(tokens)) =
         &mut *fixture.frame.tables[TableId::LexicalTokens.index()]
@@ -200,7 +212,7 @@ fn scientist_trait_uses_full_category_mask_and_caller_scope() {
             },
         ]));
     let out = fixture.render(
-        "add_scientist_trait=scientist_trait_scoped",
+        "add_scientist_trait=syn_scoped",
         &mut caller(),
         Content::default(),
     );
@@ -217,11 +229,7 @@ fn scientist_trait_uses_full_category_mask_and_caller_scope() {
             .scientist_traits
             .as_ref()
             .unwrap();
-        let modifiers = &traits
-            .get("scientist_trait_scoped")
-            .unwrap()
-            .unwrap()
-            .modifiers;
+        let modifiers = &traits.get("syn_scoped").unwrap().unwrap().modifiers;
         assert_eq!(
             renderer
                 .modifier_list_with(modifiers, "", scopes, ModifierListOptions::default())
@@ -231,9 +239,11 @@ fn scientist_trait_uses_full_category_mask_and_caller_scope() {
     });
 }
 
-// Authored witness: common/special_projects/prototype_rewards/generic_nuclear_prototype_rewards.txt:200.
+// Removing the role describes the selected character.
 #[test]
 fn remove_scientist_role() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render(
         "remove_scientist_role=yes",
@@ -244,27 +254,33 @@ fn remove_scientist_role() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// Authored witness: mod 1826643372/common/decisions/KTZ_decisions.txt:2487.
+// Role creation accepts authored traits and starting skills.
 #[test]
 fn add_scientist_role() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
-    let out = fixture.render("add_scientist_role={scientist={traits={scientist_trait_bright} skills={specialization_nuclear=3}}}", &mut caller(), Content::default());
+    let out = fixture.render("add_scientist_role={scientist={traits={syn_observant} skills={specialization_synthetic_energy=5}}}", &mut caller(), Content::default());
     assert_eq!(out.text, "Add Alice/AAA");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 #[test]
-fn active_non_scientists_keep_native_empty_gates() {
+fn active_non_scientists_keep_empty_gates() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let mut scopes = caller();
     scopes.scopes[0].this = EventObject::Character(8);
-    let out = fixture.render("add_scientist_xp={specialization=specialization_nuclear experience=500} add_scientist_level={specialization=specialization_air level=1} injure_scientist_for_days=60 add_scientist_trait=scientist_trait_fast_learner", &mut scopes, Content::default());
+    let out = fixture.render("add_scientist_xp={specialization=specialization_synthetic_energy experience=275} add_scientist_level={specialization=specialization_synthetic_lift level=4} injure_scientist_for_days=13 add_scientist_trait=syn_practiced", &mut scopes, Content::default());
     assert_eq!(out.text, "");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 #[test]
 fn unrostered_scientist_presence_is_named_and_counted() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::Scientists.index()] =
         TableView::Complete(TableRows::Scientists(vec![]));
@@ -279,16 +295,18 @@ fn unrostered_scientist_presence_is_named_and_counted() {
             },
         ]));
     let out = fixture.render(
-        "injure_scientist_for_days=60",
+        "injure_scientist_for_days=13",
         &mut caller(),
         Content::default(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect CInjureScientistEffect@?A0x9898cfbe@NProject: key injure_scientist_for_days: unrostered character 7 scientist holder (CCharacter+0xC0, 1404909E0) is unrecorded".to_owned(), 1)]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect injure_scientist_for_days: key injure_scientist_for_days: unrostered character 7 scientist holder is unrecorded".to_owned(), 1)]));
 }
 
 #[test]
 fn scientist_role_targets_use_named_character_and_current_fallback() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let out = fixture.render("add_scientist_role={character=synthetic_ben scientist={}} remove_scientist_role={character=synthetic_ben}", &mut caller(), Content::default());
     assert_eq!(out.text, "Add Ben/AAA\nRemove Ben/AAA");
@@ -296,9 +314,11 @@ fn scientist_role_targets_use_named_character_and_current_fallback() {
 }
 
 #[test]
-fn missing_and_reserved_trait_ids_keep_native_empty() {
+fn missing_and_reserved_trait_ids_keep_empty() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
-    let out = fixture.render("add_scientist_trait=missing_trait add_scientist_trait=\"scientist_trait_bright\" add_scientist_trait=3 add_scientist_xp={specialization=missing_specialization experience=500}", &mut caller(), Content::default());
+    let out = fixture.render("add_scientist_trait=missing_trait add_scientist_trait=\"syn_observant\" add_scientist_trait=3 add_scientist_xp={specialization=missing_specialization experience=275}", &mut caller(), Content::default());
     assert_eq!(out.text, "");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }

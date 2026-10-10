@@ -1,9 +1,9 @@
 //! CStrategicNavyManager canonical-country-indexed cache.
 use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, cstrategic_navy, read};
 
-/// CStrategicNavyManager primary vtable; constructor 140E88580 installs 14295C6C0.
+/// Strategic-navy-manager primary vtable.
 pub const VTABLE_RVA: usize = 0x0295_c6c0;
-/// CStrategicNavyManager CPdxArray<CStrategicNavy*>; constructor E88580 and getter6ECBF0.
+/// Strategic-navy pointer array.
 pub const NAVIES: usize = 8;
 
 pub(crate) fn navies(
@@ -57,8 +57,7 @@ pub(crate) fn authenticate_owner(
     })
 }
 
-/// The country's strategic navy (`CCountry::GetStrategicNavy@1406ECBF0`), its identity and
-/// owner authenticated.
+/// Country strategic navy with authenticated identity and owner.
 pub fn navy(
     memory: &impl Memory,
     base: usize,
@@ -71,7 +70,7 @@ pub fn navy(
     })
 }
 
-/// The country's regional mine level, raw fixed5; `CanLayMinesInRegion@140F65E40`
+/// Regional mine level, raw fixed5, selected for the wing's effective country.
 pub fn regional_operand(
     memory: &impl Memory,
     base: usize,

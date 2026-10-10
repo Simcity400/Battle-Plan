@@ -97,6 +97,8 @@ fn render(fixture: &Fixture, database: &Database, body: &str) -> Description {
 
 #[test]
 fn static_balance_modifiers_use_the_shared_raw_formatter_without_lf() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let database = database();
     let static_modifiers = installed_content::static_modifiers::Descriptions::from_blocks([(
@@ -122,7 +124,9 @@ fn static_balance_modifiers_use_the_shared_raw_formatter_without_lf() {
 }
 
 #[test]
-fn set_and_remove_compare_the_first_country_membership_and_keep_native_order() {
+fn set_and_remove_compare_the_first_country_membership_and_keep_order() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let database = database();
     assert_eq!(
@@ -155,6 +159,8 @@ fn set_and_remove_compare_the_first_country_membership_and_keep_native_order() {
 
 #[test]
 fn predicted_value_clamps_and_range_changes_use_strict_bounds_and_two_newlines() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let database = database();
     assert_eq!(
@@ -188,6 +194,8 @@ fn predicted_value_clamps_and_range_changes_use_strict_bounds_and_two_newlines()
 
 #[test]
 fn duplicate_runtime_range_identity_is_a_named_refusal() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let definition = database().definition(b"SYN_BALANCE").unwrap().clone();
     let database = Database::from_parsed([(
@@ -224,6 +232,8 @@ fn duplicate_runtime_range_identity_is_a_named_refusal() {
 
 #[test]
 fn moving_range_formats_the_numeric_difference_with_a_forced_plus() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     *fixture.frame.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
@@ -276,6 +286,8 @@ fn moving_range_formats_the_numeric_difference_with_a_forced_plus() {
 
 #[test]
 fn changing_an_unnamed_recorded_side_refuses_its_lost_null_identity() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     let TableView::Complete(TableRows::PowerBalances(rows)) =
         &mut *fixture.frame.tables[TableId::PowerBalances.index()]

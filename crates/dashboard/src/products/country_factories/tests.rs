@@ -691,7 +691,7 @@ fn factory_types_follow_a_modded_content_stack() {
             ),
             (
                 "localisation/english/buildings_l_english.yml",
-                "\u{feff}l_english:\n arms_factory:0 \"Military Factory\"\n industrial_complex:0 \"Civilian Factory\"\n dockyard:0 \"Naval Dockyard\"\n",
+                "\u{feff}l_english:\n arms_factory:0 \"Assembly Workshop\"\n industrial_complex:0 \"Public Works Hall\"\n dockyard:0 \"Harbor Workshop\"\n",
             ),
         ],
     );
@@ -732,7 +732,7 @@ fn factory_types_follow_a_modded_content_stack() {
     assert!(findings.iter().any(|finding| {
         finding.kind == Kind::Content
             && finding.subject == "building workshop"
-            && finding.message.contains("142230940")
+            && finding.message.contains("shown by its token")
     }));
     assert!(findings.iter().any(|finding| {
         finding.kind == Kind::Fallback && finding.subject == "factory group naval_production"
@@ -760,7 +760,7 @@ fn factory_types_follow_a_modded_content_stack() {
     assert_eq!(
         named(FactoryGroupKey::Civilian),
         [
-            ("industrial_complex".to_owned(), some("Civilian Factory")),
+            ("industrial_complex".to_owned(), some("Public Works Hall")),
             ("workshop".to_owned(), None)
         ]
     );
@@ -788,7 +788,7 @@ fn factory_types_follow_a_modded_content_stack() {
             .iter()
             .all(|warning| !warning.contains("launch_site"))
     );
-    // The native integer scan leaves an unresolved token at its constructor's zero.
+    // The integer scan leaves an unresolved token at its initial zero.
     let scripted = content_folder(
         "factories_scripted",
         &[(

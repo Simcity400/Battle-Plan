@@ -1,35 +1,28 @@
-//! Historical division and ship names from the authored name groups.
+//! Historical division and ship names from authored name groups.
 //!
-//! The simulation supplies the selected group, ordinal and ordered flag; this
-//! module only renders that selection. It never chooses or reserves a name.
+//! The simulation supplies the selected group, ordinal and ordered flag;
+//! this module renders that selection without choosing or reserving a name.
 //!
-//! Native evidence (a729): `CNameGroup::vf4` at `1409b9a20` appends unordered
-//! entries and replaces matching ordered IDs without discarding other entries.
-//! `1409b5640` selects an exact ordered ID or a zero-based unordered entry;
-//! `1409b4ce0` uses the authored fallback. `1409b57c0` replaces all `%s` with
-//! Roman numerals, otherwise all `%d` with decimal, through `1424b7f40`.
-//! `1422b8dd0` uses the ordinary subtractive Roman table, repeating M above 3999.
-//! Ship `unique` lists enter the same unordered array. `CNameGroup::vf8` at
-//! `1409b86a0` prefixes both entry arrays, never the fallback. `CPersistent::
-//! Read` at `1424a9730` invokes that prefix pass after every group
-//! declaration, including overrides.
+//! Declarations append unordered entries and replace matching ordered IDs
+//! without discarding other entries. Resolve an exact ordered ID or a zero-
+//! based unordered entry, otherwise use the authored fallback. Replace all
+//! `%s` with subtractive Roman numerals, repeating M above 3999; if no `%s`
+//! occurs, replace all `%d` with decimal. Ship `unique` lists append to the
+//! same unordered array. After every group declaration, including overrides,
+//! prefix both entry arrays while leaving the fallback unprefixed.
 //!
-//! The database loader `1409b4370` keeps four tables by the group's `type`
-//! (+0x150): army +0x28, ship +0x38, code name +0x48 and railway gun +0x58. A
-//! declaration re-reads a group of its name found in the first three, which
-//! stays in its table whatever `type` the new declaration gives; otherwise it
-//! creates a group and inserts it into the table of the `type` it read. The
-//! railway-gun table is not searched, so each railway-gun declaration is a
-//! new group. A division's group is an army group: templates look theirs up
-//! in the army table (1409B71F0) or take it from the country's division
-//! tracker (1409B6820), which holds army groups (1409B88F0, kind 0).
+//! The database has army, ship, code-name and railway-gun tables. Re-read a
+//! matching name in the first three tables without moving it when `type`
+//! changes; otherwise create a group in its selected table. Railway-gun
+//! groups are not searched, so each such declaration creates a new group.
+//! Divisions take their groups from the army table, through their templates
+//! or their country's division tracker.
 //!
-//! One reader reads each file (1409B8510), and the file is read through the
-//! reader replay ([`native`]): its `@name` table holds from a definition to
-//! the end of that file, and text the readers take out of step with its
-//! braces is read as they read it, each such place noted. A block read by
-//! key that the port cannot settle leaves the rest of the file unknown: the
-//! group being read and every group that rest could declare are refused.
+//! One persistent reader handles each file ([`native`]). Its `@name` table
+//! holds from a definition to the file's end. Reads that consume text out
+//! of step with its braces retain that consumption and report each place.
+//! When a keyed block cannot be settled, refuse the current group and every
+//! group that the unknown remainder could declare.
 
 use std::{
     collections::{BTreeMap, BTreeSet, btree_map::Entry},
@@ -47,8 +40,8 @@ use crate::{
     },
 };
 
-/// A group's names as stored bytes (ReadStringInto 1424ABB50 keeps the
-/// text's bytes); a lookup that selects one that is not UTF-8 is refused.
+/// A group's names as stored bytes; lookups that select non-UTF-8 text
+/// are refused without discarding the other entries.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Group {
     ordered: BTreeMap<i32, Vec<u8>>,
@@ -57,8 +50,8 @@ struct Group {
     prefix: Option<Vec<u8>>,
 }
 
-/// A name group's `type` (+0x150), which picks the table 1409B4370 inserts
-/// a new group into. CNameGroup's constructor (1409B2AD0) sets army.
+/// A name group's `type` selects the table for a new group.
+/// The default table is army.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Table {
     #[default]
@@ -69,7 +62,7 @@ pub enum Table {
 }
 
 impl Table {
-    /// The `type` keyword 1409B9A20 compares the value token with.
+    /// The `type` keyword compared with the value token.
     fn keyword(self) -> &'static str {
         match self {
             Self::Army => "army",
@@ -81,13 +74,12 @@ impl Table {
 }
 
 /// Authored name groups, independent of any recording client's language/UI.
-/// Keyed by the ASCII-folded group name: the loader 1409B4370 finds a group by
-/// the folded hash 140BBA1B0 and `_stricmp` (14253D9F8), so `GROUP` and a
-/// later layer's `group` are one group, and a recorded key matches either.
+/// Keys use ASCII-folded group names, so `GROUP` and a later layer's `group`
+/// are one group, and a recorded key in either case matches it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Database {
-    /// The groups of the three tables 1409B4370 searches (army, ship, code
-    /// name), each with the table it was inserted into.
+    /// Groups in the searchable army, ship and code-name tables, each with
+    /// the table it was inserted into.
     groups: BTreeMap<Vec<u8>, (Table, Group)>,
     /// Folded names a refused file declares or could declare. The game read
     /// that file, so from then on those groups are unknown here.
@@ -102,9 +94,9 @@ fn fold(key: &[u8]) -> Vec<u8> {
 /// Why [`Database::resolve`] cannot render the selected name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unresolved {
-    /// The recorded key is empty and no group is declared with an empty
-    /// name, so the member's group is null (1409B7290 returned 0) and it has
-    /// no stored name: 1409B5640 builds the legacy name (1409B4CE0).
+    /// The recorded key is empty and no group declares an empty name, so
+    /// the member has no name group or stored name and requires legacy
+    /// name generation from its template.
     NoGroup,
     /// The recorded key is empty and a group is declared (or refused) with
     /// an empty name: the key is that group's or a null group's.
@@ -116,11 +108,11 @@ pub enum Unresolved {
     NotArmy(Table),
     /// A name file that declares or could declare the group was refused.
     GroupRefused,
-    /// An ordered member at order 0 has not been given its number yet:
-    /// 1409B5640 calls the simulation's allocator, which is not recorded.
+    /// An ordered member at order 0 has not been given its number yet;
+    /// the simulation's allocator supplies that unrecorded number.
     UnassignedOrder,
-    /// Neither the selected entry nor an authored non-empty fallback exists;
-    /// 1409B4CE0 then builds the legacy name from the template.
+    /// Neither the selected entry nor a non-empty authored fallback exists;
+    /// legacy name generation from the template would be required.
     NoFallback,
     /// The selected name, with its prefix, is not UTF-8.
     NotText,
@@ -130,7 +122,7 @@ impl std::fmt::Display for Unresolved {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoGroup => f.write_str(
-                "it has neither a name group (ResolveNameGroup 1409B7290 found none) nor a stored name, so the game builds a legacy name from the template (1409B4CE0), which is not reproduced",
+                "it has neither a name group nor a stored name, so the game builds a legacy name from the template, which is not reproduced",
             ),
             Self::EmptyKey => f.write_str(
                 "its recorded name group key is empty, which a null name group and the group a name file declares with an empty name both give",
@@ -140,17 +132,17 @@ impl std::fmt::Display for Unresolved {
             }
             Self::NotArmy(table) => write!(
                 f,
-                "its name group is first declared with type {}, so it is not in the army table a division's group comes from (1409B4370, 1409B71F0)",
+                "its name group is first declared with type {}, so it is not in the army table a division's group comes from",
                 table.keyword()
             ),
             Self::GroupRefused => {
                 f.write_str("a name file that declares or could declare its name group was refused")
             }
             Self::UnassignedOrder => f.write_str(
-                "its ordered name is not yet assigned (order 0 asks the simulation's allocator 1409B3A00)",
+                "its ordered name is not yet assigned (order 0 asks the simulation's allocator)",
             ),
             Self::NoFallback => f.write_str(
-                "its group has neither the selected entry nor a non-empty fallback_name, so the game builds a legacy name from the template (1409B4CE0), which is not reproduced",
+                "its group has neither the selected entry nor a non-empty fallback_name, so the game builds a legacy name from the template, which is not reproduced",
             ),
             Self::NotText => f.write_str("its selected name is not UTF-8"),
         }
@@ -229,8 +221,8 @@ impl Database {
             }
             (Some((_, group)), _) => group,
         };
-        // 1409B5640 calls the simulation's allocator for an unassigned ordered
-        // member. Its zero does not mean the authored fallback's first number.
+        // An unassigned ordered member requires the simulation's allocator.
+        // Its zero is not the authored fallback's first number.
         if ordered && order == 0 {
             return Err(Unresolved::UnassignedOrder);
         }
@@ -266,10 +258,9 @@ impl Database {
         String::from_utf8(name).map_err(|_| Unresolved::NotText)
     }
 
-    /// One declaration as 1409B4370 applies it: it re-reads the group of
-    /// its name in the army, ship or code-name table, which stays there;
-    /// otherwise the declaration is a new group in the table of its `type`,
-    /// and a railway-gun group, never searched again, is not kept.
+    /// Apply one declaration: re-read a matching group in the army, ship or
+    /// code-name table without moving it. Otherwise create it in its `type`
+    /// table; railway-gun groups are never searched and are not retained here.
     fn declare(&mut self, key: &[u8], table: Table, definition: Group) {
         let group = match self.groups.entry(fold(key)) {
             Entry::Occupied(entry) => &mut entry.into_mut().1,
@@ -291,12 +282,10 @@ impl Database {
         }
     }
 
-    /// Reads one name file onto the database: what the game only logs about
-    /// it, and why part of it is refused. Every group the replay read is
-    /// applied. When the port cannot follow the reading to the end of the
-    /// file, the group being read and every name a token of the unknown
-    /// rest could declare are refused: 1409B4370 takes each group's name
-    /// from a key token, and keys are not variables (1424AC5E0).
+    /// Read one name file onto the database, retaining logged recovery and
+    /// refusals. Apply each completed group. If reading cannot reach the end,
+    /// refuse the group being read and every group named by a possible key in
+    /// the remainder. Group names come from key tokens, never variables.
     fn apply(
         &mut self,
         bytes: &[u8],
@@ -326,9 +315,8 @@ impl Database {
         let Some(unsettled) = &read.unsettled else {
             return (notes, None);
         };
-        // The line is the unsettled block's `{`: every token after it is at
-        // or below it.
-        // 1409B8510 constructs the lexer in mode 1 (CTextLexer 1424A6370).
+        // The line is the unsettled block's `{`: every later token is at or below
+        // that line. Skip the file's leading mark while collecting possible names.
         let mut names: BTreeSet<Vec<u8>> = native::lex(bytes, native::Mode::SkipMark)
             .tokens
             .iter()
@@ -361,8 +349,8 @@ fn group_key(item: &Item) -> &[u8] {
     group_name(item.key.as_deref().unwrap_or_default())
 }
 
-/// A key token's text as a group name: 1409B4370 takes it to its first NUL
-/// (the `strlen` before 14011D460), quoted or not.
+/// A key token's text as a group name, ending at its first NUL whether
+/// quoted or bare.
 fn group_name(key: &[u8]) -> &[u8] {
     crate::parser::c_string(key)
 }
@@ -389,23 +377,21 @@ pub fn parse(bytes: &[u8], names: &KeyNames) -> io::Result<Database> {
 /// Which reader a field goes to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Node {
-    /// 1409B4370's file loop.
+    /// The file's group loop.
     Top,
-    /// CNameGroup::vf4 (1409B9A20) under CPersistent::Read (1424A9730).
+    /// Persistent fields within one group.
     Group,
-    /// 1409B9A20's `ordered` loop.
+    /// The group's ordered-entry loop.
     Ordered,
-    /// 1409B9A20's `unordered` loop.
+    /// The group's unordered-entry loop.
     Unordered,
 }
 
-/// One name file as its reader reads it (1409B8510 builds one CReader per
-/// file, so its `@name` table holds to the end of that file), through
-/// [`native`]: 1409B4370 reads keys until the end of the text only, each a
-/// group through CPersistent::Read (vtable +0x18) whatever its value.
-/// Keyword ids from register_authored_keys (140082CB0).
+/// Read one name file with one persistent reader, keeping `@name` values
+/// through that file's end. The file loop reads keys to the end of the
+/// text; each key starts a group regardless of its value.
 fn read_file(bytes: &[u8], names: &KeyNames) -> native::Read {
-    // 1409B8510 constructs the lexer in mode 1 (CTextLexer 1424A6370).
+    // Skip the leading mark when opening each name file.
     native::read(
         bytes,
         native::Mode::SkipMark,
@@ -414,12 +400,9 @@ fn read_file(bytes: &[u8], names: &KeyNames) -> native::Read {
         &mut |node, field| match node {
             Node::Top => Shape::Object(Node::Group),
             Node::Group => match field.keyword().as_deref() {
-                // ReadStringInto (1424ABB50): `name` 0x1B, `prefix` 0x30F8,
-                // `fallback_name` 0x38E0.
+                // Text fields each consume one value token.
                 Some(b"name" | b"prefix" | b"fallback_name") => Shape::One,
-                // ReadStringList (1401426E0): `unique` 0x30FA, `division_types`
-                // 0x38DD, `link_numbering_with` 0x38DE, `for_countries` 0x38E4,
-                // `ship_types` 0x3C84.
+                // These fields consume string lists.
                 Some(
                     b"unique"
                     | b"division_types"
@@ -427,35 +410,27 @@ fn read_file(bytes: &[u8], names: &KeyNames) -> native::Read {
                     | b"for_countries"
                     | b"ship_types",
                 ) => Shape::List,
-                // `ordered` 0x3907 and `unordered` 0x3908: 1409B9A20's own loops,
-                // which stop at `}` or the end as CPersistent::Read does.
+                // Ordered and unordered entry loops stop at `}` or the end of the text.
                 Some(b"ordered") => Shape::Object(Node::Ordered),
                 Some(b"unordered") => Shape::Object(Node::Unordered),
-                // `can_use` 0x37AE: a CAndTrigger (vtable +0x28, CTrigger::
-                // LoadBody 1405431C0) on this reader.
+                // `can_use` reads a conjunction trigger on the same file reader.
                 Some(b"can_use") => Shape::Trigger,
-                // `type` 0xE1 compares the value token (army 0x289D, ship
-                // 0x28A0, codename 0x3D17, railway_gun 0x4D14); any other, a `{`
-                // included, is RecordError "unexpected name type" (1424ACF90),
-                // which skips a block (1424AD270). Any other key, a quoted one
-                // included, reaches the default (1409B9FF0): RecordError
-                // "Unexpected token while reading division names database", the
-                // same skip.
+                // `type` compares a keyword value with army, ship, codename or
+                // railway_gun. Other values, blocks included, log a type error and
+                // skip any block. Other keys, quoted ones included, use the same skip.
                 _ => Shape::Skip,
             },
-            // Each entry: 1424AC5E0, then ParseTokenInt32 (1424B0080 -> atol)
-            // on the key's text, quoted or not. Below 1 the game records "The
-            // entry index of ... is out of range" and leaves the loop, the
-            // entry's list unread; otherwise ReadStringList (1401426E0) reads
-            // to `}` whatever the value was.
+            // Scan each key's signed decimal prefix, quoted or bare. An index
+            // below 1 logs an out-of-range error and leaves the loop with its list
+            // unread; otherwise read the string list through `}` whatever its value.
             Node::Ordered if decimal_i32(&field.key.text) < 1 => Shape::Break,
             Node::Ordered | Node::Unordered => Shape::List,
         },
     )
 }
 
-/// One group as CNameGroup::vf4 (1409B9A20) read it, in source order, with
-/// the table its last valid `type` picks.
+/// Read one group in source order, keeping the table chosen by its last
+/// valid `type` field.
 fn group(key: &str, fields: &[Item], notes: &mut Vec<crate::Diagnostic>) -> (Table, Group) {
     let place = format!("group {key}");
     let mut table = Table::default();
@@ -498,10 +473,9 @@ fn group(key: &str, fields: &[Item], notes: &mut Vec<crate::Diagnostic>) -> (Tab
                     group.unordered.extend(stored(entry, &place, notes));
                 }
             }
-            // 1409B9A20 compares the value token's id: a bare token folds to
-            // its keyword (1424A7A90); a quoted one (0xF), a number, the end
-            // of the text (0x13, its text kept) and a block are "unexpected
-            // name type" (1424ACF90).
+            // Bare type values fold to their keyword. Quoted values, numbers,
+            // blocks and the end token are invalid types, even when an end token
+            // retains text from a recognized keyword.
             Some(b"type") => {
                 let value = field.value_keyword();
                 match [
@@ -515,7 +489,7 @@ fn group(key: &str, fields: &[Item], notes: &mut Vec<crate::Diagnostic>) -> (Tab
                 {
                     Some(found) => table = found,
                     None => notes.push((crate::DiagnosticKind::Logged, format!(
-                        "{place}: type {} is not army, ship, codename or railway_gun; the game records \"unexpected name type\" and keeps the type it had (1409B9A20, 1424ACF90)",
+                        "{place}: type {} is not army, ship, codename or railway_gun; the game logs the invalid value and keeps the type it had",
                         shown(field)
                     ))),
                 }
@@ -531,13 +505,13 @@ fn group(key: &str, fields: &[Item], notes: &mut Vec<crate::Diagnostic>) -> (Tab
                 | b"for_countries"
                 | b"ship_types",
             ) => {}
-            // 1409B9FF0 rejects any other key, a quoted one included, and
-            // skips its block; the group reads on.
+            // Reject other keys, quoted ones included, and skip their blocks;
+            // continue reading the group.
             _ => {
                 let name = String::from_utf8_lossy(field.key.as_deref().unwrap_or_default());
                 let quoted = if field.key_quoted { "quoted " } else { "" };
                 notes.push((crate::DiagnosticKind::Logged, format!(
-                    "{place}: {quoted}field {name} is not a division-name field; the game rejects it and skips its block (1409B9FF0, 1424ACF90)"
+                    "{place}: {quoted}field {name} is not a division-name field; the game rejects it and skips its block"
                 )));
             }
         }
@@ -557,30 +531,31 @@ fn shown(field: &Item) -> String {
     }
 }
 
-/// A string as CReader::ReadStringInto (1424ABB50) stores it
-/// ([`parser::Value::read_string`]); the replay has resolved a variable
-/// (1424AB540). [`read_file`] gives every such field one token, so a block
-/// here is noted, not read.
+/// Read a string through [`parser::Value::read_string`] after resolving
+/// variables. [`read_file`] gives each text field one token, so a block
+/// is reported rather than read as a string.
 fn stored(item: &Item, place: &str, notes: &mut Vec<crate::Diagnostic>) -> Option<Vec<u8>> {
     let text = item.value.read_string().map(<[u8]>::to_vec);
     if text.is_none() {
         let name = String::from_utf8_lossy(item.key.as_deref().unwrap_or(b"entry"));
-        notes.push((crate::DiagnosticKind::Unsupported, format!(
-            "{place}: {name} is a block where ReadStringInto (1424ABB50) reads one value, so it is not read"
-        )));
+        notes.push((
+            crate::DiagnosticKind::Unsupported,
+            format!(
+                "{place}: {name} is a block where the reader consumes one value, so it is not read"
+            ),
+        ));
     }
     text
 }
 
-/// A name entry's list as CReader::ReadStringList (1401426E0) read it: an
-/// empty list adds no entry (1409B9A20 tests the count) and the name is its
-/// first string. Descriptions/URLs affect the name picker, outside map scope.
+/// A name entry uses the first string in its list; an empty list adds
+/// no entry. Descriptions and URLs affect name selection outside map scope.
 fn list_name(items: &[Item], place: &str, notes: &mut Vec<crate::Diagnostic>) -> Option<Vec<u8>> {
     items.first().and_then(|first| stored(first, place, notes))
 }
 
-/// 1409B57C0 through 1424B7F40: every `%s` becomes the Roman numeral, or
-/// else every `%d` the decimal number.
+/// Every `%s` becomes the Roman numeral, otherwise every `%d` becomes
+/// the decimal number.
 fn format_number(pattern: &[u8], number: u32) -> Vec<u8> {
     if pattern.windows(2).any(|pair| pair == b"%s") {
         replace(pattern, b"%s", roman(number).as_bytes())
@@ -636,13 +611,12 @@ fn roman(mut number: u32) -> String {
 pub fn read<N: crate::DiagnosticMessage>(
     layers: &ResolvedLayers,
 ) -> io::Result<(Database, Vec<N>)> {
-    // Later directories can re-read a group already retained in the army
-    // table, even when the declaration changes its type (1409B4370).
+    // Later directories can re-read an army group already retained, even
+    // when the declaration changes its type.
     read_directories(layers, &DIRECTORIES)
 }
 
-/// The directories CBuildingDatabase::load (140191044..140191083) hands
-/// 1409B8510, in order, into the one name database.
+/// Directories read in order into the shared name database.
 pub const DIRECTORIES: [&str; 4] = [
     "common/units/names_divisions/",
     "common/units/names_ships/",
@@ -656,7 +630,7 @@ pub fn read_directories<N: crate::DiagnosticMessage>(
     layers: &ResolvedLayers,
     directories: &[&str],
 ) -> io::Result<(Database, Vec<N>)> {
-    // 1409B8510: enumerate_directory_wrapper with `.txt` and depth 0.
+    // List direct `.txt` files in each directory's loader order.
     let paths = directories
         .iter()
         .flat_map(|directory| crate::script_files::paths(layers, directory, Some(".txt")));

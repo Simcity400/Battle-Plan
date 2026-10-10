@@ -43,15 +43,11 @@ impl Presentation {
         false
     }
 
-    /// 140F0D6F0 refreshes only with dirty work and elapsed graphics time >=
-    /// (f32(manager+300)/100000.0f32; divisor at 142709C48), copying current
-    /// +388/+390 to previous +398/+3A0 before applying changes. The identity is equality
-    /// only; it also catches a refresh whose averaged cells happen to agree.
-    /// 140B47710 resets CGraphicalMap+13C on success. 140B481A0 then adds the
-    /// frame's f32 graphics delta and clamps [0,1] (1.0 at 14270E270): linear,
-    /// one second, including an interrupted fade. No interpolation of old fade.
-    /// `now` selects refresh eligibility; `render_delta` is the independently
-    /// admitted idler delta, never the difference between refresh timestamps.
+    /// Refresh only with dirty work and sufficient elapsed graphics time, narrowing the fixed-five
+    /// interval to f32. Copy current to previous before updates. Equality identifies refreshes even
+    /// when averaged cells agree. Each successful refresh resets the fade, then independently admitted
+    /// graphics deltas advance it over one second, including interrupted fades. `now` controls
+    /// eligibility; `render_delta` is independent of refresh timestamps.
     pub fn advance(&mut self, now: f32, render_delta: f32) -> bool {
         // Preserve the viewer's first-frame/reset epoch: both planes were just
         // bound to one snapshot, so the new phase starts at zero on this frame.
@@ -75,7 +71,7 @@ impl Presentation {
                 .chunks_exact_mut(4)
                 .zip(self.pending.chunks_exact(4))
             {
-                // 14124BE50 logical RGBA: previous mud, current snow,
+                // Logical RGBA: previous mud, current snow,
                 // previous snow, current mud. Copy raw current, not its fade.
                 cell[0] = cell[3];
                 cell[2] = cell[1];

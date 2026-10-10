@@ -1,5 +1,5 @@
-//! Selected bodies 140DE95A0 / 140DF7D20. Selection and target stay viewer-local.
-//! Prospective queries need their own genuine operands, never a captured UI cache.
+//! Selected-unit text. Selection and target stay viewer-local. Prospective
+//! queries need their own operands, never a captured UI cache.
 mod movement;
 mod travel;
 
@@ -50,7 +50,7 @@ pub(super) fn refuse(out: &mut Tooltip, name: &str, reason: String) {
         .or_default() += 1;
 }
 
-/// 140DFF0D0: indent once before append, including empty or multiline values.
+/// Indent once before append, including empty or multiline values.
 pub(super) fn line(out: &mut Tooltip, name: &str, indent: usize, value: Result<String, String>) {
     match value {
         Ok(value) => {
@@ -286,7 +286,7 @@ struct RailwaySecondGate<'a> {
     rejection: &'a Result<bool, String>,
 }
 
-/// DF7D20 reaches its second E67D80 call only after a known empty rejection,
+/// Reach the second railway check only after known empty rejection,
 /// nonpositive duration, empty prospective route and no selected gun at target.
 fn railway_second(
     out: &mut Tooltip,
@@ -444,8 +444,8 @@ pub(super) fn build(context: &Context<'_>, selected: &[Unit], nato: bool) -> Too
     out
 }
 
-/// 140DE95A0 appends retreat/withdrawal after rejection and before either
-/// attack-preview modifiers or the blocked-strait notice.
+/// Append retreat/withdrawal after rejection and before either attack-preview
+/// modifiers or the blocked-strait notice.
 fn statuses_then_attack(
     out: &mut Tooltip,
     frame: &DecodedFrame,
@@ -464,13 +464,13 @@ pub(super) fn append(out: &mut Tooltip, selected: Tooltip, loc: &Localisation) {
     for (name, count) in selected.refused {
         *out.refused.entry(name).or_default() += count;
     }
-    // 140DF0D10..D22: both main-after-location and selected byte lengths are nonzero.
+    // Both main-after-location and selected byte lengths must be nonzero.
     if out.title.is_empty() || selected.title.is_empty() {
         return;
     }
     match localise(loc, "SEPARATION_LINE", &[]) {
         Ok(separator) => {
-            // 1419947D0 skips ASCII spaces only; the separator adds no imposed LF.
+            // Skip ASCII spaces only; the separator adds no imposed LF.
             if !out.title.trim_end_matches(' ').ends_with('\n') {
                 out.title.push('\n');
             }

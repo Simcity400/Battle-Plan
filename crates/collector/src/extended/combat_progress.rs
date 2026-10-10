@@ -131,8 +131,7 @@ impl Captured {
                 .len
                 .checked_add(1)
                 .ok_or("land loss row demand overflow")?;
-            // Worker-only World acquisition. SCombatSideData@140CD15D0
-            // owns the pools traversed by 140FFDB00's full +0x2C count.
+            // Worker-only World acquisition owns the full combat-side pools.
             // Grow from these original LossPlan headers before reading entries.
             engine::walk::Buffer::Growing(&mut self.rows.rows).ensure(rows)?;
             engine::walk::Buffer::Growing(&mut self.losses).ensure(rows)?;

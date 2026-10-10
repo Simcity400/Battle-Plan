@@ -1,10 +1,8 @@
-//! The name groups a raid's recorded division or source ship names itself
-//! from: the one name database CBuildingDatabase::load builds from the four
-//! name directories (140191044..140191083, 1409B8510), read as
-//! [`crate::division_names`] reads it: groups found without case (1409B4370,
-//! 140BBA1B0, 14253D9F8), repeats merged (1409B9A20), and each group's
-//! `prefix` prepended to both entry arrays after every declaration
-//! (1424A9730 -> 1409B86A0). Names are literal authored text.
+//! Name groups for a raid's recorded division or source ship. The four name
+//! directories feed one database, shared with [`crate::division_names`].
+//! Groups are found without case, repeated declarations merge, and each
+//! group's `prefix` is prepended to both entry arrays after every declaration.
+//! Names are literal authored text.
 use crate::{ResolvedLayers, division_names};
 use std::io;
 
@@ -38,8 +36,8 @@ impl Groups {
         })
     }
 
-    /// The member's name (1409B5640) from the group of its recorded key, in
-    /// whichever table holds it.
+    /// The member's name from the group of its recorded key, in whichever
+    /// table holds it.
     pub fn name(&self, key: &str, order: i32, ordered: bool) -> Result<String, String> {
         self.database
             .resolve_any(key, order, ordered)
@@ -51,7 +49,7 @@ impl Groups {
 mod tests {
     use super::*;
 
-    /// The name files in the order 1409B8510 reads them.
+    /// The name files in loader order.
     fn groups(files: &[(&str, &str)]) -> Groups {
         let texts: Vec<&[u8]> = files.iter().map(|(_, text)| text.as_bytes()).collect();
         Groups {
@@ -67,7 +65,7 @@ mod tests {
             r#"x={ordered={4={"old"}} unordered={a={"A"}} fallback_name="%d. X"}
             X={ordered={4={"%s/%d" "description" "url"}} unique={"B"}}"#,
         )]);
-        // `x` and `X` are one group (1409B4370 finds groups without case).
+        // `x` and `X` are one group: group lookup ignores case.
         assert_eq!(g.name("x", 4, true).unwrap(), "IV/%d");
         assert_eq!(g.name("X", 1, false).unwrap(), "B");
         assert_eq!(g.name("x", 2, false).unwrap(), "3. X");
@@ -86,7 +84,7 @@ mod tests {
                 r#"Agents={type=codename unique={"Nightjar"}}"#,
             ),
         ]);
-        // 1424A9730 -> 1409B86A0 prepends the prefix to both arrays.
+        // Finalisation prepends the prefix to both arrays.
         for (at, name) in ["PRE First", "PRE Second", "PRE Third"]
             .into_iter()
             .enumerate()

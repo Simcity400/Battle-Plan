@@ -2,13 +2,15 @@
 
 Tauri host for the replay app. **Campaign map** embeds the native viewer; **Overview** hosts the dashboard. The host owns folder selection, replay library, native-process lifecycle and an asynchronous data proxy. Replay decoding/products remain in the viewer process, shared with map consumers.
 
+Game-derived display preferences initialize executable metadata in the host from the selected game folder. The viewer's dashboard service validates that folder and initializes its own process-wide tables before exposing content-dependent products. Missing or incompatible installation metadata reports a folder/content error; recording metadata remains accessible.
+
 ## Develop
 
-Use Node.js 22.12+ and Microsoft Edge WebView2; see the [project index](../../README.md) for component guides. Run from the worktree root using the [shared wrapper](../../AGENTS.md):
+Use Windows, Rust 1.96+ with the x64 MSVC toolchain, Visual Studio C++ Build Tools and a Windows SDK, Node.js 22.12+ and Microsoft Edge WebView2. See the [project index](../../README.md) for component guides. Run from the repository root:
 
 ```powershell
 npm.cmd ci
-bash tools/build-slot.sh "dev/desktop" "npm.cmd run dev"
+npm.cmd run dev
 ```
 
 This builds the viewer, then starts Tauri/Vite. Frontend changes hot reload; desktop Rust rebuilds. Restart development after viewer changes to rebuild its sibling executable. Ctrl+C must stop both host and child. For UI-only layout work use `npm.cmd run dev:ui`; native features need the host.
@@ -16,17 +18,17 @@ This builds the viewer, then starts Tauri/Vite. Frontend changes hot reload; des
 Viewer arguments pass through both separators:
 
 ```powershell
-bash tools/build-slot.sh "dev/desktop" "npm.cmd run dev -- -- -- C:/recordings/campaign.battleplan"
+npm.cmd run dev -- -- -- "<campaign.battleplan>"
 ```
 
 ## Build and launch
 
 ```powershell
-bash tools/build-slot.sh "dev/desktop" "npm.cmd run build:desktop"
-.\.cargo-target\release\replay-desktop.exe C:\recordings\campaign.battleplan
+npm.cmd run build:desktop
+.\.cargo-target\release\replay-desktop.exe "<campaign.battleplan>"
 ```
 
-Keep `replay-desktop.exe` and `viewer.exe` together. Production embeds the frontend, needs WebView2 and forwards viewer arguments such as `--game-dir`/`--user-dir`. This produces an executable directory, not an installer/updater. Retain [third-party notices](../../THIRD_PARTY_NOTICES.md) and the full shader compiler directory; see [distribution](#shader-compiler-distribution) and [publication guidance](../../docs/publication.md).
+Keep `replay-desktop.exe` and `viewer.exe` together. Production embeds the frontend, needs WebView2 and forwards viewer arguments such as `--game-dir`/`--user-dir`. This produces an executable directory, not an installer/updater. Retain `LICENSE`, `LICENSES/` and the full shader compiler directory; see [distribution](#shader-compiler-distribution).
 
 ## Where to work
 
@@ -68,12 +70,16 @@ Export carries an optional map-view ID through the native action. Widget exports
 
 Follow [AGENTS.md](../../AGENTS.md) for scoped Rust/UI checks. Lifecycle changes must exercise open, tab switch, seek, cancellation, unload, close and development shutdown. Native integration requires matched built host/viewer executables.
 
-[desktop_ui.py](../../tools/desktop_ui.py) launches the real host/viewer on an inactive Windows desktop without switching desktops or moving the cursor. It copies executables and isolates APPDATA, LOCALAPPDATA and WebView2 storage under the session directory. It needs a logged-in Windows session and normal graphics/WebView2 support. Build the frontend, viewer and host with `custom-protocol` before launch so the host embeds UI instead of needing Vite. Keep the launcher alive; use distinct sessions/ports for concurrent runs.
+[desktop_ui.py](../../tools/desktop_ui.py) launches the real host/viewer on an inactive Windows desktop without switching desktops or moving the cursor. It copies executables and isolates APPDATA, LOCALAPPDATA and WebView2 storage under the session directory. It needs Python, a logged-in Windows session and normal graphics/WebView2 support. Build the frontend, viewer and host with `custom-protocol` before launch so the host embeds UI instead of needing Vite. Keep the launcher alive; choose a session directory outside the checkout and use distinct sessions/ports for concurrent runs.
 
 ```powershell
-python tools/desktop_ui.py --session captures\desktop-ui launch .\.cargo-target\debug\replay-desktop.exe
-node tools/desktop_cdp.mjs captures\desktop-ui inspect
-python tools/desktop_ui.py --session captures\desktop-ui list
+npm.cmd run build:ui
+cargo build -p viewer
+cargo build -p replay-desktop --features custom-protocol
+$sessionDir = Join-Path $env:TEMP 'battle-plan-ui'
+python tools/desktop_ui.py --session $sessionDir launch .\.cargo-target\debug\replay-desktop.exe
+node tools/desktop_cdp.mjs $sessionDir inspect
+python tools/desktop_ui.py --session $sessionDir list
 ```
 
 [desktop_cdp.mjs](../../tools/desktop_cdp.mjs) targets the real Tauri WebView2 using the session's local debugging port. Use mouse/key commands to exercise controls and expressions to inspect state. WebView screenshots exclude native dialogs/map windows; use the Python helper's `capture`, `children`, `resize`, `choose`, `cancel-dialog` and `close` commands for those. `capture` requires Pillow. Native input commands are confined to the isolated desktop.

@@ -1,4 +1,4 @@
-//! Political-map province selection: 140B44760, 140B46960 and 140B44DD0.
+//! Political-map province selection from the camera ray and height cells.
 
 use installed_content::map::MapData;
 
@@ -28,7 +28,7 @@ pub fn pick(
         return Ok(None);
     }
     let views = views(*camera, viewport);
-    let mut hits = [[0.0; 3]; 256]; // Native candidate capacity, 140B44946.
+    let mut hits = [[0.0; 3]; 256]; // Candidate capacity used by the picking walk.
     let mut count = 0;
     let mut best = None;
     let mut nearest = f32::MAX;
@@ -44,7 +44,7 @@ pub fn pick(
             &mut hits,
             &mut count,
         );
-        // 140B44985 evaluates the accumulated candidates against each view.
+        // Evaluate the accumulated candidates against each view.
         let mut view_nearest = f32::MAX;
         let mut view_best = None;
         for hit in &hits[..count] {
@@ -63,7 +63,7 @@ pub fn pick(
     Ok(raster(map, point))
 }
 
-/// Seam flags and the single-width recenter are 14124C8C0, shared with admission.
+/// Seam flags and the single-width recenter are , shared with admission.
 fn views(mut camera: Camera, viewport: [u32; 2]) -> [Option<Camera>; 3] {
     let width = camera.map.x();
     let corners = province_admission::footprint(camera, viewport);
@@ -88,7 +88,7 @@ fn views(mut camera: Camera, viewport: [u32; 2]) -> [Option<Camera>; 3] {
 }
 
 fn plane_pick(camera: &Camera, screen: [f32; 2], viewport: [u32; 2]) -> [f32; 3] {
-    // 140B44360 uses y=0, |origin.y/direction.y|, epsilon .0001 and far 4000.
+    // Use y=0, |origin.y/direction.y|, epsilon .0001 and far 4000.
     for view in views(*camera, viewport).into_iter().flatten() {
         let direction = view.pick_ray(screen, viewport);
         let origin = view.eye();
@@ -106,7 +106,7 @@ fn plane_pick(camera: &Camera, screen: [f32; 2], viewport: [u32; 2]) -> [f32; 3]
     [0.0; 3]
 }
 
-/// 140B44DD0 truncates coordinates; native raster rows count from the south.
+/// Truncate coordinates; native raster rows count from the south.
 fn raster(map: &MapData, [x, _, z]: [f32; 3]) -> Option<u32> {
     if !x.is_finite() || !z.is_finite() {
         return None;
@@ -129,7 +129,7 @@ fn height_hits(
     hits: &mut [[f32; 3]; 256],
     count: &mut usize,
 ) {
-    // 140B46960 halves only axes >=2, preserving native quadrant order.
+    // Halve only axes >=2, preserving native quadrant order.
     if width >= 2.0 || depth >= 2.0 {
         let width = if width >= 2.0 { width * 0.5 } else { width };
         let depth = if depth >= 2.0 { depth * 0.5 } else { depth };
@@ -139,7 +139,7 @@ fn height_hits(
             [x, z + depth],
             [x + width, z + depth],
         ] {
-            // 140B4485E's coarse maximum is .1 * 255, not the sea plane.
+            // The coarse height bound reaches 25.5 world units.
             if intersects(origin, direction, [x, 0.0, z], [x + width, 25.5, z + depth]) {
                 height_hits(
                     origin,
@@ -169,7 +169,7 @@ fn height_hits(
     }
 }
 
-/// 140A51CC0: nearest texel, clamp both axes, multiply .1, clamp to 9.5.
+/// nearest texel, clamp both axes, multiply .1, clamp to 9.5.
 fn height(map: &MapData, texels: &[u8], [x, z]: [f32; 2]) -> f32 {
     let x = ((x + 0.5) as i32).clamp(0, map.width as i32 - 1) as usize;
     let z = ((z + 0.5) as i32).clamp(0, map.height as i32 - 1) as usize;
@@ -179,11 +179,11 @@ fn height(map: &MapData, texels: &[u8], [x, z]: [f32; 2]) -> f32 {
 
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     let [x, y, z] = std::array::from_fn::<_, 3, _>(|axis| a[axis] - b[axis]);
-    // 140B46AB1 adds y²+x² before z².
+    // Add y²+x² before z².
     (y * y + x * x + z * z).sqrt()
 }
 
-/// 1424E6270's slabs, including strict near/far interval tests.
+/// Ray-box slab intersection with strict near and far interval tests.
 fn intersects(origin: [f32; 3], direction: [f32; 3], min: [f32; 3], max: [f32; 3]) -> bool {
     let interval = |axis: usize| {
         let inverse = 1.0 / direction[axis];

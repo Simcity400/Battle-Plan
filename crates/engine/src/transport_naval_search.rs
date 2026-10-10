@@ -1,24 +1,20 @@
-//! Original strategic-region graph of FA1CB0/FA1E90 -> F922B0/F91960.
-//! E0DD70 owns the ordered +B0 neighbours and corresponding +C8 records;
-//! E0F160 copies the signed integer centroid at +F0. F9E3A0 reads only
-//! adjacency flags, +58 and ordered nullable rule references. Capture does
-//! not call native search, reconstruct neighbours or retain native controls.
+//! Original strategic-region search graph. Ordered neighbors at +0xB0
+//! correspond to adjacency records at +0xC8; +0xF0 holds the signed integer
+//! centroid. Search reads adjacency flags, +0x58 and ordered nullable rule
+//! references. Capture does not call search or reconstruct neighbors.
 //!
-//! Ownership: ctor140E0B040 copies template+E0 into region+F0 and constructs
-//! both arrays; reset1401E0190 calls E0DD70 after constructing the original
-//! region roster. E0DD70 clears/rebuilds both arrays and copies its temporary
-//! records through E0B230. Serializer E0FF10 / loader E0F190 touch only the
-//! name and naval-dominance object, not this search graph. Destructor E0B6E0
-//! retires the +C8 records before +B0. Rule wrappers point into original
-//! province-definition adjacencies; F9E3A0 dereferences wrapper then rule.
+//! Construction copies the template centroid and constructs both arrays.
+//! Reset builds the region roster before rebuilding the graph. Save/load
+//! touches name and naval dominance, leaving this graph separate. Destruction
+//! retires adjacency records before neighbors. Rule wrappers point into
+//! province-definition adjacencies and are followed before reading rules.
 //!
-//! The caller must supply the same quiescent world lease as the other native
-//! readers. Production captures each hour in the original Ordinary mission
-//! pass, and the callback joins that job before native HourlyUpdate resumes.
-//! This reader re-observes the roster, width, arrays and rules every call; it
-//! assumes no cross-hour or session-static pointer lifetime. Only numerical
-//! output and owned name bytes escape. Synthetic retirement checks do not
-//! independently certify the game's task/load quiescence at that boundary.
+//! The caller supplies a quiescent world lifetime. Production captures
+//! hourly in the Ordinary mission pass; the callback joins that job before
+//! hourly game execution resumes. Each call re-observes roster, width, arrays
+//! and rules with no assumed cross-hour pointer lifetime. Only numbers and
+//! owned name bytes escape. Synthetic retirement checks cannot establish
+//! load or task quiescence at the callback boundary.
 use crate::{
     Memory, cgame_state, cmap,
     cpdx_array::Array,
@@ -29,10 +25,10 @@ use crate::{
 };
 
 type Fact<T> = Result<T, &'static str>;
-const RULE_VTABLE: usize = 0x029b_f7f8; // CAdjacencyRule ctor141534660, RTTI.
-const NEIGHBOURS: usize = 0xb0; // E0DD70/E0F170/E0F180.
-const ADJACENCIES: usize = 0xc8; // E0DD70; E0EC70 returns parallel record.
-const POSITION: usize = 0xf0; // E0F160: exact qword copy.
+const RULE_VTABLE: usize = 0x029b_f7f8; // Adjacency-rule vtable.
+const NEIGHBOURS: usize = 0xb0; // Ordered neighbors.
+const ADJACENCIES: usize = 0xc8; // Parallel adjacency records.
+const POSITION: usize = 0xf0; // Signed integer centroid.
 const ADJACENCY_STRIDE: usize = 0x60;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -188,7 +184,7 @@ pub trait SpottingObserver {
 
 /// Off-thread header/descriptor sizing only. Repeated rules contribute a safe
 /// upper bound for the unique dictionary; no captured value or pointer escapes.
-/// E0DD70 pairs the arrays; F9E3A0 reaches rules only through flags2/+58==0.
+/// Arrays are parallel; rules are reached only when flags are 2 and +0x58 is zero.
 pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Fact<Demand> {
     let roster = array(memory, state, cgame_state::STRATEGIC_REGIONS, 8)?;
     let mut demand = Demand {

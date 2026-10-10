@@ -1,4 +1,4 @@
-//! D3DCompile at 1423FBC10 receives a null include handler. Only PdxShader `Includes` (already
+//! Raw HLSL includes have no handler. Only PdxShader `Includes` (already
 //! resolved by installed-content) can load content. A compiler CLI must not search its host filesystem
 //! for raw HLSL #include directives. Turn them into preprocessor errors, preserving #if branches.
 
@@ -66,7 +66,7 @@ pub fn native_includes(source: &str) -> String {
     }
     let mut out = source;
     for range in replacements.into_iter().rev() {
-        out.replace_range(range, "error Native_D3DCompile_has_no_HLSL_include_handler");
+        out.replace_range(range, "error Raw_HLSL_includes_are_not_supported");
     }
     out
 }
@@ -79,8 +79,13 @@ mod tests {
     fn host_includes_become_conditional_compiler_errors() {
         let source = "/* #include \"comment\" */\n#if 0\n# /*comment*/ include \"inactive\"\n#endif\n#inc\\\nlude \"active\"\n// #include \"comment\"\n";
         let lowered = native_includes(source);
-        assert_eq!(lowered.matches("#error Native_").count(), 1);
-        assert!(lowered.contains("# /*comment*/ error Native_"));
+        assert_eq!(
+            lowered
+                .matches("#error Raw_HLSL_includes_are_not_supported")
+                .count(),
+            1
+        );
+        assert!(lowered.contains("# /*comment*/ error Raw_HLSL_includes_are_not_supported"));
         assert!(lowered.contains("/* #include \"comment\" */"));
         assert!(lowered.contains("// #include \"comment\""));
         assert!(lowered.contains("#if 0\n"));

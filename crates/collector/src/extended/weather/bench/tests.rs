@@ -1,5 +1,5 @@
-//! Synthetic native weather layout at the requested vanilla census size.
-//! Values change in place; no game process or copied game fixtures are used.
+//! Synthetic native weather layout for census benchmarks.
+//! Values change in place between captures.
 use super::*;
 use engine::{
     cpdx_array::Array,
@@ -80,8 +80,8 @@ impl<M: Memory> Memory for ReadCensus<'_, M> {
     }
 }
 
-// Benchmark dimensions only. Vanilla weather.txt's provinces_per_update is
-// 584; quiet/typical/all-changed are controlled synthetic shapes, not live cost.
+// Benchmark dimensions only. Quiet/typical/all-changed are controlled
+// synthetic shapes, not live cost.
 const TYPICAL_CHANGED: usize = 584;
 const STATE: usize = 0x100;
 const MANAGER: usize = 0x1000;

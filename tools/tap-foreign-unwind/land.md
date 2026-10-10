@@ -5,12 +5,9 @@ LAND callbacks with the shared [probe DLL and client](README.md). They run outsi
 the game and recorder. No Rust catcher, exception translation, copied emitter or
 non-unwinding callback cast substitutes for actual foreign dispatch.
 
-Integrate the final reviewed shared Hook extension, including atomic publication
-and `new_indirect_call` owner safety, and the LAND escaped-unwind retention policy
-before running. This actual integration preserves the current capture foundation
-and authoritative Hook. The shared client, current generic example and native
-DLL source are unchanged from their independently reviewed versions.
-Cases and raise pointers remain inside the owning loaded `Probe` lifetime.
+The shared Hook provides atomic publication and `new_indirect_call` owner safety.
+LAND retains escaped flights. Cases and raise pointers remain inside the owning
+loaded `Probe` lifetime.
 
 ## Covered production paths
 
@@ -52,20 +49,18 @@ permit unloading a collector with an escaped flight.
 These paths cover damage entry, verdict indirect call and accepted HQ return.
 Other supplemental callbacks, native game handler scopes, asynchronous faults at
 arbitrary Rust instructions, concurrent detach, actual unwind metadata/artifacts,
-fresh saves, smoke and live cost remain separate parent gates. The existing direct
+fresh saves, smoke and live cost require separate validation. The existing direct
 Rust-panic policy regression is also separate; it is not foreign-unwind evidence.
 
-## Parent-only build and run
+## Build and run
 
-Use the final reviewed merged head in an x64 MSVC developer environment. Keep
-all DLLs, objects, logs, metadata and debugger dumps outside Git. Wait for the
-coordinator's build window; no child builds or runs these fixtures.
+Run from the repository root in an x64 MSVC developer environment. Keep
+all DLLs, objects, logs, metadata and debugger dumps outside Git.
 
 ```powershell
-$proofOutput = 'captures/widget_completion/land-foreign-proof'
-$env:JOBS = '4'
+$proofOutput = Join-Path $env:TEMP 'battle-plan-land-foreign-proof'
 New-Item -ItemType Directory -Force -Path $proofOutput | Out-Null
-& tools/build-slot.ps1 -Owner 'dev/land-foreign-proof' -Command "cl.exe /nologo /LD /O2 /EHa /W4 /WX tools/tap-foreign-unwind/probe.cpp /Fo:$proofOutput/probe.obj /Fe:$proofOutput/tap_foreign_probe.dll /link /IMPLIB:$proofOutput/tap_foreign_probe.lib"
+cl.exe /nologo /LD /O2 /EHa /W4 /WX tools/tap-foreign-unwind/probe.cpp "/Fo:$proofOutput/probe.obj" "/Fe:$proofOutput/tap_foreign_probe.dll" /link "/IMPLIB:$proofOutput/tap_foreign_probe.lib"
 if ($LASTEXITCODE -ne 0) { throw 'Native probe build failed' }
 $env:BATTLE_PLAN_TAP_UNWIND_PROBE = "$proofOutput/tap_foreign_probe.dll"
 $landProofFilters = @(
@@ -74,14 +69,14 @@ $landProofFilters = @(
     'equipment_destruction::tests::foreign_unwind::production_return_call_foreign_unwind'
 )
 foreach ($proofFilter in $landProofFilters) {
-    & tools/build-slot.ps1 -Owner 'dev/land-foreign-proof' -Command "cargo test -p collector --features tap-foreign-probe $proofFilter -- --exact --ignored --nocapture --test-threads=1"
+    cargo test -p collector --features tap-foreign-probe $proofFilter -- --exact --ignored --nocapture --test-threads=1
     if ($LASTEXITCODE -ne 0) { throw "LAND foreign proof failed: $proofFilter" }
 }
 ```
 
 Require exactly one selected test per command, exit zero and all nine case `PASS`
 lines (normal/C++/SEH for each path). A skipped or absent test is unverified.
-Run the existing four-check [generic Tap example](README.md#parent-only-build-and-run)
+Run the existing four-check [generic Tap example](README.md#build-and-run)
 separately. Repeat at the final collector profile if it differs from the test
 profile; successful diagnostic builds alone do not certify a release artifact.
 
@@ -90,4 +85,4 @@ output, executable/DLL hashes and unwind tables. Under a Windows debugger, captu
 disassembly and registered runtime entries for the printed native site, production
 stub/body and generated ranges while the DLL raise is active. Verify each actual
 handler path and continuation; do not replace it with virtual-unwind reconstruction
-or an earlier artifact. No build, native call or current PASS is claimed here.
+or an earlier artifact.

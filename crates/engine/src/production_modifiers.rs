@@ -1,8 +1,7 @@
-//! Passive production-hover operands. Cached MIO bonuses are copied, never
-//! refreshed through 141924C20. Source trees use the shared passive formatter
-//! reader; country selection and daily cadence belong to this pack.
-//! Its requests match attrition_modifier_breakdown's public accumulator/key
-//! reader; that module's army demand selector is not a country/MIO catalogue.
+//! Passive production-hover operands. Cached MIO bonuses are copied without
+//! refreshing them. Shared passive readers acquire source trees; this pack owns
+//! country selection and daily cadence. Requests use the public accumulator/key
+//! reader, independently of army-specific demand selection.
 
 use crate::{
     Memory, attrition_modifier_breakdown::Request, ccountry, cequipment_production_line as line,
@@ -10,10 +9,7 @@ use crate::{
     modifier_keys as keys, read,
 };
 
-/// Native production tooltip keys, in increasing order. Registration spellings
-/// and callsites remain in modifier_keys::builtins; 140E53EC0 uses A5,
-/// 1415B7AB0/C60 use A8, 141922A00 uses A9, 141921EE0 uses AA,
-/// 141924820 uses AB, and 141922160/1415B79B0/B60 use the output/refit keys.
+/// Production-tooltip modifier keys in increasing order.
 pub const KEYS: [u32; 11] = [
     keys::LINE_CHANGE_PRODUCTION_EFFICIENCY_FACTOR,
     keys::OUT_OF_POWER_IMPACT_FACTOR,
@@ -27,13 +23,11 @@ pub const KEYS: [u32; 11] = [
     keys::EQUIPMENT_CONVERSION_SPEED,
     keys::REFIT_SPEED,
 ];
-/// LookupProductionBonusValue@1406329E0 maps these seven native categories
-/// through the runtime token table, rather than treating category as token.
+/// Seven production categories mapped through the runtime token table, distinct from token IDs.
 pub const BONUS_COUNT: usize = 7;
 const BONUS_KEYS_RVA: usize = 0x0337_1600;
 
-/// 141924820/141922A00 read signed i32 start/cap percentages. 141921EE0
-/// reads signed fixed5 gain/balance, and 1415B7AB0/C60 the four fixed5 rates.
+/// Signed i32 start/cap percentages, signed fixed5 gain/balance and four fixed5 factory rates.
 const DEFINE_RVAS: [usize; 8] = [
     0x0331_db08,
     0x0331_db88,
@@ -53,9 +47,9 @@ pub struct Context {
     pub balance: i64,
     /// Unpowered/powered military, then unpowered/powered naval IC rates.
     pub factory_speed: [i64; 4],
-    /// 140E53EC0: same variant, parent, family, archetype switch percentages.
+    /// Switch percentages for same variant, parent, family and archetype.
     pub retention: [i64; 4],
-    /// ConversionSpeed141920D40's base bonus, stored fixed5.
+    /// Stored fixed5 base conversion-speed bonus.
     pub conversion: i64,
     pub module_mask: u64,
     pub bonus_keys: [u32; BONUS_COUNT],
@@ -85,7 +79,7 @@ impl Context {
             *value = i64::from(field::<i32>(memory, base, rva)?).wrapping_mul(1000);
         }
         result.conversion = field(memory, base, 0x0331_f158)?;
-        // GetDlcEquipmentCategoryMask140F72890, feature cases1401AE640.
+        // Equipment-category feature gates.
         let mask = field::<u32>(memory, base, crate::dlc_feature_state::MASK_RVA)?;
         result.module_mask = (if mask & (1 << 4) != 0 {
             0x80004001c0
@@ -106,7 +100,7 @@ pub struct Country {
     pub country: u32,
     /// Pass-local tree address, never serialized as an identity.
     pub accumulator: usize,
-    /// CProductionStatus+3A8, 1415B7D10: stored powered-factory fraction.
+    /// Stored powered-factory fraction.
     pub power_raw: i64,
 }
 
@@ -118,19 +112,19 @@ pub struct Line {
     pub organisation: u64,
     pub kind: u8,
     pub active_factories: i32,
-    /// +D8, used by growth141921EE0 and output141922E00.
+    /// Growth/output operand.
     pub resource_penalty: i64,
     /// +B8; a getter would refresh the stored +98 bonus cache when nonzero.
     pub organisation_dirty: bool,
-    /// +EC, written by conversion selection/RefreshProductionState141926DB0.
+    /// Conversion-selection operand written during production-state refresh.
     pub conversion: bool,
-    /// 141922160 calls LicenceSpeed140BC63F0 when variant+20 is positive.
+    /// Positive variant licensing selects the licence-speed contribution.
     pub licensed: bool,
     pub conversion_output: bool,
     pub refit_output: bool,
-    /// 140C88440 on the type, independently of cached variant flags.
+    /// Type archetype selection independent of cached variant flags.
     pub naval_efficiency: bool,
-    /// 141922E00 tests the variant's stored +408 ship-family mask.
+    /// Stored variant ship-family mask used for output.
     pub naval_output: bool,
     pub bonuses: [i64; BONUS_COUNT],
     /// All saved +C0 factory-efficiency occurrences, in native order.
@@ -250,7 +244,7 @@ fn add(value: &mut usize, amount: usize) -> Result<(), &'static str> {
 }
 fn normalized(mut flags: u64) -> u64 {
     use crate::cequipment_type as ty;
-    // NormalizeCategory140F75EA0's ordered branches.
+    // Category normalization preserves branch order.
     if flags & ty::SHIP_MASK != 0 {
         if flags & ty::NORMALIZE_FIRST_SELECTOR != 0 {
             flags &= !ty::NORMALIZE_FIRST_CLEAR;
@@ -263,8 +257,7 @@ fn normalized(mut flags: u64) -> u64 {
     flags
 }
 
-/// 140C88440 recurses to the effective archetype before testing this type.
-/// Caller-owned scratch records that order without a chosen depth limit.
+/// Effective archetype precedes the current type; caller scratch retains that order without a depth cap.
 fn naval(
     memory: &impl Memory,
     base: usize,
@@ -324,9 +317,9 @@ pub struct Demand {
     pub requests: usize,
 }
 
-/// Off-thread headers only. RefreshProductionState@141926DB0 resizes +C0
-/// to the native factory limit; neither active factories nor country count
-/// bounds the retained efficiency entries. Values still acquire independently.
+/// Off-thread headers only. Production refresh sizes retained efficiency
+/// entries from the factory limit; active factories and country count do not
+/// bound them. Values are acquired independently.
 pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Result<Demand, &'static str> {
     let countries = ccountry::Reader::new(memory, base, state)?;
     let mut demand = Demand::default();
@@ -548,7 +541,7 @@ fn capture_buffer(
             let bonus = Array::read(memory, at(pointer, 0xa0)?, 16)
                 .ok_or("production modifier organisation cache unreadable or invalid")?;
             let mut bonuses = [0_i64; BONUS_COUNT];
-            // LookupProductionBonusValue1406329E0 selects the first equal key.
+            // Production bonus selection uses the first equal key.
             let mut found = [false; BONUS_COUNT];
             for index in 0..bonus.count {
                 let entry = bonus
@@ -583,13 +576,13 @@ fn capture_buffer(
             let conversion = field::<u8>(memory, pointer, 0xec)? != 0;
             let licensed =
                 field::<i32>(memory, variant_pointer, cequipment_variant::ORIGIN_LINK)? > 0;
-            // CalculateProductionSpeed141922E00, IncludeConversion=true.
+            // Production-speed operands include the conversion branch.
             let mut conversion_output = conversion
                 && ((field::<u64>(memory, variant_pointer, 0x3f8)? != 0
                     || field::<u8>(memory, definition, 0x556)? != 0)
                     && !licensed
                     || field::<i32>(memory, definition, 0x49c)? != 0);
-            // HasDlcEnabledModuleSlots140C88540 gates conversion's bonus.
+            // Enabled module slots gate the conversion bonus.
             if conversion_output
                 && field::<i32>(memory, definition, crate::cequipment_type::SLOTS_COUNT)? != 0
             {
@@ -618,9 +611,8 @@ fn capture_buffer(
                 ) & context.module_mask
                     == 0;
             }
-            // All four pinned native vtables' slot27 is a constant predicate.
-            // Ship refit142965858 uses ReturnTrue1401802A0; the other classes
-            // inherit ReturnZero14011CD10. Refuse a new virtual implementation.
+            // The four supported production forms have constant eligibility predicates.
+            // Refit selects true; the others select zero. Refuse a different implementation.
             let refit_output =
                 match field::<u64>(memory, vtable as usize, 0xd8)?.checked_sub(base as u64) {
                     Some(0x0018_02a0) => true,

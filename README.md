@@ -2,7 +2,7 @@
 
 Record a Hearts of Iron IV campaign, replay it on an interactive map, and explore its statistics over time. The recorder reads game state without controlling the game; the desktop app provides Campaign map and Overview views. Playback reads `.battleplan` files without live game memory.
 
-This is a Windows project for a hash-verified game executable. Start with the [desktop guide](crates/desktop/README.md) to run the app or the [recorder guide](crates/recorder/README.md) to record a campaign. Shared development, validation and merge rules live in [AGENTS.md](AGENTS.md); read [publication guidance](docs/publication.md) before sharing source or artifacts.
+This is a Windows project for a hash-verified game executable. Start with the [desktop guide](crates/desktop/README.md) to run the app or the [recorder guide](crates/recorder/README.md) to record a campaign. Shared development, validation and merge rules live in [AGENTS.md](AGENTS.md).
 
 ## Components
 
@@ -35,10 +35,16 @@ The [dashboard architecture](docs/dashboard.md) explains how recordings become d
 | [Widgets](ui/src/widgets/README.md) | Widget registration and individual widget guides, including the map widget. |
 | [Generated types](ui/src/generated/) | TypeScript contracts generated from Rust. |
 
-## Research and diagnostics
+## Diagnostics
 
 | Area | Responsibility |
 |---|---|
-| [hoi4re](tools/re/README.md) | Native decompile, instruction and knowledge lookup tools. |
 | [Foreign-unwind fixture](tools/tap-foreign-unwind/README.md) | Out-of-game C++ and SEH checks for the production Tap. |
-| [Reference evidence](reference/README.md) | Comparison notes and guidance for private matched captures. |
+
+## License
+
+Battle Plan is free software under the [MIT License](LICENSE).
+
+The image decoders and archive reader in `crates/installed-content` include modified Rust adaptations of the Independent JPEG Group's libjpeg 9a, libpng 1.6.16 and PhysicsFS. This software is based in part on the work of the Independent JPEG Group. The refresh icon is from Lucide. Their notices are in [LICENSES](LICENSES/).
+
+Battle Plan is an unofficial project and is not affiliated with or endorsed by Paradox Interactive. Hearts of Iron IV is a trademark of Paradox Interactive AB. No installed content are included; the app reads them from your own installation.

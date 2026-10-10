@@ -1,74 +1,47 @@
-//! Applied building damage for hash-pinned a729, without calling the game.
+//! Applied building damage for the supported executable, acquired without
+//! calling the game. Direct-call coverage in [`CALLERS`] includes air missions,
+//! naval air and port damage, land collateral, weekly sabotage, script damage
+//! and facility dismantling. Unknown callers remain Unknown; direct-call
+//! coverage alone cannot establish the absence of indirect calls.
 //!
-//! `CBuilding::ApplyDamage@1410C6F60` is the sole caller of the health writer
-//! `ApplyDamageStep@1410C7000`. The instruction index finds ten calls in seven
-//! functions, listed in [`CALLERS`]. Three air-mission paths (logistics train
-//! F60880, logistics building F612F0 and strategic F6F8D0) reach the helper
-//! F663C0; naval air/port damage 1419681E0 reaches ApplyDamage independently.
-//! Land collateral, weekly sabotage, script damage and facility dismantling
-//! use the same writer. This ledger retains these causes with null attackers.
-//! This is indexed direct-call coverage, not a claim that the call graph alone
-//! proves absence of every indirect call; unmatched callers stay Unknown.
-//! CBuilding constructor 1410C5800 stores status/template at +1D8/+1E0 and
-//! copies template+8 into its own +8 lexer token. Native lookup 141160CD0
-//! uses template+2E0 as the index into status+20, then status+38's instance
-//! vector. Both live mappings authenticate the token; no building names,
-//! template ordinals, state counts or province counts are assumed.
+//! Both status and template mappings authenticate the building token without
+//! assuming names, ordinals or country/state/province counts. Only an air source
+//! kind permits following its wing payload. Other or unknown kinds and null
+//! wings retain null attackers. Attribution faults also retain null attackers;
+//! location and health faults refuse the event. Air credit selects the location
+//! controller after applying damage, independently of repair/notification routing.
+//! A zero controller remains known absence, with no phantom country join or
+//! omission of the event. Positive wing country overrides win; otherwise the
+//! pool owner supplies the effective country. References remain raw words.
 //!
-//! F663C0 constructs source kind 1 and its wing at +8; 1419681E0 constructs
-//! the same source. Land 141296CC0 uses kind 3, weekly 1409D3B60 kind 2, and
-//! script 14030E5B0 / facility 141430D60 / abort 14142FC10 kind 0. Only kind
-//! 1's payload is followed. Unknown callers are classified Unknown; unknown
-//! kinds remain raw with a null attacker. A null wing also remains a null
-//! attacker. Attribution-only faults retain null attackers; location/health faults refuse.
+//! Applied damage is the signed before/after healthy-level and partial-health
+//! difference. Modified requests can be rounded before reducing health, so
+//! returned budget consumption is retained separately. Raw health has a full
+//! level scale of 10,000,000 and fixed5 scale of 100,000. Damage does not write
+//! total level; saves retain total, healthy and partial health without attribution.
 //!
-//! Air credit's victim is the location controller: F663C0 writes province+188
-//! or state+CC to its victim output after applying damage. Status+70's explicit
-//! country selects repair/notification routing (141162010), not this credit.
-//! A controller word of zero is retained: F663C0 explicitly handles its zero
-//! case, and country resolvers 140BA5140 / 140BA56A0 map it to reserved slot 0.
-//! Consumers must treat it as known absence of a country, without a phantom
-//! CountryLinks join or omission of the damage event.
-//! GetEffectiveCountryTag F45950 selects a positive wing+9C4, otherwise
-//! wing+38 -> pool+40 -> strategic-air+90. References remain opaque raw words.
+//! Normal hourly damage follows completion of air workers. Tick and scorch
+//! commands execute serially and recursive drains are refused. Daily repair
+//! follows hourly work; nuclear refresh is serial. Nuclear and scorch bypass
+//! this damage writer, so the ledger cannot represent every health reduction.
+//! Damage queues repair without instant level assignment. Notifications dispatch
+//! building, aircraft and ship listeners without direct health or controller
+//! writes. Naval notification uses the province controller without a separate
+//! building victim-credit output.
 //!
-//! True applied damage is the before/after difference of healthy*10,000,000
-//! plus partial health, as get_level_health 1410C64D0 establishes. Step
-//! 1410C7000 can multiply an air request by a building modifier and round it
-//! before reducing health; ApplyDamage's returned budget consumption can
-//! therefore differ. Consumers must retain it separately from this difference.
-//! Raw health divided by 10,000,000 displays full building-level equivalents;
-//! divided by 100,000 it displays the native fixed5 health amount.
-//! No total-level write occurs in either damage function. Serializer 1410C7960
-//! saves total/healthy/partial health; it saves no event attribution or ledger.
-//! Normal hourly damage runs after the air TBB joins (140C485F0 / 140C48E42).
-//! Tick command 140EF1A60 calls 1401DCEF0 synchronously; session 14223DDC0
-//! executes command slot10 serially and refuses recursive drains. Scorch
-//! 1411487C0 uses that same slot. Daily repair follows hourly work through
-//! 140E527A0 -> 140F55590 -> 1410C5C90; nuclear 1410831B0 -> 141083430 ->
-//! 141082C90 / 1410C6D20 runs in serial pending refresh 1406F8AC0. Nuclear
-//! and scorch bypass ApplyDamage, so this ledger is not all health reductions.
-//! Damage's repair queue 140E4B5D0 -> 140E4AFC0 passes bRepair=1, excluding
-//! instant set_level. Its status notifier 141163C10 dispatches the indexed
-//! building listeners 140E56010 (dirty flag), 140C4BFE0 (aircraft losses) and
-//! 140E95660 (ship losses), with no direct health/controller write. Naval
-//! listener 140E95660 routes by province controller+188; unlike F663C0,
-//! naval caller 1419681E0 has no separate building victim-credit output.
-//! These are normal-path scheduling facts. Complete exclusion of console
-//! repair, arbitrary script/setter mutations and transitive ship callbacks
-//! is unproved. Same-building damage claims cannot detect unhooked setters;
-//! changed attribution/total levels are refused, but those
-//! guards alone do not establish health isolation. Debug/init paths and
-//! recovered native exceptions remain outside the live-validated evidence.
-//! Synthetic tests exercise layouts and refusals; live cost is unverified.
+//! Console repair, arbitrary script/setter mutations and transitive ship callbacks
+//! are not completely excluded. Same-building damage claims cannot detect
+//! unobserved setters; attribution and level checks alone do not prove health
+//! isolation. Debug/init paths and exceptions lack live validation. Synthetic
+//! tests cover layouts and refusals; live cost remains unverified.
 
 use crate::{
     Memory, cair_wing, cair_wing_pool, cbuilding, cbuilding_status, cbuilding_template,
     cgame_state, cpdx_array::Array, cprovince, cstate, cstrategic_air, read,
 };
 
-/// ApplyDamage entry, a729. The five-byte relocated instruction only stores
-/// RBX in caller home space; it changes neither RSP nor nonvolatile registers.
+/// Damage entry. Its relocated five-byte instruction stores RBX in caller
+/// home space without changing RSP or nonvolatile registers.
 pub const APPLY_DAMAGE_RVA: usize = 0x010c_6f60;
 pub const APPLY_DAMAGE_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0xf9,
@@ -105,9 +78,9 @@ pub const CALLERS: [(usize, Cause); 10] = [
     (0x0142_fd37, Cause::AbortDismantle),
 ];
 
-/// Native source kind; F663C0@140F66B86 and naval@141968F5B store 1.
+/// Source kind selecting an air-wing payload.
 pub const AIR_SOURCE_KIND: u32 = 1;
-/// Wing payload offset: F663C0@140F66B91 and naval@141968F66 store here.
+/// Air-source wing payload offset.
 pub const SOURCE_WING: usize = 8;
 
 /// Callback-local owned values. Internal pointers authenticate the post-read;
@@ -197,8 +170,8 @@ fn health(memory: &impl Memory, building: usize) -> Result<(i16, i64), &'static 
     if total < 0 || healthy < 0 || healthy > total || partial < 0 {
         return Err("building damage health form unsupported");
     }
-    // ApplyDamageStep@1410C7000 does not clamp a negative modified request:
-    // partial health can exceed a full level, including the total level health.
+    // A negative modified request is not clamped: partial health can exceed a
+    // full level, including the total level health.
     let value = (i64::from(healthy) * scale)
         .checked_add(partial)
         .ok_or("building damage health overflow")?;
@@ -535,7 +508,7 @@ pub fn snapshot(
         "building damage template unreadable",
     )?;
     let (total_level, health_raw) = health(memory, building)?;
-    // ApplyDamage's exhausted-health gate precedes source reads (`1410C6FA0..AF`).
+    // The exhausted-health gate precedes source reads.
     let native_cause = if source == 0 || health_raw == 0 {
         0
     } else {
@@ -561,8 +534,8 @@ pub fn snapshot(
     })
 }
 
-/// Air credit reads the controller after ApplyDamage (`140F66BE2..BF7`).
-/// Attribution failures retain a null attacker; identity/location failures refuse.
+/// Air credit reads the controller after damage. Attribution failures retain
+/// a null attacker; identity and location failures refuse the event.
 pub fn attribution(
     memory: &impl Memory,
     base: usize,

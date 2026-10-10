@@ -1,7 +1,6 @@
-//! Logistics archetype pictures: recorded roster kind 2, selected by
-//! FindBestVariantForArchetype@140E54540 / EquipmentVariantPrecedes@140BC2F10,
-//! then BindEquipmentVariantIcon@140B371F0. Stock quantities and obsolete flags
-//! do not participate in this selector.
+//! Logistics archetype pictures: the best variant from recorded roster kind 2,
+//! drawn with its production-row icon. Stock quantities and obsolete flags do
+//! not participate in this selector.
 
 use crate::products::{
     CountryParams, LoadContext, Product, equipment,

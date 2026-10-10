@@ -21,4 +21,4 @@ Land, naval and result windows bind recorded values into native GUI declarations
 - Scripted tactic text follows the viewer's NATO choice, including nested unit icons; toggling refreshes land bindings without changing a disengaged naval window's supplying hour.
 - Unseen icons prefer established view/index frames, else land's authored/naval binding initial frame with a counted history reason. Fallback never establishes history.
 
-The [viewer guide](../../README.md#native-gui-and-hover-ownership) owns lifecycle, clocks, language guards and matched comparisons. Formulas/evidence stay beside code. Use [AGENTS.md](../../../../AGENTS.md) checks; synthetic tests establish no live hover parity.
+The [viewer guide](../../README.md#native-gui-and-hover-ownership) owns lifecycle, clocks, language guards and matched comparisons. Use [AGENTS.md](../../../../AGENTS.md) checks.

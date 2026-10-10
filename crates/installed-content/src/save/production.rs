@@ -1,4 +1,4 @@
-//! Exact literal equipment state. Native serializer omissions are retained
+//! Exact literal equipment state. Serializer omissions are retained
 //! independently of fields whose correspondence has not been established.
 
 use std::{collections::BTreeMap, io};
@@ -14,7 +14,7 @@ pub struct Pack {
     /// The complete top-level equipment registry. An omitted registry is not
     /// an empty census.
     pub variants: Option<BTreeMap<u64, Variant>>,
-    /// CArmy C80E00 serializes its primary+348 pool under equipment. The
+    /// Each army serializes its pool under `equipment`. The
     /// enclosing countries roster can be absent independently of empty banks.
     pub divisions: Option<BTreeMap<u64, Division>>,
     pub countries: Option<BTreeMap<Vec<u8>, Country>>,
@@ -22,53 +22,51 @@ pub struct Pack {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Country {
-    /// CCountry70C580 writes this wrapper unconditionally.
+    /// The country writer emits this wrapper unconditionally.
     pub production: Option<Production>,
-    /// CDeploymentStatus writes the whole `deployment` wrapper, which also
+    /// The whole `deployment` wrapper also
     /// carries configuration fields. An absent wrapper is not an empty queue.
     pub deployment: Option<Vec<Conveyor>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Production {
-    /// E5D3B0 traverses the entire equipment line list in native order.
+    /// The entire equipment line list is traversed in stored order.
     pub lines: Vec<Line>,
-    /// E5D3B0 always emits its primary+200 pool under equipments.
+    /// The stockpile pool is always emitted under `equipments`.
     pub stockpile: Option<Pool>,
-    /// E5D3B0 writes the +190 licence container under token 0x37B2 through
-    /// 1424ABB40, so an absent block is malformed rather than an empty licence
-    /// set. Container serializer 141429400 writes two arrays into it: this one
-    /// as bare `available=` typed variant handles in container order (repeated
+    /// The licence container is always written, so an absent block is malformed
+    /// rather than an empty licence set. It contains two arrays: this one as
+    /// bare `available=` typed variant handles in container order (repeated
     /// handles stay distinct entries), and the licence relations below.
     pub licenses: Option<Vec<u64>>,
     /// `owned_license=` entries, in the same container order. Present exactly
     /// when `licenses` is: the two arrays share one wrapper.
     pub license_records: Option<Vec<LicenseRecord>>,
-    /// E5D3B0 writes the +A0 roster under `available_equipments` as
+    /// The roster under `available_equipments` contains
     /// `equipment=` typed handles, repeats kept; absent is not empty.
     pub available_variants: Option<Vec<u64>>,
-    /// The +E8 roster under `foreign_lease_equipments`, written only when
+    /// The roster under `foreign_lease_equipments`, written only when
     /// nonempty: absence is an empty roster.
     pub foreign_lease_variants: Vec<u64>,
-    /// The +4A8 recalculation flag, which E5D3B0 writes unconditionally as
-    /// `dirty` (token 0x3484). While it is set the hourly production update
-    /// 140E54DE0 has a factory-total recalculation pending.
+    /// The recalculation flag, written unconditionally as `dirty`. While it
+    /// is set the hourly production update has a factory-total recalculation
+    /// pending.
     pub dirty: Option<bool>,
-    /// E5D3B0 writes the +0x130 organisations under `industrial_organisations`
+    /// Organisations are written under `industrial_organisations`
     /// in array order, each keyed by its script key, only when there is one:
     /// absence is an empty array.
     pub organisations: Vec<Organisation>,
 }
 
-/// One COrganisation block (Serialize 140da84b0), in the fields the replay
-/// records.
+/// One organisation block, in the fields the replay records.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Organisation {
     /// The block's key, the organisation's script-key token as written.
     pub key: Vec<u8>,
     /// Full CID (type 79 low word).
     pub id: u64,
-    /// `name` (token 0x1b) and `icon` (0xb5): written even when empty, so an
+    /// `name` and `icon`: written even when empty, so an
     /// absent one is malformed rather than empty.
     pub name: Option<Vec<u8>>,
     pub icon: Option<Vec<u8>>,
@@ -80,7 +78,7 @@ pub struct Organisation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OrganisationHistory {
     pub variant: u64,
-    /// `units` (0x2faa), which the value writer 140da8930 always writes.
+    /// `units`, which the value writer always emits.
     pub units: i32,
 }
 
@@ -120,7 +118,7 @@ fn parse_equipment_roster(value: &crate::parser::Value) -> io::Result<Vec<u64>> 
         .collect()
 }
 
-/// One CEquipmentProductionLicense as serializer 141429310 writes it. Every
+/// One saved equipment-production licence. Every
 /// field is unconditional, so a missing one is a malformed save.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LicenseRecord {
@@ -136,11 +134,11 @@ pub struct LicenseRecord {
     pub equipment: Vec<u64>,
 }
 
-/// One CMilitaryDeploymentConveyor as serializer 1414247D0 writes it.
+/// One saved military deployment conveyor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Conveyor {
     pub id: u64,
-    /// Written by dereferencing +0x20, so a saved conveyor always has one.
+    /// The template is dereferenced by the writer, so a saved conveyor always has one.
     pub template: u64,
     pub name: Vec<u8>,
     pub amount: i32,
@@ -149,35 +147,36 @@ pub struct Conveyor {
     /// Literal role text from the engine lexer; token zero has its own spelling.
     pub role: Option<Vec<u8>>,
     pub closed: Option<bool>,
-    /// 1414247D0 writes the +0x98 country reference under token 0x3ABA only
+    /// The government-in-exile country reference is written only
     /// when it is positive. The reference is identified but not recorded.
     pub government_in_exile_tag: Option<Vec<u8>>,
     pub lines: Vec<DeploymentLine>,
 }
 
-/// One CMilitaryDeploymentLine and the CMilitaryDeployment it owns.
+/// One military deployment line and the deployment it owns.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeploymentLine {
     pub id: u64,
-    /// `division_name` block. Serializer 1409BCC70 writes the order word only
+    /// `division_name` block. The order word is written only
     /// when it is nonzero, so an omitted `name_order` proves a stored zero.
     pub name_order: Option<i32>,
-    /// Name-object `type` word at +0x08, which 1409BCC70 writes unconditionally.
+    /// Name-object `type` word, written unconditionally.
     pub name_type: Option<i32>,
-    /// 1409BCC70 emits `is_name_ordered=no` only when +0xa8 is clear.
+    /// `is_name_ordered=no` is emitted only when the ordered flag is clear.
     pub name_ordered: Option<bool>,
-    /// Custom division name held in the name object's +0x88 string. Identified
+    /// Custom division name held in the name object. Identified
     /// but not recorded; its presence is retained so the oracle can say so.
     pub name_override: Option<Vec<u8>>,
     pub name_override_programmatic: Option<bool>,
     pub amount: Option<i32>,
+    /// Lines without a deployment are erased, so a live line has one.
     pub deployment: Option<Deployment>,
 }
 
-/// CMilitaryDeployment's own saved scalars and containers. Serializer
-/// 1414246F0 omits training, max_training and max_manpower unless the stored
-/// word is strictly positive, the equipment wrapper unless gate 140FFB8F0
-/// finds a nonzero allocation row, the halting reason unless its optional flag
+/// A military deployment's own saved scalars and containers. The writer
+/// omits training, max_training and max_manpower unless the stored word is
+/// strictly positive, the equipment wrapper unless there is a nonzero
+/// allocation row, the halting reason unless its optional flag
 /// is set and the priority at its default of one, so every field is optional
 /// here and the comparator applies those rules.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -188,14 +187,13 @@ pub struct Deployment {
     pub manpower_have: Option<Vec<ManpowerValue>>,
     pub manpower_need: Option<Vec<ManpowerValue>>,
     pub equipment: Option<Pool>,
-    /// `halting_reason` word; 1414246F0 writes it only when the optional's
-    /// `_bIsSet` byte at CMilitaryDeployment+0xc4 is set.
+    /// `halting_reason` word, written only when the optional's presence flag is set.
     pub halting_reason: Option<i32>,
-    /// CEquipmentDistributable priority; 141595070 omits the default of one.
+    /// Equipment-distribution priority; the default of one is omitted.
     pub priority: Option<i32>,
 }
 
-/// One CArmyManpowerValues entry: a country tag and a signed count.
+/// One army manpower entry: a country tag and a signed count.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManpowerValue {
     pub tag: Vec<u8>,
@@ -208,12 +206,12 @@ pub struct Line {
     /// Corresponding save subtype: military/naval/refit/railway gun.
     pub kind: u8,
     pub variant: u64,
-    /// 19260B0 omits only a completely zero MIO CID.
+    /// Only a completely zero MIO CID is omitted.
     pub mio: Option<u64>,
     pub requested_factories: i32,
-    /// Every counted per-factory efficiency (+0xC0), raw Q15: 19260B0 writes
-    /// them under `factory_efficiencies` through the /32768 formatter, and
-    /// only when the count (+0xCC) is positive, so absence is an empty array.
+    /// Every counted per-factory efficiency, raw Q15: written under
+    /// `factory_efficiencies` through the /32768 formatter, and only when
+    /// the count is positive, so absence is an empty array.
     pub factory_efficiencies: Vec<i64>,
 }
 
@@ -222,9 +220,9 @@ pub struct Division {
     pub id: u64,
     pub roster_owner: Vec<u8>,
     /// Omission is retained as malformed/missing save coverage, not an empty
-    /// bank: C80E00 writes this wrapper unconditionally.
+    /// bank: this wrapper is written unconditionally.
     pub equipment: Option<Pool>,
-    /// CArmy.requests.upgrades writes the group's nonempty request/delivery
+    /// Army upgrade requests write the group's nonempty request/delivery
     /// vectors. Empty runtime groups have no saved priority.
     pub upgrades: Option<ArmyUpgrades>,
 }
@@ -242,16 +240,15 @@ pub struct Variant {
     pub origin: Option<Vec<u8>>,
     /// `override_model`, the variant's explicit model entity.
     pub override_model: Option<Vec<u8>>,
-    /// `override_sprite` (token 0x3c92): BD4770 writes the icon entry's
+    /// `override_sprite`: the writer emits the icon entry's
     /// string, without its kind, exactly when the entry's active byte is set.
     pub override_sprite: Option<Vec<u8>>,
     pub modules: Option<Vec<Module>>,
     pub upgrades: Option<Vec<Upgrade>>,
-    /// Serialize 140BD4770 emits token 0xEE only for a nonzero +0x41C,
-    /// zero-extended at 140BD47FE. Omission proves zero, not +0x41D.
+    /// The version byte is zero-extended and emitted only when nonzero.
+    /// Omission proves zero only for that byte, not the adjacent stored byte.
     pub version: Option<u8>,
-    /// BD4770 writes nonzero signed +4B0 as token4002. Registrar14010CC9A
-    /// reads142AA8908 and binds literal142AA33B8 at14010CCBD.
+    /// `number_of_design_team_traits`, written as a signed integer only when nonzero.
     pub organisation_marker: Option<i32>,
 }
 
@@ -264,13 +261,13 @@ pub struct Module {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Upgrade {
     pub definition: Vec<u8>,
-    /// F7A763 zero-extends the native byte before integer serialization.
+    /// The stored byte is zero-extended before integer serialization.
     pub level: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArmyUpgrades {
-    /// Base1595070 omits priority precisely at1; it is not a version word.
+    /// Priority is omitted precisely at 1; it is not a version word.
     pub priority: Option<u32>,
     pub requests: Vec<UpgradeRequest>,
     pub deliveries: Vec<Delivery>,
@@ -286,24 +283,24 @@ pub struct UpgradeRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LineBase {
     pub id: u64,
-    /// 1414A36A0 writes cost unconditionally, retaining signed i64 fixed5.
+    /// Cost is written unconditionally, retaining signed i64 fixed5.
     pub cost: Decimal,
     /// The same writer omits precisely zero for these three fields.
     pub speed: Option<Decimal>,
     pub produced: Option<Decimal>,
     pub active_factories: Option<i32>,
-    /// Literal priority token8D and amount token1A1 are always written.
+    /// Literal `priority` and `amount` are always written.
     pub priority: i32,
     pub amount: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Delivery {
-    /// 1414FE370 omits status precisely when its native raw word is zero.
+    /// Status is omitted precisely when its stored raw word is zero.
     pub status: Option<u32>,
-    /// Only status1 carries a serialized progress value.
+    /// Only status 1 carries a serialized progress value.
     pub progress: Option<Decimal>,
-    /// Omitted precisely at the native fixed5 default100000.
+    /// Omitted precisely at the fixed5 default 100000.
     pub total_progress: Option<Decimal>,
     /// The produced equipment pool wrapper is always emitted.
     pub produced: Pool,
@@ -311,17 +308,17 @@ pub struct Delivery {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Equipment {
-    /// Full low-type/high-id native reference, including high bits and id zero.
+    /// Full low-type/high-id reference, including high bits and id zero.
     pub variant: u64,
     pub amount: Decimal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pool {
-    /// FFDB00 writes entries in native order. Repeated variant handles remain
+    /// Entries are written in stored order. Repeated variant handles remain
     /// distinct. The writer may omit zero entries, shifting saved positions.
     pub equipment: Vec<Equipment>,
-    /// FFDB00 and unconditional1424AE850 always emit this field. Absence is
+    /// This field is always emitted. Absence is
     /// retained so comparison reports missing data rather than assuming false.
     pub allow_zero_entries: Option<bool>,
 }
@@ -547,7 +544,7 @@ fn parse_license_record(items: &[Item]) -> io::Result<LicenseRecord> {
 }
 
 /// The `deployment` wrapper also carries configuration blocks; only the
-/// conveyor entries are queue state, and their native order is preserved.
+/// conveyor entries are queue state, and their stored order is preserved.
 fn parse_deployment(items: &[Item]) -> io::Result<Vec<Conveyor>> {
     let mut conveyors = Vec::new();
     for item in items
@@ -568,7 +565,7 @@ fn parse_deployment(items: &[Item]) -> io::Result<Vec<Conveyor>> {
                 field(fields, b"division_template_id")?
                     .ok_or_else(|| invalid("saved conveyor lacks its division template"))?,
             )?,
-            // 1414247D0 always emits +0x28, including empty first-NUL text.
+            // The name is always emitted, including empty first-NUL text.
             name: bytes(fields, b"name")?
                 .ok_or_else(|| invalid("deployment conveyor lacks its unconditional name field"))?,
             amount: integer(&required_bytes(fields, b"amount")?)?,
@@ -753,9 +750,9 @@ fn parse_army_upgrades(items: &[Item]) -> io::Result<ArmyUpgrades> {
     })
 }
 
-/// The supplied fields belong to a genuine CEquipmentVariantPool serializer
+/// The supplied fields belong to an equipment-variant pool serializer
 /// wrapper, established by its caller. No recursive search substitutes a pool
-/// from another subsystem. FFDB00 uses equipment/id/amount tokens2F4E/B/1A1.
+/// from another subsystem. The pool uses the `equipment`, `id` and `amount` keys.
 pub fn parse_pool(items: &[Item]) -> io::Result<Pool> {
     let mut equipment = Vec::new();
     for item in items
@@ -780,7 +777,7 @@ pub fn parse_pool(items: &[Item]) -> io::Result<Pool> {
     })
 }
 
-/// One equipment line (19260B0) of the given save subtype; the caller
+/// One equipment line of the given save subtype; the caller
 /// supplies the `military_lines`-style wrapper's fields.
 pub fn parse_line(kind: u8, fields: &[Item]) -> io::Result<Line> {
     Ok(Line {
@@ -811,8 +808,8 @@ pub fn parse_line(kind: u8, fields: &[Item]) -> io::Result<Line> {
     })
 }
 
-/// Common CProductionLine fields; subtype callers supply the proven wrapper.
-/// Base1414A36A0 does not itself establish a production manager census.
+/// Common production-line fields; subtype callers supply the proven wrapper.
+/// These fields do not themselves establish a production manager census.
 pub fn parse_line_base(items: &[Item]) -> io::Result<LineBase> {
     Ok(LineBase {
         id: object_id(items)?,

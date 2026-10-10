@@ -1,6 +1,8 @@
 use super::*;
 #[test]
 fn tooltip_operands_follow_authored_lists_and_last_valid_lane() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let data = parse(
         br#"buildings = {
         laboratory = { specialization = { alpha } specialization = { beta alpha }
@@ -19,7 +21,7 @@ fn tooltip_operands_follow_authored_lists_and_last_valid_lane() {
     assert_eq!(lab.detecting_intel_type, 2);
     assert_eq!(lab.tooltip_refused, None);
     assert_eq!(data.types["ordinary"].detecting_intel_type, 0);
-    // 1414A9220 reports an unknown lane and keeps the constructor's.
+    // An unknown lane is reported and retains the constructor default.
     let broken = &data.types["broken"];
     assert_eq!(broken.detecting_intel_type, 0);
     assert_eq!(broken.tooltip_refused, None);

@@ -1,6 +1,6 @@
-//! Read-only `14123FF10 -> 141023710`: local prerequisites, then ordinary
-//! successors in stored order. Results live for this build's current frame.
-//! Selection, animation time and the arrow's derived cache stay viewer-local.
+//! Read-only execution state: local prerequisites, then ordinary successors
+//! in stored order. Results live for this build's current frame. Selection,
+//! animation time and the arrow's derived cache stay viewer-local.
 
 use std::{
     cell::RefCell,
@@ -58,8 +58,8 @@ pub(super) struct State {
 }
 
 impl State {
-    /// `14125ACB0`, exact f32 epsilon at142934A78. The inner execution FX
-    /// remains active even when unmet prerequisites stop texture movement.
+    /// The exact f32 epsilon. Inner execution FX remains active even when unmet
+    /// prerequisites stop texture movement.
     pub(super) fn shader_terms(self, authored_speed: f32, outer: bool) -> [f32; 2] {
         let speed = if authored_speed.abs() <= f32::from_bits(0x38d1_b717)
             || self.active && !self.prerequisites
@@ -187,7 +187,7 @@ impl<'a, 'c> Context<'a, 'c> {
             demand = demand.wrapping_add(naval_count(weight));
         }
         let allocated = transport_counts::invasion(plan)?;
-        //1410186E0 still evaluates preparation after a convoy shortage.
+        // Evaluate preparation even after a convoy shortage.
         let rows = self
             .frame
             .complete::<tables::InvasionPreparations>()
@@ -253,7 +253,7 @@ impl<'a, 'c> Context<'a, 'c> {
         if ((preparation.progress / ONE) as i32) < required {
             return Ok(false);
         }
-        //+B8 is the signed source, not the path[0] destination.
+        // Use the signed source province, separately from the first-path destination.
         if (order.paradrop_target as i32) < 1 {
             return Ok(true);
         }
@@ -423,8 +423,8 @@ fn relation_gate(
         && (native_id == 0 || slot(target)? != slot(native_id)?))
 }
 
-/// `141023710` local-first ordered DFS. First false/unknown ends this path;
-/// a cycle encountered before a later false stays an explicit refusal.
+/// Local-first ordered DFS. The first false/unknown ends this path; a cycle
+/// encountered before a later false stays an explicit refusal.
 fn ordered_conditions(
     root: OrderKey,
     orders: &BTreeMap<OrderKey, &ArmyOrderRow>,
@@ -504,8 +504,8 @@ fn ordered_conditions(
     }
 }
 
-/// `14100BFA0`: ceiling toward positive infinity, preserving the rounded
-/// fixed5 product's overflow before division and the final low-i32 cast.
+/// Ceiling towards positive infinity, preserving the rounded fixed5
+/// product's overflow before division and the final low-i32 cast.
 fn naval_count(weight: i64) -> i32 {
     (ceil_fixed(weight) / ONE) as i32
 }
@@ -535,8 +535,8 @@ fn transport_weight(base: i64, country: i64, commander: i64) -> i64 {
         / ONE
 }
 
-/// `14101DD91..14101DE3A`: the extreme sentinel is an INTERMEDIATE unsigned
-/// 0xFFFFFFFF fixed5 value, which rounds/divides to42950, not final -1.
+/// The extreme sentinel is an intermediate unsigned 0xFFFFFFFF fixed5
+/// value, which rounds/divides to 42950, not final -1.
 fn missing_transports(demand: i64, capacity: i64) -> i32 {
     let delta = demand.wrapping_sub(capacity);
     let fixed = if matches!(delta, i64::MIN | i64::MAX) || delta == i64::MIN + 1 {

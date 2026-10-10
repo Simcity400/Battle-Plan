@@ -1,6 +1,6 @@
-//! IJG libjpeg 9a ("9a  19-Jan-2014" in the exe, the version FreeImage 3.17 bundles) as the
+//! IJG libjpeg 9a, the version FreeImage 3.17 bundles, as the
 //! game's FreeImage JPEG loader drives it: `jpeg_read_header`, then (flags 0) `dct_method =
-//! JDCT_IFAST` and `do_fancy_upsampling = FALSE` (checked at `14243D0C0`: `(flags & 2) == 0`),
+//! JDCT_IFAST` and `do_fancy_upsampling = FALSE`,
 //! `jpeg_start_decompress`, every scanline, `jpeg_finish_decompress`. It follows the library's
 //! sources function by function (`jdmarker.c`, `jdinput.c`, `jdhuff.c`, `jdarith.c`,
 //! `jdcoefct.c`, `jddctmgr.c`, `jidctfst.c`, `jdsample.c`, `jdcolor.c`), computing on the whole

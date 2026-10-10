@@ -1,7 +1,6 @@
-//! Army reach (`NRaids::FindArmyPathToSource@1419F6640`) for one recorded
-//! hour: the recorded facts `installed_content::unit_path` asks for, joined through
-//! `CountryLinks` to canonical slots. A fact whose table is incomplete is an
-//! error naming it, so the reach stays unknown rather than guessed.
+//! Army reach for one recorded hour. Join facts requested by
+//! `installed_content::unit_path` through `CountryLinks` to canonical slots.
+//! An incomplete required table gives a named error and leaves reach unknown.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -155,7 +154,7 @@ impl<'w, 'a> Moves<'w, 'a> {
         unit_path::discloses(self, owner, target, true)
     }
 
-    /// 141534980 / 1415349B0: the shared rule verdict, submarine or navy bit.
+    /// Shared rule verdict, using the submarine or navy bit.
     pub(crate) fn naval_rule(
         &self,
         rule: &installed_content::adjacency_rules::AdjacencyRule,
@@ -237,8 +236,8 @@ impl<'w, 'a> Moves<'w, 'a> {
         let unit = Army {
             location: row.province,
             owner: self.slot(row.logical_owner)?,
-            // Class1 always uses the transport classifier and always checks
-            // cross-landmass; its native route does not read +2F8 transfer.
+            // Class 1 always uses the transport classifier and checks
+            // cross-landmass; its route does not read the transfer operand.
             exiled: fresh
                 .exiled
                 .ok_or("fresh ETA task force exile byte was refused")?
@@ -263,7 +262,7 @@ impl<'w, 'a> Moves<'w, 'a> {
     ) -> Fact<Vec<u32>> {
         let graph = self.assets.moves.as_ref().map_err(Clone::clone)?;
         let mover = Mover { graph, world: self };
-        // 1410277D0 requires a unit even when both ports open onto one sea.
+        // Require a unit even when both ports open onto one sea.
         let row = self
             .division(division)?
             .ok_or_else(|| format!("invasion unit {division:#x} is not a recorded army"))?;
@@ -393,8 +392,7 @@ impl<'w, 'a> Moves<'w, 'a> {
                 combats.len()
             ));
         }
-        // `CanDisengageFromCombat` reads the commander's bans only for a
-        // division on a side of one of its combats.
+        // Read commander bans only for a division on a side of one of its combats.
         let bans = if combats.is_empty() {
             0
         } else {
@@ -426,10 +424,9 @@ impl<'w, 'a> Moves<'w, 'a> {
         })
     }
 
-    /// `FindArmyPathToSource@1419F6640`, once per division and source a
-    /// perspective and hour: the answer depends on neither the target nor
-    /// the viewer. The path search runs once per [`ReachKey`], the army
-    /// fields it reads, and answers every source from that one flood fill.
+    /// Cache once per division, source, perspective and hour; the answer depends
+    /// on neither target nor viewer. Search once per [`ReachKey`] from the army
+    /// fields it reads and answer every source from that flood fill.
     pub fn reaches(&self, division: u64, source: u32) -> Eval {
         if let Some(answer) = self.cells.reach().get(&(division, source)) {
             return answer.clone();
@@ -673,9 +670,9 @@ impl<'w, 'a> Moves<'w, 'a> {
 }
 
 impl MoveWorld for Moves<'_, '_> {
-    /// 140DBF240 reads the route owner's directed native relation cache;
-    /// target zero also has its independently recorded war-pointer operands.
-    /// A known true arm suffices even if the other input was refused.
+    /// Read the route owner's directed relation cache. Target zero also has
+    /// independently recorded war-pointer operands. A known true arm suffices
+    /// even if the other input was refused.
     fn path_friendly(&self, owner: Country, target: Country) -> Fact<bool> {
         let co_belligerent = self
             .native_relations()
@@ -683,7 +680,7 @@ impl MoveWorld for Moves<'_, '_> {
         if matches!(co_belligerent, Ok(true)) {
             return Ok(true);
         }
-        // 1406F3A00's signed-positive receiver-id gate applies to every target.
+        // The signed-positive receiver-ID gate applies to every target.
         let at_war = self
             .world
             .raw_country(owner)
@@ -794,10 +791,9 @@ impl MoveWorld for Moves<'_, '_> {
             .is_some_and(|wars| wars.can_occupy_non_war))
     }
 
-    /// The recorded vector where the collector read it (a civil-war
-    /// revolter, or an owner of a retired war relation); otherwise the set
-    /// `RebuildWartimeAllies@140D31E20` builds, the other endpoint of each of
-    /// the country's active war relations. `1406F3710` compares sets.
+    /// Use a recorded vector when read directly (civil-war revolter or retired
+    /// war-relation owner). Otherwise build the set of other endpoints of the
+    /// country's active war relations; compare sets.
     fn enemies(&self, country: Country) -> Fact<Vec<Country>> {
         if let Some(read) = self
             .country_wars()?
@@ -876,8 +872,8 @@ impl MoveWorld for Moves<'_, '_> {
         Ok(self.province(province)?.move_gate & ProvinceRow::MOVE_BORDER_CONFLICT != 0)
     }
 
-    /// The recorded groups are the ones a side of the province's conflicts
-    /// resolves to and that are in a border war (`+0x1b0`).
+    /// The recorded groups resolved by sides of the province's conflicts
+    /// that are border wars.
     fn border_conflict_admits(&self, province: u32, orders_group: u64) -> Fact<bool> {
         let conflicts = get(&self.cells.border_conflicts, || {
             Ok(self
@@ -948,7 +944,6 @@ impl MoveWorld for Moves<'_, '_> {
             if ships == 0 || routed || task_force.mission != 0 || all_flag_seven {
                 continue;
             }
-            // `CUnit::read_viewer_level@140BEEA00`.
             let roster = self.slot(task_force.roster_owner)?;
             let level = if unit_path::discloses(self, roster, owner, false)? {
                 3
@@ -1032,7 +1027,7 @@ impl<'a> Moves<'_, 'a> {
                     .ok_or_else(|| format!("ship {:#x} has no model row", ship.id))?;
                 let entry = out.entry(ship.task_force).or_insert((0, true));
                 entry.0 += 1;
-                // `CShip::HasFormationFlag7@140C2BAE0`: bit 7 of `+0x628`.
+                // Formation flag is bit 7 of the raw ship flags.
                 entry.1 &= formation & 0x80 != 0;
             }
             Ok(out)
@@ -1043,7 +1038,7 @@ impl<'a> Moves<'_, 'a> {
         get(&self.cells.intel, || {
             let mut out = BTreeMap::new();
             for row in self.table::<tables::UnitIntel>()? {
-                // The first entry of a viewer answers (`read_viewer_level`).
+                // The first entry for a viewer answers.
                 out.entry((row.unit, row.viewer)).or_insert(row.level);
             }
             Ok(out)

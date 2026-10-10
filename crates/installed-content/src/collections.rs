@@ -1,4 +1,4 @@
-//! Script collections: CCollection::vf3/vf4 (140A0F440/140A0FC90).
+//! Script collection loading and compilation.
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -13,6 +13,9 @@ use crate::{
         native::{self, Shape},
     },
 };
+
+/// Reader identity for a named collection's fields.
+pub(crate) const COLLECTION_KEY_READER: u64 = 0x140A0FC90;
 
 #[derive(Clone, Debug, Default)]
 pub struct Database {
@@ -65,7 +68,7 @@ impl Database {
             &mut |node, field| {
                 if matches!(node, Node::Top) {
                     current = Some(field.key.c_str().to_ascii_lowercase());
-                    Shape::Object(Node::KeyReader(0x140A0FC90))
+                    Shape::Object(Node::KeyReader(COLLECTION_KEY_READER))
                 } else {
                     shaper.shape(node, field)
                 }
@@ -116,8 +119,8 @@ pub fn read(layers: &ResolvedLayers, names: &KeyNames) -> io::Result<Database> {
     Ok(database)
 }
 
-/// Flatten named operators before local operators (140A0E9B0), retaining the
-/// original header lookup (140A0ED70), which is independent of flattening.
+/// Flatten named operators before local operators, retaining the original header
+/// lookup, which is independent of flattening.
 pub fn compile(item: &Item, database: Option<&Database>) -> Result<Collection, String> {
     fn inner(
         item: &Item,
@@ -125,7 +128,7 @@ pub fn compile(item: &Item, database: Option<&Database>) -> Result<Collection, S
         active: &mut BTreeSet<Vec<u8>>,
     ) -> Result<Collection, String> {
         if active.len() >= 64 {
-            return Err("collection expansion exceeds port nesting guard of 64 (140A0E9B0)".into());
+            return Err("collection expansion exceeds nesting guard of 64".into());
         }
         let mut input = item;
         let mut operators = Vec::new();
@@ -143,8 +146,8 @@ pub fn compile(item: &Item, database: Option<&Database>) -> Result<Collection, S
                                 op.value.items().unwrap_or_default().to_vec(),
                             ));
                         } else if op.key.is_none() {
-                            // SOperatorReader::vf0 (140A10410): unknown bare
-                            // tokens are reported and do not append an operator.
+                            // Unknown bare tokens are reported and do not append an
+                            // operator.
                             match op.value.scalar().map(<[u8]>::to_ascii_lowercase).as_deref() {
                                 Some(b"faction_members") => {
                                     operators.push(Operator::FactionMembers)
@@ -158,7 +161,7 @@ pub fn compile(item: &Item, database: Option<&Database>) -> Result<Collection, S
                                 }
                                 _ => {
                                     return Err(format!(
-                                        "collection operator {} is reported and skipped by native 140A10410",
+                                        "collection operator {} is reported and skipped",
                                         String::from_utf8_lossy(
                                             op.value.scalar().unwrap_or_default()
                                         )
@@ -167,7 +170,7 @@ pub fn compile(item: &Item, database: Option<&Database>) -> Result<Collection, S
                             }
                         } else {
                             return Err(format!(
-                                "collection operator {} has an unsupported assignment (140A10660)",
+                                "collection operator {} has an unsupported assignment",
                                 String::from_utf8_lossy(op.key.as_deref().unwrap_or_default())
                             ));
                         }
@@ -207,17 +210,16 @@ pub fn compile(item: &Item, database: Option<&Database>) -> Result<Collection, S
                 let name = folded[11..].to_vec();
                 if !active.insert(name.clone()) {
                     return Err(format!(
-                        "collection {} recursion (140A0E9B0)",
+                        "collection {} recursion",
                         String::from_utf8_lossy(&name)
                     ));
                 }
-                let database =
-                    database.ok_or("named collection content is unavailable (140A0EB10)")?;
+                let database = database.ok_or("named collection content is unavailable")?;
                 let result = match database.entries.get(&name) {
                     Some(Ok(item)) => inner(item, Some(database), active)?,
                     Some(Err(why)) => return Err(why.clone()),
-                    // 140A0EB10's null reference flattens to empty without
-                    // appending local operators (140A0E9B0).
+                    // A null reference flattens to empty without appending local
+                    // operators.
                     None if database.unread.is_empty() => Collection {
                         input: Input::Empty,
                         operators: Vec::new(),
@@ -241,7 +243,7 @@ pub fn compile(item: &Item, database: Option<&Database>) -> Result<Collection, S
             },
             _ => {
                 return Err(format!(
-                    "collection input {} is unsupported by native 140A0FFB0",
+                    "collection input {} is unsupported",
                     String::from_utf8_lossy(&folded)
                 ));
             }

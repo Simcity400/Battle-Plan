@@ -156,6 +156,8 @@ fn group() -> OrdersGroupRow {
 
 #[test]
 fn no_source_state_base_or_container_returns_zero_without_later_tables() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let mut order = order();
     let empty = Context::new(&fixture.frame, None);
@@ -190,6 +192,8 @@ fn no_source_state_base_or_container_returns_zero_without_later_tables() {
 
 #[test]
 fn owner_group_container_preserves_repeated_signed_planes_and_ignores_capacity() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.put::<tables::AirBaseRegistrations>(vec![AirBaseRegistrationRow {
         base: 100,
@@ -207,6 +211,8 @@ fn owner_group_container_preserves_repeated_signed_planes_and_ignores_capacity()
 
 #[test]
 fn nontransport_pool_and_earlier_idle_gates_do_not_demand_later_operands() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.wing(|wing| wing.pool_subunit = Recorded::Value(Some(0)));
     assert_eq!(
@@ -234,6 +240,8 @@ fn nontransport_pool_and_earlier_idle_gates_do_not_demand_later_operands() {
 
 #[test]
 fn missing_pool_identity_and_uncertain_content_refuse_instead_of_guessing() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.wing(|wing| wing.pool_subunit = Recorded::NotRecorded);
     assert!(
@@ -261,6 +269,8 @@ fn missing_pool_identity_and_uncertain_content_refuse_instead_of_guessing() {
 
 #[test]
 fn transfer_and_raid_liveness_use_their_witnesses_without_raid_roster_inference() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.region();
     assert_eq!(fixture.context().count(&order(), Some(&group())), Ok(9));
@@ -288,6 +298,8 @@ fn transfer_and_raid_liveness_use_their_witnesses_without_raid_roster_inference(
 
 #[test]
 fn region_reach_uses_the_wings_pool_base_not_the_orders_source_base() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.region();
     fixture.wing(|wing| wing.air_base = 101);
@@ -307,6 +319,8 @@ fn region_reach_uses_the_wings_pool_base_not_the_orders_source_base() {
 
 #[test]
 fn resolved_carrier_requires_its_task_force_mission_and_uses_its_province_anchor() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.region();
     fixture.wing(|wing| wing.air_base = 101);
@@ -369,6 +383,8 @@ fn resolved_carrier_requires_its_task_force_mission_and_uses_its_province_anchor
 
 #[test]
 fn nonzero_stale_state_host_uses_state_geometry_without_ship_tables() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.region();
     fixture.put::<tables::AirBases>(vec![AirBaseRow {
@@ -386,6 +402,8 @@ fn nonzero_stale_state_host_uses_state_geometry_without_ship_tables() {
 
 #[test]
 fn a_live_host_takes_precedence_over_the_state_for_mixed_base_geometry() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.region();
     fixture.wing(|wing| wing.air_base = 101);
@@ -432,6 +450,8 @@ fn a_live_host_takes_precedence_over_the_state_for_mixed_base_geometry() {
 
 #[test]
 fn missing_ace_range_is_reached_before_idle_mission_gates() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.wing(|wing| {
         wing.ace = 700;

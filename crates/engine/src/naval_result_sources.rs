@@ -1,19 +1,12 @@
-//! Exact combat/result operands at the two native retained-result calls.
+//! Combat/result operands at retained-result fill and merge calls.
 //!
-//! `create_result@1415B2790` independently registers a new result before
-//! CALL 1415B29C0, or chooses an existing province result before CALL
-//! 1415B2AC3. Both calls receive RCX=result, RDX=complete CNavalCombat.
-//! No result stores the source reference afterward (140CD6600/140CD5840).
-//! Stack-local strikes retain the live invalid reference, rather than a
-//! unique identity (1413CB400; 140BA8DB0/140BA8F30/140BA9130).
-//! Creation can be skipped: result-emitted +114, neither eligible side
-//! (1413CD470), or neither side with qualifying evidence (14160CF80). None
-//! reaches either CALL, so a source observer appends no outcome event.
-//! Native identity minting asserts main-thread access (14220A450), while
-//! fill/merge check the native gamestate thread-forbid operand. Ordinary
-//! finalization follows the hourly manager (140BA9890 -> 140BAAF60 ->
-//! 1415B2210 -> 1413CD9F0 vslot+B8); temporary strikes also follow the
-//! coordinated-strike effect (140355BB0 -> 140F6ED50 -> 140F6DB20).
+//! Creation registers a new result or chooses an existing province result before
+//! the call. Both receive RCX=result and RDX=complete combat; results do not retain
+//! the source reference afterward. Temporary strikes keep an invalid reference.
+//! Already-emitted combats, ineligible sides and sides without qualifying outcomes
+//! skip both calls, so the observer appends no outcome event. Identity assignment
+//! requires the main thread; fill and merge check the game-state thread guard.
+//! Ordinary hourly finalization and coordinated strikes can both reach these sites.
 
 use crate::{
     Memory, cair_wing, cgame_state, cnaval_combat, cnaval_combat_results, cpdx_array::Array,
@@ -27,9 +20,8 @@ pub struct Site {
     pub sentinel_len: usize,
 }
 
-/// Five-byte CALL to fill; the result reference is already final from
-/// RegisterIdentity@1422097C0, called at 1415B2999. Return PC 1415B29C5.
-/// No branch target lies inside the patched CALL; preserve the native frame.
+/// Five-byte fill call after result identity assignment. No branch target
+/// lies inside the patched call; preserve the original frame.
 pub const NEW: Site = Site {
     name: "naval_result_new",
     rva: 0x015b_29c0,
@@ -40,9 +32,8 @@ pub const NEW: Site = Site {
     ],
 };
 
-/// Five-byte CALL to merge; RCX is the existing result selected by
-/// 1415B2930-55. Return PC 1415B2AC8 jumps to the native epilogue.
-/// Verify only the owned 13 bytes: 1415B2AD0 starts the next function.
+/// Five-byte merge call with the existing result in RCX, returning to the
+/// original epilogue. Verify only the owned 13-byte sentinel.
 pub const MERGE: Site = Site {
     name: "naval_result_merge",
     rva: 0x015b_2ac3,
@@ -59,9 +50,9 @@ pub const TARGETS: [usize; 2] = [
     cnaval_combat_results::MERGE_RVA,
 ];
 
-/// CNavalCombat constructor 1415AFEB0: RCX=complete object, RAX=same object.
-/// Its first relocated instruction only writes RBX to caller home space.
-/// A naked entry can pass the return PC in RDX without changing native RCX.
+/// Combat constructor entry: RCX is the complete object, RAX the same object.
+/// Its first relocated instruction spills RBX to caller home space. An entry
+/// observer can pass the return PC in RDX while preserving RCX.
 pub const CONSTRUCTOR: Site = Site {
     name: "naval_combat_constructor",
     rva: 0x015a_feb0,
@@ -83,16 +74,14 @@ pub enum BirthKind {
     Loaded,
 }
 
-/// Every direct constructor caller in the pinned export, verified by asm.
-/// Fresh persistent callers mint/register after construction; the load
-/// factory 140BAAE20 restores the saved reference and is not a native birth.
-/// The three temporary strike functions resolve/finalize/destroy in one call
-/// without registering the complete object's CReferenceObject at +0x10.
+/// Direct constructor callers. Fresh persistent combats register after
+/// construction; save loading restores a reference rather than creating a birth.
+/// Temporary unit, convoy and port strikes resolve, finalize and destroy in one
+/// call without registering the complete object's reference subobject.
 pub fn constructor_caller(return_rva: usize) -> BirthKind {
     match return_rva {
-        // 140BA8410, 140BA8590, 140BA8B00, 140BAA780.
         0x00ba_845d | 0x00ba_85dd | 0x00ba_8b4f | 0x00ba_aad3 => BirthKind::Persistent,
-        // Naval unit, convoy and port strike: 140BA8DB0/8F30/9130.
+
         0x00ba_8de3 | 0x00ba_8fe9 | 0x00ba_917c => BirthKind::Transient,
         0x00ba_aed9 => BirthKind::Loaded,
         _ => BirthKind::Unknown,
@@ -109,9 +98,8 @@ pub struct Inputs {
     pub naval_strike: bool,
 }
 
-/// Native raw hour, also written into result+118 by fill/merge. The combat's
-/// +40/+44 day/duration are counters, not an absolute birth (1413CB400,
-/// 1415B1210, 1415B2240), so a constructor observer uses this live clock.
+/// Raw game hour copied into retained results. Combat day and duration fields
+/// are counters, distinct from absolute birth, so construction uses the live clock.
 pub fn creation_hour(memory: &impl Memory, base: usize) -> Result<i32, &'static str> {
     let state = field::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
     if state == 0 {
@@ -120,13 +108,10 @@ pub fn creation_hour(memory: &impl Memory, base: usize) -> Result<i32, &'static 
     field(memory, state, cgame_state::CURRENT_HOUR)
 }
 
-/// Storage demand from live possible emitters, without a roster or bucket
-/// walk: active combat slots (140BA9890/140BAAF60) plus all registered wings
-/// (140C40EB0 uses type 69, 140F445E0 registers it). Include every wing so
-/// mission changes and coordinated port strikes (140F6ED50, enabled mask)
-/// cannot evade the census. This is population, not a maximum event count:
-/// 140F6CF90/140F6ED50 invoke 140F6DB20 once per admitted target, so one wing
-/// can emit several strikes. Observed demand and live headroom certify bursts.
+/// Storage demand from active combat slots and every registered wing,
+/// without walking a roster or buckets. Including all wings covers mission
+/// changes and coordinated port strikes. Population is distinct from event count:
+/// one wing can emit several targets. Observed demand and live headroom cover bursts.
 pub fn population(memory: &impl Memory, base: usize) -> Result<usize, &'static str> {
     let state = field::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
     if state == 0 {
@@ -169,12 +154,12 @@ pub fn read_inputs(
     }
     let invalid = field::<u64>(memory, base, creference_registry::INVALID_REFERENCE_RVA)?;
     let result_reference = field::<u64>(memory, result, cnaval_combat_results::HANDLE)?;
-    // RegisterIdentity@1422097C0 writes reference+10, here complete result+10.
+    // Identity registration writes the complete result's reference field.
     if !boolean(memory, result, 0x10)? || result_reference == invalid {
         return Err("naval source result reference is unregistered");
     }
     let combat_reference = field::<u64>(memory, combat, cnaval_combat::HANDLE)?;
-    // Same native writer, with receiver complete combat+10: complete+20.
+    // The same identity writer selects the complete combat's reference subobject.
     let registered = boolean(memory, combat, 0x20)?;
     if registered == (combat_reference == invalid) {
         return Err("naval source combat reference registration mismatch");

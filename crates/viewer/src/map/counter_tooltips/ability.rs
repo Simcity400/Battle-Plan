@@ -1,4 +1,4 @@
-//! CActiveAbilityItem's separate icon tooltip (1418BFCE0).
+//! Active-ability icon tooltips, independent of the counter body.
 
 use super::*;
 use crate::combat::text::ensure_newlines;
@@ -134,8 +134,7 @@ fn scoped_description(
         "common/abilities",
         effects.view(None),
     );
-    // SetCountry(reset=1), then SetUnitLeader(reset=0), with fresh self
-    // links and constructor seed words. A separate FROM/ROOT is incorrect.
+    // Reset country scope, then bind the unit leader without resetting it again.
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::CountryUnitLeader {
         country: owner,
         leader: reference,
@@ -197,8 +196,8 @@ fn formation_count(context: &Context<'_>, leader: &UnitLeaderRow) -> Result<i32,
             let first = members.partition_point(|row| row.group < reference);
             let end = members.partition_point(|row| row.group <= reference);
             for row in &members[first..end] {
-                // A complete current OrdersGroupMembers capture authenticates
-                // its CArmy hosts. Missing Divisions cannot mean another class.
+                // A complete current `OrdersGroupMembers` capture authenticates its division hosts.
+                // Missing `Divisions` cannot mean another class.
                 let division = context.division(row.unit)?;
                 let templates = context
                     .frame
@@ -225,9 +224,8 @@ fn formation_count(context: &Context<'_>, leader: &UnitLeaderRow) -> Result<i32,
 }
 
 fn communications(context: &Context<'_>, leader: &UnitLeaderRow) -> Result<String, String> {
-    // 140FF5220 resolves the scope's copied CCharacter reference through
-    // 1405294F0 / 140F8A840 before selecting communications operands. Late
-    // join instead uses the original commander pointer (1418BFCE0).
+    // Resolve the scope's character reference before selecting communications operands. Late
+    // join instead uses the original commander pointer.
     let Some(leader) = communication_leader(context, leader)? else {
         return Ok(String::new());
     };
@@ -342,9 +340,8 @@ fn first_commander<'a>(
     if group == 0 {
         return Ok(None);
     }
-    // GetUnitCommander@140C5F0E0: this Army's +C0 group, then +88.
-    // The icon roster was populated from the last fully visible member;
-    // the tooltip independently reads the original first Army (1418BFCE0).
+    // Read the first division's orders-group leader. The icon roster came from
+    // the last fully visible member; the tooltip uses the original first division.
     let reference = context.orders_group(group)?.leader;
     if reference == 0 {
         return Ok(None);
@@ -377,7 +374,7 @@ fn active_row<'a>(
 }
 
 fn late_join_multiplier(activation_count: i32, current_count: i32) -> i64 {
-    // 1406CCDF0: signed i32 activation count, native wrapping numerator,
+    // signed i32 activation count, native wrapping numerator,
     // a denominator floored to one, and only an upper clamp to ONE.
     (i64::from(activation_count).wrapping_mul(10_000_000_000)
         / (i64::from(current_count.max(1)) * ONE))
@@ -397,7 +394,7 @@ fn late_join(
         .complete::<tables::ActiveAbilities>()
         .map_err(|error| error.to_string())?;
     for row in rows {
-        // 1406CCDF0 scans this country vector in its recorded order. It
+        // The game scans this country vector in its recorded order. It
         // tests pointer identity and caster, without testing the phase byte.
         if row.caster == Some(reference)
             && row.token == token
@@ -415,7 +412,7 @@ fn late_join(
 }
 
 fn communication_value(distance: i32, scaling: &[i64]) -> Result<i64, String> {
-    // 140C067E0 chooses the final array entry for either out-of-range arm.
+    // Choose the final array entry for either out-of-range arm.
     let last = scaling
         .last()
         .copied()

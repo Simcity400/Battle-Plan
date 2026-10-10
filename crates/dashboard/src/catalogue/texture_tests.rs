@@ -3,7 +3,7 @@
 use super::tests::{Folder, folder_catalogue};
 use super::*;
 
-/// Original default sprite program and map globals for synthetic content fixtures.
+/// Default sprite program and map globals for content fixtures.
 pub(crate) fn write_sprite_program(root: &std::path::Path) {
     for (path, bytes) in [
         ("gfx/FX/buttonstate.shader", ARTWORK_SHADER.as_bytes()),
@@ -86,6 +86,8 @@ fn strip() -> Rgba8Image {
 /// frame pitch, including when the resulting width does not divide by the frame count.
 #[test]
 fn a_mod_png_uses_native_frames_with_and_without_padding() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let image = strip();
     let (catalogue, _folders) = texture_catalogue(
         &[(
@@ -237,6 +239,8 @@ pub(crate) fn refusal_textures() -> Vec<(&'static str, Vec<u8>, &'static str)> {
 
 #[test]
 fn dds_and_engine_targa_still_decode_and_resolver_candidates_win() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let image = strip();
     let (catalogue, _folders) = texture_catalogue(
         &[],
@@ -264,6 +268,8 @@ fn dds_and_engine_targa_still_decode_and_resolver_candidates_win() {
 
 #[test]
 fn padding_and_edges_above_2048_decode() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let wide = Rgba8Image {
         width: 4097,
         height: 1,
@@ -289,6 +295,8 @@ fn padding_and_edges_above_2048_decode() {
 
 #[test]
 fn native_failures_keep_their_distinct_reasons() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let refusals = refusal_textures();
     let files: Vec<_> = refusals
         .iter()
@@ -334,6 +342,8 @@ fn native_failures_keep_their_distinct_reasons() {
 
 #[test]
 fn texture_frames_keep_fractional_padded_pixels_in_both_directions() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folders) = texture_catalogue(
         &[(
             "interface/art.gfx",
@@ -388,6 +398,8 @@ fn texture_frames_keep_fractional_padded_pixels_in_both_directions() {
 
 #[test]
 fn plain_sprite_refuses_a_missing_resolved_default_program_by_name() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, folder) = folder_catalogue(&[(
         "interface/art.gfx",
         "spriteTypes={spriteType={name=GFX_plain textureFile=plain.png}}",
@@ -466,7 +478,7 @@ fn frame_animated_sprites_render_native_strip_frames() {
                 96,
             )
             .unwrap();
-            // 14222CB90 clips the fractional right edge, rather than scaling
+            // Geometry clips the fractional right edge, rather than scaling
             // its pitch into the truncated query extent.
             let columns = if decode.force_pow2_textures {
                 [[0, 1], [3, 4], [5, 6]][frame as usize]
@@ -485,7 +497,7 @@ fn frame_animated_sprites_render_native_strip_frames() {
                 )
                 .unwrap(),
             );
-            // Vertical fractional geometry is bottom-anchored (1422E90C0),
+            // Vertical fractional geometry is bottom-anchored,
             // clipping its top instead; this is not a transposed right clip.
             let rows = if decode.force_pow2_textures {
                 [[1, 2], [3, 4], [6, 7]][frame as usize]
@@ -498,7 +510,7 @@ fn frame_animated_sprites_render_native_strip_frames() {
     }
 }
 
-/// Original, synthetic program: deliberately use different effect and texture names.
+/// Sampling, masking and overlay program for the artwork fixtures.
 pub(crate) const ARTWORK_SHADER: &str = r#"
 VertexStruct Input { float3 position : POSITION;
 float2 uv : TEXCOORD0;
@@ -600,8 +612,8 @@ fn sprite_shaders_execute_stack_effects_masks_and_animation_at_rest() {
         ("GFX_custom", [40, 80, 120, 200]),
         ("GFX_masked", [40, 80, 120, 100]),
         ("GFX_animated", [90, 80, 120, 200]),
-        // 14222B5F0 ignores lazy animation records; draw@14222D5A0 still
-        // executes the stack's default Up program, including its overrides.
+        // Lazy animation records are ignored; drawing still executes
+        // the stack's default Up program, including its overrides.
         ("GFX_lazy", [40, 80, 0, 200]),
         ("GFX_plain", [40, 80, 0, 200]),
         ("GFX_custom_frames", [40, 80, 120, 200]),
@@ -643,6 +655,8 @@ fn sprite_shaders_execute_stack_effects_masks_and_animation_at_rest() {
 
 #[test]
 fn artwork_shader_source_warnings_survive_lazy_reads() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folders) = texture_catalogue(
         &[
             (

@@ -7,8 +7,8 @@ use crate::{
     parser::{Item, Value},
 };
 
-/// Component tables dispatched by CUnitLeaderDatabase::build_trait_shards
-/// (140AD6030), each read by CUnitLeaderSkill::construct (140ADE200).
+/// Component tables dispatched by the trait body pass, each read
+/// as a skill table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Component {
     Attack,
@@ -73,15 +73,15 @@ impl Skills {
         &self.component_conditions
     }
 
-    /// The selected definition's modifier (140ADC960, token 0x2965).
-    /// Missing and negative levels use the null definition (140AD3D90).
+    /// The selected definition's modifier.
+    /// Missing and negative levels use the null definition.
     pub fn component_modifiers(
         &self,
         component: Component,
         level: i32,
         category: i32,
     ) -> Result<Option<&Modifiers>, &'static str> {
-        // 140ADE200 registers definitions only in category shards 0, 1, 2 and 3.
+        // Register definitions only in category shards 0, 1, 2 and 3.
         if self.unavailable || !(0..4).contains(&category) {
             return Err("the component skill table or category is unavailable");
         }
@@ -92,7 +92,7 @@ impl Skills {
     /// null definition (at cap or a sparse level). `Some(Some(cost))`: the
     /// signed whole-XP cost, including an authored zero or negative value.
     pub fn next_required_experience(&self, level: i32, category: i32) -> Option<Option<i32>> {
-        // The same four category shards constructed by 140ADE200.
+        // The same four category shards used by skill registration.
         if self.unavailable || !(0..4).contains(&category) {
             return None;
         }
@@ -108,16 +108,15 @@ impl Skills {
         }
     }
 
-    /// One skill table as 140ADE200 read it.
+    /// One skill table as its constructor read it.
     pub(super) fn read(&mut self, levels: &[Item], path: &str, component: Option<Component>) {
         let table = component.map_or("leader_skills", Component::key);
         for definition in levels {
             let name = String::from_utf8_lossy(definition.key.as_deref().unwrap_or_default());
-            // A level the reader read (a positive ParseTokenInt32 key).
+            // A level the reader read (a positive signed integer key).
             let key = definition.key.as_deref().unwrap_or_default();
-            // The level key reads through ParseTokenInt32 (1424B0080); the
-            // constructor reports and skips a level that is not positive
-            // (1424AD100), which defines nothing.
+            // The level key uses signed integer conversion; the constructor
+            // reports and skips a level that is not positive, defining nothing.
             let level = crate::fixed5::decimal_i32(key);
             if level <= 0 {
                 self.note(format!(
@@ -129,38 +128,36 @@ impl Skills {
                 continue;
             };
             let place = format!("{table} level {name}");
-            // CUnitLeaderSkill's constructor: cost 0, and category 4, which
-            // 140ADE200 registers in no category shard.
+            // Skill construction: cost 0 and category 4, which registers
+            // in no category shard.
             let mut cost = 0;
             let mut category = 4;
             let mut modifiers = Modifiers::default();
             for field in fields {
                 let value = field.value.scalar().unwrap_or_default();
                 match field.keyword().map(|keyword| keyword.folded()).as_deref() {
-                    // ReadScriptSignedInt32 (1424AB970 -> 1424B02C0).
+                    // Signed integer field conversion.
                     Some(b"cost") => match crt::scan_i32(value) {
                         Scanned::Stored(read) => cost = read,
                         // sscanf's EOF counts as success: nothing is
                         // stored and nothing reported.
                         Scanned::End => {}
                         Scanned::NoMatch => self.note(format!(
-                            "{path}: {place} cost {} does not scan as an integer; the game reports it (1424ACEE0) and keeps {cost}",
+                            "{path}: {place} cost {} does not scan as an integer; the game reports it and keeps {cost}",
                             String::from_utf8_lossy(value)
                         )),
                     },
-                    // 140ADC960 dispatches on the value token's id: a quoted
-                    // token, or a variable defined by one (1424AC830 keeps
-                    // its token), is no keyword; like any other value that
-                    // names no category, a block included, it is reported
-                    // (1424ACF90, whose skip the reading followed) and the
-                    // category stays.
+                    // Dispatch on the value token's id: a quoted token, or a variable
+                    // defined by one (which keeps its token), is no keyword; like any
+                    // other value that names no category, a block included, it is
+                    // reported and skipped, and the category stays.
                     Some(b"type") => {
                         let named =
                             leader_category(field.value_keyword().as_deref().map(str::as_bytes));
                         match named {
                             Some(value) => category = value,
                             None => self.note(format!(
-                                "{path}: {place} type {}{} is not a leader-category keyword; the game reports it (1424ACF90) and the level keeps its category",
+                                "{path}: {place} type {}{} is not a leader-category keyword; the game reports it and the level keeps its category",
                                 String::from_utf8_lossy(value),
                                 if field.quoted() { " (quoted)" } else { "" }
                             )),
@@ -169,8 +166,8 @@ impl Skills {
                     Some(b"modifier") if component.is_some() => {
                         modifiers.read_all(field.value.items().unwrap_or_default());
                     }
-                    // building_module_modifier is a separate CModifier
-                    // (+0xD0); 140AD9010 only describes +0x20.
+                    // building_module_modifier is a separate modifier block;
+                    // the skill description reads only the main modifier.
                     _ => {}
                 }
             }

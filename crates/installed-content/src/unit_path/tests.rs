@@ -17,7 +17,7 @@ use crate::province_graph::Crossing as Authored;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
-fn transport_exposure_uses_first_native_distance_non_neighbour_unity_and_embark_define() {
+fn transport_exposure_uses_first_distance_non_neighbour_unity_and_embark_define() {
     let graph = MoveGraph {
         index: vec![NONE, 0, 1, 2],
         ids: vec![1, 2, 3],
@@ -229,7 +229,7 @@ const RULES: &[u8] = b"adjacency_rule = { name = OPEN is_disabled = { always = n
     adjacency_rule = { name = BAD enemy = { tanks = no } }";
 
 #[test]
-fn invasion_costs_keep_the_native_non_admissible_heuristic_and_zero_slot() {
+fn invasion_costs_keep_the_non_admissible_heuristic_and_zero_slot() {
     let geometry = ProvinceGeometry {
         width: 100,
         centroids: BTreeMap::from([(1, [8, 0]), (2, [4, 0]), (3, [0, 0]), (4, [0, 0])]),
@@ -293,7 +293,7 @@ fn invasion_unsupported_content_is_refused_before_destination_admission() {
             world: &world
         }
         .invasion_route(&army(), None, 1, 2),
-        Err("unit path province id exceeds the native u16 node representation".into())
+        Err("unit path province id exceeds the u16 node representation".into())
     );
 }
 
@@ -342,7 +342,7 @@ fn invasion_forces_port_links_but_ignores_region_avoidance_and_base_level() {
 }
 
 #[test]
-fn invasion_sea_fallback_keeps_native_neighbour_order_and_named_unknowns() {
+fn invasion_sea_fallback_keeps_neighbour_order_and_named_unknowns() {
     let (mut graph, mut geometry) = map();
     geometry.centroids.insert(6, [60, 5]);
     graph.edges.get_mut(&1).unwrap().insert(0, (6, Some(10)));
@@ -501,8 +501,8 @@ fn transport_risk_route_uses_one_forced_search_without_counter_fallback() {
         graph: &moves,
         world: &world,
     };
-    // The ordinary counter route succeeds on land. E8B8E0's +29 path cannot
-    // use land-to-land edges and does not retry as an ordinary counter route.
+    // The ordinary counter route succeeds on land. The forced-transfer
+    // risk route cannot use land-to-land edges or retry as an ordinary route.
     assert_eq!(
         mover.counter_route(&army(), 1, 4, CounterRequest::default()),
         Ok(vec![2, 3, 4])
@@ -519,12 +519,12 @@ fn transport_risk_route_uses_one_forced_search_without_counter_fallback() {
         mover.transport_risk_route(&army(), 1, 1, CounterClass::Army),
         Ok(Some(vec![]))
     );
-    // A planned source is legal here, independently of actual vf70 location.
+    // A planned source is legal here, independently of actual task-force access location.
     assert_eq!(
         mover.transport_risk_route(&army(), 3, 1, CounterClass::Railway(7)),
         Ok(Some(vec![5, 1]))
     );
-    // E15A20's +28 is zero even for a stored exiled unit.
+    // The transfer request disables exile even for a stored exiled unit.
     let exiled = Army {
         exiled: true,
         ..army()
@@ -655,7 +655,7 @@ fn exiled_counter_landing_skips_access_and_visible_fleet_operands() {
 }
 
 #[test]
-fn native_land_mass_ignores_cost_and_rules_but_excludes_kind_four() {
+fn land_mass_ignores_cost_and_rules_but_excludes_kind_four() {
     let (mut graph, geometry) = map();
     graph.edges.get_mut(&2).unwrap()[1].1 = None;
     graph.edges.get_mut(&3).unwrap()[0].1 = Some(0);
@@ -677,7 +677,7 @@ fn native_land_mass_ignores_cost_and_rules_but_excludes_kind_four() {
 }
 
 #[test]
-fn raw_positive_controller_linked_to_zero_still_reaches_native_war_gate() {
+fn raw_positive_controller_linked_to_zero_still_reaches_war_gate() {
     let (graph, geometry) = map();
     let moves = MoveGraph::new(&graph, &geometry);
     let mut world = world();
@@ -976,7 +976,7 @@ fn task_force_counter_rule_selects_submarines_and_exile_keeps_class_gates() {
         .counter_route(&unit, 5, 6, request)
     };
     assert_eq!(route(&world), Ok(vec![]));
-    world.submarines.insert(77); // also the native result for an empty roster
+    world.submarines.insert(77); // also true for an empty roster
     assert_eq!(route(&world), Ok(vec![6]));
     // A visible strait still blocks a task force, unless exile bypasses it.
     cross(
@@ -1067,7 +1067,7 @@ fn task_force_mode_two_uses_hostile_gate_and_preserves_local_fallback() {
     world.task_force_hostile_allows.insert((77, 6));
     assert_eq!(route(&world, true), Ok(vec![6])); // no army war/combat/region test
     world.task_force_access.clear();
-    assert_eq!(route(&world, true), Ok(vec![])); // actual vf70 remains mandatory
+    assert_eq!(route(&world, true), Ok(vec![])); // actual task-force access remains mandatory
 }
 
 fn reaches(
@@ -1388,7 +1388,7 @@ fn a_border_conflict_admits_only_its_orders_groups() {
 }
 
 #[test]
-fn an_army_in_combat_disengages_and_retreats_by_the_native_rules() {
+fn an_army_in_combat_disengages_and_retreats_by_the_rules() {
     let (graph, geometry) = map();
     let mut world = world();
     let combat = ArmyCombat {
@@ -1445,8 +1445,8 @@ fn an_army_in_combat_disengages_and_retreats_by_the_native_rules() {
 }
 
 /// Admission into an enemy-held province whose state a third country
-/// owns (`CanEnterProvince@140BEADD0`). The path search itself never
-/// enters a province its owner fights, so only admission reads this.
+/// owns. The path search never enters a province its owner fights, so only
+/// admission reads this case.
 #[test]
 fn an_enemy_occupied_neutral_state_needs_disclosure_access_or_a_shared_enemy() {
     let (graph, geometry) = map();
@@ -1696,8 +1696,6 @@ fn the_reach_equals_a_plain_flood_fill_on_random_graphs() {
     // Every answer occurs often enough to test.
     assert!(outcomes.iter().all(|&count| count > 100), "{outcomes:?}");
 }
-
-// Append to existing installed-content/src/unit_path/tests.rs. All UNRUN.
 
 #[test]
 fn selected_first_neighbour_does_not_demand_distance_or_other_crossing_fields() {

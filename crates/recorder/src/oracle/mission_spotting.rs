@@ -1,5 +1,5 @@
-//! Original transport receiver cache comparisons. FA9900 saves +20/+28 only
-//! when positive; nonpositive magnitude and nullable ledger provenance need
+//! Original transport receiver cache comparisons. The mission writer saves values
+//! only when positive; nonpositive magnitude and nullable ledger provenance need
 //! independent native witnesses, rather than an invented save value.
 
 use std::io;
@@ -360,7 +360,7 @@ fn compare_receiver(
             report.difference(&label, actual, saved.as_ref().map(|value| value.raw));
         } else if saved.is_none() {
             report.limitation(
-                "FA9900 emits mission spotting cache values only when positive; omission proves nonpositive but not zero or exact negative magnitude",
+                "the naval-mission writer emits mission spotting cache values only when positive; omission proves nonpositive but not zero or exact negative magnitude",
                 label,
             );
         }

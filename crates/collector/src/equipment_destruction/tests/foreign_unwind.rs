@@ -12,8 +12,8 @@ struct Invocation {
     continued: usize,
 }
 
-// The authored native caller has the same two-argument five-byte CALL as the
-// reached HQ return@140BE4C9C. Production hq_returned owns the actual observation.
+// The authored native caller uses a two-argument five-byte CALL for the HQ
+// return. Production hq_returned owns the actual observation.
 // The native original credits first, then calls the real DLL throw/raise export.
 core::arch::global_asm!(
     ".text", ".globl land_foreign_return_caller", ".seh_proc land_foreign_return_caller",
@@ -39,7 +39,7 @@ unsafe extern "system-unwind" {
     fn land_foreign_credit_original(reserves: usize, pool: usize);
 }
 // Authored native eight-slot caller/entry for the actual Land damage detour.
-// Its displaced MOV matches140C7BFC0; exception originates only after
+// Its displaced MOV matches the damage hook; exception originates only after
 // its registered prologue and the real collector pre observation have run.
 core::arch::global_asm!(
     ".text", ".globl land_foreign_damage_caller", ".seh_proc land_foreign_damage_caller",

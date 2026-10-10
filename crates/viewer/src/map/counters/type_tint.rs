@@ -1,16 +1,12 @@
-//! CUnitCounterItem::update (1418C4B50), independent of fog and plate colour.
+//! Unit type-icon and plate allegiance, independent of fog.
 //!
-//! Primary CUnit +1D8 is roster owner; +1E0 is logical country (140BF5290,
-//! serializer 140BF7010 token 3410), not the +1DC expeditionary owner.
-//! 1406F3A90(a,b,0,0) accepts identity, otherwise 1406F3B00 vetoes active war
-//! before accepting the same non-null faction or either direct subject endpoint
-//! (140D11030/140D11080). Access, attaches and common enemies do not qualify.
-//! 1406F3A00 tests the pair's +2E8 war and its zero retired byte +49, with a
-//! positive receiver id. Both owner countries participate; then +310's ordered
-//! volunteers_sent loop can set a flag. Friend wins over enemy at 1418C5AC1.
-//! Land, railway guns and at-sea task forces share this path, including hidden
-//! icons. Port CNavalMissionUnitItem (14197EAC0) never colours its +AE0 type.
-//! The same two flags choose the plate's allegiance colour ([`plate`]).
+//! Roster and logical owners remain distinct from expeditionary owners. Identity
+//! qualifies as friendly; active war vetoes faction or direct subject friendship.
+//! Access, attaches and common enemies do not establish friendship. Both owner
+//! countries participate, then ordered volunteer entries may add a flag. Friendship
+//! wins over hostility. Land units, railway guns and at-sea task forces share this
+//! path, including hidden icons; port items retain their type icon's authored colour.
+//! The same flags select the plate allegiance ([`plate`]).
 use crate::map::{
     allegiance::Allegiance,
     directed_wars::Owner,
@@ -34,13 +30,9 @@ pub(super) enum Side {
     Neutral,
 }
 
-/// The plate's `COUNTER_MODE_ALLEGIANCE_*` in the default colour mode
-/// (`CSettings+0x2A8 == 1`, 1418C5244..1418C52E1), set before the coarse and
-/// hidden arms: ours when the roster owner is the viewing country (raw or
-/// canonical equality at 1418C5261), otherwise the type icon's own friend and
-/// enemy flags, sent-volunteer loop included. An unavailable relation leaves
-/// our own plates ours and draws the rest as other; the counter report counts
-/// them.
+/// Select allegiance before coarse and detailed draw paths. Own identity
+/// wins; otherwise use the type icon's friend and enemy flags in their
+/// existing order.
 pub(super) fn plate(own: bool, side: Option<Side>) -> Allegiance {
     match side {
         _ if own => Allegiance::Ours,
@@ -68,9 +60,8 @@ impl Colors {
                     format!("NDefines.NGraphics.{name} is not three numbers"),
                 )
             })?;
-            // 1418C5B37 passes alpha 1 to CColor ctor 142236F70; CIcon::SetColor
-            // 1422E6AB0 -> CGraphicalObject::SetColor 142299D70 replaces RGBA;
-            // buttonstate.shader PixelShaderUp multiplies the sampled texel.
+            // Set alpha to one for content RGB colours; explicit colour updates replace
+            // all four components.
             Ok([r as f32, g as f32, b as f32, 1.0])
         };
         Ok(Self {
@@ -158,7 +149,7 @@ impl Key {
             if row.ordinal as usize != position {
                 return Err("SentVolunteers ordinals are not contiguous".into());
             }
-            // 1418C51A8 skips null references and 14220A3D0 unresolved ones. The
+            // Skip null and unresolved references. The
             // complete Divisions census holds every live division; its keys are
             // sorted and unique.
             if row.division == 0 {
@@ -185,7 +176,7 @@ impl Key {
 
 /// Each country's relation to the viewing country, by raw reference.
 ///
-/// The first matching sent volunteer decides the loop (1418C51A1..1418C52B4):
+/// The first matching sent volunteer decides the loop :
 /// each host keeps its first position, and each country at war with a host the
 /// earliest such position. A lookup never walks divisions or volunteer lists.
 #[derive(Default)]
@@ -360,7 +351,7 @@ impl Index {
     }
 
     pub(super) fn of(&self, roster: u32, logical: u32) -> Option<Side> {
-        // Signed-nonpositive roster bypasses all predicates at 1418C501C.
+        // A signed nonpositive roster owner bypasses every relation predicate.
         if (roster as i32) <= 0 {
             return Some(Side::Friend);
         }
@@ -396,7 +387,7 @@ impl Index {
                 enemy = Ok(true);
             }
         }
-        // 1418C5AC1 tests friend before enemy. A proved friend never demands
+        // Test friend before enemy. A proved friend never demands
         // unknown enemy operands; an unknown friend cannot become neutral.
         Some(if friend.ok()? {
             Side::Friend
@@ -407,14 +398,8 @@ impl Index {
         })
     }
 
-    /// A `CNavalMissionUnitItem`'s (port item's or combat tile's) plate allegiance, as
-    /// `BuildNavalCounterData@14197B4F0` sets its bytes and `CColor::CColor@140B3C210` reads them:
-    /// ours (`+0x18`) when the first task force's roster owner (`+0x1D8`) is the viewing country;
-    /// otherwise enemy (`+0x1A`) when `1406F3A00` holds between the viewer and the roster owner,
-    /// or the logical owner (`+0x1E0`) where it is another country; only then allied (`+0x19`)
-    /// by `1406F3A90` over the same two; else other. Enemy is tested first and there is no
-    /// sent-volunteer loop, unlike the at-sea counter's type relation ([`Index::of`]). `None`
-    /// when the relations or either owner are unavailable ([`Index::problem`]).
+    /// Port allegiance tests hostility before friendship using the viewing country
+    /// and roster owner. Independent flags retain the owner and volunteer terms.
     pub(super) fn mission_item(&self, own: bool, roster: u32, logical: u32) -> Option<Allegiance> {
         if own {
             return Some(Allegiance::Ours);

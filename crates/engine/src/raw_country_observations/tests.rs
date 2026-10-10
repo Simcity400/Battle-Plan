@@ -1,4 +1,4 @@
-//! Authored source-only fixtures. UNRUN; these provide no native acceptance.
+//! Synthetic fixtures for raw country observations.
 use super::*;
 use std::cell::{Cell, RefCell};
 

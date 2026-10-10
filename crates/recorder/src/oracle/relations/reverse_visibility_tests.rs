@@ -108,10 +108,10 @@ fn reverse_cells_preserve_missing_raw_zero_alias_and_retired_subject_inputs() {
     }));
     let mut report = Report::default();
     compare(&frame, &mut report).unwrap();
-    assert!(limits(&report, "raw +0x50 target association"));
+    assert!(limits(&report, "raw target association"));
     assert!(limits(&report, "war-pointer presence"));
     assert!(limits(&report, "first/second-party OR gates"));
-    assert!(limits(&report, "+0x2A0 military-access pointer presence"));
+    assert!(limits(&report, " military-access pointer presence"));
     let missing: Vec<_> = report
         .limitations
         .iter()
@@ -160,7 +160,7 @@ fn reverse_military_presence_preserves_null_refusal_and_invalid_admission() {
             assert!(error.to_string().contains("not a native pointer presence"));
         } else {
             compare(&frame, &mut report).unwrap();
-            assert!(limits(&report, "+0x2A0 military-access pointer presence"));
+            assert!(limits(&report, " military-access pointer presence"));
             assert_eq!(
                 limits(
                     &report,

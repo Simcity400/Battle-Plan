@@ -1,14 +1,13 @@
 //! Every country's recorded agency, without a player/AI admission gate.
 //!
-//! The agency screen `140F172A0` shows +0xE4 / +0xF0, not the slowly growing
-//! recruitment admission ceiling +0xF4. `140FC9F60` stores the computed maximum
-//! (`140FC2B80`) in +0xF0; the capture's `unknown_f0` preserves those bits.
-//! Defence comes verbatim from +0x128 (`140FC7CB0`), then the screen localises
-//! AGENCY_DEFENSE_LEVEL with its fixed5 LEVEL argument (`1402E2DA0`).
+//! The agency screen shows recorded active and maximum counts, rather than
+//! the slowly growing recruitment admission ceiling. The capture's
+//! `unknown_f0` preserves the computed maximum bits. Defence uses the
+//! recorded value and the AGENCY_DEFENSE_LEVEL template's fixed5 LEVEL argument.
 //!
 //! Agencies are hourly. Equal consecutive reads compress, but missing rows,
 //! failed tables, gaps and identity changes end a run. Membership counts have
-//! their own daily read date and never replace the screen's recorded +0xE4.
+//! their own daily read date and never replace the screen's recorded active count.
 
 use super::{
     LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
@@ -72,12 +71,12 @@ pub struct AgencyComparisonParams {
 #[serde(rename_all = "camelCase")]
 pub struct AgencyUpgradeItem {
     /// This read's array position, preserving repeated definitions and all levels
-    /// as Save140FCA0F0 writes the native +0x60/+0x6C entries.
+    /// in the recorded upgrade list.
     pub ordinal: u32,
     pub definition_pointer: String,
     pub branch_pointer: String,
-    /// CAgencyUpgrade+0x260 owns the branch; branch+8 and definition+8 are
-    /// separate lexical tokens (140615D50, 140618C40, 140FCA0F0). A token alone is ambiguous.
+    /// The upgrade's branch and definition have separate lexical tokens.
+    /// A token alone is ambiguous.
     pub branch_token: Option<String>,
     pub token: Option<String>,
     /// Raw lexical IDs survive a missing recorded token-name dictionary.
@@ -99,13 +98,13 @@ pub struct AgencyUpgrades {
     /// A failed or incomplete acquired-list read is distinct from absent capture.
     pub unavailable: Option<String>,
     /// Mathematical sum of max(0, signed level), unknown for an incomplete or
-    /// unauthenticated list. The nonnegative term comes from 140FC2B80; this
-    /// inventory sum omits its created gate, i32 wrapping, base and slot formula.
+    /// unauthenticated list. This inventory sum omits the maximum-count formula's
+    /// created gate, i32 wrapping, base and slot calculation.
     pub nonnegative_level_sum: Option<String>,
     pub items: Vec<AgencyUpgradeItem>,
 }
 
-/// Acquired entries are separate from elapsed creation/upgrade work (140FC6AB0).
+/// Acquired entries are separate from elapsed creation/upgrade work.
 fn upgrades_at_read(row: &AgencyProjection) -> AgencyUpgrades {
     row.upgrades.clone().unwrap_or(AgencyUpgrades {
         read_hour: None,
@@ -180,12 +179,12 @@ fn upgrades_unrecorded() -> Option<String> {
 pub struct AgencyValue {
     pub created: bool,
     /// Created names are literal recorded bytes, including an empty name.
-    /// Uncreated names use GetAgency's content-localised default (141A7B350).
+    /// Uncreated names use the content-localised default.
     pub name: Option<String>,
     pub defense_raw: String,
     /// The full native content-localised text, retained for the tooltip.
     pub defense_text: Option<String>,
-    /// Only LEVEL's native formatted output (1402E2DA0 -> 142232AB0).
+    /// Only LEVEL's complete formatted output.
     pub defense_value: Option<String>,
     pub active_count: i32,
     pub maximum: i32,
@@ -237,16 +236,16 @@ pub struct AgencyComparisonReply {
     pub observed: Vec<HourSpan>,
     pub operative_read_hours: Vec<i32>,
     pub series: Vec<AgencySeries>,
-    /// Label from the screen's AGENCY_DEFENSE_LEVEL template (140F172A0).
+    /// Label from the screen's AGENCY_DEFENSE_LEVEL template.
     pub defense_label: Option<String>,
     /// One recording-level reason, rather than repeating it at every agency read.
     pub upgrades_unrecorded: Option<String>,
     pub warnings: Vec<String>,
 }
 
-/// Only agency-screen values participate in run identity. DailyUpdate140FC6AB0
-/// changes +0xC8 work progress and +0xF4 admission independently; neither is
-/// displayed by the active/maximum screen140F172A0 and neither is stored here.
+/// Only agency-screen values participate in run identity. Daily updates change
+/// work progress and recruitment admission independently; neither appears in
+/// the active/maximum display and neither is stored here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AgencyProjection {
     created: bool,
@@ -262,7 +261,7 @@ impl From<&IntelligenceAgencyRow> for AgencyProjection {
         let created = row.created != 0;
         Self {
             created,
-            // GetAgency141A7B350 uses the content default until created.
+            // The content default is used until the agency is created.
             name: if created {
                 row.name.clone()
             } else {
@@ -444,13 +443,12 @@ impl ScannedAgencies {
     }
 }
 
-/// Scalar active_count is the +0xE4 active-list count (140FC80B0). Native recruitment
-/// pools are separate memberships: roster_kind 0 is that active list, not all
-/// entries an operative can have. Constructor140FC1D70 embeds recruitment at
-/// +8; recruitment constructor141566E10 and remove141569770 establish its
-/// three vectors, projected as kinds1..3 by engine::coperative_leader::walk.
-/// CaptureOperative140FC5830 retains active membership, so a captured operative
-/// still counts in the native active/maximum display; free-operatives is different.
+/// Scalar active_count is the active-list count. Recruitment pools are
+/// separate memberships: roster_kind 0 is that active list, not all entries an
+/// operative can have. The recruitment vectors are projected as kinds 1..3
+/// by engine::coperative_leader::walk. Capture retains active membership, so a
+/// captured operative still counts in the active/maximum display;
+/// free-operatives is different.
 fn roster_counts(
     rows: &[OperativeMembershipRow],
     links: &[replay::rows::CountryLinkRow],
@@ -637,8 +635,8 @@ fn check_cancelled(cancelled: &AtomicBool) -> io::Result<()> {
     }
 }
 
-/// GetAgency copies even an empty stored name when created; otherwise it
-/// localises the executable's AGENCY_NAME key (141A7B350 case 0x19).
+/// Created agencies keep even an empty stored name; otherwise the content's
+/// AGENCY_NAME key supplies the name.
 fn agency_name(row: &AgencyProjection, default: impl FnOnce() -> Option<String>) -> Option<String> {
     if row.created {
         std::str::from_utf8(&row.name)
@@ -663,7 +661,7 @@ fn value(
         defense_text,
         defense_value,
         active_count: row.active_count,
-        // 140FC7850 returns these bits; Int32ToString1424B56A0 displays signed.
+        // The recorded bits are displayed as a signed integer.
         maximum: row.unknown_f0 as i32,
         upgrades: upgrades_at_read(row),
     }
@@ -750,7 +748,7 @@ fn project_series(
         })
         .transpose()?;
     let mut result = Vec::new();
-    // GetAgency141A7B350 resolves the content default only for uncreated agencies.
+    // The content default is resolved only for uncreated agencies.
     let default_name = std::cell::LazyCell::new(default);
     let mut defense_texts = HashMap::new();
     let selected =

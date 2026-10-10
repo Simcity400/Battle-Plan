@@ -1,5 +1,5 @@
-//! The same numeric offset as CArmy::STANDARD_TEMPLATE does not authenticate that identity.
-//! QP evidence: `extractor/native/runs/qp_fog_bindings/evidence/`.
+//! Fog-skip receiver layout; its primary/body relationship is unspecified.
+//! Matching the standard-template offset does not authenticate that identity.
 
-/// Nullable skip-record pointer at receiver+3b8; QP func_140c79aa0.decompile.c reads its +234 byte or returns zero for null, confirmed by the fog rebuild call.
+/// Nullable skip-record pointer; null supplies zero, otherwise reads the skip byte.
 pub const SKIP_RECORD_POINTER: usize = 0x3b8;

@@ -197,6 +197,8 @@ fn raw_links_resolve_to_opaque_mod_tags_at_scale() {
 
 #[test]
 fn mod_added_law_uses_overridden_localisation_and_sprite() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut cat, folder) = crate::catalogue::tests::folder_catalogue(&[
         ("base/common/occupation_laws/a.txt", "renamed={icon=1}"),
         (
@@ -284,6 +286,8 @@ fn mod_added_law_uses_overridden_localisation_and_sprite() {
 
 #[test]
 fn law_icons_follow_vertical_native_frames_and_name_missing_effects() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (cat, folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "common/occupation_laws/a.txt",
@@ -500,6 +504,8 @@ fn partial_resistance_keeps_known_rows_and_does_not_claim_an_empty_inventory() {
 
 #[test]
 fn a_branch_with_five_thousand_states_and_countries_is_not_capped() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::rows::{Recorded, ScriptVariableEntry, ScriptVariablesRow, TableRows};
     let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -830,6 +836,8 @@ fn native_zero_strength_requires_complete_resolved_manpower_or_the_failure_flag(
 
 #[test]
 fn positive_strength_uses_recorded_native_weights_and_mod_content_at_its_daily_read() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::rows::{
         GarrisonEquipment, GarrisonEquipmentInputs, LexicalTokenRow, Recorded,
         StateAssignedManpowerRow, StateGarrisonRow, TableRows,
@@ -1112,6 +1120,8 @@ fn long_campaign_scan_at_design_scale() {
 
 #[test]
 fn occupation_default_validation_uses_native_root_from_and_prev_links() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::triggers::{ContentFacts, World};
     let mut frame = frame(100, true);
     *frame.tables[TableId::Countries.index()] =
@@ -1234,6 +1244,8 @@ fn occupation_group_law_and_null_default_are_joined_at_the_supplying_read() {
 
 #[test]
 fn occupation_default_scope_uses_the_retained_country_pointer_independently_of_membership() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::rows::{OccupationGroupLaw, OccupationSettingsRow, Recorded, TableRows};
     let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -1300,7 +1312,13 @@ fn occupation_default_scope_uses_the_retained_country_pointer_independently_of_m
     for (run, (_, _, expected)) in runs.iter().zip(cases) {
         assert_eq!(run.value.law.as_deref(), expected);
         if expected.is_none() {
-            assert!(run.value.law_missing.as_deref().unwrap().contains("+0x18"));
+            assert!(
+                run.value
+                    .law_missing
+                    .as_deref()
+                    .unwrap()
+                    .contains("occupied-country scope")
+            );
         }
     }
 }

@@ -27,7 +27,7 @@ use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 const MAX_WORKERS: usize = 15;
 // Ordinary naval tree censuses fall back to borrowed ancestor frames when
 // pack depth scratch is short. Keep the worker reserve explicit, independent
-// of RUST_MIN_STACK, matching hoi4.exe a729's PE SizeOfStackReserve (4 MiB).
+// of RUST_MIN_STACK, matching the supported executable's stack reserve (4 MiB).
 // Native retention/copy depth is documented beside the engine reader.
 const WORKER_STACK_BYTES: usize = 4 * 1024 * 1024;
 /// Longest a collector spins on its awaited running job before it parks.

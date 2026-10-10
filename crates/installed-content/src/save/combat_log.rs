@@ -1,14 +1,11 @@
-//! Saved Combat Logs (NCombatLog). CGameState::Serialize@1401f2580 writes a
-//! top-level `combat_log` (token 0x36d5) for each country slot whose manager
-//! holds a group log; the manager's vf2@140cd0e30 writes its `tag` (0x2a02)
-//! and each group log as `log` (0x29b4). A group log (vf2@140cd0fc0) writes
-//! its `group` reference (0x3f), then the four loss arrays in reason order as
-//! repeated `equipment` (0x2f4e), `enemy_equipment` (0x3765),
-//! `equipment_recovered` (0x4cb2) and further blocks this parser skips. Each
-//! month entry (CEquipmentLoss::vf2@140cd0da0) writes its pool as `equipment`
-//! (0x2f4e, the CEquipmentVariantPool serializer FFDB00, which omits zero
-//! amounts unless `allow_zero_entries`), its `reason` (0x364e) and `date`
-//! (0x284a).
+//! Saved combat logs. The state writer emits a top-level `combat_log` for
+//! each country slot whose manager holds a group log; the manager writes
+//! its `tag` and each group log as `log`. A group log writes its `group`
+//! reference, then the four loss arrays in reason order as repeated
+//! `equipment`, `enemy_equipment`, `equipment_recovered` and further blocks
+//! this parser skips. Each month entry writes its pool as `equipment`
+//! (omitting zero amounts unless `allow_zero_entries`), its `reason` and
+//! `date`.
 
 use std::io;
 

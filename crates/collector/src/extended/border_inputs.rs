@@ -1,4 +1,4 @@
-//! Minimal operands of 1409C8D50/1409C9B50. All joins borrow owned captures.
+//! Minimal border-conflict operands. All joins borrow owned captures.
 use engine::{Memory, ccountry, cprovince, cstate, ctechnology_status, walk::Outcome};
 
 pub(super) fn needed(flags: &[cstate::FlagRow]) -> bool {
@@ -84,8 +84,8 @@ pub(super) fn doctrine(
         return Err("border demand country census unordered or duplicate");
     }
     let countries = ccountry::Reader::new(memory, base, game_state)?;
-    // 1409C9B50 also visits controllers of empty provinces. Reading all active
-    // states is a safe superset, independent of any one hover perspective.
+    // Border conflicts also visit controllers of empty provinces. All active
+    // states form a safe superset, independent of any one hover perspective.
     for province in provinces {
         if !flags
             .binary_search_by_key(&province.state, |flag| flag.state)

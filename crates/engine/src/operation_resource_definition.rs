@@ -1,4 +1,4 @@
-//! Resource definition used by operation requirements; engine class name unproved.
+//! Resource definition used by operation requirements.
 
-/// Operation resource definition's raw u32 sort key at +418; operation_is_prepared at extractor.rs:8944,8961 uses ordered lookup.
+/// Resource-definition raw u32 sort key used for ordered lookup.
 pub const SORT_KEY: usize = 0x418;

@@ -1,5 +1,5 @@
-//! Pointer geometry from CGraphicalObject::traverse@1422998C0. Native hit
-//! extents and transforms are independent of a stretched or cropped draw quad.
+//! Pointer geometry for retained GUI objects.
+//! Hit extents and transforms are independent of stretched or cropped draw quads.
 
 use super::{Clip, Hit, Holder, Rect, truncate_f32};
 
@@ -138,8 +138,8 @@ impl HitGeometry {
         hit
     }
 
-    // Construction adds trunc(double(viewport)*0.5) before SetPosition1422E8EE0
-    // subtracts the float half. Those terms do not always cancel in f32.
+    // Construction adds a truncated double-precision half-viewport before
+    // subtracting the float half. Those terms do not always cancel in f32.
     fn wrapper_local(&self, position: [i32; 2]) -> [f32; 2] {
         let half = self.viewport.map(|v| v as f32 * 0.5);
         let at = [0, 1].map(|axis| {
@@ -167,8 +167,8 @@ impl HitGeometry {
         let (world, pivot) = match self.shape {
             Shape::Sprite { size, physical, .. } => {
                 let half = physical.map(|v| v as f32 * 0.5);
-                // Own scale already determined GetSize and frame. A shown
-                // drawable does not apply it to the inherited total.
+                // Own scale is already reflected in the queried size and frame. A shown
+                // object uses its retained hit geometry.
                 let local = [
                     relative[0] as f32 + -(physical[0] as f32) * 0.5,
                     (half[1] - size[1] as f32) - relative[1] as f32,
@@ -185,8 +185,8 @@ impl HitGeometry {
                 measured_height,
                 ..
             } => {
-                // Graphical local+80/+84 is zero. Layout position+200/+204 is
-                // added by GetWorldPosition after traversal.
+                // Add the retained layout position after traversal; graphical local
+                // translation begins at zero.
                 advance(
                     &mut translation,
                     &mut scale,
@@ -209,8 +209,8 @@ impl HitGeometry {
                     None,
                 );
                 let half = self.viewport.map(|v| v as f32 * 0.5);
-                // GetSize is zero, but GetWorldPosition1422E8B00 falls back to
-                // authored+13C/+140 before GetWorldPositionForSize.
+                // A zero size query falls back to the authored extent before applying
+                // the size-dependent world position.
                 let pivot = [
                     half[0] + translation[0],
                     -((translation[1] - half[1]) + size[1] as f32),

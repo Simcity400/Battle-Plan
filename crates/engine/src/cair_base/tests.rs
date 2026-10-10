@@ -1,8 +1,6 @@
 use super::*;
 use crate::memory::SliceMemory;
 
-// Carrier seam fixtures are source-only until the parent compiles/runs them.
-
 struct CarrierMemory<'a> {
     bytes: &'a [u8],
     fault: Option<usize>,
@@ -1552,7 +1550,7 @@ impl Memory for Rounds<'_> {
     }
 }
 
-/// Well above the retired 1,024-cell resolver: every country slot of one
+/// More than 1,024 resolver cells: every country slot of one
 /// host base holds a container, and a second base shares every seventh.
 /// Odd slots store an alias id, so the link table is twice the census.
 #[test]

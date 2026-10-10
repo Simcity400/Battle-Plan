@@ -1,4 +1,4 @@
-//! Arrow draw14125ACB0: native b3, declaration141250090 and forced raster14125D880.
+//! Arrow draw: native b3, declaration and forced raster.
 use eframe::wgpu;
 use installed_content::{
     ResolvedLayers,
@@ -8,8 +8,8 @@ use installed_content::{
 use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
 use std::{collections::BTreeMap, io, sync::Arc};
 
-/// 141252F00 writes XYZ and UV4; declaration14125010E skips byte12..15.
-/// Upload141256F04 uses stride0x20. The padding is not POSITION.w.
+/// The stride is 32 bytes. XYZ and UV4 are written; bytes 12 through 15 are skipped by the
+/// declaration and do not supply POSITION.w.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
@@ -18,7 +18,7 @@ pub struct Vertex {
     pub uv: [f32; 4],
 }
 
-/// Scene calls 140B481A0: mode0 before entities, then mode3 and mode1.
+/// Scene calls : mode0 before entities, then mode3 and mode1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mode {
     Shadow,
@@ -37,7 +37,7 @@ impl Mode {
     }
 
     pub fn lighting(self) -> f32 {
-        //14125B921..946: modes1/2 zero both shadow and normal factors.
+        // Modes 1/2 zero both shadow and normal factors.
         if matches!(self, Self::Late | Self::Shadow) {
             0.0
         } else {
@@ -46,8 +46,8 @@ impl Mode {
     }
 }
 
-///14125AF47 copies only light VP into the constructor block, then140FF3AB0
-///fills common lighting/time values through140FF3BB0. No camera/inverse fill.
+/// Copy the light view-projection into the initialized block, then fill common lighting and time
+/// values. Camera and inverse fields retain their existing contents.
 pub fn shadow_constants(scene: &[u8], matrix: [[f32; 4]; 4]) -> Vec<u8> {
     let mut bytes = super::tree_caster::constants(matrix);
     for range in [
@@ -88,7 +88,7 @@ pub fn load(
     library.load(path.as_bytes(), &defines).map_err(fail)
 }
 
-///141250462 copies the authored depth descriptor;468/46F/477 replace ref/masks.
+/// Retain the authored depth descriptor; late passes replace the stencil reference and masks.
 fn late_depth(mut state: DepthStencilState, late: bool) -> DepthStencilState {
     if late {
         state.stencil_ref = 2;
@@ -151,7 +151,7 @@ impl Arrow {
             cull_mode: 0,
             ..Default::default()
         };
-        //14125B600 binds topology4 (triangle strip).
+        // Bind topology4 (triangle strip).
         pass.primitive = gpu::primitive(&raster, wgpu::PrimitiveTopology::TriangleStrip).0;
         let (depth, reference) = gpu::depth_stencil(
             &late_depth(effect.source.depth_stencil(technique), mode == Mode::Late),
@@ -163,13 +163,13 @@ impl Arrow {
             .get_pass(device, &selection, &state, &pass)
             .map_err(refuse)?;
         if mode == Mode::Shadow {
-            //14125AFE2/14125AFE8 explicitly zero ShadowFadeFactor/FOWFadeFactor.
+            // Explicitly zero ShadowFadeFactor/FOWFadeFactor.
             super::shader_constants::both(&pipeline, 0, 416, &[0..348, 352..408])
                 .map_err(refuse)?;
         } else {
             super::shader_constants::scene(&pipeline).map_err(refuse)?;
         }
-        //14125D880 allocates128;14125ACB0 writes116 bytes.
+        // allocates128; writes116 bytes.
         super::shader_constants::both(&pipeline, 3, 128, std::slice::from_ref(&(0..116)))
             .map_err(refuse)?;
         let retained = super::shader_scene::Program::new(
@@ -194,7 +194,7 @@ impl Arrow {
         arrow: &[u8],
         textures: &BTreeMap<u32, wgpu::TextureView>,
     ) -> io::Result<gpu::Bindings> {
-        //141269E90 binds PS-only b2.14125ACB0 binds b0/b3 to both stages.
+        // Bind PS-only b2. binds b0/b3 to both stages.
         self.pipeline
             .bindings(
                 arena,

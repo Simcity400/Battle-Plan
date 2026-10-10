@@ -98,8 +98,8 @@ fn equipment_icons_keep_null_archetype_fallbacks() {
     let frame = production_frame(PRODUCTION_HOUR, true, true, 9001, &[], Some(&[]));
     let hour = IconHour::read(&frame, &content).unwrap();
     let row = VariantDefinitionRow::default();
-    // 140B3D270 admits the type's own sprite before testing its archetype's
-    // validity. 140B36C60 continues through technology, family and pools.
+    // The type's own sprite is admitted before testing its archetype's
+    // validity. Fallback continues through technology, family and pools.
     for (token, expected) in [
         ("bare_type", "GFX_bare_type_medium"),
         ("technology_type", "GFX_mod_technology_medium"),
@@ -113,7 +113,7 @@ fn equipment_icons_keep_null_archetype_fallbacks() {
         );
     }
     // Null archetype sprites and technologies are skipped, even when their
-    // would-be string-only matches exist (140AB8D20 checks the cached hash).
+    // would-be string-only matches exist, because the cached hash is checked.
     let capital = VariantDefinitionRow {
         classifier_flags: 1 << 6,
         ..Default::default()
@@ -131,8 +131,8 @@ fn equipment_icons_keep_null_archetype_fallbacks() {
         variant_icon(&content, &hour, &auto, "pooled_type"),
         Ok(Some(Icon::Sprite("GFX_pool_picture".into())))
     );
-    // 1409F13F0/1409F1540 visit the null object's empty NAME, but its sentinel
-    // hash -1 (140C82B50) cannot match an authored empty-key pool.
+    // The null object's empty name has sentinel hash -1 and cannot match an
+    // authored empty-key pool.
     let null_pool = make_content(&[br#"
         default = { "" = { pool = { icons = { GFX_null_pool } } } }
     "#]);
@@ -150,10 +150,8 @@ fn equipment_icons_distinguish_real_empty_names_from_null_archetypes() {
     use installed_content::equipment_graphics;
     use replay::rows::VariantDefinitionRow;
 
-    // 1409E5170 registers the NAME/hash before dynamic-token registration;
-    // 140C82D60/140BBA180 retain a real empty NAME's hash, not the null sentinel.
-    // Archetype/family references read strings, not token ids
-    // (140C89CC0 -> 1424ABB50 -> GetTypeByName 1409EB8B0).
+    // A real empty name retains its registered hash, distinct from the null sentinel.
+    // Archetype/family references read strings, not token ids.
     let units = equipment_types(&[br#"
         equipments = {
             "" = { is_archetype = yes }
@@ -235,6 +233,8 @@ fn authored_equipment_icons_keep_null_archetype_candidates() {
 
 #[test]
 fn equipment_icons_follow_the_production_rows_rule() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::equipment_icon::{Icon, IconContent, IconHour, variant_icon};
     use installed_content::{
         equipment_graphics,
@@ -509,7 +509,7 @@ fn equipment_icons_follow_the_production_rows_rule() {
         sprite("GFX_infantry_weapons1_medium")
     );
     // A dynamic origin (D01, named after AAA): its type sprites use its own tag, its
-    // technology sprites its original tag (replay README, the icon rule's step 5).
+    // technology sprites its original tag.
     let mut dynamic = frame.clone();
     let country = |id, canonical_slot, tag: &[u8]| CountryRow {
         id,
@@ -576,6 +576,8 @@ fn equipment_icons_follow_the_production_rows_rule() {
 /// overrides with its own texture; a type the content does not know is refused.
 #[test]
 fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::equipment_icon::{Icon, IconContent, IconHour, variant_icon};
     use installed_content::{ResolvedLayers, equipment_graphics, technology};
     use replay::rows::{PoliticalPartyRow, PoliticsRow, VariantDefinitionRow};

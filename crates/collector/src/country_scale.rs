@@ -5,7 +5,7 @@
 //! of a campaign with tens of thousands of countries is not truncated. The
 //! registry is read once before the hook is installed and again by the spool
 //! thread while it idles, which sees a save load (the game rebuilds the
-//! registry in `CGameState::reset`) before its first hourly tick. Allocation
+//! registry during reset) before its first hourly tick. Allocation
 //! stays off the game thread. Capacities only ever rise; the ordinary
 //! worker acquisitions grow from their original observations for populations
 //! that can change between sizing polls.
@@ -128,10 +128,10 @@ fn reserve_rows<T>(census: &mut Vec<T>, target: usize) -> bool {
     engine::allocation::reserve_exact(census, target - census.len()).is_ok()
 }
 
-/// The engine's own ceiling on canonical country slots. `CSupplySystem` stores
-/// the controller and capital slots of every province as u16 (0x140eb753d,
-/// 0x140eb7177) and the AI volunteer code indexes `CGameState+0x310` with a
-/// u16 (0x141a64833), so a slot at or above 65,536 cannot work in the game.
+/// The engine's own ceiling on canonical country slots. The supply system stores
+/// the controller and capital slots of every province as u16, and the AI
+/// volunteer code indexes the country registry with a u16, so a slot at or
+/// above 65,536 cannot work in the game.
 /// A larger registry count is treated as a torn read of the sizing hint, not
 /// as a limit on recorded data: tables still grow past it on demand.
 pub const ENGINE_SLOT_CEILING: usize = 1 << 16;
@@ -183,7 +183,7 @@ pub fn observe_country_intel(
     };
     let rows = engine::ccountry_intel::native_rows(memory, base, state)
         .ok_or("country intel sizing census unreadable or invalid")?;
-    // 140CF2AE0 -> 140CEC1C0 writes the vectors' own counts, not registry².
+    // The vectors retain their own counts, not the square of the registry size.
     Ok(Some(rows))
 }
 
@@ -707,10 +707,9 @@ pub(crate) fn observe_advisor_modifiers(
     }))
 }
 
-/// InitData@140DC2220 reaches 1401E0F60 only after creating country roots;
-/// that routine constructs +690, then 140C4A6F0 fills its country-air slots.
-/// Its +3C count reaches the country count before filling slots. A null
-/// manager or shorter roster therefore leaves these hints pending.
+/// The air manager is constructed after country roots, then its country-air
+/// slots are filled. Its count reaches the country count before filling slots.
+/// A null manager or shorter roster therefore leaves these hints pending.
 pub(crate) fn demand_air_game_state(
     memory: &impl Memory,
     base: usize,

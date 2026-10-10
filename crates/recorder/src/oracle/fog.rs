@@ -1,12 +1,12 @@
-//! Fog-derivation input comparisons (registry domain D102).
+//! Fog-derivation input comparisons.
 //!
 //! Three of the six families have an exact text-save representation and are
-//! compared here: CUnit writer BF7010 emits `country_intel` triples, CCountry
-//! writer 70C580 emits `received_air_volunteer_permission` blocks, and CTheatre
-//! writer EED430 emits `unit` references plus one representative `area` province
-//! per controller area. The other two are named limitations: EED430 does not
-//! emit an area's whole province membership, CAirBase writer C57070 does not
-//! traverse its `+0x30` country registrations at all, and no country serializer
+//! compared here: the unit writer emits `country_intel` triples, the country
+//! writer emits `received_air_volunteer_permission` blocks, and the theatre
+//! writer emits `unit` references plus one representative `area` province
+//! per controller area. The other three are named limitations: the theatre writer does not
+//! emit an area's whole province membership, the air-base writer does not
+//! traverse its country registrations at all, and no country serializer
 //! path was found that writes the radar coverage vectors.
 
 use std::{collections::BTreeMap, io};
@@ -140,7 +140,7 @@ fn compare_unit_intel(frame: &DecodedFrame, saved: &Save, report: &mut Report) -
     }
     report.compared("UnitIntel", compared);
     report.limitation(
-        "the viewer entry's native decay accumulator at +8 is not a recorded field; the save's second triple word is parsed but has no captured counterpart",
+        "the viewer entry's native decay accumulator is not a recorded field; the save's second triple word is parsed but has no captured counterpart",
         "UnitIntel: viewer and level compare exactly, timer does not",
     );
     report.limitation(
@@ -332,7 +332,7 @@ fn compare_areas(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io:
     }
     report.compared("TheatreAreas", compared);
     report.limitation(
-        "CTheatre serializer EED430 emits one representative province per controller area through area+0x28, never the area's whole +0x30 membership; the captured province list has no save representation",
+        "The theatre writer emits one representative province per controller area, never the area's whole membership; the captured province list has no save representation",
         "TheatreAreas.provinces",
     );
     Ok(())
@@ -342,7 +342,7 @@ fn record_radar(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
     let rows = complete::<tables::RadarCoverage>(frame)?;
     report.compared("RadarCoverage", 0);
     report.limitation(
-        "no inspected country serializer path writes the CCountry+0x1120 radar coverage vectors, so this table has no save comparison; the recorded rows decode but are not certified against a save",
+        "no inspected country serializer path writes the radar coverage vectors, so this table has no save comparison; the recorded rows decode but are not certified against a save",
         format!("RadarCoverage: {} decoded rows, zero save comparisons", rows.len()),
     );
     Ok(())
@@ -352,7 +352,7 @@ fn record_registrations(frame: &DecodedFrame, report: &mut Report) -> io::Result
     let rows = complete::<tables::AirBaseRegistrations>(frame)?;
     report.compared("AirBaseRegistrations", 0);
     report.limitation(
-        "CAirBase serializer C57070 does not traverse the +0x30 country containers, and a wing pool's assigned base is not the registration, so this table has no save comparison",
+        "The air-base writer does not traverse the country containers, and a wing pool's assigned base is not the registration, so this table has no save comparison",
         format!(
             "AirBaseRegistrations: {} decoded rows, zero save comparisons",
             rows.len()
@@ -376,7 +376,7 @@ fn record_carrier(
         "AirBases.carrier, AirBaseRegistrations.carrier",
     );
     report.limitation(
-        "CAirBase writer C57070 does not serialize the dense +48 vector, the +30 indexed container scalars E0/F0, or retained host-name bytes; passive current/max query operands and results have no established text-save comparator and require a matched native witness",
+        "The air-base writer does not serialize the dense vector, the indexed container capacity scalars, or retained host-name bytes; passive current/max query operands and results have no established text-save comparator and require a matched native witness",
         "registered_countries, host_name, fuel_demand_raw, fuel_allocated_raw, current_fuel_raw, maximum_fuel_raw",
     );
     report.limitation(
@@ -1302,7 +1302,7 @@ states={} provinces={}"#,
             report
                 .limitations
                 .keys()
-                .any(|key| key.contains("does not traverse the +0x30"))
+                .any(|key| key.contains("does not traverse the country containers"))
         );
         assert!(
             report
@@ -1380,7 +1380,7 @@ states={} provinces={}"#,
             "decay accumulator",
             "representative province per controller area",
             "radar coverage vectors",
-            "does not traverse the +0x30 country containers",
+            "does not traverse the country containers",
         ] {
             assert!(
                 report

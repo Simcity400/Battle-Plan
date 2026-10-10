@@ -1,12 +1,8 @@
 [build]
 target-dir = ".cargo-target"
-rustc-wrapper = "sccache"
-
-[env]
-SCCACHE_DIR = { value = "C:\\sccache_cache", force = true }
 
 # Incremental compilation stays on (Cargo's default for dev and test), so rebuilds after small
-# edits are fast; sccache still caches third-party dependencies.
+# edits are fast.
 [profile.dev]
 debug = 0
 
@@ -47,6 +43,3 @@ opt-level = 3
 
 [profile.test.package.zstd-sys]
 opt-level = 3
-
-[target.x86_64-pc-windows-msvc]
-linker = "lld-link"

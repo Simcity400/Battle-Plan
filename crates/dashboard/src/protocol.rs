@@ -177,7 +177,7 @@ pub struct MapGraphics {
     /// Viewer-local allied battle plans; no recorded client selection or toggle.
     #[serde(default)]
     pub show_allied_plans: bool,
-    /// Viewer-local world target size; CMapRenderingOptions+0x19 defaults true.
+    /// Viewer-local world target size; defaults true.
     #[serde(default = "default_full_resolution")]
     pub full_resolution: bool,
     /// Viewer-local day/night display; never copied from the recording's UI state.
@@ -186,13 +186,13 @@ pub struct MapGraphics {
     /// Embedded viewer-local NATO icons; missing legacy choices inherit their parent.
     #[serde(default)]
     pub nato_counters: Option<bool>,
-    /// CMapRenderingOptions+0x18; ctor1401F9640 defaults true.
+    /// High-quality map shaders; defaults true.
     #[serde(default = "default_high_gfx_shaders")]
     pub high_gfx_shaders: bool,
-    /// CMapRenderingOptions+0x15; ctor1401F9640 defaults true.
+    /// Water reflections; defaults true.
     #[serde(default = "default_water_reflections")]
     pub water_reflections: bool,
-    /// CMapRenderingOptions+0x0e; ctor1401F9696 defaults true.
+    /// Sky rendering; defaults true.
     #[serde(default = "default_sky")]
     pub sky: bool,
     #[serde(default)]

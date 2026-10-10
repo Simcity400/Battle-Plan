@@ -1,6 +1,5 @@
-//! Current reservations, separate from payments. P: AllocateCommandPower
-//! 140707C00 stores allocator+0x10 in country+0x1F8; ReleaseCommandPower
-//! 1406DE290 removes that full amount and refunds it via 1406DE4CA.
+//! Current reservations, separate from payments. Allocation stores the full
+//! amount in the country; release removes that amount and refunds it.
 use super::*;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -45,10 +44,10 @@ struct Holder {
     cause: PowerCause,
 }
 
-/// P: charging callers also label allocations as AbilityActivation, Raid,
-/// AirAction, Advisor or LeaderAssignment. The writer identifies a hold.
-/// GroundCrew@1406C6D30 releases/resizes/reallocates at 1406C6D70/1406C7314;
-/// its direct 1406C736B subtraction charges the reservation adjustment.
+/// Charging callers label allocations as AbilityActivation, Raid, AirAction,
+/// Advisor or LeaderAssignment. The writer identifies a hold.
+/// Ground crew releases/resizes/reallocates its reservation and charges
+/// the reservation adjustment directly.
 pub(super) fn is_hold(row: &LedgerMutation) -> bool {
     row.currency == "Command"
         && (matches!(
@@ -104,8 +103,7 @@ fn held_name(
     if holder.cause == PowerCause::AbilityActivation || holder.item.object_kind == "Ability" {
         let token = facts::token_identity(frame, &holder.item)
             .ok_or("ability holder identity is not recorded")?;
-        // P: CAbility constructor 140FF44E0 seeds +248 with its token;
-        // parse_key@140FF5EC0 replaces it with authored `name`.
+        // Ability names start as the token and can be replaced by authored `name`.
         let power = content.power_content()?;
         let key = power.abilities.name_key(token.as_bytes()).ok_or_else(|| {
             format!("ability {token}: name key is not registered in recorded content")

@@ -1,20 +1,20 @@
 //! One cached branch scan for Ships sunk log and Naval losses. Equipment losses
 //! can adopt this scan in a follow-up; its independent consumer is unchanged.
 //!
-//! P: fill_common@140C1E960 stamps the event hour. Prune@1401D7560 deletes
-//! entries whose event hour + NNavy.NAVAL_COMBAT_RESULT_TIMEOUT_YEARS * 0x2238
-//! is <= now, swap-erasing the last pointer into the removed position. Daily
-//! update@140DC4F30 calls it. Survivors are immutable and order is immaterial:
-//! compare whole-entry multiplicities at consecutive complete reads, not vector
-//! positions, partial keys or lifetime maxima. Identical entries are legitimate.
-//! After a break, surviving multiset increases can be recovered by
-//! their event hour. Events born and pruned entirely during the break cannot be
-//! counted from this vector. Runtime retention identifies possible loss spans.
-//! A hit on branch A waits behind a scan of branch B under the cache lock.
+//! Each entry carries its event hour. Daily pruning deletes entries whose event
+//! hour + NNavy.NAVAL_COMBAT_RESULT_TIMEOUT_YEARS * 0x2238 is <= now,
+//! swap-erasing the last pointer into the removed position. Survivors are immutable
+//! and order is immaterial: compare whole-entry multiplicities at consecutive
+//! complete reads, not vector positions, partial keys or lifetime maxima.
+//! Identical entries are legitimate. After a break, surviving multiset increases
+//! can be recovered by their event hour. Events born and pruned entirely during
+//! the break cannot be counted from this vector. Runtime retention identifies
+//! possible loss spans. A hit on branch A waits behind a scan of branch B under
+//! the cache lock.
 //!
-//! P: convoy writer@1401CAE90 merges (month, killer, owner) and adds a signed
-//! i32 count (@140E9E680). Prune@1401D7480 removes months strictly older than
-//! current month - NNavy.CONVOY_LOSS_HISTORY_TIMEOUT_MONTHS, also by swap-erase.
+//! Convoy counts merge by (month, killer, owner) and add a signed i32 count.
+//! Pruning removes months strictly older than current month -
+//! NNavy.CONVOY_LOSS_HISTORY_TIMEOUT_MONTHS, also by swap-erase.
 //! There is no convoy event hour: deltas retain their bucket and supplying read.
 
 use super::{
@@ -293,8 +293,8 @@ impl Tracker {
                 .convoys
                 .entry((row.month, row.killer_country, row.owner_country))
                 .or_default();
-            // ADD dword@140E9E680 wraps the native bucket. Widen both signed
-            // endpoints so summing deltas reproduces each captured i32 value.
+            // The bucket wraps as signed i32. Widen both signed endpoints
+            // so summing deltas reproduces each captured i32 value.
             let count = i64::from(row.convoys) - i64::from(*last);
             *last = row.convoys;
             if count != 0 {
@@ -744,9 +744,9 @@ pub(crate) struct Retention {
     pub warnings: Vec<String>,
 }
 
-/// Runtime defines used by daily prune@1401D7560/1401D7480. A missing numeric
-/// definition is unknown, never the getter's default zero. Nonpositive windows
-/// can delete changing histories before the next daily read.
+/// Runtime defines used by daily pruning. A missing numeric definition is
+/// unknown, never the getter's default zero. Nonpositive windows can delete
+/// changing histories before the next daily read.
 pub(crate) fn retention(
     scan: &Scanned,
     catalogue: Option<&crate::catalogue::Catalogue>,
@@ -790,7 +790,7 @@ pub(crate) fn retention(
                     result.convoys = true;
                     for span in &scan.convoy_breaks {
                         if let (Some(first), Some(resume)) = (month(span.first_hour), month(span.last_hour.saturating_add(1))) {
-                            // Prune@1401D7480 uses strict <; equality survives.
+                            // Pruning uses strict <; equality survives.
                             let last = resume - value - 1;
                             if last >= first {
                                 result.convoy_loss.push(HistoryLoss {
@@ -813,8 +813,8 @@ pub(crate) fn retention(
     result
 }
 
-/// Writer@1401CAE90 stores GetMonthZeroBased@140177140(date) +
-/// ((hour - HOUR_EPOCH) / 0x2238) * 12, exactly this absolute month encoding.
+/// Store zero-based month + ((hour - HOUR_EPOCH) / 0x2238) * 12,
+/// exactly this absolute month encoding.
 pub(crate) fn month(hour: i32) -> Option<i32> {
     let elapsed = i64::from(hour) - i64::from(engine::cdate::HOUR_EPOCH);
     if elapsed < 0 {

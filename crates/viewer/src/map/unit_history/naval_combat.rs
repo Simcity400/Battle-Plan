@@ -1,4 +1,4 @@
-//! The per-province two-sided hull actor, `141651130` / `1416535A0`.
+//! The per-province two-sided hull actor.
 //!
 //! It uses the ordinary model library and viewer-owned entity players. Combat
 //! membership, strength and the ordered combat references remain simulation
@@ -203,7 +203,7 @@ impl History {
     }
 
     pub(super) fn advance(&mut self, delta: f32) {
-        // 1416537D0 runs after province callbacks and before the animation
+        // The game runs after province callbacks and before the animation
         // manager. Birth timestamps stay separate from animation phase: an
         // actor born this frame has lifetime age zero even with a nonzero delta.
         self.deaths
@@ -284,7 +284,7 @@ impl History {
     }
 
     pub(super) fn leave(&mut self, province: u32, land_was_shown: bool, steady: bool) {
-        // 14127CAA9 deactivates combat graphics directly on the land-gate loss;
+        // The game deactivates combat graphics directly on the land-gate loss;
         // unlike ordinary hulls, they have no popup-scale fade.
         if land_was_shown || steady {
             self.release(province);
@@ -295,7 +295,7 @@ impl History {
         if let Some(id) = self.provinces.remove(&province)
             && let Some(entity) = self.entities.get_mut(&id)
         {
-            // 1416527B0 deactivates the shared wrapper without destroying it.
+            // The game deactivates the shared wrapper without destroying it.
             entity.active = false;
         }
     }
@@ -319,7 +319,7 @@ impl History {
         };
         let battle = selection.battle;
         // The cached native path checks vector[0], while fresh creation scans
-        // to the first type-2 entry (14127CE40 / 14127CEB0). These can differ.
+        // to the first type-2 entry. These can differ.
         let fresh = self.provinces.get(&province).copied() != Some(selection.first);
         if fresh {
             self.release(province);
@@ -348,7 +348,7 @@ impl History {
         // Cached native updates retain geometry from the last acquisition.
         if entity.stamp != battle.stamp {
             if entity.stamp < 0 || battle.stamp.wrapping_sub(entity.stamp) > 48 {
-                // 14164FDD0 destroys hulls, but deliberately retains slot.status.
+                // The game destroys hulls, but deliberately retains slot.status.
                 entity.parts.fill_with(|| None);
             }
             for index in 0..8 {
@@ -366,7 +366,7 @@ impl History {
                             clock,
                         });
                     }
-                    // 14164F560 advances status even when the shared budget holds
+                    // The game advances status even when the shared budget holds
                     // an empty hull slot. That slot is not retried as a formation.
                     entity.status[index] = 1;
                 }

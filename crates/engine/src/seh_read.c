@@ -5,8 +5,8 @@
 #include <xmmintrin.h>
 #include <emmintrin.h>
 
-/* Ported from the old collector's seh_read.c. Only faults within this copy
-   are handled; unrelated exceptions continue through the game's handlers.
+/* Only faults within this copy are handled; unrelated exceptions
+   continue through the game's handlers.
    Windows reports a fault on a noncanonical x86-64 source
    (bits 63:48 != bit 47, e.g. ASCII bytes such as "_factor" read as a
    pointer) with ExceptionInformation[1] == -1. The guarded instruction only

@@ -7,20 +7,20 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// CStrategicNavy primary vtable; constructor 140E88190 installs 14295C640.
+/// Strategic-navy primary vtable.
 pub const VTABLE_RVA: usize = 0x0295_c640;
-/// CStrategicNavy secondary vtable; constructor 140E88190 installs 14295C670 at +8.
+/// Secondary vtable at displacement +8.
 pub const SECONDARY_VTABLE_RVA: usize = 0x0295_c670;
-/// CStrategicNavy secondary subobject displacement; constructor 140E88190.
+/// Secondary subobject displacement.
 pub const SECONDARY: usize = 8;
-/// CStrategicNavy owner raw country tag; 140E88190 stores +10, E90910 resolves it.
+/// Owner raw country reference resolved through country links.
 pub const OWNER: usize = 0x10;
-/// CStrategicNavy mission ledger: a pointer to one 0x18-byte `CPdxArray<CNavalMission*>`
-/// header per strategic region, indexed by region id (`GetMissionsInRegion@140E90DC0`);
-/// supply fleet regions outside the mission's narrower accessible list.
+/// Regional mission ledger: one 0x18-byte array header per region, indexed
+/// by region ID. It appends caller-supplied lists, which can include fleet
+/// regions outside the mission's narrower accessible list.
 pub const REGION_MISSIONS: usize = 0x68;
 pub const REGION_MISSIONS_STRIDE: usize = 0x18;
-/// CStrategicNavy `CPdxArray<i64>`; 140E88190 constructs +C8, E90CD0 indexes by region id.
+/// Region-indexed i64 array.
 pub const REGIONAL_OPERANDS: usize = 0xc8;
 
 fn with_identity<M: Memory, T>(
@@ -57,7 +57,7 @@ fn with_identity<M: Memory, T>(
     consume()
 }
 
-/// E90910 resolves the owning navy's +10 tag without reading its regional operand.
+/// Resolve owning navy country without reaching regional operands.
 pub(crate) fn authenticate_owner(
     memory: &impl Memory,
     base: usize,
@@ -110,8 +110,8 @@ pub(crate) fn regional_inputs(
     })
 }
 
-/// 140E90CD0's array, after the caller accepts this navy's identity and owner
-/// within the same frozen acquisition. Does not retry that identity proof.
+/// Region-indexed array borrowed only after this navy's identity and owner
+/// authenticate in the same frozen acquisition, without retry.
 pub(crate) fn regional_array(memory: &impl Memory, navy: usize) -> Result<Array, &'static str> {
     let root = navy
         .checked_add(REGIONAL_OPERANDS)
@@ -119,17 +119,10 @@ pub(crate) fn regional_array(memory: &impl Memory, navy: usize) -> Result<Array,
     Array::read(memory, root, 8).ok_or("navy regional array invalid")
 }
 
-/// CStrategicNavy strategic-region access modes, a `CPdxArray<u8>` (count +0xBC)
-/// indexed by the strategic region's own id (`CStrategicRegion+0x58`, the `id` of
-/// its `map/strategicregions` file): 0 allowed, 1 avoid, 2 block.
-/// `GetRegionAccessMode@140E91150` reads it. Runtime writers found:
-/// `SetRegionAccessModes@140E9A650`, applying `CSetNavalRegionAccessCommand`, which
-/// the player's UI (`1417222C0`) and the AI interior minister's daily step
-/// (`1412FF7D0`) post, and the reset `140E96510` from
-/// `CCountry::ResetForDynamicReuse@140703760`; `140E92AE0` sizes it at setup. Not
-/// proven complete (navy pointers held by other objects were not traced). The
-/// navy saves it as `per_region_access`
-/// (region id and mode pairs), read back by `vt8_vf4@140E97960` token 0x393E.
+/// Region-ID-indexed access modes: 0 allowed, 1 avoid, 2 block. UI and daily AI
+/// commands assign modes; dynamic-country reuse resets them and setup sizes
+/// the array. Writer coverage is incomplete. Serialization stores region/mode
+/// pairs as `per_region_access` and loading restores them.
 pub const ACCESS_MODES: usize = 0xb0;
 
 /// One nonzero region access mode of one country's strategic navy.
@@ -252,9 +245,8 @@ impl ModeSpans {
     }
 }
 
-/// Every nonzero access mode of every country's strategic navy
-/// (`g_GameState+0x698` -> `+8`, indexed by canonical slot; `GetStrategicNavy@1406ECBF0`).
-/// Navies are authenticated in guarded batches; a null navy has no modes.
+/// Every nonzero regional access mode for each canonical country's navy.
+/// Authenticate navies in guarded batches; a null navy has no modes.
 pub fn access_modes(
     memory: &impl Memory,
     base: usize,
@@ -353,7 +345,7 @@ pub fn access_modes_buffer(
                 if word(0) != primary || word(8) != secondary {
                     return Err("navy identity mismatch");
                 }
-                // GetStrategicNavy indexes by the owner's canonical slot.
+                // Strategic-navy lookup indexes by the owner's canonical slot.
                 let raw = u32::from_le_bytes(record[16..20].try_into().unwrap());
                 let country = countries.resolve(raw)?;
                 if country.canonical_slot != slot {
@@ -361,7 +353,7 @@ pub fn access_modes_buffer(
                 }
                 let array = Array::from_header(record[20..36].try_into().unwrap(), 1)
                     .ok_or("navy access modes invalid")?;
-                // GetRegionAccessMode@140E91150 indexes the complete native array.
+                // Region-access lookup indexes the complete stored array.
                 required_rows = required_rows
                     .checked_add(array.count as usize)
                     .ok_or("navy access row demand overflow")?;

@@ -252,7 +252,7 @@ fn null_slots_are_skipped_but_a_foreign_object_fails_the_census() {
         census.unit_inputs().unwrap().outcome(),
         Outcome::Rows { len: 3 }
     );
-    // Every native country loop dereferences each slot as a CCountry.
+    // Every native country loop dereferences each slot as a country object.
     let foreign = many::country(3);
     bytes[foreign..foreign + 8].copy_from_slice(&1_u64.to_le_bytes());
     census.capture_inputs(&kit::memory(&bytes), 0, many::GAME_STATE);

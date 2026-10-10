@@ -1,6 +1,6 @@
-//! 1414536D0 takes the army before the wing. CNameGroupMember's cached name
-//! (+60) and programmatic override (+88) lose provenance when 1409B4C40 localises;
-//! preserve the authored group key and user bytes.
+//! Army names take precedence over wing names. Cached and programmatic
+//! names lose their authored source after localisation; preserve the group
+//! key and user bytes.
 use super::*;
 use crate::{cname_group_member as member, msvc_string};
 
@@ -145,7 +145,7 @@ pub(super) fn capture(
     } else {
         return Ok(());
     };
-    // 1414545D0, 140BEC560, 140F48100 test resolution, not equality to this raid.
+    // Test reference resolution, not equality to this raid.
     sink.push(NAME, UNIT_RAID_REFERENCE, reference as i64)?;
     sink.push(
         NAME,
@@ -153,12 +153,10 @@ pub(super) fn capture(
         i64::from(creference_registry::resolve(m, base, reference)?.is_some()),
     )?;
     let Some(army) = army else {
-        // 1414536D0 -> 140F4B8F0 reads primary+998. 140F51FB0 assigns the
-        // MSVC string: inline/heap at +998, length +9A8, capacity +9B0.
-        // Generated 140F48F90 and rename 141932C30 use the same setter, with
-        // no provenance flag. 140AE3750 gets null param7 (140F4903F); its
-        // selected number/key and 140AE49D0's unused-name choice are lost.
-        // PLAN #164: viewer uses the recording language for this stored text.
+        // The wing name uses inline/heap storage at +0x998, length +0x9A8 and
+        // capacity +0x9B0. Generated and renamed text share that setter without
+        // a source flag; the selected number, key and unused-name choice are
+        // not retained. The viewer uses the recording language for stored text.
         let first = (sink.required, sink.ordinal);
         if let Err(error) = string(m, wing.unwrap() + 0x998, WING_NAME, sink) {
             (sink.required, sink.ordinal) = first;
@@ -166,7 +164,7 @@ pub(super) fn capture(
         }
         return Ok(());
     };
-    let p = field::<u64>(m, army, 0x340)? as usize; // CArmy::GetName 140C72F00.
+    let p = field::<u64>(m, army, 0x340)? as usize;
     member(m, base, p, NAME, NAME_GROUP, CUSTOM_NAME, sink)
 }
 
@@ -198,8 +196,8 @@ fn member(
             Ok(())
         };
     }
-    // 1409B7290 selects a naming group; the stored group key witnesses the
-    // selected template/variant, without recording a renderer-local name.
+    // The stored naming-group key identifies the selected template or variant
+    // without recording a renderer-local name.
     let group = match ty {
         0 => {
             let reference = field::<u64>(m, p, 0x58)?;
@@ -245,8 +243,8 @@ fn member(
         _ => return Ok(()), // Consumer names unsupported member types.
     };
     if group != 0 {
-        context::authenticate(m, base, group, 0x0291_f568)?; // CNameGroup::vf4.
-        string(m, group + 8, group_kind, sink).map_err(NameReadError::reason)?; // raw key, serializer 140B977F0.
+        context::authenticate(m, base, group, 0x0291_f568)?;
+        string(m, group + 8, group_kind, sink).map_err(NameReadError::reason)?; // Stored raw key.
     }
     Ok(())
 }
@@ -267,7 +265,7 @@ pub(super) fn source(
     sink.push(NAME, SOURCE_SHIP_RESOLVED, i64::from(ship.is_some()))?;
     if let Some(ship) = ship {
         context::authenticate(m, base, ship, crate::cship::VTABLE_RVA)?;
-        // CShip::GetName 140C29A20, member constructor 1409B2FC0.
+        // Ship names use the stored naming-group member.
         member(
             m,
             base,

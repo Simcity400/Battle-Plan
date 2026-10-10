@@ -1,5 +1,5 @@
-//! CNavalMission::serialize@140FA9900 emits +20/+28 only when positive.
-//! The caller binds token 2FCD/302F through the recorded LexicalTokens, and
+//! Mission spotting caches are emitted only when positive.
+//! The caller binds their keys through the recorded LexicalTokens, and
 //! supplies the same full country view used by the ordinary save parser.
 
 use super::*;

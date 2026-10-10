@@ -33,7 +33,7 @@ import './subjects.css';
 const NO_WARNINGS: string[] = [];
 const NOTE = 'Subject relations are recorded every hour; the date a country became a subject is the game’s own.';
 
-/** Every overlord and its subjects over time (mock-up style-4's timeline): each
+/** Every overlord and its subjects over time: each
  * overlord heads a band as thick as its number of subjects, and each subject has a
  * bar from when it became one to when it stopped, coloured by its level. Levels and
  * their names come from the campaign's content; colours follow their order. */
@@ -75,7 +75,7 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   // A tooltip names its countries as recorded at the hour hovered, asking only for those.
   const hover = useHoverLabels(runtime.client, track, active, country);
   const unobserved = views[0]?.unknown ?? data?.unobserved;
-  // An overlord's band is neutral, as the mock-up's war bars: its subjects carry the colours.
+  // An overlord's band is neutral: its subjects carry the colours.
   const bandColor = mix(tokens.text, tokens.surface, 0.45);
   const { lanes, info } = useMemo(() => subjectLanes(views, levels, colours, at, {
     order: options.order as OverlordOrder, subjects: options.subjects as SubjectOrder, ended: options.ended === 'shown', countries: filter.tags, countryIds: filter.countryIds, bandColor,

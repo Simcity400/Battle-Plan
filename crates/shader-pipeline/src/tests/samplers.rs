@@ -3,6 +3,7 @@ use super::*;
 #[test]
 #[ignore = "requires a shader compiler and GPU"]
 fn point_float32_uses_actual_sampler_pairs_without_filterable_feature() {
+    crate::tests::initialize_runtime_tables();
     let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
     let (device, queue) = device();
     let arena = gpu::Arena::new(&device);
@@ -158,6 +159,7 @@ Effect Test { VertexShader = V PixelShader = P }
 #[test]
 #[ignore = "requires a shader compiler and GPU"]
 fn linear_float32_matches_bilinear_and_mip_addressing_without_feature() {
+    crate::tests::initialize_runtime_tables();
     use installed_content::pdxshader::{Address, program::Filter};
     let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
     let compiler = Compiler::discover().unwrap();
@@ -385,6 +387,7 @@ Effect Test {{ VertexShader = V PixelShader = P }}
 #[test]
 #[ignore = "requires a shader compiler and GPU"]
 fn samples_native_addressing_and_mip_bias() {
+    crate::tests::initialize_runtime_tables();
     let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
     let compiler = Compiler::discover().unwrap();
     let (device, queue) = device();
@@ -596,6 +599,7 @@ Effect Test {{ VertexShader = V PixelShader = P }}
 #[test]
 #[ignore = "requires a shader compiler and GPU"]
 fn mirror_once_gathers_and_offsets_match_d3d() {
+    crate::tests::initialize_runtime_tables();
     let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
     let compiler = Compiler::discover().unwrap();
     let (device, queue) = device();

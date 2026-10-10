@@ -1,14 +1,11 @@
-//! The movement operands of the native terrain database.
+//! The movement operands of the terrain database.
 //!
-//! [`crate::terrain::read_definitions`] reads the database with the native
-//! load, append and lookup rules; this module only derives what movement
-//! samples from it: each category's one-based ordinal and each terrain bitmap
-//! palette index's movement cost. `FindTerrainByHashedName` (`1403bca00`)
-//! falls back to the null terrain, ordinal zero and cost zero. The ordinal is
-//! the database's signed category count when the category was read
-//! (`140AC7035` passes `+0x4C` to `CTerrainType::CTerrainType@141429930`,
-//! which stores it as the i32 at `+0x88`), so a mod may declare any number of
-//! categories.
+//! [`crate::terrain::read_definitions`] reads the database with its load,
+//! append and lookup rules; this module derives what movement samples from
+//! it: each category's one-based ordinal and each terrain bitmap palette
+//! index's movement cost. A missing name selects the null terrain, ordinal
+//! zero and cost zero. The ordinal is the signed category count when the
+//! category was read, so a mod may declare any number of categories.
 
 use std::{borrow::Cow, io};
 
@@ -100,14 +97,14 @@ mod tests {
         }
         let invalid =
             database(&["categories={bad={movement_cost=bad}} terrain={a={type=bad color={0}}}"]);
-        // A cost that does not convert keeps the constructor's zero, which
-        // the category then clamps to 0.01 (14142D0A0).
+        // A cost that does not convert keeps the constructor's zero,
+        // which the category then clamps to 0.01.
         assert_eq!(invalid.cost(0), 1_000);
     }
 
     #[test]
     fn ordinals_past_a_byte_keep_counting() {
-        // KaiserreduX declares 1,581 categories.
+        // Category ordinals are not limited by the palette's byte width.
         let categories: String = (0..1581).map(|i| format!("c{i}={{}} ")).collect();
         let costs = database(&[&format!("categories={{{categories}}}")]);
         assert_eq!(costs.ordinal(b"c255"), 256);

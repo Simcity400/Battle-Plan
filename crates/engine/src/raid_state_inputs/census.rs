@@ -2,10 +2,9 @@ use super::*;
 
 /// Attach/cadence storage demand from registries and retained array/name
 /// headers. No resource amounts, modifier values, route pairs or core links
-/// are acquired. AccumulateStrategicResourceAmounts@1409CC730,
-/// MaxStateProvinceNodeValue@1412138A0 and CIsCoreOfTrigger@140463740 select
-/// these same native populations; the worker still authenticates its own
-/// original headers and grows if they changed after this hint.
+/// are acquired. Resource, province-node and core checks select these same
+/// populations; the worker authenticates its own original headers and grows
+/// if they changed after this hint.
 pub fn demand(
     memory: &impl Memory,
     base: usize,
@@ -212,9 +211,8 @@ pub fn state_census(
     Ok(())
 }
 
-/// One state's core countries (`CState + 0xB0`, count `+0xBC`): the raw
-/// country references `CIsCoreOfTrigger::Evaluate@140463740` compares, in
-/// stored order, at `links[start..start + len]`.
+/// One state's core countries (+0xB0, count +0xBC): raw country references
+/// in stored order at `links[start..start + len]`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CoreRow {
     pub state: u32,
@@ -346,7 +344,7 @@ fn state_cores_buffer(
                 *required = required
                     .checked_add(count)
                     .ok_or("state core link count overflow")?;
-                // CIsCoreOfTrigger::Evaluate@140463740 reaches every stored core.
+                // Core checks reach every stored core occurrence.
                 rows.ensure(len + 1)?;
                 links.ensure(used + count)?;
                 let (Some(row), Some(slot)) =

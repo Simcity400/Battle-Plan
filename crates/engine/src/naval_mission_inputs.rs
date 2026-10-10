@@ -1,0 +1,775 @@
+//! Operands of naval mission map counts, convoy efficiencies and mission ledgers.
+//!
+//! The viewing navy's region ledger is visited in stored order. The last counted
+//! registration containing fleet pride chooses its marker kind; only each fleet's
+//! first escort registration contributes escort efficiency. Raiding and escort
+//! efficiency are recomputed on icon refresh and never stored. Recording retains
+//! task-force stats, weather, leaders, headquarters, mission range and convoys,
+//! owner modifiers, navy ledgers and escort presence. Accumulator entries remain
+//! raw; modifier-definition operands supply effective-value metadata.
+
+use crate::{
+    Memory, ccharacter, cfleet, cnaval_mission, cnavy_leader,
+    cpdx_array::Array,
+    cprovince, cstrategic_navy, ctask_force, cunit, cweather_manager,
+    memory::{RecordField, RecordLayout, RecordSources, read_slice},
+    modifier_accumulator::{self as accumulator, Value},
+    modifier_keys as keys, read, sweather_per_region,
+};
+
+/// Combined-modifier keys used by range and efficiency calculations.
+pub const TASK_FORCE_KEYS: [u32; 4] = [
+    keys::NAVAL_COORDINATION,
+    keys::NAVAL_RANGE,
+    keys::NAVAL_RANGE_FACTOR,
+    keys::CONVOY_RAIDING_EFFICIENCY_FACTOR,
+];
+/// [`TASK_FORCE_KEYS`] plus mission-owner escort efficiency, roster-owner
+/// weather reduction and underway range from the positive expeditionary owner
+/// or roster owner.
+pub const COUNTRY_KEYS: [u32; 7] = [
+    keys::NAVAL_COORDINATION,
+    keys::NAVAL_RANGE,
+    keys::NAVAL_RANGE_FACTOR,
+    keys::CONVOY_RAIDING_EFFICIENCY_FACTOR,
+    keys::CONVOY_ESCORT_EFFICIENCY,
+    keys::NAVY_WEATHER_PENALTY,
+    keys::UNDERWAY_REPLENISHMENT_RANGE_FACTOR,
+];
+
+/// Mission kinds supplying convoy-raiding and convoy-escort efficiency operands.
+pub const RAIDING: u32 = 3;
+pub const ESCORT: u32 = 4;
+pub const MISSION_KINDS: [u32; 4] = [2, RAIDING, ESCORT, 9];
+
+/// Stored range, underway, fuel and requested-convoy operands. Underway is
+/// always serialized; zero fuel and requested counts are omitted.
+pub const UNDERWAY: usize = 0x468;
+/// Convoy subscriber supplied and requested signed counts.
+pub const REPLENISHMENT: usize = 0x478;
+pub const FUEL: usize = 0x4f8;
+/// Stored stat block reset and merged by ability refresh.
+pub const STAT_RANGE: usize = 0x1b0;
+/// Stored navy supply-hub province IDs in state/building order, retaining repeats.
+pub const HUBS: usize = 0x188;
+
+/// Task-force own modifier accumulator, reached only while it has a location.
+pub const LOCAL_MODIFIERS: usize = 0x668;
+/// Stored raiding factor scaling the raiders.
+pub const STAT_RAIDING: usize = 0x1f8;
+
+/// Fleet leader reference.
+pub const FLEET_LEADER: usize = cfleet::LEADER;
+/// Navy-leader modifier accumulator rebuilt from its loaded modifier block.
+pub const LEADER_MODIFIERS: usize = 0x418;
+
+/// Headquarters commander object whose reference selects a character.
+pub const HEADQUARTERS_COMMANDER: usize = 0x40;
+pub const COMMANDER_CHARACTER: usize = 0x08;
+/// Character unit-leader selection: cached pointer, otherwise reference resolution.
+pub const CHARACTER_UNIT_LEADER: usize = 0xa8;
+pub const CHARACTER_UNIT_LEADER_REFERENCE: usize = 0xc8;
+/// Unit-leader kind; headquarters sums include only kind two.
+pub const UNIT_LEADER_KIND: usize = 0xe7c;
+/// Four ordered skill objects whose accumulators supply headquarters modifiers.
+pub const UNIT_LEADER_SOURCES: [usize; 4] = [0xf70, 0xf80, 0xfa0, 0xf90];
+pub const SOURCE_MODIFIERS: usize = 0xe0;
+
+/// Mission owner initialized from the task-force roster owner.
+pub const MISSION_OWNER: usize = 0x10;
+/// Mission convoys in the area of operation, serialized when positive.
+pub const MISSION_CONVOYS: usize = 0x40;
+/// Mission region range copied from fleet region groups: fleet pointer and
+/// first/end group indices. The embedded task-force mission uses the same range.
+pub const MISSION_RANGE_FLEET: usize = 0xf0;
+pub const MISSION_RANGE: usize = 0xf8;
+
+/// Region runtime slot to convoy-escort count-ring map. Region runtime slot
+/// and ID are initialized together and have equal values.
+pub const PRESENCE: usize = 0x160;
+const PRESENCE_ENTRIES: usize = PRESENCE + 0x08;
+const PRESENCE_MASK: usize = PRESENCE + 0x14;
+const PRESENCE_PROBE: usize = PRESENCE + 0x18;
+const PRESENCE_STRIDE: usize = 0x28;
+/// Presence-map key hash multiplier, applied twice.
+const PRESENCE_HASH: u32 = 0x045d_9f3b;
+/// Maximum reached presence-ring window.
+pub const PRESENCE_WINDOW: usize = 0x2d0;
+
+/// One strike/invasion or convoy task force's operands.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Operands {
+    pub id: u64,
+    /// `CTaskForce+0x374`, one of [`MISSION_KINDS`].
+    pub kind: u32,
+    /// [`MISSION_OWNER`], a raw country reference.
+    pub mission_owner: u32,
+    /// Location strategic-region ID, zero without a location; selects region weather.
+    pub region: u32,
+    pub raiding_factor: i64,
+    pub range_base: i64,
+    pub fuel: [i64; 2],
+    pub underway: u8,
+    pub replenishment: [i32; 2],
+    /// Positive expeditionary owner selects the range country; otherwise use roster owner.
+    pub expeditionary_owner: i32,
+    /// [`TASK_FORCE_KEYS`] in the local accumulator; absent without a location.
+    pub local: [Value; 4],
+    /// Fleet leader reference, zero for none or no fleet.
+    pub leader: u64,
+    /// Attached headquarters entries; each entry's commander character (zero without one) is
+    /// written to the caller's slice when they all fit.
+    pub headquarters: usize,
+    /// The mission's region range: fleet handle (zero when unset), first and end index.
+    pub range_fleet: u64,
+    pub range: [i32; 2],
+    pub convoys: i32,
+}
+
+/// One region's convoy-escort presence: ring entries at least zero and above zero within
+/// [`PRESENCE_WINDOW`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Presence {
+    pub positive: i32,
+    pub total: i32,
+}
+
+pub type Resolve<'a> = &'a dyn Fn(u64) -> Result<Option<usize>, &'static str>;
+
+fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
+    pointer
+        .checked_add(offset)
+        .ok_or("naval mission input address overflow")
+}
+
+fn field<T: crate::memory::Raw>(
+    memory: &impl Memory,
+    pointer: usize,
+    offset: usize,
+    what: &'static str,
+) -> Result<T, &'static str> {
+    read(memory, at(pointer, offset)?).ok_or(what)
+}
+
+fn vtable(base: usize, rva: usize) -> Result<u64, &'static str> {
+    Ok(base.checked_add(rva).ok_or("module address overflow")? as u64)
+}
+
+fn identity(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    rva: usize,
+    what: &'static str,
+) -> Result<(), &'static str> {
+    (read::<u64>(memory, pointer) == Some(vtable(base, rva)?))
+        .then_some(())
+        .ok_or(what)
+}
+
+fn u64_at(bytes: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(bytes[at..at + 8].try_into().expect("eight bytes"))
+}
+
+fn u32_at(bytes: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"))
+}
+
+fn i32_at(bytes: &[u8], at: usize) -> i32 {
+    i32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"))
+}
+
+const MISSION: usize = ctask_force::NAVAL_MISSION;
+
+/// One guarded gather of a mission task force's fixed-offset operands.
+const TASK_FIELDS: [RecordField; 12] = {
+    const fn field(source_offset: usize, destination_offset: usize, len: usize) -> RecordField {
+        RecordField {
+            source_offset,
+            destination_offset,
+            len,
+        }
+    }
+    [
+        field(MISSION, 112, 16),
+        field(MISSION + MISSION_CONVOYS, 0, 4),
+        field(cunit::STAT_BLOCK, 8, 8),
+        field(cunit::LOCATION, 16, 8),
+        field(ctask_force::ATTACHED_HEADQUARTERS, 40, 16),
+        field(MISSION + MISSION_RANGE_FLEET, 56, 8),
+        field(MISSION + MISSION_RANGE, 64, 8),
+        field(MISSION + MISSION_OWNER, 72, 4),
+        field(FUEL, 80, 16),
+        field(REPLENISHMENT, 96, 8),
+        field(UNDERWAY, 104, 1),
+        field(cunit::EXPEDITIONARY_OWNER, 108, 4),
+    ]
+};
+const TASK_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&TASK_FIELDS, 128).expect("task force operand layout");
+
+/// Reads and authenticates the embedded mission of a task force found by [`walk`]. Its headquarters' commander characters go to `headquarters` only when all
+/// of them fit; the row's count gives the demand either way.
+pub fn read_task_force(
+    memory: &impl Memory,
+    base: usize,
+    visit: cfleet::TaskForceVisit,
+    headquarters: &mut [u64],
+) -> Result<Operands, &'static str> {
+    read_task_force_observed(memory, base, visit, headquarters, &mut None)
+}
+
+/// Shares the original first mission-header gather, including its failure.
+/// Transport consumes this observation rather than probing it a second time.
+pub fn read_task_force_observed(
+    memory: &impl Memory,
+    base: usize,
+    visit: cfleet::TaskForceVisit,
+    headquarters: &mut [u64],
+    original_header: &mut Option<Result<[u8; 16], &'static str>>,
+) -> Result<Operands, &'static str> {
+    read_task_force_transport_observed(
+        memory,
+        base,
+        visit,
+        headquarters,
+        original_header,
+        &mut None,
+    )
+}
+
+/// Supplies the original mission-owner attempt independently of later strict
+/// icon operands. None is unattempted; a failed original attempt is not retried.
+pub fn read_task_force_transport_observed(
+    memory: &impl Memory,
+    base: usize,
+    visit: cfleet::TaskForceVisit,
+    headquarters: &mut [u64],
+    original_header: &mut Option<Result<[u8; 16], &'static str>>,
+    original_owner: &mut Option<Result<u32, &'static str>>,
+) -> Result<Operands, &'static str> {
+    read_task_force_transport_observed_buffer(
+        memory,
+        base,
+        visit,
+        crate::walk::Buffer::Fixed(headquarters),
+        original_header,
+        original_owner,
+    )
+}
+
+pub fn read_task_force_transport_observed_growing(
+    memory: &impl Memory,
+    base: usize,
+    visit: cfleet::TaskForceVisit,
+    headquarters: &mut Vec<u64>,
+    original_header: &mut Option<Result<[u8; 16], &'static str>>,
+    original_owner: &mut Option<Result<u32, &'static str>>,
+) -> Result<Operands, &'static str> {
+    read_task_force_transport_observed_buffer(
+        memory,
+        base,
+        visit,
+        crate::walk::Buffer::Growing(headquarters),
+        original_header,
+        original_owner,
+    )
+}
+
+pub fn read_task_force_transport_observed_buffer(
+    memory: &impl Memory,
+    base: usize,
+    visit: cfleet::TaskForceVisit,
+    mut headquarters: crate::walk::Buffer<'_, u64>,
+    original_header: &mut Option<Result<[u8; 16], &'static str>>,
+    original_owner: &mut Option<Result<u32, &'static str>>,
+) -> Result<Operands, &'static str> {
+    let task = visit.task;
+    let mut bytes = [0; 128];
+    let copied = memory.copy_records(RecordSources::Pointers(&[task]), &TASK_LAYOUT, &mut bytes);
+    *original_header = Some(if copied == 0 {
+        Err("transport original mission header unreadable")
+    } else {
+        Ok(bytes[112..128].try_into().expect("original mission header"))
+    });
+    *original_owner = if copied >= 8 {
+        Some(Ok(u32_at(&bytes, 72)))
+    } else if copied == 7 {
+        Some(Err("transport original mission owner unreadable"))
+    } else {
+        None
+    };
+    if copied != TASK_FIELDS.len() {
+        return Err("task force operands unreadable");
+    }
+    if u64_at(&bytes, 112) != vtable(base, cnaval_mission::VTABLE_RVA)?
+        || u64_at(&bytes, 120) != task as u64
+    {
+        return Err("naval mission identity mismatch");
+    }
+    let mut row = Operands {
+        id: visit.id,
+        kind: visit.kind,
+        mission_owner: u32_at(&bytes, 72),
+        convoys: i32_at(&bytes, 0),
+        range: [i32_at(&bytes, 64), i32_at(&bytes, 68)],
+        leader: visit.leader,
+        fuel: [u64_at(&bytes, 80) as i64, u64_at(&bytes, 88) as i64],
+        replenishment: [i32_at(&bytes, 96), i32_at(&bytes, 100)],
+        underway: bytes[104],
+        expeditionary_owner: i32_at(&bytes, 108),
+        ..Operands::default()
+    };
+    let stats = u64_at(&bytes, 8) as usize;
+    if stats == 0 {
+        return Err("task-force stat block null");
+    }
+    let mut range = [0; 8];
+    let mut raiding = [0; 8];
+    if memory.copy_scattered(
+        [at(stats, STAT_RANGE)?, at(stats, STAT_RAIDING)?],
+        &mut [&mut range, &mut raiding],
+    ) != 2
+    {
+        return Err("task-force range or raiding stat unreadable");
+    }
+    row.range_base = i64::from_le_bytes(range);
+    row.raiding_factor = i64::from_le_bytes(raiding);
+    let location = u64_at(&bytes, 16) as usize;
+    if location != 0 {
+        identity(
+            memory,
+            base,
+            location,
+            cprovince::VTABLE_RVA,
+            "task-force location is not a province",
+        )?;
+        let region: u64 = field(
+            memory,
+            location,
+            cprovince::STRATEGIC_REGION,
+            "task-force location unreadable",
+        )?;
+        row.region = crate::cstrategic_region::id(memory, base, region as usize)?
+            .ok_or("task-force location has no strategic region")?;
+        accumulator::lookup_many_at(
+            memory,
+            at(task, LOCAL_MODIFIERS)?,
+            &TASK_FORCE_KEYS,
+            &mut row.local,
+        )?;
+    }
+    let attached = Array::from_header(bytes[40..56].try_into().expect("header"), 8)
+        .ok_or("task-force headquarters invalid")?;
+    // Reserve from the original header for every attached headquarters entry.
+    row.headquarters = attached.count as usize;
+    headquarters.ensure(row.headquarters)?;
+    if let Some(out) = headquarters.get_mut(..row.headquarters) {
+        crate::cpdx_array::pointers(
+            memory,
+            attached,
+            "task-force headquarters entry unreadable or null",
+            |index, entry| {
+                if entry == 0 {
+                    return Err("task-force headquarters entry unreadable or null");
+                }
+                let commander: u64 = field(
+                    memory,
+                    entry,
+                    HEADQUARTERS_COMMANDER,
+                    "headquarters commander unreadable",
+                )?;
+                // A missing commander contributes nothing to the maximum.
+                out[index as usize] = if commander == 0 {
+                    0
+                } else {
+                    field(
+                        memory,
+                        commander as usize,
+                        COMMANDER_CHARACTER,
+                        "headquarters character unreadable",
+                    )?
+                };
+                Ok(())
+            },
+        )?;
+    }
+    let range_fleet = u64_at(&bytes, 56) as usize;
+    if range_fleet == visit.fleet {
+        row.range_fleet = visit.fleet_handle;
+    } else if range_fleet != 0 {
+        let mut identity = [0; 8];
+        let mut handle = [0; 8];
+        if memory.copy_scattered(
+            [range_fleet, at(range_fleet, cfleet::HANDLE)?],
+            &mut [&mut identity, &mut handle],
+        ) != 2
+        {
+            return Err("mission range fleet unreadable");
+        }
+        if u64::from_le_bytes(identity) != vtable(base, cfleet::VTABLE_RVA)? {
+            return Err("mission range fleet vtable mismatch");
+        }
+        row.range_fleet = u64::from_le_bytes(handle);
+    }
+    Ok(row)
+}
+
+/// Nonempty region ledgers, including registrations beyond the mission's
+/// accessible list. That list may be narrower and cannot supply this census.
+/// Read headers in fixed-size batches without a population cap.
+pub fn ledger_regions(
+    memory: &impl Memory,
+    navy: usize,
+    visit: impl FnMut(u32, Array) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    let outer = Array::read(
+        memory,
+        at(navy, cstrategic_navy::REGION_MISSIONS)?,
+        cstrategic_navy::REGION_MISSIONS_STRIDE,
+    )
+    .ok_or("navy ledger region array invalid")?;
+    ledger_regions_in(memory, outer, visit)
+}
+
+/// Original already-observed physical-navy outer header, never read again.
+pub fn ledger_regions_in(
+    memory: &impl Memory,
+    outer: Array,
+    mut visit: impl FnMut(u32, Array) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    const STRIDE: usize = cstrategic_navy::REGION_MISSIONS_STRIDE;
+    const BATCH: usize = 128;
+    let mut bytes = [0; BATCH * STRIDE];
+    for first in (0..outer.count).step_by(BATCH) {
+        let count = ((outer.count - first) as usize).min(BATCH);
+        let address = outer
+            .element(first, STRIDE)
+            .ok_or("navy ledger header address overflow")?;
+        if !memory.copy(address, &mut bytes[..count * STRIDE]) {
+            return Err("navy ledger region headers unreadable");
+        }
+        for index in 0..count {
+            let header = bytes[index * STRIDE..index * STRIDE + 16]
+                .try_into()
+                .expect("header");
+            let ledger = Array::from_header(header, 8).ok_or("navy region ledger invalid")?;
+            if ledger.count != 0 {
+                visit(first + index as u32, ledger)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A navy's ledger for one region ([`cstrategic_navy::REGION_MISSIONS`]): its mission pointers
+/// in stored order, written to `out` when they all fit. Returns how many there are.
+pub fn ledger(
+    memory: &impl Memory,
+    missions: Array,
+    out: &mut [usize],
+) -> Result<usize, &'static str> {
+    let count = missions.count as usize;
+    if let Some(out) = out.get_mut(..count) {
+        crate::cpdx_array::pointers(
+            memory,
+            missions,
+            "navy ledger mission unreadable or null",
+            |index, mission| {
+                if mission == 0 {
+                    return Err("navy ledger mission unreadable or null");
+                }
+                out[index as usize] = mission;
+                Ok(())
+            },
+        )?;
+    }
+    Ok(count)
+}
+
+/// Stored supply-hub IDs; return the complete list or its capacity demand.
+pub fn navy_hubs(
+    memory: &impl Memory,
+    navy: usize,
+    out: &mut [u32],
+) -> Result<usize, &'static str> {
+    navy_hubs_buffer(memory, navy, crate::walk::Buffer::Fixed(out))
+}
+
+pub fn navy_hubs_growing(
+    memory: &impl Memory,
+    navy: usize,
+    out: &mut Vec<u32>,
+) -> Result<usize, &'static str> {
+    navy_hubs_buffer(memory, navy, crate::walk::Buffer::Growing(out))
+}
+
+pub fn navy_hubs_buffer(
+    memory: &impl Memory,
+    navy: usize,
+    mut out: crate::walk::Buffer<'_, u32>,
+) -> Result<usize, &'static str> {
+    let array = Array::read(memory, at(navy, HUBS)?, 4).ok_or("navy supply hubs invalid")?;
+    let count = array.count as usize;
+    out.ensure(count)?;
+    if count != 0 && count <= out.len() {
+        crate::cpdx_array::copy_u32s(
+            memory,
+            array,
+            &mut out[..count],
+            "navy supply hub unreadable",
+        )?;
+    }
+    Ok(count)
+}
+
+/// Fleet-leader [`TASK_FORCE_KEYS`]; unresolved leaders add nothing.
+pub fn leader_modifiers(
+    memory: &impl Memory,
+    base: usize,
+    leader: u64,
+    resolve: Resolve<'_>,
+    out: &mut [Value; 4],
+) -> Result<(), &'static str> {
+    let Some(pointer) = resolve(leader)? else {
+        return Ok(());
+    };
+    identity(
+        memory,
+        base,
+        pointer,
+        cnavy_leader::VTABLE_RVA,
+        "fleet leader is not a navy leader",
+    )?;
+    accumulator::lookup_many_at(
+        memory,
+        at(pointer, LEADER_MODIFIERS)?,
+        &TASK_FORCE_KEYS,
+        out,
+    )?;
+    Ok(())
+}
+
+/// Four ordered accumulators of a kind-two headquarters unit leader.
+/// Unresolved character or leader references, or another kind, add nothing.
+pub fn headquarters_modifiers(
+    memory: &impl Memory,
+    base: usize,
+    character: u64,
+    resolve: Resolve<'_>,
+    out: &mut [[Value; 4]; 4],
+) -> Result<(), &'static str> {
+    let Some(character) = resolve(character)? else {
+        return Ok(());
+    };
+    identity(
+        memory,
+        base,
+        character,
+        ccharacter::VTABLE_RVA,
+        "headquarters character identity mismatch",
+    )?;
+    let cached: u64 = field(
+        memory,
+        character,
+        CHARACTER_UNIT_LEADER,
+        "character unit leader unreadable",
+    )?;
+    let leader = if cached != 0 {
+        Some(cached as usize)
+    } else {
+        let reference: u64 = field(
+            memory,
+            character,
+            CHARACTER_UNIT_LEADER_REFERENCE,
+            "character unit leader unreadable",
+        )?;
+        if reference == 0 {
+            None
+        } else {
+            resolve(reference)?
+        }
+    };
+    let Some(leader) = leader else {
+        return Ok(());
+    };
+    if field::<i32>(
+        memory,
+        leader,
+        UNIT_LEADER_KIND,
+        "unit leader kind unreadable",
+    )? != 2
+    {
+        return Ok(());
+    }
+    for (source, values) in UNIT_LEADER_SOURCES.into_iter().zip(out.iter_mut()) {
+        let pointer: u64 = field(memory, leader, source, "unit leader source unreadable")?;
+        if pointer == 0 {
+            return Err("unit leader modifier source null");
+        }
+        accumulator::lookup_many_at(
+            memory,
+            at(pointer as usize, SOURCE_MODIFIERS)?,
+            &TASK_FORCE_KEYS,
+            values,
+        )?;
+    }
+    Ok(())
+}
+
+/// A navy's convoy-escort presence map ([`PRESENCE`]), its header read once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PresenceMap {
+    entries: usize,
+    mask: u32,
+    /// Entry past the last probe slot, representing a lookup miss.
+    end: u32,
+}
+
+impl PresenceMap {
+    pub fn read(memory: &impl Memory, navy: usize) -> Result<Self, &'static str> {
+        let mut entries = [0; 8];
+        let mut mask = [0; 4];
+        let mut probe = [0; 1];
+        if memory.copy_scattered(
+            [
+                at(navy, PRESENCE_ENTRIES)?,
+                at(navy, PRESENCE_MASK)?,
+                at(navy, PRESENCE_PROBE)?,
+            ],
+            &mut [&mut entries, &mut mask, &mut probe],
+        ) != 3
+        {
+            return Err("presence map unreadable");
+        }
+        let entries = u64::from_le_bytes(entries) as usize;
+        if entries == 0 {
+            return Err("presence map has no entries");
+        }
+        let mask =
+            u32::try_from(i32::from_le_bytes(mask)).map_err(|_| "presence map mask invalid")?;
+        let end = u32::from(probe[0])
+            .checked_add(1)
+            .and_then(|end| end.checked_add(mask))
+            .ok_or("presence map end overflow")?;
+        Ok(Self { entries, mask, end })
+    }
+
+    fn entry(
+        &self,
+        memory: &impl Memory,
+        index: u32,
+    ) -> Result<[u8; PRESENCE_STRIDE], &'static str> {
+        let address = (index as usize)
+            .checked_mul(PRESENCE_STRIDE)
+            .and_then(|offset| self.entries.checked_add(offset))
+            .ok_or("presence entry address overflow")?;
+        read(memory, address).ok_or("presence entry unreadable")
+    }
+
+    /// Presence counts for one region slot; `None` when the map holds no ring.
+    pub fn presence(
+        &self,
+        memory: &impl Memory,
+        slot: u32,
+    ) -> Result<Option<Presence>, &'static str> {
+        // Hash twice and probe while entry distance is at least the probe count.
+        // The entry past the last probe slot marks the end.
+        let hashed = (slot >> 16 ^ slot).wrapping_mul(PRESENCE_HASH);
+        let hashed = (hashed >> 16 ^ hashed).wrapping_mul(PRESENCE_HASH);
+        let mut index = (hashed >> 16 ^ hashed) & self.mask;
+        let mut entry = self.entry(memory, index)?;
+        let mut found = false;
+        if entry[4] != 0 {
+            let mut distance: u8 = 1;
+            loop {
+                if u32_at(&entry, 8) == slot {
+                    found = true;
+                    break;
+                }
+                distance = distance
+                    .checked_add(1)
+                    .ok_or("presence probe did not end")?;
+                index = index.checked_add(1).ok_or("presence probe overflow")?;
+                entry = self.entry(memory, index)?;
+                if distance > entry[4] {
+                    break;
+                }
+            }
+        }
+        if !found || index == self.end {
+            return Ok(None);
+        }
+        let data = u64_at(&entry, 0x10) as usize;
+        let capacity = i32_at(&entry, 0x18);
+        let head = i32_at(&entry, 0x1c);
+        let tail = i32_at(&entry, 0x20);
+        if head == tail {
+            return Ok(Some(Presence::default()));
+        }
+        if capacity <= 0 || !(0..capacity).contains(&head) {
+            return Err("presence ring index invalid");
+        }
+        // The native walk advances modulo the capacity until it meets the tail or has read the
+        // window; a tail outside the ring is never met.
+        let steps = if (0..capacity).contains(&tail) {
+            (tail - head).rem_euclid(capacity) as usize
+        } else {
+            PRESENCE_WINDOW
+        }
+        .min(PRESENCE_WINDOW);
+        let mut values = [0; PRESENCE_WINDOW * 4];
+        let first = steps.min((capacity - head) as usize);
+        for (start, count, offset) in [(head as usize, first, 0), (0, steps - first, first)] {
+            if count == 0 {
+                continue;
+            }
+            let address = start
+                .checked_mul(4)
+                .and_then(|bytes| data.checked_add(bytes))
+                .ok_or("presence ring address overflow")?;
+            if !read_slice(
+                memory,
+                address,
+                &mut values[offset * 4..(offset + count) * 4],
+            ) {
+                return Err("presence ring unreadable");
+            }
+        }
+        let mut presence = Presence::default();
+        for value in values[..steps * 4].chunks_exact(4) {
+            let value = i32::from_le_bytes(value.try_into().expect("four bytes"));
+            if value >= 0 {
+                presence.total += 1;
+                presence.positive += i32::from(value > 0);
+            }
+        }
+        Ok(Some(presence))
+    }
+}
+
+/// [`TASK_FORCE_KEYS`] from region weather. An ID outside the region array
+/// has no weather object, leaving every key absent. Weather updates rebuild
+/// the stored region accumulator.
+pub fn region_weather<M: Memory>(
+    memory: &M,
+    weather: &cweather_manager::Reader<'_, M>,
+    region: u32,
+    out: &mut [Value; 4],
+) -> Result<(), &'static str> {
+    let id = i32::try_from(region).map_err(|_| "weather region id out of range")?;
+    let record = weather.movement_record(id, true)?;
+    if record == 0 {
+        *out = [Value::default(); 4];
+        return Ok(());
+    }
+    accumulator::lookup_many_at(
+        memory,
+        at(record, sweather_per_region::MODIFIERS)?,
+        &TASK_FORCE_KEYS,
+        out,
+    )
+}
+
+#[cfg(test)]
+mod tests;

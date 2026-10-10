@@ -145,7 +145,7 @@ fn finalized_resident_conferences_use_their_earlier_publication_after_queue_clea
     }
     *hours[1].tables[TableId::PeaceSettlements.index()] =
         TableView::Complete(TableRows::PeaceSettlements(vec![row(100)]));
-    // BAFB00 cleans first, then advances/finalizes the remaining first entry.
+    // Queue cleanup runs first, then advances/finalizes the remaining first entry.
     // Its finalizer can already be published while that ID remains resident.
     for at in [101, 104] {
         let priors: Vec<_> = hours.iter().filter(|frame| frame.hour < at).collect();

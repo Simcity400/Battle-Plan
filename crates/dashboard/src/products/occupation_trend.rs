@@ -1,14 +1,14 @@
 //! Occupier means from Occupied states' single cached branch scan.
-//! P: RefreshGarrisons 140FE9420 selects controlled states with a positive
-//! original occupied link and CheckActivation(...,1) (140F86330), including
-//! annexed non-cores. Ownership is not the admission test.
-//! P: occupation-group averages 140FE98F0 sum stored fixed5 resistance/compliance
-//! and divide by the state count, truncating signed fixed5 division. The widget
+//! Garrisons select controlled states with a positive original occupied link
+//! and active occupation, including annexed non-cores. Ownership is not
+//! the admission test.
+//! Occupation-group averages sum stored fixed5 resistance/compliance and
+//! divide by the state count, truncating signed fixed5 division. The widget
 //! applies that arithmetic across an occupier's readable held states, rather
-//! than averaging rounded country-group UI values (14155C270).
-//! I: this whole-occupier scope is the widget definition. 140FE1EC0 refreshes
-//! native cached group means BEFORE updating state scalars; their +0x38/+0x40
-//! fields are not recorded. Our mean is explicitly of the supplying state read.
+//! than averaging rounded country-group UI values.
+//! This whole-occupier scope is the widget definition. Cached group means
+//! refresh before state scalars update; those means are not recorded.
+//! Our mean is explicitly of the supplying state read.
 use super::{
     LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
     country_groups::HourSpan,
@@ -66,8 +66,8 @@ pub struct OccupationCollaborationActor {
 #[serde(rename_all = "camelCase")]
 pub struct OccupationCollaboration {
     pub tag: Option<String>,
-    /// P: CCountryCollaborationData+0x10, 1413DFC50; fixed5 fraction, unlike
-    /// the state percentage-point scalars. Politics meter: 141C441D0.
+    /// Collaboration is a fixed5 fraction, unlike the state percentage-point
+    /// scalars, matching the politics meter.
     pub raw: Option<String>,
     pub read_hour: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]

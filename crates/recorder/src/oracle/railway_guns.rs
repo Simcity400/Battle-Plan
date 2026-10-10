@@ -10,7 +10,7 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
         r.compared("RailwayGunCounterInputs", validate(frame)?);
         compare_saved(frame, save, r)?;
         r.limitation(
-            "The save omits naval transfer, the CUnit combat vector (its count, the first combat's side and province, and the attacking byte), the assignee pointer, the stat definition and its maximum strength, the received-supply ratio and the railway building level at the gun; retreat is not compared by this oracle; its combat list is the gun's own reference array, compared by its stored count (+0x42C); compare the rest against paused memory at the sampled hour",
+            "The save omits naval transfer, the CUnit combat vector (its count, the first combat's side and province, and the attacking byte), the assignee pointer, the stat definition and its maximum strength, the received-supply ratio and the railway building level at the gun; retreat is not compared by this oracle; its combat list is the gun's own reference array, compared by its stored count; compare the rest against paused memory at the sampled hour",
             "RailwayGunCounterInputs live-only operands",
         );
         Ok(())
@@ -66,7 +66,7 @@ fn compare_fresh(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
                 "required genuine CUnit group identity",
             );
         }
-        report.limitation("fresh variant maximum speed and composed land-supply factor are runtime getters, independently of saved equipment or strength; the genuine CUnit+0xC0 group is distinct from the railway assignee and has no proved text-save join in this comparison", &label);
+        report.limitation("fresh variant maximum speed and composed land-supply factor are runtime getters, independently of saved equipment or strength; the unit parent group is distinct from the railway assignee and has no proved text-save join in this comparison", &label);
     }
     report.compared("RailwayGunCounterInputs.fresh", rows.len());
     Ok(())
@@ -207,8 +207,8 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
                 &saved.name,
             ),
             replay::rows::Recorded::Value(Some(name)) => {
-                // CRailwayGun::Serialize@140E78CF0 delegates to CUnit's
-                // 140BF7010, which gates +0x248 on stored length +0x258.
+                // The railway-gun writer delegates to the unit writer,
+                // which gates the name on stored length.
                 let label = format!("{label}.name");
                 let name = (!name.is_empty()).then(|| super::serialized_text(report, &label, name));
                 check(report, &label, name, saved.name.as_deref());
@@ -260,8 +260,8 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
             row.ordinary_path.as_slice(),
             saved.path.as_slice(),
         );
-        // CUnit::Serialize@140BF7010 writes primary+0x1E8 as support_attack
-        // (0x2EDA) iff nonnull, and primary+0x220 as full_path (0x362C) iff nonempty.
+        // The unit save writer emits the movement target as support_attack
+        // when nonnull, and the alternate route as full_path when nonempty.
         check(
             report,
             &format!("{label}.target"),
@@ -280,8 +280,8 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
             row.strategic_redeployment != 0,
             saved.strategic_redeployment,
         );
-        // E78CF0 delegates to the same secondary CUnit receiver. BF7010
-        // writes token 0x2D0D `exile` only for nonzero primary+0x2AE.
+        // The railway-gun writer delegates to the unit writer,
+        // which writes the exile flag only when nonzero.
         check(
             report,
             &format!("{label}.exiled truth"),
@@ -313,14 +313,12 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
             Some(row.current_strength),
             Some(&saved.strength),
         );
-        // A gun's saved `combat` list (token 0x2916) is its own CRailwayGun+0x420
-        // reference array: CRailwayGun::Serialize@140E78CF0 writes it while the
-        // count at +0x42C is nonzero, and CRailwayGun::HasReferenceEntries@140E76080
-        // tests that same count. CUnit::Serialize@140BF7010 never writes the CUnit
-        // combat vector (+0x1A8) that `combat_count` holds, so that has no saved
-        // counterpart for a gun.
-        // The writer emits exactly +0x42C entries, so the stored count is the
-        // saved list's length.
+        // A gun's saved `combat` list is its own reference array: the railway-gun
+        // writer emits it when its count is nonzero. The reference-presence
+        // test uses that same count. The unit writer never saves the unit
+        // combat vector that `combat_count` holds, so that has no saved
+        // counterpart for a gun. The writer emits exactly the stored count,
+        // making it the saved list's length.
         check(
             report,
             &format!("{label}.reference_entry_count"),
@@ -335,7 +333,7 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
             "absent",
         );
     }
-    report.limitation("CUnit::Serialize@140BF7010 saves withdraw only as zero/nonzero truth, not raw nonzero byte identity", "RailwayGunCounterInputs.withdrawal raw byte");
+    report.limitation("the unit save writer saves withdraw only as zero/nonzero truth, not raw nonzero byte identity", "RailwayGunCounterInputs.withdrawal raw byte");
     Ok(())
 }
 

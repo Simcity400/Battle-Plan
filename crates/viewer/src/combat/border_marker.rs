@@ -1,4 +1,4 @@
-//! Border-conflict outcome tail of 1413D69D0, after the common marker text.
+//! Border-conflict outcome tail after common marker text.
 use super::{
     INLINE_FLAG,
     binding::{TextIcons, builtin, token},
@@ -19,7 +19,7 @@ use replay::{
 };
 use std::collections::BTreeMap;
 
-// Executable keys/substitution names at 1413D69D0.
+// Localisation keys and substitution names for border conflicts.
 super::text::tooltip_keys! {
     BORDER_CONFLICT_IF_YOU_WIN = "BORDER_CONFLICT_IF_YOU_WIN",
     BORDER_CONFLICT_IF_YOU_LOSE = "BORDER_CONFLICT_IF_YOU_LOSE",
@@ -49,7 +49,7 @@ fn tail_side(
     viewer: u32,
     links: &BTreeMap<u32, u32>,
 ) -> Result<Option<usize>, String> {
-    // 1413D69D0: +0x4F0/+0x510 lengths or +0xF0 must enable an outcome.
+    // A win/lose event or a state transfer must enable an outcome.
     // With neither outcome, no country/content lookup can add text.
     if border.transfer_state == 0
         && border
@@ -74,7 +74,7 @@ fn newline(body: &mut String) {
 }
 
 fn country_marker(name: &str, flag: &str, transfer: bool) -> String {
-    // 1413D69D0 brackets the transfer target; the enemy heading uses a space.
+    // the game brackets the transfer target; the enemy heading uses a space.
     if transfer {
         format!("{name} ({INLINE_FLAG}{flag})")
     } else {
@@ -84,7 +84,7 @@ fn country_marker(name: &str, flag: &str, transfer: bool) -> String {
 
 /// ROOT is a fresh country scope; FROM is this side's state, whose FROM is
 /// a deep copy of the opposing country/state context. PREV stays itself.
-/// 1413D69D0 builds copies before linking the original state scopes.
+/// the game builds copies before linking the original state scopes.
 fn scopes(own: u32, own_state: u32, enemy: u32, enemy_state: u32) -> EventScopes {
     let mut values = vec![
         EventScope::of(EventObject::Country(own)),
@@ -127,13 +127,12 @@ fn event_description(
         out.refuse(why.clone());
         return out;
     }
-    // 1413D7FC3/1413D7FCA: Lose skips enemy win text at CEvent+0x374 > 1;
-    // Win instead emits the enemy lose-event title (1413D74B0).
+    // Lose skips enemy win text when the event has more than one option;
+    // Win instead emits the enemy lose-event title.
     if enemy_win && event.options.len() >= 2 {
         return out;
     }
     if event.options.len() < 2 {
-        // 14116B330/14116B230: separate sessions, the same caller graph.
         for items in std::iter::once(&event.immediate).chain(event.options.first()) {
             let description = describe(items, scopes);
             for (why, count) in description.refusals {
@@ -144,10 +143,10 @@ fn event_description(
             newline(&mut out.body);
         }
     }
-    // 1413D8085/1413D8141: a zero-option enemy win appends its title after
+    // a zero-option enemy win appends its title after
     // the immediate body; a single option describes only the effect bodies.
     if event.options.len() >= 2 || (enemy_win && event.options.is_empty()) {
-        // 14116B3B0/14116C180 choose a scoped title, not any effect body.
+        // the game chooses a scoped title, not any effect body.
         let title = event.sole_title_key().and_then(|key| match key {
             Some(key) => render(key, scopes),
             None => Ok(String::new()),
@@ -167,7 +166,7 @@ fn event_description(
     out
 }
 
-#[allow(clippy::too_many_arguments)] // Native 1413D69D0 context and output.
+#[allow(clippy::too_many_arguments)] // Border-conflict context and output.
 fn build(
     icons: &dyn TextIcons,
     loc: &Localisation,

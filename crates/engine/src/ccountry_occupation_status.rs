@@ -1,26 +1,27 @@
-//! CCountryOccupationStatus, confirmed by the pinned executable's RTTI.
-//! Its primary base is CGarrisonStatus/CEquipmentDistributable; CPersistent is at +0x18.
-//! These harvested fields do not establish hourly consistency or writer ownership.
+//! Country occupation status with distributable garrison base and a secondary
+//! persistent subobject. These fields alone do not establish hourly consistency
+//! or writer ownership.
 
-/// CCountryOccupationStatus primary vtable; old D52 collector_module.rs:37, confirmed by pinned RTTI.
+/// Occupation-status primary vtable.
 pub const VTABLE_RVA: usize = 0x0296_dd50;
-/// CCountryOccupationStatus CPersistent vtable; old D52 collector_module.rs:38 and pinned RTTI.
+/// Persistent subobject vtable.
 pub const SECONDARY_VTABLE_RVA: usize = 0x0296_dd88;
-/// CCountryOccupationStatus CPersistent base displacement; old D52 double-vtable guard and pinned RTTI agree.
+/// Persistent subobject displacement.
 pub const SECONDARY_BASE: usize = 0x18;
-/// CCountryOccupationStatus embedded occupation-data robin-hood table; old D66 attach_log.rs:148589-148628 enumerates live buckets.
+/// Embedded occupation-data robin-hood table; enumerate only live buckets.
 pub const OCCUPATION_DATA_TABLE: usize = 0x48;
-/// Effect reader@1413DE730 and serializer@140FEAE70 (secondary base +0x18)
-/// walk this pointer vector in the same order, using group+0x18 -> country+8.
+/// Effect and serialization pointer vector; both preserve its occurrence
+/// order and use each group's country scope.
 pub const OCCUPATION_DATA_ROWS: usize = 0x60;
-/// CCountryOccupationStatus occupation-data vector count, i32 read; old a729_garrison_alert.rs:449-453.
+/// Occupation-data vector count, read as i32.
 pub const OCCUPATION_DATA_COUNT: usize = 0x6c;
-/// CCountryOccupationStatus garrison CReferencedDivisionTemplate pointer; old D52 read_country_occupation_status validates type 52 and vtable.
+/// CReferencedDivisionTemplate pointer requiring reference-type and vtable authentication.
 pub const GARRISON_TEMPLATE: usize = 0x78;
-/// CCountryOccupationStatus embedded assigned-manpower container; old a729_garrison_alert.rs:348 sums its i32 entry amounts.
+/// Embedded assigned-manpower container with signed i32 entry amounts.
 pub const ASSIGNED_MANPOWER: usize = 0x90;
-/// CCountryOccupationStatus default COccupationLaw pointer; old D52 collector_module.rs:40 and read_country_occupation_status.
+/// Default COccupationLaw pointer.
 pub const DEFAULT_LAW: usize = 0x118;
+/// Reset leaving the occupation table empty.
 pub const RESET_RVA: usize = 0x00fe_0c30;
 
 use crate::{
@@ -198,8 +199,7 @@ impl Occupied<'_> {
     }
 }
 
-/// Native sorted roster order is independent of the occupation hash slots
-/// (insertion@140FDEA20, removal@140FE7C70).
+/// Sorted roster order is independent of occupation hash slots.
 pub fn occupied_demand(
     memory: &impl Memory,
     base: usize,

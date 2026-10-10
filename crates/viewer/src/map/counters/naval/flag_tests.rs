@@ -149,7 +149,7 @@ fn the_counter_pass_leaves_a_patrol_here_to_the_mission_icon() {
     );
 }
 
-/// A reset group's number keeps its raw bits through `SetFrame`'s `int`: `0xFFFFFFFF` is -1,
+/// A reset group's number keeps its raw bits through `frame update`'s `int`: `0xFFFFFFFF` is -1,
 /// not a refusal; a numbered group's is its place.
 #[test]
 fn a_reset_ideology_number_reaches_set_frame_as_its_bits() {

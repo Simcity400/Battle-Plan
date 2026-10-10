@@ -36,11 +36,11 @@ struct Renderer {
 static RENDERER: OnceLock<Result<Mutex<Renderer>, String>> = OnceLock::new();
 
 /// Executes the authored Up program with the native Sprite declaration and four-record strip.
-/// CSpriteType::draw@14222D5A0 binds b0 to both stages, textures to PS and topology 4.
+/// Sprite draws bind b0 to both stages, textures to the pixel stage and a triangle strip.
 pub fn render(layers: &ResolvedLayers, draw: Draw, decode: Decode) -> Result<Rgba8Image, String> {
     let source = Arc::new(program::read_reported(layers, &draw.effect)?);
     let technique = source.technique("Up").ok_or_else(|| format!(
-        "effect {:?} has no Up technique; 142400520 retains a preceding program unavailable to isolated artwork", source.effect
+        "effect {:?} has no Up technique; a preceding program is unavailable to isolated artwork", source.effect
     ))?;
     let mut defines = globals(layers, decode)?;
     defines.extend(draw.defines.iter().cloned());
@@ -65,7 +65,7 @@ pub fn render(layers: &ResolvedLayers, draw: Draw, decode: Decode) -> Result<Rgb
 }
 
 fn globals(layers: &ResolvedLayers, decode: Decode) -> Result<Vec<String>, String> {
-    // derive_map_shader_constants@140A4DDE0 uses the bitmap named by default.map.
+    // Map shader constants use the provinces bitmap named by default.map.
     let files = installed_content::terrain::read_default_map(layers).map_err(|e| e.to_string())?;
     let path = files.file("provinces").map_err(|e| e.to_string())?;
     let bytes = layers.read(&path).map_err(|e| e.to_string())?;

@@ -1,4 +1,4 @@
-//! Actual viewer draw/capture failure presentation, using the B11 Scene fixture.
+//! Actual viewer draw/capture failure presentation, using a synthetic Scene fixture.
 use super::*;
 use crate::map::scene::failure_tests::{Fixture, Point};
 

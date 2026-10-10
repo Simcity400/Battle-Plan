@@ -16,22 +16,22 @@ pub fn shown(value: &Value) -> String {
     }
 }
 
-/// A scope selector ParseScopeSelector (14053E330) finds by the value's
-/// keyword ID, as CTrigger::ResolveCountryScope (140542000) reads it.
+/// A scope selector found by the value's keyword ID,
+/// as country operands read it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Selector {
-    /// `this` 0x29C3, `root` 0x2C94, `prev` 0x2C95, `from` 0x298F: that
+    /// `this`, `root`, `prev`, `from`: that
     /// scope.
     This,
     Root,
     Prev,
     From,
-    /// `owner` 0x283E (bit 0x10), `controller` 0x283F (0x40) and `occupied`
-    /// 0x3DB1 (0x20): the state of THIS.
+    /// `owner`, `controller` and `occupied`:
+    /// the state of THIS.
     StateOwner,
     StateController,
     StateOccupier,
-    /// `capital` 0x284B and `random` 0x27BB, whose bits 140542000 does not
+    /// `capital` and `random`, which country selection does not
     /// test: link 0.
     None,
 }
@@ -49,7 +49,7 @@ impl Selector {
         ("random", Selector::None),
     ];
 
-    /// The selector a bare value names, found without case (1424A7A90).
+    /// The selector a bare value names, found without case.
     pub fn named(text: &[u8]) -> Option<Self> {
         Self::NAMES
             .iter()
@@ -58,29 +58,29 @@ impl Selector {
     }
 }
 
-/// What ParseScopeSelector (14053E330) finds in a value token, before a
+/// What scope selection finds in a value token, before a
 /// trigger's own reading of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Selected<'a> {
     /// A selector keyword, by the token's keyword ID: never a quoted token
-    /// (0xF) or a number (0xC) (1424A7A90, [`Item::value_keyword`]).
+    /// or a number ([`Item::value_keyword`]).
     Keyword(Selector),
-    /// `event_target:` compared with the text's start (strncmp 14253B770,
-    /// which stops at a NUL), whatever the token kind.
+    /// `event_target:` compared with the text's start, stopping at a NUL,
+    /// whatever the token kind.
     EventTarget(&'a [u8]),
 }
 
 impl Selected<'_> {
     pub fn describe(self) -> &'static str {
         match self {
-            Self::Keyword(_) => "a scope selector keyword (14053E330)",
-            Self::EventTarget(_) => "an event target (14053E330)",
+            Self::Keyword(_) => "a scope selector keyword",
+            Self::EventTarget(_) => "an event target",
         }
     }
 }
 
-/// The one reading of a value token as a scope selector (14053E330), which
-/// the bool triggers (14138D3D0) and the country operand (141394CA0) share.
+/// The one reading of a value token as a scope selector, which
+/// bool triggers and country operands share.
 pub fn scope_selector(item: &Item) -> Option<Selected<'_>> {
     if let Some(keyword) = item.value_keyword()
         && let Some(selector) = Selector::named(keyword.as_bytes())
@@ -93,29 +93,29 @@ pub fn scope_selector(item: &Item) -> Option<Selected<'_>> {
         .map(Selected::EventTarget)
 }
 
-/// A CBoolTrigger operand (14138D3D0, the reader CScriptedTrigger shares):
-/// +0x58 is cleared, then the value token is read as a scope selector
-/// ([`scope_selector`]); only if it is none, by read_bool_token
-/// (1424B06E0), which compares `yes` and `no` with their terminating NUL,
+/// A boolean trigger operand, also used by scripted triggers:
+/// the expected value is cleared, then the token is read as a scope selector
+/// ([`scope_selector`]); only if it is none, as a boolean
+/// comparing `yes` and `no` with their terminating NUL,
 /// so the text to its first NUL, quoted or bare. Any other value, an empty
 /// one, a block's `{` or another spelling of yes or no, fails that read,
-/// so +0x58 stays false and the trigger tests `no`
-/// (CSimpleAssignTrigger::vf5 141395A40 only logs it). A selector is
+/// so the expected value stays false and the trigger tests `no`;
+/// assignment only logs the failure. A selector is
 /// refused: what the trigger then tests is not reproduced.
 pub fn trigger_boolean(item: &Item) -> Result<bool, String> {
     if let Some(selector) = scope_selector(item) {
         return Err(format!(
-            "the operand {} is {}, which the trigger's reader (14138D3D0) takes instead of yes or no; what the trigger then tests is not reproduced",
+            "the operand {} is {}, which the trigger's reader takes instead of yes or no; what the trigger then tests is not reproduced",
             shown(&item.value),
             selector.describe()
         ));
     }
-    // read_bool_token (1424B06E0) compares bytes; a failed read leaves `no`.
+    // Boolean reading compares bytes; a failed read leaves `no`.
     Ok(item.value.scalar().and_then(read_bool).unwrap_or(false))
 }
 
-/// CIntTrigger::Evaluate (14138CC70) preserves equality; CValueTrigger's
-/// (14138D120, `fixed`) selects `<` only for that token and otherwise takes
+/// Integer comparisons preserve equality; fixed comparisons
+/// select `<` only for that token and otherwise take
 /// the strict `>` arm.
 pub fn compare(actual: i64, required: i64, comparison: Operator, fixed: bool) -> bool {
     match comparison {
@@ -127,15 +127,15 @@ pub fn compare(actual: i64, required: i64, comparison: Operator, fixed: bool) ->
 }
 
 impl Evaluator<'_, '_> {
-    /// A comparison trigger's operand, fixed5, in `scopes`. CIntTrigger::vf4
-    /// (14138D4E0) reads a number token through `%i` and any other, a quoted
+    /// A comparison trigger's operand, fixed5, in `scopes`. Integer comparison
+    /// reads a number token through `%i` and any other, a quoted
     /// one included, as a scoped variable (a constant through
-    /// ParseFixed5String, installed_content::fixed5::int_operand);
-    /// CIntTrigger::Evaluate (14138CC70) compares the scoped value as
-    /// `(int)(value / 100000)`. CValueTrigger's reader (`fixed`, 14138D630)
-    /// takes every token as a scoped variable (140539370) and compares the
-    /// fixed5 value (14138D120). A scoped variable is evaluated in the
-    /// trigger's scope (CScopedVariable::Evaluate 1405382B0).
+    /// installed_content::fixed5::int_operand);
+    /// it compares the scoped value as
+    /// `(int)(value / 100000)`. Fixed comparison
+    /// takes every token as a scoped variable and compares the
+    /// fixed5 value. A scoped variable is evaluated in the
+    /// trigger's scope.
     pub fn required(
         &self,
         bytes: &[u8],
@@ -153,26 +153,23 @@ impl Evaluator<'_, '_> {
         match int_operand(bytes, quoted || fixed) {
             IntOperand::Integer(value) => Ok(i64::from(value) * ONE),
             IntOperand::Constant(value) => Ok(scoped(value)),
-            IntOperand::Unreadable => {
-                Err("the operand is a number `%i` (1424B02C0) cannot scan".into())
-            }
+            IntOperand::Unreadable => Err("the operand is a number `%i` cannot scan".into()),
             IntOperand::Empty => Err(
-                "the operand is empty: the scoped-variable reader (140539B50) logs it and sets nothing"
-                    .into(),
+                "the operand is empty: the scoped-variable reader logs it and sets nothing".into(),
             ),
             IntOperand::Scoped => self.scoped_value(bytes, scopes).map(scoped),
         }
     }
 
-    /// A CMTTHModifier's `factor` or `add` as it reads each occurrence in
-    /// order (140545820 -> CScopedVariable::vf3 140539440 -> 140539B50, the
-    /// scoped-variable reader CValueTrigger's operands share): empty text is
+    /// A mean-time modifier's `factor` or `add` reads each occurrence in
+    /// order, using the scoped-variable reader shared by fixed comparison
+    /// operands: empty text is
     /// logged and sets nothing, any other text is parsed into the one
-    /// operand, which CMeanTimeToHappen::Evaluate (1405455A0) evaluates in
+    /// operand, evaluated in
     /// the mean time's scope. `default` is the modifier's own.
     ///
     /// A later parse does not reset every field an earlier one set (the temp
-    /// flag, the scope chain), so only a last literal, which Evaluate
+    /// flag, the scope chain), so only a last literal, which evaluation
     /// returns before reading any other field, is exact after another
     /// assignment; any other repeated assignment is refused by name.
     pub(super) fn mtth_operand(
@@ -200,7 +197,7 @@ impl Evaluator<'_, '_> {
         };
         if texts.len() > 1 && self.operand(text).map_err(within)?.literal.is_none() {
             return Err(within(super::refused(format!(
-                "{key} is assigned {} times, and a later assignment into the one operand keeps fields an earlier one set (140539B50), which is not reproduced",
+                "{key} is assigned {} times, and a later assignment into the one operand keeps fields an earlier one set, which is not reproduced",
                 texts.len()
             ))));
         }
@@ -208,12 +205,12 @@ impl Evaluator<'_, '_> {
     }
 }
 
-/// A CMeanTimeToHappen's base value as its reader keeps it: 100000 from its
-/// constructor (140544B60), then each field in order (140545850): `factor`
-/// through ReadFixed5 (1424ABB10, `%lli`), `base` as a decimal (1424AFF10),
-/// and `days`, `months` and `years` through ParseTokenInt32 (1424B0080)
+/// A mean-time base value: 100000 initially,
+/// then each field in order: `factor`
+/// as fixed5 (`%lli`), `base` as a decimal,
+/// and `days`, `months` and `years` as decimal integers
 /// times 1, 30 and 365 in 32-bit arithmetic. A `factor` that does not scan
-/// is reported (1424ACEE0) and leaves the value as it was.
+/// is reported and leaves the value as it was.
 pub fn mtth_base(items: &[Item]) -> i64 {
     let mut base = ONE;
     for item in items {

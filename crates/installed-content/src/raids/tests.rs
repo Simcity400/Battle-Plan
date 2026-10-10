@@ -8,7 +8,9 @@ fn doc(bytes: &[u8]) -> io::Result<parser::Document> {
 }
 
 #[test]
-fn raid_reader_notes_keep_native_kinds() {
+fn raid_reader_notes_keep_diagnostic_kinds() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut notes = Vec::new();
     reader::document(
         b"types = { a = { unit_model = { type = x } success_levels = { success = { actor_effects = { free_operative = { operative = x } } } } } }",
@@ -56,6 +58,8 @@ types = {
 
 #[test]
 fn a_type_keeps_the_fields_offers_read_in_database_order() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let categories =
         doc(b"categories = { air_raids = { free_targeting = yes visible = { has_dlc = x } } }")
             .unwrap();
@@ -122,6 +126,8 @@ fn a_type_keeps_the_fields_offers_read_in_database_order() {
 
 #[test]
 fn every_field_updates_the_types_persistent_objects() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let catalog = parse(
         &[],
         &[doc(br#"types = {
@@ -151,7 +157,7 @@ fn every_field_updates_the_types_persistent_objects() {
         EQUIPMENT,
     )
     .unwrap();
-    // 14157F920 overwrites the one selector's flag.
+    // Each field overwrites the selector's flag.
     assert!(catalog.get("leader").unwrap().target_types.is_empty());
     let fort = catalog.get("fort").unwrap();
     let TargetType::State { triggers, .. } = &fort.target_types[1] else {
@@ -166,7 +172,7 @@ fn every_field_updates_the_types_persistent_objects() {
         })
     );
     assert_eq!(triggers.len(), 2);
-    // 1415818B0 maps the list token: a quoted one is reported.
+    // Source kinds use list tokens: a quoted one is reported.
     assert_eq!(
         (
             fort.starting_point.types.as_slice(),
@@ -180,8 +186,8 @@ fn every_field_updates_the_types_persistent_objects() {
         (&[("convoy".to_owned(), 3)][..], 0)
     );
     assert_eq!(fort.visible.len(), 2);
-    // One CBattalionTypeRequirements per requirement: the repeat of
-    // `marine` in the second block is RecordError and skipped.
+    // One battalion-type table per requirement: the repeated `marine`
+    // in the second block is reported and skipped.
     let battalions = &fort.unit_requirements[0].battalions;
     assert_eq!(
         battalions
@@ -190,9 +196,9 @@ fn every_field_updates_the_types_persistent_objects() {
             .collect::<Vec<_>>(),
         [("marine", Some(1), None), ("paratrooper", None, Some(2))]
     );
-    // A quoted key: no building type (the empty selector matches no
-    // building, 14157A5A0); the trigger child keeps its quoted key for
-    // the evaluator, which gives it no built-in (LoadKey 1405434F0).
+    // A quoted key adds no building type, so the empty selector matches
+    // no building. The trigger child retains its quoted key for the
+    // evaluator, which gives it no built-in meaning.
     let quoted = catalog.get("quoted").unwrap();
     let [TargetType::State { triggers, .. }] = quoted.target_types.as_slice() else {
         panic!("{:?}", quoted.target_types);
@@ -202,6 +208,8 @@ fn every_field_updates_the_types_persistent_objects() {
 
 #[test]
 fn type_and_category_names_are_folded_tokens() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let categories =
         doc(b"categories = { Air = { free_targeting = no } AIR = { free_targeting = yes } }")
             .unwrap();
@@ -222,8 +230,10 @@ fn type_and_category_names_are_folded_tokens() {
 
 #[test]
 fn scalar_selector_names_read_the_lexers_current_token() {
-    // `type` has no operator: 1424AC5E0 leaves `no` in the value slot,
-    // and 140309DC0 registers the lexer's current token, `custom_fort`.
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    // `type` has no operator: `no` remains in the value slot, while the
+    // building list registers the lexer's current token, `custom_fort`.
     let catalog = parse(
             &[],
             &[doc(b"types = { t = { target_type = { building = { is_coastal = no type custom_fort } } } }")
@@ -239,6 +249,8 @@ fn scalar_selector_names_read_the_lexers_current_token() {
 
 #[test]
 fn launch_buildings_resolve_types_and_tags_in_database_order() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = crate::buildings::parse(
         b"buildings = {
                 launcher = { tags = { launch_group } level_cap = { province_max = 1 } }
@@ -275,6 +287,8 @@ fn launch_buildings_resolve_types_and_tags_in_database_order() {
 
 #[test]
 fn a_scalar_container_enters_nothing_and_skipped_fields_are_noted() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut notes = Vec::new();
     let types = reader::document(
         b"categories = no types = { t = { unit_model = { type = transport scale = 2 } } }",
@@ -283,7 +297,7 @@ fn a_scalar_container_enters_nothing_and_skipped_fields_are_noted() {
         &mut notes,
     )
     .unwrap();
-    // 140A88270 reports `no` and returns: `types` is read as the file's.
+    // The category container reports `no` and returns: `types` is read as the file's.
     let files = [types];
     let catalog = parse(&files, &files, EQUIPMENT).unwrap();
     assert!(catalog.categories.is_empty());
@@ -294,13 +308,15 @@ fn a_scalar_container_enters_nothing_and_skipped_fields_are_noted() {
     assert!(
         notes[1]
             .1
-            .contains("unit_model field type is reported and skipped (14157FB30"),
+            .contains("unit_model field type is reported and skipped"),
         "{notes:?}"
     );
 }
 
 #[test]
 fn a_lost_equipment_database_refuses_only_types_with_an_undecided_key() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // Known before the loss: convoy. Anything else is undecided.
     let partial: Equipment<'static> = &|key| (key == b"convoy").then_some(true);
     let types = reader::document(
@@ -342,6 +358,8 @@ fn a_lost_equipment_database_refuses_only_types_with_an_undecided_key() {
 
 #[test]
 fn reported_keys_add_nothing_and_list_readers_leave_the_value_slot() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut notes = Vec::new();
     let types = reader::document(
         br#"types = {
@@ -357,7 +375,7 @@ fn reported_keys_add_nothing_and_list_readers_leave_the_value_slot() {
     )
     .unwrap();
     let catalog = parse(&[], &[types], EQUIPMENT).unwrap();
-    // ReadScriptInt32Array leaves `1` in the value slot, which the
+    // The province list leaves `1` in the value slot, which the
     // operator-less `state` then reads as its id.
     assert_eq!(
         catalog.types[0].target_types,
@@ -369,8 +387,8 @@ fn reported_keys_add_nothing_and_list_readers_leave_the_value_slot() {
             }
         ]
     );
-    // A quoted key is token 0xF: no selector, no equipment demand; an
-    // unknown type is skipped with its block.
+    // A quoted key has no keyword identity: no selector or equipment
+    // demand is added; an unknown type is skipped with its block.
     let q = &catalog.types[1];
     assert!(q.target_types.is_empty());
     assert_eq!(
@@ -392,6 +410,8 @@ fn reported_keys_add_nothing_and_list_readers_leave_the_value_slot() {
 
 #[test]
 fn the_icon_key_follows_the_documented_two_step_lookup() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let catalog = parse(&[], &[doc(TYPES).unwrap()], EQUIPMENT).unwrap();
     let facility = &catalog.types[0];
     let known = |name: &str| name.starts_with("GFX_raid_type_icon_facility_raid");
@@ -403,9 +423,11 @@ fn the_icon_key_follows_the_documented_two_step_lookup() {
 }
 
 #[test]
-fn raids_empty_custom_map_icon_uses_native_generated_base_and_building_suffix() {
-    // BuildSpriteName@141EDC220 tests the authored string's length, so an
-    // explicit empty override follows the same generated-key arm as absence.
+fn raids_empty_custom_map_icon_uses_generated_base_and_building_suffix() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    // Sprite-key selection tests the authored string's length, so an
+    // explicit empty override uses the generated key just as absence does.
     let catalog = parse(
         &[],
         &[doc(br#"types = { synthetic_empty = { custom_map_icon = "" } }"#).unwrap()],
@@ -432,6 +454,8 @@ fn raids_empty_custom_map_icon_uses_native_generated_base_and_building_suffix() 
 
 #[test]
 fn a_name_declared_twice_or_thrice_is_refused_once() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let catalog = parse(
         &[],
         &[doc(b"types = { a = {} b = {} a = {} a = { command_power = 1 } }").unwrap()],
@@ -450,6 +474,8 @@ fn a_name_declared_twice_or_thrice_is_refused_once() {
 
 #[test]
 fn a_type_with_an_unreadable_field_is_refused_and_the_rest_load() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let catalog = parse(
             &[],
             &[doc(br#"types = {
@@ -473,9 +499,9 @@ fn a_type_with_an_unreadable_field_is_refused_and_the_rest_load() {
     assert_eq!(uncertain, ["a", "b"]);
     assert!(catalog.uncertain[0].declarations.is_empty());
     assert!(catalog.uncertain[0].reason.contains("tanks"));
-    // Script numbers read natively: a leading zero is octal.
+    // Script integers treat a leading zero as octal.
     assert_eq!(catalog.types[0].command_power_raw, 800_000);
-    // Keys the readers report and skip change nothing (14157FD70, 1415818B0).
+    // Keys the readers report and skip change nothing.
     let d = &catalog.types[1];
     assert_eq!(d.unit_requirements, [UnitRequirement::default()]);
     assert!(d.starting_point.types.is_empty());
@@ -483,6 +509,8 @@ fn a_type_with_an_unreadable_field_is_refused_and_the_rest_load() {
 
 #[test]
 fn the_arrow_and_unit_model_keep_the_constructor_values_until_read() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let catalog = parse(
             &[],
             &[doc(br#"types = {
@@ -532,9 +560,9 @@ fn the_arrow_and_unit_model_keep_the_constructor_values_until_read() {
     );
     assert_eq!(convoy.unit_model.scale_raw, 200_000);
     assert!(bare.unit_animations.is_empty());
-    // 14157E670 dispatches the value token: an unknown or quoted value
-    // keeps the kind, a bare one in any case is read; 14157FB30 clears a
-    // category outside the air ones and skips an unknown key.
+    // Arrow kind dispatch uses the value token: an unknown or quoted value
+    // keeps the kind, while a bare one is read without case. The unit model
+    // clears a category outside the air categories and skips unknown keys.
     let odd = catalog.get("odd").unwrap();
     assert_eq!(odd.arrow, RaidArrowKind::Land);
     assert_eq!(odd.unit_model.equipment, 0);
@@ -545,22 +573,22 @@ fn the_arrow_and_unit_model_keep_the_constructor_values_until_read() {
 }
 
 const GRAPHICS_DEFINES: &str = r#"NDefines = { NMapMode = {
-                    PREPARING_RAID_ARROW_COLOR = { 0.7, 0.7, 0.7, 1.0 },
-                    READY_RAID_ARROW_COLOR = { 0.7, 0.7, 0, 0.9 },
-                    ACTIVE_RAID_ARROW_COLOR = { 1, 0, 0, 0.9 } },
+                    PREPARING_RAID_ARROW_COLOR = { 0.15, 0.25, 0.35, 0.45 },
+                    READY_RAID_ARROW_COLOR = { 0.65, 0.55, 0.45, 0.35 },
+                    ACTIVE_RAID_ARROW_COLOR = { 0.85, 0.75, 0.65, 0.55 } },
                   NGraphics = {
-                    RAID_ARROW_BALLISTIC_SHAPE = 0.02, RAID_ARROW_BALLISTIC_MAX_HEIGHT = 30,
-                    RAID_ARROW_BALLISTIC_MAX_SEGMENT_LENGTH = 1, RAID_ARROW_BALLISTIC_MAX_SEGMENTS = 100,
-                    RAID_ARROW_AIR_HEIGHT = 10.0, RAID_ARROW_AIR_SLOPE_SOURCE_STEEPNESS = 0.2,
-                    RAID_ARROW_AIR_SLOPE_SOURCE_LENGTH = 50.0, RAID_ARROW_AIR_SLOPE_TARGET_STEEPNESS = 0.2,
-                    RAID_ARROW_AIR_SLOPE_TARGET_LENGTH = 0.0, RAID_ARROW_AIR_MAX_SEGMENT_LENGTH = 1,
-                    RAID_ARROW_AIR_MAX_SEGMENTS = 100,
-                    RAID_ARROW_NAVAL_SUBDIVISIONS = 20, RAID_ARROW_NAVAL_SHARP_TURN_SMOOTHNESS = 0.10,
-                    RAID_ARROW_NAVAL_USE_MIDPOINTS = true,
-                    RAID_ARROW_LAND_SUBDIVISIONS = 12, RAID_ARROW_LAND_SHARP_TURN_SMOOTHNESS = 0,
-                    RAID_ARROW_LAND_USE_MIDPOINTS = false,
-                    RAID_UNIT_ENTITY_BASE_SCALE = 2.0, RAID_UNIT_ENTITY_OFFSET = { 0.0, 1.5, 0.0 } },
-                  NRaids = { RAID_UNIT_SPEED_MULTIPLIER = 0.1 } }"#;
+                    RAID_ARROW_BALLISTIC_SHAPE = 0.045, RAID_ARROW_BALLISTIC_MAX_HEIGHT = 17.5,
+                    RAID_ARROW_BALLISTIC_MAX_SEGMENT_LENGTH = 2.25, RAID_ARROW_BALLISTIC_MAX_SEGMENTS = 73,
+                    RAID_ARROW_AIR_HEIGHT = 14.25, RAID_ARROW_AIR_SLOPE_SOURCE_STEEPNESS = 0.35,
+                    RAID_ARROW_AIR_SLOPE_SOURCE_LENGTH = 31.25, RAID_ARROW_AIR_SLOPE_TARGET_STEEPNESS = 0.45,
+                    RAID_ARROW_AIR_SLOPE_TARGET_LENGTH = 9.5, RAID_ARROW_AIR_MAX_SEGMENT_LENGTH = 3.75,
+                    RAID_ARROW_AIR_MAX_SEGMENTS = 67,
+                    RAID_ARROW_NAVAL_SUBDIVISIONS = 9, RAID_ARROW_NAVAL_SHARP_TURN_SMOOTHNESS = 0.27,
+                    RAID_ARROW_NAVAL_USE_MIDPOINTS = false,
+                    RAID_ARROW_LAND_SUBDIVISIONS = 7, RAID_ARROW_LAND_SHARP_TURN_SMOOTHNESS = 0.38,
+                    RAID_ARROW_LAND_USE_MIDPOINTS = true,
+                    RAID_UNIT_ENTITY_BASE_SCALE = 1.75, RAID_UNIT_ENTITY_OFFSET = { 2.25, -3.5, 4.75 } },
+                  NRaids = { RAID_UNIT_SPEED_MULTIPLIER = 0.375 } }"#;
 
 fn graphics_defines(replace: &[(&str, &str)]) -> io::Result<RaidGraphicsDefines> {
     let source = replace
@@ -571,33 +599,32 @@ fn graphics_defines(replace: &[(&str, &str)]) -> io::Result<RaidGraphicsDefines>
         });
     let defines = crate::defines::Defines::new().unwrap();
     defines
-        .load("common/defines/00_graphics.lua", source.as_bytes())
+        .load("common/defines/raid_fixture.lua", source.as_bytes())
         .unwrap();
     RaidGraphicsDefines::read(&defines)
 }
 
 #[test]
-fn the_graphics_defines_are_read_with_their_native_widths() {
+fn graphics_defines_keep_field_widths() {
     let read = graphics_defines(&[]).unwrap();
-    assert_eq!(read.ready_color, [0.7, 0.7, 0.0, 0.9]);
-    assert_eq!(read.air_source_length, 50.0);
-    assert_eq!(read.ballistic_max_segments, 100);
+    assert_eq!(read.ready_color, [0.65, 0.55, 0.45, 0.35]);
+    assert_eq!(read.air_source_length, 31.25);
+    assert_eq!(read.ballistic_max_segments, 73);
     assert_eq!(
         read.land,
         PathArrowDefines {
-            subdivisions: 12,
-            sharp_turn_smoothness: 0.0,
-            use_midpoints: false
+            subdivisions: 7,
+            sharp_turn_smoothness: 0.38,
+            use_midpoints: true
         }
     );
-    assert!(read.naval.use_midpoints);
-    assert_eq!(read.unit_offset, [0.0, 1.5, 0.0]);
-    assert_eq!(read.speed_multiplier_raw, 10_000);
+    assert!(!read.naval.use_midpoints);
+    assert_eq!(read.unit_offset, [2.25, -3.5, 4.75]);
+    assert_eq!(read.speed_multiplier_raw, 37_500);
 }
 
-/// The counts' loaders (`140859620`, `1408582E0`, `140859FD0`,
-/// `14085A770`) raise the getter's 0 for a missing or non-number value,
-/// and any value below 1, to 1.
+/// The counts' loaders raise the getter's 0 for a missing or non-number
+/// value, and any value below 1, to 1.
 #[test]
 fn segment_and_subdivision_counts_are_at_least_one() {
     let counts = |read: RaidGraphicsDefines| {
@@ -609,46 +636,46 @@ fn segment_and_subdivision_counts_are_at_least_one() {
         ]
     };
     let missing = graphics_defines(&[
-        ("RAID_ARROW_BALLISTIC_MAX_SEGMENTS = 100,", ""),
-        ("RAID_ARROW_AIR_MAX_SEGMENTS = 100,", ""),
-        ("RAID_ARROW_NAVAL_SUBDIVISIONS = 20,", ""),
-        ("RAID_ARROW_LAND_SUBDIVISIONS = 12,", ""),
+        ("RAID_ARROW_BALLISTIC_MAX_SEGMENTS = 73,", ""),
+        ("RAID_ARROW_AIR_MAX_SEGMENTS = 67,", ""),
+        ("RAID_ARROW_NAVAL_SUBDIVISIONS = 9,", ""),
+        ("RAID_ARROW_LAND_SUBDIVISIONS = 7,", ""),
     ]);
     assert_eq!(counts(missing.unwrap()), [1; 4]);
     let not_numbers = graphics_defines(&[
         (
-            "RAID_ARROW_BALLISTIC_MAX_SEGMENTS = 100",
-            "RAID_ARROW_BALLISTIC_MAX_SEGMENTS = \"100\"",
+            "RAID_ARROW_BALLISTIC_MAX_SEGMENTS = 73",
+            "RAID_ARROW_BALLISTIC_MAX_SEGMENTS = \"73\"",
         ),
         (
-            "RAID_ARROW_AIR_MAX_SEGMENTS = 100",
+            "RAID_ARROW_AIR_MAX_SEGMENTS = 67",
             "RAID_ARROW_AIR_MAX_SEGMENTS = true",
         ),
         (
-            "RAID_ARROW_NAVAL_SUBDIVISIONS = 20",
-            "RAID_ARROW_NAVAL_SUBDIVISIONS = { 20 }",
+            "RAID_ARROW_NAVAL_SUBDIVISIONS = 9",
+            "RAID_ARROW_NAVAL_SUBDIVISIONS = { 9 }",
         ),
         (
-            "RAID_ARROW_LAND_SUBDIVISIONS = 12",
-            "RAID_ARROW_LAND_SUBDIVISIONS = \"12\"",
+            "RAID_ARROW_LAND_SUBDIVISIONS = 7",
+            "RAID_ARROW_LAND_SUBDIVISIONS = \"7\"",
         ),
     ]);
     assert_eq!(counts(not_numbers.unwrap()), [1; 4]);
     let below_one = graphics_defines(&[
         (
-            "RAID_ARROW_BALLISTIC_MAX_SEGMENTS = 100",
+            "RAID_ARROW_BALLISTIC_MAX_SEGMENTS = 73",
             "RAID_ARROW_BALLISTIC_MAX_SEGMENTS = 0.9",
         ),
         (
-            "RAID_ARROW_AIR_MAX_SEGMENTS = 100",
+            "RAID_ARROW_AIR_MAX_SEGMENTS = 67",
             "RAID_ARROW_AIR_MAX_SEGMENTS = -4",
         ),
         (
-            "RAID_ARROW_NAVAL_SUBDIVISIONS = 20",
+            "RAID_ARROW_NAVAL_SUBDIVISIONS = 9",
             "RAID_ARROW_NAVAL_SUBDIVISIONS = 0",
         ),
         (
-            "RAID_ARROW_LAND_SUBDIVISIONS = 12",
+            "RAID_ARROW_LAND_SUBDIVISIONS = 7",
             "RAID_ARROW_LAND_SUBDIVISIONS = 2.5",
         ),
     ]);
@@ -657,6 +684,8 @@ fn segment_and_subdivision_counts_are_at_least_one() {
 
 #[test]
 fn unit_animation_stages_keep_authored_order_across_blocks() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let catalog = parse(
         &[],
         &[doc(br#"types = { militia = {
@@ -695,6 +724,8 @@ fn unit_animation_stages_keep_authored_order_across_blocks() {
 
 #[test]
 fn a_repeated_category_is_the_later_declaration_alone() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let categories = doc(
         b"categories = { air = { free_targeting = yes visible = { always = yes } } }
               categories = { air = { available = { always = no } } }",

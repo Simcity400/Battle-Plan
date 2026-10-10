@@ -52,7 +52,7 @@ fn hsv_sectors_outside_zero_to_four_take_the_last_case() {
 
 #[test]
 fn the_field_peaks_on_the_boundary_and_dies_inside_the_region() {
-    // Section 1.4 worked through by hand for a state layer, T = 5, C = 2.
+    // Hand-calculated field fixture with thickness five and scale two.
     assert_eq!(field_alpha(0.0, 5.0, 2.0), 247, "255 - 0 - 8");
     assert_eq!(field_alpha(1.0, 5.0, 2.0), 246, "255 - 1 - 8");
     assert_eq!(
@@ -87,7 +87,7 @@ fn country_thickness_runs_from_five_to_twenty_five_pixels() {
     assert_eq!(country_thickness(u64::MAX, &FieldDefines::TEST), 25.0);
     // Halfway up the area range is halfway up the thickness range.
     assert!((country_thickness((300 + 9000) / 2, &FieldDefines::TEST) - 15.0).abs() < 0.001);
-    // The four rows of the module header's table that the capture constrains best.
+    // Representative areas exercise interpolation and the upper clamp.
     for (area, thickness) in [(460, 5.4), (4616, 14.9), (7476, 21.5), (1_217_260, 25.0)] {
         let fitted = country_thickness(area, &FieldDefines::TEST);
         assert!((fitted - thickness).abs() < 0.05, "{area}: {fitted}");
@@ -109,8 +109,8 @@ fn the_optimization_range_never_truncates_a_thicker_field() {
     assert_eq!(field_reach(5.0, &FieldDefines::TEST), 30.0);
     assert_eq!(field_reach(25.0, &FieldDefines::TEST), 30.0);
     assert_eq!(field_alpha(30.0, 25.0, 2.0), 0);
-    // The strategic-region field does not, and reading the range as a cap would cut it at 30
-    // map pixels where the game's own texture carries it past 60.
+    // The strategic-region field extends beyond the optimization range, so that range must not cap
+    // its thickness.
     assert_eq!(field_reach(150.0, &FieldDefines::TEST), 152.0);
     assert_eq!(field_alpha(60.0, 150.0, 2.0), 147);
 }

@@ -1,11 +1,8 @@
-//! Contained template storage returned by CArmy's template getter.
-//!
-//! CReferencedDivisionTemplate contains this at +0x18. Its RTTI does not name
-//! the contained type; the old UZ dossier's CDivision label is unconfirmed.
+//! Contained division-template storage, separate from its reference wrapper.
 
-/// Contained template subunit-entry vector data; old UZ func_140ff5c30.decompile.c:64-67 reads the getter result +A8.
+/// Subunit-entry vector data.
 pub const SUBUNIT_DATA: usize = 0xa8;
-/// Contained template subunit-entry i32 count; old UZ func_140ff5c30.decompile.c:65-66 reads +B4.
+/// Signed i32 subunit-entry count.
 pub const SUBUNIT_COUNT: usize = 0xb4;
-/// Contained template subunit-entry stride; old UZ func_140ff5c30.decompile.c:65-67 advances two qwords, first points to CSubUnitDefinition.
+/// Subunit-entry stride; the first word points to a subunit definition.
 pub const SUBUNIT_ENTRY_STRIDE: usize = 0x10;

@@ -85,14 +85,12 @@ pub struct IdeaCharacter {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectLine {
-    /// The modifier, as the game identifies it: its key folded (1424A7A90,
-    /// FindTokenNoCase 1424A7060); the formats are keyed the same way.
+    /// The modifier's case-folded key; formats are keyed the same way.
     pub key: String,
-    /// The stored value in fixed point with five decimals, as a decimal
-    /// string: the CRT conversion of the authored text into a zeroed
-    /// destination (1406042A0, 1424B0480).
+    /// The stored fixed5 value as a decimal string. Authored text converts
+    /// into a zeroed destination.
     pub fixed5: String,
-    /// Named in `hidden_modifier`: applied, never listed (14054F6D0).
+    /// Named in hidden_modifier: applied, never listed.
     pub hidden: bool,
 }
 
@@ -104,8 +102,8 @@ pub struct EffectGroup {
     /// An equipment bonus that applies at once to existing equipment.
     pub instant: bool,
     pub lines: Vec<EffectLine>,
-    /// A targeted modifier's custom tooltip keys, in the order its CModifier
-    /// lists them (14054E050); none for an equipment bonus.
+    /// A targeted modifier's custom tooltip keys in stored order;
+    /// none for an equipment bonus.
     pub tooltips: Vec<String>,
 }
 
@@ -230,11 +228,10 @@ pub struct ScannedIdeas {
     pub spans: Vec<IdeaSpan>,
     pub unobserved: Vec<HourSpan>,
     pub identity_starts: Vec<i32>,
-    /// For each identity start, the country as idea naming reads it
-    /// (140FBCF90).
+    /// For each identity start, the country used for idea naming.
     pub(crate) identity_naming: Vec<NamingCountry>,
-    /// Each recorded advisor holder's template (CCharacter+0x20), by
-    /// character id, or why the recording does not give it.
+    /// Each recorded advisor holder's template, by character id,
+    /// or why the recording does not give it.
     pub(crate) templates: BTreeMap<u32, Result<BuiltTemplate, String>>,
     pub warnings: Vec<String>,
     /// Feed-only naming at each span's first hour, in the same order as `spans`.
@@ -244,11 +241,10 @@ pub struct ScannedIdeas {
     pub(crate) gap_starts: Vec<i32>,
 }
 
-/// Witnessed additions only (active ideas: AddIdeas 140349B50, RemoveIdeas
-/// 14035D500, SwapIdeas 140366540; appointed advisors: CCountryCharacters+0x58).
-/// A rename or newly resolved script token for the
-/// same character and seat does not hire an advisor again. Every sampled
-/// addition is dated by first observation, an upper bound rather than a writer hour.
+/// Witnessed additions of active ideas and appointed advisors only.
+/// A rename or newly resolved script token for the same character and seat
+/// does not hire an advisor again. Every sampled addition is dated by
+/// first observation, an upper bound rather than a writer hour.
 #[cfg(test)]
 pub(crate) fn additions(scanned: &ScannedIdeas) -> impl Iterator<Item = &IdeaSpan> {
     addition_indices(scanned).map(move |index| &scanned.spans[index])
@@ -466,8 +462,8 @@ impl CountryScan {
             let name = row
                 .and_then(|row| std::str::from_utf8(&row.token).ok())
                 .unwrap_or_default();
-            // Only a build or a save load sets CCharacter+0x20, so the
-            // first template read stands.
+            // Only a build or save load sets the character's template, so
+            // the first template read stands.
             if !matches!(result.templates.get(&advisor.character), Some(Ok(_))) {
                 let template = match (characters, row) {
                     (_, Some(row)) => built_template(row, lexical),
@@ -947,9 +943,9 @@ fn equipment(bonuses: &[installed_content::modifiers::EquipmentBonus]) -> Vec<Ef
         .collect()
 }
 
-/// A CModifier's lines: one per stored modifier, a hidden one marked. Its
-/// `added_modifier` children are not listed (FormatDescription 14054E050
-/// reads the values and the tooltip table only).
+/// A modifier's lines: one per stored modifier, a hidden one marked.
+/// Added-modifier children are not listed; descriptions read the values
+/// and tooltip table only.
 fn lines(modifiers: &Modifiers) -> Vec<EffectLine> {
     modifiers
         .values
@@ -997,8 +993,8 @@ pub(crate) fn prepare_info(
         })
         .ok()
         .flatten();
-    // The idea's group resolves to its category as 140A33240 finds it: by
-    // the category's name (a national spirit's) or by a slot it holds.
+    // The idea's group resolves to its category by the category's name
+    // (a national spirit's) or by a slot it holds.
     let (group_category, gap) = match idea {
         Some(idea) => known(tags.resolve(&idea.group), &subject, &mut findings),
         None => (None, None),
@@ -1047,13 +1043,11 @@ pub(crate) fn prepare_info(
                 token: trait_token.clone(),
                 known: found.is_some(),
                 unknown,
-                // 140711C80 localises the selected trait's stored name,
-                // whose spelling can differ from the reference (140710200).
+                // Trait names localise the selected trait's stored name, whose
+                // spelling can differ from the reference.
                 name: found.and_then(|found| (content.localise)(&found.token, View::Plain)),
-                // The trait's command fields are no lines of the trait: the
-                // per-trait formatter (140711C80 -> 1407104A0) never reads
-                // them; an advisor shows their sum with its own cost
-                // (14128BA50, 14128FDD0, 14128A780).
+                // The trait's command fields are not lines of the trait: its formatter
+                // never reads them. An advisor shows their sum with its own cost.
                 lines: found
                     .map(|found| lines(&found.modifiers))
                     .unwrap_or_default(),
@@ -1069,8 +1063,7 @@ pub(crate) fn prepare_info(
             }
         })
         .collect();
-    // An idea's effects, else its advisor role's (CAdvisorTemplate 1413CA970
-    // keeps `modifier` and `research_bonus`).
+    // An idea's effects, else its advisor role's modifier and research_bonus.
     let modifiers = idea
         .map(|idea| &idea.modifiers)
         .or_else(|| authored_role.map(|role| &role.modifiers));
@@ -1125,7 +1118,7 @@ pub fn categories(content: &Joined) -> Vec<CategoryInfo> {
                 .iter()
                 .map(|slot| SlotInfo {
                     token: slot.clone(),
-                    // Slot names are plain (140FBD700).
+                    // Slot names are plain.
                     name: (content.localise)(slot, View::Plain),
                     character: false,
                     seats: 1,
@@ -1146,7 +1139,7 @@ pub fn categories(content: &Joined) -> Vec<CategoryInfo> {
                     Some(slot) => slot.seats += 1,
                     None => slots.push(SlotInfo {
                         token: seat.clone(),
-                        // Seat names are plain (141D09EF0).
+                        // Seat names are plain.
                         name: (content.localise)(seat, View::Plain),
                         character: true,
                         seats: 1,
@@ -1156,7 +1149,7 @@ pub fn categories(content: &Joined) -> Vec<CategoryInfo> {
             }
             CategoryInfo {
                 token: category.name.clone(),
-                // Category names are plain (1406708A0).
+                // Category names are plain.
                 name: (content.localise)(&category.name, View::Plain),
                 kind: category.kind.clone(),
                 hidden: category.hidden,
@@ -1171,7 +1164,7 @@ pub fn categories(content: &Joined) -> Vec<CategoryInfo> {
 pub(crate) fn effect_keys<'a>(
     ideas: impl IntoIterator<Item = &'a IdeaInfo>,
 ) -> (BTreeSet<String>, BTreeSet<String>) {
-    // YES/NO: FormatValue 14054FE50 (YES at 142760760).
+    // Boolean modifier values use YES/NO localisation.
     let mut modifier_keys = BTreeSet::new();
     let mut text_keys: BTreeSet<String> = ["YES", "NO"].map(str::to_owned).into();
     for idea in ideas {
@@ -1196,7 +1189,7 @@ pub(crate) fn effect_keys<'a>(
                 effects(&found.lines, &found.targeted, &found.tooltips);
             }
         }
-        // _research: CCountryTechnologyView::BuildTooltip 1415E5420, 1427516B0.
+        // Research bonuses use the research-tooltip content key.
         text_keys.extend(
             idea.research
                 .iter()

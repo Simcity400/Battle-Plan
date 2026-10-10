@@ -120,7 +120,7 @@ fn delivery_source(base: usize, caller: usize) -> DeliverySource {
     }
 }
 fn rocket_source(kind: u32, caller: usize) -> bool {
-    // DailyProduce140F5C150 and its DELIVERY return140F5C24A are rocket
+    // Daily rocket production and its DELIVERY return are rocket
     // observations. Equipment's DELIVERY/CREDIT still use the same guard,
     // but must not inflate the rocket counter.
     kind == 2
@@ -223,7 +223,7 @@ unsafe extern "system-unwind" fn before(
             context.scope_owned = true;
         } else {
             let scope = SCOPE.try_with(|scope| scope.get()).unwrap_or_default();
-            // DELIVERY RCX is CLogisticsStatus. Producer comes only from the
+            // DELIVERY RCX is logistics status. Producer comes only from the
             // matched same-thread Rocket scope, not a receiver-type guess.
             let variant = engine::cequipment_variant::identity(&memory, base, second).unwrap_or(0);
             if let crate::extended::rocket_output::Entry::Delivery {

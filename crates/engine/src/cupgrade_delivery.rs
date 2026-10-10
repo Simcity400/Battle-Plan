@@ -1,21 +1,22 @@
 //! CUpgradeDelivery with an embedded CEquipmentVariantPool.
 //!
-//! hourly path updates and removes deliveries before the accepted callback;
-//! live consistency and the other allocation/command routes still need proof.
+//! Progress is serialized only for status one. The ordinary hourly path
+//! updates and removes deliveries before capture; other allocation and command
+//! routes do not establish a consistency contract here.
 
-/// CUpgradeDelivery primary vtable; pinned-exe RTTI confirms old D93 lib.rs:52.
+/// CUpgradeDelivery primary vtable.
 pub const VTABLE_RVA: usize = 0x29bb2e0;
-/// CUpgradeDelivery status, u32; old D93 read_deliveries reads +0x08.
+/// CUpgradeDelivery status, u32.
 pub const STATUS: usize = 0x08;
-/// CUpgradeDelivery status whose progress is read; old D93 read_deliveries admits +0x10 only when status equals 1.
+/// Status whose progress is read; other statuses do not reach the progress field.
 pub const PROGRESS_AVAILABLE_STATUS: u32 = 1;
-/// CUpgradeDelivery progress, i64 native fixed point; old D93 read_deliveries reads +0x10 when status is 1.
+/// CUpgradeDelivery progress, i64 native fixed point.
 pub const PROGRESS: usize = 0x10;
-/// CUpgradeDelivery total progress, i64 native fixed point; old D93 read_deliveries reads +0x18 for every status.
+/// CUpgradeDelivery total progress, i64 native fixed point.
 pub const TOTAL_PROGRESS: usize = 0x18;
-/// CUpgradeDelivery embedded CEquipmentVariantPool; old D93 read_deliveries validates its vtable at +0x20.
+/// CUpgradeDelivery embedded CEquipmentVariantPool.
 pub const PRODUCED_EQUIPMENT_POOL: usize = 0x20;
-/// CUpgradeDelivery numeric scale; old D93 lib.rs:65 records native fixed point with denominator 100,000.
+/// CUpgradeDelivery numeric scale.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
 
 use crate::{

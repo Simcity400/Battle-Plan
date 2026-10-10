@@ -119,11 +119,9 @@ pub struct RaidRun {
 }
 
 /// (First read, last read, preparation at first read, change per read hour).
-/// Stored preparation hours at CRaidInstance+0x44. The active
-/// tooltip@141612820 -> phase text@140FD5730 reads it through
-/// GetPhaseElapsedHours@140FD53C0 in phase 2. Other phases do not use it as
-/// elapsed phase time. Every hour in a run was read and matched its exact slope;
-/// a missing read ends it, so this encoding never interpolates across a gap.
+/// Stored preparation hours supply elapsed phase time in phase 2 only.
+/// Every hour in a run was read and matched its exact slope; a missing read
+/// ends it, so this encoding never interpolates across a gap.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
 pub struct RaidPreparationRun(pub i32, pub i32, pub i32, #[ts(type = "number")] pub i64);
 
@@ -198,12 +196,11 @@ pub struct RaidsReply {
     pub warnings: Vec<String>,
 }
 
-/// Execute@140FD9070 and TryAutoLaunch@140FD7E50 call SetPhase@140FD4EF0(4).
-/// End@140FD7600 also runs directly from console callback@1402574C0 for any
-/// non-ended phase. A terminal result therefore cannot prove an unseen launch.
-/// Finite nonzero travelled proves flight: constructor@140FD46D0 starts it at zero,
-/// SetPhase(4) clears it, and HourlyUpdate@140FDA5A0 adds speed only in phase 4.
-/// End preserves it; ReadToken@140FD9560 loads the trusted saved distance.
+/// Execution and auto-launch enter phase 4. Ending can also run directly
+/// from the console for any non-ended phase, so a terminal result cannot
+/// prove an unseen launch. Finite nonzero travelled proves flight: it starts
+/// at zero, entering phase 4 clears it, and hourly updates add speed only
+/// in phase 4. Ending preserves it; loading restores the trusted saved distance.
 fn launched(row: &RaidRow) -> Option<bool> {
     if row
         .travelled
@@ -219,8 +216,8 @@ fn launched(row: &RaidRow) -> Option<bool> {
     }
 }
 
-/// End@140FD7600's success branch tests `(outcome - 3U) < 2`: limited
-/// success (2) is excluded, exactly as the native success-only effects are.
+/// The success branch tests `(outcome - 3U) < 2`: limited success (2)
+/// is excluded, exactly as the success-only effects are.
 fn succeeded(row: &RaidRow) -> Option<bool> {
     match row.outcome {
         native::OUTCOME_SUCCESS | native::OUTCOME_CRITICAL_SUCCESS
@@ -247,8 +244,8 @@ struct Content {
 }
 
 fn icon_key(cat: &Catalogue, kind: &RaidType, template: Option<&str>) -> Result<String, String> {
-    // BuildSpriteName@141EDC220's fallback bytes at 142A79358. The key is a
-    // native literal; whether its sprite exists and all pixels are content facts.
+    // The fallback sprite key is an interface literal; whether its sprite
+    // exists and all pixels are content facts.
     let refused = std::cell::RefCell::new(None);
     let key = kind
         .icon(template, |key| match cat.sprites.find(key) {
@@ -279,7 +276,7 @@ fn localised_label(cat: &Catalogue, key: &str) -> Option<String> {
     cat.localised(key, View::Plain)
 }
 
-// GetLocalizedName@140A8E3B0 constructs raid_type_<database name>.
+// Raid names use raid_type_<database name>.
 fn type_name_key(kind: &RaidType) -> String {
     format!("raid_type_{}", kind.name)
 }
@@ -696,12 +693,11 @@ impl Scan {
                     }
                 }
             }
-            // End@140FD7600 saves the victim at +0x1D0. Feedback view@141B20DE0
-            // renders its flag through 140FD7E10 (saved positive country first,
-            // else the live scope resolver). This format lacks +0x1D0: retain
-            // the first phase-5 read's victim, including an unresolved one,
-            // rather than follow later conquests. Control changes before that
-            // first read cannot be recovered from this recording.
+            // Ending saves the victim. Feedback renders its flag from the saved
+            // positive country first, else the live scope resolver. This format lacks
+            // the saved victim: retain the first phase-5 read's victim, including an
+            // unresolved one, rather than follow later conquests. Control changes
+            // before that first read cannot be recovered from this recording.
             if row.phase == native::PHASE_ENDED {
                 victim = self.ended_victims.entry(key).or_insert(victim).clone();
             }
@@ -725,7 +721,7 @@ impl Scan {
             };
             let was_success = succeeded(row);
             if row.phase == native::PHASE_ENDED && was_launched.is_none() {
-                self.refusals.note("terminal result without recorded phase 4 or finite nonzero flight distance; console End@1402574C0 can bypass launch", &id);
+                self.refusals.note("terminal result without recorded phase 4 or finite nonzero flight distance; ending from the console can bypass launch", &id);
             }
             if let Some(tag) = &raider {
                 let holder = self.tracks[tag].holder.expect("current country holder");
@@ -934,9 +930,9 @@ struct Cache {
 }
 
 /// Recorded feature evidence for the picker, stopping at the first positive
-/// read. Native allowed-type roster is
-/// populated at load/new game/database reload@1414D82D0, independently of player
-/// status. Neither a missing row nor an empty roster invents a disabled feature.
+/// read. The allowed-type roster is populated at load/new game/database reload,
+/// independently of player status. Neither a missing row nor an empty roster
+/// invents a disabled feature.
 fn recording_available(
     replay: &Replay,
     branch: u64,
@@ -1295,8 +1291,7 @@ impl Product for Raids {
         };
         let mut reply = RaidsReply {
             branch_id: params.branch_id.clone(),
-            // Phase text@140FD5730 and feedback tooltip@141613BE0 select
-            // these CRaidInstance enum IDs.
+            // Phase text and feedback tooltips select these raid enum IDs.
             phase_preparing: native::PHASE_PREPARING,
             phase_ended: native::PHASE_ENDED,
             outcome_none: native::OUTCOME_NONE,

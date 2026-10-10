@@ -185,6 +185,8 @@ const GOLD: [u8; 4] = [255, 200, 0, 255];
 /// renamed base resource takes the mod's name.
 #[test]
 fn resource_balance_names_and_draws_a_mod_resource_from_the_mod_s_own_art() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("resources");
     let (base, addon) = (stack.base(), stack.addon());
     stack.write(
@@ -195,7 +197,7 @@ fn resource_balance_names_and_draws_a_mod_resource_from_the_mod_s_own_art() {
     stack.write(
         &base,
         "localisation/english/resources_l_english.yml",
-        "\u{feff}l_english:\n PRODUCTION_MATERIALS_OIL:0 \"Oil\"\n PRODUCTION_MATERIALS_STEEL:0 \"Steel\"\n",
+        "\u{feff}l_english:\n PRODUCTION_MATERIALS_OIL:0 \"Base liquid\"\n PRODUCTION_MATERIALS_STEEL:0 \"Base metal\"\n",
     );
     stack.write(
         &base,
@@ -327,6 +329,8 @@ fn a_cosmetic_flag_in_a_subfolder_is_drawn_and_an_unresolvable_one_never_falls_t
 /// and a mod that redeclares the top bar in a later file wins, with a warning.
 #[test]
 fn shield_flags_read_the_top_bar_s_own_flag_button_whatever_other_windows_declare() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("shield");
     let (base, addon) = (stack.base(), stack.addon());
     stack.write(
@@ -389,6 +393,8 @@ fn shield_flags_read_the_top_bar_s_own_flag_button_whatever_other_windows_declar
 /// name and slots, and a base category the mod removes is gone.
 #[test]
 fn idea_timeline_categories_come_from_the_mod_stack() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("categories");
     let (base, addon) = (stack.base(), stack.addon());
     stack.write(
@@ -442,6 +448,8 @@ fn idea_timeline_categories_come_from_the_mod_stack() {
 /// may recolour a base ideology, and replacing the folder removes the base ones.
 #[test]
 fn ruling_party_ideologies_take_the_mod_s_names_and_colours() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("ideologies");
     let (base, addon) = (stack.base(), stack.addon());
     stack.write(
@@ -514,6 +522,8 @@ fn ruling_party_ideologies_take_the_mod_s_names_and_colours() {
 /// base game's usual three.
 #[test]
 fn idea_artwork_follows_the_mod_s_sprites_and_localisation() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("artwork");
     let (base, addon) = (stack.base(), stack.addon());
     stack.write(
@@ -591,6 +601,8 @@ fn idea_artwork_follows_the_mod_s_sprites_and_localisation() {
 /// replies stay quiet.
 #[test]
 fn a_refused_sprite_override_shows_no_art_and_says_why() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("refused_sprite");
     let (base, addon) = (stack.base(), stack.addon());
     stack.write(
@@ -648,6 +660,8 @@ fn unusual_and_dynamic_tags_are_valid_country_keys() {
 /// An ambiguous first portrait cannot fall through to a lower role or token art.
 #[test]
 fn an_ambiguous_first_portrait_stops_the_native_role_search() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("ambiguous_portrait");
     stack.write(
         &stack.addon(),
@@ -686,6 +700,8 @@ fn an_ambiguous_first_portrait_stops_the_native_role_search() {
 
 #[test]
 fn a_tag_specific_idea_sprite_keeps_the_holder_tag_opaque() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("tag_artwork");
     stack.write(
         &stack.addon(),
@@ -717,6 +733,8 @@ fn a_tag_specific_idea_sprite_keeps_the_holder_tag_opaque() {
 
 #[test]
 fn an_ideas_own_art_does_not_evaluate_an_ambiguous_advisor_portrait() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("lazy_portrait");
     stack.write(
         &stack.addon(),
@@ -756,6 +774,8 @@ fn an_ideas_own_art_does_not_evaluate_an_ambiguous_advisor_portrait() {
 
 #[test]
 fn a_resource_icon_is_the_trade_row_s_button_whatever_file_declares_it() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (kind, drawn) in [("buttonType", true), ("iconType", false)] {
         let stack = Stack::new(kind);
         stack.write(
@@ -796,7 +816,7 @@ fn a_resource_icon_is_the_trade_row_s_button_whatever_file_declares_it() {
             assert_eq!(icon, &Some(pixel_png(BLUE)));
             assert!(warnings.is_empty(), "{warnings:?}");
         } else {
-            // The trade view asks FindButton; an icon of the name is not its control.
+            // The trade view looks up a button; an icon of the name is not its control.
             assert_eq!(icon, &None);
             assert!(
                 warnings
@@ -811,6 +831,8 @@ fn a_resource_icon_is_the_trade_row_s_button_whatever_file_declares_it() {
 /// The offline corpus uses each product's own preparation over the merged stack.
 #[test]
 fn content_check_exercises_every_product_and_names_exact_mod_fallbacks() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::{
         content_check::{Finding, Kind, check},
         products::{self, Product},
@@ -967,7 +989,7 @@ fn content_check_exercises_every_product_and_names_exact_mod_fallbacks() {
         "l_english:\n mod_focus_desc:0 \"Mod focus description\"\n mod_idea:0 \"Mod idea\"\n mod_idea_desc:0 \"Mod idea description\"\n",
         " mod_tech:0 \"Mod technology\"\n mod_tech_desc:0 \"Mod technology description\"\n",
         " spirits:0 \"Mod spirits\"\n mod_group:0 \"Mod government\"\n mod_type:0 \"Mod type\"\n",
-        " PRODUCTION_MATERIALS_MOD_CRYSTAL:0 \"Mod crystal\"\n YES:0 \"Yes\"\n NO:0 \"No\"\n",
+        " PRODUCTION_MATERIALS_MOD_CRYSTAL:0 \"Mod crystal\"\n YES:0 \"Fixture enabled\"\n NO:0 \"Fixture disabled\"\n",
         " mod_tag:0 \"Mod country\"\n mod_works:0 \"Mod works\"\n mod_archetype:0 \"Mod equipment\"\n",
         " mod_level:0 \"Mod level\"\n MOD_STATE:0 \"Mod state\"\n MOD_REGION:0 \"\"\n mod_specialization:0 \"Mod specialization\"\n mod_project:0 \"Mod project\"\n")
     );
@@ -1095,7 +1117,7 @@ fn content_check_exercises_every_product_and_names_exact_mod_fallbacks() {
         findings(products::party_history::PartyHistory::KEY),
         vec![inventory_finding(
             Kind::Content,
-            "party name keys are missing; the ideology group name is shown (14118F860 / 14118EAD0)",
+            "party name keys are missing; the ideology group name is shown",
             &[
                 "party \"mod_tag\" / mod_group: party name keys for \"mod_tag\" / mod_group are missing; the ideology group name is shown"
             ]
@@ -1193,7 +1215,7 @@ fn content_check_exercises_every_product_and_names_exact_mod_fallbacks() {
             .any(|finding| finding.kind == Kind::Fallback
                 && finding.subject == "operation mod_covert")
     );
-    // LocalizeOperationName@140A6DF00 preserves the definition's empty name.
+    // Operation naming preserves the definition's empty name.
     let changed_intelligence =
         products::intelligence_content::IntelligenceContent::load(Arc::clone(&changed_raids))
             .unwrap();
@@ -1380,6 +1402,8 @@ fn flag_cache_keeps_sets_separate_for_opaque_subfolder_keys() {
 
 #[test]
 fn offline_ideas_report_traits_scripted_names_and_recorded_name_operands() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::{
         content_check::{Finding, Kind, check},
         products::{self, Product},
@@ -1399,7 +1423,7 @@ fn offline_ideas_report_traits_scripted_names_and_recorded_name_operands() {
     stack.write(&addon, "common/ideas/mod.txt", "ideas = { spirits = { scoped = { traits = { missing_trait } } } generated = { generated_idea = { } } }");
     stack.write(&addon, "interface/mod.gfx", "spriteTypes = { spriteType = { name = GFX_idea_scoped texturefile = gfx/mod.tga } spriteType = { name = GFX_idea_generated_idea texturefile = gfx/mod.tga } }");
     stack.write(&addon, "gfx/mod.tga", tga_row(&[GREEN]));
-    stack.write(&addon, "localisation/mod_l_english.yml", "l_english:\n spirits:0 \"Spirits\"\n generated:0 \"Advisors\"\n scoped:0 \"[ROOT.GetName]\"\n YES:0 \"Yes\"\n NO:0 \"No\"\n");
+    stack.write(&addon, "localisation/mod_l_english.yml", "l_english:\n spirits:0 \"Spirits\"\n generated:0 \"Advisors\"\n scoped:0 \"[ROOT.GetName]\"\n YES:0 \"Fixture enabled\"\n NO:0 \"Fixture disabled\"\n");
     let catalogue = stack.catalogue(&[]);
     let checks = check(Arc::clone(&catalogue.content), "english");
     let ideas = checks
@@ -1491,7 +1515,7 @@ fn country_name_checks_report_bare_opaque_tags() {
             check.findings,
             vec![inventory_finding(
                 Kind::Content,
-                "country-name ladder has no localisation; the bare tag key is copied (142230940)",
+                "country-name ladder has no localisation; the bare tag key is copied",
                 &[
                     "country name \"tag with spaces\" group None: no localisation key names tag with spaces; the country name is unavailable and the tag is shown"
                 ]
@@ -1644,6 +1668,8 @@ fn missing_resource_keys_are_content_and_shared_icon_refusals_are_not_repeated()
 
 #[test]
 fn ideology_colour_refusals_emit_one_warning_without_text_refusals() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::content_check::Kind;
     let stack = Stack::new("ideology_colour");
     stack.write(
@@ -1683,6 +1709,8 @@ fn ideology_colour_refusals_emit_one_warning_without_text_refusals() {
 
 #[test]
 fn an_iconless_focus_draws_the_engine_s_unknown_goal_or_says_it_cannot() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::{
         content_check::{Kind, check},
         products::{self, Product},
@@ -1759,7 +1787,7 @@ fn an_iconless_focus_draws_the_engine_s_unknown_goal_or_says_it_cannot() {
 }
 
 #[test]
-fn truncated_flag_is_a_product_refusal_rather_than_engine_parity() {
+fn truncated_flag_is_refused_without_a_content_fallback_claim() {
     use crate::{content_check::Kind, products::country_flags::FlagCache};
     use installed_content::flags::FlagSet;
     let stack = Stack::new("truncated_flag");
@@ -1780,13 +1808,15 @@ fn truncated_flag_is_a_product_refusal_rather_than_engine_parity() {
     assert!(
         findings[0]
             .message
-            .contains("engine does not check read status")
+            .contains("game does not check read status")
     );
     assert!(!findings.iter().any(|finding| finding.kind == Kind::Content));
 }
 
 #[test]
 fn native_reader_recovery_is_owned_by_the_corpus_reader() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("native_recovery");
     stack.write(
         &stack.addon(),
@@ -1815,6 +1845,8 @@ fn native_reader_recovery_is_owned_by_the_corpus_reader() {
 
 #[test]
 fn stability_advisor_names_and_roles_need_the_recorded_holder() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::{
         content_check::{Kind, check},
         products::{self, Product},
@@ -1860,6 +1892,8 @@ fn stability_advisor_names_and_roles_need_the_recorded_holder() {
 
 #[test]
 fn ideas_draw_the_mods_unknown_sprite_or_name_its_failure() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("unknown_idea_art");
     let (base, addon) = (stack.base(), stack.addon());
     stack.write(
@@ -1910,9 +1944,11 @@ fn ideas_draw_the_mods_unknown_sprite_or_name_its_failure() {
 }
 
 #[test]
-fn corpus_separates_recording_context_engine_names_and_uncited_technology_fallbacks() {
+fn corpus_separates_recording_context_country_names_and_technology_fallbacks() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::content_check::{Kind, check};
-    let stack = Stack::new("round3_classes");
+    let stack = Stack::new("context_name_fallbacks");
     let addon = stack.addon();
     stack.write(
         &addon,
@@ -1994,7 +2030,8 @@ fn corpus_separates_recording_context_engine_names_and_uncited_technology_fallba
             findings(key)
                 .iter()
                 .any(|finding| finding.kind == Kind::Content
-                    && finding.message == "country-name ladder has no localisation; the bare tag key is copied (142230940)"
+                    && finding.message
+                        == "country-name ladder has no localisation; the bare tag key is copied"
                     && finding
                         .examples
                         .iter()
@@ -2023,6 +2060,8 @@ fn corpus_separates_recording_context_engine_names_and_uncited_technology_fallba
 
 #[test]
 fn character_reader_notes_are_not_repeated_by_product_preparation() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("shared_politics_notes");
     stack.write(
         &stack.addon(),
@@ -2052,6 +2091,8 @@ fn character_reader_notes_are_not_repeated_by_product_preparation() {
 
 #[test]
 fn recorded_holder_names_settle_alternatives_but_authored_portraits_still_do_not() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::content_check::{Kind, check};
     let stack = Stack::new("recorded_names");
     let addon = stack.addon();
@@ -2134,6 +2175,8 @@ fn recorded_holder_names_settle_alternatives_but_authored_portraits_still_do_not
 
 #[test]
 fn live_catalogue_does_not_accumulate_product_findings() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::content_check::{Finding, Kind};
     let stack = Stack::new("live_findings");
     stack.write(&stack.addon(), "common/national_focus/mod.txt", "focus_tree = { focus = { id = mod_live_focus icon = { GFX_trigger_chosen = { always = yes } } } }");
@@ -2202,6 +2245,8 @@ fn live_catalogue_does_not_accumulate_product_findings() {
 
 #[test]
 fn offline_idea_icons_skip_country_candidates_and_aggregate_the_dependency() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::content_check::{Kind, check};
     let stack = Stack::new("offline_idea_icon_country");
     let addon = stack.addon();
@@ -2241,6 +2286,8 @@ fn offline_idea_icons_skip_country_candidates_and_aggregate_the_dependency() {
 
 #[test]
 fn trigger_chosen_focus_icons_are_one_counted_finding() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::content_check::{Kind, check};
     let stack = Stack::new("focus_icon_aggregate");
     stack.write(&stack.addon(), "common/national_focus/mod.txt", "focus_tree = { focus = { id = mod_focus_one icon = { GFX_mod_one = { always = yes } } } focus = { id = mod_focus_two icon = { GFX_mod_two = { always = no } } } }");
@@ -2269,6 +2316,8 @@ fn trigger_chosen_focus_icons_are_one_counted_finding() {
 
 #[test]
 fn corpus_checks_new_main_products_through_their_shared_preparation() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::content_check::{Kind, check};
     let stack = Stack::new("main_product_preparation");
     let addon = stack.addon();
@@ -2420,7 +2469,7 @@ fn corpus_checks_new_main_products_through_their_shared_preparation() {
             &[(
                 Kind::Content,
                 Some("building unnamed_works"),
-                "142230940",
+                "shown by its token",
                 None,
             )],
             &[],
@@ -2471,6 +2520,8 @@ fn corpus_checks_new_main_products_through_their_shared_preparation() {
 
 #[test]
 fn recorded_holder_names_survive_refused_content() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("saved_name_refused_content");
     stack.write(
         &stack.addon(),
@@ -2514,7 +2565,7 @@ fn factory_missing_names_are_content_and_refused_text_stays_refused() {
     assert!(
         findings.iter().any(|finding| finding.kind == Kind::Content
             && finding.subject == "building unnamed_works"
-            && finding.message.contains("142230940")),
+            && finding.message.contains("shown by its token")),
         "{findings:?}"
     );
     assert!(
@@ -2604,6 +2655,8 @@ fn shared_equipment_and_autonomy_reader_notes_are_not_repeated_by_products() {
 
 #[test]
 fn every_shared_preparation_note_has_one_owner_and_its_producer_kind() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::content_check::{
         AUTONOMY_CHECK_KEY, CONSTRUCTION_CHECK_KEY, Finding, INTELLIGENCE_CHECK_KEY, Kind,
         PRODUCTION_LINES_CHECK_KEY, SHARED_CHECK_KEYS, check,

@@ -1,4 +1,4 @@
-//! EC1A80, D6D9B0, D6DB40, ED0970 and D6F050 sharing operands.
+//! Stored research-sharing operands.
 use super::*;
 
 const GROUP_VTABLE: usize = crate::ctechnology_sharing_group::VTABLE_RVA;
@@ -44,7 +44,7 @@ impl Country {
     ) -> Result<Self, &'static str> {
         let roster = array_at(memory, at(status, 0x118)?, 8)?;
         let mut result = Self {
-            // 140D6D9B0 visits the complete signed sharing-roster count.
+            // Visit the complete signed sharing-roster count.
             groups: crate::allocation::default_vec(roster.count as usize)
                 .map_err(|_| "research sharing group allocation failed")?,
             len: 0,
@@ -58,8 +58,8 @@ impl Country {
             }
             let members = array(&bytes[24..40], 4)?;
             let bonuses = array(&bytes[48..64], 8)?;
-            // D6D9B0 scans +18/+24 to its live count and indexes the parallel
-            // +30 bonuses by the same ordinal: the headers are the only bound.
+            // Scan +0x18/+0x24 to the live count and index parallel +0x30 bonuses
+            // by the same ordinal; the headers are the only bound.
             if members.count != bonuses.count {
                 return Err("research sharing members invalid");
             }
@@ -133,7 +133,7 @@ impl Country {
         memo: &mut Witnesses,
         out: &mut Output<'_>,
     ) -> Result<(), &'static str> {
-        // EC1A80 bypasses sharing for template+409 doctrine flag.
+        // The template +0x409 doctrine flag bypasses sharing.
         if self.len == 0 {
             return Ok(());
         }
@@ -222,7 +222,7 @@ fn capture_categories(
     owner: u32,
     out: &mut Output<'_>,
 ) -> Result<(), &'static str> {
-    // 140ED0970 uses the original template category roster.
+    // Use the original template category roster.
     for index in 0..categories.count {
         let p = categories
             .element(index, 40)
@@ -247,8 +247,8 @@ struct Witness {
     present: bool,
     predecessors: Array,
 }
-/// Original member witnesses keyed by (raw member, template), retained for
-/// the whole country pass. EC9CB0 selects the native member/template headers.
+/// Original member witnesses keyed by raw member and template, retained
+/// for the whole country pass with the selected member/template headers.
 #[derive(Default)]
 pub(super) struct Witnesses {
     entries: std::collections::HashMap<(u32, usize), Witness>,
@@ -339,7 +339,7 @@ impl Witnesses {
             raw,
             Text::default(),
         )?;
-        // EC9CB0's predecessor classifier and maximum-level gates are replay calculations.
+        // Predecessor-classifier and maximum-level gates are replay calculations.
         pointer_pages(memory, witness.predecessors, |predecessor| {
             let classifier = read::<u32>(memory, at(predecessor, crate::ctechnology::CLASSIFIER)?)
                 .ok_or("research sharing predecessor unreadable")?;

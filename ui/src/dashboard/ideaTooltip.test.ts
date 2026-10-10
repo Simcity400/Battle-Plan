@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { IdeaInfo, ModifierFormat } from '../generated/dashboard';
 import { fixed5Of, fixed5Text, formatModifier, ideaEffectRows, ideaTooltip, ideaTooltipSources, ideaTargetTags, tooltipRowBudget, tooltipText } from './ideaTooltip.ts';
 
-// Recorded definitions (the static examples in the formatting evidence).
+// Modifier definitions covering the formatting flags.
 const format = (key: string, index: number, flags: number, precision: number, label: string, postfix: string | null = null): ModifierFormat =>
   ({ key, index, flags, precision, label, postfix, postfixKey: postfix ? 'MOD_DAILY' : null, feature: 0, source: 'recorded' });
 const STABILITY = format('stability_factor', 0x8d, 3, 2, 'Stability');
@@ -52,7 +52,7 @@ const sources = ideaTooltipSources({
 
 test('an idea lists its effects in key order, hides what the game hides, and marks what it cannot format', () => {
   const { rows, note } = ideaEffectRows(idea({
-    // A value the game's conversion cannot read is stored as 0 (1424B0480): stability is not shown.
+    // A value the game's conversion cannot read is stored as 0: stability is not shown.
     effects: [line('stability_factor', 0), line('political_power_gain', 0.2), line('min_export', 0),
       line('consumer_goods_factor', 0, true), line('mod_key', 0.3)],
     tooltips: ['MY_TOOLTIP'],

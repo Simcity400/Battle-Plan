@@ -331,7 +331,7 @@ fn scalar_stats_channels(
     memory: &impl Memory,
     values: Array,
 ) -> bool {
-    // Independent copy of the original scalar loop, not the gather layout.
+    // Independent scalar span check for the gather layout.
     for (len, index) in [
         (32, 0_usize),
         (8, 10),

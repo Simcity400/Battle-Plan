@@ -138,7 +138,7 @@ mod tests {
     const SYSTEM: usize = 0x2200;
     const FACTIONS: usize = 0x2300;
     const FIRST: usize = 0x3000;
-    // A CFaction spans past its colour at +0x9d0, so the second one sits after every other object.
+    // A faction spans past its colour field, so the second one sits after every other object.
     const SECOND: usize = 0xb000;
     const MEMBERS: usize = 0x4300;
     const C1: usize = 0x5000;
@@ -207,7 +207,7 @@ mod tests {
                 faction + cfaction::NAME + msvc_string::CAPACITY,
                 15,
             );
-            // No template, and the default colour: CColor's vtable with 1.0 components.
+            // No template, and the default colour: the colour object's vtable with 1.0 components.
             put64(
                 &mut bytes,
                 faction + cfaction::COLOR,

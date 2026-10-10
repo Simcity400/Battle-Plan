@@ -64,7 +64,7 @@ impl Text {
     ) -> Result<Self, &'static str> {
         if descriptor.len > 512 && growing {
             let mut bytes = Vec::new();
-            // 140EC8640/1413BAA70 consume the original std::string length.
+            // Text consumers use the original stored string length.
             // Acquire payload chunks before growth so an invalid source keeps
             // its original read failure ahead of any allocation failure.
             descriptor.copy_buffer(memory, &mut crate::walk::Buffer::Growing(&mut bytes), 0)?;

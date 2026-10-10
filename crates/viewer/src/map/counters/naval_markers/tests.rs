@@ -1,7 +1,7 @@
 use super::*;
 use replay::frame::{Metrics, TableView};
 
-/// Both colour modes of the convoy addition's background (`140B3C0C0`): the allegiance
+/// Both colour modes of the convoy addition's background : the allegiance
 /// colour, or the first country's UI colour, OTHER for no country, and a named refusal for a
 /// country without one or an unresolved reference.
 #[test]
@@ -33,7 +33,7 @@ fn the_convoy_addition_takes_the_counter_colour_mode() {
     assert!(
         color(country, Some(Ok(9)))
             .unwrap_err()
-            .contains("CCountry+0x390")
+            .contains("country slot 9's UI colour")
     );
     assert!(color(country, Some(Err(77))).unwrap_err().contains("77"));
 }
@@ -191,8 +191,8 @@ fn detail(attackers: &[u32], defenders: &[u32]) -> NavalCombatDetailsRow {
     row
 }
 
-/// Only a forward-group member's task force counts for the HQ frame: `1418E2040` walks the
-/// side's `+0xC8` groups, so a member outside them (`group_index` `u32::MAX`) does not.
+/// Only a forward-group member's task force counts for the HQ frame. A member
+/// outside those groups (`group_index` `u32::MAX`) does not count.
 #[test]
 fn the_hq_frame_counts_only_forward_group_members_of_the_viewers_side() {
     let force = replay::rows::TaskForceRow {
@@ -238,7 +238,7 @@ fn the_hq_frame_counts_only_forward_group_members_of_the_viewers_side() {
         };
         assert_eq!(frame(&[member(7, 0, 0)]), Ok(true));
         assert_eq!(frame(&[member(7, u32::MAX, 0)]), Ok(false));
-        // A retained member (`+0x70`) and another combat's member are not this one's.
+        // A retained member and another combat's member are not this combat's forward members.
         assert_eq!(frame(&[member(7, 0, 1)]), Ok(false));
         assert_eq!(frame(&[member(8, 0, 0)]), Ok(false));
         // Any qualifying task force shows the frame, whatever the order: an unresolved
@@ -875,7 +875,7 @@ fn every_omitted_naval_icon_reaches_the_diagnostics_by_cause_and_combat() {
             1
         )
     );
-    // The omitted icon keeps its identity for the presented frame (S1 #1): its owner, that it
+    // The omitted icon keeps its identity for the presented frame: its owner, that it
     // rotates, and that its place is undecided.
     let anchor = |province: u32| (province != 1_000).then_some([0.0; 3]);
     let hour = NavalMarkerTables::read(
@@ -1011,7 +1011,7 @@ fn every_omitted_naval_icon_reaches_the_diagnostics_by_cause_and_combat() {
     assert_eq!(undecided, [(2, 1001, true, true)]);
 }
 
-/// `1418B50D0` builds from every result its icon holds: the sprite and frame change with
+/// Build from every result its icon holds: the sprite and frame change with
 /// which results those are, and a province's list is undecided while the result tables are
 /// not whole.
 #[test]
@@ -1037,8 +1037,8 @@ fn the_result_presentation_follows_the_results_it_holds() {
         result_presentation(&[won], 1),
         Ok((NAVAL_RESULT_SPRITES[3], 1))
     );
-    // The first with a second reference that expired: one convoy battle of two held is
-    // not a majority (the denominator is `+0x9C`, review_l5c2_st6b 1).
+    // The second reference expired: one convoy battle out of two held references
+    // is not a majority because expired references remain in the denominator.
     assert_eq!(
         result_presentation(&[won], 2),
         Ok((NAVAL_RESULT_SPRITES[2], 1))

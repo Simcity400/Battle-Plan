@@ -1,17 +1,17 @@
 //! Numerical admission for transport borrowers within the original callback.
 //!
-//! `140EF1A60` and `14117B550` pass the selected game-state object to
-//! `1401DCEF0`; the latter advances +468 only after entry and raises +4C0
-//! for its mutation phase. Compare that original callback argument with the
-//! original entry clock, then bind each request to the same base/state/hour.
-//! `14011C710` initializes the OS main-thread ID; its only other xrefs read it.
+//! The hourly update receives the selected game-state object, advances the
+//! clock only after entry and raises its busy flag for the mutation phase.
+//! Compare that original callback argument with the original entry clock,
+//! then bind each request to the same base/state/hour.
+//! The OS main-thread ID is initialized once and remains read-only.
 //! Require that original scalar at callback entry, without calling the native
 //! ETS main-thread helper (which can allocate). Then require the original
 //! authenticated idler's previous graphics task to be absent or completed:
-//! `140DBF240` can execute commands before its native wait, and its ImGui render
-//! panels reach real convoy/stat writers. Serial command/UI/load writers cannot
+//! The idler can execute commands before its wait, and its render panels
+//! reach real convoy/stat writers. Serial command/UI/load writers cannot
 //! run while the admitted main thread holds the callback. Joined simulation
-//! tasks and other foreign task bodies are bounded in the native root evidence.
+//! tasks and other foreign task bodies must remain within the admitted interval.
 
 use engine::{
     Memory,

@@ -16,7 +16,7 @@ impl Materials {
     }
 
     pub fn admitted(&mut self, material: &mesh::Material, sub: &mesh::SubMesh) -> io::Result<bool> {
-        // 14224BA50 uses the string at142AE6A98; 14224BB00 replaces the
+        // Start with the default effect key, then replace the
         // source for every variant only when meshsettings.shader_file is nonempty.
         let file = material
             .shader_file
@@ -37,9 +37,9 @@ impl Materials {
         if !base.is_empty() && effect.select(&name).map_err(io::Error::other)?.is_some() {
             return Ok(true);
         }
-        // 14224BB00 uses the installed global fallback on a base lookup miss.
-        // 14208CA80 registers these from142AE6A98 without material UV defines;
-        // 142251E30 stores their handles. Only a missing fallback skips the record.
+        // The game uses the installed global fallback on a base lookup miss.
+        // Register fallback effects without material UV defines;
+        // The game stores their handles. Only a missing fallback skips the record.
         let fallback = self
             .library
             .load(b"gfx/FX/pdxmesh.lua", &[])
@@ -53,7 +53,7 @@ impl Materials {
     }
 }
 
-/// 14224F250 checks the authored key before applying any meshsettings override.
+/// The game checks the authored key before applying any meshsettings override.
 pub fn candidate(sub: &mesh::SubMesh) -> bool {
     sub.material
         .as_ref()

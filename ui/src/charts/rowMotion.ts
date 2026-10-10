@@ -1,4 +1,4 @@
-/** Table rows that move like the signed-off tables (mock-up economy-1, style-5):
+/** Table row motion:
  * each row slides to its new place when the order changes, a new row flashes in,
  * and a row that is gone fades out where it was before it leaves. Pure: a widget
  * keeps the rows between renders and draws each at its `slot`. */

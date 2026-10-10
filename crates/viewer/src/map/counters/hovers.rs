@@ -66,8 +66,7 @@ pub(super) fn presented(
                 .text_box()
                 .is_some_and(|text| text.always_transparent)
         {
-            // CIconType::object_factory@142358760 -> CIcon+154 bit5;
-            // input_update@1422E6E90 skips CButton's observer dispatch.
+            // Transparent icons pass through the pointer and skip button observer dispatch.
             continue;
         }
         if element.is_named("active_abilities") {
@@ -76,8 +75,8 @@ pub(super) fn presented(
         }
         let control = control(element, railway_gun);
         if let Some(text) = element.text_box() {
-            // HitTest@1422D8240 uses the authored +220/+224 layout, not ink.
-            // The existing TextChild has 1422D7FD0's parent-orientation anchor;
+            // Use the authored layout position and height, independently of glyph ink.
+            // The existing TextChild has the game's parent-orientation anchor;
             // native integer point comparisons exclude both lower edges.
             let layout = if railway_gun {
                 inputs
@@ -132,7 +131,7 @@ pub(super) fn presented(
             if let Some(icon) = element.icon()
                 && icon.rotation != 0.0
             {
-                // CSpriteType::ContainsPoint@14222C220 tests the unturned frame.
+                // Test the unturned frame.
                 // Undo the admitted bars' draw placement before using that frame.
                 if element.is_named("bar_org") || element.is_named("bar_str") {
                     rect[1] -= (frame.drawn[1] - frame.drawn[0]) * scale * 0.5;
@@ -181,7 +180,7 @@ struct Frame {
 
 impl Frame {
     fn scaled_size(&self, scale: f32) -> [f32; 2] {
-        // ContainsPoint@14222C220 multiplies the complete size by the scale,
+        // Multiply the complete size by the scale,
         // then the reciprocal grid size, all in native float precision.
         [0, 1].map(|axis| self.texture[axis] * scale * (1.0 / self.grid[axis] as f32))
     }
@@ -452,6 +451,8 @@ mod tests {
 
     #[test]
     fn vertical_counter_hover_uses_the_native_grid_and_scale_order() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "hoi4_vertical_counter_hover_{}",
             std::process::id()
@@ -507,7 +508,7 @@ mod tests {
         );
         assert_eq!(batch.quads[0].rect, rect);
         assert_eq!(batch.quads[0].uv, [0., 0.5, 1., 1.]);
-        // ContainsPoint@14222C220 scales the full texture before dividing.
+        // Scale the full texture before dividing.
         let fractional = Frame {
             texture: [12., 31.],
             grid: [1, 3],

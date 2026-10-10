@@ -1,13 +1,11 @@
 //! Hourly equipment of divisions minted since the daily `DivisionEquipment`
-//! walk. A division handle is minted either with type 0x33 from the unit id
-//! `0x1268 + n` from the reference registry's counter
-//! (`creference_registry::ID_COUNTER_RVA`, `mint_identity@14220A450`, which
-//! `DeployDivision@1414217F0` and `CreateDeployedGeneralArmy@14159EC30` use).
-//! Both counters only grow, so "not in the last daily walk" is "id past the
-//! counter of its handle type at that walk": a few divisions an hour. A unit
-//! mint takes the counter's value before incrementing it (140C24B40, and
-//! 140BF0AE0), so the counter's own value is the next unit id and is new; the
-//! registry counter is incremented first, so its value is already taken.
+//! walk. A division handle is minted either from the unit id counter or with
+//! a dynamic type from the reference registry's counter. Both counters only
+//! grow, so "not in the last daily walk" is "id past the counter of its handle
+//! type at that walk": a few divisions an hour. A unit mint takes the counter's
+//! value before incrementing it, so the counter's own value is the next unit
+//! id and is new; the registry counter is incremented first, so its value is
+//! already taken.
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{sampling::qpc, spooling::table, table_capture::CaptureRows};
@@ -24,9 +22,9 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 /// The two id counters at the last daily walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Counters {
-    /// `cship::NEXT_ID_RVA`, for type-0x33 handles.
+    /// Unit id counter, for unit handles.
     pub unit: u32,
-    /// `creference_registry::ID_COUNTER_RVA`, for every dynamic type.
+    /// Reference registry counter, for every dynamic type.
     pub registry: u32,
 }
 

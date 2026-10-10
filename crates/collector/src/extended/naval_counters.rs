@@ -30,7 +30,7 @@ struct RiskCapture<'a> {
     ships: Option<&'a mut dyn ctask_force::OriginalRiskShips>,
 }
 
-/// F99BF0 cache pair from the admitted original mission control, one sixteen
+/// Detection cache pair from the admitted original mission control, one sixteen
 /// byte observation. Earlier native skips never demand this independent source.
 fn capture_receiver_cache(memory: &impl Memory, control: &mut super::transport_receivers::Control) {
     if control.packet.in_regions.is_some_and(|flag| flag != 0)
@@ -153,8 +153,8 @@ pub struct Capacities {
 }
 
 impl Capacities {
-    /// Native fleet/task rosters (Serialize@140D4A390) and both CUnit routes
-    /// (Serialize@140BF7010) size every independent motion/counter arena.
+    /// Fleet/task rosters and both unit traversal routes size every
+    /// independent motion/counter arena.
     pub(crate) fn presize(
         &mut self,
         memory: &impl Memory,

@@ -15,7 +15,7 @@ use std::{collections::BTreeMap, io};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Group {
     pub token: String,
-    /// Template +0x10; 1413BCF50 -> 1402C7150 localises it with event scope.
+    /// Localised with event scope.
     pub name: String,
 }
 
@@ -54,13 +54,13 @@ fn string(item: &Item) -> io::Result<String> {
     })
 }
 
-/// Database 140AB7F70 and template 1413BD140. Every definition is a new
-/// template; 140AB7060 replaces the pointer on an existing token.
+/// Every definition is a new template; an existing token replaces
+/// the pointer to its previous template.
 pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<(Vec<Group>, Vec<String>)> {
     let mut available = false;
     let read = native::read(
         input,
-        // Loader 140AB7DD0 constructs CTextLexer with mode 0.
+        // Each file constructs the lexer in mode 0.
         native::Mode::KeepMark,
         native::Top::Persistent(Node::File),
         Some(names),
@@ -79,7 +79,7 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<(Vec<Group>, Vec<Stri
                     | b"research_sharing_per_country_bonus"
                     | b"is_faction_sharing",
                 ) => Shape::One,
-                // 1409FB540 resolves raw lexer tokens, leaving the value slot.
+                // Resolve raw lexer tokens, leaving the value slot.
                 Some(b"categories") => Shape::RawList,
                 // A second available body records an error and skips it.
                 Some(b"available") if available => Shape::Skip,
@@ -111,7 +111,7 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<(Vec<Group>, Vec<Stri
         }
         if group.token.is_empty() {
             return Err(invalid(
-                "technology-sharing group has no representable id (1413BD140, count: 1)",
+                "technology-sharing group has no representable id (count: 1)",
             ));
         }
         result.push(group);
@@ -152,7 +152,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn technology_sharing_native_names_raw_categories_and_repeated_available() {
+    fn technology_sharing_names_raw_categories_and_repeated_available() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (groups, warnings) = parse(
             br#"
             @name=MOD_NAME

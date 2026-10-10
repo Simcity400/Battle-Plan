@@ -24,12 +24,11 @@ impl Animation {
     /// The rest pose of one joint, as a transform in its parent's space.
     ///
     /// This is the `[info]` block's own `t`, `q` and `s`, read verbatim. It is
-    /// also [`FIRST_FRAME`]: across all 474 shipped `.anim` files that carry a
-    /// `[samples]` block, every animated joint's frame 0 equals its `[info]`
-    /// values to the last bit, in all three channels, with no exception. The
-    /// two readings are kept apart anyway, because a modded file need not
-    /// honour it and because [`Animation::local`] is what an animating pass
-    /// would call.
+    /// separate from [`FIRST_FRAME`], which reads the first sample of each
+    /// animated channel. A file can repeat its rest values at frame zero,
+    /// but each channel retains its authored samples independently. Keeping
+    /// the two readings apart also allows [`Animation::local`] to select
+    /// later frames while static channels keep their rest values.
     #[cfg(test)]
     pub(super) fn rest(&self, name: &str) -> Option<Transform> {
         let joint = self.joints.iter().find(|joint| joint.name == name)?;
@@ -107,7 +106,7 @@ impl Animation {
         out
     }
 
-    /// 142399290: loop period is the last sample's time, (samples - 1) / fps;
+    /// The loop period is the last sample's time, (samples - 1) / fps;
     /// a single-sample clip lasts one frame interval.
     pub fn duration(&self) -> f32 {
         if self.fps > 0.0 {
@@ -202,26 +201,26 @@ impl JointPose {
 /// sample 0. Nothing here advances it.
 pub const FIRST_FRAME: u32 = 0;
 
-/// One joint's rest pose inside an `.anim` (section 1.3).
+/// One joint's rest pose inside an `.anim`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AnimationJoint {
     pub name: String,
     /// `sa`, the animated channels: a subset of `"tqs"` in that order. Empty
-    /// means the joint is static, which every attachment joint of the four
-    /// shipped rigs is.
+    /// means the joint is static and keeps its rest transform at every
+    /// sampled frame.
     pub channels: String,
     /// `t`, the rest translation.
     pub translation: [f32; 3],
     /// `q`, the rest rotation quaternion `(x, y, z, w)`.
     pub rotation: [f32; 4],
     /// `s`, the rest uniform scale. **Zero hides the joint's attachment**:
-    /// that is how a rifleman's idle animation holds one of his four rifles
-    /// and how `cavalry_frame`'s idle drops its separate rider and horse in
-    /// favour of the combined model on its `cavalry` joint.
+    /// an animation can select between attached objects by giving the
+    /// visible joint a nonzero scale and the other joints a zero scale.
+    /// Their authored transforms remain available even while hidden.
     pub scale: f32,
 }
 
-/// Decodes the `[info]` and `[samples]` blocks of a `.anim` file (section 1.3).
+/// Decodes the `[info]` and `[samples]` blocks of a `.anim` file.
 ///
 /// Errors are named `InvalidData` for anything [`parse`] refuses, for a file
 /// with no `[info]` node, and for a `[samples]` stream whose length is not the

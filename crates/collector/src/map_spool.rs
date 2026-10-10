@@ -175,7 +175,7 @@ fn land_combats(
                 return unavailable("land combat members lie outside the captured reference arena")
                     .into();
             };
-            // 1413CC2B0 keeps each native side vector unique. Cross-side or
+            // Each native side vector keeps unique members. Cross-side or
             // cross-combat exclusion is not established and is not imposed.
             scratch.clear();
             scratch.extend_from_slice(members);

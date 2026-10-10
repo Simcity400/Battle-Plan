@@ -1,5 +1,5 @@
-//! Own singleton attrition child: 1418C00D0 -> fresh140C65DC0(param4=0).
-//! The earlier +438 counter cache cannot supply this tooltip's ordered terms.
+//! Own singleton attrition tooltips from fresh ordered terms.
+//! The earlier counter cache cannot supply these details.
 
 use super::*;
 use engine::carmy_attrition::{
@@ -152,7 +152,7 @@ fn source_block(
     }
 }
 
-/// FormatColoredFixed5Value142257CE0(false,true): + at zero too, fixed5
+/// Include a plus sign at zero; use a fixed-point
 /// product before division, red positive / green negative / yellow zero.
 fn coloured_percent(value: i64, precision: i32) -> String {
     let scaled = value.wrapping_mul(10_000_000) / 100_000;
@@ -477,7 +477,7 @@ fn details(
         .and_then(|text| displayable(context.icons, text))
     {
         Ok(mut header) => {
-            // 140C65DC0 starts the detail body on a new line before prepending total.
+            // The game starts the detail body on a new line before prepending total.
             if !out.title.is_empty() && !out.title.starts_with('\n') {
                 crate::combat::text::ensure_newlines(&mut header, 1);
             }
@@ -485,7 +485,7 @@ fn details(
         }
         Err(reason) => refuse(out, "attrition total", reason),
     }
-    // 1402A4080 trims completed CTooltip text with 1424B7400's four bytes.
+    // Trim completed tooltip text at line-feed, tab, carriage-return and space boundaries.
     // Keep interior separators; boundary breaks are not display rows.
     out.title = out.title.trim_matches(['\n', '\t', '\r', ' ']).to_owned();
 }

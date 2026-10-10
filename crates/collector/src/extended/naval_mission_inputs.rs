@@ -91,7 +91,7 @@ impl Capacities {
                 selected = selected
                     .checked_add(1)
                     .ok_or("naval mission row demand overflow")?;
-                // CUnit::CalcStat@140C296B0 reaches every attached HQ occurrence.
+                // Reach every attached HQ occurrence.
                 let attached = visit
                     .task
                     .checked_add(ctask_force::ATTACHED_HEADQUARTERS)
@@ -952,7 +952,7 @@ impl Captured {
                     ..LedgerRow::default()
                 };
                 {
-                    // 1418ED090 updates every record, including an unlisted escort
+                    // Every record is updated, including an unlisted escort
                     // animating out. Its alert still reads this region's presence.
                     let map = match map {
                         Some(map) => map,

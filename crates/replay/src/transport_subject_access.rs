@@ -51,8 +51,8 @@ pub fn current(
     Ok(Some(packet))
 }
 
-/// D11030 then D11080: raw equality first, both-nonzero alias equality
-/// second. Null and wrong type do not demand +50 or endpoint words.
+/// Raw equality first, then alias equality only for two nonzero references.
+/// Null or wrong type does not demand target or endpoint words.
 pub fn matches(
     subject: &ZeroSubjectInputs,
     target: Fact<u32>,

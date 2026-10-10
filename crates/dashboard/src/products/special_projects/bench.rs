@@ -44,10 +44,12 @@ fn vanilla_scoped_name_audit() {
 #[test]
 #[ignore = "requires BATTLE_PLAN_SP_PART_Q and constructs a ten-year offline recording"]
 fn offline_scan_timings() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let cancelled = AtomicBool::new(false);
-    let part_q = std::env::var_os("BATTLE_PLAN_SP_PART_Q").or_else(|| std::env::var_os("HOI4_SP_PART_Q")).expect("BATTLE_PLAN_SP_PART_Q");
+    let recording_path = std::env::var_os("BATTLE_PLAN_SP_PART_Q").or_else(|| std::env::var_os("HOI4_SP_PART_Q")).expect("BATTLE_PLAN_SP_PART_Q");
     let started = Instant::now();
-    match Replay::open(std::fs::read(part_q).unwrap()) {
+    match Replay::open(std::fs::read(recording_path).unwrap()) {
         Ok(replay) => {
             let branch = replay.index[0].branch;
             let params = CountryParams {
@@ -58,13 +60,13 @@ fn offline_scan_timings() {
             let scan = history::BranchScan::scan(&replay, params.branch(), &cancelled).unwrap();
             let reply = project(&scan, &params, None, None, &cancelled).unwrap().0;
             println!(
-                "part-Q scan: {:?}; {} episodes",
+                "recording scan: {:?}; {} episodes",
                 started.elapsed(),
                 reply.projects.len()
             );
         }
         Err(error) => println!(
-            "part-Q refused after {:?}: {error}; scan unavailable",
+            "recording refused after {:?}: {error}; scan unavailable",
             started.elapsed()
         ),
     }
@@ -86,7 +88,7 @@ fn offline_scan_timings() {
         ),
         (
             "localisation/english/project_l_english.yml",
-            "\u{feff}l_english:\n mod_project:0 \"Mod project\"\n mod_kind:0 \"Mod science\"\n ONGOING_PROJECT_BREAKTHROUGHS_NUMBER:0 \"Project Iterations Completed: $NUMBER$\"\n",
+            "\u{feff}l_english:\n mod_project:0 \"Mod project\"\n mod_kind:0 \"Mod science\"\n ONGOING_PROJECT_BREAKTHROUGHS_NUMBER:0 \"Trial count: $NUMBER$\"\n",
         ),
     ] {
         let file = folder.join(path);

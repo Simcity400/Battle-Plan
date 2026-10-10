@@ -1,12 +1,8 @@
-//! The special-facility map flag of program provinces.
-//!
-//! `ProvincePresentation_UpdateVisibility@141277FC0` shows a province's special facility icon
-//! (`+0x118F`) from `CProvinceGraphics+0x175B`. Only `NProject::CProgramStatus` code sets that
-//! byte (`140E628A0`, `140E62CB0`, `140E62AD0` for every country's programs at load,
-//! `140E61440` when a program is added), and `140E63170` (one province) and `140B43380` (every
-//! province, from `CCountry::ResetForDynamicReuse`) clear it. It lives in the client's map
-//! graphics, so it is the recording client's; every set lands on a program's province, so the
-//! program rosters enumerate every province that can hold it.
+//! Special-facility map flag for program provinces. Visibility uses the
+//! province-graphics byte at +0x175B to show the icon at +0x118F. Program
+//! loading and addition set it; per-province and dynamic-country resets
+//! clear it. This is the recording client's map graphics. Program rosters
+//! enumerate every province that can hold a set flag.
 
 use crate::{
     Memory, ccountry, cgraphical_map, cin_game_idler, cpdx_array::Array, nproject_cprogram,
@@ -98,7 +94,7 @@ pub fn walk_buffer(
                 if flag == 0 {
                     continue;
                 }
-                // Program writers@140E62AD0 can flag every reached occurrence.
+                // Program writers can flag every reached occurrence.
                 output.ensure(len.checked_add(1).ok_or("facility flag count overflow")?)?;
                 if len == output.len() {
                     unread = unread
@@ -122,6 +118,7 @@ pub fn walk_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
+/// The in-game idler map delegate's graphical map and its province-indexed
 /// graphics array.
 fn province_graphics(memory: &impl Memory, base: usize) -> Result<Array, &'static str> {
     let pointer = |address: usize| {

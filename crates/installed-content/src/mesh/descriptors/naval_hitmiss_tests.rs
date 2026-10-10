@@ -184,7 +184,7 @@ fn naval_hitmiss_preflight_ignores_unrelated_nested_state_dsl_data() {
 }
 
 #[test]
-fn naval_hitmiss_state_text_keeps_whitespace_and_native_255_byte_truncation() {
+fn naval_hitmiss_state_text_keeps_whitespace_and_255_byte_truncation() {
     let name = "n".repeat(256);
     let animation = "a".repeat(256);
     let text = format!(
@@ -324,7 +324,7 @@ fn naval_hitmiss_empty_records_append_zero_defaults_and_absence_is_empty() {
 }
 
 #[test]
-fn naval_hitmiss_float_words_keep_native_infinity_and_nan_bits() {
+fn naval_hitmiss_float_words_keep_infinity_and_nan_bits() {
     let descriptors = read(
         br#"entity = { name = ship state = { name = attack game_data = {
             hitmiss_effect = { time = "1e39" }
@@ -338,7 +338,7 @@ fn naval_hitmiss_float_words_keep_native_infinity_and_nan_bits() {
 }
 
 #[test]
-fn naval_hitmiss_native_string_read_stops_at_nul_before_comparison() {
+fn naval_hitmiss_string_read_stops_at_nul_before_comparison() {
     // The native token replay can retain NUL bytes, while the descriptor tree
     // lexer rejects them before this projection. Exercise the shared reader's
     // C-string behavior directly rather than claiming descriptor integration.

@@ -11,17 +11,15 @@
 //! The leader is the ruling party's first country leader as the country's
 //! appearance records it (`CountryAppearance.leader_ideology` and
 //! `leader_character`), named through `Characters` like an advisor. The
-//! portrait is the one the game's leader views ask for
-//! (`SetCountryLeaderPortrait@140B38140` calls `GetCharacterPortrait@140B35360`
-//! with role civilian, size large): the recorded holder's entry
+//! portrait uses the civilian role and large size: the recorded holder's entry
 //! [`replay::rows::portrait_entry`] finds, when it is set and content has its
-//! sprite or texture. Otherwise the game generates a portrait
-//! (`ResolveOrGeneratePortrait@141388EC0`) from inputs the recording lacks, so it
-//! is left out and said to be.
+//! sprite or texture. Otherwise the game generates a portrait from inputs
+//! the recording lacks, so it is left out and said to be.
 //!
-//! The ruling party's name is the game's (`GetName@14118F860`): its stored key
+//! The ruling party's name uses its stored key
 //! (`PoliticalParties.name`) when `set_party_name` cleared the default flag,
-//! then with the party tag's positive original reference (1406DF830), then the
+//! otherwise `<tag>_<ideology group>_party`, then with the party tag's
+//! positive original reference, then the
 //! ideology group's own name. [`party_key`] follows it.
 
 use super::{
@@ -116,8 +114,8 @@ pub struct PartyNaming {
 }
 
 /// The party localisation key: the stored key, else
-/// `<TAG>_<group>_party`, `<ORIGTAG>_<group>_party`, then the group token
-/// (14118EAD0). None when the tag or original tag is not recorded.
+/// `<TAG>_<group>_party`, `<ORIGTAG>_<group>_party`, then the group token.
+/// None when the tag or original tag is not recorded.
 pub fn party_key(naming: &PartyNaming, defines: impl Fn(&str) -> bool) -> Option<String> {
     party_key_checked(naming, defines).map(|(key, _)| key)
 }
@@ -134,7 +132,7 @@ pub(crate) fn party_key_checked(
     party_key_for_tag_checked(naming, selected_tag, defines)
 }
 
-/// The same ladder with GetOriginalTagOrTag's exact selected bytes. A positive
+/// The same ladder with exact selected tag bytes. A positive
 /// reference may spell empty text, which still probes `_<group>_party`.
 pub(crate) fn party_key_with_selected_tag(
     naming: &PartyNaming,
@@ -193,7 +191,7 @@ pub struct IdeologyInfo {
     pub color: Option<[u8; 3]>,
 }
 
-/// The chart's bytes of an ideology group's CColor (red, green, blue,
+/// The chart's bytes of an ideology group's colour (red, green, blue,
 /// alpha, as installed_content::ideologies reads it): the widget draws its own
 /// chart, so each channel is the stored float clamped to 0..1 and scaled to
 /// a byte, rounded; the alpha is not drawn.
@@ -276,7 +274,7 @@ pub struct ScannedParties {
 
 /// Widget naming uses exact recorded bytes; the public legacy wrapper keeps
 /// its historical empty-original normalization. Missing operands are reached
-/// only after the custom key and authored own-tag key fail (14118EAD0).
+/// only after the custom key and authored own-tag key fail.
 pub(crate) fn recorded_party_key(
     scanned: &ScannedParties,
     index: usize,
@@ -296,7 +294,7 @@ pub(crate) fn recorded_party_key(
                 .as_ref()
                 .err()
                 .cloned()
-                .unwrap_or_else(|| "party own tag is unavailable (14118EAD0)".into())
+                .unwrap_or_else(|| "party own tag is unavailable".into())
         })
 }
 
@@ -346,7 +344,7 @@ fn recorded_party_tags(
         Option<&replay::rows::CountryAppearanceRow>,
     ),
 ) -> (Option<String>, Result<String, String>) {
-    // ResolveCountryReference@140BA56A0 maps raw zero to the reserved singleton.
+    // Raw zero maps to the reserved singleton.
     if raw == 0 {
         return (
             installed_content::country_names::reserved_zero_tag(decoded)
@@ -435,7 +433,7 @@ pub(crate) fn ideology_infos(
             }
             IdeologyInfo {
                 token: group.token.clone(),
-                // Ideology names are plain (140616BC0).
+                // Ideology names are plain.
                 name: politics.localised(&group.token, View::Plain),
                 color: group.color.as_ref().ok().map(|color| chart_color(*color)),
             }
@@ -617,7 +615,7 @@ impl CountryScan {
                 }
             }
             if party.is_ruling != 0 {
-                // 14118EAD0 resolves the party's tag, not its current owner.
+                // Resolve the party's tag, not its current owner.
                 let (tag, selected_tag) = recorded_party_tags(
                     decoded,
                     party.tag,
@@ -1218,7 +1216,7 @@ impl Product for PartyHistory {
                     if let Some(reason) = fallback {
                         warnings.push(reason);
                     }
-                    // Party names are plain (14118F860).
+                    // Party names are plain.
                     politics.localised(&key, View::Plain)
                 })
             })

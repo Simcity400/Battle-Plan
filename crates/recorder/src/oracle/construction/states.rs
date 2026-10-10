@@ -22,8 +22,8 @@ fn earlier_states(
 }
 
 /// `StateResources.pool` against each saved state's `resources` block: the
-/// CState+0x1c0 pool. 1409D4040 emits the block only if a value is positive;
-/// 140BBD5D0 then writes every nonzero value, including negatives. The accumulator
+/// state resource pool. The save emits the block only if a value is positive;
+/// the game then writes every nonzero value, including negatives. The accumulator
 /// operands of the same rows are not saved. Only states `sampled` at the
 /// frame's hour are compared.
 pub(in crate::oracle) fn state_pools(
@@ -55,7 +55,7 @@ pub(in crate::oracle) fn state_pools(
         .collect();
     if !omitted_negative.is_empty() {
         report.limitation(
-            "1409D4040 omits resource blocks with no positive amounts; those omissions cannot certify the negative pool values",
+            "the game omits resource blocks with no positive amounts; those omissions cannot certify the negative pool values",
             format!("StateResources states {omitted_negative:?}"),
         );
     }
@@ -107,7 +107,7 @@ pub(in crate::oracle) fn state_pools(
 
 /// `StateResourceInputs.origin` and `.infrastructure_level` against the save.
 /// A state has an origin when its controller's saved `resources` block has an
-/// `origin` of that state (`CResourceOrigin + 0x80`, the pointer the walk
+/// `origin` of that state (the resource-origin state, the pointer the walk
 /// matches). The level is that of the state's building whose token the
 /// engine fixes (`engine::cbuilding_database::INFRASTRUCTURE_TOKEN`), damage
 /// included: the saved `buildings` entry's `level`. It is read only with an
@@ -140,9 +140,9 @@ pub(in crate::oracle) fn resource_inputs(
         let controller = controllers
             .get(&row.state)
             .ok_or_else(|| invalid(format!("{subject} has no captured state")))?;
-        // 1409C6E20 -> 140BA56A0 resolves raw0 to the reserved country.
-        // Its resources start empty (140C95280); 140CAA9F0 builds origins
-        // from controlled states, which 1409D0BF0 adds only for positive tags.
+        // The game resolves raw0 to the reserved country.
+        // Its resources start empty; the game builds origins
+        // from controlled states, which the game adds only for positive tags.
         let origin = country_tag(*controller, links)?
             .and_then(|tag| saved.country_resources.get(tag))
             .is_some_and(|resources| resources.origin_states.contains(&row.state));
@@ -169,7 +169,7 @@ pub(in crate::oracle) fn resource_inputs(
     }
     report.compared("StateResourceInputs", matched);
     report.limitation(
-        "the resource gate (CState+0x1b4), the global factor (state modifier 0x223), the controller's infrastructure modifier (0x292) and the supply-route test (MaxStateProvinceNodeValue@1412138A0) are runtime reads the save does not carry",
+        "the resource gate, the global factor (state modifier 0x223), the controller's infrastructure modifier (0x292) and the supply-route test are runtime reads the save does not carry",
         "StateResourceInputs.gate, global_factor, infrastructure_modifier, supply_route",
     );
     Ok(())
@@ -180,7 +180,7 @@ pub(in crate::oracle) fn resource_inputs(
 type OverrideEntries = Vec<(u32, Vec<(u32, i64)>)>;
 
 /// `CountryBuildingResources` against each saved country's
-/// `resources.modify_building_resources` (`CCountryResources::Write@140CAEB80`),
+/// `resources.modify_building_resources` (the country resource save writer),
 /// entry by entry and element by element in native order. A saved element's
 /// key is the one-based resource database index (`ResourceDefinitions.id`)
 /// the walk turns into a token. The walk reads state controllers only. A
@@ -377,7 +377,7 @@ pub(in crate::oracle) fn building_overrides(
 
 /// `StateCores` against the saved countries' `cores` lists, inverted per
 /// state. The save writes membership reciprocally from the country side
-/// (`CCountry+0x4A8`), so it certifies canonical membership, not the state
+/// (the core-state roster), so it certifies canonical membership, not the state
 /// list's raw alias spelling or order: each recorded link is resolved to its
 /// country's tag and a state's tags compare as a sorted list. Only states
 /// whose StateCores row was read at the frame's hour are compared.

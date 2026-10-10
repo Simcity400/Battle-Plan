@@ -295,8 +295,8 @@ impl Store {
         Ok(ticket)
     }
 
-    /// CALL140D15418: retain inputs before the original and its reentrant
-    /// destruction before ReplaceRelation's store@140D03010.
+    /// Retain inputs before the original and its reentrant destruction,
+    /// before the relation replacement is stored.
     pub fn war_before(
         &mut self,
         memory: &impl Memory,
@@ -311,7 +311,7 @@ impl Store {
         self.acquire(generation, pending.operands(), Proof::War(pending))
     }
 
-    /// CALL1406C8E34: copy actor/FROM before authored dispatch.
+    /// Copy actor/FROM before authored dispatch.
     pub fn annex_before(
         &mut self,
         memory: &impl Memory,
@@ -424,7 +424,7 @@ impl Store {
     }
 
     /// Original returned normally after invalidation. Settle without touching
-    /// the old native proof (ReplaceRelation@140D02DF0 can reenter destruction).
+    /// the old native proof (relation replacement can reenter destruction).
     pub(crate) fn world_returned(&mut self, ticket: Ticket) -> Result<(), Retained> {
         if self
             .entry(&ticket)

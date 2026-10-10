@@ -48,7 +48,7 @@ const CADENCE = 'production lines are read once a day.';
 
 /** One country's production lines. Live (following playback or a pinned moment):
  * the lines running then, like the game's production tab. Otherwise: one lane per
- * line across the campaign, its thickness the factories assigned (mock-up economy-1).
+ * line across the campaign, its thickness the factories assigned.
  * The history holds each line's factory steps; every other value comes a window of
  * reads at a time: the live table's (and the next, so playback never waits) or the
  * one a history tooltip needs. */
@@ -196,7 +196,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
  * read out, and `full` (a caller asking for the text read out) gets them all. */
 const fitted = (forms: TooltipForms, height: number, full = false) => full ? forms[0] : fitTooltip(forms, height, { full: forms[0] });
 
-/** The lines running at the hour shown, one row each (mock-up economy-1): the
+/** The lines running at the hour shown, one row each: the
  * equipment's art and names, factories assigned of those requested, efficiency,
  * output per week and the units made so far; with more columns, the queue place, IC
  * per unit and the organisation. Rows slide when the order changes, new lines flash in

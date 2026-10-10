@@ -5,7 +5,7 @@
 /* The bars' parent carries the shared column widths to the header and every row
    without a box of its own (custom properties inherit through display: contents). */
 .stockpile-rows { display: contents; }
-/* Mock-up economy-1: art and name, a bar from zero, the exact amount at the right.
+/* Art and name, a bar from zero, the exact amount at the right.
    Rows sit at their slot and slide to a new one (useRowMotion); the list scrolls. */
 .stockpile-bars { position: relative; flex: none; margin: 0 var(--space-3); padding: 0; list-style: none; }
 .equipment-stockpile:has(.stockpile-bars) { overflow-y: auto; }

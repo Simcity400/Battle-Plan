@@ -1,26 +1,19 @@
-//! Saved globals, not the event-chain or description-only target arrays.
-//! 1401ECF60 writes +6C0, 1401D1F10 shifts on erase, 1401D2160 and
-//! ResetRuntimeState@1401D09B0 clear it. 1401E5550 appends loaded records.
-//! Tag switch (14034EBF0 -> 14113E4B0) changes the player/controller;
-//! annexation (14034D200 -> 1406C73C0) changes country ownership, not this
-//! registry (S: append/erase/reset callers and +6C0/+6CC writer audit).
-//! Character retirement (1410D9330) keeps the object; destruction
-//! (140F8A000 -> 142209500 -> 142209B20) unregisters its handle without
-//! rewriting saved targets. State destruction 1409C3460 has no target edit.
-//! 1401F2A20 emits one saved_event_target per record through 14052F780.
-//! Name IDs are case-sensitive interned strings (FNV-1a, 140F43E10), not
-//! lexer tokens. The reverse string vector is used by 14052BE50/14052F780.
+//! Saved global targets, separate from event-chain and description arrays.
+//! Loading appends records, erasure shifts them and reset clears the registry.
+//! Tag switching and annexation change player/control or country ownership
+//! without rewriting these targets. Character retirement retains the object;
+//! destruction unregisters its handle. State destruction also leaves targets
+//! unchanged. Each retained record is serialized independently.
 //!
-//! The reader keeps the registry's native order and resolves each name through
-//! the reverse name vector. It records the stored selectors and character ID,
-//! all nine object-reference liveness bits with region/combatant presence, the
-//! omission of an intern-ID-0 name from saves, and GetUnitLeader's result.
-//! UnitLeaders does not cover its fallback reference. A null leader identity
-//! refuses only that row's leader consumer. A nonempty registry whose native
-//! 16-bit name IDs have wrapped is unavailable by name: the reverse vector
-//! cannot reconstruct name aliases. An empty registry remains complete.
-//! Synthetic memory covers strings, ID wrapping, invalid reads and exact
-//! capacity demand; live capture is unverified.
+//! Names are case-sensitive FNV-1a interned strings, resolved through the
+//! reverse string vector. The reader retains registry order, stored selectors,
+//! character ID, all nine reference-liveness bits, region/combatant presence
+//! and the save omission of an intern-ID-zero name. The selected unit leader
+//! may come from a fallback reference not covered by UnitLeaders. Null leader
+//! identity refuses only that row's leader consumer. Wrapped 16-bit name IDs
+//! make a nonempty registry unavailable by name, since the reverse vector
+//! cannot reconstruct aliases; an empty registry remains complete. Synthetic
+//! fixtures cover strings, ID wrapping, invalid reads and capacity demand.
 use crate::{
     Memory,
     cpdx_array::Array,
@@ -28,17 +21,17 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// CGameState's saved-global CPdxArray (1401DB7B0, 1401ECF60).
+/// Saved-global target array in game state.
 pub const REGISTRY: usize = 0x6c0;
-/// Name reverse vector at 1433245A0 (140F43E10, 14052F780).
+/// Reverse interned-name vector.
 pub const NAMES_RVA: usize = 0x0332_45a0;
-/// CSavedEventTarget stride (1401DB7B0); its last u16 is +68.
+/// Saved-target record stride; its final u16 is at +0x68.
 pub const STRIDE: usize = 0x70;
-/// CSavedEventTarget vtable (constructors 1405288D0..140528E00).
+/// Saved-target record vtable.
 pub const VTABLE_RVA: usize = 0x0270_b250;
-/// 14146BB30 falls back to THIS only outside an initialized game (+A39).
+/// Fallback target receiver used only outside an initialized game, gated by +0xA39.
 pub const IN_GAME: usize = 0xa39;
-/// Fields written/read by 14052CC20/14052F780, in validity-bit order.
+/// Stored reference fields in validity-bit order.
 pub const REFERENCES: [usize; 9] = [0x10, 0x18, 0x30, 0x38, 0x40, 0x48, 0x50, 0x58, 0x60];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -103,9 +96,8 @@ pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Option<Demand>
     let result = walk(memory, base, state, &mut [], &mut []);
     (!matches!(result.outcome, Outcome::Unavailable { .. })).then_some(result.required)
 }
-/// No allocations and no game calls. Reference validity is on-demand native
-/// lookup, not saved state (14052BE50); capture its live-kind bits.
-/// A dead reference resolves invalid, not refused.
+/// No allocations or game calls. Reference validity is an on-demand lookup;
+/// capture its live-kind bits. A dead reference resolves invalid, not refused.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -122,8 +114,8 @@ pub fn walk(
     )
 }
 
-/// 1401F2A20/14052F780 visit the saved registry and its retained name lengths.
-/// Grow owned worker storage from those original observations before copying.
+/// Visit the saved registry and retained name lengths. Grow owned worker
+/// storage from original observations before copying.
 pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
@@ -172,10 +164,10 @@ fn walk_buffer(
         let (rh, registry) = header(memory, registry_at, STRIDE)?;
         let (nh, names) = header(memory, names_at, 32)?;
         required.rows = registry.count as usize;
-        // 140F43E10 truncates map size to u16 for each new name. Once IDs
-        // wrap, distinct strings alias a stored ID; the reverse-vector names
-        // alone cannot reproduce that full name-to-ID map. Refuse the named
-        // unsupported form rather than deciding a lookup by the wrong name.
+        // Each new interned name truncates map size to u16. After wrap, distinct
+        // strings alias a stored ID; reverse-vector names cannot reproduce the
+        // full name-to-ID map. Refuse this named unsupported form instead of
+        // resolving the wrong name.
         if registry.count != 0 && names.count as usize > usize::from(u16::MAX) + 1 {
             return Err(
                 "saved event target intern IDs have wrapped: name aliases are not recorded",
@@ -241,23 +233,23 @@ fn walk_buffer(
             let target_state = i32::from_le_bytes(raw[8..12].try_into().unwrap());
             let country = i32::from_le_bytes(raw[12..16].try_into().unwrap());
             let mut live = u16::from(qword(0x20) != 0) << 9 | u16::from(qword(0x28) != 0) << 10;
-            // The first interned string has ID 0 (140F43E10); the save
-            // writer omits its name (14052F780), but lookup keeps the string.
+            // The first interned string has ID zero. Saving omits its name, while
+            // lookup retains the string.
             live |= u16::from(id == 0) << 11;
             let mut character_leader = None;
             if target_state == 0 && country <= 0 {
-                // All object references are witnessed, including kinds a
-                // context/variable selector shadows (14052BE50, 1410CFF00).
+                // Observe all object references, including kinds shadowed by a context
+                // or variable selector.
                 for (bit, handle) in REFERENCES.map(qword).into_iter().enumerate() {
                     if let Some(object) = creference_registry::resolve(memory, base, handle)? {
-                        // ResolveUnit returns registry object -10; +10 alone is null.
+                        // Unit reference resolution yields object -0x10; +0x10 alone is null.
                         if bit == 3 && object == 0x10 {
                             continue;
                         }
                         live |= 1 << bit;
                         if bit == 0 {
-                            // GetUnitLeader@140F8A840: direct +A8, else reference +C8.
-                            // UnitLeaders captures only +A8; it cannot supply +C8.
+                            // Unit-leader selection uses direct +0xA8, else reference +0xC8.
+                            // UnitLeaders captures only +0xA8 and cannot supply the fallback.
                             let direct = read::<u64>(
                                 memory,
                                 object.checked_add(0xa8).ok_or("saved character overflow")?,
@@ -560,7 +552,7 @@ mod tests {
             Outcome::Rows { len: 2 }
         );
         assert_eq!(rows[0].character_leader, Some(leader));
-        // S3 probes a later reference even when the character wins selection.
+        // Later references are probed even when the character wins selection.
         memory.saved.0.remove(&(r::LOW_ROOTS_RVA + 55 * 8));
         assert!(matches!(
             walk(&memory, 0, 0x1000, &mut rows, &mut text).outcome,

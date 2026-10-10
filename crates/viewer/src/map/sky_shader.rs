@@ -1,4 +1,4 @@
-//! Native sky141268860, after map text and immediately before post140B476B0.
+//! Native sky, after map text and immediately before post.
 use eframe::wgpu::{self, util::DeviceExt};
 use installed_content::{
     ResolvedLayers,
@@ -14,7 +14,7 @@ fn refuse(reason: impl Into<String>) -> io::Error {
 
 pub fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Result<Arc<Effect>> {
     let (mut library, defines) = super::shader_sources::library(layers, map, decode);
-    // Fixed effect and technique registered by141261100.
+    // Fixed sky effect and technique selection.
     library.load(b"gfx/FX/sky.shader", &defines).map_err(refuse)
 }
 
@@ -39,7 +39,7 @@ impl Sky {
         let mut state =
             gpu::State::authored(&effect.source, &effect.source.techniques[selection.index])
                 .map_err(refuse)?;
-        //141268860 updates only physical PS texture/sampler0. Other registers retain.
+        // updates only physical PS texture/sampler0. Other registers retain.
         state
             .samplers
             .retain(|slot, _| *slot == binding(0, Stage::Pixel));
@@ -67,8 +67,8 @@ impl Sky {
             step: wgpu::VertexStepMode::Vertex,
             attributes,
         }];
-        //141261100 creates CPdxMap+70: depth enabled, LESS_EQUAL, writes/stencil off.
-        //140B48E50 restores default renderer+C0 raster before sky: CW/back cull.
+        // Sky enables depth with LESS_EQUAL, disables depth writes and stencil, and restores clockwise
+        // renderer raster state with back-face culling.
         let raster = RasterizerState::default();
         let depth_state = DepthStencilState {
             depth_write_mask: 0,
@@ -80,7 +80,7 @@ impl Sky {
             .get_pass(device, &selection, &state, &pass)
             .map_err(refuse)?;
         super::shader_constants::scene(&pipeline).map_err(refuse)?;
-        //141261100 uploads three signed16 pairs to CPdxMap+138, stride4.
+        // Upload three signed 16-bit coordinate pairs at stride 4.
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("native sky triangle"),
             contents: bytemuck::cast_slice(&[[3_i16, -1], [-1, -1], [-1, 3]]),
@@ -97,8 +97,8 @@ impl Sky {
         frame: &[u8],
         reflection: &wgpu::TextureView,
     ) -> io::Result<()> {
-        //141268860 builds fresh416-byte b0 through140223170/140FF3FC0, both stages.
-        //Scene padding is unverified; extra retained registers refuse by name.
+        // Build a fresh 416-byte scene b0 for both stages. Unknown scene padding and extra retained
+        // registers refuse by name.
         let buffers = BTreeMap::from([
             (binding(0, Stage::Vertex), frame.to_vec()),
             (binding(0, Stage::Pixel), frame.to_vec()),

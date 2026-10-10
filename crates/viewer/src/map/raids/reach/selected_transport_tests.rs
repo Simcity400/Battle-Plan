@@ -286,7 +286,7 @@ fn complete_nested_caller_uses_current_context_terrain_targeted_and_night_inputs
             moves, &failed, 11, 1
         ))
         .unwrap_err()
-        .contains("1C5")
+        .contains("targeted spotting modifier refused")
     );
     put::<tables::WeatherProvinces>(
         &mut frame,
@@ -301,7 +301,7 @@ fn complete_nested_caller_uses_current_context_terrain_targeted_and_night_inputs
             moves, &receiver, 11, 1
         ))
         .unwrap_err()
-        .contains("108")
+        .contains("night spotting modifier refused")
     );
     let mut stale = packet;
     stale.spotting_context.as_mut().unwrap().sample_hour -= 1;
@@ -493,7 +493,7 @@ fn coastal_army_and_nonzero_or_same_source_transfer_return_before_convoy_and_ris
 }
 
 #[test]
-fn native_class13_vf8_never_demands_commander_ban_and_empty_localisation_does_not_admit() {
+fn railway_retreat_never_demands_commander_ban_and_empty_localisation_does_not_admit() {
     let frame = frame();
     let army = Army::default();
     for attacking in [false, true] {

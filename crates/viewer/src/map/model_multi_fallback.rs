@@ -1,16 +1,16 @@
 //! No-selected-pair land model selection from the six native template queues.
 //!
-//! `141919100` reads the viewing country's two production rosters and the
-//! template's stored grouped entries (composition `+0xA8`); each candidate
+//! The game reads the viewing country's two production rosters and the
+//! template's stored grouped entries; each candidate
 //! country's stored best-variant list comes from the recorded third roster.
 //! The final native label sort can move an arbitrary custom variant label
 //! beside `USE_DEFAULT_MODEL`; without that raw name operand, only an
 //! invariant entity is displayed, and a stack whose rows disagree is refused
 //! with [`LABEL_ORDERING`], which the model report counts.
 //!
-//! The viewing country is `CGameState+0x520` when it holds a positive country
-//! reference, else `+0x524`; a replay settles both in `Vision`, whose country
-//! is the unique `Countries` row for that canonical slot.
+//! The viewing country uses a signed-positive player-country reference, else
+//! the observer-country reference. `Vision` settles both to the unique
+//! `Countries` row for that canonical slot.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -117,8 +117,8 @@ pub fn resolve(inputs: &Inputs<'_, '_>) -> Result<Option<Resolved>, String> {
     if roster.is_empty() {
         return Ok(None);
     }
-    // 140BC2F10 reads only reference identity. Defer naming/culture until a
-    // real candidate reaches 141918420; an empty queue needs neither.
+    // The game reads only reference identity. Defer naming/culture until a
+    // real candidate reaches graphics selection; an empty queue needs neither.
     let viewing = legacy::Country {
         tag: "",
         cosmetic: "",
@@ -154,8 +154,8 @@ pub fn resolve(inputs: &Inputs<'_, '_>) -> Result<Option<Resolved>, String> {
 }
 
 fn template_countries(template: &DivisionTemplateIconRow) -> Result<(u32, u32), String> {
-    // 140B88010 points to composition +0x1D4, the template's country.
-    // 140B90DF0 supplies +0x1DC, the preferred suffix country, when positive.
+    // Composition supplies the template's country.
+    // A signed-positive preferred country supplies the suffix country.
     let initial = template.country;
     if initial <= 0 {
         return Err(format!(
@@ -242,7 +242,7 @@ fn evaluate<'a>(
             }
         }
     }
-    // 141919100 drains q0..q5, then 14191AB30 sorts by first-seen localized
+    // Drain queues 0..5, then sort by first-seen localized
     // label. The label of a custom variant may equal USE_DEFAULT_MODEL, and
     // the rank byte can wrap. Without names, only one distinct entity across
     // all drained rows proves physical output row one.
@@ -315,8 +315,8 @@ fn invariant_entity(
 }
 
 fn drain_rows(variants: [Vec<Row>; 3], suffix: [Vec<Row>; 3]) -> Vec<Row> {
-    // 141919100 pre-seeds the outer output with an empty entity token.
-    // Each 141918420 input has its own empty sentinel; the final drain drops it.
+    // The game pre-seeds the outer output with an empty entity token.
+    // Each graphics-selection input has its own empty sentinel; the final drain drops it.
     let mut seen = BTreeSet::from([String::new()]);
     variants
         .into_iter()
@@ -356,7 +356,7 @@ fn model_country(
     model_selection::variant_country(variant, subunit, initial)
 }
 
-/// `14191A090`: the variant creator's ruling ideology group and culture, or
+/// The variant creator's ruling ideology group and culture, or
 /// neither for a nonpositive creator. A positive creator must resolve.
 pub fn creator_operands<'a>(
     definition: &VariantDefinitionRow,
@@ -450,7 +450,7 @@ fn pair_candidates<'a>(
         .content
         .equipment_model(equipment_key)
         .map_err(|error| error.to_string())?;
-    // `CEquipmentType+0x4E8`, the type itself unless another is named.
+    // The equipment family is the type itself unless another is named.
     let family = Some((
         equipment.family,
         Some(

@@ -1,27 +1,14 @@
-//! The raid system's path distance memo, `CRaidSystem + 0x230`.
+//! Raid-system path-distance memo shared by land and naval lookup.
+//! The key contains source and target province IDs only, so the first computed
+//! path kind wins for that pair during the session, including failures. The memo
+//! is not saved. Buckets retain hash, occupancy/probe distance, province IDs and
+//! distance/success fields.
 //!
-//! `RaidPathCache_GetOrComputeNaval@1419F5450` and `_Land@1419F52F0` share
-//! this spin-locked robin-hood table, keyed only by the (source, target)
-//! province ids (`+0xa4`), so the first path kind computed for a pair wins
-//! for the session, failures included. Only the `CRaidSystem` constructor
-//! (`140E6EE70`) and destructor (`140E70510`) otherwise touch it; it is not
-//! saved. Header: buckets `+8`, element count `+0x10`, slot mask `+0x14`,
-//! maximum probe length `+0x18`. Buckets are 0x20 bytes: hash `+0`, probe
-//! byte `+4` (0 empty, 0xff the end sentinel, else distance from the ideal
-//! slot plus one), key `+8`/`+0xc`, value `{i64 distance, u8 ok}` at `+0x10`
-//!
-//! The game guards the table with the spin lock at `+0x20`, which both
-//! get-or-compute paths hold across the lookup, the insert and a rehash
-//! (`1419F5D90`), and pathfinding threads may insert while the collector
-//! reads. The collector never takes a game lock. It reads lock-free and
-//! validates: it snapshots the header and the lock word before and after
-//! copying the buckets, and accepts the copy only when the lock was free at
-//! both ends and the header did not change. A writer holds the lock for the
-//! whole insert or rehash and every insert changes the element count, so an
-//! insert or rehash that overlapped the copy fails that check (x86 stores are
-//! not reordered with each other). A failed check is a torn read: it is
-//! counted and that hour's table is published unavailable. The copy is not
-//! retried: a second read is not the value the hour held.
+//! Game writers hold a spin lock across lookup, insertion and rehash. Capture
+//! does not take that lock: it snapshots header and lock before and after copying,
+//! accepting only unchanged headers with a free lock at both ends. Insertions change
+//! element count and rehash changes geometry, so overlapping work makes the copy
+//! torn and this hour's table unavailable. A failed check is counted without retry.
 
 use crate::{Memory, cgame_state, craid_system, memory::read_slice, read, walk::Outcome};
 
@@ -31,8 +18,7 @@ const BUCKETS: usize = 0x08;
 const COUNT: usize = 0x10;
 const MASK: usize = 0x14;
 const MAX_PROBE: usize = 0x18;
-/// The spin lock `RaidPathCache_GetOrComputeNaval@1419F5450` takes (`LOCK`
-/// compare-exchange of 0 to 1).
+/// Spin lock acquired by compare-exchanging zero to one.
 const LOCK: usize = 0x20;
 /// The header span a read snapshots: buckets through the lock word.
 const HEADER: usize = LOCK + 4 - BUCKETS;
@@ -54,10 +40,9 @@ pub struct Row {
     pub ok: u8,
 }
 
-/// Header-only sizing hint; nothing observed here is recorded. Rehash
-/// `1419F5D90` allocates `mask + 1 + max_probe` data slots, then a sentinel.
-/// Inserts (`1419F3430`) keep that geometry until rehash, so this bounds every
-/// row `copy_table` can emit even if COUNT grows before the next sizing poll.
+/// Header-only sizing hint; no value here is recorded. Rehash allocates the
+/// bucket and probe-tail extent plus a separate sentinel. Inserts keep that
+/// geometry, bounding output even if count grows before the next sizing poll.
 pub fn required_rows(memory: &impl Memory, base: usize, game_state: usize) -> Option<usize> {
     let memo = memo_address(memory, base, game_state).ok()?;
     table_slots(&read_header(memory, memo).ok()?).ok()
@@ -167,7 +152,7 @@ fn table_slots(header: &[u8; HEADER]) -> Result<usize, &'static str> {
         .checked_add(1)
         .filter(|slots| slots.is_power_of_two())
         .ok_or("raid path memo mask is not a power of two less one")?;
-    // The probe tail precedes the end sentinel (`1419F5D90`).
+    // The probe tail precedes the separate end sentinel.
     (slots as usize)
         .checked_add(usize::from(header[MAX_PROBE - BUCKETS]))
         .ok_or("raid path memo slot count overflow")

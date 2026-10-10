@@ -1,16 +1,14 @@
 //! Current-hour movement coefficients shared by a moving country's divisions.
+//! Land movement selects the owner's relation accumulator by the destination
+//! canonical controller, including slot zero, and reads its effective river
+//! factor. Transport selects the logical owner and source strategic region
+//! before applying the caller's multiplier. Existing passive readers own these
+//! computations; this module visits complete caller-supplied domains.
 //!
-//! `CArmy::GetMovementSpeed@140C70670` selects the land owner's relation
-//! accumulator by the destination's canonical controller (including slot zero)
-//! and reads the effective `RIVER_CROSSING_FACTOR_AGAINST`. Transport uses
-//! `141955DF0` for the logical owner and the source strategic region, before
-//! the caller's transport multiplier. The existing passive readers own both
-//! computations; this module only visits complete caller-supplied domains.
-//!
-//! The controller and region rosters must come from this frozen acquisition's
-//! complete authenticated map census. Keys are unique and increasing. Country
-//! owners are authenticated positive objects; zero is admitted only as a river
-//! target. No selection, hover cache, game call or path search is involved.
+//! Controller and region rosters come from this frozen acquisition's complete
+//! authenticated map census. Keys are unique and increasing. Owners are
+//! authenticated positive countries; zero is allowed only as a river target.
+//! No selection, hover cache, game call or path search is involved.
 
 use crate::{
     Memory, ccountry, cgame_state, cmodifier, cnaval_unit_transfer, cpdx_array::Array, cprovince,
@@ -479,13 +477,12 @@ pub fn capture_river<M: Memory>(
     captured
 }
 
-/// Copies one logical owner's complete source-region domain. Native region
-/// identity and the supplied key must agree; the existing transport reader
-/// additionally checks the region's runtime census slot. A pre-query identity
-/// fault refuses only that region. `141955DF0`/`141956170` query the supplied
-/// region independently; the reader retains each first result at its actual
-/// shared-control, owner, region or regional-operand boundary.
-/// Capacity and domain checks precede native reads.
+/// Copy one logical owner's complete source-region domain. The region
+/// identity and supplied key must agree; transport also authenticates its
+/// runtime census slot. Pre-query identity faults refuse only that region.
+/// Independent region queries retain each first result at the shared-control,
+/// owner, region or regional-operand boundary. Check capacity and domain
+/// before acquiring operands.
 #[allow(clippy::too_many_arguments)]
 pub fn capture_transport(
     memory: &impl Memory,

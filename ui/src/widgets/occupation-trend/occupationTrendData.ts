@@ -60,8 +60,8 @@ export function occupationAt(model: OccupationModel, tag: string, hour: number):
   return index < 0 ? null : { run: series.runs[index], stretch: series.starts[index] };
 }
 const measureRaw = (run: OccupationTrendRun, measure: OccupationMeasure) => measure === 'resistance' ? run.resistanceRaw : run.complianceRaw;
-/** P: 140FE98F0 supplies the arithmetic ported over the recorded state scalars;
- * its cached group fields are not captured. Means stay exact outside geometry. */
+/** Means use the recorded state scalars; cached group fields are not captured.
+ * Means stay exact outside geometry. */
 export const occupationPercent = (value: string, digits = 5) => `${formatAmount(value, 5, digits)}%`;
 export function occupationEntries(model: OccupationModel, candidates: readonly string[], hour: number, measure: OccupationMeasure, count: number, digits = 2): CountryRaceEntry[] {
   return candidates.flatMap(tag => {

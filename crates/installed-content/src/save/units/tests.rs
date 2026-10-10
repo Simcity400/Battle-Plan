@@ -45,7 +45,7 @@ fn saved_unit_withdrawal_is_shared_and_omission_means_false() {
 }
 
 #[test]
-fn division_priority_retains_the_native_writer_enum_and_default_omission() {
+fn division_priority_retains_the_writer_enum_and_default_omission() {
     let parse = |suffix: &str| {
         let document = crate::parser::parse(
             format!("id={{id=7 type=51}} logical_country=AAA strength=0 organisation=0 {suffix}")
@@ -101,7 +101,7 @@ fn task_force_saved_progress_is_exact_and_retreat_is_boolean() {
 }
 
 #[test]
-fn task_force_exile_preserves_native_saved_truth_and_refuses_malformed_fields() {
+fn task_force_exile_preserves_saved_truth_and_refuses_malformed_fields() {
     let parse = |suffix: &str| {
         let document = crate::parser::parse(
             format!("id={{id=7 type=51}} logical_country=AAA mission={{mission=0}} {suffix}")
@@ -227,7 +227,7 @@ fn template_fallback_key_is_saved_independently_of_explicit_name() {
 
 #[test]
 fn template_name_fields_keep_omitted_empty_and_nonempty_presence_independently() {
-    // 140B977F0 omits stored-empty strings, but 1424ADF40 -> 1424AF5A0
+    // The writer omits stored-empty strings, but
     // emits an empty scalar for a stored-nonempty string with a leading NUL.
     let parse = |fields: &str| {
         let document = crate::parser::parse(

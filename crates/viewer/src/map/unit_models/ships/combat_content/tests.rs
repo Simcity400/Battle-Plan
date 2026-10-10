@@ -87,7 +87,7 @@ fn naval_combat_reader_replays_native_list_and_failed_float_consumption() {
           naval_combat_formation = kept \
           naval_death_time = { naval_death_time = 99 } naval_random_start_time = .25",
     );
-    // ReadStringList starts after its current value even without '{', so
+    // List reading starts after its current value even without '{', so
     // ordinary field-like tokens here are effect entries, not assignments.
     assert_eq!(config.formation().unwrap().0, "");
     assert_eq!(

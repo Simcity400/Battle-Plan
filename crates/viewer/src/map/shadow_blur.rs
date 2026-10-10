@@ -1,4 +1,4 @@
-//! Native shadow-screen blurs: registration 1422C4730, draws 1422C5D30.
+//! Horizontal and vertical screen-space shadow blurs.
 use std::{collections::BTreeMap, io, sync::Arc};
 
 use super::shader_sources;
@@ -6,9 +6,9 @@ use eframe::wgpu::{self, util::DeviceExt};
 use installed_content::{ResolvedLayers, image::native::Decode, pdxshader::program::Stage};
 use shader_pipeline::{binding, gpu, library::Effect};
 
-// 1422C64C0 -> 1423FFAB0: the receiver owns D24_UNORM_S8_UINT.
+// The receiver owns the depth/stencil attachment.
 pub(super) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
-// Screen targets use native enum 0xD -> DXGI 0x57 (142411320).
+// Screen targets store BGRA8 UNORM values.
 pub(super) const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
 fn refuse(reason: impl Into<String>) -> io::Error {
@@ -23,16 +23,16 @@ pub(super) fn load(
     map: [u32; 2],
     decode: Decode,
 ) -> io::Result<Arc<Effect>> {
-    // 1422C4730 supplies an empty caller-define array for both techniques.
+    // Supply an empty caller-define array for both techniques.
     let (mut library, defines) = shader_sources::library(layers, map, decode);
     library
         .load(b"gfx/FX/shadowblur.shader", &defines)
         .map_err(refuse)
 }
 
-/// All 32 bytes written at 1422C5D30, including the two trailing ones.
+/// All 32 bytes are initialized, including the two trailing ones.
 pub(super) fn constants(extent: u32, height: f32) -> [f32; 8] {
-    // 1422C4730 literal stores; 1422C6BC0 sets min(camY / 700, 1).
+    // Scale blur offsets by camera height, capped at one.
     let offsets = [0.0, f32::from_bits(0x3fb13b14), f32::from_bits(0x404ec4ec)];
     let fade = (height / 700.0).min(1.0);
     let offsets = offsets.map(|offset| (offset - offset * fade) / extent as f32);
@@ -95,8 +95,8 @@ impl Blur {
                 step: wgpu::VertexStepMode::Vertex,
                 attributes,
             }];
-            // Receiver 141269A30 restores CGraphics+c0 raster and retains +90
-            // depth: clockwise/back cull, depth write + LESS_EQUAL, no stencil.
+            // Restore renderer raster state and retain receiver depth: clockwise fronts, back-face culling,
+            // depth writes with LESS_EQUAL, and no stencil.
             pass.primitive.topology = wgpu::PrimitiveTopology::TriangleStrip;
             pass.primitive.front_face = wgpu::FrontFace::Cw;
             pass.primitive.cull_mode = Some(wgpu::Face::Back);
@@ -115,7 +115,7 @@ impl Blur {
             pipeline(1, "ShadowBlurVertical"),
         ];
         let [horizontal, vertical] = pipelines;
-        // 1422C64C0: float4 POSITION + float2 UV, stride32; Y flips each draw.
+        // float4 POSITION + float2 UV, stride32; Y flips each draw.
         let vertices: [[f32; 8]; 4] = [
             [-1.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
             [-1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0],

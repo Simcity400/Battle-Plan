@@ -3,7 +3,7 @@ use super::scene::DEPTH_FORMAT;
 use eframe::wgpu;
 use std::{cell::RefCell, io, sync::Arc};
 
-/// Separate linear sea-bed target at t5 (frame33840/event10338).
+/// Separate linear sea-bed target bound at t5.
 pub const REFRACTION_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
 pub struct WaterPass {

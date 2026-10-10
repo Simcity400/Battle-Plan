@@ -1,5 +1,5 @@
-//! `1410277D0`: first assigned member, else first group member, else the
-//! request country's roster slot 0 (`CountryCounterInputs.first_division`).
+//! Choose the first assigned member, else the first group member, else the
+//! request country's roster slot zero (`CountryCounterInputs.first_division`).
 //! No unit means no route, even when both ports open onto one sea.
 
 use crate::map::raids::{
@@ -102,7 +102,7 @@ impl<'a> Routes<'a> {
                 .filter(|&id| id != 0);
         }
         if unit.is_none() {
-            // 1406C25B0: the resolved request country's +0x290 slot 0.
+            // Use the resolved request country's roster slot zero.
             let own = world
                 .raw_country(country)
                 .ok_or_else(|| format!("invasion request country {raw} has no country row"))?;

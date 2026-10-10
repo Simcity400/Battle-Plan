@@ -2,28 +2,29 @@
 
 use crate::{Memory, cpdx_array::Array, read};
 
-/// CRailwayProductionLine primary vtable; construction lane lib.rs:105 and pinned executable RTTI agree.
+/// Primary vtable.
 pub const VTABLE_RVA: usize = 0x02a1_5130;
-/// CRailwayProductionLine observed CReferenceObject type; construction lane LINE_TYPE_RAILWAY_CONSTRUCTION.
+/// Railway-construction reference type identifier.
 pub const REFERENCE_TYPE_ID: u32 = 4_713;
-/// CRailwayProductionLine initial railway level i32; exact 1419F0F20 serializes signed dword, correcting the old unsigned read.
+/// Initial railway level, signed i32, serialized as a dword.
 pub const BASE_LEVEL: usize = 0x70;
-/// CRailwayProductionLine requested railway level i32; exact 1419F0F20 serializes signed dword, correcting the old unsigned read.
+/// Requested railway level, signed i32, serialized as a dword.
 pub const TARGET_LEVEL: usize = 0x74;
-/// Cancel byte: setter 1419EEE90, save key `cancel` at 1419F0F20;
-/// IsComplete@1419F02A0 returns true for it independently of route completion.
+/// Cancel byte serialized as `cancel`; independently completes the line
+/// without requiring route completion.
 pub const COMPLETION_FLAG: usize = 0x78;
-/// CRailwayProductionLine province-id route array; construction lane lib.rs RAILWAY_LINE_ROUTE_PTR.
+/// Route province-ID array data.
 pub const ROUTE: usize = 0x80;
-/// CRailwayProductionLine route array u32 capacity; construction lane lib.rs RAILWAY_LINE_ROUTE_CAP.
+/// Route array capacity, u32.
 pub const ROUTE_CAPACITY: usize = 0x88;
-/// CRailwayProductionLine route array u32 count; construction lane lib.rs RAILWAY_LINE_ROUTE_SIZE.
+/// Route array count, u32.
 pub const ROUTE_COUNT: usize = 0x8c;
-/// CRailwayProductionLine route entries are u32 province ids; old queue reader multiplies index by 4.
+/// Route entries are u32 province IDs.
 pub const ROUTE_PROVINCE_STRIDE: usize = 0x04;
-/// CRailwayProductionLine current segment i32, with -1 allowed; old railway queue reader.
+/// Current segment, i32, permitting -1.
 pub const CURRENT_SEGMENT: usize = 0x98;
-/// CRailwayProductionLine remaining construction cost i64 fixed5; 1419F0B70 sums segment costs and computes produced=cost-remaining.
+/// Remaining construction cost, signed i64 fixed5; produced amount is total
+/// segment cost minus remaining cost.
 pub const REMAINING_COST: usize = 0xa0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

@@ -1,12 +1,10 @@
-//! Acquired CIntelligenceAgency upgrade entries, read with its scalar agency row.
+//! Acquired agency upgrade entries, read with the scalar agency row.
 //!
-//! Save@140FCA0F0 writes every 16-byte entry at agency+0x60/+0x6C, using
-//! definition+8 and the signed level at entry+8, independently of created.
-//! AddUpgrade@140FC2620 and Load@140FC8750 mutate the stored list by pointer;
-//! neither their caps nor loader merge semantics change what this reader copies.
-//! Hourly is required because the scripted effect@140368520, GUI upgrade command
-//! and reset@140FC6430 can change it between daily updates. Live reads remain
-//! unverified. No hook or native call is added.
+//! Serialization retains every pointer and signed level independently of the
+//! created flag. Mutations and loading select entries by pointer; their caps and
+//! merge rules do not change what this reader copies. Hourly acquisition covers
+//! scripted upgrades, GUI commands and resets between daily updates. Live reads
+//! remain unverified. No hook or game call is added.
 
 use crate::{
     Memory, ccountry, cintelligence_agency,
@@ -15,9 +13,9 @@ use crate::{
     walk::Outcome,
 };
 
-/// Save@140FCA0F0, AddUpgrade@140FC2620 and Load@140FC8750.
+/// Stored acquired-upgrade array.
 pub const ACQUIRED: usize = 0x60;
-/// The same native writers index pointer+i32-level entries by 16 bytes.
+/// Pointer and signed i32 level entry stride.
 pub const ENTRY_STRIDE: usize = 16;
 pub use crate::{
     agency_upgrade_branch::{UPGRADES as BRANCH_UPGRADES, VTABLE_RVA as BRANCH_VTABLE_RVA},
@@ -228,7 +226,7 @@ impl Catalog {
                     .checked_add(members.count as usize)
                     .ok_or("agency upgrade catalog demand overflow")?;
                 if self.growing {
-                    // Database loader@140617860 retains every branch membership.
+                    // The database loader retains every branch membership.
                     crate::walk::Buffer::Growing(&mut self.definitions).ensure(self.required)?;
                 }
                 let branch_token = token(memory, tokens, branch).ok();
@@ -258,7 +256,7 @@ impl Catalog {
                 }
             }
             // Global lookup keeps the first token pointer; another branch-owned
-            // pointer with the same token remains valid (loader@140617860).
+            // pointer with the same token remains valid.
             let globals = globals
                 .slice(1, globals.count - 1, 8)
                 .map_err(|_| DATABASE_UNSUPPORTED)?;

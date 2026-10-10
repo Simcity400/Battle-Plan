@@ -1,8 +1,8 @@
-//! Current end-screen operands, not the hourly cached country scores.
-//! CalculateArmyScore@1406D8920 reads the signed division roster size;
-//! CalculateNavyScore@1406D93E0 sums fleet task-vector sizes with i32 wrapping.
-//! CalculateAirScore@1406D8560 visits every first-site/pool/wing occurrence.
-//! Buffers are caller-owned and grow off the callback; errors keep each part unknown.
+//! Current end-screen operands, independent of cached hourly country scores.
+//! Army score reads the signed division-roster size; navy score sums signed
+//! task-vector sizes with i32 wrapping; air score visits every site, pool and
+//! wing occurrence. Caller-owned buffers grow off the callback and failures
+//! leave each score component independently unknown.
 
 use crate::{
     Memory, cair_base, cair_wing, cair_wing_pool, ccountry, cfleet, cpdx_array::Array,
@@ -95,7 +95,7 @@ fn vtable(
 
 /// Shares country authentication, and reads no division, task-force or ship payload.
 /// Visits every authenticated canonical object and inspects the catalogue's
-/// slot zero independently of positive-reference lookup (140BA5140).
+/// slot zero independently of the positive-reference lookup.
 pub fn walk_country_inputs(
     memory: &impl Memory,
     base: usize,
@@ -192,8 +192,8 @@ fn walk_country_inputs_buffer(
                 fleet_required = fleet_required
                     .checked_add(roster.count as usize)
                     .ok_or("game score fleet demand overflow")?;
-                // CalculateNavyScore1406D93E0 sums every original fleet's
-                // signed +C4 task count. Capacity must not omit that witness.
+                // Navy score sums each original fleet's signed task count.
+                // Capacity cannot omit that observation.
                 if !fleets.ensure(
                     fleet_len
                         .checked_add(roster.count as usize)
@@ -525,7 +525,7 @@ pub fn arena_demand(
     Ok(sizing)
 }
 
-/// Navy reads CFleet::GetTaskForceArray@140D0E930 +0xc, without following tasks.
+/// Navy reads each fleet's signed task count without following task payloads.
 pub fn read_fleet_count(
     memory: &impl Memory,
     base: usize,
@@ -668,7 +668,7 @@ pub fn read_first_sites_buffer(
     }
 }
 
-/// HasAccess@140C47CC0 tests signed bounds and a nonnull container, not capacity.
+/// Air-base access tests signed bounds and a non-null container, independent of capacity.
 pub fn read_air_site(
     memory: &impl Memory,
     base: usize,
@@ -742,8 +742,8 @@ impl Default for WingRow {
     }
 }
 
-/// CalculateAirScore@1406D8560 asks GetStatForSingleMission@140F4B740 for (0x33,1).
-/// Plane count is borrowed from the same authenticated AirWings acquisition.
+/// Air score requests the single-mission score channel. Plane count comes
+/// from the same authenticated air-wing acquisition.
 pub fn read_wing(memory: &impl Memory, pointer: usize, row: &cair_wing::ScoreLeaf) -> WingRow {
     let index = cair_wing::mission_stat_index(memory, pointer, 1);
     let stat_raw = index
@@ -777,8 +777,7 @@ pub struct Multipliers {
     pub land_raw: Result<i64, &'static str>,
 }
 
-/// Native fixed5 globals: loaders 1407EDFE0/1407E9880/1407FAD60/1407E8800/
-/// 1407F4FA0/1407FC410 use LuaTable_ReadFixed5@14205D560. Read each independently.
+/// Content-loaded fixed5 score globals; read each independently.
 pub fn read_multipliers(memory: &impl Memory, base: usize) -> Multipliers {
     Multipliers {
         total_raw: field(

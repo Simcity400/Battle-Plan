@@ -15,7 +15,7 @@ pub fn mul(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / ONE
 }
 
-/// 14067C770 coastal=false; no-state factor is known0, null controller returns define.
+/// Use noncoastal fort power. No state gives factor zero; a null controller returns the define.
 pub fn fort_base(country: Option<i64>, state: i64, define: i64) -> i64 {
     match country {
         None => define,
@@ -28,8 +28,8 @@ pub fn river(unit: [i64; 2], leader: i64, define: i64) -> [i64; 2] {
     unit.map(|value| value.wrapping_add(adjustment))
 }
 
-/// Native preview directions=1, both multipliers=ONE, coastal=false.
-/// base_factor comes from EXACT14067C770 via fort_base below.
+/// Preview with one direction, both multipliers equal to ONE, and noncoastal
+/// fort power. Resolve base_factor with fort_base below.
 pub fn fort(unit: [i64; 2], leader: i64, healthy: i32, base_factor: i64) -> Option<[i64; 2]> {
     if healthy <= 0 {
         return None;
@@ -108,8 +108,8 @@ pub struct Preview {
     pub refusals: Vec<(&'static str, String)>,
 }
 
-/// Exact observable projection of14129F040→140DE95A0. Seven independent
-/// row slots preserve order and failure locality. No sort or dedup by kind.
+/// Seven independent row slots preserve order and failure locality.
+/// Do not sort or deduplicate by kind.
 pub fn rows(input: Projection) -> Preview {
     let mut out = Preview {
         rows: Vec::new(),
@@ -180,8 +180,8 @@ pub fn rows(input: Projection) -> Preview {
     out
 }
 
-// The caller resolves `name` through 141440750's shared key helper and
-// recorded-content localisation; the native formatter supplies the percentage.
+// The caller resolves `name` through the shared key helper and content
+// localization; the formatter supplies the percentage.
 
 pub fn modifier_text(name: &str, value: i64) -> String {
     let percent = installed_content::fixed5::fixed5_percent(value, 2, true);

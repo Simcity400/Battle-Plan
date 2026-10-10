@@ -1,14 +1,12 @@
-//! Accepted experience adjustments in the pinned a729 executable. Each tap is
-//! immediately before the bank addition, after gain modifiers and any daily
-//! rejection. Positive adjustments are income before the bank cap; negatives
-//! are spending or corrections and must not be inferred from a balance fall.
+//! Accepted experience adjustments immediately before bank addition, after
+//! gain modifiers and any daily rejection. Positive adjustments are income
+//! before the bank cap; negative values are spending or corrections. Balance
+//! falls cannot substitute for those observations.
 //!
-//! AddArmyExperience@141291410, AddNavyExperience@1412916A0 and
-//! AddAirExperience@1412912D0 have one accepted-add path each. DailyUpdate
-//! @141292FC0 adds the three passive modifiers directly, then clears its daily
-//! counters. The counters themselves clamp army/navy gain, so reading them
-//! cannot recover an accepted overshoot. Constructor141291090 and token reader
-//! 141293AD0 restore state, and Reset@141292ED0 clears it; none is an income writer.
+//! Each army, navy and air adjustment has one accepted-add path. Daily update
+//! adds passive modifiers directly and then clears counters; those counters
+//! clamp army and navy gain and cannot recover accepted overshoot. Construction,
+//! token loading and reset restore or clear state rather than recording income.
 
 use crate::{Memory, ccountry, ccountry_experience_status as status, read};
 
@@ -19,14 +17,12 @@ pub struct Site {
     pub sentinel: [u8; 16],
 }
 
-/// `hoi4re asm`: RBX is the status and RDI the adjusted-amount pointer, except
-/// AddAirExperience uses RSI. The relocated prefixes are a bank load and add
-/// (seven bytes). No return PC or branch target lies inside those prefixes;
-/// incoming branches target their first instruction. All native registers,
-/// flags and XMM values must survive observation before the original addition.
-/// Authentication uses the first 16 native bytes. At the DailyUpdate sites
-/// (`asm 141292FC0`) this ends before the later floor-store displacement;
-/// only the complete seven-byte load/add prefix is relocated.
+/// RBX holds the status; RDI points to the adjusted amount, except the air
+/// path uses RSI. Relocate only the seven-byte bank load/add prefix. No return
+/// address or branch target lies inside; incoming branches enter its first
+/// instruction. Preserve all registers, flags and XMM values before addition.
+/// Authenticate the first sixteen bytes; daily sites leave the later floor
+/// store outside the relocated prefix.
 pub const SITES: [Site; 6] = [
     Site {
         rva: 0x129151f,

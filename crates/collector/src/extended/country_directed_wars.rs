@@ -131,8 +131,7 @@ impl Captured {
         if owner.reason.is_some() {
             return refused(2);
         }
-        // 1406F3A00 selects the full canonical slot from 140BA6240;
-        // 140D1E540 stores the matrix extent as signed i32 at diplomacy+14.
+        // Use the full canonical slot and the stored signed-i32 matrix extent.
         if owner.country as i32 <= 0
             || owner.canonical_slot == 0
             || owner.matrix_count == 0

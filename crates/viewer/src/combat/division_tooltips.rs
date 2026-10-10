@@ -1,6 +1,4 @@
-//! CCombatantEntry/ReserveEntry hover builders, rebuilt from simulation rows.
-//! Native dispatchers 1415BF4B0/1415C0840; stat composition 1415BE410/1415BD840;
-//! reserve chance 140C6D610 and movement contribution 140C76E90.
+//! Committed and reserve entry hovers, rebuilt from simulation rows.
 use super::{
     Selection, Values,
     binding::Bindings,
@@ -35,7 +33,7 @@ use std::{
     io,
 };
 
-// 140C781E0 -> 140C6F8B0. The maximum getter floors max HP to .001.
+// The maximum getter floors max HP to.001.
 fn combat_strength(strength: i64, maximum: i64, factor: i64) -> Option<i64> {
     Some(
         mul(
@@ -46,14 +44,14 @@ fn combat_strength(strength: i64, maximum: i64, factor: i64) -> Option<i64> {
     )
 }
 
-// Fixed5ToString (1424B6200 -> format_fixed5 1424B89F0) at precision 1:
+// Fixed-point formatting at precision 1:
 // truncated, a negative value near zero keeping its sign, and the whole
-// part through the signed i32 formatter (1424B7A80).
+// part through the signed i32 formatter.
 fn one_decimal(value: i64) -> String {
     installed_content::fixed5::fixed5_to_string(value, 1)
 }
 
-/// The complete modifier-name dispatch141440750, in the recorded native order.
+/// The complete modifier-name dispatch, in recorded order.
 const MODIFIER_NAMES: [&str; 30] = [
     BM_LEADER_BONUS,
     BM_COUNTRY_BONUS,
@@ -87,7 +85,7 @@ const MODIFIER_NAMES: [&str; 30] = [
     BM_NIGHT_MODIFIER,
 ];
 
-/// One shared native141440750 dispatch for actual combat and selected preview.
+/// Shared modifier-name dispatch for actual combat and selected preview.
 pub(crate) fn modifier_name_key(id: u32) -> Result<&'static str, String> {
     MODIFIER_NAMES
         .get(id as usize)
@@ -120,8 +118,8 @@ fn tactic_effects(
         )
     };
     let mut text = String::new();
-    //1412A03A0 tests defender C8 but formats attacker C0 on the defender org
-    // line as well (ASM1412A0FEC/1412A1182/1412A1357). Preserve that native quirk.
+    // The defender organisation line tests the defender bonus but formats
+    // the attacker bonus, preserving the displayed behavior.
     for (key, gate, value) in [
         (damage_key, damage, damage),
         (org_key, org_gate, organisation[0]),
@@ -146,7 +144,7 @@ fn tactic_effects(
     Ok(text)
 }
 
-/// 1415BE410's combat-stat hover, or why it cannot be made: the refused
+/// combat-stat hover, or why it cannot be made: the refused
 /// localisation key or missing operand.
 fn combat_stat(
     icons: &dyn TextIcons,
@@ -218,20 +216,20 @@ fn combat_stat(
     Ok(text)
 }
 
-// 1415BF4B0's default child dispatch. These two stat lines use the same
-// 1415BE410 formatter as the special attack/defence hovers, without a combat
-// modifier breakdown. FormatFixed5Trimmed (1424B60D0) formats the headline
+// default child dispatch. These two stat lines use the same
+// the game formatter as the special attack/defence hovers, without a combat
+// modifier breakdown. trimmed fixed-point formatting formats the headline
 // value before COMBAT_STAT: the magnitude by wrapping negation, its whole
-// part through the signed i32 formatter (1424B7A80) and every nonzero
+// part through the signed i32 formatter and every nonzero
 // decimal, trailing zeros trimmed, which is format_fixed5's mode 0
-// (1424B89F0 with a negative precision). The numeric base line still uses
+// (negative precision). The numeric base line still uses
 // fixed5 localisation. The piercing table is authored in NMilitary, and its
-// final "less than" label uses the preceding threshold (ASM 1415C00A2).
+// final "less than" label uses the preceding threshold.
 fn fixed_decimal(value: i64) -> String {
     installed_content::fixed5::fixed5_to_string(value, -1)
 }
 
-/// 1415C3AA0 frame 8/9: the two authored dice sizes are signed integers;
+/// the game frame 8/9: the two authored dice sizes are signed integers;
 /// native Fixed5 division first scales each by 100000 and returns 0xffffffff
 /// for a zero denominator. The bonus text is gated by the resulting ratio,
 /// while the defence reduction always appears in the delayed paragraph.
@@ -312,11 +310,9 @@ fn base_stat(
     Ok(text)
 }
 
-/// `name` is the division's standard template's display name: 1415BF4B0
-/// passes `CArmy+0x3B8`'s `CDivisionTemplateData` (140C6F080, through the
-/// identity thunk in vtable slot 8) to GetDisplayName (140B91170).
-/// `invasion` is the first-edge progress (140BEC9A0) of a division making an
-/// amphibious invasion move (140BF0E20), whose section follows the name.
+/// `name` is the division's standard template display name.
+/// `invasion` is the first-edge progress of a division making an
+/// amphibious invasion move, whose section follows the name.
 fn division_summary(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -390,10 +386,9 @@ fn division_summary(
     Ok(text)
 }
 
-/// 1415BF4B0's naval invasion section. `scales` are CUnit+0x188..+0x1A8; the
-/// section shows +0x198 and +0x1A0 less one (fixed5) when either differs.
-/// The separators are the executable's "\n\n" (14271A054) and "\n"
-/// (142702E68).
+/// Naval invasion section. Show the attack and defence scales less one
+/// in fixed5 when either scale differs from one.
+/// The separators are the executable's "\n\n" and "\n"
 fn invasion_section(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -488,9 +483,8 @@ impl Wars {
     }
 }
 
-/// 140BF0E20(unit, false): the unit's next route step leaves a sea province
-/// for a land province controlled by a country it is at war with (1406F3A00,
-/// the live, nonretired relation). The error names the row or relation
+/// The unit's next route step leaves a sea province for a land province
+/// controlled by a country it has a live, nonretired war relation with. The error names the row or relation
 /// whose absence leaves the test undecided.
 fn naval_invasion(
     unit: u64,
@@ -564,7 +558,7 @@ fn naval_invasion(
     }
 }
 
-/// CModifierIconEntry::GetTooltip (1415C3AA0), frames generated by
+/// modifier icon hover, frames generated by
 /// division_icons::frames. The first eight frames retain their source's
 /// first matching modifier entry; armor/piercing frames count the complete
 /// opposing committed roster into the same native buckets as their icon law.
@@ -644,8 +638,8 @@ fn modifier_icon_tooltip(
             }
             return Ok((text, Some(builtin(icons, loc, &format!("{key}_DESC"), &[]))));
         }
-        // 1415BEBA0 returns an empty breakdown/description when the icon's
-        // modifier is absent; 1415C3AA0 still emits the authored header.
+        // the game returns an empty breakdown/description when the icon's
+        // modifier is absent; the game still emits the authored header.
         return Ok((text, None));
     }
     if frame == 12 {
@@ -859,8 +853,8 @@ enum Reinforcement {
     },
 }
 
-/// CanAdvance (140C684A0) compares raw HP and current organisation against
-/// these executable constants (14293C980, 14293C978), not authored defines.
+/// advance eligibility compares raw HP and current organisation against
+/// these executable constants, not authored defines.
 const ADVANCE_STRENGTH: i64 = 10_000;
 const ADVANCE_ORGANISATION: i64 = 100_000;
 
@@ -878,7 +872,7 @@ fn reinforcement(
         .reinforce;
     let (width, used) = widths.map_err(str::to_owned)?;
     let available = width.wrapping_sub(used);
-    // 140C684A0's modifier getters (140551820) with an unsupported
+    // modifier getters with an unsupported
     // eligibility callback cannot be evaluated.
     let callback = |what: &str| {
         format!(
@@ -1007,7 +1001,7 @@ fn reserve_sources(
                 row.division
             )
         })?;
-    // 140C6D610: positive expeditionary owner, otherwise the roster owner.
+    // positive expeditionary owner, otherwise the roster owner.
     let country = if unit.expeditionary_owner as i32 > 0 {
         unit.expeditionary_owner
     } else {
@@ -1031,7 +1025,7 @@ fn reserve_sources(
         )
     };
     let country = describe(0, country as u64)?;
-    // 140C6D610 emits the commander only when its getter is nonzero.
+    // the game emits the commander only when its getter is nonzero.
     let commander = if modifier(&row.context, 0, true)
         .ok_or("reserve reinforcement: commander eligibility callback is unsupported")?
         != 0
@@ -1114,7 +1108,7 @@ fn reinforcement_text(
     Ok(text)
 }
 
-/// The committed entry's children 1415BF4B0 gives the division summary.
+/// The committed entry's children the game gives the division summary.
 const SUMMARY_HOVERS: [&str; 7] = [
     "Background",
     "unit_button",
@@ -1124,10 +1118,10 @@ const SUMMARY_HOVERS: [&str; 7] = [
     "hard_attack_icon",
     "breakthrough_icon",
 ];
-/// The committed entry's stat children 1415BF4B0 dispatches specially.
+/// The committed entry's stat children the game dispatches specially.
 const STAT_HOVERS: [&str; 3] = ["soft_attack", "hard_attack", "defense"];
 /// The reserve entry's children, which all take the reinforcement hover
-/// (the reserve dispatcher 1415C0840).
+/// (the reserve dispatcher).
 const RESERVE_HOVERS: [&str; 6] = [
     "Background",
     "unit_button",
@@ -1236,14 +1230,14 @@ pub(super) fn bind(
         .iter()
         .map(|row| (row.division, row.source))
         .collect();
-    // 141298D50's total width, or why it is unknown.
+    // total width, or why it is unknown.
     let width = direction_count(
         &detail.sides[0].committed,
         &divisions,
         detail.province,
         &movement_sources,
     )
-    .map_err(|reason| format!("the 141298E00 direction count is unknown: {reason}"))
+    .map_err(|reason| format!("the attack direction count is unknown: {reason}"))
     .and_then(|count| {
         let terrain = document
             .counters
@@ -1352,7 +1346,7 @@ pub(super) fn bind(
                 }
                 continue;
             }
-            // Both maxima are DivisionStatus's (+0x108 HP, organisation).
+            // DivisionStatus holds both maximum strength and organisation.
             let missing = |what: &str| {
                 format!("division {unit} has no DivisionStatus row, which holds its maximum {what}")
             };
@@ -1405,7 +1399,7 @@ pub(super) fn bind(
                 }
             };
             set_hover(values, "org_bar", organisation, None);
-            // GetDisplayName@140B91170: explicit name, otherwise LocalizeForCountry.
+            // template display-name selection: explicit name, otherwise country-specific localisation.
             let name = (|| {
                 let template = template_names.get(&row.context.template).ok_or_else(|| {
                     format!(
@@ -1454,7 +1448,7 @@ pub(super) fn bind(
             let summary = match invasion {
                 Ok(true) => etas.progress(*unit).map(Some).map_err(|reason| {
                     format!(
-                        "it invades from the sea, and its landing progress (140BEC9A0) cannot be rebuilt: {reason}"
+                        "it invades from the sea, and its landing progress cannot be rebuilt: {reason}"
                     )
                 }),
                 Ok(false) => Ok(None),
@@ -1475,7 +1469,7 @@ pub(super) fn bind(
                     None
                 }
             };
-            // 1415BF4B0 dispatches only five named children specially. Every
+            // the game dispatches only five named children specially. Every
             // other visible child of the committed row requests this summary.
             for key in SUMMARY_HOVERS {
                 set_hover(values, key, summary.clone(), None);

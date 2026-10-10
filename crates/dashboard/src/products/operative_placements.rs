@@ -1,6 +1,6 @@
 //! Operatives working in each country, dated by the membership read.
-//! Targets follow mission GetCountryTag@140FAE550 or GetOperationInstance
-//! @140BFF6B0 -> operation+0x58 (status UI 141E2D500).
+//! Targets follow the mission country link or the operation target,
+//! as selected for status text.
 
 use super::{LoadContext, Product, operative_rows};
 use crate::{Source, metadata::validate_campaign};
@@ -82,9 +82,9 @@ pub struct OperativePlacementReply {
 }
 
 fn recorded_operatives(frame: &DecodedFrame) -> Option<&[OperativeMembershipRow]> {
-    // #212 snapshots target/name with the roster. Assignment3 keeps its
-    // mission target even with a reservation (140C17B70); only assignment4
-    // reads the own operation's target (140BFF6B0 -> 141E2D500).
+    // Snapshots keep target/name with the roster. Assignment 3 keeps its
+    // mission target even with a reservation; only assignment 4 reads
+    // the own operation target.
     frame.complete::<tables::OperativeMemberships>().ok()
 }
 

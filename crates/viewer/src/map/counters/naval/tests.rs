@@ -4,7 +4,8 @@ use replay::{
     rows::{TableId, TableRows, TaskForceCounterInputRow, TaskForceRow},
 };
 
-/// 14127EBF0 filters combat task forces after 141277A00 has bucketed them for models.
+/// Exclude combat task forces from counter sources after preparing their
+/// model buckets.
 #[test]
 fn combat_task_forces_never_offer_sea_counter_sources() {
     let skips = crate::map::task_force_visual::MissionSkips::fixture([(7, (0, 0))], []);
@@ -26,10 +27,10 @@ fn combat_task_forces_never_offer_sea_counter_sources() {
     }
 }
 
-/// Session-C N1: 14127EBF0/140BF0AD0 exclude POL's combat force before
-/// 14162E2C0 groups sea sources in their shared strategic region.
+/// Combat task forces are excluded before sea-source grouping, while their
+/// model buckets remain available.
 #[test]
-fn l4e9_eng_plate_keeps_its_anchor_at_both_session_c_heights() {
+fn combat_task_forces_leave_sea_group_anchors_unchanged_at_both_heights() {
     use crate::map::counter_groups::{self, Extents, GroupDefines, Icon, Level};
     use replay::rows::{ShipCounterInputs, ShipModelRow, ShipRow};
 
@@ -206,7 +207,7 @@ fn port_unit(force: &TaskForceRow, slot: u32) -> NavalUnit<'_> {
     }
 }
 
-/// The political map's coarse sorter `141E778F0` has no mission tie-break and the sort is
+/// The political map's coarse sorter the game has no mission tie-break and the sort is
 /// stable: three otherwise equal own task forces in one fleet keep their roster missions
 /// `[1, 0, 1]`, so the port item's first and last missions agree and its mission icon draws.
 #[test]
@@ -273,11 +274,13 @@ fn a_hidden_unit_pass_reads_no_naval_table() {
     );
 }
 
-/// `141E77970` subtracts two fleet handles' words in `i32` and the game sorts on whatever
+/// Subtract two fleet handles' words in `i32` and the game sorts on whatever
 /// order that gives: a roster of 5,000 task forces whose fleet low words wrap sorts as the
 /// game's `std::stable_sort` does, own task forces first, with nothing refused.
 #[test]
 fn a_5000_task_force_port_roster_with_wrapping_fleets_sorts_as_the_game_does() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let forces: Vec<TaskForceRow> = (1..=5_000_u64)
         .map(|id| TaskForceRow {
             id: (id << 32) | 51,
@@ -402,10 +405,8 @@ fn a_port_force_dropped_for_a_missing_operand_leaves_its_roster_undecided() {
     });
 }
 
-/// A task force a naval base province's recorded occupant array names but the incomplete
-/// TaskForces census lacks leaves that base's roster undecided (the pass walks the array,
-/// `1418DDF50`); a complete census, or an array whose task forces are all recorded, decides
-/// nothing here.
+/// A complete census, or an occupant array whose every task force is recorded,
+/// settles port membership. An unavailable reached member leaves it unknown.
 #[test]
 fn a_port_force_the_incomplete_census_lacks_leaves_its_roster_undecided() {
     let recorded = TaskForceRow {

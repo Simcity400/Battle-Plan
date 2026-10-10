@@ -222,7 +222,7 @@ fn malformed_or_duplicate_serialized_scope_is_never_silently_overwritten() {
 }
 
 #[test]
-fn base_resources_use_initial_declarations_and_preserve_native_integer_scale() {
+fn base_resources_use_initial_declarations_and_preserve_resource_integer_scale() {
     let mut resources = BaseResources::default();
     resources
         .add_state_history(&super::super::history_fixture(b"state={id=1 resources={steel=-2147483648 oil=3 aluminium=10.000 chromium=-1.9 rubber=2147483648.0} history={resources={steel=999}}}"))

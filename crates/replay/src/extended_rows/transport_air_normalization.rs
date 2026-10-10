@@ -1,4 +1,4 @@
-//! Numerical F49710/F4B6E0 operands. Native controls never enter the codec.
+//! Numerical air-normalization operands. Live controls never enter the codec.
 use super::*;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

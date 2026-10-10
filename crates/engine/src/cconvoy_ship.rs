@@ -1,18 +1,17 @@
-//! CConvoyShip raw bar operands, separate from transport-order objects.
-//! Constructor141AC31F0 stores vtable142A23ED8 (instruction141AC3220).
+//! Raw convoy-ship bar operands, separate from transport-order objects.
 use crate::{Memory, cnaval_combatant::field};
 pub const VTABLE_RVA: usize = 0x02a2_3ed8;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// 141AC3720 reads the stored variant speed at +0x208.
+    /// Stored variant speed.
     pub speed: i64,
     pub strength: i64,
     pub organisation: i64,
     pub maximum_strength: i64,
     pub maximum_organisation: i64,
 }
-///141AC37A0/141AC3510 divide these operands, with native minimum100. Keep
-/// the unmodified variant max fields rather than those calculated quotients.
+/// Raw maximum fields used by fraction getters with a minimum of one hundred.
+/// Retain the stored operands before any quotient is calculated.
 pub(crate) fn read(
     memory: &impl Memory,
     base: usize,

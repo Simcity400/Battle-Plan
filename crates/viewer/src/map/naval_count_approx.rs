@@ -1,9 +1,8 @@
-//! `CNavalMissionUnitItem` ship and capital-count text at partial naval intel.
+//! Ship and capital-count text at partial naval intel.
 //!
-//! `14197EAC0` chooses the low/medium NNavy defines from the *first* grouped
-//! task force's viewer-derived visibility byte. `14197A4C0` formats the bounds
-//! produced by `14197A330`; its deterministic jitter uses that task force's
-//! simulation handle ID, not a saved display string or recorder-local RNG.
+//! The first grouped task force's visibility byte selects the low or medium `NNavy` count range.
+//! Signed count arithmetic produces the displayed bounds; deterministic jitter uses that task
+//! force's simulation handle ID.
 
 use std::io;
 
@@ -47,10 +46,9 @@ impl Defines {
     };
 }
 
-/// Native count text for one naval mission counter child (`14197EAC0`). `total_ships` is the
-/// complete task-force ship-roster sum (`BuildNavalCounterData@14197B4F0` `+0x50`), including
-/// partly visible members; the `capital` child's `total` is the capital sum (`+0x54`). The game
-/// formats whatever its signed arithmetic gives, so every input words a text.
+/// Count text for one naval mission counter child. `total_ships` includes the complete
+/// task-force rosters, including partly visible members; a capital child uses the capital sum
+/// as `total`. Every signed arithmetic result is formatted.
 pub(crate) fn format_count(
     total: i32,
     first_force_handle: u64,
@@ -63,10 +61,9 @@ pub(crate) fn format_count(
         return "?".to_owned();
     }
     if visibility >= 250 {
-        // `CInstantTextBox::SetInt32Text@1422B5AC0`.
         return total.to_string();
     }
-    let medium = visibility >= 150; // `0x95 < byte` in `14197EAC0`.
+    let medium = visibility >= 150; // The medium threshold includes byte 150.
     let (percent, minimum) = match (medium, capital) {
         (false, false) => (defines.low_half_range_percent, defines.low_min_ships),
         (false, true) => (defines.low_half_range_percent, defines.low_min_capitals),
@@ -80,10 +77,9 @@ pub(crate) fn format_count(
             },
         ),
     };
-    let seed = (first_force_handle >> 32) as u32; // `CTaskForce/CUnit+0x1c`.
+    let seed = (first_force_handle >> 32) as u32; // High handle word seeds the count jitter.
     let (lower, upper) = count_range(total, percent, minimum, seed);
-    // `FormatApproximateNavalIntelCount@14197A4C0`: equal bounds, a range below 100, or ">100";
-    // it formats reversed bounds as they are.
+    // Equal bounds, a range below 100, or greater-than-100 text. Reversed bounds retain their order.
     if lower == upper {
         lower.to_string()
     } else if upper < 100 {
@@ -93,10 +89,9 @@ pub(crate) fn format_count(
     }
 }
 
-/// `FormatNavalIntelCountRange@14197A330`: signed 32-bit count arithmetic, which wraps, and a
-/// wrapping 32-bit seed hash. The jitter modulus is a signed `int` (`2h + 1` for an even half
-/// range `h`, `2h` for an odd one), never zero; a half range past `2^30` makes it negative, and
-/// the game's signed remainder takes it as it is.
+/// Counts use wrapping signed 32-bit arithmetic and a wrapping seed hash. The signed jitter
+/// modulus has size `2h + 1` for an even half-range and `2h` for an odd one, and is never zero.
+/// Half-ranges above `2^30` produce a negative modulus, which signed remainder accepts.
 pub(crate) fn count_range(total: i32, percent: i32, minimum: i32, seed: u32) -> (i32, i32) {
     let half_range = (total.wrapping_mul(percent) / 100).max(minimum);
     let jitter = if half_range > 0 {

@@ -97,7 +97,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const rulingBand = list.find(band => band.token === ruling);
   const rulingRaw = rulingBand ? rawAt(rulingBand.series, Math.floor(head)) : null;
   const leader = leaderShown(data, leaderAt(data, Math.floor(head)));
-  // Mock-up politics-2: portrait ringed in the ruling ideology's colour (grey when not
+  // Portrait ringed in the ruling ideology's colour (grey when not
   // known), the leader's name, then ideology · party · share.
   // The party as the game names it ("NSDAP"); left out when that is not known.
   const detail = [leader.ideology, partyNameAt(data, Math.floor(head)), rulingRaw ? formatPopularity(rulingRaw, data.decimals) : null].filter(Boolean).join(' · ');
@@ -118,7 +118,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   </div>;
   return <div className="ruling-party">
     {header}
-    {/* Names only, as signed off; each popularity is still read out to assistive technology. */}
+    {/* Names only; each popularity is still read out to assistive technology. */}
     <Legend label="Parties" items={list.map(band => {
       const raw = rawAt(band.series, Math.floor(head));
       return { id: band.token, label: band.name, color: band.color, spokenValue: raw == null ? 'not recorded' : formatPopularity(raw, data.decimals) };

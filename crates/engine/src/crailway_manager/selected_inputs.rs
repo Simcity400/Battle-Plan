@@ -1,7 +1,7 @@
-//! Selected railway movement operands from the original authenticated info walk.
-//! E733D0 indexes +20 by find_neighbour@1413F4F30's first ordinal; E765F0
-//! tests signed +44 != 0 without reading the sorted pair vector. E7D110 and
-//! E80070 size +20 from definition+7C; E80C40 saves that entire signed array.
+//! Selected railway movement operands from the original authenticated info
+//! walk. Indexed levels use the first neighbour ordinal. The signed pair
+//! count is tested for nonzero without reading the sorted pair vector.
+//! Indexed arrays size from definition neighbours and serialize in full.
 
 use crate::{
     Memory, cpdx_array::Array, cprovince_railway_info as info, province_definition, read,
@@ -25,9 +25,9 @@ fn level_header(memory: &impl Memory, node: usize, definition: usize) -> Input<A
     Ok(header)
 }
 
-/// Off-hour hint for 140E80C40's complete neighbour-indexed saved array. Size
-/// from authenticated live headers without reading levels, pairs or buildings.
-/// This does not supply any hourly operand or certify a later acquisition.
+/// Off-hour hint for the complete neighbour-indexed saved array. Size from
+/// authenticated live headers without reading levels, pairs or buildings.
+/// It supplies no hourly value and certifies no later acquisition.
 pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Input<usize> {
     use super::{PROVINCE_INFO_TABLE, VTABLE_RVA};
     use crate::{cgame_state, cprovince};
@@ -134,8 +134,8 @@ pub struct Levels<'a> {
     pub required: usize,
 }
 
-/// Worker-owned indexed levels grow after the same authenticated header read
-/// used by the fixed reader. 140E80C40 writes the full signed +20 array.
+/// Worker indexed levels grow after the fixed reader's authenticated header
+/// read; serialization retains the full signed array.
 pub struct GrowingLevels<'a> {
     pub values: &'a mut Vec<i32>,
     pub len: usize,

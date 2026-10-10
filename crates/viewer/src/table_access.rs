@@ -80,8 +80,8 @@ pub fn rows<T: TableSchema>(frame: &DecodedFrame) -> io::Result<Available<'_, T>
 /// Content names spelled by this hour's `LexicalTokens`. Rows record an
 /// equipment type, module or upgrade by its token: the engine builds each
 /// definition's name and token from one authored key, so the spelling is the
-/// name. The exception is token 0, which `AddDynamicToken` (1424A65A0)
-/// returns for every key it rejects (empty, or starting with a digit or
+/// name. The exception is token 0, returned for every rejected key
+/// (empty, or starting with a digit or
 /// '-'), so it names no one key. A spelling that is not NUL-free UTF-8 names
 /// nothing here.
 #[derive(Clone, Copy, Debug)]
@@ -199,12 +199,9 @@ pub fn refuse(refusals: &mut Refusals, reason: String) {
 
 pub use dashboard::triggers::fold_token;
 
-/// Content keys grouped by the lexer's token identity. `AddDynamicToken`
-/// (1424A65A0) finds an existing token with 1424A5EE0: an FNV-1a hash that
-/// folds only ASCII A-Z, then equal length and `_strnicmp` (142549958, whose
-/// C-locale path 14254990C also folds only A-Z). Two keys equal under that
-/// fold share one token, so a token's spelling names the one content key
-/// equal to it, and several such keys are ambiguous.
+/// Content keys grouped by lexer token identity. Lookup uses ASCII-folding
+/// FNV-1a, equal length and comparison folding only A-Z. Equivalent keys share
+/// one token, so several such content keys make the spelling ambiguous.
 #[derive(Clone, Debug, Default)]
 pub struct TokenKeys(BTreeMap<String, Vec<String>>);
 

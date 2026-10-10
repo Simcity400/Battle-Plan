@@ -73,7 +73,7 @@ fn breakdown_capture_keeps_the_original_push_capacity_trace() {
     bytes[MANAGER + power_balance_manager::RECORDS..MANAGER + power_balance_manager::RECORDS + 8]
         .copy_from_slice(&(RECORDS as u64).to_le_bytes());
     for record in 0..17 {
-        // Empty cached accumulator at +0xC8, with an empty inline +0x48 label.
+        // Empty cached accumulator with an empty inline label.
         let capacity = RECORDS + record * power_balance_record::STRIDE + 0xc8 + 0x48 + 24;
         bytes[capacity..capacity + 8].copy_from_slice(&15_u64.to_le_bytes());
     }

@@ -467,8 +467,7 @@ impl<'a> Inputs<'a> {
                 .evaluate(NormalEdgeOperands { additive, river })
             };
             if speed == 0 {
-                // Native BECF90 returns before reaching progress subtraction
-                // or any later route operand.
+                // Return before progress subtraction or any later route operand.
                 return Ok(0);
             }
             duration = duration.wrapping_add(eta_ratio(distance, speed).map_err(str::to_owned)?);
@@ -491,8 +490,8 @@ impl<'a> Inputs<'a> {
 
 impl crate::map::raids::reach::CounterFacts for Inputs<'_> {
     fn rail_connected(&self, from: u32, to: u32) -> Fact<bool> {
-        // E153A0 returns before reading railway nodes unless both endpoints
-        // are LAND, then proves both nodes before either selected building.
+        // Return before railway nodes unless both endpoints are land, then prove
+        // both nodes before either selected building.
         for province in [from, to] {
             if self
                 .content
@@ -630,9 +629,8 @@ impl<'a> Inputs<'a> {
                 class: Default::default(),
             },
         )?;
-        // BECF90 count<=0 never asks a speed or actual-progress operand.
-        // A failed admission/search is distinguishable from missing facts:
-        // native false yields Ok(empty), missing simulation inputs yield Err.
+        // A nonpositive count requests no speed or actual-progress operand.
+        // Failed admission/search gives Ok(empty); missing simulation facts give Err.
         let duration = if route.is_empty() {
             Ok(0)
         } else {
@@ -714,6 +712,8 @@ mod tests {
 
     #[test]
     fn idle_explicit_target_keeps_a_known_route_when_duration_profile_is_refused() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::map::raids::{reach::Cells, script::World};
         let (assets, mut frame) = crate::map::raids::counter_fixture();
         let mut content = content(1);
@@ -912,6 +912,8 @@ mod tests {
 
     #[test]
     fn transport_route_ignores_missing_normal_rail_weather_and_unreached_stored_terrain() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = transport_frame(200_000);
         let content = content(0);
         let inputs = Inputs::new(&frame, &content);
@@ -929,6 +931,8 @@ mod tests {
 
     #[test]
     fn refused_rail_content_does_not_deny_transport_or_normal_duration() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let transport = transport_frame(200_000);
         let land = normal_frame();
         for (frame, flags, fresh) in [
@@ -948,6 +952,8 @@ mod tests {
 
     #[test]
     fn fresh_progress_uses_actual_speed_only_when_first_edges_match() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = normal_frame();
         let content = content(1);
         let inputs = Inputs::new(&frame, &content);
@@ -978,6 +984,8 @@ mod tests {
 
     #[test]
     fn refused_strategic_gate_does_not_become_a_normal_speed_fallback() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = normal_frame();
         let content = content(1);
         let inputs = Inputs::new(&frame, &content);
@@ -1000,6 +1008,8 @@ mod tests {
 
     #[test]
     fn zero_transport_speed_returns_before_missing_actual_progress_speed() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = transport_frame(0);
         let content = content(0);
         let inputs = Inputs::new(&frame, &content);
@@ -1017,6 +1027,8 @@ mod tests {
 
     #[test]
     fn earlier_transport_division_overflow_is_not_hidden_by_later_zero_speed() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = transport_frame(-1);
         put(
             &mut frame,
@@ -1079,6 +1091,8 @@ mod tests {
 
     #[test]
     fn refused_and_stale_owner_packets_cannot_supply_transport() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = transport_frame(200_000);
         let content = content(0);
         for (packet, expected) in [
@@ -1258,6 +1272,8 @@ mod tests {
 
     #[test]
     fn absent_weather_record_does_not_require_the_snow_ceiling() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = normal_frame();
         let content = content(1);
         let fresh = normal();
@@ -1323,6 +1339,8 @@ mod tests {
 
     #[test]
     fn refused_owner_entries_are_independent_but_duplicate_domain_keys_refuse() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = transport_frame(200_000);
         put(
             &mut frame,
@@ -1421,6 +1439,8 @@ mod tests {
 
     #[test]
     fn normal_terrain_rejects_duplicate_and_nonpositive_keys_only_when_reached() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = normal_frame();
         let land = content(1);
         let inputs = Inputs::new(&frame, &land);
@@ -1474,6 +1494,8 @@ mod tests {
 
     #[test]
     fn row_indexes_refuse_duplicate_aliases_slots_and_directed_edges() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let content = content(0);
         let mut frame = transport_frame(200_000);
         put(

@@ -1,8 +1,8 @@
-//! Stored operands of the ordinary-map raid tooltips. `14157C670` reads
-//! army statistics and the wing's mission-8 statistics on demand. Keep the
-//! stored numerators and every manpower entry; division and wing derived
-//! fractions are computed by the viewer. Hourly because equipment, strength,
-//! organisation and experience can change during any hour.
+//! Stored operands of ordinary-map raid tooltips. Army statistics and
+//! wing mission-8 statistics are read on demand. Keep stored numerators
+//! and every manpower entry; the viewer computes derived fractions.
+//! Hourly acquisition preserves equipment, strength, organisation and
+//! experience changes during any hour.
 use crate::modifier_keys as keys;
 use crate::{
     Memory, cair_wing, carmy, cpdx_array::Array, craid_instance, creference_registry, cunit,
@@ -46,8 +46,8 @@ pub const ADDITIONAL_ORDER: u32 = 28;
 pub const SOURCE_NAME: u32 = 29;
 pub const SOURCE_NAME_GROUP: u32 = 30;
 pub const SOURCE_CUSTOM_NAME: u32 = 31;
-/// Global subunit +10 discriminator, 141578C80. Scope zero holds the
-/// ordered database entries; key zero is the native null fallback.
+/// Global subunit +10 discriminator. Scope zero holds ordered database
+/// entries; key zero is the null fallback.
 pub const SUBUNIT_ACTIVE: u32 = 32;
 /// The only row of a raid whose operands could not be read; the other
 /// raids keep theirs.
@@ -55,7 +55,7 @@ pub const UNREADABLE: u32 = 33;
 /// Stored wing text: length at u32::MAX, chunks at zero-based keys.
 /// A negative length is a NameReadError code, with no chunks.
 pub const WING_NAME: u32 = 34;
-/// 141084940 passes these static lexer tokens to GetTokenString for names.
+/// Static lexer tokens used to resolve names.
 pub const NUCLEAR_BOMB_TOKEN: u32 = 0x4bf0;
 pub const THERMONUCLEAR_BOMB_TOKEN: u32 = 0x4bf1;
 /// Definition keys use the unused null reference-type arm; ordinary raid
@@ -202,13 +202,13 @@ fn unit(
 }
 
 fn army(memory: &impl Memory, pointer: usize, sink: &mut Sink<'_>) -> Result<(), &'static str> {
-    // CArmy vf31/vf36: 140C78820 / 140C78810. Experience 141454330 reads
-    // +430 and sums the signed manpower array at +3E0, without deduplication.
+    // Experience uses +0x430 and sums the signed manpower array at +0x3E0,
+    // without deduplication.
     for offset in [0x420, 0x428, 0x430] {
         sink.push(ARMY, offset as u32, field(memory, pointer, offset)?)?;
     }
     let stats = field::<u64>(memory, pointer, cunit::STAT_BLOCK)? as usize;
-    // Recon 140BEE1B0, maximum strength 140C72EB0 (the latter clamps at 100).
+    // Recon and maximum strength; maximum strength clamps at 100.
     for offset in [0xd0, 0x288] {
         sink.push(ARMY_STATS, offset as u32, field(memory, stats, offset)?)?;
     }
@@ -242,8 +242,8 @@ fn wing_stats(
     )?;
     let index = cair_wing::mission_stat_index(memory, pointer, 8).map_err(raid_stat_reason)?;
     let stats = cair_wing::mission_stat_record(memory, pointer, index).map_err(raid_stat_reason)?;
-    // GetMissionStatOrDefault 140F4B7F0, consumed by 140F49710/140F4D130
-    // and reliability branch 14157C670. No getter or modifier is executed.
+    // Stored mission-stat inputs for wing statistics and raid reliability.
+    // No getter or modifier is executed.
     for key in [0x2f, 0x31, 0x32, 0x41, 0x4c] {
         sink.push(WING_STATS, key, field(memory, stats, key as usize * 8)?)?;
     }
@@ -263,8 +263,8 @@ fn raid_stat_reason(reason: cair_wing::MissionStatError) -> &'static str {
     }
 }
 
-/// 140F48230 scans all occurrences; the other getters binary-search this
-/// sorted vector. Preserve native order and duplicate keys for both users.
+/// Direct scans visit every occurrence; other queries binary-search this
+/// sorted vector. Preserve order and duplicate keys for both users.
 fn modifiers(
     memory: &impl Memory,
     at: usize,
@@ -355,8 +355,8 @@ fn object(
 }
 
 fn nearest(memory: &impl Memory, state: usize) -> Result<usize, &'static str> {
-    // 140FD0D60, 1409CE8D0, 140E6AAD0: no wrapping of the map X axis;
-    // squared distances wrap as signed i32 and equal distances keep first.
+    // The map X axis does not wrap; squared distances wrap as signed i32,
+    // and equal distances keep the first occurrence.
     let template = field::<u64>(memory, state, crate::cstate::TEMPLATE)? as usize;
     let point = |at, offset| -> Result<[i32; 2], &'static str> {
         let bytes = field::<[u8; 8]>(memory, at, offset)?;
@@ -412,7 +412,7 @@ fn targets(
     } else {
         building_location
     };
-    // 140FD19C0 has a different precedence from 140FD1760.
+    // Building requirements and target selection have distinct precedence.
     let state = if explicit_state != 0 {
         explicit_state
     } else if province != 0 {
@@ -445,11 +445,11 @@ fn target_inputs(
     sink: &mut Sink<'_>,
 ) -> Result<(), &'static str> {
     if state != 0 {
-        // 14157BC30 resistance branch reads the live CState+278 numerator.
+        // The resistance branch reads the live state +0x278 numerator.
         sink.push(TARGET_STATE, 0x278, field(memory, state, 0x278)?)?;
     }
     if province != 0 {
-        // 14157BC30 enemy_units uses this roster, not the map-counter roster.
+        // Enemy-unit counts use this roster rather than the map-counter roster.
         let roster =
             Array::read(memory, province + 0x110, 8).ok_or("raid tooltip target units invalid")?;
         for index in 0..roster.count {
@@ -487,8 +487,8 @@ fn wing(
         let holder = field::<u64>(memory, pool, raid_speed_inputs::WING_POOL_OWNER)? as usize;
         field::<u32>(memory, holder, raid_speed_inputs::POOL_OWNER_COUNTRY)?
     };
-    // 140F49710 and 140F4D130 use this wing-country accumulator. The
-    // slot selected above is a stored CCountryTag, never a modifier result.
+    // Wing statistics use this wing-country accumulator. The selected slot
+    // is a stored country tag, never a modifier result.
     let slot = countries
         .link(raw)?
         .ok_or("raid tooltip wing country unresolved")?;

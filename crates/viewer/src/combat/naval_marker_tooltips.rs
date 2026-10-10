@@ -1,4 +1,4 @@
-//! CNavalCombatMapIcon::BuildTooltip@1418E2DC0, normal map hover.
+//! naval combat marker hover, normal map hover.
 use super::{
     binding::{TextIcons, builtin},
     land_marker_tooltips,
@@ -25,7 +25,7 @@ use std::{
     sync::Arc,
 };
 
-// Executable literals at 1418E2DC0.
+// Localisation keys for naval combat marker hovers.
 super::text::tooltip_keys! {
     NAVAL_COMBAT_TOOLTIP_ATTACKER = "NAVAL_COMBAT_TOOLTIP_ATTACKER",
     NAVAL_COMBAT_TOOLTIP_ATTACKER_WITH_CONVOYS = "NAVAL_COMBAT_TOOLTIP_ATTACKER_WITH_CONVOYS",
@@ -53,8 +53,8 @@ fn whole<'a, T: TableSchema>(table: &Available<'a, T>, name: &str) -> Result<&'a
     }
 }
 
-// CountryTagListContainsEquivalent@1406D7F90: primary OR secondary
-// membership for the shared 1413CCBC0 outcome. HQ selection uses only primary.
+// country-list equivalence testing: primary OR secondary
+// membership for the shared outcome. HQ selection uses only primary.
 fn contains(ids: &[u32], viewer: u32, links: &BTreeMap<u32, u32>) -> Result<bool, String> {
     if ids.iter().any(|raw| links.get(raw) == Some(&viewer)) {
         return Ok(true);
@@ -65,9 +65,9 @@ fn contains(ids: &[u32], viewer: u32, links: &BTreeMap<u32, u32>) -> Result<bool
     Ok(false)
 }
 
-/// 1418E1E90/1418E2040: first primary side containing the viewer,
+/// first primary side containing the viewer,
 /// forward groups/members in native order, distinct task forces, then the
-/// FIRST viewer-roster-owned (+0x1D8) force with nonempty attached HQ (+0x734).
+/// first viewer-roster-owned force with a nonempty attached HQ.
 fn hq_count(
     detail: &NavalCombatDetailsRow,
     members: &[&NavalCombatShipRow],
@@ -128,7 +128,7 @@ fn seen(
 ) -> Result<String, String> {
     let mut text = String::new();
     for (side, value) in detail.sides.iter().enumerate() {
-        // 14160BC80 -> 141C55500(group, false): live convoy reference,
+        // Live convoy references,
         // excluding state 0x10; paired-only groups and history are not walked.
         let convoys = members
             .iter()
@@ -152,10 +152,10 @@ fn seen(
                 ("HQCOUNT", Argument::Int32(hq)),
             ],
         )?);
-        text.push('\n'); // 1418E2DC0 adds a literal LF after BOTH sides.
+        text.push('\n'); // the game adds a literal LF after BOTH sides.
     }
-    // CNavalCombatant vtable+0x68 is 140627630: it writes zero for both
-    // survival scores. 1413CCBC0 therefore shows undecided / less than a day.
+    // Naval survival scores are zero for both sides, so the outcome is
+    // undecided and duration is less than a day.
     text.push_str(&land_marker_tooltips::outlook(
         icons,
         loc,

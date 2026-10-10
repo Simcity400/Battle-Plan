@@ -1,7 +1,7 @@
-//! CConferenceSubjectParticipant's primary identity.
-/// a729 RTTI and constructors 141441BB0/141441C50.
+//! Subject-country peace participant identity.
+/// Primary vtable.
 pub const VTABLE_RVA: usize = 0x029a_b9e8;
-/// 141443300 initializes the subject relation with +58 as overlord and +60
-/// as the country selected by 1414473C0 (possibly a newly allocated reference).
+/// The subject relation uses +58 as overlord and +60 as the selected country,
+/// which may have a newly allocated reference.
 pub const OVERLORD: usize = 0x58;
 pub const RESULT_COUNTRY: usize = 0x60;

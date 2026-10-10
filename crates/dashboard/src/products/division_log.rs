@@ -1,9 +1,8 @@
 //! Observed appearances and witnessed removals, never snapshot-inferred deaths.
-//! DeleteUnit@1401D6340 clears expeditionary ownership at 1401D654E; the
-//! deletion capture preserves it. Its dispositions distinguish reserve returns,
-//! merges and transfers. Destroy@140C79E70 / 140CCC7F0 and combat lifecycle
-//! @141299850 provide killer context, joined only within the same drain.
-//! First appearance has no native creation date: its date is an upper bound.
+//! Deletion clears expeditionary ownership; the capture preserves it. Recorded
+//! dispositions distinguish reserve returns, merges and transfers. Destruction
+//! and combat lifecycle supply killer context, joined only within the same drain.
+//! First appearance has no creation date: its date is an upper bound.
 use super::{
     BranchParams, LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
     battles::{BattleWarning, BattleWindow},
@@ -335,8 +334,8 @@ impl Scan {
                 }
                 if self.seen.insert(division.id) && !baseline {
                     let presentation = current_presentation.get(division.id);
-                    // Force owner @140C600A9-C3 / 140C7BFC0: positive
-                    // expeditionary owner, otherwise the recorded roster owner.
+                    // Division owner is the positive expeditionary owner, otherwise
+                    // the recorded roster owner.
                     let raw = if (division.expeditionary_owner as i32) > 0 {
                         division.expeditionary_owner
                     } else {
@@ -697,8 +696,8 @@ fn legacy_names(source: &Source, cat: &Arc<Catalogue>) -> CachedLegacyNames {
     cache
         .names
         .get_or_insert_with(|| {
-            // Global loader@140191044-140191083; reached only by the historical
-            // operand path. CArmy::GetName140C72F00's cached bytes need no database.
+            // The global database is reached only by the historical operand path.
+            // Cached army-name bytes need no database.
             match installed_content::division_names::read_directories::<installed_content::Diagnostic>(
                 &cat.content.layers,
                 &installed_content::division_names::DIRECTORIES,
@@ -721,10 +720,9 @@ fn icon_key(
     unit: &[u8],
     exists: impl Fn(&str) -> Result<bool, String>,
 ) -> Result<String, String> {
-    // SelectDivisionTemplateIconSprite@140B36730 forwards the i32 choice;
-    // FormatDivisionTemplateIconName@140B3BD30 tests nonnegative indices and
-    // SelectUnitTypeIconSprite@140B367C0 rejects the null/invalid priority
-    // definition (+0x10) before any custom lookup, then falls back if absent.
+    // The template icon forwards its i32 choice and tests nonnegative indices.
+    // The unit-type selector rejects a null/invalid priority definition before
+    // any custom lookup, then falls back if absent.
     if priority_unit == 0 {
         return Err(
             "Division priority unit is null or invalid; native template artwork is absent".into(),
@@ -837,7 +835,7 @@ fn named(
         }
     }
     if let Some(template) = &presentation.template {
-        // GetDisplayName@140B91170: explicit +0x8 before +0x28 localisation key.
+        // An explicit display name precedes the localisation key.
         let name = if !template.name.is_empty() {
             stored_text(
                 &cat.localisation,

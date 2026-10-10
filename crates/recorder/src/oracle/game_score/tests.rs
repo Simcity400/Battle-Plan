@@ -274,7 +274,8 @@ fn game_score_oracle_names_unsaved_industry_effective_totals() {
         report
             .limitations
             .keys()
-            .any(|reason| reason.contains("140E5D3B0") && reason.contains("saved building inputs"))
+            .any(|reason| reason.contains("production save writer")
+                && reason.contains("saved building inputs"))
     );
 }
 
@@ -308,7 +309,7 @@ fn game_score_reserved_object_does_not_block_positive_country_comparisons() {
         report
             .limitations
             .keys()
-            .any(|reason| reason.contains("1401F4185"))
+            .any(|reason| reason.contains("omits reserved slot zero"))
     );
     drop(context);
     inputs(

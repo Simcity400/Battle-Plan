@@ -1,5 +1,5 @@
-//! NScript::SScriptedKey presentation cases. The shared native reader owns
-//! their grammar; consumers supply the recorded event scope for selection.
+//! Scripted-key presentation cases. The shared reader owns their grammar;
+//! consumers supply the recorded event scope for selection.
 
 use crate::parser::{Item, Value};
 
@@ -16,7 +16,7 @@ pub struct ScriptedKey {
 }
 
 impl ScriptedKey {
-    /// 1413622A0/1413623A0 append cases; key strings use raw C-string bytes,
+    /// Cases append; key strings use raw C-string bytes,
     /// and a false/invalid bool creates a conjunction, even if it is empty.
     pub fn append(&mut self, value: &Value) -> Result<(), String> {
         if let Some(body) = value.items() {
@@ -42,7 +42,7 @@ impl ScriptedKey {
         Ok(())
     }
 
-    /// 1413621E0: first null/true trigger wins. A single case is evaluated,
+    /// First null/true trigger wins. A single case is evaluated,
     /// and no match gives no key; an unknown trigger cannot skip to a fallback.
     pub fn select(
         &self,

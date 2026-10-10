@@ -1,8 +1,6 @@
-//! TEST ONLY: main's land_reinforcement_inputs readers,
-//! copied verbatim from origin/main c53208146b, except that its row types
-//! are the current module's (they are unchanged), so outputs compare
-//! directly. The sharing equivalence tests run this as the baseline:
-//! every read in main's order, every failure with main's reason.
+//! Test-only sequential, unshared reinforcement-input readers. Row types
+//! match the shared reader so outputs compare directly. Equivalence tests
+//! compare every read in the unshared order and every failure with its reason.
 #![allow(dead_code, clippy::all)]
 
 use crate::{Memory, carmy, ccountry, cgame_state, cpdx_array::Array, cprovince, cunit, read};
@@ -209,9 +207,9 @@ fn append_modifiers(
     Ok(())
 }
 
-/// Raw accumulator selection for1409CC140; its hash selects a source rather
+/// Country-specific accumulator selection; the hash selects a source rather
 /// than calculating a displayed numeric result. All four possible speed keys
-/// are kept so controller/attacking choices cannot lose an operand.
+/// are kept so controller and attacking choices cannot lose an operand.
 fn state_accumulator(
     memory: &impl Memory,
     base: usize,
@@ -551,8 +549,8 @@ fn transport_context(
             if pointer(memory, diplomacy, cdiplomacy_status::COUNTRY)? != owner.pointer {
                 return Err("reinforcement transport diplomacy backlink mismatch");
             }
-            // E8DC30 visits every enemy reference in +98/+A4 and appends to a
-            // growable CPdxArray: the native header count is the only bound.
+            // Every enemy reference is visited and appended to a growable array:
+            // the live header count is the only bound.
             let enemies = array(memory, diplomacy, cdiplomacy_status::ENEMY_COUNTRIES, 4)?;
             for index in 0..enemies.count {
                 let raw = field::<u32>(memory, element(enemies, index, 4)?, 0)?;

@@ -13,6 +13,8 @@ impl CombatResources for Fixture {
 
 #[test]
 fn retained_null_tactic_keeps_the_previous_drawable_and_initial_authored_image() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use super::super::{presentation::land_tactics, tactics::Content};
     use replay::rows::LandCombatSideDetails;
     let windows = windows(
@@ -94,6 +96,8 @@ fn retained_null_tactic_keeps_the_previous_drawable_and_initial_authored_image()
 
 #[test]
 fn result_controls_include_both_close_buttons_outside_panels_and_text_scrollbars() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let resources = fixture_with(installed_content::gui::native::read(br#"guiTypes={
         scrollbarType={name=details_bar size={x=10 y=60} minValue=0 maxValue=1 stepSize=1
             rightButton=up leftButton=down track=track slider=slider
@@ -148,6 +152,8 @@ fn result_controls_include_both_close_buttons_outside_panels_and_text_scrollbars
 
 #[test]
 fn retained_result_mixed_templates_keep_nested_air_loss_counts_and_tint() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use super::super::Widget;
     let windows = windows(
         br#"guiTypes={
@@ -254,6 +260,8 @@ fn retained_result_mixed_templates_keep_nested_air_loss_counts_and_tint() {
 
 #[test]
 fn tactics_entry_provider_fills_child_hits_and_preserves_explicit_hovers() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use super::super::tooltips::set_hover;
     let windows = windows(
         b"guiTypes={containerWindowType={name=tactics_list_entry
@@ -340,6 +348,8 @@ fn tactics_entry_provider_fills_child_hits_and_preserves_explicit_hovers() {
 
 #[test]
 fn combat_box_hovers_pass_through_counts_and_keep_ship_icons_on_both_sides() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use super::super::{Widget, tooltips::set_hover};
     for (transparent, cover) in [(true, false), (false, false), (true, true)] {
         let mut source =
@@ -451,6 +461,8 @@ fn combat_box_hovers_pass_through_counts_and_keep_ship_icons_on_both_sides() {
 
 #[test]
 fn combat_mixed_grid_rows_are_counted_without_losing_compatible_entries() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let windows = windows(
         br#"guiTypes={
         containerWindowType={name=view size={width=400 height=200}
@@ -527,6 +539,8 @@ fn combat_mixed_grid_rows_are_counted_without_losing_compatible_entries() {
 
 #[test]
 fn naval_loss_grid_uses_authored_slots_and_runtime_bounds() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use super::super::{Widget, binding::NavalEntry, naval_details::entry_offset};
     let windows = windows(
         br#"guiTypes={
@@ -603,8 +617,9 @@ fn naval_loss_grid_uses_authored_slots_and_runtime_bounds() {
 
 #[test]
 fn combat_button_enabled_binding_draws_native_disabled_state_and_resets() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use super::super::Widget;
-    use crate::map::native_effects::Pixel;
 
     let windows = windows(
         br#"guiTypes={containerWindowType={name=view size={width=40 height=20}
@@ -649,8 +664,8 @@ fn combat_button_enabled_binding_draws_native_disabled_state_and_resets() {
             let native_gui::PartKind::Sprite { offsets, .. } = &part.kind else {
                 panic!("expected a button sprite");
             };
-            // DrawWithStateEffect@14222D0D0: disabled state 4 uses frame 4
-            // when present, otherwise frame 1, and the Disable technique.
+            // disabled state 4 uses frame 4 when present, otherwise frame 1, and the Disable
+            // technique.
             assert_eq!(
                 offsets[0],
                 if disabled && frames == 4. {
@@ -659,10 +674,10 @@ fn combat_button_enabled_binding_draws_native_disabled_state_and_resets() {
                     0.
                 }
             );
-            let Some((Pixel::Sprite(program), ..)) = part.shading.program else {
-                panic!("expected the native button-state program");
+            let Some((fixture, ..)) = part.shading.fixture else {
+                panic!("expected the button-state fixture technique");
             };
-            assert_eq!(program.grey, disabled);
+            assert_eq!(fixture.id, if disabled { 3 } else { 1 });
         }
         assert_eq!(
             instance
@@ -716,6 +731,8 @@ fn hover_geometry_uses_native_container_clip() {
 
 #[test]
 fn native_paths_include_container_backgrounds() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = installed_content::gui::native::read(b"guiTypes={containerWindowType={name=view size={width=20 height=20} background={name=Background spriteType=bg} containerWindowType={name=inner size={width=5 height=5} iconType={name=icon spriteType=s}}}}");
     let root = gui
         .templates()
@@ -729,6 +746,8 @@ fn native_paths_include_container_backgrounds() {
 
 #[test]
 fn unchanged_generation_keeps_runtime_controls_until_refresh() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let windows = windows(
         br#"guiTypes={containerWindowType={name=view size={width=20 height=20}
             iconType={name=icon spriteType=GFX_even}}}"#,
@@ -769,6 +788,8 @@ fn unchanged_generation_keeps_runtime_controls_until_refresh() {
 
 #[test]
 fn combat_prepare_draws_percentage_grid_slots_natively() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let windows = windows(
         br#"guiTypes={
             containerWindowType={name=entry size={width=20 height=10}
@@ -841,6 +862,8 @@ fn combat_prepare_draws_percentage_grid_slots_natively() {
 
 #[test]
 fn combat_prepare_composes_nested_entries_clips_hovers_and_counts_missing_templates() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let windows = windows(
         br#"guiTypes={
             containerWindowType={name=leaf size={width=20 height=10}
@@ -910,7 +933,7 @@ fn combat_prepare_composes_nested_entries_clips_hovers_and_counts_missing_templa
         .unwrap();
     assert_eq!(refused.len(), 1, "{refused:?}");
     assert_eq!(
-        refused["Combat GUI missing: the content stack declares no absent template (142247660)"],
+        refused["Combat GUI missing: the content stack declares no absent template"],
         2
     );
     let mut held_refused = BTreeMap::new();
@@ -977,6 +1000,8 @@ fn combat_prepare_composes_nested_entries_clips_hovers_and_counts_missing_templa
 
 #[test]
 fn combat_prepare_sizes_escape_entries_from_the_native_drawable() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let windows = windows(
         br#"guiTypes={
             containerWindowType={name=entry size={width=1 height=3}
@@ -1043,6 +1068,8 @@ fn combat_prepare_sizes_escape_entries_from_the_native_drawable() {
 
 #[test]
 fn combat_controls_keep_native_scroll_paths_axes_and_popup_mask() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let body = r#"size={width=300 height=160}
             containerWindowType={name=BattleReport size={width=100 height=80}
                 verticalScrollbar=shared autohide_scrollbars=no}
@@ -1138,6 +1165,8 @@ fn combat_controls_keep_native_scroll_paths_axes_and_popup_mask() {
 
 #[test]
 fn combat_hit_prepare_does_not_tick_before_native_scroll_input() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let source = br#"guiTypes={
             extendedScrollbarType={name=sb size={width=10 height=50} smooth_scrolling=0.5
                 background={name=bg spriteType=GFX_even}
@@ -1258,6 +1287,8 @@ fn combat_hit_prepare_does_not_tick_before_native_scroll_input() {
 
 #[test]
 fn combat_prepare_resolves_bound_control_and_holder_names_without_case() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let windows = windows(
         br#"guiTypes={
             containerWindowType={name=Entry size={width=100 height=40}

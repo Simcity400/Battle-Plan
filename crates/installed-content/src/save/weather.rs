@@ -1,5 +1,5 @@
-//! The weather save fields the oracle compares, read with the native
-//! F0D8E0/F0DBB0/F0DDC0 serializer rules. Source order and absence stay explicit.
+//! The weather save fields the oracle compares, with serializer omission rules.
+//! Source order and absence stay explicit.
 
 use super::{Decimal, Item, block, boolean, decimal, field, integer, invalid, scalar};
 use std::io;
@@ -18,9 +18,9 @@ pub struct Province {
     pub slot: u32,
     pub province: Option<u32>,
     pub snow: Option<Decimal>,
-    /// 140F0DBB0 writes temperature unconditionally, including zero.
+    /// Temperature is written unconditionally, including zero.
     pub temperature: Option<Decimal>,
-    /// Raw +0x130; the Boolean serializer retains zero/nonzero truth only.
+    /// The Boolean serializer retains zero/nonzero truth only.
     pub mud: Option<bool>,
 }
 

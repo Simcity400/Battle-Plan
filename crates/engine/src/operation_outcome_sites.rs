@@ -1,23 +1,17 @@
-//! Operation completion observation, before the manager can destroy an instance.
-//!
-//! P: Completion@1413EE390 has one indexed caller, CALL@14118B5BD in
-//! 14118B110. Its successful AL=1 return@1413EF440 follows bonus store
-//! 1413EE9D5, description assignment/trim@1413EEB8B/1413EEBA0, terminal
-//! store@1413EEBE6 and detection store@1413EEF2D. It does not destroy this.
-//! The caller subsequently handles auto-repeat@14118B91A/14118B940 and
-//! AI cleanup@14118BC8E/14118BE6C. The observer copies every successful
-//! call before returning to that caller, without a controller predicate.
-//! P: Invalidation@141188FC0 -> predicate1413EE2C0 does not complete or
-//! store outcomes; its cleanup/deletion is cancellation, not a completion.
+//! Operation completion observation before the manager can destroy an instance.
+//! Successful completion returns AL=1 after storing bonus, description, terminal
+//! state and detection. The observer copies every success before the caller can
+//! repeat or clean up the instance, without a controller predicate. Invalidation
+//! does not store outcomes; its cleanup is cancellation, distinct from completion.
 
 use crate::{
     Memory, ccharacter::Literal, ccountry, cgame_state, coperation,
     coperation_instance as operation, read,
 };
 
-/// P: 1413EE390 entry. The five-byte patch/relocation is only MOV [RSP+18],RBX.
-/// It contains no CALL return PC, RIP-relative operand or interior branch
-/// target. The remainder is an authenticated sentinel, not a patched span.
+/// Completion entry with a five-byte stack-spill patch span. It has no
+/// relative operand, call-return PC or interior branch target. The remaining
+/// bytes authenticate the entry without extending the patched span.
 pub const COMPLETION_RVA: usize = 0x013e_e390;
 pub const COMPLETION_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
@@ -53,8 +47,7 @@ impl Observation {
         Literal::copy_all(memory, [&self.description], output)
             .map_err(|_| "operation completion description bytes unreadable")
     }
-    /// Copy the stored +0xA0 string (assignment@1413EEB8B) across a byte-ring
-    /// boundary. Both destinations belong to this callback's lane.
+    /// Copy the stored description string across a byte-ring boundary into this callback's lane.
     pub fn copy_description_parts(
         &self,
         memory: &impl Memory,

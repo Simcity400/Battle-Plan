@@ -10,9 +10,8 @@
 //! wing handles are a permutation of census order, so neither the mission
 //! pointer nor the handle order can stand in for the vector order.
 //!
-//! Every wing with a region is registered, as `CAirMission::SetRegion`
-//! registers every non-null region. Unregistered wings are training wings
-//! (some with no pool base, some sharing a registered wing's base, some with
+//! Every wing with a non-null region is registered. Unregistered wings are
+//! training wings (some with no pool base, some sharing a registered wing's base, some with
 //! a base of their own) and idle wings, whose resolvable pool bases must not
 //! be probed. Pool bases repeat across wings; a tenth of the wings name a
 //! transfer base, some shared with pool bases, some of their own and some
@@ -23,8 +22,7 @@
 //! A stateless base's host is a carrier with a task force, a carrier
 //! without one, or a handle the registry does not hold. A state base without
 //! a cached province takes the first province of its state's list for its
-//! kind (`CAirBase::GetProvince@140C44050`); a fourth of those lists are
-//! empty.
+//! kind; a fourth of those lists are empty.
 //!
 //! Memory is two windows: a heap holding every object, and the reference
 //! registry's low-type root cells in the module. Anything else, including the
@@ -173,6 +171,7 @@ impl World {
     }
 
     /// A reference registry table of `kind` holding `objects` by handle,
+    /// filled by Robin Hood insertion.
     fn registry(&mut self, kind: u32, objects: &BTreeMap<u64, usize>) {
         let exponent = (objects.len() * 2)
             .next_power_of_two()

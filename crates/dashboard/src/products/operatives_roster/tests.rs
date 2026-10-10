@@ -452,7 +452,7 @@ fn operatives_roster_off_read_alias_handoff_preserves_known_empty_and_refuses_am
 
 #[test]
 fn operatives_roster_names_and_every_mission_use_recorded_content() {
-    // Executable mission keys: GetOperativeMissionLocalizationKey@140FADB60.
+    // Mission localisation keys resolve through the recorded content.
     let keys = [
         "NO_MISSION",
         "BUILD_INTEL_NETWORK",
@@ -1142,6 +1142,8 @@ fn operatives_roster_five_thousand_countries_have_sparse_complete_histories_and_
 
 #[test]
 fn operatives_roster_multi_year_content_artwork_is_interned_and_equal_daily_reads_merge() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::rows::{
         CharacterOperativeRow, CharacterPortrait, CharacterPortraitRow, LexicalTokenRow,
         OperationRow, PORTRAIT_LARGE,
@@ -1511,7 +1513,7 @@ fn captured_roster_resolves_five_thousand_distinct_captors() {
     use replay::rows::{CountryAppearanceRow, PoliticsRow};
     let count = 5000;
     let mut localisation = String::from(
-        "\u{feff}l_english:\n OPERATIVE_CAPTURED_BY:0 \"Captured by $CAPTURER$\"\n DURATION_DAYS:0 \"$NUM|.0$ days\"\n",
+        "\u{feff}l_english:\n OPERATIVE_CAPTURED_BY:0 \"Captured by $CAPTURER$\"\n DURATION_DAYS:0 \"Remaining span: $NUM|.0$ days\"\n",
     );
     for id in 1..=count {
         localisation.push_str(&format!(" country_{id}_DEF:0 \"Captor {id}\"\n"));
@@ -1608,7 +1610,7 @@ fn captured_status_names_reserved_zero_without_inventing_a_country_or_flag() {
     let (content, _folder) = super::super::operative_content::test_content(&[
         (
             "localisation/english/fixture_l_english.yml",
-            "\u{feff}l_english:\n ZERO_DEF:0 \"the reserved capturer\"\n OPERATIVE_CAPTURED_BY:0 \"Captured by $CAPTURER$\"\n DURATION_DAYS:0 \"$NUM|.0$ days\"\n",
+            "\u{feff}l_english:\n ZERO_DEF:0 \"the reserved capturer\"\n OPERATIVE_CAPTURED_BY:0 \"Captured by $CAPTURER$\"\n DURATION_DAYS:0 \"Remaining span: $NUM|.0$ days\"\n",
         ),
         (
             "common/defines/zz_capture.lua",

@@ -1,4 +1,4 @@
-// CFillBufferThreaded: integer coordinates, row-major buckets and native early exit.
+// Integer coordinates, row-major buckets and ordered early exit.
 struct Params {
     width: u32, height: u32, columns: u32, rows: u32,
     stride: u32, packed_ids: u32, count: u32, dispatch_stride: u32,
@@ -138,7 +138,7 @@ fn sample_pixel(x: u32, y: u32) -> Sample {
                     if neighbour != 0u {
                         sum += rgb(regions[neighbour].color); count++;
                         let attr = regions[neighbour].attributes;
-                        //141587F70 accumulates control and contested as bytes.
+                        // accumulates control and contested as bytes.
                         fx = (fx + vec2<u32>(attr & 255u, (attr >> 8u) & 255u)) & vec2<u32>(255u);
                         if (attr & (1u << 24u)) != 0u { gradient += (attr >> 16u) & 255u; has_gradient = true; }
                     }

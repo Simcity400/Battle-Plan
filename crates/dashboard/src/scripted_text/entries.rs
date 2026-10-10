@@ -48,8 +48,8 @@ impl ActiveEntry {
             return false;
         }
         // Compare reachable values and links, not allocation indices.
-        // ROOT/FROM/PREV can themselves be promoted (141A81250); only
-        // THIS's seed is read here (1410CDDF0 gives entries a fresh seed).
+        // ROOT/FROM/PREV can themselves be promoted; only THIS's seed
+        // is read here, since promoted entries receive a fresh seed.
         let mut pending = vec![(self.at, at)];
         let mut seen = BTreeSet::new();
         while let Some((left_at, right_at)) = pending.pop() {
@@ -95,10 +95,10 @@ pub(crate) fn live_state_warnings(
     notes: &[installed_content::states::Diagnostic],
 ) -> impl Iterator<Item = &str> {
     use installed_content::states::MisreadCause;
-    // States' Warning channel contains 140AAD450's nonpositive-ID and
-    // duplicate-ID skips. Both keep exactly the templates the game keeps.
-    // Only the explicitly cited state-field recoveries are proven exact;
-    // shared reader notes and unported readers still warn.
+    // States' Warning channel contains nonpositive-ID and duplicate-ID
+    // skips. Both keep exactly the templates the game keeps.
+    // Only the listed state-field recoveries preserve the game's result;
+    // shared reader notes and unsupported readers still warn.
     notes.iter().filter_map(|note| {
         let exact = note.kind == installed_content::DiagnosticKind::Misread
             && matches!(
@@ -149,7 +149,7 @@ fn read_state_templates(
 }
 
 pub(crate) struct Environment {
-    // LoadGameDefines 14073DDA0; shared content stays independent of lazy map inputs.
+    // Shared defines stay independent of lazy map inputs.
     defines: installed_content::defines::Defines,
     ideologies: Result<installed_content::ideologies::Ideologies, String>,
     terrain_definitions: Result<installed_content::terrain::TerrainDefinitions, String>,
@@ -361,7 +361,7 @@ impl EnvironmentInputs {
 }
 
 impl ScriptedContent {
-    /// Native content-load callers use a fresh empty scope, without a game
+    /// Content-load callers use a fresh empty scope, without a game
     /// hour. Reuse this cached content environment; runtime operands remain
     /// unavailable instead of borrowing a later recording read.
     pub(crate) fn unrecorded_trigger_world(&self) -> Result<World<'_>, String> {
@@ -513,23 +513,23 @@ impl<'a> ScriptedText<'a> {
         let _guard = EntryGuard(scopes, previous_len);
         if repeated {
             return Err(format!(
-                "scripted localisation {name}: cyclic entry invocation (1410CF560)"
+                "scripted localisation {name}: cyclic entry invocation"
             ));
         }
         if scopes.active.borrow().len() + scopes.fresh_depth.get() > MAX_SCRIPTED_NESTING {
             return Err(nesting_refusal(name));
         }
-        // 140A9CC20 checks alternatives in order; EndScopedVariableContext
-        // (140535830) leaves the checked trigger's temps for a later value.
+        // Check alternatives in order; closing the variable context
+        // leaves the checked trigger's temps for a later value.
         let mut checked_trigger = false;
         let mut evaluator = None;
         for text in &entry.texts {
-            // 140A9CC20 skips a null value without checking its trigger.
+            // Skip a null value without checking its trigger.
             let Some(value) = &text.value else { continue };
             let trigger = &text.trigger;
             if text.trigger_present {
                 checked_trigger = true;
-                // Even an empty trigger opens the next context (140A9CC20).
+                // Even an empty trigger opens the next context.
                 let projected = entry_scopes(scopes, at, bare);
                 evaluator = Some(scopes.evaluator(self, Temps::Fresh)?);
                 let checked = evaluator.as_ref().unwrap().evaluate(trigger, projected);
@@ -571,12 +571,11 @@ impl<'a> ScriptedText<'a> {
                 }
             };
             let text = self.localisation.localise(key).map_err(|e| e.to_string())?;
-            // SScopeLocalizer (1402F6340) -> ExpandLocalizationWithEventScope
-            // (1410CF560): a new context in the evaluation scope, from depth
-            // 0; ProcessString's own depth rule still applies.
+            // A new text context in the evaluation scope starts at depth
+            // zero; the text processor's own depth rule still applies.
             return self.process(&text, 0, scopes, at, Object::Event);
         }
-        // The shared empty CBoundLocalization at 143098438.
+        // No alternative selected: return empty localisation.
         Ok(String::new())
     }
 
@@ -584,8 +583,8 @@ impl<'a> ScriptedText<'a> {
         self.state_name_for(id, false)
     }
 
-    /// War naming copies display_name's already-localised string without
-    /// running CTextBase::ProcessString (140D0BCA0, 140AAF580, 1409CC380).
+    /// War naming copies the already-localised display name without
+    /// scripted-text processing.
     pub(crate) fn plain_state_name(&self, id: u32) -> Result<String, String> {
         self.state_name_for(id, true)
     }
@@ -618,7 +617,7 @@ impl<'a> ScriptedText<'a> {
         )
     }
 
-    /// GetDisplayName (140E67930), as province GetName calls it (141A83DD0).
+    /// Province GetName uses an override, then the victory-point name.
     pub(crate) fn province_name(&self, id: u32) -> Result<String, String> {
         if let Some(raw) = self.province_name_override(id)? {
             let text = self.localisation.localise(raw).map_err(|e| e.to_string())?;
@@ -629,13 +628,13 @@ impl<'a> ScriptedText<'a> {
         self.province_victory_point_name(id)
     }
 
-    /// First two rungs of 140E69320, also used by the combat-history location.
+    /// Primary province display names, also used by the combat-history location.
     pub(crate) fn province_display_name_primary(&self, id: u32) -> Result<Option<String>, String> {
         if let Some(raw) = self
             .province_name_override(id)?
             .filter(|raw| !raw.is_empty())
         {
-            // Native tests raw length, then returns even an empty localisation.
+            // Test raw length, then return even an empty localisation.
             return self
                 .localisation
                 .localise(raw)
@@ -649,7 +648,7 @@ impl<'a> ScriptedText<'a> {
         Ok(None)
     }
 
-    /// Effect/map display (140E69320), distinct from province GetName.
+    /// Effect/map display names, distinct from province GetName.
     pub(crate) fn province_display_name(&self, id: u32) -> Result<String, String> {
         if let Some(text) = self.province_display_name_primary(id)? {
             return Ok(text);
@@ -663,7 +662,7 @@ impl<'a> ScriptedText<'a> {
             self.state_name(province.state)
         } else {
             Err(format!(
-                "province {id} effect display fallback needs unrecorded CProvince+0xC8 strategic-region pointer/nullness and CStrategicRegion+0x38/+0x48 instance name (140E69320/140E0EB10; writers 140E0F2B0,141B50C80,141B4F0B0)"
+                "province {id} effect display fallback needs unrecorded province strategic-region pointer/nullness and region instance name"
             ))
         }
     }
@@ -685,7 +684,7 @@ impl<'a> ScriptedText<'a> {
             .iter()
             .find(|row| row.id == id)
             .ok_or_else(|| format!("province {id}: Provinces {gap}"))?;
-        // 140E68E30 takes the STATE's owner original tag or tag, not the
+        // Use the state's owner original tag or tag, not the
         // province controller. A null state uses the country at slot zero.
         let owner = if province.state == 0 {
             0
@@ -726,12 +725,12 @@ impl<'a> ScriptedText<'a> {
     pub(crate) fn province_terrain(&self, id: u32) -> Result<i32, String> {
         self.environment()?.terrain.as_ref().and_then(|map| map.terrain(id))
             .map(|terrain| terrain.index)
-            .ok_or_else(|| format!("Terrain of province {id}: the recorded-content province template is unavailable (141A83F00)"))
+            .ok_or_else(|| format!("Terrain of province {id}: the recorded-content province template is unavailable"))
     }
 
-    /// CGameItem::id_copy@140616BC0, also used by raid target naming (140FD1D50).
+    /// Localised terrain ID, also used by raid target naming.
     pub(crate) fn terrain_id_name(&self, ordinal: i32) -> Result<String, String> {
-        // Null CTerrainType has an empty id (140AC6860 -> 1414297D0).
+        // Null terrain has an empty ID.
         if ordinal == 0 {
             return Ok(String::new());
         }
@@ -742,7 +741,7 @@ impl<'a> ScriptedText<'a> {
         self.localisation.localise(name).map_err(|e| e.to_string())
     }
 
-    /// Terrain GetName@141A857D0 localises the already localised CGameItem id.
+    /// Terrain GetName localises the already localised terrain ID.
     pub(super) fn terrain_name(&self, ordinal: i32) -> Result<String, String> {
         let id = self.terrain_id_name(ordinal)?;
         self.localisation
@@ -751,22 +750,21 @@ impl<'a> ScriptedText<'a> {
     }
 }
 
-/// Shared with state tables: native name precedence without another ID scan.
+/// Shared with state tables: name precedence without another ID scan.
 pub(crate) fn state_name_from(
     state: &replay::rows::StateRow,
     stored: impl Fn(&[u8], &str) -> Result<String, String>,
     template: impl Fn(u32) -> Result<String, String>,
 ) -> Result<String, String> {
     let id = state.id;
-    // CState::display_name (1409CC380): the custom name, else the owner
-    // name, else the template's. set_state_name (140310B50) stores the
-    // localised text of its argument as the custom name; SetOwner
-    // (1409D1710, also on load) has 1409D3770 store the localised
+    // The custom name, else the owner name, else the template's. Setting
+    // a state name stores the localised text as the custom name. Setting
+    // the owner, also on load, stores the localised
     // `<owner original tag or tag>_<template name key>` as the owner name,
-    // or clear it when the key is missing.
+    // or clears it when the key is missing.
     for (bytes, what) in [
-        (&state.custom_name, "the custom name (CState+0x38)"),
-        (&state.owner_name, "the owner name (CState+0xE8)"),
+        (&state.custom_name, "the custom name"),
+        (&state.owner_name, "the owner name"),
     ] {
         if !bytes.is_empty() {
             return stored(bytes, &format!("GetName of state {id}: {what}"));
@@ -775,13 +773,11 @@ pub(crate) fn state_name_from(
     template(id)
 }
 
-/// The event scope 1410CD900 evaluates an entry in, as an index into the
-/// expansion's scope arena. With no promotion it is the active scope itself
-/// (1410CE090 with +0x378); otherwise 1410CDDF0 binds the promoted object as
-/// THIS in a new scope with the active scope's ROOT (+0x18) and FROM
-/// (+0x20), and the active scope as PREV (+0x28); a country or state is set
-/// with clearing (14052DD00, 14052ECE0 with 1 -> 14052F3F0), so that scope
-/// carries no character.
+/// The event scope an entry is evaluated in, as an index into the
+/// expansion's scope arena. With no promotion it is the active scope itself;
+/// otherwise bind the promoted object as THIS in a new scope with the
+/// active scope's ROOT and FROM, and the active scope as PREV. A country
+/// or state is set with clearing, so that scope carries no character.
 fn bound_scope(
     object: Object,
     scopes: &ExpansionScopes,
@@ -790,9 +786,9 @@ fn bound_scope(
 ) -> usize {
     let this = match object {
         Object::Event => return active,
-        // 1410CDDF0 kind3 reads this text object's own country+8, then uses
-        // set_country(clear=1). Actual Country0 stays a country TEXT object,
-        // but binding its raw0 own word leaves this EVENT scope empty.
+        // Bind this text object's own country with clearing. Actual
+        // Country0 stays a country text object, but binding its raw zero
+        // country reference leaves this event scope empty.
         Object::Country(0) => EventObject::State(crate::triggers::NULL_STATE),
         Object::Country(slot) => EventObject::Country(slot),
         Object::State(id) => EventObject::State(id.unwrap_or(crate::triggers::NULL_STATE)),
@@ -801,11 +797,11 @@ fn bound_scope(
         | Object::Terrain(_)
         | Object::FactionEnvironment(_)
         | Object::Faction(_) => {
-            unreachable!("1410CD900 does not bind these text kinds")
+            unreachable!("scripted entries do not bind these text kinds")
         }
     };
-    // 1410CD900 leaves the fresh 1410CDDF0 scope's links alone when +0x378
-    // is null, including a country promoted from the faction environment.
+    // Leave the fresh scope's links alone when the active event is null,
+    // including a country promoted from the faction environment.
     let current = if event_active {
         scopes.scope(active)
     } else {
@@ -835,7 +831,7 @@ fn bound_scope(
         },
         random_seed: super::random::scope_seed(424242),
         random_counter: super::random::scope_counter(424242),
-        random_seed_refusal: None, // 1410CDDF0 constructs a known fresh seed.
+        random_seed_refusal: None, // Construct a known fresh seed.
     });
     scopes.prev_distance.borrow_mut().push(distance);
     at
@@ -845,7 +841,7 @@ fn bound_scope(
 /// clearing ([`bound_scope`]). A character is a character scope
 /// (`crate::character_scope`). A link the caller cannot describe is unknown
 /// to the evaluator, so only a condition that reads it is unknown (`always`
-/// reads none, 1403CE520).
+/// reads none).
 pub(super) fn entry_scopes(scopes: &ExpansionScopes, at: usize, bare: bool) -> Scopes {
     let scope = |object| match object {
         EventObject::Country(slot) | EventObject::CountryState { country: slot, .. } => {
@@ -898,6 +894,8 @@ pub(super) fn entry_scopes(scopes: &ExpansionScopes, at: usize, bare: bool) -> S
 #[cfg(test)]
 #[test]
 fn entry_invocations_keep_the_original_bounds_of_unresolved_links() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let scopes = ExpansionScopes::new(&EventScopes::new(vec![EventScope {
         prev: Link::Scope(1),
         ..EventScope::of(EventObject::Country(0))

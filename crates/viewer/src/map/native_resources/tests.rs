@@ -65,6 +65,8 @@ fn loaded(
 
 #[test]
 fn lazy_plain_resources_share_native_metadata_without_loading_texture() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (root, layers) = stack(
         "lazy-plain",
         &[
@@ -106,9 +108,11 @@ fn lazy_plain_resources_share_native_metadata_without_loading_texture() {
 
 /// A mod's font: `path` appends and `fontfiles` replaces in order, the first file holding a
 /// glyph wins, a page that does not load is named when a glyph on it draws, a language
-/// override selects its own family, and an unknown name takes `GetFontOrFallback`'s font.
+/// override selects its own family, and an unknown name takes `fallback font lookup`'s font.
 #[test]
 fn fonts_load_through_the_native_registry() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (root, layers) = stack(
         "fonts",
         &[
@@ -204,10 +208,12 @@ impl crate::map::native_gui::Resources for Drawn<'_> {
 }
 
 /// A mod whose GUI and GFX name a sprite with the same non-UTF-8 bytes: collected, loaded
-/// and drawn under those bytes (`sprite_functions::lookup@140A2D0D0` compares them), not
+/// and drawn under those bytes, not
 /// under their lossy spelling, which another declaration holds.
 #[test]
 fn byte_names_match_end_to_end() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (root, layers) = stack(
         "bytes",
         &[
@@ -255,6 +261,8 @@ fn byte_names_match_end_to_end() {
 /// load draws nothing: a sprite, a font page, an edit box's texture file.
 #[test]
 fn undetermined_textures_are_refused_not_dropped() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // Three bytes: FreeImage's ICO validate compares six (uninitialised memory past them).
     let jpeg = vec![0, 0, 1];
     let (root, layers) = stack(
@@ -295,6 +303,8 @@ fn undetermined_textures_are_refused_not_dropped() {
 /// A 16-bit page stays at full precision; shader-pipeline handles device filtering.
 #[test]
 fn a_sixteen_bit_texture_is_loaded_at_full_precision() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut dds = vec![0_u8; 128];
     dds[..4].copy_from_slice(b"DDS ");
     for (offset, value) in [
@@ -353,6 +363,8 @@ fn a_sixteen_bit_texture_is_loaded_at_full_precision() {
 /// refused too.
 #[test]
 fn a_shared_refused_texture_refuses_every_user() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (root, layers) = stack(
         "shared",
         &[
@@ -415,6 +427,8 @@ fn a_shared_refused_texture_refuses_every_user() {
 /// missing effect as the native null record and a missing backend header named explicitly.
 #[test]
 fn sprites_load_through_the_native_registry() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (root, layers) = stack(
         "sprites",
         &[
@@ -479,6 +493,8 @@ fn sprites_load_through_the_native_registry() {
 }
 #[test]
 fn arbitrary_effects_load_lazily_without_a_model_or_compiler() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (root, layers) = stack(
         "lazy-effect",
         &[
@@ -506,7 +522,7 @@ Effect Up { VertexShader = V PixelShader = P }
         .effect_result(&layers, b"gfx/FX/mod-owned.lua", false)
         .unwrap();
     assert!(effect.has_technique("Up"));
-    // The renderer's globals come first (1423F4EC0), then the GUI's own defines.
+    // The renderer's globals come first, then the GUI's own defines.
     assert_eq!(
         effect.compiled.as_ref().unwrap().defines,
         super::super::native_shader::library::globals([5632, 2048], Decode::default())
@@ -537,10 +553,11 @@ Effect Up { VertexShader = V PixelShader = P }
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// The client's one `force_pow2_textures` reaches both readers of `get_force_power_of_two
-/// @1423F07B0`: the textures' decode and the effects' power-of-two globals (`140A4DDE0`).
+/// Texture decoding and effect globals share the client power-of-two setting.
 #[test]
 fn force_pow2_textures_sets_the_decode_and_the_effect_globals() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (root, layers) = stack(
         "pow2-globals",
         &[

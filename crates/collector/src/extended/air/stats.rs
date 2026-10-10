@@ -190,8 +190,8 @@ fn copy_stats_history(
         Some(start) => log.bytes[start],
         None => return false,
     };
-    // 140C40870 retains existing rings; 141504800/141505AD0 use their
-    // original signed capacity, just as the typed current-bucket reader does.
+    // Existing rings retain their original signed capacity,
+    // just as the typed current-bucket reader does.
     if capacity as i32 <= 0 || records.count != capacity || year_slot >= capacity || wrapped > 1 {
         return false;
     }

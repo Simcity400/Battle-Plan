@@ -1,41 +1,31 @@
-//! Cause-specific destruction in the hash-pinned a729 executable. No logging,
-//! orders-group or player predicates are used. Pool differences are actual
-//! signed native fixed5 net removals; a negative row is a native gain.
+//! Cause-specific equipment destruction observations. Pool differences are
+//! signed fixed5 net removals; a negative row is a gain. Logging, orders-group
+//! and player predicates do not select these observations.
 //!
-//! `hoi4re asm/fn` evidence: active_damage 140C7BFC0 scales/rounds army+348
-//! (140FFBCC0/140FFCCE0); KillAirplanes 140F4E400 removes wing+1D8 through
-//! 140FF7A30; resistance 140FDFA80 scales/rounds occupation+90 then computes
-//! its own pre-minus-post pool through 140FFD520, before the AI log gate.
+//! Combat damage scales and rounds live division pools; aircraft loss removes
+//! wing equipment. Resistance computes its pool difference before optional AI
+//! logging. Deletion preserves ownership before expeditionary ownership clears,
+//! and nested writers retain that country through the final combat flush.
+//! Returned, merged and HQ-transferred pools produce deletion observations
+//! without loss amounts. Runtime reset brackets queue and country cleanup;
+//! parsed and failed-create cleanup supplies no live deletion observation.
+//! Deception armies follow the census reveal-skip flag regardless of pool contents.
 //!
-//! Deletion uses the shared DeleteUnit scope, its exact reserve-return CALL,
-//! and CArmy's pre-free deleting destructor. The scope preserves ownership
-//! before 140BF4E40 clears expeditionary ownership; nested army writers use
-//! that captured country through the final combat flush. Returned, merged and
-//! HQ-transferred pools have deletion witnesses without loss amounts.
-//! ResetRuntimeState sets game-state+A3A before queue/country cleanup and
-//! clears it afterwards; parser and failed-create cleanup have no witnesses.
-//! Fake-intel armies use the recorded census's reveal_skip flag and are
-//! excluded as deception objects, without assuming their parsed pools empty.
-//! Paradrop's sole writer 140C7AE10 divides then floors the live army pool.
-//! Combat flush CALL 1413CE6C1 precedes lifecycle CALL 1413CE9F0. DeleteUnit
-//! also unlinks combat at 1401D69AB -> 140BF4C40 -> 1413CE250, invoking
-//! OnCombatEnded before deleting-destructor CALL 1401D6DA3. The final snapshot
-//! therefore excludes prior combat/attrition/immediate removals, including
-//! an overrun's final combat unlink. CaptureEquipmentFromDefeatedArmies makes
-//! scaled copies and credits winners; it never subtracts the victim's pool.
-//! Whole Merge@14134ECE0 conserves selected main pools, canceled delivery
-//! pools and touched reserves across retained allocation and actual credits.
-//! Its source destructor witnesses never count transferred bookkeeping twice.
-//! Volunteer/exile StartTransfer CALLs remove live armies from rosters but
-//! retain their handles in serialized transfer objects: zero-amount transfer
-//! witnesses cover that absence until reappearance or actual deletion.
-//! SetExiled's scale then integral rounding are one pre/post observation;
-//! rounding may add equipment, so observing the scale alone would overcount.
-//! Volunteer return scaling, capitulation escape scaling and scripted
-//! equipment fractions have exact call taps, including the script's reserves.
-//! Land's negative damage, stochastic ceiling and signed pool entries can
-//! increase pools (140C7C1AC/140C7C327/140FF7A30); 140C7C341 accounts for the
-//! signed pre-minus-post difference. Script factors at 14049B2B3 are unclamped.
+//! Paradrop divides and floors the live pool. Combat flush precedes lifecycle
+//! cleanup, and combat unlink finishes before the deleting destructor. The final
+//! snapshot excludes earlier combat, attrition and immediate removals. Defeated
+//! equipment capture credits winners from scaled copies without subtracting
+//! the victim pool. Merge conserves selected main pools, canceled deliveries
+//! and reserves across retained allocations and actual credits; transferred
+//! bookkeeping is not counted twice at source disposal.
+//!
+//! Volunteer and exile transfers remove armies from rosters while retaining
+//! full handles in transfer objects. Zero-amount transfer observations cover
+//! that absence until reappearance or deletion. Exile scaling and integral
+//! rounding are one observation because rounding can add equipment. Volunteer
+//! return, capitulation escape and scripted fractions have separate exact taps,
+//! including stockpiles. Signed damage, stochastic ceiling and signed entries
+//! can increase pools; script factors remain unclamped.
 
 use crate::{
     Memory, cair_wing, carmy, cequipment_variant_pool, cpdx_array::Array, equipment_entry, read,
@@ -100,15 +90,12 @@ pub const LAND: Site = Site {
         0x41,
     ],
 };
-/// Replace only CALL 140FFD5A0 at 140C5EAC4 (five bytes), with another CALL.
-/// RCX is army+348 (MOV RCX,[RDI]; ADD RCX,348 at 140C5EAAA-B9), RDX
-/// variant (R14), R8 positive fixed5 removal (RBX); void. Native RSP is
-/// 16-byte aligned with home space. Next instruction is 140C5EAC9; no
-/// branch targets or RIP-relative operands lie inside the five-byte span.
-/// This is after the +438 <=0 return (140C5FE89-93), the +3B8/+234 gate
-/// (140C5FE99-AC), and the helper's loss-roll <=0 return (140C5EAA2-A9).
-/// The original CALL is PC-relative; invoke its verified target directly,
-/// never call the mid-function continuation as a function trampoline.
+/// Replace only the five-byte removal CALL with another CALL. RCX is the
+/// division equipment pool, RDX the variant, R8 the positive fixed5 removal;
+/// returns void. RSP is 16-byte aligned with home space. No branch targets or
+/// RIP-relative operands lie in the patch span. Observation follows the
+/// inactive-consumption, template and nonpositive-loss-roll gates. Invoke the
+/// verified original PC-relative target directly; the continuation is not a function.
 pub const ATTRITION: Site = Site {
     id: SiteId::Attrition,
     kind: SiteKind::Call {
@@ -144,8 +131,8 @@ pub const GARRISON: Site = Site {
         0x41,
     ],
 };
-/// RCX game state, RDX unit, R8B return request; void. R9 is not consumed,
-/// but the detour preserves its full slot. Entry/unwind: 1401D6210/1435EAA98.
+/// RCX game state, RDX unit, R8B return request; returns void. R9 is unused
+/// but its full slot must be preserved.
 pub const DELETE: Site = Site {
     id: SiteId::Delete,
     kind: SiteKind::Entry,
@@ -156,10 +143,10 @@ pub const DELETE: Site = Site {
         0x41,
     ],
 };
-/// Replace only CALL 1401D6718 with CALL. RCX reserve manager, RDX army+348;
-/// void. This executes only after return was requested, the unit is not in a
-/// naval transfer and HasHomeAreaOrSupplyPortConnection@140DE2430 succeeded.
-/// No branch targets lie in the five-byte patch. Return PC is 1401D671D.
+/// Replace only the five-byte reserve-return CALL with another CALL. RCX is
+/// reserve manager, RDX the division equipment pool; returns void. Reached only
+/// for requested return outside naval transfer with a home-area or supply-port
+/// connection. No branch targets lie within the patch span.
 pub const RETURN: Site = Site {
     id: SiteId::Return,
     kind: SiteKind::Call {
@@ -173,10 +160,9 @@ pub const RETURN: Site = Site {
     ],
 };
 pub const RETURN_TARGET: usize = 0xe4c550;
-/// RCX primary army, EDX deleting flags; returns the original army pointer.
-/// 140C5F08F calls ~CArmy; its 140C5E59B/5AB clear/free the live +348 pool.
-/// The secondary -10/-338 thunks tail-jump here, preserving the caller PC.
-/// Entry/unwind: 140C5F080/1436378A4.
+/// RCX primary division, EDX deleting flags; returns the original pointer.
+/// The destructor clears and frees the live equipment pool. Secondary-base
+/// thunks tail-jump here and retain the original caller return address.
 pub const DIVISION_FREE: Site = Site {
     id: SiteId::DivisionFree,
     kind: SiteKind::Entry,
@@ -187,9 +173,8 @@ pub const DIVISION_FREE: Site = Site {
         0xe8,
     ],
 };
-/// RCX game state, RDX unit; void. Only remembers provenance: the actual
-/// residual is copied at DIVISION_FREE, after any intervening writers.
-/// Entry/unwind: 1401D6FE0/1435EAAA4.
+/// RCX game state, RDX unit; returns void. Records deletion cause only; the
+/// residual is copied at DIVISION_FREE after intervening writers.
 pub const QUEUE: Site = Site {
     id: SiteId::Queue,
     kind: SiteKind::Entry,
@@ -200,10 +185,9 @@ pub const QUEUE: Site = Site {
         0x57,
     ],
 };
-/// Five integer slots: army, source-country pointer, equipment divisor,
-/// manpower divisor, organisation divisor. The fifth is at entry RSP+28.
-/// Sole caller CALL 140C7B34B returns 140C7B350; 140FF8BB0 divides +348 then
-/// 140FFD700 floors it before gated logging. Entry/unwind: 140C7AE10/143637FC4.
+/// Five integer slots: division, source-country pointer, equipment divisor,
+/// manpower divisor and organization divisor. The fifth is at entry RSP+0x28.
+/// Division and flooring finish before optional logging.
 pub const PARADROP: Site = Site {
     id: SiteId::Paradrop,
     kind: SiteKind::Entry,
@@ -214,11 +198,9 @@ pub const PARADROP: Site = Site {
         0x56,
     ],
 };
-/// StartTransfer@1415108D0, CALL 141511023 -> RemoveUnitFromRoster@1407034B0.
-/// RCX roster country, RDX primary army; returns the original integer result.
-/// The transfer retains the full army handle; neither this call nor RemoveArmy
-/// deletes the pool. Write@141511350 and ReadMember@14150FE60 serialize/read
-/// the held divisions separately from the roster.
+/// Volunteer roster-removal CALL. RCX roster country, RDX primary division;
+/// retains the original integer result. The transfer keeps the complete handle
+/// and serializes its held divisions separately; roster removal does not delete the pool.
 pub const VOLUNTEER_TRANSFER: Site = Site {
     id: SiteId::VolunteerTransfer,
     kind: SiteKind::Call {
@@ -231,10 +213,9 @@ pub const VOLUNTEER_TRANSFER: Site = Site {
         0x74,
     ],
 };
-/// Exile StartTransfer@1415014E0, CALL 1415015D3; same ABI as volunteer tap.
-/// CreateExilesTransfer@1406D9C80 supplies live armies; ReadMember@141500AB0
-/// reconstructs transfer-held armies separately from country roster units;
-/// Write@141501660 writes each held army under the division token.
+/// Exile roster-removal CALL; same ABI as the volunteer tap. Live armies and
+/// load-restored transfer-held armies remain separate from the country roster.
+/// Transfer serialization retains every held division.
 pub const EXILE_TRANSFER: Site = Site {
     id: SiteId::ExileTransfer,
     kind: SiteKind::Call {
@@ -248,17 +229,12 @@ pub const EXILE_TRANSFER: Site = Site {
     ],
 };
 pub const TRANSFER_TARGET: usize = 0x7034b0;
-/// Win64 RCX primary army, EDX bool; void. Entry/unwind 140C7F020/143638180.
-/// Scale CALL 140C7F085 -> 140FFBCC0 then rounding CALL 140C7F091 -> 140FFCC10
-/// are the only pool mutations. SetMovementTarget clears +1E8; RefreshAbilities
-/// rebuilds stats; CancelMovement flag=1 preserves active combat (140BEBF70).
-/// Observe the entire method to include rounding gains in the exact net loss.
-/// CArmy's primary vtable 142943AD0 has SetExiled in slot 50 (+190).
-/// The fixed-displacement instruction/decompile census finds only the unit
-/// access update 140BF5BB0: CALLs 140BF5C14 (true) and 140BF5BFE (false), from
-/// army HourlyUpdate@140C78B6B or railway update@140E76804, never a loader.
-/// Pointer copies/adjustments outside those indexed forms remain unverified;
-/// this census does not prove a complete loader/reset caller exclusion.
+/// RCX primary division, EDX boolean; returns void. Observe scaling and
+/// integral rounding together so rounding gains remain in the exact net loss.
+/// Other work clears the movement target, rebuilds abilities and cancels
+/// movement while preserving active combat. The operation is virtual; unit
+/// access updates reach it from division and railway hourly updates. Those
+/// observed routes do not establish a complete loader or reset exclusion.
 pub const SET_EXILED: Site = Site {
     id: SiteId::SetExiled,
     kind: SiteKind::Entry,
@@ -269,16 +245,13 @@ pub const SET_EXILED: Site = Site {
         0x01,
     ],
 };
-/// All scale taps are void, RCX pool, RDX fixed5 factor. Only the five-byte
-/// CALL is replaced: ScaleQuantities@140FFBCC0 does not call other writers.
+/// Scale taps return void, with RCX pool and RDX fixed5 factor. Replace only
+/// the five-byte CALL; scaling does not call other pool writers.
 pub const SCALE_TARGET: usize = 0xffbcc0;
-/// Returning volunteers (+2C==0) scale live army+348 at 141510D60 using
-/// VOLUNTEERS_RETURN_EQUIPMENT@14331C9C8. The removed difference is logged
-/// as AddEquipmentLoss reason 1; no source reserve credit occurs. Update
-/// @14150EAD0 returns the surviving army/pool through AddArmy, not the loss.
-/// CreateVolunteersTransfer@1406DA640 forwards its fifth bool at 1406DA891
-/// to the +2C setter 1415014D0. SendVolunteerAction supplies 1@1410F4AD6;
-/// explicit/automatic recall supplies 0@1406CA2AA/1406CAAEC, proving return.
+/// Returning volunteers scale their live pool with the content-loaded return
+/// ratio. The removed difference is logged as loss without a source-reserve
+/// credit. Surviving armies and pools return to the roster. The stored transfer
+/// direction distinguishes sends from explicit and automatic recalls.
 pub const VOLUNTEER_RETURN_LOSS: Site = Site {
     id: SiteId::VolunteerReturnLoss,
     kind: SiteKind::Call {
@@ -291,9 +264,8 @@ pub const VOLUNTEER_RETURN_LOSS: Site = Site {
         0x24,
     ],
 };
-/// Capitulation escape@1406D7270 scales selected live armies at 1406D7C58,
-/// using GIE_ESCAPING_DIVISIONS_EQUIPMENT_RATIO@14331D5E0 and selection
-/// rounding. The tap reads the actual pool result, never the define/factor.
+/// Capitulation escape scales selected live armies with a content-loaded ratio
+/// and applies selection rounding. Observe the actual pool result rather than the factor.
 pub const CAPITULATION_ESCAPE_LOSS: Site = Site {
     id: SiteId::CapitulationEscapeLoss,
     kind: SiteKind::Call {
@@ -306,9 +278,8 @@ pub const CAPITULATION_ESCAPE_LOSS: Site = Site {
         0x02,
     ],
 };
-/// CSetEquipmentFraction::vf13@14049B260 scales every roster army+348 in
-/// the target country's array at CALL 14049B2F3. Evaluate@14049B2B3 is
-/// unclamped: factors above one or below zero have signed native results.
+/// Scripted equipment fractions scale every roster division. Factors remain
+/// unclamped; values above one or below zero retain signed results.
 pub const SCRIPTED_EQUIPMENT_FRACTION: Site = Site {
     id: SiteId::ScriptedEquipmentFraction,
     kind: SiteKind::Call {
@@ -321,10 +292,9 @@ pub const SCRIPTED_EQUIPMENT_FRACTION: Site = Site {
         0x5c,
     ],
 };
-/// The same script scales CProductionStatus+200 first at CALL 14049B2C0.
-/// Owner comes through the authenticated manager's +290 country backlink.
-/// This national pool includes aircraft and ships, so its cause has no fixed
-/// land domain: resolve each design's equipment type through recorded content.
+/// Scripted fractions scale the national stockpile before division pools.
+/// Authenticate the manager's country backlink. Aircraft and ships can occur
+/// in this pool, so resolve each design's type through recorded content.
 pub const SCRIPTED_RESERVE_EQUIPMENT_FRACTION: Site = Site {
     id: SiteId::ScriptedReserveEquipmentFraction,
     kind: SiteKind::Call {
@@ -358,7 +328,7 @@ pub const SITES: [&Site; 18] = [
     &HQ_RETURN,
 ];
 
-/// Merge@14134ECE0: RCX points to survivor followed by the candidate CPdxArray.
+/// Merge receiver points to the survivor followed by the candidate array.
 /// The complete operation clears signed pools and saturates retained allocations.
 pub const MERGE: Site = Site {
     id: SiteId::Merge,
@@ -370,8 +340,8 @@ pub const MERGE: Site = Site {
         0x41,
     ],
 };
-/// clear_hq_provider@140BE4970 returns equipment at CALL140BE4C9C before
-/// queuing the same complete army handle at140BE4DBF. Five-byte CALL span.
+/// Five-byte HQ-provider reserve-return CALL, before the same full division
+/// handle is queued for deletion.
 pub const HQ_RETURN: Site = Site {
     id: SiteId::HqReturn,
     kind: SiteKind::Call {
@@ -385,8 +355,8 @@ pub const HQ_RETURN: Site = Site {
     ],
 };
 
-/// Native selected pools: matching +1F0 location pointers at14134F01B.
-/// Distinct physical pools are read once even if the input repeats a pointer.
+/// Selected pools have matching location pointers. Read each physical pool
+/// once, even when the input repeats a pointer.
 pub fn merge_armies(
     memory: &impl Memory,
     base: usize,
@@ -450,10 +420,9 @@ pub fn merge_reserves(
     Ok(pool)
 }
 
-/// Merge cancels survivor reinforcement deliveries at14134F973 ->140C7B9C0
-/// ->1414F8330. Source destruction140C5E1BC ->1414F79C0 also returns upgrade
-/// deliveries through1414F7610. Survivor upgrades remain live. Every status and
-/// signed/zero row is passed to140E4C550; no progress getter is used.
+/// Merge returns canceled survivor reinforcement deliveries and source upgrade
+/// deliveries. Survivor upgrades remain live. All statuses and signed or zero
+/// entries reach reserve credit; no progress getter is called.
 pub fn canceled_delivery_pools(
     memory: &impl Memory,
     base: usize,
@@ -465,7 +434,7 @@ pub fn canceled_delivery_pools(
     if requests == 0 {
         return Ok(());
     }
-    // CArmyRequests::vf0@1414F79C0, parent army at+8; child owning army+20.
+    // Parent requests point to their division; children retain the owning division.
     if field::<u64>(memory, requests, 0)?
         != base
             .checked_add(0x29bb490)
@@ -530,9 +499,9 @@ pub fn canceled_delivery_pools(
 }
 
 /// Only variants the source operation can credit. Merge admits positive
-/// surplus; bulk pool addition also reaches zero and negative source rows. The native bulk add/merge
-/// searches these same reserve entries (140FF7830/14134F948); no getter runs.
-/// Sources are sorted by callback-local pointer and retain full design handles.
+/// surplus; bulk addition also reaches zero and negative rows. Both use the
+/// selected reserve entries without calling getters. Sources sort by callback-local
+/// pointer and retain complete design handles.
 pub fn touched_reserves(
     memory: &impl Memory,
     base: usize,
@@ -649,21 +618,19 @@ pub enum QueuedContext {
     Transfer(Disposition),
 }
 
-/// Actual return PCs, including native tail jumps. Both transfer readers
-/// tail-jump from ReadMember to DeleteUnit, preserving CPersistent::Read's
-/// sole token-dispatch return (CALL 1424A9B02). Combat lifecycle similarly
-/// preserves CALL 1413CE9F0's return through 141299E83 and 1413CC7A3.
+/// Actual return addresses include tail-jump routes. Transfer readers preserve
+/// their original parser dispatch return through unit deletion; combat lifecycle
+/// cleanup also retains the original caller return through its intervening dispatches.
 pub const COMBAT_DELETION_RETURN: usize = 0x13ce9f6;
 pub const QUEUED_DELETE_RETURN: usize = 0x1d5fc4;
 pub const READ_CONTEXT_RETURN: usize = 0x24a9b05;
 pub const DELETION_CAUSES: [(usize, Cause); 15] = [
     (COMBAT_DELETION_RETURN, Cause::DivisionDestroyed),
-    // DeleteUnitEffect and DeleteUnitsEffect; their return flag is recorded
-    // by the exact reserve-return tap, not interpreted as a loss predicate.
+    // Unit-deletion effects retain their requested-return flag through the
+    // exact reserve-return tap; it is not interpreted as a loss predicate.
     (0x354980, Cause::DivisionScripted),
     (0x354ffe, Cause::DivisionScripted),
-    // DestroyUnitEffect tail-jumps through ExecuteWithScopeValidation's
-    // sole virtual Execute dispatch (CALL 14053130D).
+    // Destruction effects retain the return address through scope-validated virtual dispatch.
     (0x531310, Cause::DivisionScripted),
     (0x700c06, Cause::DivisionTemplateRemoved),
     (0x1501127, Cause::DivisionTemplateRemoved),
@@ -676,14 +643,13 @@ pub const DELETION_CAUSES: [(usize, Cause); 15] = [
     (0x706e08, Cause::DivisionDeleted),
     (0x14ff6e0, Cause::DivisionDeleted),
     (0x150e151, Cause::DivisionDeleted),
-    // ResetCountryAppearance also serves gameplay dynamic-country reuse.
-    // ResetRuntimeState is excluded by RESETTING, not these shared PCs.
+    // Appearance reset also supports gameplay country reuse. Runtime reset
+    // is excluded by RESETTING rather than by shared return addresses.
     (0x6d68ee, Cause::DivisionDeleted),
     (0x6d6a01, Cause::DivisionDeleted),
 ];
-/// Failed save-reader validation and rejected CreateUnitEffect setup.
-/// CALL 1403527B9 deletes the parsed allocation before AddArmy@140352940:
-/// no stockpile supplied it and no live division was attached.
+/// Failed save-reader validation and rejected scripted unit creation delete
+/// parsed allocations before roster attachment or stockpile supply.
 pub const FAILED_CREATE_RETURN: usize = 0x3527be;
 pub const IGNORED_DELETIONS: [usize; 4] = [
     0x6fa567,
@@ -691,8 +657,8 @@ pub const IGNORED_DELETIONS: [usize; 4] = [
     READ_CONTEXT_RETURN,
     FAILED_CREATE_RETURN,
 ];
-/// Merge copies source pools into its aggregate before this DeleteUnit CALL
-/// (14134FAC8). Source pools remain unchanged, so their disposal is a transfer.
+/// Merge copies source pools into its aggregate before disposal. Unchanged
+/// source pools are therefore transfers rather than losses.
 pub const MERGED_DELETION_RETURN: usize = 0x134facd;
 
 pub fn deletion_context(caller_rva: usize) -> DeletionContext {
@@ -712,25 +678,24 @@ pub fn deletion_context(caller_rva: usize) -> DeletionContext {
     }
 }
 
-/// ScheduleUnitDeletion copies only a unique native handle, never the pool.
-/// Preserve the first provenance until actual deletion. HQ provider cleanup
-/// credits its full pool at 140BE4C9C before queueing, so it is a transfer.
+/// Scheduling copies a unique full handle, never the pool. Retain the first
+/// deletion cause until disposal. HQ cleanup credits its complete pool before
+/// queueing, so that disposal is a transfer.
 pub const QUEUED_DELETION_CAUSES: [(usize, Cause); 7] = [
     (0xc7a306, Cause::DivisionOverrun),
-    // Hourly attrition CALL 140C78C2E completes before the strength-threshold
-    // comparison of runtime define 14331A2B8 and this scheduling CALL.
+    // Hourly attrition completes before the content-loaded strength threshold
+    // and deletion scheduling.
     (0xc78f76, Cause::DivisionDeleted),
     (0xde32d8, Cause::DivisionDeleted),
     (0x70b56d, Cause::DivisionDeleted),
     (0x150f0ad, Cause::DivisionDeleted),
     (0x9d08a4, Cause::DivisionDeleted),
-    // TakeDamageImmediate's actual removal precedes this strength test.
+    // Immediate damage finishes its removal before this strength test.
     (0x342aa6, Cause::DivisionScripted),
 ];
 pub const HQ_PROVIDER_RETURN: usize = 0xbe4dc4;
-/// RevealFakeArmy@1412A5F40 CALL 1412A6246 returns here (1412A6250 is
-/// the following MOV). Its GetDivisionRevealSkipFlag-selected armies are
-/// deception objects: TryJoinUnit@1412A6C70 refuses them before combat.
+/// Reveal-skip selects deception armies. Combat joining refuses those
+/// objects, so their disposal is outside inventory loss.
 pub const FAKE_INTEL_QUEUE_RETURN: usize = 0x12a624b;
 
 pub fn queued_context(caller_rva: usize) -> QueuedContext {
@@ -748,9 +713,9 @@ pub fn queued_context(caller_rva: usize) -> QueuedContext {
     }
 }
 
-/// ResetRuntimeState@1401D09B0 sets this at 1401D09F4, drains the queue and
-/// clears countries, then clears it at 1401D1730. DeleteUnit samples it at
-/// 1401D6340 and OnCombatEnded checks it before applying gameplay damage.
+/// Runtime reset sets this flag before draining queues and clearing countries,
+/// then clears it. Deletion samples it and combat-end processing tests it
+/// before applying gameplay damage.
 pub const RESETTING: usize = 0xa3a;
 
 pub fn cleanup(memory: &impl Memory, base: usize) -> Result<bool, &'static str> {
@@ -776,7 +741,7 @@ pub fn current_state(
     Ok(())
 }
 
-/// Class zero is CArmy (constructor 140C5DD30; DeleteUnit compares +8).
+/// Class zero identifies divisions for unit-deletion capture.
 /// Other live unit classes are outside division-equipment deletion capture.
 pub fn is_army(memory: &impl Memory, base: usize, unit: usize) -> Result<bool, &'static str> {
     if unit == 0 {
@@ -809,15 +774,14 @@ pub fn army_identity(memory: &impl Memory, base: usize, army: usize) -> Result<u
     Ok(handle)
 }
 
-/// Return PCs of the three direct active_damage callers, verified by asm.
-/// OnCombatEnded@140C7B370 flushes accumulated combat losses and applies the
-/// EQUIPMENT_COMBAT_LOSS_FACTOR before CALL 140C7B6B3.
+/// Direct combat-damage caller return addresses. Combat end flushes accumulated
+/// losses and applies the content-loaded combat-loss factor before damage.
 pub const LAND_COMBAT_RETURN: usize = 0xc7b6b8;
-/// navaltransfer.cpp 140E138F0 removes lost convoys and damages their carried
-/// armies through CALL 140E13A6B, with the lost transport proportion.
+/// Lost transports remove convoys and damage carried divisions in proportion
+/// to the lost transport amount.
 pub const NAVAL_TRANSPORT_RETURN: usize = 0xe13a70;
-/// TakeDamageImmediate@140C80020 applies the immediate strength/organisation
-/// operands before CALL 140C80220.
+/// Immediate damage applies strength and organization operands before
+/// equipment damage.
 pub const IMMEDIATE_RETURN: usize = 0xc80225;
 
 pub fn land_cause(caller_rva: usize) -> Cause {
@@ -829,44 +793,31 @@ pub fn land_cause(caller_rva: usize) -> Cause {
     }
 }
 
-/// Build-specific return PC -> semantic cause map. `hoi4re fn` establishes
-/// each enclosing context; `hoi4re asm` establishes the CALL and next PC.
-/// The strategic and mission-AA groups preserve the coordinator's source
-/// classifications, including mission loss application rather than guessing
-/// a finer cause from the requested removal or source-country argument.
+/// Supported-build return-address to cause map. Strategic and mission-AA
+/// channels retain the coordinator's classification. Requested removal and
+/// source-country arguments do not establish a finer cause.
 pub const AIR_CAUSES: [(usize, Cause); 11] = [
-    // nuke.cpp 141084AA0 walks an airbase's wings and removes each wing's
-    // aircraft count: CALL 141084BEE -> return 141084BF3.
+    // Nuclear airbase damage removes aircraft from every wing.
     (0x1084bf3, Cause::AirNuclear),
-    // 140F48C00 obtains the country loss roll from 1407086E0 and increments
-    // wing accident losses (+84): CALL 140F48C6D -> return 140F48C72.
+    // Accident losses apply the country loss roll and update the wing accumulator.
     (0xf48c72, Cause::AirAccident),
-    // strategicair.cpp 140C4BC40 uses BASE_STRATEGIC_BOMBING_HIT_PLANE_*
-    // chance/damage: CALL 140C4BDDC -> return 140C4BDE1.
+    // Strategic bombing applies content-loaded aircraft hit and damage factors.
     (0xc4bde1, Cause::AirStrategic),
-    // strategicair.cpp 140C4FD80, called by StrategicAirManager::HourlyUpdate,
-    // removes one aircraft in its wing pass: CALL 140C5047D -> return 140C50482.
+    // Strategic hourly processing removes aircraft during its wing pass.
     (0xc50482, Cause::AirStrategic),
-    // airmission.cpp 140F60880 uses TRAIN_ANTI_AIR_HIT_* and
-    // TRAIN_ANTI_AIR_ATTACK_TO_AMOUNT: CALL 140F61259 -> return 140F6125E.
+    // Train anti-air losses use the content-loaded hit and amount factors.
     (0xf6125e, Cause::AirMissionAa),
-    // airmission.cpp 140F6DB20 invokes mission AA helper 140F718C0 and
-    // applies a mission-dependent wing loss: CALL 140F6E8E1 -> return 140F6E8E6.
+    // Mission anti-air applies the mission-dependent wing loss.
     (0xf6e8e6, Cause::AirMissionAa),
-    // airmission.cpp 140F718C0 uses ANTI_AIR_PLANE_DAMAGE_CHANCE/FACTOR:
-    // CALL 140F71E5B -> return 140F71E60.
+    // Mission anti-air damage uses content-loaded chance and damage factors.
     (0xf71e60, Cause::AirMissionAa),
-    // airmission.cpp 140F723D0 flushes the mission's accumulated losses
-    // (+98), attributed to +A4: CALL 140F724F2 -> return 140F724F7.
+    // Mission processing flushes its accumulated losses with their stored attribution.
     (0xf724f7, Cause::AirMissionAa),
-    // 141295D10, called by LandCombatant::round, uses CAS_NIGHT_ATTACK_FACTOR
-    // and land ANTI_AIR_*: CALL 14129667E -> return 141296683.
+    // Land anti-air applies the night-attack and anti-air content factors.
     (0x1296683, Cause::AirLandCombatCas),
-    // 141454710 is called by DamageRaidUnitEffect::Execute@1404A29C0:
-    // CALL 1414547D3 -> return 1414547D8.
+    // Scripted raid-unit damage reaches this aircraft-removal channel.
     (0x14547d8, Cause::AirRaid),
-    // naval_fire_exchange_air.cpp 141966B10 removes aircraft for the naval
-    // AA callers 141967CD0/141969200: CALL 141966BD7 -> return 141966BDC.
+    // Naval anti-air callers remove aircraft through their shared exchange channel.
     (0x1966bdc, Cause::AirNavalAa),
 ];
 
@@ -877,9 +828,8 @@ pub fn air_cause(caller_rva: usize) -> Cause {
         .unwrap_or(Cause::Unknown)
 }
 
-/// +1DC when positive, otherwise +1D8: the country selected by both writers
-/// at 140C600A9-C3 / active_damage 140C7BFC0 and for loss accounting. This
-/// follows expeditionary ownership rather than the containing army roster.
+/// Positive expeditionary ownership selects the equipment country; otherwise
+/// use the roster owner. Retain the raw reference independently of the enclosing roster.
 pub fn army_owner(memory: &impl Memory, army: usize) -> Result<u32, &'static str> {
     let expeditionary = field::<i32>(memory, army, crate::cunit::EXPEDITIONARY_OWNER)?;
     if expeditionary > 0 {
@@ -889,16 +839,15 @@ pub fn army_owner(memory: &impl Memory, army: usize) -> Result<u32, &'static str
     }
 }
 
-/// Preserve the full raw expeditionary-owner word, including native nulls.
-/// DeleteUnit's 140BF4E40 CALL at 1401D654E clears it before combat unlink.
+/// Preserve the full raw expeditionary-owner word, including nulls. Deletion
+/// clears it before combat unlink.
 pub fn army_expeditionary_owner(memory: &impl Memory, army: usize) -> Result<u32, &'static str> {
     field(memory, army, crate::cunit::EXPEDITIONARY_OWNER)
 }
 
-/// GetDivisionRevealSkipFlag@140C79AA0 selects deception armies through the
-/// standard template's +234 byte. TryJoinUnit@1412A6C70 refuses them, and
-/// TakeDamage@140C7FDC0/ApplyAttrition@140C5FE80 do not apply force losses.
-/// Their parsed pools need not be empty; fake disposal is not an inventory loss.
+/// The standard template's reveal-skip byte selects deception armies. Combat
+/// joining refuses them and damage or attrition does not apply force losses.
+/// Their parsed pools need not be empty; disposal is not an inventory loss.
 pub fn fake_intel_division(memory: &impl Memory, army: usize) -> Result<bool, &'static str> {
     let template = pointer(memory, army, carmy::STANDARD_TEMPLATE)?;
     if template == 0 {
@@ -913,8 +862,8 @@ pub fn fake_intel_division(memory: &impl Memory, army: usize) -> Result<bool, &'
     }
 }
 
-/// KillAirplanes uses wing+9C4 when positive, else wing+38 -> +40 -> +90
-/// (140F4E400). The source-country argument is the attacker, not the owner.
+/// Aircraft removal prefers a positive pool-country reference, otherwise
+/// the host owner. The source-country argument identifies the attacker.
 pub fn air_owner(memory: &impl Memory, wing: usize) -> Result<u32, &'static str> {
     let owner = field::<i32>(memory, wing, 0x9c4)?;
     if owner > 0 {
@@ -925,8 +874,8 @@ pub fn air_owner(memory: &impl Memory, wing: usize) -> Result<u32, &'static str>
     field(memory, status, 0x90)
 }
 
-/// Resistance writer 140FDFA80 attributes the occupation entry's pool to
-/// its state (+50), using that state's controller (+CC) for its loss record.
+/// Resistance attributes the occupation-entry pool through its state to
+/// that state's controller.
 pub fn garrison_owner(memory: &impl Memory, occupation: usize) -> Result<u32, &'static str> {
     let state = pointer(memory, occupation, 0x50)?;
     field(memory, state, 0xcc)
@@ -953,23 +902,22 @@ pub fn pool(receiver: usize, site: SiteId) -> Result<usize, &'static str> {
         SiteId::Air => cair_wing::EQUIPMENT_POOL,
         SiteId::Garrison => 0x90,
         _ => return Err("unsupported destruction writer"),
-    }; // 140FDFA80
+    };
     receiver
         .checked_add(offset)
         .ok_or("destruction pool address overflow")
 }
 
-/// AddEquipmentPoolToCountryReserves@140E4C550 and the item wrapper
-/// 140E4C530 add to the reserve manager's embedded pool at +200.
+/// Bulk equipment reserve credit reaches the reserve manager's embedded pool.
 pub fn reserve_pool(manager: usize) -> Result<usize, &'static str> {
     manager
         .checked_add(0x200)
         .ok_or("destruction reserve pool address overflow")
 }
 
-/// Scripted fractions reach the stockpile through country+F68 then the folded
-/// +200 accessor@140BEE1A0. CProductionStatus ctor@140E476A0 stores +290 owner;
-/// authenticate its vtable, the country's vtable and the reverse F68 link.
+/// Scripted stockpile fractions follow the country's production manager to
+/// its embedded pool. Authenticate manager and country vtables, the manager
+/// owner backlink and the country's reverse manager link.
 pub fn reserve_owner(memory: &impl Memory, base: usize, pool: usize) -> Result<u32, &'static str> {
     use crate::{ccountry, cproduction_status};
     let manager = pool
@@ -995,17 +943,16 @@ pub fn reserve_owner(memory: &impl Memory, base: usize, pool: usize) -> Result<u
     field(memory, country, ccountry::ID)
 }
 
-/// Merge returns use the survivor's roster country (14134F8F3), which can
-/// differ from ordinary combat's expeditionary owner. The merge validator
-/// 141354570 rejects expeditionary armies and active combat, so this is the
-/// equipment owner on the admitted native route. Keep the native raw tag.
+/// Merge return uses the survivor's roster country, which can differ from
+/// combat's expeditionary owner. The merge route rejects expeditionary armies
+/// and active combat. Preserve the admitted equipment owner's raw reference.
 pub fn merge_owner(memory: &impl Memory, army: usize) -> Result<u32, &'static str> {
     field(memory, army, crate::cunit::ROSTER_OWNER)
 }
 
-// AddVariantQuantity@140FF7A30 saturates, but ScaleQuantities@140FFBCC0
-// stores signed i64 results past that bound. Preserve the stored bytes; only
-// actual duplicate aggregation or net-difference overflow is refused below.
+// Quantity addition saturates, while scaling can store signed i64 values
+// beyond that bound. Preserve stored bytes; refuse only overflow in actual
+// duplicate aggregation or net differences below.
 
 /// Owned copies, bounded by the live design census. A short copy or growing
 /// pool fails the event; nothing reads game pointers after the detour returns.
@@ -1017,8 +964,8 @@ pub fn snapshot(
 ) -> Result<usize, &'static str> {
     snapshot_with_demand(memory, base, pool, rows, |_| ())
 }
-/// Preserve the original pool+20/+2C header (140FFDB00) demand even when
-/// allocation-free callback storage cannot retain its payload.
+/// Retain original pool-header demand even when allocation-free callback
+/// storage cannot retain its payload.
 pub fn snapshot_with_demand(
     memory: &impl Memory,
     base: usize,
@@ -1043,9 +990,9 @@ pub fn snapshot_with_demand(
     }
 }
 
-/// Attribute one variant's actual change, not helper 140C5E9C0's requested
-/// amount. 140FFD5A0 subtracts before the optional Combat Log write. Duplicate
-/// occurrences, if supplied, are summed rather than assumed unique.
+/// Attribute the variant's actual change rather than the requested amount.
+/// Subtraction precedes optional combat logging. Sum repeated occurrences
+/// instead of assuming uniqueness.
 pub fn variant_amount(
     memory: &impl Memory,
     base: usize,
@@ -1055,8 +1002,8 @@ pub fn variant_amount(
 ) -> Result<i64, &'static str> {
     variant_amount_with_demand(memory, base, pool, variant, scratch, |_| ())
 }
-/// 140FFD5A0 consumes the same pool header; report its row count before the
-/// scratch check without changing the original payload/consistency reads.
+/// Report the original pool row count before the scratch check, preserving
+/// payload and consistency-read order.
 pub fn variant_amount_with_demand(
     memory: &impl Memory,
     base: usize,
@@ -1154,9 +1101,8 @@ pub struct Population {
     pub delivery_pool_entries: usize,
 }
 
-/// Off-thread sizing only: GetDivisionArray@1406C25B0 returns country+290;
-/// sum its +29C counts and division+348 pool rows once per canonical country.
-/// 140FFDB00 walks pool+20/+2C; the stockpile accessor 140BEE1A0 returns +200.
+/// Off-thread sizing only: sum live division-roster counts and equipment-pool
+/// rows once per canonical country, retaining stockpile demand separately.
 pub fn population(memory: &impl Memory, base: usize) -> Option<Population> {
     let state = usize::try_from(read::<u64>(
         memory,

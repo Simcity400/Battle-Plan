@@ -2,7 +2,7 @@
 
 **What it shows:** Each country's share of divisions in supply, strained or in the native very-low supply state, with a complete classification drill.
 
-**Product(s) it reads:** [`supply-health`](../../../../crates/dashboard/src/products/supply_health.rs) supplies exact count runs and native identity spans. Its module notes own the division-icon algorithm and content-define evidence.
+**Product(s) it reads:** [`supply-health`](../../../../crates/dashboard/src/products/supply_health.rs) supplies exact count runs and native identity spans. Its module notes describe the division-icon classification and content thresholds.
 
 **Settings:** One country by default or manual/group comparisons; Show Supply classification, inline/pop-out drill, playback/window/Show after the playhead; Campaign, Follow, Pin and Range.
 

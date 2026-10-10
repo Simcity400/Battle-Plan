@@ -1,4 +1,3 @@
-//! Meaningful authored fixtures; NO tests were executed by this source lane.
 use super::*;
 
 #[test]
@@ -41,8 +40,8 @@ fn selected_demand_wraps_i32_and_never_converts_unknown_to_zero() {
 }
 
 #[test]
-fn extreme_cached_weight_preserves_native_i64_rounding_wrap_before_narrowing() {
-    // 14100BFA0's rounded fixed5 multiply wraps at positive MAX. A plain
+fn extreme_cached_weight_preserves_i64_rounding_wrap_before_narrowing() {
+    // Rounded fixed5 multiplication wraps at positive MAX. A plain
     // ceil(raw/ONE) as i32 would incorrectly return -702313052 here.
     assert_eq!(unit_convoys(i64::MAX), 702_313_053);
     assert_eq!(unit_convoys(i64::MIN), 702_313_053);
@@ -405,7 +404,7 @@ fn later_gate_skip_clears_the_prior_rejection_without_demanding_weight_or_risk()
 }
 
 #[test]
-fn known_empty_localisations_keep_native_lf_and_zero_risk_has_no_primary() {
+fn known_empty_localisations_keep_lf_and_zero_risk_has_no_primary() {
     let mut inputs = Message {
         admit: Some(Unit::Army(1)),
         risk: 1,

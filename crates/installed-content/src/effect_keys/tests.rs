@@ -5,15 +5,18 @@ use crate::parser::{
 };
 
 #[test]
-fn native_class_metadata_covers_the_reader_registry_and_aliases() {
+fn class_metadata_covers_the_reader_registry_and_aliases() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     assert!(
         classes::CLASS_IDENTITIES
             .windows(2)
             .all(|pair| pair[0].0 < pair[1].0)
     );
     assert_eq!(classes::CLASS_IDENTITIES.len(), EFFECT_CLASSES.len());
-    for ((token, _), (class_token, name, vtable)) in
-        REGISTERED_EFFECTS.iter().zip(classes::CLASS_IDENTITIES)
+    for ((token, _), (class_token, name, vtable)) in REGISTERED_EFFECTS
+        .iter()
+        .zip(classes::CLASS_IDENTITIES.iter().copied())
     {
         assert_eq!(*token, class_token);
         assert!(!name.is_empty());
@@ -21,7 +24,7 @@ fn native_class_metadata_covers_the_reader_registry_and_aliases() {
     }
     assert_eq!(
         native_class(b"set_unit_leader_flag").map(|class| class.name),
-        Some("CSetCharacterFlagEffect")
+        native_class(b"set_character_flag").map(|class| class.name)
     );
     assert_eq!(
         native_class(b"SET_CHARACTER_FLAG"),
@@ -41,6 +44,8 @@ fn native_class_metadata_covers_the_reader_registry_and_aliases() {
 }
 
 pub(super) fn read(text: &[u8], names: &KeyNames) -> Read {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     native::read(
         text,
         native::Mode::KeepMark,
@@ -78,6 +83,8 @@ pub(super) fn scalar<'a>(items: &'a [Item], key: &str) -> &'a [u8] {
 
 #[test]
 fn registry_is_sorted_complete_and_names_fold() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     assert!(EFFECT_CLASSES.windows(2).all(|pair| pair[0].0 < pair[1].0));
     let names: std::collections::BTreeSet<_> =
         REGISTERED_EFFECTS.iter().map(|(_, name)| name).collect();
@@ -95,14 +102,16 @@ fn registry_is_sorted_complete_and_names_fold() {
             .windows(2)
             .all(|pair| pair[0].0 < pair[1].0)
     );
-    for (token, _) in REGISTERED_EFFECTS {
+    for &(token, _) in REGISTERED_EFFECTS.iter() {
         assert!(class(token).is_some());
     }
     assert_eq!(class(u32::MAX), None);
 }
 
 #[test]
-fn description_conditional_adjacency_uses_native_added_children() {
+fn description_conditional_adjacency_uses_added_children() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let mut names = KeyNames::default();
     names.countries.insert(b"SYN".to_vec());
     names.scripted_effects.insert(b"authored".to_vec());
@@ -119,10 +128,10 @@ fn description_conditional_adjacency_uses_native_added_children() {
     assert!(adds_child(&fields[3], &names).unwrap());
     assert!(adds_child(&fields[4], &names).unwrap());
 }
-
-// Invalid effect + RecordError 1405345D0 -> 1424ACF90 -> 1424AD270.
 #[test]
 fn invalid_effect_skips_without_defining_names() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let read = read(
         b"body = { invalid_effect = { @hidden = 7 } } final = @hidden",
         &KeyNames::default(),
@@ -134,6 +143,8 @@ fn invalid_effect_skips_without_defining_names() {
 
 #[test]
 fn a_scope_body_uses_effect_dispatch() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let names = KeyNames {
         countries: [b"ABC".to_vec()].into(),
         ..Default::default()
@@ -143,10 +154,10 @@ fn a_scope_body_uses_effect_dispatch() {
     assert_eq!(scalar(&read.items, "final"), b"3");
     assert_eq!(scalar(&read.items, "hidden"), b"@hidden");
 }
-
-// CScriptedEffect vtable 14299F7C8, slot 3 = 141385570.
 #[test]
 fn a_scripted_effect_reads_one_value_and_no_block() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let names = KeyNames {
         scripted_effects: [b"my_effect".to_vec()].into(),
         ..Default::default()
@@ -162,6 +173,8 @@ fn a_scripted_effect_reads_one_value_and_no_block() {
 
 #[test]
 fn else_and_else_if_read_the_conditional_before_attachment() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     for key in ["else", "else_if"] {
         let text = format!("body = {{ {key} = {{ @seen = 7 add_stability = 0 }} }} final = @seen");
         let read = read(text.as_bytes(), &KeyNames::default());
@@ -177,7 +190,7 @@ fn else_and_else_if_read_the_conditional_before_attachment() {
             read_effect_nonblock(text.as_bytes())
                 .misreads
                 .iter()
-                .any(|note| note.what.contains("140534280"))
+                .any(|note| note.what.contains("block"))
         );
     }
 }
@@ -188,6 +201,8 @@ fn read_effect_nonblock(text: &[u8]) -> Read {
 
 #[test]
 fn readscript_default_body_dispatches_each_effect() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     for key in ["hidden_effect", "effect_tooltip"] {
         let text = format!(
             "body = {{ {key} = {{ invalid_effect = {{ @hidden = 9 }} @seen = 2 add_stability = 0 }} }} final = @seen hidden = @hidden"
@@ -202,6 +217,8 @@ fn readscript_default_body_dispatches_each_effect() {
 
 #[test]
 fn generic_value_reader_does_not_consume_a_body() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let read = read(
         b"body = { add_stability = { @seen = 7 add_stability = 0 } final = @seen",
         &KeyNames::default(),
@@ -213,6 +230,8 @@ fn generic_value_reader_does_not_consume_a_body() {
 
 #[test]
 fn conditional_limit_keeps_scope_and_scripted_trigger_names() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let names = KeyNames {
         countries: [b"ABC".to_vec()].into(),
         scripted: [b"my_check".to_vec()].into(),
@@ -231,6 +250,8 @@ fn conditional_limit_keeps_scope_and_scripted_trigger_names() {
 
 #[test]
 fn missing_operator_uses_stale_value_and_current_error_skip() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     for (key, expected) in [
         ("hidden_effect", b"7".as_slice()),
         ("ABC", b"7"),
@@ -244,8 +265,6 @@ fn missing_operator_uses_stale_value_and_current_error_skip() {
         let text = format!("body = {{ {key} {{ @seen = 7 add_stability = 0 }} final = @seen");
         let read = read(text.as_bytes(), &names);
         assert!(read.unsettled.is_none(), "{key}: {read:?}");
-        // The one-value reader leaves the child's `}` to end `body`;
-        // ReadScript and the error skip consume it inside that body.
         let items = if key == "add_stability" {
             &read.items
         } else {
@@ -257,6 +276,8 @@ fn missing_operator_uses_stale_value_and_current_error_skip() {
 
 #[test]
 fn coded_effect_precedes_scope_and_scripted_name() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let names = KeyNames {
         countries: [b"hidden_effect".to_vec()].into(),
         scripted_effects: [b"hidden_effect".to_vec()].into(),
@@ -275,9 +296,8 @@ fn coded_effect_precedes_scope_and_scripted_name() {
 
 #[test]
 fn deferred_readers_keep_by_key_bodies_and_count_named_gaps() {
-    // ai_message remains deferred and reads by key. every_active_scientist
-    // now shares the ported character reader 1402F6D70: its ReadEffect tail
-    // skips an invalid block without defining anything in it.
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let read = read(b"body = { ai_message = { @seen = 1 unknown = @seen } ai_message = { unknown = 2 } every_active_scientist = { @flag = 2 invalid = { @hidden = 9 marker = 1 } } } final = @flag hidden = @hidden", &KeyNames::default());
     assert!(read.unsettled.is_none(), "{read:?}");
     assert_eq!(scalar(&read.items, "final"), b"2");
@@ -292,13 +312,15 @@ fn deferred_readers_keep_by_key_bodies_and_count_named_gaps() {
         .collect();
     assert_eq!(gaps.len(), 1);
     assert!(gaps[0].what.contains("`ai_message`"));
-    assert!(gaps[0].what.contains("0x140534280"));
-    assert!(gaps[0].what.contains("0x1403AE870"));
+    assert!(gaps[0].what.contains("unsupported"));
+    assert!(gaps[0].what.contains("by-key reading retained"));
     assert_eq!(gaps[0].count, Some(2));
 }
 
 #[test]
 fn description_projection_follows_own_readers_without_a_global_skip_list() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let document = crate::parser::parse(br#"
         if = { limit = { always = yes } array = yes original_tag = ABC prioritize = 1 }
         else = { limit = { always = no } array = yes }
@@ -343,7 +365,9 @@ fn description_projection_follows_own_readers_without_a_global_skip_list() {
 }
 
 #[test]
-fn random_list_and_member_projection_share_the_native_own_key_metadata() {
+fn random_list_and_member_projection_share_the_own_key_metadata() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let document = crate::parser::parse(br#"
         random_list = {
             seed = 4 log = no
@@ -366,8 +390,8 @@ fn random_list_and_member_projection_share_the_native_own_key_metadata() {
 
 #[test]
 fn event_random_blocks_project_as_children_but_delay_and_tooltip_stay_own() {
-    // 1413859E0 delegates to 141385790; its block branch at 1413857F5
-    // calls ReadEffect, while the scalar reads the delay at +0x740.
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     for key in [
         "country_event",
         "state_event",
@@ -386,9 +410,9 @@ fn event_random_blocks_project_as_children_but_delay_and_tooltip_stay_own() {
 }
 
 #[test]
-fn focus_projection_keeps_the_native_originator_and_invalid_tooltip_boundary() {
-    // 1403B1040 consumes focus/use_side_message/originator_name only.
-    // tooltip is not accepted here as it is in CFireEventEffect (141385790).
+fn focus_projection_keeps_the_originator_and_invalid_tooltip_boundary() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let document = crate::parser::parse(
         br#"
         complete_national_focus = {
@@ -410,7 +434,6 @@ fn focus_projection_keeps_the_native_originator_and_invalid_tooltip_boundary() {
     ).unwrap();
     let children = description_fields(&parsed[0]).unwrap();
     assert_eq!(children.len(), 2);
-    // ReadEffect's known invalid-key skip is not an unported-reader refusal.
     assert!(!adds_child(&children[0], &names).unwrap());
     assert!(adds_child(&children[1], &names).unwrap());
 
@@ -425,9 +448,9 @@ fn focus_projection_keeps_the_native_originator_and_invalid_tooltip_boundary() {
 }
 
 #[test]
-fn active_scientist_projection_reuses_its_native_character_reader() {
-    // Both classes use key reader 1402F6D70. Its five own fields never
-    // enter the child array; other keys delegate to ReadEffect1405345D0.
+fn active_scientist_projection_reuses_its_character_reader() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let names = KeyNames::default();
     for key in ["every_scientist", "every_active_scientist"] {
         let text = format!(
@@ -454,8 +477,8 @@ fn active_scientist_projection_reuses_its_native_character_reader() {
 
 #[test]
 fn technology_scalar_effects_keep_their_operand_and_no_child_array() {
-    // Generic value reader 141385570 passes +0xC0 to vf6 directly.
-    // The stored scalar is independent of the empty child array +8/+0x14.
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let names = KeyNames::default();
     let items = read_body(
         b"@source=BBB @enabled=yes inherit_technology=@source set_faction_research_unlocked=@enabled",

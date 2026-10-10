@@ -1,4 +1,4 @@
-//! Authored fallback@1419948B0 after the map handler@1416295A0 returns false.
+//! Authored fallback after the map tooltip handler returns false.
 
 use super::*;
 
@@ -19,7 +19,7 @@ pub struct Authored {
 }
 
 impl Authored {
-    /// 1419948B0 checks occupied bound text before the ordinary hash probe.
+    /// The game checks occupied bound text before the ordinary hash probe.
     /// The disabled selector chooses each disabled hash independently.
     pub(crate) fn read(element: &installed_content::gui::native::Element, disabled: bool) -> Option<Self> {
         use installed_content::gui::native::{FormattedLocalization, tooltip_hash};
@@ -42,10 +42,8 @@ impl Authored {
                     bound: true,
                 });
             } else {
-                out.refusal = Some(
-                    "occupied bound/context-aware GUI tooltip form is not supported (1419948B0)"
-                        .into(),
-                );
+                out.refusal =
+                    Some("occupied bound/context-aware GUI tooltip form is not supported".into());
             }
             return Some(out);
         }
@@ -103,7 +101,7 @@ impl Authored {
                 if key.bound {
                     localise(context.loc, text_key, &[]).map(Some)
                 } else {
-                    // HashLookup142389E30 returns stored bytes or nullptr;
+                    // Return stored bytes or nullptr;
                     // the caller scans to NUL, without expanding localisation.
                     Ok(context.loc.get(text_key).map(|text| {
                         std::str::from_utf8(installed_content::parser::c_string(text.as_bytes()))
@@ -146,6 +144,8 @@ mod tests {
 
     #[test]
     fn authored_disabled_hashes_fall_back_independently_to_each_normal_field() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let parsed = element(
             "pdx_tooltip = TITLE pdx_tooltip_delayed = BODY pdx_disabled_tooltip = DISABLED",
         );
@@ -169,6 +169,8 @@ mod tests {
 
     #[test]
     fn empty_context_tree_keeps_callback_and_occupied_bound_text_overrides_normal_keys() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let empty = element("context_aware_tooltip = { } ");
         assert!(empty.common.bound_tooltip.is_empty());
         assert!(Authored::read(&empty, false).is_none());

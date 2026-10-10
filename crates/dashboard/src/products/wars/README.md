@@ -12,13 +12,12 @@ including retired occurrences and swap removals.
 | File | Responsibility |
 |---|---|
 | [../wars.rs](../wars.rs) | Product, branch/viewpoint cache, dated projection, app continuity and casualty membership shared with breakdowns. |
-| [native.rs](native.rs) | Native grouping, representative selection and indexed deduplication, with instruction citations. |
+| [native.rs](native.rs) | Grouping, representative selection and indexed deduplication. |
 | [naming.rs](naming.rs) | Recorded native name operands and content-resolved war names. |
 | [labels.rs](labels.rs) | Historical country names for label measurement. |
-| [tests.rs](tests.rs) | Synthetic native-loop, continuity, naming, scale and reply-budget cases. |
+| [tests.rs](tests.rs) | Synthetic grouping properties, continuity, naming, scale and reply-budget cases. |
 
-The [native audit](../../../../engine/src/cwar_relation/war_overview.md) owns the
-grouping evidence. Display and settings belong to the
+Display and settings belong to the
 [Wars widget](../../../../../ui/src/widgets/wars/README.md).
 
 ## Identity and dates
@@ -67,7 +66,7 @@ unchanged structural inputs when only casualties change. The Rust-only relation
 membership feeds casualty breakdowns without another grouping algorithm. Counts
 have no chosen ceiling; measure the complete reply against the shared
 `MAX_PRODUCT_REPLY_BYTES` and refuse excess bytes without shortening history.
-Indexed fast paths require the equivalence checks in `native.rs`; arbitrary
+Indexed fast paths preserve the grouping properties checked in `tests.rs`; arbitrary
 graphs can still require superlinear work and overlapping output.
 
 Use the [dashboard checks](../../../README.md#check-a-change), including generated

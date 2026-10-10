@@ -1,22 +1,21 @@
-//! `NProject::CProjectPool`; archived collector `read_country_project_lifecycle`.
+//! Country project pool.
 
 use crate::{Memory, cpdx_array::Array, nproject_cprogram_status, nproject_cproject, read};
 
-/// NProject::CProjectPool primary vtable; confirmed by pinned executable RTTI.
+/// Project-pool primary vtable.
 pub const VTABLE_RVA: usize = 0x029b_0238;
-/// CProjectPool +0x10 first inline CProject pointer; lifecycle walker advances by CProject's 0x1c0 stride.
+/// First project pointer in the contiguous pool.
 pub const PROJECTS: usize = 0x10;
-/// CProjectPool +0x18 packed capacity/count u64; archived lifecycle walker splits low/high u32 halves.
+/// Packed u64 project capacity/count.
 pub const PACKED_CAPACITY_COUNT: usize = 0x18;
-/// CProjectPool +0x18 capacity u32; low half of archived lifecycle walker's packed header.
+/// Project u32 capacity in the low half of the header.
 pub const CAPACITY: usize = 0x18;
-/// CProjectPool +0x1c count u32; high half of archived lifecycle walker's packed header.
+/// Project u32 count in the high half of the header.
 pub const COUNT: usize = 0x1c;
-/// `FindProjectById@1414700A0`: robin-hood token -> signed i16 array index.
+/// Robin-hood project-token lookup yielding a signed i16 array index.
 const INDEX: usize = 0x30;
 
-/// Copy the selected project's stored definition/owner pair. A present
-/// program token need not resolve: native `14142FD80` then returns null.
+/// Copy the selected project's stored definition/owner pair; an unresolved token returns no project.
 pub(crate) fn active_definition(
     memory: &impl Memory,
     base: usize,

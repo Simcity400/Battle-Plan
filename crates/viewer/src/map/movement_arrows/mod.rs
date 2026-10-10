@@ -1,4 +1,4 @@
-//! Viewer-selected unit routes: the native `CArrowObject` producer, not battle-plan arrows.
+//! Viewer-selected unit routes and their movement arrows.
 //!
 //! Simulation routes and first-edge progress come from the recording. Selection and the
 //! expansion/fill animation belong to this viewer; they are never recording inputs.
@@ -33,7 +33,7 @@ use super::{
     unit_selection::Unit,
 };
 
-// Literal CUnit selector keys in 141632130. Their definitions and resources are content facts.
+// Unit selector keys. Their definitions and resources are content facts.
 const STYLES: [&[u8]; 8] = [
     b"retreatArrow",
     b"withdrawArrow",
@@ -116,8 +116,8 @@ impl Assets {
                     return Err("arrowType size is not finite and positive".into());
                 }
                 let effect = if definition.effect.is_empty() {
-                    // Constructor142341610 leaves handle+150=-1 when no effect is registered.
-                    // Its empty record preserves the prior program at the native draw.
+                    // An unregistered effect leaves the handle unset. Its empty record
+                    // preserves the prior program at draw time.
                     shader_pipeline::library::Effect::from_compiled(
                         Arc::new(installed_content::pdxshader::program::Program::default()),
                         Vec::new(),
@@ -577,8 +577,8 @@ fn forget_unknown(retained: &mut shader_scene::State) {
     }
 }
 
-/// Physical b1 allocation112 (1422BE7A0), written prefix100 (1422BEA20). The adapter marks only that
-/// prefix known, so a mod reading the unwritten tail is explicitly refused.
+/// Physical b1 allocation: 112 bytes; written prefix: 100 bytes. Mark only
+/// that prefix known, so a mod reading the unwritten tail is explicitly refused.
 fn constants(
     matrix: &[[f32; 4]; 4],
     phase: &Phase,
@@ -610,7 +610,7 @@ struct Bounds {
 }
 
 impl Bounds {
-    /// 1422BEEB0 takes the smoothed pre-height controls, not the expanded ribbon.
+    /// Use the smoothed pre-height controls, before ribbon expansion.
     fn of([min, max]: [[f32; 3]; 2], width: f32) -> Self {
         Self {
             min,

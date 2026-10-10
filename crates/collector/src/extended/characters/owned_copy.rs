@@ -131,8 +131,8 @@ impl CharacterSourceBindings {
 }
 
 /// Successful shared skill definitions, retained only for this acquisition.
-/// CUnitLeader::add_experience (140c05400) selects definitions from the
-/// category/level database (140adace0); it changes the leader's selection.
+/// Experience changes select skill definitions from the category/level
+/// database and can change the leader's selection.
 /// Collisions simply acquire again. Every use still appends its scoped raw
 /// observations so unrelated aliases and their faults keep separate cursors.
 #[derive(Debug, Default, Clone, Copy)]
@@ -1268,7 +1268,7 @@ pub(super) fn copy_leaders(
             return true;
         }
     };
-    // CCharacter::Serialize@140F913A0 retains the full ordered leader map.
+    // Retain the full ordered leader map.
     let Some(required) = job.leader_rows.checked_add(walk.count as usize) else {
         dead.leaders = true;
         return true;

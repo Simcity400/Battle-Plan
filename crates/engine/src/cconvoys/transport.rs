@@ -1,41 +1,30 @@
-//! Passive C970/FF8A00 and C740/FFA620 union, entered during the ORIGINAL
-//! authenticated country-row loan. No native calls, cache write or retry.
-//! C740 uses the first nonzero quantity, including negatives, without flags.
-//! FF8A00 inspects every flag even for zero/negative quantities. Independent
-//! original-cache, first-variant, pool and reservation failures stay independent.
-//! All private selectors/memos retire before the Countries loan returns.
-//! The caller must admit the original transport writer boundary: native main
-//! thread (14011C710's recorded OS thread id), authenticated matching A/B
-//! CInGameIdler owners, and an absent or completed original A28 task. This
-//! excludes the independent ImGui FF8A00/BD0770 cache writers before borrowing
-//! the graph. Pointer identity or Rust worker completion alone cannot admit
-//! that boundary. Runtime acceptance and measured cost remain separate checks.
+//! Passive transport cache, pool and reservation inputs borrowed during the
+//! original authenticated country-row observation. No game calls, cache writes
+//! or retries occur. Variant selection uses the first nonzero quantity, including
+//! negative values, without flags; the complete pool reduction checks every flag
+//! even for zero and negative quantities. Cache, first-variant, pool and
+//! reservation failures remain independent. Selectors and memos retire before
+//! the country loan returns.
 //!
-//! Native ownership and mutation evidence (pinned a729): CCountry constructor
-//! 1406BD180 constructs embedded CConvoys through 14100B130, which constructs
-//! its pool, clears reservations and marks the signed cache dirty. CConvoys
-//! loader14100CEB0 restores only pool token2F4E and invalidates the cache;
-//! serializer14100DA40 writes that pool, not cache or reservation buckets.
-//! AddCount/Quantity/Default14100B2B0/B340/B3D0, Transfer14100D800 and
-//! RemoveQuantity14100D330 mutate the pool then clear +78. Post-stock helper
-//! C310->C3D0 can divert quantity to raid stock and also invalidate it.
-//! Getters C970, C120, C5D0, CF00 and CA70 can fill +80/+78 lazily.
-//! Reservation registration CCE0->B520 inserts/grows through AEE0; C120,
-//! C5D0 and D0E0 update allocated bucket+4 in place. D540 unregisters,
-//! swap-erases and destroys a final subscriber's bucket. Destructor1406BEF80
-//! destroys the bucket pointers and both embedded pool arrays.
+//! Admission requires the recorded main OS thread, authenticated matching idler
+//! owners and an absent or completed original task. This excludes independent
+//! UI cache writers before borrowing the graph. Pointer identity or worker
+//! completion alone cannot establish admission. Runtime acceptance and measured
+//! cost remain separate checks.
 //!
-//! Variant stats are mutable with an unchanged handle: BD0D50 calls
-//! BD0560/BD0770 and BC4990->BC81B0; MoveAssign140620220 also replaces the
-//! stat block. Constructors BC1190/BC1630 initialize it, copy constructor
-//! BC1A20 and CloneIntoBC82B0 copy it, and production post-load E530B0/
-//! E550F0 rebuild it. CategoryBD0400 writes classifier+408. Deleting
-//! destructorBC30A0 invokes BC2160, whose reference-base destructor retires
-//! the registration. These writers prohibit reuse across hourly callbacks
-//! even when pointers or full handles remain equal. Local memos
-//! therefore bind only the original Countries loan and retire before finish.
-//! A registry check and the Rust completion barrier are not foreign-thread
-//! writer exclusion, load exclusion or a proof that every native task joined.
+//! Construction initializes the pool, empty reservations and dirty signed cache.
+//! Loading restores the pool and invalidates the cache; serialization omits cache
+//! and reservation buckets. Pool additions, transfers, removals and diversions
+//! to raid stock invalidate it; getters can fill it lazily. Reservation writers
+//! grow the pointer vector, update allocated amounts, or swap-erase and destroy
+//! the final subscriber's bucket. Destruction releases buckets and pool arrays.
+//!
+//! Variant stats can change without a new handle: assignment replaces stat blocks,
+//! copying retains them, post-load work rebuilds them, and category changes alter
+//! the classifier. Destruction retires registration. Memos therefore bind only
+//! the original loan, even when pointers or full handles remain equal. Registry
+//! authentication and worker completion do not establish foreign-writer exclusion,
+//! load exclusion or that every game task has joined.
 use crate::{
     Memory, ccountry, cequipment_variant as variant, cequipment_variant_pool as pool,
     cpdx_array::{self, Array},
@@ -45,8 +34,9 @@ use crate::{
 };
 type Fact<T> = Result<T, &'static str>;
 
-// F9C6E0 loads the detection slots and speed; F97BF0 loads visibility alone.
-// BD0560/BD0770 write stat i at +100+8*i with signed64 storage.
+// Transport detection reads detection slots and speed; interception reads
+// visibility alone. The stat cache stores signed i64 values at +0x100
+// with eight-byte entries.
 const SURFACE_DETECTION: usize = 0x198;
 const SUBMARINE_DETECTION: usize = 0x1a0;
 const VISIBILITY: usize = 0x1a8;
@@ -254,9 +244,8 @@ impl Scratch {
         let entry = self.entry(memory, base, pointer)?;
         let handle = entry.identity?;
         *entry.stats.get_or_insert_with(|| {
-            // F97BF0/F9C6E0 read these signed cached stats, written by
-            // BD0560/BD0770. Never reconstruct them from authored equipment.
-            // F97BF0 reaches visibility alone. F9C6E0 independently reaches
+            // Read these signed cached stats without reconstructing them from authored
+            // equipment. Interception reaches visibility alone. Detection reaches
             // the detection caches and speed: a fault in any of those leaves
             // cannot erase the authenticated first variant or its visibility.
             let stat = |offset, reason| {
@@ -298,7 +287,7 @@ pub fn demand(
     if read::<u64>(memory, root) != Some(at(base, super::VTABLE_RVA)? as u64) {
         return Err("transport embedded CConvoys identity mismatch");
     }
-    // 14100C970 consumes the complete pool and signed +50/+5C reservations.
+    // Consume the complete pool and signed reservation range.
     let pool = pool::entries(memory, base, at(root, super::EQUIPMENT_POOL)?)?;
     let reservations = Array::read(memory, at(root, super::RESERVATIONS)?, 8)
         .ok_or("transport convoy reservation sizing header unreadable or invalid")?;
@@ -357,7 +346,7 @@ fn capture_buffer(
     (mut reservation_output, reservation_start): (crate::walk::Buffer<'_, Reservation>, usize),
     scratch: &mut Scratch,
 ) -> Observation {
-    // BEFC40 passes this runtime signed32 value to C970. Read it once for
+    // The transport query passes this runtime signed i32 value to its calculation. Read it once for
     // the original country pass, including a failed observation; no default.
     let mut result = Observation {
         priority: *scratch.priority.get_or_insert_with(|| {
@@ -385,10 +374,9 @@ fn capture_buffer(
         if read::<u64>(memory, root) != Some(expected) {
             return Err("transport embedded CConvoys identity mismatch");
         }
-        // AllocateDynamicCountry@1401DA850 stamps CCountry+8 through
-        // 140700330 without restamping ctor14100B130's CConvoys+8 tag.
-        // 14100C970/14100C740 consume this embedded pool without that
-        // equality check; the original country loan owns its current identity.
+        // Dynamic country allocation can restamp the country without changing its
+        // embedded convoy owner tag. Getters consume the pool without requiring
+        // that equality; the original country loan owns the current identity.
         Ok(())
     })();
     if let Err(reason) = identity {
@@ -422,7 +410,7 @@ fn capture_buffer(
             return Err("transport convoy pool arena exhausted");
         }
         if matches!(pool_output, crate::walk::Buffer::Growing(_)) {
-            // FF8A00 visits all original pool+20/+2C entries, including zero
+            // The pool walk visits all original variant entries, including zero
             // quantities. Retain the same-pass failed memo while growing it.
             scratch.grow(
                 scratch
@@ -490,7 +478,7 @@ fn capture_buffer(
         let source = Array::read(memory, at(root, super::RESERVATIONS)?, 8)
             .ok_or("transport convoy reservation header unreadable or invalid")?;
         result.reservations_required = source.count as usize;
-        // 14100C970 consumes every original signed reservation+50/+5C.
+        // Consume every original signed reservation occurrence.
         let end = reservation_start
             .checked_add(result.reservations_required)
             .ok_or("transport convoy reservation arena extent overflow")?;

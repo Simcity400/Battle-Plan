@@ -56,7 +56,7 @@ fn clean_modifiers(text: &str, remove_spaced_colon: bool) -> String {
     text.replace("    ", " ")
 }
 
-// 14039DCC0/1403A21E0 floor into fixed5 first, wrapping that intermediate,
+// floor into fixed5 first, wrapping that intermediate,
 // then divide and narrow. This differs from integer floor near i64::MIN.
 fn timed_component_integer(value: i64) -> i32 {
     let floored = if value % 100_000 == 0 {
@@ -82,14 +82,14 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         operand: &str,
         scopes: Scopes,
     ) -> Result<Option<&'c installed_content::ideas::Idea>, String> {
-        // 1403A85A0 treats token: as a literal; ':' or '.' chooses a variable.
+        // treats token: as a literal; ':' or '.' chooses a variable.
         if let Some(token) = operand.strip_prefix("token:") {
             return self.idea(token);
         }
         if !operand.bytes().any(|byte| matches!(byte, b':' | b'.')) {
             return self.idea(operand);
         }
-        // 14032A6D0 -> 1405382B0, signed /100000 then lexer token lookup.
+        // signed /100000 then lexer token lookup.
         let token = (self.scoped_value(operand.as_bytes(), scopes)? / 100_000) as u32;
         let rows = self
             .context
@@ -97,17 +97,18 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .frame()
             .complete::<tables::LexicalTokens>()
             .map_err(|why| why.to_string())?;
-        let literal = rows.iter().find(|row| row.token == token).ok_or_else(|| {
-            format!("idea variable references unrecorded lexer token {token} (14032A6D0)")
-        })?;
+        let literal = rows
+            .iter()
+            .find(|row| row.token == token)
+            .ok_or_else(|| format!("idea variable references unrecorded lexer token {token}"))?;
         let literal = std::str::from_utf8(installed_content::parser::c_string(&literal.literal))
             .map_err(|_| "idea variable token is not UTF-8")?;
         self.idea(literal)
     }
 
-    // CIdea::GetDisplayNameForCountry@140FBCF90, shared by all idea effects.
+    // shared by all idea effects.
     fn idea_name(&self, idea: &installed_content::ideas::Idea, scopes: Scopes) -> Result<String, String> {
-        // The caller supplies its +8 country carrier, including zero for a
+        // The caller supplies its country carrier, including zero for a
         // non-country scope; name expansion uses a fresh country-only scope.
         let country = match scopes.this {
             Scope::Country(country) | Scope::CountryLeader { country, .. } => country,
@@ -132,7 +133,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .complete::<tables::ReservedCountryNaming>()
                 .map_err(|why| why.to_string())?;
             let [row] = rows else {
-                return Err("ReservedCountryNaming has no singleton row for CCountry[0]".into());
+                return Err("ReservedCountryNaming has no singleton row for country zero".into());
             };
             Some(CountryLook {
                 name_tag: std::str::from_utf8(&row.name_tag)
@@ -140,7 +141,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 original_or_own_tag: original_or_own_tag.as_deref().map_err(String::as_str),
                 cosmetic_tag: std::str::from_utf8(&row.cosmetic_tag)
                     .map_err(|_| "reserved idea cosmetic_tag is not UTF-8")?,
-                civil_war: Ok(false), // 140BA61F0 tests canonical zero, not a dynamic country.
+                civil_war: Ok(false), // tests canonical zero, not a dynamic country.
             })
         } else {
             world
@@ -182,7 +183,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
     }
 
-    // 140FB9FF0/140FBB140/140FBDA10/140FBC770, in the native fragment order.
+    // Preserve fragment order.
     fn idea_details(
         &self,
         idea: &installed_content::ideas::Idea,
@@ -226,8 +227,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         text.push_str(&self.modifier_list_with(&idea.modifiers, "", scopes, options)?);
         newline(&mut text);
         for target in &idea.targeted {
-            // 140FBC770 resolves in a default-empty scope, copies the caller,
-            // and only SetCountry(..., true) / builds a header for positive tags.
+            // resolves in a default-empty scope, copies the caller,
+            // and only a positive country builds a header.
             let country = target
                 .operand
                 .as_deref()
@@ -267,7 +268,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
-    // 140FB9FF0/1413CA140: authored category key + "_research".
+    // authored category key + "_research".
     fn research_bonus_line(
         &self,
         bonus: &installed_content::modifiers::Modifier,
@@ -290,7 +291,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // 140FBA570 uses the short wrapper only when the complete detail text is empty.
+    // uses the short wrapper only when the complete detail text is empty.
     fn idea_tooltip(
         &self,
         idea: &installed_content::ideas::Idea,
@@ -318,7 +319,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
     }
 
-    // Bound idea_desc callback 1405256B0 -> 140FBA570; a missing token is empty.
+    // Bound idea_desc callback; a missing token is empty.
     pub(in crate::effect_description) fn bound_idea_description(
         &self,
         token: &str,
@@ -330,7 +331,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .map(Option::unwrap_or_default)
     }
 
-    // 140378970 concatenates four fragments, cleans them, then expands the wrapper.
+    // concatenates four fragments, cleans them, then expands the wrapper.
     pub(super) fn timed_idea(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let fields = children(item);
         let token = text_field(fields, "idea")?;
@@ -353,7 +354,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 
     fn idea_advisor(&self, token: &str) -> Result<bool, String> {
-        // 1406ACA00: registered advisor tokens take precedence over CIdea.
+        // registered advisor tokens take precedence over idea.
         Ok(self
             .context
             .text
@@ -376,12 +377,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         for token in &tokens {
             if self.idea_advisor(token)? {
                 let Some(character) = self.advisor_idea_character(token, scopes)? else {
-                    // 140369290 returns empty for a missing association;
-                    // 140394850's multi-token loop continues with other names.
+                    // returns empty for a missing association;
+                    // The multi-token loop continues with other names.
                     if !show || tokens.len() == 1 {
                         return Ok(String::new());
                     }
-                    // 14039504D still tries CIdea when the association misses.
+                    // still tries idea when the association misses.
                     let name = self
                         .idea(token)?
                         .map(|idea| self.idea_name(idea, scopes))
@@ -397,7 +398,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     self.advisor_idea_tooltip(character, token, scopes, remove, show)?
                 } else {
                     let mut name = self.effect_character_name(character)?;
-                    // 14039504D also tries the CIdea name, even for an advisor.
+                    // also tries the idea name, even for an advisor.
                     if show && let Some(idea) = self.idea(token)? {
                         name.push_str(&self.idea_name(idea, scopes)?);
                     }
@@ -415,13 +416,13 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     self.idea_tooltip(idea, scopes)?
                 } else {
                     let name = self.idea_name(idea, scopes)?;
-                    // Show calls 1405260E0 at both 140394FC1 and 14039504D.
+                    // Show describes both the advisor name and the idea name.
                     if show { format!("{name}{name}") } else { name }
                 });
             }
         }
         let mut name = names.join(", ");
-        // 140369290 removes the literal ".\n" (14271CCC0), not indentation.
+        // removes the literal ".\n", not indentation.
         if !show {
             name = name.replace(".\n", "");
         }
@@ -447,7 +448,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // 140389480 localises the authored trait and current country's name.
+        // localises the authored trait and current country's name.
         let trait_ = self.localised(scalar_operand(item)?, &[], scopes, true)?;
         let country = self.country_name(self.current_country(scopes)?, false)?;
         self.char_native_text(
@@ -461,7 +462,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // 140B9C980 returns the first entry's stored days, or -1 without one.
+    // returns the first entry's stored days, or -1 without one.
     // Keep membership separate: an entry itself may store -1.
     fn timed_idea_days(
         &self,
@@ -489,10 +490,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(String::new());
         };
         let Some(days) = self.timed_idea_days(idea, scopes)? else {
-            return Ok(String::new()); // 140B9D8F0 membership gate.
+            return Ok(String::new()); // membership gate.
         };
         let mut added = 0_i32;
-        // 14039DCC0 floors each component before native signed32 arithmetic.
+        // floors each component before native signed32 arithmetic.
         for (field_name, scale) in [("days", 1), ("years", 365), ("months", 30)] {
             if let Some(field) = field(children(item), field_name) {
                 let raw = self.scoped_value(field.value.scalar().unwrap_or_default(), scopes)?;
@@ -506,11 +507,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .hour
                 .wrapping_add(added.wrapping_add(days).wrapping_mul(24)),
         );
-        // FormatDayMonthYear@140526FD0 -> 1422542E0 localises the month key.
+        // localises the month key.
         let month = self.char_native_text(month.as_bytes(), &[], scopes, false)?;
-        let date = format!("{day} {month}, {year}"); // FormatDayMonthYear 140526FD0.
+        let date = format!("{day} {month}, {year}");
         let name = self.idea_name(idea, scopes)?;
-        // 140385480 cleans ':,' but, unlike add-timed, retains ': ,'.
+        // cleans ':,' but, unlike add-timed, retains ':,'.
         let description = clean_modifiers(&self.idea_details(idea, scopes)?, false);
         let duration = self.duration(children(item), scopes)?;
         self.char_native_text(
@@ -537,11 +538,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let add = self.idea_reference(add, scopes)?;
         let remove = self.idea_reference(remove, scopes)?;
         let (Some(add), Some(remove)) = (add, remove) else {
-            return Ok("ERROR: IDEAS ARE MISSING\n".to_owned()); // 142751718.
+            return Ok("ERROR: IDEAS ARE MISSING\n".to_owned());
         };
         let old = self.timed_idea_days(remove, scopes)?.unwrap_or(-1);
         let mut days = old;
-        // 14039DBB0's negative add-days result describes removal alone.
+        // The negative add-days result describes removal alone.
         if let Some(days) = field(fields, "add_days") {
             let added = crate::triggers::fixed_round(
                 self.scoped_value(days.value.scalar().unwrap_or_default(), scopes)?,
@@ -566,7 +567,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.swap_idea_description(add, remove, old, days, scopes)
     }
 
-    // 140396910 compares display-name bytes, not idea tokens, before choosing
+    // compares display-name bytes, not idea tokens, before choosing
     // the duration wrapper. Its fragments stay plain; only the header expands.
     fn swap_idea_description(
         &mut self,
@@ -610,15 +611,15 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         ] {
             match fragment {
                 Ok(fragment) => text.push_str(&fragment),
-                Err(why) => self.refuse("CSwapIdeasEffect", why),
+                Err(why) => self.refuse("idea swap", why),
             }
             newline(&mut text);
         }
-        text.push('\n'); // 1403978D0: terminal LF even after a fragment's LF.
+        text.push('\n'); // terminal LF even after a fragment's LF.
         Ok(text)
     }
 
-    // 14054AD00/14054AE00: each raw contribution multiplies before division;
+    // each raw contribution multiplies before division;
     // the new accumulator does not copy hidden flags or custom tooltip slots.
     fn modifier_difference(
         &self,
@@ -658,7 +659,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
     }
 
-    // 1403A1B00 / 140FBD830: first matching target per country, in country
+    // first matching target per country, in country
     // index order. Each operand evaluates in a fresh default-empty scope.
     fn idea_targeted_difference(
         &self,
@@ -683,7 +684,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let empty = Modifiers::default();
         let mut text = String::new();
         for country in countries {
-            // 140FBD830 evaluates only the prefix up to the first match for
+            // evaluates only the prefix up to the first match for
             // this country; a later variable may never be evaluated at all.
             let mut selected = [&empty, &empty];
             for (index, idea) in [add, remove].into_iter().enumerate() {
@@ -721,7 +722,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
-    // 14039F410/14039C2C0: new order, first old folded match, then remaining
+    // new order, first old folded match, then remaining
     // old entries in their order. Matched values subtract with signed64 wrap.
     fn idea_research_difference(
         &self,
@@ -761,7 +762,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
-    // 14039FCD0 -> CRule::BuildRuleDescriptionWithChildren@14062CB20:
     // a changed rule restored to its native default contributes an empty line.
     fn idea_rule_difference(
         &self,
@@ -771,20 +771,20 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<String, String> {
         let mut text = String::new();
         for (index, &(_, key, default, fulfilled)) in
-            installed_content::power_balance::RULES.iter().enumerate()
+            installed_content::power_balance::rules().iter().enumerate()
         {
             let value = add
                 .rules
                 .values
                 .get(index)
                 .copied()
-                .ok_or("idea rule values are incomplete (CRule+0x40, 14039FCD0)")?;
+                .ok_or("idea rule values are incomplete")?;
             let old = remove
                 .rules
                 .values
                 .get(index)
                 .copied()
-                .ok_or("idea rule values are incomplete (CRule+0x40, 14039FCD0)")?;
+                .ok_or("idea rule values are incomplete")?;
             if value == old {
                 continue;
             }
@@ -828,8 +828,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
-    // 14039C4E0/140624A70/140626010 group equipment names in first-seen order
-    // and add/subtract each stored stat; 14039BBF0 omits zero stats.
+    // group equipment names in first-seen order
+    // and add/subtract each stored stat; omits zero stats.
     fn idea_equipment_difference(
         &self,
         add: &installed_content::ideas::Idea,
@@ -947,7 +947,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             (false, false, true) => b"EFFECT_ADD_TRADE_OPINION",
             (false, false, false) => b"EFFECT_ADD_OPINION",
         };
-        // 1403759C0/14038A4F0 append LF; days affects execution, not this text.
+        // append LF; days affects execution, not this text.
         self.char_native_line(
             key,
             &[
@@ -986,7 +986,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let country = self.country_name(target, false)?;
         let name = self.localised(name.as_bytes(), &[], scopes, false)?;
         let description = self.modifier_description_with(&modifiers, "", Default::default())?;
-        // 140376590/14038AB90: target TARGET, static NAME, raw DESC, scoped wrapper.
+        // target TARGET, static NAME, raw DESC, scoped wrapper.
         self.char_native_text(
             if remove {
                 b"EFFECT_REMOVE_RELATION_MODIFIER"
@@ -1050,7 +1050,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let mut description =
             self.modifier_list_with(&modifier.modifiers, "", selected_scopes, Default::default())?;
         newline(&mut description);
-        // 14054DAD0 formats each scoped entry in authored order.
+        // formats each scoped entry in authored order.
         let mut scoped_lines = Vec::new();
         for (key, operand) in &modifier.scoped_modifiers {
             let value = self.scoped_value(operand, selected_scopes)?;
@@ -1143,7 +1143,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             )?);
             list.push('\n');
         }
-        // 140314F00/140316F70 compute days/province list but omit them from own text.
+        // compute days/province list but omit them from own text.
         let description = self.char_native_text(
             if remove {
                 b"EFFECT_REMOVE_PROVINCE_MODIFIER"
@@ -1226,7 +1226,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                         .map_err(|why| why.to_string())
                 },
             )?;
-            // 140314A70 -> 14054C770 passes colour byte 1 and includes zero.
+            // passes colour byte 1 and includes zero.
             text.push_str("\n\u{11}\u{1}");
             text.push_str(&name);
             text.push_str(": ");
@@ -1243,7 +1243,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     fn duration(&self, fields: &[Item], scopes: Scopes) -> Result<String, String> {
         let mut text = String::new();
-        // 1403A21E0 floors each stored component separately, then casts to i32.
+        // floors each stored component separately, then casts to i32.
         for (name, key, trailing) in [
             ("years", b"FREQUENCY_YEAR".as_slice(), true),
             ("months", b"FREQUENCY_MONTH".as_slice(), true),
@@ -1272,7 +1272,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
-    /// 14054E520 expands 14054E050's raw list in the supplied event scope.
+    /// Expands the raw modifier list in the supplied event scope.
     pub(super) fn modifier_list_with(
         &self,
         modifiers: &Modifiers,
@@ -1286,7 +1286,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    /// 14054E050: raw text; its direct callers choose when to expand it.
+    /// raw text; its direct callers choose when to expand it.
     pub(super) fn modifier_description_with(
         &self,
         modifiers: &Modifiers,
@@ -1324,7 +1324,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.modifier_description_values(&values, &modifiers.tooltips(), prefix, options)
     }
 
-    /// 14128C8E0 -> 14054E050: stored definition IDs and numeric-array order.
+    /// stored definition IDs and numeric-array order.
     pub(in crate::effect_description) fn cached_modifier_description_with(
         &self,
         entries: &[CachedModifier],
@@ -1334,7 +1334,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.cached_modifier_description(entries, &[], prefix, options)
     }
 
-    /// 141290135/14054E050: occupied tooltip slots are stored string bytes,
+    /// occupied tooltip slots are stored string bytes,
     /// independent of authored traits and the cache's refresh history.
     pub(in crate::effect_description) fn advisor_cache_description(
         &self,
@@ -1344,18 +1344,18 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .modifier_cache
             .require("AdvisorRoles.modifier_cache")?
             .as_ref()
-            .ok_or("AdvisorRoles.modifier_cache unavailable (CAdvisor+0x1B0)")?;
+            .ok_or("AdvisorRoles.modifier_cache unavailable")?;
         let keys = row
             .tooltip_keys
             .require("AdvisorRoles.tooltip_keys")?
             .as_ref()
-            .ok_or("AdvisorRoles.tooltip_keys capture unavailable (CAdvisor+0x218)")?;
+            .ok_or("AdvisorRoles.tooltip_keys capture unavailable")?;
         let tooltips = keys
             .iter()
             .map(|key| {
                 std::str::from_utf8(installed_content::parser::c_string(key))
                     .map(str::to_owned)
-                    .map_err(|_| "AdvisorRoles tooltip key is not UTF-8 (14054E050)".to_owned())
+                    .map_err(|_| "AdvisorRoles tooltip key is not UTF-8".to_owned())
             })
             .collect::<Result<Vec<_>, String>>()?;
         self.cached_modifier_description(
@@ -1412,26 +1412,26 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<String, String> {
         if !options.outer_colour.is_ascii() {
             return Err(format!(
-                "modifier outer colour byte {:02x} is not UTF-8 (14054E0CC)",
+                "modifier outer colour byte {:02x} is not UTF-8",
                 options.outer_colour
             ));
         }
         let frame = self.context.text.frame();
         let mut out = String::new();
         if options.outer_colour != 0 {
-            // 14054E0CC: these bytes precede the first line's separator check.
+            // these bytes precede the first line's separator check.
             out.push('\u{11}');
             out.push(char::from(options.outer_colour));
         }
         for &(raw_value, definition) in values {
-            // 14054F743/14054F74F: separate include/exclude intersections.
+            // separate include/exclude intersections.
             if definition.category_mask & options.category_mask == 0
                 || definition.category_mask & !options.excluded_category_mask == 0
             {
                 continue;
             }
-            // Getter 140551820 clamps before 14054E198's wrapping IMUL and
-            // signed /100000; FormatLine 14054F6D0 tests the scaled zero.
+            // Clamp before wrapping multiplication and
+            // signed /100000; tests the scaled zero.
             let effective = if definition.flags & engine::modifier_definition::CLAMP_MAXIMUM != 0 {
                 raw_value.clamp(0, 100_000)
             } else {
@@ -1477,7 +1477,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 },
             )?;
             if !out.is_empty() {
-                // 14054F81D appends the separator as a NUL-terminated string.
+                // appends the separator as a NUL-terminated string.
                 out.push_str(options.separator.split('\0').next().unwrap_or_default());
             }
             out.push_str(prefix);
@@ -1489,7 +1489,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             if tooltip.is_empty() {
                 continue;
             }
-            // 14054E296/14054E2AF: LF only if needed, no numeric prefix.
+            // LF only if needed, no numeric prefix.
             if !out.is_empty() && !out.ends_with('\n') {
                 out.push('\n');
             }
@@ -1502,7 +1502,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             );
         }
         if options.outer_colour != 0 {
-            // 14054E3DE appends the reset even when there were no lines.
+            // appends the reset even when there were no lines.
             out.push_str("\u{11}!");
         }
         Ok(out)

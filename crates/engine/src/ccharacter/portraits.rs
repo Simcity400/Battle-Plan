@@ -29,8 +29,8 @@ impl Default for PortraitWalk<'_> {
 }
 
 /// Hourly manager census, including characters whose runtime map is empty.
-/// F913A0 passes character+78 to the portrait holder serializer; 138A0E0/1389960
-/// place its array at +8/+14 with 38-byte entries.
+/// Character serialization reaches the embedded portrait holder. Its entry
+/// array is at +0x08 and its count at +0x14; entries span 0x38 bytes.
 /// Share `part` of `parts` of the roster, contiguous in roster order. Rows
 /// are sorted within the share; the caller merges shares by character.
 /// Entries may be reused only under a complete mutation observation. Roster,
@@ -108,8 +108,8 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
         let mut missing = 0;
         let first = (count * part / parts) as u32;
         let last = (count * (part + 1) / parts) as u32;
-        // 1406AE170/1406AE080 bound the complete roster; 141389960 appends
-        // portrait entries dynamically. Grow once from each original control.
+        // The complete roster and dynamic portrait-entry counts size storage.
+        // Grow once from each original control.
         output.ensure((last - first) as usize)?;
         let mut hinted = first;
         for index in first..last {

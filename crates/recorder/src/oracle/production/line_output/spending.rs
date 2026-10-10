@@ -185,10 +185,10 @@ impl SpendingCheck {
                     self.costs += 1;
                     continue;
                 }
-                // DailyUpdate@1401D4390 calls one production pass per country
-                // (140E527A0). Over one day this surviving line has one tick.
-                // A blocked naval deployment credits n!=0 (140F5A0D2/D4)
-                // without delivery and clamps progress at 140F5A26C; equality
+                // The daily update calls one production pass per country
+                // at the hourly boundary. Over one day this surviving line has one tick.
+                // A blocked naval deployment credits n!=0
+                // without delivery and clamps progress; equality
                 // of credit and delivery deltas excludes that path for one
                 // tick, including signed counts. Multiple ticks can cancel.
                 if now.line.kind == engine::cequipment_production_line::KIND_NAVAL
@@ -214,8 +214,8 @@ impl SpendingCheck {
                 let delivered = units
                     .checked_mul(i128::from(now.line.cost_raw))
                     .ok_or_else(|| invalid("production spending delivery-cost product overflow"))?;
-                // Native qword ADD/SUB wrap: 140F5970F/7F6, 140F5A078/11B,
-                // 140F5AAF7/BBF and 140F5CA55/A72. Reporting totals are wide;
+                // Signed qword addition and subtraction wrap.
+                // Reporting totals are wide;
                 // only their applied low bits participate in native progress.
                 let expected = was
                     .line

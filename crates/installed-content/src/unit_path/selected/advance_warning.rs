@@ -1,11 +1,12 @@
-//! Exact C684A0 arithmetic/text proposal. Thresholds are genuine native raw
-//! operands, never hard-coded vanilla values. Formatter callback reuses the
-//! recorded content/native numeric formatter at1424B6200; no `%` is invented.
+//! Advance-warning arithmetic and text. Thresholds come from recorded
+//! raw operands. The formatter callback uses the recorded content and shared
+//! numeric formatter; percent signs come from that content.
 
 use super::Fact;
 
-/// C685CF..C68633: wrapped IMUL, signed /100000, unusual unsigned sentinel
-/// guard, wrapped second IMUL, signed IDIV. EAX=FFFFFFFF zero-extends to i64.
+/// Wrapped multiplication, signed fixed5 division, an unsigned sentinel
+/// guard, then a second wrapped multiplication and signed division.
+/// The 32-bit all-ones sentinel is zero-extended to i64.
 pub fn organisation_warning_value(threshold: i64, maximum_organisation: i64) -> Fact<i64> {
     let adjusted = threshold.wrapping_mul(10_000_000) / 100_000;
     if maximum_organisation == 0
@@ -16,7 +17,7 @@ pub fn organisation_warning_value(threshold: i64, maximum_organisation: i64) -> 
     adjusted
         .wrapping_mul(100_000)
         .checked_div(maximum_organisation)
-        .ok_or_else(|| "native low-organisation division would overflow".into())
+        .ok_or_else(|| "low-organisation division would overflow".into())
 }
 
 /// Strength precedes organisation. Warning text REPLACES the prior buffer,
@@ -85,7 +86,7 @@ mod tests {
         assert_eq!(text, "earlier");
     }
     #[test]
-    fn raw_org_ratio_and_unsigned_sentinel_match_instructions() {
+    fn raw_org_ratio_and_unsigned_sentinel_preserve_wrapping_results() {
         assert_eq!(organisation_warning_value(100_000, 5_000_000), Ok(200_000));
         assert_eq!(organisation_warning_value(100_000, 0), Ok(4_294_967_295));
         assert_eq!(organisation_warning_value(-1, -2), Ok(5_000_000));

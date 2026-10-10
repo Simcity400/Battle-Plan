@@ -1,4 +1,4 @@
-//! Private fixtures authored for the proposal; none has been executed.
+//! Synthetic display-name fixtures.
 use super::*;
 use crate::memory::SliceMemory;
 use std::cell::RefCell;

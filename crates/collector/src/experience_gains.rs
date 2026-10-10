@@ -101,7 +101,7 @@ impl Store {
         mut rows: engine::walk::Buffer<'_, CountryExperienceGainRow>,
     ) -> Result<usize, &'static str> {
         let countries = ccountry::Reader::new(memory, base, state)?;
-        // 1401D8120 visits the live +310/+31C country roster. The worker sizes
+        // The hourly update visits the live country roster. The worker sizes
         // row and owner storage from this original census before publication;
         // native interval writers retain their allocation-free add path.
         if rows.is_growing() {

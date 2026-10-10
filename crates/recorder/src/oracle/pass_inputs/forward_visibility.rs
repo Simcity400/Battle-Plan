@@ -27,7 +27,7 @@ pub(super) fn compare(frame: &DecodedFrame, report: &mut Report) -> io::Result<(
             positive_receiver(frame, row.country)
         });
         report.limitation(
-            "forward status0 +0x50 raw target association has no proved text-save counterpart; a matched same-hour native witness must distinguish literal0 from exact positive aliases to canonical0; this structural self-check resolves no target link",
+            "forward status0 raw target association has no proved text-save counterpart; a matched same-hour native witness must distinguish literal0 from exact positive aliases to canonical0; this structural self-check resolves no target link",
             match packet.target {
                 Some(raw) => format!("{label}.target raw {raw}"),
                 None => format!("{label}.target"),
@@ -40,7 +40,7 @@ pub(super) fn compare(frame: &DecodedFrame, report: &mut Report) -> io::Result<(
             );
         }
         report.limitation(
-            "forward status0 +0x2E8 war-pointer presence and pointed raw retired byte have no proved text-save counterpart; saved WarRelations equality does not certify this cell association, so a matched same-hour full-width pointer/retired-byte native witness is required",
+            "forward status0 war-pointer presence and pointed raw retired byte have no proved text-save counterpart; saved WarRelations equality does not certify this cell association, so a matched same-hour full-width pointer/retired-byte native witness is required",
             format!("{label}.war"),
         );
         match packet.war {
@@ -61,7 +61,7 @@ pub(super) fn compare(frame: &DecodedFrame, report: &mut Report) -> io::Result<(
             ),
         }
         report.limitation(
-            "forward status0 +0x2A0 military-access presence has no proved text-save counterpart; saved relation equality cannot certify its exact eight-byte pointer presence, so a matched same-hour full-width native witness is required",
+            "forward status0 military-access presence has no proved text-save counterpart; saved relation equality cannot certify its exact eight-byte pointer presence, so a matched same-hour full-width native witness is required",
             format!("{label}.military_access"),
         );
         match packet.military_access {
@@ -80,7 +80,7 @@ pub(super) fn compare(frame: &DecodedFrame, report: &mut Report) -> io::Result<(
             ),
         }
         report.limitation(
-            "forward status0 +0x288 subject pointer/type and ordered raw first/second-party OR operands have no proved text-save counterpart; saved Subjects equality cannot certify their association or short-circuits, so a matched same-hour native witness is required; no target or party alias is resolved here",
+            "forward status0 subject pointer/type and ordered raw first/second-party OR operands have no proved text-save counterpart; saved Subjects equality cannot certify their association or short-circuits, so a matched same-hour native witness is required; no target or party alias is resolved here",
             format!("{label}.subject"),
         );
         match packet.subject {

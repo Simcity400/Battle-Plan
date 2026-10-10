@@ -129,8 +129,7 @@ struct Table {
 }
 
 impl Table {
-    /// Writes an MSVC std::string: inline up to 15 bytes, otherwise a heap
-    /// buffer with its terminator, as `std::string::MoveAssign` leaves them.
+    /// Writes an MSVC string inline up to 15 bytes, otherwise in a terminated heap buffer.
     fn string(&mut self, address: usize, value: &[u8]) {
         let mut storage = [0_u8; 16];
         let capacity = if value.len() <= 15 {
@@ -198,7 +197,7 @@ impl Table {
         self.memory.put(BASE + TABLE_RVA, &header);
     }
 
-    /// Lexer reverse dictionary `names[id]`, witnessed with no writer.
+    /// Lexer reverse dictionary `names[id]`, read with no active writer.
     fn lexer(&mut self, names: &[&[u8]]) {
         let mut header = [0_u8; 64];
         let at = |rva: usize| rva - cpdx_lexer::INITIALIZED_RVA;

@@ -37,14 +37,12 @@ impl TagIndex {
     }
 }
 
-/// `common/country_tags/*.txt`, as `ccountry_database::load_tags` (`14070E900`)
-/// reads it: every declared tag and its country file, `common/` plus the value.
-/// The key `dynamic_tags` (token 0x309F) is not a tag: it only marks where the
-/// dynamic-country slots begin, and the tags after it are still declared. A
-/// key must be exactly three bytes (any other is skipped by the engine, and here
-/// counted in [`TagIndex::skipped`]), and the first declaration of a tag wins.
-/// A block value is a form the engine's reader was not traced on, so it is
-/// refused rather than guessed.
+/// `common/country_tags/*.txt`: declared tags and country files, with
+/// `common/` prepended to each value. `dynamic_tags` marks where dynamic-country
+/// slots begin without declaring a tag; following tags still register.
+/// Keys must be exactly three bytes; others are counted in [`TagIndex::skipped`].
+/// The first declaration wins. Block values are refused because their
+/// consumption is unsupported.
 pub fn country_tag_index(layers: &ResolvedLayers) -> io::Result<TagIndex> {
     let mut index = TagIndex::default();
     for path in index_paths(layers) {
@@ -83,7 +81,7 @@ fn add_tag_index(path: &str, bytes: &[u8], index: &mut TagIndex) -> io::Result<(
         let Some(key) = item.key.as_deref() else {
             continue;
         };
-        // 14070E900 tests token 0x309F, never a quoted key's text.
+        // The marker requires a keyword; quoted text does not match.
         if item.keyword_is("dynamic_tags") {
             continue;
         }
@@ -114,9 +112,8 @@ fn add_definitions(
     dynamic: &mut bool,
 ) -> io::Result<()> {
     let document = parser::parse(bytes).map_err(|error| invalid(format!("{path}: {error}")))?;
-    // CCountryDatabase::load_tags 14070E900: the marker snapshots the
-    // current registration count as the first dynamic slot. Its value is
-    // ignored; the last marker wins, and the boundary survives file changes.
+    // The last marker snapshots the registration count as the first
+    // dynamic slot. Its value is ignored, and the boundary survives file changes.
     for item in &document.items {
         if item.keyword_is("dynamic_tags") {
             for definition in tags.values_mut() {
@@ -309,7 +306,7 @@ mod tests {
         add_tag_index("extra.txt", extra.as_bytes(), &mut index).unwrap();
         assert_eq!(index.skipped.len(), 10);
         assert!(index.warning().unwrap().ends_with("extra.txt: skipped_7"));
-        // Quoted text is token 0xF, not the dynamic boundary token 0x309F.
+        // Quoted text is not the dynamic boundary.
         add_tag_index("quoted.txt", b"\"dynamic_tags\" = unused", &mut index).unwrap();
         assert_eq!(index.skipped.len(), 11);
         assert_eq!(index.skipped.last().unwrap(), "quoted.txt: dynamic_tags");

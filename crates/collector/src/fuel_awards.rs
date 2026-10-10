@@ -201,7 +201,7 @@ pub fn presize(memory: &impl Memory, base: usize) {
 }
 
 fn presize_storage(memory: &impl Memory, base: usize) {
-    // ResetCountryAppearance@1406D61D0 also runs before strategic air exists.
+    // Country reset also runs before strategic air exists.
     // Its reset receipts need only the live country registry, not air rosters.
     offer(crate::country_scale::census_rows(0).max(1), 0);
     let observed = crate::country_scale::demand_air_game_state(memory, base).and_then(|state| {
@@ -439,7 +439,7 @@ fn refuse_append(entry: Entry, absent: bool) {
 }
 fn append(entry: Entry, name: Option<native::StoredName>, memory: &impl Memory) -> bool {
     let _call = LOG.enter();
-    // 1410DE110, 140D4FF10 and 140C3C3D0 write each native award once.
+    // Each observed award writer emits its native award once.
     // Rejected receipts still belong to the full observed interval demand.
     let attempted = ENTRY_ATTEMPTS
         .fetch_add(1, Ordering::SeqCst)
@@ -560,7 +560,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
     let memory = unsafe { LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     if tag == 9 {
-        // 1410DDC69: the reset body retains its original receiver in RSI.
+        // The reset body retains its original receiver in RSI.
         let status = registers.rsi;
         if let Some(mut pending) = PENDING.get()
             && pending.started.status == status

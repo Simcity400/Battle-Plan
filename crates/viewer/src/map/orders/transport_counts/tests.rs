@@ -8,7 +8,7 @@ fn source_to_id_distance_uses_native_wrap_sqrt_and_invalid_signed_slot_zero() {
         centroids: BTreeMap::from([(1, [98, 4]), (2, [2, 1])]),
         ..Default::default()
     };
-    // 1424D88E0 -> 1424DAE00 stops Newton iteration at its native tolerance.
+    // Newton iteration stops at its fixed5 tolerance.
     assert_eq!(distance(&map, 1, 2), 500_002);
     assert_eq!(distance(&map, 1, 1), 0);
     let zero = installed_content::province_geometry::native_fixed_sqrt(20);

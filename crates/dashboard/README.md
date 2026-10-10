@@ -6,6 +6,8 @@ neither reads live game memory nor draws map pixels. See the
 [architecture](../../docs/dashboard.md), [desktop host](../desktop/README.md) and
 [widget framework](../../ui/src/widgets/README.md) for the surrounding flow.
 
+`Service::configure_content` verifies the selected game folder and prepares the process-wide executable tables before reading game settings or exposing content options. Content-dependent consumers share the decoded registry, equipment and rule metadata. Built-in variable names come from the installation's shipped documentation. Recording-only source opening, metadata and numeric histories remain independent of these tables.
+
 ## Layout
 
 | Module | What it does |
@@ -129,8 +131,8 @@ proven localisation key keeps the shared recording-language guard; a literal
 never becomes a key. Scoped text, triggers and descriptions use the same
 recorded-hour evaluator and caller-owned event graph/variable session. Missing
 operands and unsupported reached forms retain named, counted refusals, without
-invented scopes, roster order or rebuilt native caches. Native evidence and exact
-form handling belong beside those helpers.
+invented scopes, roster order or rebuilt native caches. Supported forms and
+refusal handling belong beside those helpers.
 
 Faction naming preserves complete empty bindings and successfully localised empty strings as known empty text. Missing inputs retain a null name and a named reason; a literal never becomes a localisation key.
 
@@ -139,7 +141,7 @@ Place-name consumers retain successful empty state/region text separately from u
 `content_check::check` visits products in registry order, shares preparation per
 stack and calls their real loaders. Offline findings belong to that preparation,
 not later live replies. Preserve producer diagnostic kinds: `Content` requires
-cited native parity, while `Offline` identifies a recording dependency. Keep
+supported content behaviour, while `Offline` identifies a recording dependency. Keep
 counts/examples separate from diagnostic identity and avoid duplicating
 reader-owned notes in product checks.
 
@@ -172,19 +174,21 @@ content/configuration change, never successful empty data.
 
 ## Check a change
 
-Follow [AGENTS.md](../../AGENTS.md) for the build wrapper and
-crate-scoped formatting, clippy and affected synthetic tests. Exercise changed
-identity, gap/read-date, mod-content and complete-reply-budget behaviour at the
+Tests that parse installation-dependent content or authenticate modifier names explicitly initialize shared metadata from `BATTLE_PLAN_GAME_DIR`. An unset variable fails with a named setup error. Recording metadata, numeric history and transport tests that use no executable tables remain installation-independent.
+
+Follow [AGENTS.md](../../AGENTS.md) for crate-scoped formatting, clippy and
+affected synthetic tests. Exercise changed identity, gap/read-date, mod-content
+and complete-reply-budget behaviour at the
 required scale. Capture integration also needs the relevant fresh-save oracle
 and smoke workflow in [recorder](../recorder/README.md).
 
 Rust owns [ui/src/generated/dashboard.ts](../../ui/src/generated/dashboard.ts);
-do not hand-edit it. From the worktree root, generate changed types and check
-that the committed contract matches (every cargo invocation uses the wrapper):
+do not hand-edit it. From the repository root, generate changed types and check
+that the committed contract matches:
 
-```bash
-bash tools/build-slot.sh "dev/<task>" "cargo run -q --profile test -p dashboard --bin export-types"
-bash tools/build-slot.sh "dev/<task>" "cargo run -q --profile test -p dashboard --bin export-types -- --check"
+```powershell
+cargo run -q --profile test -p dashboard --bin export-types
+cargo run -q --profile test -p dashboard --bin export-types -- --check
 ```
 
 UI changes also need `npm.cmd run check:ui` and `npm.cmd run test:ui`, as described

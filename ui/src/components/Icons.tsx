@@ -12,7 +12,7 @@ const paths = {
   'folder-open': <><path d="M3.5 17.5v-10a2 2 0 0 1 2-2h3.6l2 2.2h6.4a2 2 0 0 1 2 2v1.3" /><path d="M3.9 18.3 6.2 12a2 2 0 0 1 1.9-1.3h11.6a1.2 1.2 0 0 1 1.1 1.6l-2 5.7a2 2 0 0 1-1.9 1.5H5.5a1.6 1.6 0 0 1-1.6-1.2Z" /></>,
   file: <><path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5L14 3.5Z" /><path d="M14 3.5v5h5" /></>,
   arrow: <path d="M5 12h14m-6-6 6 6-6 6" />,
-  // Lucide refresh-cw (ISC); retain the notice in ../../../THIRD_PARTY_NOTICES.md.
+  // Lucide refresh-cw (ISC).
   'refresh-cw': <><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M8 16H3v5" /></>,
   refresh: <><path d="M19.5 10.5A7.8 7.8 0 0 0 5.7 7.2L4.5 8.8" /><path d="M4.5 4.5v4.3h4.3" /><path d="M4.5 13.5a7.8 7.8 0 0 0 13.8 3.3l1.2-1.6" /><path d="M19.5 19.5v-4.3h-4.3" /></>,
   info: <><circle cx="12" cy="12" r="8.75" /><path d="M12 11v5.5" /><path d="M12 7.7v.1" /></>,

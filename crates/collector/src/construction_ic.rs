@@ -190,7 +190,7 @@ const RESET: u8 = 128;
 /// One construction spend, railway carry or native completion decision.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Entry {
-    /// The line's CID (+0x08), the construction tables' `id`.
+    /// The line's CID, the construction tables' `id`.
     pub line: u64,
     /// Later segment call in the same advance; never new factory spending.
     pub carry: bool,
@@ -211,7 +211,7 @@ pub struct Entry {
     /// The secondary receiver completed inside its primary's advance; its share
     /// stays unknown even if the primary spend preceded this observation.
     pub linked_completion: bool,
-    /// Signed quantity cleared by MarkComplete@140F55390, never spending.
+    /// Signed quantity cleared on completion, never spending.
     pub count_reset: Option<i32>,
 }
 
@@ -236,21 +236,20 @@ fn observe(line: usize, amount: i64, railway: bool, carry: bool) {
             return;
         }
     };
-    // GetProductionSpeed returns the receiver's +0x30 at the filtered site.
+    // The speed getter returns the receiver's stored speed at the filtered site.
     let amount = if railway { amount } else { operands.speed };
     // Railway instant progress is player-only; the amount identifies the path
-    // without reading the player global (1419EF1F6, 1419EF42B/440).
+    // without reading the player global.
     let instant = if railway {
         amount == engine::construction_ic_sites::RAILWAY_INSTANT_AMOUNT
     } else {
         operands.instant
     };
-    // Building speed is stored unclamped after an optional assertion at
-    // 140F594C2 and added signed to progress at 140F557F5/813. Industrial
-    // modifiers alone clamp at 140F58220; the final infrastructure product and
-    // speed+bank ADD can still be signed. Bank reservation 141448820 is >=0.
-    // Railway spend requires speed>0 at 1419EF314/317; carry is gated by RBX>=0 at
-    // 1419EF528..52F/5A2. A nonnegative speed below its bank is not that sum.
+    // Building speed is stored unclamped after an optional assertion and
+    // added signed to progress. Industrial modifiers alone clamp; the final
+    // infrastructure product and speed+bank sum can still be signed. Bank
+    // reservation is >=0. Railway spend requires speed>0; carry is gated
+    // by RBX>=0. A nonnegative speed below its bank is not that sum.
     if (railway && amount < 0)
         || operands.bank < 0
         || (!carry && !instant && amount >= 0 && operands.bank > amount)
@@ -258,7 +257,8 @@ fn observe(line: usize, amount: i64, railway: bool, carry: bool) {
         refuse("construction output amount or CIC bank draw unsupported");
         return;
     }
-    // 140F55700..0F raises new-building progress to max(cost, speed).
+    // Instant construction raises new-building progress to max(cost, speed).
+    // Repair uses the speed again, even with the cheat on.
     let amount = if instant && !railway && !operands.repair {
         amount.max(operands.cost)
     } else {
@@ -286,7 +286,7 @@ fn refuse(reason: &'static str) {
     invalidate();
 }
 
-/// After the getter returned to its advance, its own +0x30 is the spend.
+/// After the getter returned to its advance, its stored speed is the spend.
 /// Other callers do not read observation operands.
 fn observe_building(line: usize, caller: usize) {
     if caller
@@ -626,8 +626,8 @@ unsafe extern "system" fn speed_entry() {
     core::arch::naked_asm!("mov r8, qword ptr [rsp]", "jmp {body}", body = sym speed);
 }
 
-// IsComplete takes only RCX and returns AL. RDX retains the game's return
-// address without touching the stack; the body passes the original AL through.
+// The completion predicate takes only RCX and returns AL. RDX retains the
+// game's return address without touching the stack; the body passes AL through.
 #[unsafe(naked)]
 unsafe extern "system" fn building_complete_entry() {
     core::arch::naked_asm!("mov rdx, qword ptr [rsp]", "jmp {body}", body = sym building_complete);
@@ -654,7 +654,7 @@ unsafe extern "system" fn railway_complete(line: usize, caller: usize) -> u8 {
     result
 }
 
-// RemoveGeneralLine takes RCX/RDX; R8 retains the native return address.
+// Linked-line removal takes RCX/RDX; R8 retains the native return address.
 // The receiver must be observed before the original deletes it. Other removal
 // callers perform no operand reads and emit no completion.
 #[unsafe(naked)]
@@ -669,8 +669,7 @@ unsafe extern "system" fn linked_complete(status: usize, line: usize, caller: us
     unsafe { original(status, line) };
 }
 
-// Signatures from the pinned decompiles; every argument is passed through
-// unchanged and every result returned.
+// Every argument is passed through unchanged and every result returned.
 unsafe extern "system" fn speed(line: usize, out: usize, caller: usize) -> usize {
     let _call = OBSERVATION.enter();
     let original: unsafe extern "system" fn(usize, usize) -> usize =
@@ -1059,7 +1058,7 @@ mod tests {
         let mut image = Image::new();
         observe_for_test(true, image.base());
         let rail = Line::new(&image, true, 0x32_0000_1269, 0, 0, false);
-        // Speed < 1: AdvanceProduction makes no progress call.
+        // Speed < 1: the production advance makes no progress call.
         RAILWAY_LINE.set((rail.address(), 0));
         RAILWAY_LINE.set((0, 0));
         assert!(drained(8).1.is_empty());

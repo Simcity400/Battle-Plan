@@ -1,13 +1,11 @@
 import type { TooltipContent, TooltipRow } from '../charts/tooltip';
 import type { EffectGroup, EffectLine, IdeaHistoryReply, IdeaInfo, ModifierFormat, TraitEffects } from '../generated/dashboard';
 
-/** An idea's effects as the game's own tooltip shows them (mock-up politics-4),
- * formatted with the game's rules from the recorded modifier definitions:
- * `FormatValue@14054FE50` and `Fixed5ToString@1424B6200` (evidence beside the
- * `idea_format` product). A key without a definition is shown as authored and
- * marked, never guessed. */
+/** An idea's effects as the game's own tooltip shows them, formatted from the
+ * recorded modifier definitions. A key without a definition is shown as
+ * authored and marked, never guessed. */
 
-/** The precision the idea tooltip asks for (FUN_140FBC770 passes 2). */
+/** The precision the idea tooltip asks for. */
 export const IDEA_PRECISION = 2;
 const FIXED = 100_000n;
 
@@ -28,9 +26,9 @@ export function fixed5Text(raw: bigint, precision: number): string {
 }
 
 /** A script value as the game's fixed point: the script conversion keeps only
- * the first five decimals of the authored text (`1424b0480`, beside
- * `installed-content/src/terrain.rs`). The reader's number prints back as its shortest
- * decimal form, which is the authored text, so that text is truncated here. */
+ * the first five decimals of the authored text. The reader's number prints back
+ * as its shortest decimal form, which is the authored text, so that text is
+ * truncated here. */
 export function fixed5Of(value: number): bigint {
   const text = String(value);
   // Exponent forms are far below or above anything a modifier holds.
@@ -95,13 +93,12 @@ export function sourcesAt(sources: IdeaTooltipSources, hour: number | undefined)
 /** Rows, whether any is shown as authored, and whether any needs a game feature. */
 interface Section { rows: TooltipRow[]; authored: boolean; featured?: boolean }
 
-/** Modifier lines as the game lists them (FormatDescription@14054E050): in
+/** Modifier lines as the game lists them: in
  * ascending key index (a scripted modifier after every built-in one), one line
  * per modifier as the game stores it (its last value), every modifier a
- * `hidden_modifier` names left out entirely (FormatLine@14054F6D0 skips the
- * hidden-key set), zero values only where the definition shows them. */
+ * `hidden_modifier` names left out entirely, zero values only where the
+ * definition shows them. */
 function modifierRows(lines: readonly EffectLine[], sources: IdeaTooltipSources): Section {
-  // YES/NO: modifier_definition::FormatValue 14054FE50 (YES at 142760760).
   const words = { yes: sources.text('YES') ?? 'Yes', no: sources.text('NO') ?? 'No' };
   const order = (key: string) => sources.formats.get(key)?.index ?? Number.MAX_SAFE_INTEGER;
   let authored = false;
@@ -110,7 +107,7 @@ function modifierRows(lines: readonly EffectLine[], sources: IdeaTooltipSources)
   const listed = lines.filter(line => !line.hidden);
   for (const line of [...listed].sort((a, b) => order(a.key) - order(b.key) || a.key.localeCompare(b.key))) {
     const format = sources.formats.get(line.key);
-    // The accumulator's getter clamps a flag-0x10 modifier to [0, 1] (modifier_accumulator::value@140551820).
+    // A flag-0x10 modifier clamps to [0, 1].
     const authoredRaw = BigInt(line.fixed5);
     const raw = format && format.flags & 0x10 ? (authoredRaw < 0n ? 0n : authoredRaw > 100_000n ? 100_000n : authoredRaw) : authoredRaw;
     // Without a format the game's zero rule is not known: the authored value stays.
@@ -122,7 +119,7 @@ function modifierRows(lines: readonly EffectLine[], sources: IdeaTooltipSources)
     }
     if (raw === 0n && !(format.flags & 0x100)) continue;
     const shown = formatModifier(format, raw, words);
-    // The game writes the name, then ": ", then the value (FormatLine@14054F6D0).
+    // The game writes the name, then ": ", then the value.
     // A name localisation lacks is shown as the script key; a unit whose text is
     // missing is shown as its key, marked, never dropped.
     const unitMissing = format.postfix == null && format.postfixKey != null;
@@ -154,8 +151,7 @@ function traitSection(found: TraitEffects, sources: IdeaTooltipSources): Section
     authored: own.authored || groups.some(group => group.authored), featured: own.featured || groups.some(group => group.featured) };
 }
 
-/** A targeted modifier: its own CModifier's lines, then its custom tooltips
- * (FormatScopedModifierDescription@14054E520 per target in FUN_140FBC770). */
+/** A targeted modifier: its modifier lines, then its custom tooltips. */
 function targetedSection(group: EffectGroup, sources: IdeaTooltipSources): Section {
   const lines = modifierRows(group.lines, sources);
   const rows = [...lines.rows, ...group.tooltips.map(key => ({ label: sources.text(key) ?? key }))];
@@ -171,11 +167,9 @@ function equipmentSection(group: EffectGroup, sources: IdeaTooltipSources): Sect
   return { rows: section(`${name}${group.instant ? ' (at once)' : ''}:`, rows), authored: rows.length > 0 };
 }
 
-/** A research bonus (`POLITICAL_RESEARCH_BONUS_ENTRY`: category, then the factor
- * as a signed whole percentage). */
+/** A research bonus: category, then the factor as a signed whole percentage. */
 function researchRows(lines: readonly EffectLine[], sources: IdeaTooltipSources): TooltipRow[] {
   return lines.filter(line => !line.hidden).map(line => {
-    // _research: CCountryTechnologyView::BuildTooltip 1415E5420, 1427516B0.
     const label = `${sources.text(`${line.key}_research`) ?? line.key}:`;
     const raw = BigInt(line.fixed5);
     return { label, value: `${raw > 0n ? '+' : ''}${fixed5Text(raw * 100n, 0)}%`, tone: raw < 0n ? 'negative' as const : 'positive' as const };
@@ -207,7 +201,7 @@ export function ideaEffectRows(info: IdeaInfo, sources: IdeaTooltipSources): { r
 /** Most effect rows a tooltip shows; the rest are counted, so it stays on screen. */
 export const MAX_TOOLTIP_ROWS = 40;
 
-/** An idea's game-style tooltip (mock-up politics-4): its icon, name and a line
+/** An idea's game-style tooltip: its icon, name and a line
  * saying when it was held, any rows the widget adds, its effects, then its
  * description. Countries its targeted modifiers name are named as they were at
  * `hour` (when the idea was taken on). */

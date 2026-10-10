@@ -106,7 +106,7 @@ fn combat_wipe_default_country_follows_slot_zero_link_translation() {
     memory.dword(0xa000, 5);
     memory.dword(0xa004, 6);
     memory.dword(0xa008, 0);
-    // Native FindCountryLinkFromSlot stops before unreadable fourth lane.
+    // Reserved-country link search stops before an unreadable fourth lane.
     assert_eq!(words(&memory, 0x3000).unwrap()[4], 2);
     memory.array(0x1000 + cgame_state::COUNTRY_LINKS, 0, 0);
     assert_eq!(words(&memory, 0x3000).unwrap()[4], 0);

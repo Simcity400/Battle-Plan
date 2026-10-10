@@ -1,6 +1,6 @@
 # Air bridge foreign-exception diagnostic
 
-This parent-run diagnostic uses the shared, independently authored
+This diagnostic uses the shared, independently authored
 [native probe DLL](README.md). Its two ignored collector tests install the actual
 production hooks over authored native frames and call the actual Air assembly
 bridges. No game, recorder, copied emitter or Rust exception catcher is involved.
@@ -47,19 +47,19 @@ scopes, every native patched site, live capture cost or actual detach/unload.
 The synthetic building caller is intentionally classified as an unknown game
 caller; native caller allow-list acceptance remains a separate live check.
 
-## Parent-only run
+## Run
 
-Integrate the shared `foreign_unwind_probe` client, its exact register/RSP witness
-runner and the existing native DLL source before building. Set
+Set
 `BATTLE_PLAN_TAP_UNWIND_PROBE` to the absolute path of that separately built DLL. Use the
-same x64 MSVC `/EHa` build and private output location as the shared guide.
+same x64 MSVC `/EHa` build and chosen scratch directory as the shared guide.
 
-From the final integrated worktree, run these focused diagnostics through the
-build-slot wrapper; do not replace them with the virtual-unwind tests:
+From the repository root, run these focused diagnostics; do not replace them
+with the virtual-unwind tests:
 
 ```powershell
+$proofOutput = Join-Path $env:TEMP 'battle-plan-tap-foreign-probe'
 $env:BATTLE_PLAN_TAP_UNWIND_PROBE = "$proofOutput/tap_foreign_probe.dll"
-& tools/build-slot.ps1 -Owner 'dev/air-foreign-proof' -Command 'cargo test -p collector --lib --features tap-foreign-probe foreign_unwind_retains_stranded_observation_and_restores_call -- --ignored --nocapture --test-threads=1'
+cargo test -p collector --lib --features tap-foreign-probe foreign_unwind_retains_stranded_observation_and_restores_call -- --ignored --nocapture --test-threads=1
 ```
 
 Require both tests to pass and four `PASS` case lines: air-loss C++/SEH and
@@ -69,4 +69,3 @@ Record the exact integrated source, compiler versions/profile, executable and DL
 hashes, commands, output and exit status. Repeat in the final collector profile
 if it differs. Inspect actual PE unwind entries and bridge/caller addresses in
 the final artifact; keep binaries, logs and debugger evidence outside Git.
-No build, native call or passing execution is claimed by these source fixtures.

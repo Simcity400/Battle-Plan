@@ -1,9 +1,9 @@
-//! Viewer-owned allied-plan admission, `141242140`.
+//! Viewer-owned allied-plan admission.
 //!
-//! The native `+0x99` switch is local UI state. It enables a physical country
-//! array walk after the viewing country; `1406F3A90(viewer, target, 0, 0)` or
-//! `1406F0610(viewer, target)` admits each occurrence. The latter is a sent-
-//! volunteer/theatre-host predicate, not the relation's co-belligerent cache.
+//! The allied-plan switch is local UI state. It enables a physical country
+//! array walk after the viewing country; same-country/alias identity or the
+//! sent-volunteer/theatre-host predicate admits each occurrence. The latter
+//! is distinct from the relation's co-belligerent cache.
 
 use std::{
     cell::LazyCell,
@@ -70,7 +70,7 @@ impl Selection {
         let zero = LazyCell::new(|| zero_visibility(frame, links, ours, || factions.lookup(ours)));
         let hosts = LazyCell::new(|| volunteer_hosts(frame, links, ours));
         let zero_theatres = LazyCell::new(|| reserved_theatres(frame));
-        // 141242265 installs cursor 1 after returning the viewing country.
+        // After returning the viewing country, set the cursor to 1.
         // The recorded physical array retains aliases, order and slot zero.
         for &raw in roster.iter().skip(1) {
             if raw == 0 {
@@ -115,9 +115,9 @@ impl Selection {
                 out.countries.push(target);
                 continue;
             }
-            // 1406F0610 requires a signed-positive target, a nonempty raw sent
-            // list (+31C), and a matching volunteer theatre (+110). Even null
-            // or stale sent references satisfy the count; no division join.
+            // Require a signed-positive target, a nonempty raw sent list and a matching
+            // volunteer theatre. Even null or stale sent references satisfy the count;
+            // no division join is needed.
             let volunteer = if raw as i32 > 0 {
                 hosts
                     .as_ref()

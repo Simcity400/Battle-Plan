@@ -367,9 +367,8 @@ fn world(shape: &Shape) -> Built {
             country as u64,
         );
         diplomacies.push(diplomacy);
-        // Every third owner is at war with the next owner: its enemy list,
-        // whose count (CDiplomacyStatus+0xA4) is the air test's at-war
-        // answer.
+        // Every third owner is at war with the next owner: its enemy list's
+        // count supplies the air test's at-war answer.
         let next = 1 + ((owner + 1) % shape.owners) * (slots - 1) / shape.owners;
         let tags = w.alloc(8);
         w.u32(tags, slot as u32);
@@ -1597,10 +1596,9 @@ fn border_war_hooks_reference_relocates_after_neighbouring_heap_text() {
     border_war_hooks_after_neighbouring_text(true);
 }
 
-/// 140C16FB0 stores a selected commander's +0x20 name as an ordinary MSVC
-/// string and 142230F20 takes any length, empty included; +0x80 is the
-/// same kind of string. A long name grows the land-detail text arena during
-/// its original read and publishes whole, as the reference walk does.
+/// A selected commander's stored name and token use ordinary MSVC strings
+/// of any length, empty included. A long name grows the land-detail text arena
+/// during its original read and publishes whole, as the reference walk does.
 #[test]
 fn selected_commander_texts_keep_native_length_and_grow() {
     use engine::cunit_leader::{DESCRIPTION_TOKEN, TOKEN};

@@ -956,8 +956,8 @@ fn exile_lists_are_bounded_by_the_live_country_count_and_never_sized_from_it() {
         // Template, operands, location, state and the list header only.
         assert_eq!(memory.copies.get() - before, 5);
     }
-    // 140C79AC0 is exactly `origin == 2`: every other value, including
-    // ones outside 0..=2, is not exiled and reads nothing further.
+    // Only origin two is exiled. Other values, including values outside the
+    // known range, read no further operands.
     for origin in [0, 1, 3, 7, -1, i32::MIN, i32::MAX] {
         memory.put(0xb000 + TEMPLATE_ORIGIN_TYPE, &origin.to_le_bytes());
         let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
@@ -1015,10 +1015,10 @@ fn worker_exile_arena_keeps_5000_country_lists_and_later_growth_without_truncati
     }
 }
 
-/// An exiled division's country always resolves in the game (14129FB60
-/// reads its diplomacy status unguarded), so a resolution or read fault is
-/// the division's failure, never an empty occupier set. The exile country
-/// here differs from the division's ordinary owner, which resolves.
+/// An exiled division's country resolves before diplomacy access in the
+/// game. A resolution or read fault fails that division rather than yielding
+/// an empty occupier set. This fixture's exile country differs from its
+/// ordinary owner, which resolves.
 #[test]
 fn exile_country_faults_fail_the_division_with_their_reason() {
     let mut memory = context_fixture();
@@ -1320,9 +1320,8 @@ mod scale {
                 world.put(member + name::ORDER, &(i as i32 + 1).to_le_bytes());
                 world.put(member + name::FLAG_A, &[1, u8::from(i % 13 == 0)]);
                 world.u64(member + name::OVERRIDE_NAME + 24, 15);
-                // Custom names: some inline, some on the heap; programmatic
-                // copies hold generated text, which the game shows (and
-                // the reader takes) only for a null group (1409B5640).
+                // Custom names use inline and heap storage. Programmatic copies retain
+                // generated text, selected only when the name group is null.
                 if i % 20 == 0 || i % 13 == 0 {
                     world.string(member + name::OVERRIDE_NAME, b"Guards", 0);
                 } else if i % 97 == 0 {
@@ -1435,7 +1434,7 @@ mod scale {
                     };
                 }
             }
-            // 1409B5640 shows a programmatic stored name for a null group.
+            // A null name group selects programmatic stored text.
             if null && programmatic != 0 {
                 let (source, len, _, _) = name::custom(memory, base, member)?;
                 row.custom.len = len;

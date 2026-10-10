@@ -361,7 +361,7 @@ pub(crate) mod tests {
     const DATABASE: usize = 0x0331_0000;
     const DEFINITION: usize = 0x0331_1000;
     const MAXIMUM: i32 = 5;
-    // The per-level define at base+0x0331_aac0, fixed5.
+    // The per-level define, fixed5.
     const PER_LEVEL: i64 = -10_000;
     // A disabled template lookup keeps every healthy level at zero, so the term
     // is maximum * per level. Nonzero, so a denied pass cannot be mistaken for it.
@@ -582,7 +582,7 @@ pub(crate) mod tests {
             let report = actual.run(&memory);
             let outcome = serial(&mut reference, &expected);
             assert_eq!(report.census.result, outcome, "fault {fault}");
-            // read_continents' database singleton (1401770B0) is optional.
+            // The continents database singleton is optional.
             if healthy.calls.borrow()[fault] == (0x0331_6ca0, 8) {
                 assert_eq!(report.census.result, Outcome::Rows { len: 2 });
                 assert_eq!(actual.visitor.outcomes(), [Outcome::Rows { len: 2 }]);

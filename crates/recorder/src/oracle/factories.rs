@@ -1,13 +1,14 @@
 //! CountryFactories against a text save. The save writes none of the stored
-//! factory totals: CProductionStatus::Serialize (140E5D3B0) omits +0x2B0..+0x4A8
+//! factory totals: the production save writer omits them
 //! and a load recalculates them. What it writes are their inputs, so the one
 //! comparison is each group's building levels: the levels of the saved state
 //! buildings the country controls and of its saved offsite buildings whose
+//! content flags put them in that group, as the game sums them. Where the
 //! state writer omits control, captured control supplies that invariant input.
 //!
 //! The stored levels are those of the last recalculation. A country whose
 //! save shows one pending (production `dirty`, or `refresh` bit 1 or 9, which
-//! CGameState::PreHourlyUpdate applies at the next hour) is listed, not
+//! the next hourly update applies at the next hour) is listed, not
 //! compared.
 
 use std::{
@@ -26,9 +27,9 @@ use replay::{
 
 use super::{Report, complete, invalid, required_country_tag};
 
-/// RefreshDerivedStateByFlags (1406F2680): bit 1 rebuilds modifiers, which
-/// recalculates the factory totals when modifier 0x68 changed (1406CE2A0 ->
-/// 140E58F30); bit 9 recalculates them (140E57F10).
+/// The derived-state refresh: bit 1 rebuilds modifiers, which
+/// recalculates the factory totals when modifier 0x68 changes;
+/// bit 9 recalculates them directly.
 const REFRESH_RECALCULATES: u32 = 1 << 1 | 1 << 9;
 
 pub(super) fn compare(
@@ -76,8 +77,8 @@ pub(super) fn compare(
                 if !building_states.contains(id) {
                     continue;
                 }
-                // 1409D4040 omits this state's controller too. 140E4FC10 sums
-                // the controlled-state roster; 1409D0BF0 adds only positive
+                // The game omits this state's controller too. The game sums
+                // the controlled-state roster; the game adds only positive
                 // controllers. Use captured control as an invariant input,
                 // never assign null-controlled buildings to a saved country.
                 let row = captured
@@ -208,12 +209,12 @@ pub(super) fn compare(
     report.compared("CountryFactories", count);
     if unsaved_controls > 0 {
         report.limitation(
-            "a nonpositive-owner state's controller is omitted by 1409D4040; its captured signed-positive control is an input to the saved-building-level invariant, not an independently saved controller comparison",
+            "a nonpositive-owner state's controller is omitted by the game; its captured signed-positive control is an input to the saved-building-level invariant, not an independently saved controller comparison",
             format!("CountryFactories: {unsaved_controls} nonpositive-owner states"),
         );
     }
     report.limitation(
-        "the save writes neither the stored group-head levels nor the other factory totals (CProductionStatus::Serialize 140E5D3B0 omits them; RecalculateFactoryTotals 140E57F10 rebuilds them); levels are compared only with saved building inputs: totals, controlled, owned and damaged factories (state output factors and country modifiers are not saved), assigned and withheld factories, subject and other-country transfers, licence and trade exports and each civilian consumer's allocation, consumer goods included, are not compared",
+        "the save writes neither the stored group-head levels nor the other factory totals (the production save writer omits them; factory-total recalculation rebuilds them); levels are compared only with saved building inputs: totals, controlled, owned and damaged factories (state output factors and country modifiers are not saved), assigned and withheld factories, subject and other-country transfers, licence and trade exports and each civilian consumer's allocation, consumer goods included, are not compared",
         "CountryFactories",
     );
     if pending > 0 {

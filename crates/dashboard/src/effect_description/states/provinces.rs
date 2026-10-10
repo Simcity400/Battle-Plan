@@ -4,7 +4,7 @@ use installed_content::crt::{Scanned, scan_i32};
 use replay::{frame::TableView, rows::TableId};
 
 impl Renderer<'_, '_, '_> {
-    // CIntEffect vf6/vf26, 14137DD70/141384870: selectors leave the integer
+    // int effect: selectors leave the integer
     // zero; numeric tokens scan %i, scoped values truncate toward zero.
     fn province_integer(&self, item: &Item, scopes: Scopes) -> Result<i32, String> {
         if scope_selector(item).is_some() {
@@ -22,7 +22,7 @@ impl Renderer<'_, '_, '_> {
         if id != 0 {
             return Ok(id as u32);
         }
-        // 1403A0CC0 -> vf16@140533BE0/14052FA10, with default state zero.
+        // with default state zero.
         if scope_selector(item).is_some() {
             self.state_target(item, scopes)
         } else {
@@ -68,23 +68,20 @@ impl Renderer<'_, '_, '_> {
         let id = self.province_integer(item, scopes)? as u32;
         let Some(province) = self.description_province(id)? else {
             return if goto {
-                Err("goto_province has an invalid province; native 1403821C0 dereferences the missing target".into())
+                Err("goto_province has an invalid province; the description requires an existing target".into())
             } else {
-                Ok(String::new()) // 140392F90 checks the province pointer.
+                Ok(String::new()) // checks the province pointer.
             };
         };
         if province.state == 0 {
-            return Err(
-                "province has no state; native 1403821C0/140392F90 dereferences CProvince+0xC0"
-                    .into(),
-            );
+            return Err("province has no state; the description requires its state".into());
         }
         let label = self.state_name(province.state)?;
         let args = [("STATE", Argument::Text(&label))];
         if goto {
-            self.line(b"EFFECT_GO_TO_PROVINCE", &args, scopes, true) // 1403821C0.
+            self.line(b"EFFECT_GO_TO_PROVINCE", &args, scopes, true)
         } else {
-            self.localised(b"EFFECT_SET_PROVINCE_CONTROLLER", &args, scopes, true) // 140392F90: no LF.
+            self.localised(b"EFFECT_SET_PROVINCE_CONTROLLER", &args, scopes, true) // no LF.
         }
     }
 
@@ -94,7 +91,7 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
         add: bool,
     ) -> Result<String, String> {
-        // 1403AE5F0 writes +0x58; 14039E9C0 evaluates and rounds that ID.
+        // Parse the ID, then evaluate and round it.
         let id = match field(children(item), "province") {
             Some(operand) => {
                 let value = scalar_operand(operand)?;
@@ -103,7 +100,7 @@ impl Renderer<'_, '_, '_> {
             None => 0,
         };
         let Some(province) = self.description_province(id)? else {
-            return Ok(String::new()); // 14036E9A0/14036EBA0.
+            return Ok(String::new());
         };
         let mut label = self.context.text.province_display_name(id)?;
         if label.is_empty() {
@@ -121,10 +118,13 @@ impl Renderer<'_, '_, '_> {
             };
             if let Some(row) = raw {
                 if row.name.contains(&0) {
-                    return Err("victory-point raw-name fallback with embedded NUL is not reproduced (CProvince+0x40; 14036E9A0/14036EBA0)".into());
+                    return Err(
+                        "victory-point raw-name fallback with embedded NUL is not reproduced"
+                            .into(),
+                    );
                 }
                 label = std::str::from_utf8(&row.name)
-                    .map_err(|_| "victory-point raw-name fallback is not UTF-8 (CProvince+0x40; 14036E9A0/14036EBA0)")?
+                    .map_err(|_| "victory-point raw-name fallback is not UTF-8")?
                     .to_owned();
             }
             if label.is_empty() && province.state != 0 {
@@ -135,7 +135,7 @@ impl Renderer<'_, '_, '_> {
             }
         }
         // Native reads the amount only after a usable name. Constructor
-        // 14014AAC0 gives the missing field a literal zero; fixed_round1424D8760.
+        // gives the missing field a literal zero; fixed-point rounding.
         let value = match field(children(item), "value") {
             Some(operand) => {
                 crate::triggers::fixed_round(self.scoped_value(scalar_operand(operand)?, scopes)?)
@@ -165,7 +165,7 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             true,
-        ) // 1403273F0: expansion, no LF.
+        ) // expansion, no LF.
     }
 
     pub(in crate::effect_description) fn rename_province(
@@ -173,8 +173,8 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // 1403B4C80 -> 1424AB970/1424B02C0: a failed %i scan keeps the
-        // previous ID, including a repeated field; factory 140340170 starts at 0.
+        // a failed %i scan keeps the
+        // previous ID, including a repeated field; factory starts at 0.
         let mut id = 0;
         for operand in children(item)
             .iter()
@@ -191,15 +191,15 @@ impl Renderer<'_, '_, '_> {
                 .description_province(id as u32)?
                 .is_none_or(|province| province.victory_points < 1)
         {
-            // Native literal at 14275D618, returned without localisation/LF.
+            // Return the literal without localisation or LF.
             return Ok("ERROR: Invalid location or missing victory point for rename".into());
         }
         let name = field(children(item), "name")
             .map(scalar_operand)
             .transpose()?
             .unwrap_or_default();
-        let name = self.localised(name, &[], scopes, true)?; // NAME first at 14038C716.
-        let old_name = self.context.text.province_display_name(id as u32)?; // 14038C728.
+        let name = self.localised(name, &[], scopes, true)?; // Resolve NAME first.
+        let old_name = self.context.text.province_display_name(id as u32)?;
         self.line(
             b"EFFECT_SET_PROVINCE_NAME",
             &[
@@ -208,7 +208,7 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             true,
-        ) // 14038C5B0: one LF.
+        ) // one LF.
     }
 
     pub(in crate::effect_description) fn reset_province_name(
@@ -218,7 +218,7 @@ impl Renderer<'_, '_, '_> {
     ) -> Result<String, String> {
         let id = self.province_integer(item, scopes)? as u32;
         if self.description_province(id)?.is_none() {
-            return Ok(String::new()); // 14038CAF0.
+            return Ok(String::new());
         }
         let name = self.context.text.province_display_name(id)?;
         self.localised(
@@ -226,6 +226,6 @@ impl Renderer<'_, '_, '_> {
             &[("NAME", Argument::Text(&name))],
             scopes,
             true,
-        ) // 14038CAF0: no LF.
+        ) // no LF.
     }
 }

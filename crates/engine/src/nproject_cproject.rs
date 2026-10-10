@@ -1,14 +1,6 @@
-//! `NProject::CProject` layout retained from archived Domain 41.
-//!
-//! `PROJECT_PROJECT_OFF_ITERATIONS` and `PROJECT_PROJECT_OFF_HISTORY_COUNT`
-//! both named +0x74. The serializer-owned history vector provides the latter
-//! interpretation; the old project row called the same bytes iterations.
-//! Native deserialization resolves the conflict as history count, not iterations.
-//! Local project ids are unique only within the owning country, as observed
-//! by the archived owner-joined lifecycle walk.
-//! Sources: `collector/src/attach_log/offsets.rs:1214-1270`,
-//! `read_project_row`, `read_country_project_lifecycle`, and
-//! `read_project_reward_history_from_bytes` in archived `attach_log.rs`.
+//! Country-local projects with a serializer-owned history vector. Local IDs
+//! are unique only within the owning country. History count is distinct from
+//! the prototype state's iterations.
 
 use crate::{
     Memory, ccountry,
@@ -20,34 +12,35 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// NProject::CProject primary vtable; confirmed by pinned executable RTTI.
+/// Project primary vtable.
 pub const VTABLE_RVA: usize = 0x0296_c270;
-/// CProject reference type discriminator 86; checked by archived `project_pin`.
+/// Project reference-type discriminator.
 pub const REFERENCE_TYPE: u32 = 86;
-/// CProject contiguous pool stride 0x1c0; archived lifecycle walks call this PROJECT_COUNTRY_STRIDE.
+/// Contiguous project-pool stride.
 pub const POOL_STRIDE: usize = 0x1c0;
-/// CProject +0x08 reference type u32; checked by archived project pin and lifecycle walks.
+/// Project u32 reference type.
 pub const TYPE: usize = 0x08;
-/// CProject +0x0c local project id u32; checked by archived project pin and lifecycle walks.
+/// Project u32 country-local ID.
 pub const ID: usize = 0x0c;
-/// CProject +0x18 static project definition handle u32; checked by archived `project_pin`.
+/// Static project-definition u32 handle.
 pub const DEFINITION_HANDLE: usize = 0x18;
+/// Project u32 owner country link copied at construction.
 pub const OWNER: usize = 0x1c;
-/// CProject +0x28 CProjectStateMachine pointer; vtable-checked by archived `read_project_state_row`.
+/// Project-state-machine pointer.
 pub const STATE_MACHINE: usize = 0x28;
-/// CProject +0x60 worked-at reference type u32, checked as CProgram type 83; old OWNER_TAG name was misleading.
+/// Worked-at program u32 reference type.
 pub const PROGRAM_REFERENCE_TYPE: usize = 0x60;
-/// CProject +0x64 worked-at CProgram id u32; read by archived `project_row_from_fields`.
+/// Worked-at program u32 ID.
 pub const PROGRAM_REFERENCE_ID: usize = 0x64;
-/// CProject +0x68 SProjectHistory vector data pointer; archived serializer-derived history walker.
+/// Project-history vector data pointer.
 pub const HISTORY: usize = 0x68;
-/// CProject +0x70 history vector capacity u32; archived history walker checks count <= capacity.
+/// Project-history u32 capacity.
 pub const HISTORY_CAPACITY: usize = 0x70;
-/// CProject +0x74 signed history count; FCB2D0 moves 0x58-byte records and FCF9A0 deserializes this vector.
+/// Project-history signed count.
 pub const HISTORY_COUNT: usize = 0x74;
-/// CProject +0x1bc started flag u8; archived lifecycle walker accepts only 0 or 1.
+/// Project started u8 flag, restricted to zero or one.
 pub const STARTED: usize = 0x1bc;
-/// CProject +0x1bd completed flag u8; archived lifecycle walker accepts only 0 or 1.
+/// Project completed u8 flag, restricted to zero or one.
 pub const COMPLETED: usize = 0x1bd;
 
 /// A batch's identity gather and its state-machine gather are both checked for
@@ -200,7 +193,7 @@ fn walk_tables(
             .ok_or("project vtable overflow")? as u64;
         let decoder = machine::Decoder::new(base)?;
         for_each_pool(memory, base, game_state, |countries, country, pool| {
-            // 14146F0B0 supplies the original signed project-pool extent.
+            // Original signed project-pool extent.
             if project_error.is_none() {
                 projects.ensure(
                     project_len
@@ -341,7 +334,7 @@ fn walk_tables(
                     if let Some(output) = histories.as_mut().filter(|_| history_error.is_none()) {
                         let result = (|| {
                             let array = history_array(bytes[..HEADER_LEN].try_into().unwrap())?;
-                            // 140FCF9A0 retains this history vector in its parent header.
+                            // The parent header retains this history vector.
                             output.ensure(
                                 history_len
                                     .checked_add(array.count as usize)

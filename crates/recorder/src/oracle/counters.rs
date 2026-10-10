@@ -146,7 +146,7 @@ fn provinces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
             .collect(),
     );
     r.compared("ProvinceUnitOrder", rows.len());
-    r.limitation("CProvince E6CA90 omits occupant arrays; CUnit BF7010 saves location but no province insertion ordinal. Country unit serialization order is not an independent witness of the current province order. Membership/location are checked; mixed/naval ordinals remain unverified", "ProvinceUnitOrder order");
+    r.limitation("The province writer omits occupant arrays; the unit writer saves location but no province insertion ordinal. Country unit serialization order is not an independent witness of the current province order. Membership/location are checked; mixed/naval ordinals remain unverified", "ProvinceUnitOrder order");
     Ok(())
 }
 fn characters(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
@@ -212,7 +212,7 @@ fn characters(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<(
         );
     }
     r.compared("CharacterPortraits", rows.len());
-    r.limitation("138A110/13887E0 serialize category, size and the identity string for kinds0/1; the set byte and kind distinction are not serialized. Text identity comparison ends at embedded NUL; trailing resource/cache pointers are not part of the contract", "CharacterPortraits descriptor");
+    r.limitation("The portrait writers serialize category, size and the identity string for kinds0/1; the set byte and kind distinction are not serialized. Text identity comparison ends at embedded NUL; trailing resource/cache pointers are not part of the contract", "CharacterPortraits descriptor");
     Ok(())
 }
 /// Check the recorded scope and the independent saved selection. An omitted HQ
@@ -285,7 +285,7 @@ fn leaders(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> 
         }
     }
     r.compared("LeaderPortraits", rows.len());
-    r.limitation("C0D920 omits empty portrait_path/picture/gfx; comparison uses their proven empty-string default and text bytes through NUL. Only current HQ leaders are captured; all saved HQ leaders are required. Unsaved HQ leaders and raw character references cannot be verified by these strings", "LeaderPortraits");
+    r.limitation("the unit-leader writer omits empty portrait_path/picture/gfx; comparison uses their proven empty-string default and text bytes through NUL. Only current HQ leaders are captured; all saved HQ leaders are required. Unsaved HQ leaders and raw character references cannot be verified by these strings", "LeaderPortraits");
     Ok(())
 }
 

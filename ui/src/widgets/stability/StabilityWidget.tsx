@@ -75,7 +75,7 @@ const MEASURES: readonly { key: Measure; label: string; dash?: readonly number[]
   { key: 'warSupport', label: 'War support', dash: SECONDARY_DASH },
 ];
 
-/** Stability and war support over time (mock-ups politics-1/2): each country in its
+/** Stability and war support over time: each country in its
  * map colour, stability solid and war support dashed, on a fixed 0–100% scale by
  * default. Hovering one country shows the game's own breakdown of both values for
  * the read behind that hour. */
@@ -190,7 +190,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
       pending={looks.flagPending(item.tag, styleAt)} reason={looks.flagReason(item.tag, styleAt)} /> })),
     [series, looks, styleAt]);
 
-  // Event markers (mock-up politics-2), for one country: each kind can be switched off.
+  // Event markers for one country: each kind can be switched off.
   const kinds = useMemo(() => new Set(([['wars', 'markWars'], ['factions', 'markFactions'], ['government', 'markGovernment'], ['focus', 'markFocus']] as const)
     .filter(([, key]) => options[key] !== false).map(([kind]) => kind as MarkerKind)), [options.markWars, options.markFactions, options.markGovernment, options.markFocus]);
   // A widget showing only a breakdown draws no markers, so asks for none.
@@ -385,7 +385,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
         : spokenEmpty && spokenAt?.read === headRead && spokenAt.hour === Math.floor(head) ? `No breakdown was recorded for ${dayLabel(Math.floor(head))}.` : '';
   const main = <div className="stability-main">
     <Legend label="Countries" items={legendItems} windowed onVisibleItems={onVisibleItems} />
-    {/* The line styles are named, as signed off: never the dash pattern alone. */}
+    {/* The line styles are named: never the dash pattern alone. */}
     <p className="stability-key">{shown.map(measure => <span key={measure.key}><i aria-hidden="true" className={measure.dash ? 'is-dashed' : undefined} />{measure.dash ? 'Dashed' : 'Solid'}: {measure.label.toLowerCase()}</span>)}</p>
     {/* The current values as text, for keyboard and screen-reader users. */}
     <p className="sr-only" aria-live="off">{`${dayLabel(Math.floor(head))}: `}{series.map(item => {

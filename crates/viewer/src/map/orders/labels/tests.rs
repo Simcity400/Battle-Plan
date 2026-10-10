@@ -329,8 +329,8 @@ fn the_first_fitting_variant_is_placed_along_the_arc() {
             .is_none()
     );
 
-    // The height callback gets the glyph's segment's control index over
-    // the control count, as `RebuildMapArrowTextMesh` passes it.
+    // The height callback receives the glyph segment's control index over
+    // the control count.
     let seen = std::cell::RefCell::new(Vec::new());
     let lift = |_: f32, _: f32, t: f32| {
         seen.borrow_mut().push(t);
@@ -363,9 +363,9 @@ fn modded() -> Localisation {
     ))
 }
 
-/// A variant is localised and checked only when the layout reaches it:
-/// an unused short variant with an icon does not hide a full label that
-/// fits, and a reached one refuses the label by name (1412585E0).
+/// Localize and check a variant only when layout reaches it. An unused short
+/// variant with an icon does not hide a full label that fits; a reached one
+/// refuses the label by name.
 #[test]
 fn only_a_reached_variant_can_refuse_the_label() {
     let loc = modded();
@@ -395,9 +395,8 @@ fn only_a_reached_variant_can_refuse_the_label() {
     );
 }
 
-/// A `MAP_ARROWS_*` key the executable names (14123FF10) and a recorded
-/// name token are both copied as their bytes when the content lacks
-/// them, as the localiser copies a missing top-level key (142230940).
+/// A `MAP_ARROWS_*` label key and a recorded name token both use their own
+/// bytes when absent from the content, like any missing top-level localization key.
 #[test]
 fn a_missing_label_key_and_a_missing_token_are_copied() {
     let loc = modded();

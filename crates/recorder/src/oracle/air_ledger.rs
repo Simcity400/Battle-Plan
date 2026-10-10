@@ -1,9 +1,9 @@
 //! Daily save-slot equality and owned event attribution checks.
-//! `1401DCEF0` completes `(M-24,M]` before the roster-gated midnight
+//! The game completes `(M-24,M]` before the roster-gated midnight
 //! advance. Events retain the authenticated native daily cursor, so writes
 //! either side of that advance at the same hour use their actual save slot.
-//! Queue serializers `140C57230 -> 141505B90 -> 141505F20 ->
-//! 141505BB0` retain current/previous physical records; event context is not saved.
+//! Queue serializers retain current and previous physical records;
+//! event context is not saved.
 use super::{ContentRead, Report, complete, country_context, invalid};
 use engine::air_loss_sites::FIELD_COUNT;
 use installed_content::save::air::Pack;
@@ -34,10 +34,10 @@ const ORACLE_TABLES: [TableId; 4] = [
 ];
 
 fn loss_only_ordinal(index: usize) -> bool {
-    // Other writers: bombing 0/41 (`140C4D620`), division/ship damage
-    // 1/42 and 2/43 (`140C4E010`, `140C4D9B0`), logistics 36..39 and
-    // enemy channels 77..80 (`140C4DE50`, `140C4E1A0`, `140C4D7F0`, `140C4CE80`).
-    // Credited missile total 81 has no indexed writer other than `140C4D180`.
+    // Other writers: bombing 0/41, division/ship damage
+    // 1/42 and 2/43, logistics 36..39 and
+    // enemy channels 77..80.
+    // Credited missile total 81 has no other indexed writer.
     !matches!(index, 0|1|2|36..=39|41..=43|77..=80)
 }
 
@@ -93,7 +93,7 @@ impl DailyCheck {
     fn new(end: i32) -> io::Result<Self> {
         let midnight = end
             .checked_sub(end.rem_euclid(24))
-            .ok_or_else(|| invalid("air daily oracle midnight underflow"))?; // Calendar epoch 43800000 is a multiple of 24 (`1401DCEF0`).
+            .ok_or_else(|| invalid("air daily oracle midnight underflow"))?; // Calendar epoch 43800000 is a multiple of 24.
         let start = midnight
             .checked_sub(24)
             .ok_or_else(|| invalid("air daily oracle hour underflow"))?;
@@ -218,7 +218,7 @@ impl DailyCheck {
                 continue;
             }
             let capacity = engine::cloop_history::DAILY_WINDOW_CAPACITY;
-            let previous_slot = (row.current_slot + capacity - 1) % capacity; // `1415050B0`.
+            let previous_slot = (row.current_slot + capacity - 1) % capacity;
             for (current, slot, fields) in [
                 (false, previous_slot, &row.previous_fields),
                 (true, row.current_slot, &row.current_fields),
@@ -332,7 +332,7 @@ pub(super) fn compare_bombing_damage(
                 "BuildingBombingDamage contains a zero applied health change",
             ));
         }
-        // Native country resolution@140BA5140/140BA56A0 maps raw zero to
+        // Country resolution maps raw zero to
         // the reserved null slot, not a country from the positive census.
         null_victims += usize::from(row.victim == 0);
         for country in row
@@ -358,8 +358,8 @@ pub(super) fn compare_bombing_damage(
                 String::from_utf8_lossy(name)
             )));
         }
-        // CBuilding::get_state@1410C6520 -> status getter@141162450
-        // returns province+C0 directly, including null (recorded state 0).
+        // The building-state lookup returns the province's state pointer
+        // directly, including null (recorded state 0).
         let state_known = if row.state == 0 {
             row.province.is_some()
         } else {
@@ -382,12 +382,12 @@ pub(super) fn compare_bombing_damage(
     report.compared("BuildingBombingDamage", rows.len());
     if null_victims != 0 {
         report.limitation(
-            &format!("BuildingBombingNullVictim: {null_victims} applied damage events retain native victim 0, the reserved null country (140BA5140/140BA56A0). Their amounts remain recorded without inventing a credited victim country"),
+            &format!("BuildingBombingNullVictim: {null_victims} applied damage events retain native victim 0, the reserved null country. Their amounts remain recorded without inventing a credited victim country"),
             "BuildingBombingDamage.victim",
         );
     }
     report.limitation(
-        "BuildingBombingEventHistoryNotSaved: CBuilding::vf2@1410C7960 serializes current total level, healthy level and partial health. The existing StateBuildings / ProvinceBuildings comparisons certify those saved quantities independently. It writes no damage event, attacker, native cause, applied health drop or credited return value. Repair, construction, scripts and other damage prevent health deltas from certifying bombing events; no health difference is waived",
+        "BuildingBombingEventHistoryNotSaved: the building save writer serializes current total level, healthy level and partial health. The existing StateBuildings / ProvinceBuildings comparisons certify those saved quantities independently. It writes no damage event, attacker, native cause, applied health drop or credited return value. Repair, construction, scripts and other damage prevent health deltas from certifying bombing events; no health difference is waived",
         "BuildingBombingDamage.amount_raw / credited_raw",
     );
     report.limitation(

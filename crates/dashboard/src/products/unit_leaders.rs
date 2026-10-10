@@ -1,49 +1,40 @@
 //! Military leader careers from hourly reads; no combat outcome is inferred.
 //!
-//! Identity: CUnitLeader +0x08/+0x0c (type/id), +0xf4c (character),
-//! +0x120 (raw owner); CountryLinks resolves that owner. CATEGORY +0xe7c:
-//! GetLocalizedRoleTitle@140c0a7a0 maps 0/1/2 to fm_leader/cc_leader/navy_leader.
-//! These are executable localisation keys, resolved in the recorded stack.
-//! KIND is the recorder's vtable discriminator (engine/cunit_leader.rs:83).
-//! CArmyLeader +0xf58/f68/f78/f88 are attack/defence/planning/logistics
-//! (Serialize@140c18ca0); CNavyLeader +0xf68/f78/f88/f98 are
-//! attack/defence/maneuvering/coordination (Serialize@140c18e90).
-//! Skill is +0xe60 -> CUnitLeaderSkill +0x1b8; a null object is missing, not zero.
-//! BuildSkillLevelTooltip@1416c07e0 and AddExperience@140c05400 stop at a missing
-//! next skill definition; the star ceiling follows that same content lookup.
+//! Identity uses the full leader type/id, character link and raw owner;
+//! CountryLinks resolves that owner. Categories 0/1/2 map to
+//! fm_leader/cc_leader/navy_leader, resolved in the recorded stack.
+//! KIND is the recorder's leader-kind discriminator. Army skills are
+//! attack/defence/planning/logistics; navy skills are
+//! attack/defence/maneuvering/coordination. A null skill object is missing,
+//! not zero. Skill tooltip and experience progression stop at a missing next
+//! skill definition; the star ceiling follows that same content lookup.
 //!
-//! Visibility uses the shared IsVisible@140c0e360 evaluator in the owner's
-//! country scope. The roster calls IsVisible with its captured-role gate:
-//! 1410da238/1410da327 set R8B=1 before calls 1410da243/1410da332.
-//! +0x1059 captured excludes army categories <2 (vtable +0xe8). Unknown
-//! visibility is withheld, with a named warning. No foreign-country/AI gate.
-//! That caller also sets the selected character without clearing the country;
-//! the shared CountryLeader scope preserves both native carriers.
+//! Visibility uses the shared evaluator in the owner's country scope. The roster
+//! enables its captured-role gate, excluding captured army categories <2.
+//! Unknown visibility is withheld, with a named warning. No foreign-country/AI
+//! gate. That caller also sets the selected character without clearing the
+//! country; the shared CountryLeader scope preserves both carriers.
 //! Portraits ask the recorded holder for army/navy, large (portrait_entry's
-//! native fallback); PoliticsContent decodes the same entries as Ruling party.
+//! fallback); PoliticsContent decodes the same entries as Ruling party.
 //! Trait names use their recorded tokens. Trait icons are GFX_trait_<token>,
-//! the native construction in 141c61c40/141d011a0, resolved through the catalogue.
-//! TraitExperience entries are learning progress, never assigned traits.
+//! resolved through the catalogue. TraitExperience entries are learning
+//! progress, never assigned traits.
 //!
-//! Commands: OrdersGroups.leader reads COrdersGroup +0x88's leader pointer,
-//! then the full handle at leader +0x08 (Serialize@140be8100).
-//! is_army_group is +0x39; OrdersGroupPlan.name is the stored +0x160 name.
-//! Fleets.leader is the full native CUnitLeader reference; Fleets.name and
-//! OrdersGroups.name hold the hourly stored +E0/+160 strings. Older recordings
-//! can supply command names from daily OrdersGroupPlans and naval commands from
-//! NavalMissionTaskForces.leader, its fleet's CUnitLeader reference
-//! (CFleet +0xb0, ResolveFleetLeader@140d4fce0; Serialize@140d4a390).
+//! Commands: OrdersGroups.leader reads the leader's full handle; is_army_group
+//! and OrdersGroupPlan.name are stored fields. Fleets.leader is the full leader
+//! reference; Fleets.name and OrdersGroups.name hold hourly stored strings.
+//! Older recordings can supply command names from daily OrdersGroupPlans and
+//! naval commands from NavalMissionTaskForces.leader, its fleet's leader reference.
 //! Join TaskForces.fleet, never the mission's distinct range_fleet. Coverage is
 //! limited to the mission kinds this hourly table records (naval_mission_rows.rs).
 //! Fleet names and idle commands are unavailable only in those older records.
 //! LandCombatDetails.sides[].commander and
-//! NavalCombatDetails.sides[].commander identify side command, once per full
-//! combat handle (replay/combat_rows.rs:161 and :468).
-//! Each leader's hours are observation spans, never inferred dates.
+//! NavalCombatDetails.sides[].commander identify side command once per full
+//! combat handle. Each leader's hours are observation spans, never inferred dates.
 //! An already-active or post-gap combat has an unknown start. LandCombatResults
 //! joins the full combat handle. NavalResultSources links retained NavalResults
-//! through the exact creation transition (1415B29C0 -> 140CD6600), not a date,
-//! province or sunk-ship heuristic. Transient unregistered combats never join.
+//! through the exact creation transition, not a date, province or sunk-ship
+//! heuristic. Transient unregistered combats never join.
 //!
 //! Requests name countries, one leader, or the recording's lightweight choice
 //! list. Equal consecutive reads compress; missing hours, hidden leaders and
@@ -85,7 +76,7 @@ use ts_rs::TS;
 pub struct UnitLeaders;
 pub mod portraits;
 pub const MAX_REPLY_BYTES: usize = super::MAX_PRODUCT_REPLY_BYTES;
-// TokenToPortraitType@1414d4b80: army token 0x289d -> 1, navy 0x289e -> 2.
+// Portrait tokens map army 0x289d to 1 and navy 0x289e to 2.
 const PORTRAIT_ARMY: u32 = 1;
 const PORTRAIT_NAVY: u32 = 2;
 
@@ -429,7 +420,7 @@ fn handle(row: &UnitLeaderRow) -> u64 {
     (u64::from(row.id) << 32) | u64::from(row.reference_type)
 }
 
-/// Executable keys, not a vanilla content list: GetLocalizedRoleTitle@140c0a7a0.
+/// Role-title localisation interface keys, resolved through recorded content.
 fn rank_key(category: i32) -> Option<&'static str> {
     match category {
         0 => Some("fm_leader"),
@@ -448,7 +439,7 @@ fn maximum_skill(
         return None;
     }
     let mut ceiling = level;
-    // Sparse tables stop as the native XP loop does.
+    // Sparse skill tables stop at the first missing next level.
     loop {
         match skills.next_required_experience(ceiling, category)? {
             None => return Some(ceiling),
@@ -577,7 +568,7 @@ fn append_command(
 }
 
 fn visible(row: &UnitLeaderRow, scripted: Option<&ScriptedText<'_>>) -> Result<bool, String> {
-    // IsVisible@140c0e360's optional role gate; Capture@140c02810 sets +0x1059.
+    // The optional role gate checks recorded capture state.
     if row.kind == engine::cunit_leader::KIND_ARMY && (row.category as u32) < 2 && row.captured != 0
     {
         return Ok(false);
@@ -1014,8 +1005,8 @@ fn scan(
             if let Ok(results) = decoded.complete::<tables::NavalResults>() {
                 for result in results {
                     if let Some(source) = naval_sources.get(&result.id) {
-                        // 140CD6600 copies the combat's first and second sides into
-                        // the result's +18/+88; +F8 selects those exact embedded sides.
+                        // Results copy the combat's first and second sides; the recorded
+                        // selector chooses those exact embedded sides.
                         let winners = match result.winning_side {
                             1 => 1,
                             2 => 2,
@@ -2020,9 +2011,8 @@ fn trait_info(token: &str, content: Option<&Content>) -> LeaderTraitInfo {
         .map(|content| {
             let catalogue = &content.catalogue;
             let name = catalogue.localised(token, View::Plain);
-            // The assignment tree admits every defined trait (141D011A0), then
-            // CButtonStandard::SetSpriteByName@1422BBD90 constructs it through
-            // 142222AD0: an absent name retries the stack's fallback drawable.
+            // The assignment tree admits every defined trait; icon construction
+            // retries the stack's fallback drawable for an absent name.
             let asset = content
                 .leaders
                 .traits
@@ -2058,8 +2048,7 @@ fn trait_info(token: &str, content: Option<&Content>) -> LeaderTraitInfo {
     }
 }
 
-// Native localisation keys: army labels at CalculateFactionTheaterCommanderBonus
-// @14116f770, navy at CNavyLeaderTraitWindow::vt28_vf0@14180c000.
+// Army and navy trait-window localisation keys.
 fn attribute_names(kind: u8, content: Option<&Catalogue>) -> [Option<String>; 4] {
     let keys = if kind == engine::cunit_leader::KIND_NAVY {
         [

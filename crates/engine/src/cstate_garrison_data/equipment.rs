@@ -1,6 +1,6 @@
-//! Operands of 140B8A4E0, used by displayed strength 140FE01E0(..., true).
-//! Required amounts use active archetype pointer identity (140FF9760), while
-//! allocations use the first ordered signed-ID match (140FF97C0).
+//! Displayed-strength equipment operands. Required amounts use active
+//! archetype pointer identity; allocation lookup uses the first ordered
+//! signed-ID match.
 use crate::{
     Memory, cequipment_type as ty, cequipment_variant_pool as pool, cpdx_array::Array,
     garrison_equipment_pool, read, required_equipment_row,
@@ -72,8 +72,8 @@ impl<'a> Arena<'a> {
             let active = field::<u8>(memory, archetype, ty::ACTIVE)?;
             let target = field::<i32>(memory, archetype, ty::ARCHETYPE_ID)?;
             let mut allocated = 0;
-            // Native FF97C0 stops on the first key >= the target, including
-            // duplicate and out-of-order entries; never normalize the pool.
+            // Pool lookup stops at the first key greater than or equal to target,
+            // including duplicate and unordered entries. Never normalize the pool.
             for index in 0..allocations.count {
                 let address = allocations
                     .element(index, crate::allocation_equipment_row::STRIDE)
@@ -111,8 +111,8 @@ impl<'a> Arena<'a> {
     }
 }
 
-/// CEquipmentArcheTypePool primary vtable (RTTI 1427739D0); its serializer
-/// 140FFDA90 writes each nonzero 16-byte token/amount entry in source order.
+/// Equipment-archetype-pool primary vtable. Serialization emits each nonzero
+/// 16-byte token/amount entry in source order.
 pub fn required_entries(
     memory: &impl Memory,
     base: usize,

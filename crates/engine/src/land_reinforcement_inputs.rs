@@ -1,4 +1,4 @@
-//! Raw dependencies of reinforcement speed140C76E90 ->140C70670.
+//! Raw reinforcement movement-speed dependencies.
 //!
 //! The caller passes (ignore_terrain=1, ignore_combat=1); effective route speed
 //! and its organisation/fuel factors are NOT this getter. No displayed speed,
@@ -50,18 +50,13 @@ pub struct TransportTerm {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ContextRow {
-    ///0 acclimatization maximum;1 active-definition coefficient;
-    ///2 supply+600;3 supply+610;4 supply+40;5 supply-days+498;
-    ///6 supply-hours define33191C0;7 penalty-days define3319394;
-    ///8 supply-speed define33194E0;9 selected noncore define;
-    ///10 air-supply+58;11 retreat define3319758;12 shattered define3319808;
-    ///13/14 friendly/hostile air;15 impact;16 AA;17 air scale331DDD8;
-    ///18/19 AA denominator/reduction;20/21 infrastructure definition limits;
-    ///22 infrastructure fallback limit;23 per-level;24 healthy level;
-    ///25 transport maximum331E100;26 minimum intel331D5B0;27 maximum intel331D620;
-    ///28 intel reduction331E550;29 static modifier category mask;
-    ///30..31 reserved, always zero. Absent branch operands are zero and their
-    ///presence is given by flags; zero does not assert that native storage is zero.
+    /// Scalar slots: acclimatization maximum and active coefficient; stored supply
+    /// amounts and durations; loaded supply penalties and bypass terms; air supply;
+    /// retreat and shattered factors; friendly/hostile air, impact and anti-air
+    /// factors; infrastructure limits, fallback, per-level and healthy levels;
+    /// transport maximum and intel bounds/reduction; static category mask.
+    /// Slots thirty and thirty-one are reserved zeroes. Absent branches have zero
+    /// operands with separate presence flags; zero does not assert zero game storage.
     pub scalar_values: [i64; 32],
     ///0 raw retreat;1 raw shattered+24D;2 raw supply-bypass+2AE;
     ///3 raw core-bypass+2E;4 active-acclimatization reference present;
@@ -320,9 +315,9 @@ fn census(
     }
 }
 
-/// Raw accumulator selection for1409CC140; its hash selects a source rather
-/// than calculating a displayed numeric result. All four possible speed keys
-/// are kept so controller/attacking choices cannot lose an operand.
+/// Raw state modifier-accumulator selection; hashing selects a source rather
+/// than computing a displayed result. Keep all four speed keys so controller
+/// and attacker choices cannot discard operands.
 fn state_accumulator(
     memory: &impl Memory,
     base: usize,
@@ -392,7 +387,7 @@ fn acclimatization(
     }
     let entries = array(memory, object, 8, 16)?;
     let count = entries.count as usize;
-    // 140608080 visits all signed +14 entries; 140607FA0 selects from them.
+    // Visit every signed vector entry before selecting the matching definition.
     if !output.ensure(count)? {
         return Err("reinforcement acclimatization arena full");
     }
@@ -572,7 +567,7 @@ fn infrastructure_shared(
     Ok(())
 }
 
-/// 140C67F40's supply operands retain every live template +C0/+CC entry.
+/// Supply operands retain every live template supply-entry occurrence.
 fn supply_entries(
     memory: &impl Memory,
     base: usize,
@@ -634,7 +629,7 @@ fn priority(
     let token = field::<u32>(memory, selected, 0x5d8)?;
     let categories = array(memory, selected, 0x508, 8).map(|categories| {
         let start = arena.len();
-        // 140C70670 walks the full +508/+514 category vector.
+        // Visit the complete selected category vector.
         let failure = crate::allocation::reserve_push_batch(arena, categories.count as usize)
             .map_err(|_| "reinforcement category allocation failed")
             .and_then(|()| {
@@ -661,13 +656,10 @@ fn priority(
     })
 }
 
-/// Whether an owned relation is a war (`CRelation` type 0x380a, the type
-/// `CRelation::factory` 140D0A6D0 builds a `CWarRelation` for), in list order.
-/// A world war gives a country thousands of relations, so each batch of
-/// relation pointers is gathered in one call and their types in another.
-/// Each gather reports its first failing lane, and a batch answers exactly as
-/// the one-by-one walk would: a war before the first failure, else that
-/// failure. Nothing is read twice.
+/// Whether an owned relation has the war type, retaining list order. Large
+/// country relation rosters use one pointer gather and one type gather per
+/// batch. The first failing lane preserves one-by-one outcomes: return a war
+/// before that lane, otherwise its failure. No read is repeated.
 pub(crate) fn owned_war_relation(
     memory: &impl Memory,
     relations: Array,
@@ -749,9 +741,8 @@ pub(crate) fn owned_war_relation(
     Ok(false)
 }
 
-/// 140C70670 CArmy::GetMovementSpeedModifier's air-supply operands. The
-/// owner's diplomacy walk, relations included, runs once per owner in a pass;
-/// the region entry once per owner and region.
+/// Air-supply operands; owner diplomacy and relation walks occur once per
+/// owner in the pass, while regional entries occur once per owner and region.
 #[allow(clippy::too_many_arguments)]
 fn air(
     memory: &impl Memory,
@@ -840,11 +831,10 @@ fn transport_intel_lane(
     Ok(value)
 }
 
-/// The transport owner's enemy walk (E8DC30 over the +98/+A4 enemy references),
-/// once per owner in a pass: each eligible enemy with its intel lanes, in
-/// native order. The walk stops where main's would fail for every region: at
-/// an enemy whose reads before the regional operand fail (kept as `failure`),
-/// or after one whose lanes fail (kept in its entry, behind its regional read).
+/// Transport-owner enemies, once per owner per pass, in diplomacy order.
+/// An enemy's failure before its regional operand stops the shared walk.
+/// Intel-lane failures stay in that entry after its regional read, preserving
+/// each region's original failure order.
 fn transport_owner(
     memory: &impl Memory,
     base: usize,
@@ -862,8 +852,8 @@ fn transport_owner(
     if pointer(memory, diplomacy, cdiplomacy_status::COUNTRY)? != owner.pointer {
         return Err("reinforcement transport diplomacy backlink mismatch");
     }
-    // E8DC30 visits every enemy reference in +98/+A4 and appends to a
-    // growable CPdxArray: the native header count is the only bound.
+    // Visit every enemy reference from the live header. Its count alone
+    // bounds the growable destination.
     let enemies = array(memory, diplomacy, cdiplomacy_status::ENEMY_COUNTRIES, 4)?;
     let start = arena.len();
     let mut failure = None;
@@ -1134,8 +1124,8 @@ pub fn capture_context(
     )
 }
 
-/// Worker storage follows each original movement-speed operand (140C70670),
-/// including the template, acclimatization and selected category vectors.
+/// Worker storage follows each original movement operand, including template,
+/// acclimatization and selected-category vectors.
 #[allow(clippy::too_many_arguments)]
 pub fn capture_context_buffer(
     memory: &impl Memory,

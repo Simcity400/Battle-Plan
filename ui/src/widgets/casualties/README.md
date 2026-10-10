@@ -2,7 +2,7 @@
 
 **What it shows:** Each country's cumulative casualties dealt/taken as a butterfly chart, or a race of losses taken. These war-relation counters cover land, sea and air together.
 
-**Product(s) it reads:** [`war-casualties`](../../../../crates/dashboard/src/products/war_casualties.rs) supplies exact hourly country totals, identities and membership. Native loss and unknown-recovery evidence is beside that code.
+**Product(s) it reads:** [`war-casualties`](../../../../crates/dashboard/src/products/war_casualties.rs) supplies exact hourly country totals, identities and membership. Country loss totals and unknown recovery are computed there.
 
 **Settings:** Top ten by dealt + known taken by default; manual countries and smart groups; Dealt vs taken/Race of losses taken, include losses with no recorded attacker (off), butterfly values/ratio. Campaign, Follow, Pin and Range.
 

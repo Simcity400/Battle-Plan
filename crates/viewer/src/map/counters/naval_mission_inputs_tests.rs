@@ -135,6 +135,8 @@ fn force_frame() -> DecodedFrame {
 
 #[test]
 fn unread_commander_is_named_unknown_and_read_zero_is_explicit() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = force_frame();
     let content = content(b"categories={ocean={}}");
     let mut anchors = anchors();
@@ -230,6 +232,8 @@ fn unread_commander_is_named_unknown_and_read_zero_is_explicit() {
 
 #[test]
 fn ship_indexes_stay_cold_until_a_mission_chain_needs_ships() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = frame();
     set(
         &mut frame,
@@ -260,6 +264,8 @@ fn ship_indexes_stay_cold_until_a_mission_chain_needs_ships() {
 
 #[test]
 fn p3_terrain_merges_common_before_clamping_and_keeps_the_first_class_bucket() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = force_frame();
     let content=content(b"categories={ocean={naval_coordination=0.5 cruiser={naval_coordination=0.9} cruiser={naval_coordination=-0.9}}}");
     let mut anchors = anchors();
@@ -340,6 +346,8 @@ fn p3_terrain_merges_common_before_clamping_and_keeps_the_first_class_bucket() {
 
 #[test]
 fn p2_join_keeps_the_native_range_boundary_and_null_home_base_hub_guard() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = force_frame();
     let content = content(b"categories={ocean={}}");
     let mut anchors = anchors();
@@ -424,6 +432,8 @@ fn p2_join_keeps_the_native_range_boundary_and_null_home_base_hub_guard() {
 
 #[test]
 fn unlinked_mission_owner_is_named_without_losing_the_other_operands() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = force_frame();
     if let TableView::Complete(TableRows::NavalMissionTaskForces(rows)) =
         &mut *frame.tables[TableId::NavalMissionTaskForces.index()]

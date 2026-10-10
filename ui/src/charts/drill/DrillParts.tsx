@@ -28,7 +28,7 @@ export default function DrillParts({ parts, format, total, unattributed, totalRo
   positiveBars?: boolean; signedShares?: boolean;
   /** The part of the total no recorded source explains, with the game's own label if it has one. */
   unattributed?: { label: string; value: number; raw?: bigint | null; text?: string; shareText?: string; color?: string };
-  /** A closing total row, as signed off (mock-up drill-1). */
+  /** A closing total row. */
   totalRow?: { label: string; value: string };
 }) {
   const rows = useMemo(() => {

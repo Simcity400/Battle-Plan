@@ -1,8 +1,7 @@
-//! Target-intel operands (`140FD0EA0`). `1411DED90` computes national
-//! counterintelligence on demand, using the country modifier and its
-//! strategic-operative mission roster. The collector copies those stored
-//! operands, not the rating or the agency's differently transformed cache.
-//! Mission changes and modifier recalculation can occur between daily ticks.
+//! Target-intel operands. National counterintelligence is computed on demand
+//! from country modifiers and the strategic-operative mission roster. Capture
+//! copies those operands; it does not substitute the agency's transformed cache.
+//! Mission and modifier changes may occur between daily ticks.
 
 use crate::{
     Memory, ccountry, ccryptology, cgame_state, cintelligence_agency as agency,
@@ -11,15 +10,14 @@ use crate::{
     operative_action as action, read, walk::Outcome,
 };
 
-/// `1411E35B0`'s reference roster, distinct from the agency's active roster.
+/// Counterintelligence reference roster, distinct from the agency active roster.
 const MISSIONS: usize = 0x28;
-/// `140C07140`'s CModifier; the accumulator begins at +0x10.
+/// Counterintelligence modifier object, with its embedded accumulator.
 const OPERATIVE_MODIFIER: usize = 0x408;
-/// `140C09280` selects this bound CStaticModifier when the subject country
-/// occurs in the operative's sorted nationalities.
+/// Bound static modifier selected when the subject occurs in sorted operative nationalities.
 const STATIC_DATABASE_RVA: usize = 0x0331_7cc8;
 const NATIONALITY_MODIFIER: usize = 0x130;
-/// Counterintelligence mission virtual +0x50 is `141A1DD30`, reading +0x10.
+/// Counterintelligence mission country-tag virtual dispatch.
 const MISSION_VTABLE_RVA: usize = 0x02a0_8f40;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -88,7 +86,7 @@ fn modifier(
     modifier_accumulator::lookup_effective_at(memory, base, accumulator, key).map(|v| v.effective)
 }
 
-/// Exact `140C09280` lower-bound, including aliases and the native zero tag.
+/// Nationality lower-bound lookup retaining canonical aliases and the zero tag.
 fn has_nationality(
     memory: &impl Memory,
     countries: &ccountry::Reader<'_, impl Memory>,

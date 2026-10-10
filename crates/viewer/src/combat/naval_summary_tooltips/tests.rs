@@ -73,6 +73,8 @@ fn flag_damage_summary_includes_naval_bomber_weapon_before_box_categories() {
 
 #[test]
 fn flag_damage_summary_uses_native_sections_and_sorted_source_types() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let loc: Localisation = [
         ("total_damage_dealt", "T $NUM$ $RATIO$;"),
         ("damage_dealt_light_guns", "L $NUM$ $RATIO$;"),
@@ -157,6 +159,8 @@ fn flag_damage_summary_uses_native_sections_and_sorted_source_types() {
 
 #[test]
 fn flag_damage_summary_keeps_blank_null_type_and_empty_localisation_rows() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let loc: Localisation = [
         ("total_damage_dealt", "TOTAL $NUM$;"),
         ("damage_dealt_by_box", "BOX;"),
@@ -215,7 +219,7 @@ fn flag_damage_summary_keeps_blank_null_type_and_empty_localisation_rows() {
         .unwrap(),
         "TOTAL 10.00;\nBOX;\nTYPES;[ 1.00 0.10][ 2.00 0.20][ 3.00 0.30]\n"
     );
-    // A missing localisation shows the key itself (142230940), while an
+    // A missing localisation shows the key itself, while an
     // empty authored localisation stays empty: neither drops the type row.
     assert!(
         flag_description(
@@ -248,8 +252,8 @@ fn torpedo_hover_reports_damage_history_not_current_attack_counter() {
         original_health: 30_000_000,
         ..Default::default()
     };
-    // 1417D1A90 -> 14160C600 reads the historical matrix's torpedo column,
-    // independently of 1417D9C60's current active-member attack summary.
+    // the game reads the historical matrix's torpedo column,
+    // independently of current active-member attack summary.
     assert_eq!(
         weapon_description(&side, &opponent, 2, None, &NoIcons, &loc).unwrap(),
         "180\nRatio 0.60\nScreens 180"
@@ -368,10 +372,8 @@ fn positioning_hover_has_native_heading_terms_and_low_positioning_consequences()
         "Positioning\nBase 0.40\nCountry +0.03\nWeather -0.01\nEscort 0.10\nDetection 0.20\nShip -0.10\nCarrier -0.05\nRecent -0.05\n\nPenalty\nAttack -0.20\nScreen -0.10\nAA -0.30\nSub 0.15\n"
     );
 
-    // Native argument names and formatting directives reproduce the Visby
-    // and Rabaul penalty blocks; percent substitutions truncate (142233187).
-    // 142232AB0 honours the content's explicit precision 1: a fixed5 reveal
-    // of 0.22973 displays +22.9%, even while adjacent lines use precision 2.
+    // Percentage substitutions truncate. Content precision 1 shows a fixed5
+    // reveal value of 0.22973 as +22.9%, even beside lines at precision 2.
     let loc: Localisation = [
         ("POSITIONING_INFO", "Positioning"),
         ("POSITIONING_PENALTY_INFO", "Penalty"),
@@ -638,7 +640,7 @@ fn screening_hovers_keep_complete_submarine_counts_and_bonuses_without_unneeded_
         piercing_critical_values: vec![],
         positioning_impacts: [0; 3],
     };
-    // 141C55600's submarine classification does not depend on the carrier
+    // submarine classification does not depend on the carrier
     // predicate's value. Complete combat rows suffice when Models is absent.
     let (census, screening, _) = screening_inputs(
         42,

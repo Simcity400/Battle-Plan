@@ -43,8 +43,8 @@ fn numeric_notes_skip_blocks_and_show_invalid_scalar_bytes_lossily() {
     assert!(!warning.contains("= {"), "{warning}");
 }
 
-/// A test file: `block` is a CModifier, `t` a targeted modifier, `e` an
-/// equipment bonus loop; anything else is skipped.
+/// A test file: `block` is a modifier object, `t` a targeted modifier,
+/// `e` an equipment bonus loop; anything else is skipped.
 fn read(text: &[u8]) -> (Vec<Item>, Vec<String>, Vec<Undecided>) {
     read_with(text, UNKNOWN)
 }
@@ -93,8 +93,8 @@ fn stored_values(modifiers: &Modifiers) -> Vec<(&str, i64)> {
         .collect()
 }
 
-/// ReadFixed5 (1424B0480) into a destination 1406042A0 zeroed: the CRT
-/// scan decides, a failure leaves 0; the authored text stays apart.
+/// Fixed5 conversion into a zeroed destination: the CRT scan decides,
+/// a failure leaves 0; the authored text stays apart.
 #[test]
 fn values_are_the_crt_conversion_into_a_zeroed_destination() {
     let (items, misreads, undecided) = read(
@@ -109,16 +109,14 @@ fn values_are_the_crt_conversion_into_a_zeroed_destination() {
         [
             ("stability_factor", 10_000),
             ("command_cap_increase", 2_000_000),
-            // `yes`, `[?x]` and an undefined reference do not convert.
             ("disable", 0),
             ("scripted", 0),
             ("unknown", 0),
-            // 1424AB540 never reads a quoted token as a reference.
+            // A quoted token is never read as a variable reference.
             ("quoted", 0),
             ("prefix", 100_000),
             ("hex", 1_600_000),
             ("empty", 0),
-            // Truncated to five decimals of the text, never rounded.
             ("cut", -12_345),
             ("fine", 9_999),
         ]
@@ -127,11 +125,10 @@ fn values_are_the_crt_conversion_into_a_zeroed_destination() {
     assert_eq!(block.values[4].text, "@missing");
 }
 
-/// One entry per modifier whatever the key's case (1424A7A90 folds a
-/// bare key; FindTokenNoCase 1424A7060 a quoted one), the last value
-/// kept in the first place; `hidden_modifier` stores into the same
-/// entries and hides them; tooltips are one per text; `added_modifier`
-/// is a child, no line.
+/// One entry per modifier whatever the key's case: bare and quoted keys
+/// fold ASCII, with the last value kept in the first place.
+/// `hidden_modifier` stores into the same entries and hides them;
+/// tooltips are one per text; `added_modifier` is a child with no line.
 #[test]
 fn modifiers_merge_hide_and_keep_children_by_identity() {
     let (items, misreads, undecided) = read(
@@ -147,7 +144,6 @@ fn modifiers_merge_hide_and_keep_children_by_identity() {
         [
             ("stability_factor", 30_000),
             ("war_support_factor", 50_000),
-            // The definition inside ADDED_MODIFIER registered.
             ("b", 100_000),
         ]
     );
@@ -166,9 +162,6 @@ fn modifiers_merge_hide_and_keep_children_by_identity() {
     assert_eq!(stored_values(&block.children[0]), [("a", 100_000)]);
 }
 
-/// The tooltip table lists its texts in slot order: FNV-1a over the
-/// text, masked by a table grown from 8 slots when an insert passes
-/// 0.9 of its mask; entries farther from home displace nearer ones.
 #[test]
 fn custom_tooltips_are_listed_in_the_tables_slot_order() {
     let mut table = TooltipTable::default();
@@ -187,17 +180,15 @@ fn custom_tooltips_are_listed_in_the_tables_slot_order() {
     for index in 0..7 {
         table.insert(format!("K{index}"));
     }
-    // Ten texts: past 0.9 of mask 7, then of mask 15.
     assert_eq!((table.mask, table.count), (15, 10));
     assert_eq!(table.keys().count(), 10);
 }
 
-/// A displacement chain past the overflow (+0x18) puts the carried
-/// entry back in the new key's slot, grows and inserts the key again
-/// (140546110 -> 1405521B0 -> 140546E60): these nine keys, read in
-/// order, grow the table to 32 buckets and list in this slot order. The
-/// copy (1405492D0 -> 14054BA50) holds the same keys; an empty set
-/// copies to the default table.
+/// A displacement chain past the overflow puts the carried entry back
+/// in the new key's slot, grows and inserts the key again: these nine
+/// keys, read in order, grow the table to 32 buckets and list in this
+/// slot order. A copy holds the same keys; an empty set copies to the
+/// default table.
 #[test]
 fn a_displacement_chain_past_the_overflow_grows_the_tooltip_table() {
     let keys = [
@@ -239,7 +230,7 @@ fn targeted_and_equipment_bonuses() {
               e = { ship_hull_heavy = { build_cost_ic = -0.15 instant = yes BUILD_COST_IC = -0.1 } armor = { armor_value = 0.05 } }",
         );
     let t = targeted(block(&items, "t"));
-    // SsoStringToUpperInPlace (1424B87F0) before the tag is parsed.
+    // Uppercase the text before parsing the tag.
     assert_eq!(t.tag.as_deref(), Some("SOU"));
     assert_eq!(
         stored_values(&t.modifiers),
@@ -250,7 +241,7 @@ fn targeted_and_equipment_bonuses() {
     assert_eq!(targeted(block(&items, "s")).tag, None);
     assert_eq!(targeted(block(&items, "v")).tag, None);
     let e = equipment_bonuses(block(&items, "e"), &mut Unheld::default());
-    // A stat read again adds (140625D00).
+    // A stat read again adds.
     let stats: Vec<_> = e[0]
         .values
         .iter()
@@ -263,10 +254,10 @@ fn targeted_and_equipment_bonuses() {
     assert_eq!((e[1].equipment.as_str(), e[1].instant), ("armor", false));
 }
 
-/// A block value under a name that is no structure keyword is read by
-/// 1406042A0 as a registered modifier's value or skipped; the replay
-/// reads the skip and records the name. A value without a key takes the
-/// next token as its operator (1424AC5E0) and is no modifier name.
+/// A block value under a name that is no structure keyword is read as
+/// a registered modifier's value or skipped; the replay reads the skip
+/// and records the name. A value without a key takes the next token as
+/// its operator and is no modifier name.
 #[test]
 fn block_values_under_modifier_names_are_undecided() {
     let (items, misreads, undecided) =
@@ -279,14 +270,11 @@ fn block_values_under_modifier_names_are_undecided() {
         ["some_modifier", "z"]
     );
     assert!(
-        undecided[0]
-            .to_string()
-            .starts_with("line 1: some_modifier has a block value, which 1406042A0 reads")
+        undecided[0].to_string().starts_with(
+            "line 1: some_modifier has a block value, which modifier value reader reads"
+        )
     );
     let b = values(block(&items, "block"));
-    // Skipped, the block defined nothing; `x` consumed `y` as its
-    // operator and took the stale value `@m`, and `=` then consumed `3`:
-    // punctuation names no modifier.
     let texts: Vec<_> = b
         .values
         .iter()
@@ -302,12 +290,11 @@ fn block_values_under_modifier_names_are_undecided() {
     );
 }
 
-/// With a registry (a recording's modifier definitions), 1406042A0
-/// decides a block value: a registered name goes through ReadFixed5,
-/// which takes the `{` as its value, so the block's entries are the
-/// modifier's own and its `}` ends it; any other name is recorded
-/// (1424ACF90) and its block skipped. An equipment stat (140625D00) is
-/// not the modifier registry's to decide.
+/// With a registry (a recording's modifier definitions), the modifier
+/// reader decides a block value: a registered name reads `{` as its
+/// fixed5 value, so the block's entries are the modifier's own and its
+/// `}` ends it; any other name is reported and its block skipped.
+/// An equipment stat is not the modifier registry's to decide.
 #[test]
 fn a_registry_decides_block_values_under_modifier_names() {
     let registry: Registry<'_> = &|name| match name {
@@ -324,7 +311,6 @@ fn a_registry_decides_block_values_under_modifier_names() {
             .map(|m| m.key)
             .collect::<Vec<_>>()
     };
-    // `b` is read by the file loop, past the block's `}`.
     assert_eq!(
         keys(b"block = { registered = { a = 1 } b = 2 }"),
         ["registered", "a"]
@@ -339,13 +325,10 @@ fn a_registry_decides_block_values_under_modifier_names() {
             .iter()
             .map(|found| (found.name.as_str(), found.reader))
             .collect::<Vec<_>>(),
-        [("registered", "140625D00")]
+        [("registered", "equipment stat reader")]
     );
 }
 
-/// A key, value text or tooltip that is not UTF-8 is kept as the block's
-/// named failure, which the reader owning the block refuses; the other
-/// entries read on.
 #[test]
 fn text_the_port_cannot_hold_is_named() {
     let (items, _, _) =

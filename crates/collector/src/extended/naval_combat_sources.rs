@@ -40,9 +40,9 @@ pub struct Capacities {
 }
 
 impl Capacities {
-    /// Live attach/cadence floor for the original map-icon vectors@14127C6B0
-    /// and transfer/unit serialization@1415B36C0/140E14640. The temporary owned
-    /// walk keeps distinct-reference scratch complete while measuring its demand.
+    /// Live attach/cadence floor for the original map-icon vectors and
+    /// transfer/unit rosters. The temporary owned walk keeps distinct-reference
+    /// scratch complete while measuring its demand.
     pub(crate) fn presize(
         &mut self,
         memory: &impl Memory,

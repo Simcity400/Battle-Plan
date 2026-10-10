@@ -1,7 +1,6 @@
-//! CLimitedUseTechCostReduction. Serializer 1413BAFA0 writes name +30, ID +50
-//! and fixed5 reduction +08. EC1440 selects from status +100; EC43A0 appends
-//! the selected IDs to the same applied-ID list as speed/ahead bonuses.
-//! EC0360/EC03D0 allocate both kinds from status's shared +13c ID counter.
+//! Limited-use technology cost reduction. Serialization writes its name,
+//! id and signed fixed5 reduction. Selection adds ids to the same applied-id
+//! list as speed/ahead bonuses; both kinds share the status id counter.
 use crate::{
     Memory, climited_use_tech_bonus::Value, msvc_string::Descriptor, read, research_inputs::Text,
 };

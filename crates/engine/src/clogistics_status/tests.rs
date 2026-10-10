@@ -477,7 +477,7 @@ fn ai_control_fails_at_its_first_operand_failure_without_reading_slots_singly() 
     let mut f = Fixture::new(3);
     f.forget(COUNTS + 3, 1);
     assert_eq!(unavailable(&f), GATHER_FAILED);
-    // A slot past the flags' own count fails as 1E1FE0's read would.
+    // A slot past the flags' own count must fail.
     let mut f = Fixture::new(3);
     f.array(GAME + cgame_state::AUTONOMOUS_STATUS, FLAGS, 3);
     assert_eq!(unavailable(&f), "autonomous flag unreadable");

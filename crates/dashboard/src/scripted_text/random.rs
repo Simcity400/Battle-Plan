@@ -1,11 +1,11 @@
-//! CRandomLocList::Resolve (140A9CD70); no RNG state is advanced.
+//! Random localisation selection; no RNG state is advanced.
 
 use super::*;
 use crate::triggers::{Evaluator, Temps};
 use installed_content::scripted_localisation::RandomList;
 
-/// CEventScope's seeded constructor (1405286D0) stores this second hash
-/// lane at +0x0C. 1410CDDF0 constructs promoted objects with 424242.
+/// The seeded event scope stores this second hash lane.
+/// Promoted objects construct their scopes with 424242.
 pub(crate) fn scope_seed(seed: u32) -> u32 {
     lane(seed, 0x205a_d647, 0xb4f3_c315, 0x387a_9f3a)
 }
@@ -17,7 +17,7 @@ fn lane(seed: u32, first: u32, add: u32, last: u32) -> u32 {
     value ^ (value >> 8)
 }
 
-/// 140A9CF4A..140A9D025: two hash lanes, combined and mixed in u32,
+/// Two hash lanes, combined and mixed in u32,
 /// then the sign bit cleared. No key, date, player or global seed is read.
 pub(crate) fn scope_counter(seed: u32) -> u32 {
     lane(seed, 0x7eb8_da44, 0x10d8_365e, 0x6d22_f31b)
@@ -27,12 +27,12 @@ fn draw(seed: u32) -> i32 {
     scoped_draw(scope_seed(seed), scope_counter(seed))
 }
 
-/// Scoped draw used by decision highlight@14071C840.
+/// Scoped draw used by decision highlights.
 pub(crate) fn scoped_draw(seed: u32, counter: u32) -> i32 {
     (scoped_word(seed, counter) & 0x7fff_ffff) as i32
 }
 
-/// The full mixed word, also used by the TLS seed update (1403B7C30).
+/// The full mixed word, also used by the thread-local seed update.
 pub(crate) fn scoped_word(seed: u32, counter: u32) -> u32 {
     let a = counter;
     let b = seed;
@@ -45,7 +45,7 @@ pub(crate) fn scoped_word(seed: u32, counter: u32) -> u32 {
 
 /// The one-member fast path reads no weight or seed. Otherwise all weights
 /// are evaluated first, their i32 sum wraps, and a nonpositive total returns
-/// the shared empty CBoundLocalization. Negative weights are not clamped.
+/// empty localisation. Negative weights are not clamped.
 fn pick(
     count: usize,
     mut weight: impl FnMut(usize) -> Result<i32, String>,
@@ -119,8 +119,8 @@ impl<'a> ScriptedText<'a> {
                     Some(evaluator) => evaluator,
                     None => &*seeded.insert(bound.evaluator(self, temps)?),
                 };
-                // 140A9CF27 uses an explicit seed without reading +0x0C;
-                // 140A9CF9A/140A9CFBD read the default only without that operand.
+                // An explicit seed does not read the scope seed;
+                // the default is read only without that operand.
                 match evaluator.localisation_seed(list, scopes)? {
                     Some(seed) => Ok(seed),
                     None => bound.scope(at).require_random_seed(),
@@ -140,9 +140,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_fixed_seed_draw_and_cumulative_pick() {
-        // 140A9CF4A..140A9D025: lanes 0x926D254E/0x1EF7E295,
-        // final draw 683596854; %60 = 54, minus 10 then 20 then 30.
+    fn fixed_seed_draw_and_cumulative_pick() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        // Seed 1 gives final draw 683596854; %60 = 54.
+        // Subtract 10 then 20 then 30 to choose the final member.
         assert_eq!(scope_seed(424242), 0xa4fb_a302);
         assert_eq!(scope_counter(424242), 0xf827_aabc);
         assert_eq!(scoped_draw(1, 0x5ea6_ba9e), 411_376_010);
@@ -151,7 +153,9 @@ mod tests {
     }
 
     #[test]
-    fn native_zero_single_negative_and_wrapping_weights() {
+    fn zero_single_negative_and_wrapping_weights() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let never = || Err("seed must not be read".into());
         assert_eq!(pick(0, |_| panic!(), never), Ok(None));
         assert_eq!(pick(1, |_| panic!(), never), Ok(Some(0)));

@@ -7,11 +7,11 @@ pub use native::{NativeBuffer, PackedBuffers, pack_native};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Declaration {
-    /// 1422BDD80 passes 142B30CF0; progress builds the same declaration at 14234A5E0.
+    /// Sprite and progress draws share float3 POSITION and float2 TEXCOORD0.
     Sprite,
-    /// 1422BD9F0: float3@0, float2@12, B8G8R8A8_UNORM COLOR0@20/COLOR1@24.
+    /// float3 POSITION at 0, float2 TEXCOORD0 at 12, B8G8R8A8_UNORM COLOR0 at 20/COLOR1 at 24.
     Text,
-    /// 1423421E0: float2 POSITION@0, TEXCOORD0@8, TEXCOORD1@16.
+    /// float2 POSITION at 0, TEXCOORD0 at 8, TEXCOORD1 at 16.
     Circular,
 }
 

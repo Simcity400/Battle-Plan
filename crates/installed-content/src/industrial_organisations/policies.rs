@@ -1,4 +1,4 @@
-//! CPolicyTemplate names and modifiers (140A3CE80), in the native stored order.
+//! Policy names and modifiers in their stored order.
 
 use crate::{
     key_names::KeyNames,
@@ -56,13 +56,13 @@ impl Catalog {
             &mut |reader, field| match reader {
                 Reader::File => {
                     let name = field.key.c_str().to_ascii_lowercase();
-                    // 140168550 skips repeated definitions, including later files.
+                    // Repeated definitions are skipped, including those in later files.
                     if seen.insert(name.clone()) {
                         current = Some(name);
                         Shape::Object(Reader::Policy)
                     } else {
                         duplicate_notes.push(format!(
-                            "MIO policy {}: duplicate definition skipped (140168550, count: 1)",
+                            "MIO policy {}: duplicate definition skipped (count: 1)",
                             String::from_utf8_lossy(&name)
                         ));
                         current = None;
@@ -75,16 +75,16 @@ impl Catalog {
                     Some(b"on_add" | b"on_remove") => Shape::Effect,
                     Some(b"ai_will_do") => native::mean_time_to_happen(field),
                     Some(b"equipment_bonus" | b"production_bonus") => {
-                        Shape::Object(Reader::Groups) // 140A39E90, shared +0x50 map.
+                        Shape::Object(Reader::Groups) // Equipment and production share one group map.
                     }
                     Some(b"organization_modifier") => {
                         Shape::Object(Reader::Modifier(modifiers::Node::Modifier))
                     }
-                    _ => Shape::Skip, // ReportUnexpectedToken 1424AD100.
+                    _ => Shape::Skip, // Unknown fields are reported and skipped.
                 },
                 Reader::Groups => Shape::Object(Reader::Bonus),
                 Reader::Bonus => {
-                    // CTraitBonus::vf4 140634B70 consumes each accepted stat once.
+                    // The bonus reader consumes each accepted stat once.
                     if field.keyword().is_some_and(|name| {
                         crate::equipment::stat_index(&name).is_some()
                             || std::str::from_utf8(&name)
@@ -143,7 +143,7 @@ impl Catalog {
                 {
                     for group in field.value.items().unwrap_or_default() {
                         let token = c_string(group.key.as_deref().unwrap_or_default()).to_vec();
-                        // 140A3A200 compares unsigned folded-FNV hash, then folded bytes;
+                        // Groups compare unsigned folded-FNV hash, then folded bytes;
                         // an existing group retains its first value, not a merged block.
                         let key = (
                             crate::decisions::seed_component(&token) as u32,
@@ -217,6 +217,8 @@ mod tests {
 
     #[test]
     fn policy_projection_keeps_first_groups_stats_and_definition() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut catalog = Catalog::default();
         catalog.read_file(
             b"synthetic={name=NAME equipment_bonus={z={soft_attack=1 soft_attack=9} a={defense=2}} production_bonus={z={production_cost_factor=3}} organization_modifier={custom_modifier_tooltip=TIP}} synthetic={name=LATE}",

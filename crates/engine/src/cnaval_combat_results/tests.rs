@@ -434,8 +434,8 @@ fn ordinal_fixture(count: usize, provinces: usize) -> (Vec<u8>, Vec<Row>, Vec<Re
     (bytes, rows, slots)
 }
 
-/// 1,500 and 5,000 results, all in one province (the old per-record rescan's worst case)
-/// and spread over 300 provinces: one read per node and per 64 bucket entries.
+/// Synthetic 1,500/5,000-result censuses in one province and spread over
+/// 300 provinces: one read per node and per 64 bucket entries.
 #[test]
 fn province_ordinals_read_each_bucket_once() {
     for count in [1_500, 5_000] {

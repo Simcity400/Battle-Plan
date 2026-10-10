@@ -741,8 +741,9 @@ fn a_dynamic_modifiers_evaluated_values_pair_as_their_own_line() {
 #[test]
 fn defensive_wars_and_hosted_counterparts_follow_the_engine_predicates() {
     let mut w = world();
-    // Country 2 instigated: this country defends. The counterpart hosts
-    // (diplomacy +0x1a8 >= 1), so IsAtWar(mode 1) is false.
+    // Country two instigated, so this country defends. The counterpart
+    // hosts the war (diplomacy +0x1a8 is at least one), leaving the
+    // mode-one at-war predicate false.
     w.put(R1 + cwar_relation::FIRST_WAS_INSTIGATOR, &[0]);
     w.u32(D2 + DIPLOMACY_HOSTING, 1);
     let walked = walk(&w, 16);

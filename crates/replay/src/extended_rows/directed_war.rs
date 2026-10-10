@@ -46,8 +46,8 @@ pub struct DirectedWarContext<'a> {
 
 impl DirectedWars {
     fn validate(&self) -> Fact<()> {
-        // Native 1406F3A00 uses the full canonical slot from 140BA6240.
-        // 140D1E540 stores the matrix extent as signed i32 at diplomacy+14.
+        // Use the full resolved canonical slot. The stored diplomacy matrix
+        // extent is a signed i32.
         if self.matrix_count == 0
             || self.matrix_count > i32::MAX as u32
             || self.receiver_slot >= self.matrix_count

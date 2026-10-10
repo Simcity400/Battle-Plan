@@ -2,13 +2,12 @@
 //! the three recorded factory groups as the game last recalculated them, hour by hour.
 //!
 //! The values are the recorded `CountryFactories` rows (table 257, hourly): the
-//! stored totals the top bar, the factory tooltips and the factory triggers read
-//! (`CProductionStatus` +0x2b0.., see `engine::factory_group` and
-//! `engine::civ_factory_consumer`). A group's buildings count through their
-//! content flags (`military_production`, `naval_production`,
-//! `general_production`), in the states the country controls and its offsite
-//! buildings, so the territory counted is the game's own: occupied land
-//! included, its own land held by an enemy left out.
+//! stored totals the top bar, factory tooltips and factory triggers read
+//! (see `engine::factory_group` and `engine::civ_factory_consumer`). A group's
+//! buildings count through their content flags (`military_production`,
+//! `naval_production`, `general_production`), in the states the country controls
+//! and its offsite buildings, so occupied land is included and its own land
+//! held by an enemy is left out.
 //!
 //! Every game view truncates the fixed5 totals toward zero, `(int)(value /
 //! 100000)`, so the reply carries each truncated as the game shows it: T, C, O and
@@ -20,13 +19,11 @@
 //!   given to other countries for the civilian group, and T − D − given to the
 //!   overlord − given to other countries for the military and naval groups;
 //! - built: T, the construction tab's `Total`;
-//! - the top bar's group total: T − D − given to the overlord − given to others
-//!   (`CTopBar::BuildFactoryStatusTooltip@14187f760`).
+//! - the top bar's group total: T - D - given to the overlord - given to others.
 //!
-//! The game adds every withheld count above into the group's `unavailable`
-//! (`RecalculateFactoryTotals@140e57f10`), which the reply does not repeat: an
-//! hour whose recorded `unavailable` differs from those parts is counted in a
-//! warning rather than hidden.
+//! The game adds every withheld count above into the group's `unavailable`,
+//! which the reply does not repeat: an hour whose recorded `unavailable`
+//! differs from those parts is counted in a warning rather than hidden.
 //!
 //! Runs compress equal consecutive hours and never bridge a gap, an hour whose
 //! tables do not tell (the country or factory table incomplete, the links unable
@@ -82,11 +79,9 @@ pub use super::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
 /// JSON of one run besides its numbers: the keys, braces and commas.
 const RUN_OVERHEAD: usize = 64;
 
-/// One of the game's factory groups (`CProductionStatus` +0x2b0, +0x310, +0x370,
-/// zeroed by `ResetFactoryTotals@140e51760` and rebuilt by
-/// `RecalculateFactoryTotals@140e57f10`). Building membership, including modded
-/// types, comes from the content flag [`FactoryGroupKey::flag`]. The native
-/// fourth group (+0x3d0, positive `rocket_production`) is not recorded; content
+/// One of the game's recalculated factory groups. Building membership,
+/// including modded types, comes from the content flag [`FactoryGroupKey::flag`].
+/// The fourth group (positive `rocket_production`) is not recorded; content
 /// that counts in it is refused by name rather than treated as one of these groups.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
 #[serde(rename_all = "camelCase")]
@@ -99,10 +94,8 @@ pub enum FactoryGroupKey {
 impl FactoryGroupKey {
     pub const ALL: [Self; 3] = [Self::Military, Self::Naval, Self::Civilian];
 
-    /// The building template flag that counts a building in this group: engine
-    /// tokens the template reader `1414a9220` reads (`military_production` token
-    /// 0x2f5c into `CBuildingTemplate` +0x2fc, `naval_production` 0x2f5b into +0x2f8,
-    /// a building to the group (`installed_content::buildings::FactoryFlags`).
+    /// The building template flag that counts a building in this group
+    /// (`installed_content::buildings::FactoryFlags`).
     pub fn flag(self) -> &'static str {
         match self {
             Self::Military => "military_production",
@@ -951,11 +944,9 @@ pub(crate) fn content_groups(catalogue: &Catalogue) -> (Vec<FactoryGroupInfo>, V
     warnings.extend(catalogue.warnings.iter().cloned());
     let (groups, notes, mut findings) =
         describe_groups_with_findings(&catalogue.content.layers, |token| {
-            // CBuildingTemplate::constructor@1414a4470 localises the raw key with
-            // localization_substitution_record::consumer@142230F20 (no script scope)
-            // into +0x210. get_display_name@1414a7570 returns that cached name to
-            // CProductionLineBuildingItem::vta48_vf0@141d40750 in the construction UI.
-            // A type without localisation stays unnamed.
+            // The building's raw key is localised without script scope into its
+            // cached display name for the construction UI. A type without
+            // localisation stays unnamed.
             catalogue.localisation.get(token)?;
             let name = catalogue.localised(token, catalogue::View::Plain)?;
             if name.is_empty() {
@@ -971,7 +962,7 @@ pub(crate) fn content_groups(catalogue: &Catalogue) -> (Vec<FactoryGroupInfo>, V
                 crate::content_check::Kind::Content,
                 format!("building {}", building.token),
                 format!(
-                    "{}: no name in the recorded content; shown by its token (142230940).",
+                    "{}: no name in the recorded content; shown by its token.",
                     building.token
                 ),
             ));

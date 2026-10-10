@@ -1,4 +1,4 @@
-//! Simulation-dependent regional scenario laws, `14122EFD0` and `14122BE70`.
+//! Simulation-dependent regional scenario laws.
 //! Random choices and presentation time belong to the viewer.
 
 use replay::rows::Recorded;
@@ -18,7 +18,7 @@ pub(super) struct ScenarioWing<'a> {
     pub side: usize,
 }
 
-/// `14122EB00`: bombers, fighters, base equipment, transports, scouts.
+/// Bombers, fighters, base equipment, transports, scouts.
 #[derive(Default)]
 pub(super) struct RegionGroups<'a> {
     pub arrays: [[Vec<ScenarioWing<'a>>; 5]; 2],
@@ -67,7 +67,7 @@ impl<'a> Scheduler<'a, '_> {
         }
     }
 
-    /// `141235430`: count exact kind and outcome before the complete batch.
+    /// Count exact kind and outcome before the complete batch.
     fn open(&self, kind: u8, outcome: u8, limit: usize) -> bool {
         self.caps
             .counts
@@ -165,7 +165,7 @@ impl<'a> Scheduler<'a, '_> {
             } else {
                 (None, 0)
             };
-            // `1412321D8`: A patrol singles count wings, including this one.
+            // The game: A patrol singles count wings, including this one.
             if !triple
                 && if side == 0 && !naval {
                     before < family.single as usize
@@ -202,7 +202,7 @@ impl<'a> Scheduler<'a, '_> {
     fn bombers(&mut self, wings: &mut Vec<ScenarioWing<'a>>) {
         while !wings.is_empty() {
             let wing = take(wings, self.random);
-            // Both independent bomber arms read `CAirWing+0x7C` directly.
+            // Both independent bomber branches read the wing's own plane count.
             let planes = wing.wing.planes;
             if planes <= 0 {
                 continue;
@@ -235,7 +235,7 @@ impl<'a> Scheduler<'a, '_> {
         }
     }
 
-    /// `14122BE70`: one weighted CAS draw, then random eligible wings.
+    /// One weighted CAS draw, then random eligible wings.
     fn divert_cas(&mut self, bombers: &mut Vec<ScenarioWing<'a>>) -> bool {
         let mut candidates = Vec::new();
         let mut weighted = 0i64;
@@ -307,7 +307,7 @@ impl<'a> Scheduler<'a, '_> {
                 break;
             }
             let wing = take(wings, self.random);
-            // `14122EFD0`: fighters stay in
+            // Fighters stay in
             // their array; the same wing may escort several opposing batches.
             let fighter = fighters[self.random.next() as usize % fighters.len()];
             let Some(planes) = self.planes(&wing) else {
@@ -354,7 +354,7 @@ impl<'a> Scheduler<'a, '_> {
             let a_units = family.sizing.units(a_planes);
             let b_units = family.sizing.units(b_planes);
             let triple = a_units >= family.sizing.triple && b_units >= family.sizing.triple;
-            // `14123381A`: counts include the selected wings, before decrement.
+            // Counts include the selected wings, before decrement.
             if !triple && (a.len() < family.single as usize || b.len() < family.single as usize) {
                 break;
             }
@@ -403,14 +403,14 @@ fn cas_ratio(weighted: i64, planes: i32) -> i64 {
     if denominator == 0 {
         return 0;
     }
-    // Native fixed-point sentinel check in `14122BE70` precedes the multiply.
+    // Native fixed-point sentinel check precedes the multiply.
     if (weighted as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd {
         return 0xffff_ffff;
     }
     weighted.wrapping_mul(100_000) / denominator
 }
 
-/// `141237C10`: CAS takes precedence; fire threshold precedes carpet.
+/// The game: CAS takes precedence; fire threshold precedes carpet.
 fn bomber_kind(wing: &AirWingRow, units: i32, defines: FlightDefines) -> Result<u8, &'static str> {
     let triple = u8::from(units >= defines.bomber.triple);
     if wing.mission_mask & 0x202 != 0 {
@@ -433,7 +433,7 @@ fn bomber_kind(wing: &AirWingRow, units: i32, defines: FlightDefines) -> Result<
     Ok(6 + triple)
 }
 
-/// `14122EFD0`: window-zero fighter-loss tolerance, with native signed
+/// Window-zero fighter-loss tolerance, with native signed
 /// multiplication overflow and division toward zero.
 fn dogfight_outcome(a: i64, b: i64) -> u8 {
     if a.wrapping_mul(110_000) / 100_000 < b {
@@ -529,7 +529,7 @@ pub(super) fn generate<'a>(
         ));
         return scheduler.draws;
     }
-    // `14122EFD0`: transport admission uses the arrays left by dogfights.
+    // Transport admission uses the arrays left by dogfights.
     if transports_a.is_empty() && fighters_a.is_empty() {
         scheduler.stepped(&mut transports_b, defines.transport, [19, 20], false);
     } else if transports_b.is_empty() && fighters_b.is_empty() {

@@ -1,4 +1,4 @@
-//! Decision names and highlight scopes (140725B40, 140727980, 140720D40).
+//! Decision names and highlight scopes.
 
 use crate::{
     ResolvedLayers,
@@ -14,8 +14,8 @@ use std::{
     io,
 };
 
-/// CTriggeredText (14116AB10, 14116C100). Conditions remain data until a
-/// consumer supplies the recorded event scope of the row's hour.
+/// Triggered icon text. Conditions remain data until a consumer supplies
+/// the recorded event scope at the row's hour.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TriggeredIcon {
     pub text: String,
@@ -26,15 +26,15 @@ pub struct TriggeredIcon {
 pub struct Decision {
     pub id: Vec<u8>,
     pub name: Vec<u8>,
-    /// Each CTriggeredText appends, including scalar icons (140725B40/14116AB10).
+    /// Each triggered text appends, including scalar icons.
     pub icons: Vec<TriggeredIcon>,
     pub icon_refusal: Option<String>,
     pub source: String,
-    /// CDecision+0x140: authored identifier's folded FNV-1a (140716650).
+    /// The authored identifier's ASCII-folded FNV-1a hash.
     pub seed_component: i32,
     pub mission: bool,
     pub fixed_random_seed: bool,
-    /// CDecision+0x9E0 can exist with an empty target body (140727980).
+    /// Target-object presence is retained even for an empty body.
     pub has_state_targets: bool,
     pub highlight_states: Vec<Item>,
     pub highlight_conditions: Vec<Item>,
@@ -42,23 +42,22 @@ pub struct Decision {
     pub target_trigger: Vec<Item>,
     pub target_arrays: Vec<Vec<u8>>,
     pub target_states: Vec<Vec<u8>>,
-    /// 14071DE00 / 140721280 describe these content effects in fresh country scopes.
+    /// Content effects described in fresh country scopes.
     pub complete_effect: Vec<Item>,
     pub remove_effect: Vec<Item>,
     pub days_remove: Vec<u8>,
     pub modifier: Vec<Item>,
-    /// CDecision+0x3F0/+0x3FC retains each CStaticModifier separately;
-    /// 140399827/140399BF6 walks the 0x220-byte entries in stored order.
+    /// Each targeted modifier is retained separately and visited in stored order.
     pub targeted_modifier: Vec<Vec<Item>>,
-    /// Category+0x3E0 selects EFFECT_UNLOCK_DECISION_BOP (140399360).
+    /// Whether its category is bound to a power balance.
     pub power_balance: bool,
     pub refused: Option<String>,
 }
 
 impl Decision {
-    /// 1407209E0/140720D40 call 14071C840 only when the highlight conjunction
-    /// holds a child or its targets object is present. 140717210 constructs
-    /// both empty. Use the shared LoadKey dispatch to distinguish ignored keys.
+    /// State naming applies when the highlight conjunction has a child or
+    /// the targets object is present. Both default to empty. Use shared
+    /// trigger dispatch to distinguish ignored keys.
     pub fn name_selects_state(
         &self,
         has_children: impl FnOnce(&[Item]) -> Result<bool, String>,
@@ -72,9 +71,9 @@ impl Decision {
         }
     }
 
-    /// 140721730: cosmetic tag, current tag, then no tag; at each step
-    /// first the ruling ideology suffix, then the base key. Only localisation
-    /// presence selects the key, before scoped expansion (140720B40).
+    /// Try cosmetic tag, current tag, then no tag. Each tries the ruling
+    /// ideology suffix before the base key. Localisation presence selects
+    /// the key before scoped expansion.
     pub fn name_key(
         &self,
         tag: &str,
@@ -105,9 +104,9 @@ impl Decision {
         })
     }
 
-    /// 14071FE20 -> 14116C180 with random=false: one entry bypasses its
-    /// trigger; otherwise first true wins, and no true entry returns the first.
-    /// A condition whose result is unknown ends selection, never false.
+    /// A sole icon bypasses its trigger; otherwise the first true condition
+    /// wins, falling back to the first icon when none pass. Unknown
+    /// conditions stop selection rather than acting as false.
     pub fn select_icon(
         &self,
         mut evaluate: impl FnMut(&[Item]) -> Result<bool, String>,
@@ -129,9 +128,8 @@ impl Decision {
         }
     }
 
-    /// 140B360E0: own-token sprite first; then the selected text with the
-    /// native prefix, then its direct sprite; the native unknown is last.
-    /// The executable owns both strings (data 142934378, 142934388).
+    /// Try the decision-token sprite, then the selected text with the decision
+    /// prefix, then its direct sprite, and finally the unknown-decision sprite.
     pub fn sprite_candidates(&self, selected: Option<&str>) -> Result<Vec<String>, String> {
         let token = std::str::from_utf8(&self.id)
             .map_err(|why| format!("{} decision identifier: {why}", self.source))?;
@@ -148,7 +146,7 @@ impl Decision {
 #[derive(Clone, Debug, Default)]
 pub struct Database {
     pub entries: BTreeMap<Vec<u8>, Decision>,
-    /// CDecisionCategory+0x18 name key, used without the decision country ladder.
+    /// Category name key, without the decision-country fallback ladder.
     pub categories: BTreeMap<Vec<u8>, Vec<u8>>,
     power_balance_categories: BTreeSet<Vec<u8>>,
     pub notes: Vec<String>,
@@ -169,14 +167,14 @@ impl Database {
         if let Some(why) = &self.unread {
             return Err(why.clone());
         }
-        // 14038BF60 builds title metadata only after a matching active instance.
+        // Title metadata is built only after a matching active instance.
         Ok(self
             .entries
             .get(&parser::c_string(token).to_ascii_lowercase()))
     }
 }
 
-/// Hashed string constructor 140BBA1B0; 140716650 copies its +0x20 to +0x140.
+/// The ASCII-folded first-NUL identifier hash used in the decision seed.
 pub fn seed_component(id: &[u8]) -> i32 {
     parser::c_string(id)
         .iter()
@@ -197,7 +195,7 @@ enum Node {
     Modifier(modifiers::Node),
 }
 
-/// ReadScriptTargetsMember 140C1D730; these are scoped operands, not effects.
+/// Target members read scoped operands.
 fn targets(field: &Field<'_>) -> Option<Shape<Node>> {
     Some(match field.keyword().as_deref()? {
         b"targets" => Shape::List,
@@ -229,7 +227,7 @@ fn append(
         Some(names),
         crate::scope::ScopeKind::Country.bit(),
         &mut |node, field| match node {
-            // 1407198A0 reads each category and decision, even for a missing category.
+            // Read every category and decision, including missing categories.
             Node::File => Shape::Object(Node::Category),
             Node::Category => {
                 positions.push(field.key.line);
@@ -260,7 +258,7 @@ fn append(
                     Some(b"ai_will_do") => Shape::Object(Node::Mtth),
                     Some(b"highlight_states") => Shape::Object(Node::Highlight),
                     Some(b"icon") => Shape::ObjectIfOpen(Node::Icon),
-                    // 140301220 appends one CScopedVariable, whose vf3 takes the held token.
+                    // Append a scoped variable using the retained token.
                     Some(
                         b"war_with_on_remove" | b"war_with_on_complete" | b"war_with_on_timeout",
                     ) => Shape::One,
@@ -291,7 +289,7 @@ fn append(
                     _ => Shape::Skip,
                 }
             }
-            // CHighlightStates::vf4 140727980; its ordinary trigger is state-scoped.
+            // Highlight conditions read in state scope.
             Node::Highlight => match field.keyword().as_deref() {
                 Some(b"highlight_state_targets") => Shape::Object(Node::Targets),
                 Some(b"highlight_states_trigger") => Shape::Trigger,
@@ -301,10 +299,10 @@ fn append(
                     | b"highlight_color_before_active"
                     | b"highlight_color_while_active",
                 ) => Shape::One,
-                // This reader ignores unknown tokens without RecordError or skipping.
+                // This reader ignores unknown tokens without error recovery or skipping.
                 _ => Shape::One,
             },
-            // CTriggeredText::vf4 14116C100 replaces text/key and appends triggers.
+            // Text and key replace earlier text; trigger blocks append.
             Node::Icon => match field.keyword().as_deref() {
                 Some(b"text" | b"key") => Shape::One,
                 Some(b"trigger") => Shape::Trigger,
@@ -339,7 +337,7 @@ fn append(
             ordinal += 1;
             if !categories.contains(&category_key) {
                 database.notes.push(format!(
-                    "{source}: decision {} ignored: category {} is not registered (1407198A0)",
+                    "{source}: decision {} ignored: category {} is not registered",
                     String::from_utf8_lossy(&id),
                     String::from_utf8_lossy(&category_key)
                 ));
@@ -388,7 +386,7 @@ fn append(
                 }
                 if field.keyword_is("name") {
                     let name = field.value.read_string().unwrap_or_default();
-                    // Empty alternate key keeps the authored identifier (140720B40).
+                    // Empty alternate key keeps the authored identifier.
                     decision.name = if name.is_empty() {
                         id.clone()
                     } else {
@@ -446,7 +444,7 @@ fn append(
                                     why.push_str("; ");
                                 }
                                 why.push_str(&format!(
-                                    "{}: highlight script-target {} is not ported (140C1D730)",
+                                    "{}: highlight script-target {} is not ported",
                                     decision.source,
                                     String::from_utf8_lossy(
                                         target.key.as_deref().unwrap_or_default()
@@ -458,13 +456,13 @@ fn append(
                     }
                 }
             }
-            // Native 140719320 retains the first matching decision definition.
+            // The first matching decision definition is retained.
             let key = id.to_ascii_lowercase();
             if let std::collections::btree_map::Entry::Vacant(entry) = database.entries.entry(key) {
                 entry.insert(decision);
             } else {
                 database.notes.push(format!(
-                    "{}: duplicate decision {} ignored (140719320)",
+                    "{}: duplicate decision {} ignored",
                     decision.source,
                     String::from_utf8_lossy(&id)
                 ));
@@ -489,7 +487,7 @@ fn triggered_icon(value: &parser::Value) -> Result<TriggeredIcon, String> {
             }
         }
     } else {
-        // Scalar constructor uses strlen; block text/key use ReadStringInto (14116AB10).
+        // Scalar icon text ends at its first NUL; block text/key fields use string reads.
         icon.text = std::str::from_utf8(parser::c_string(value.scalar().unwrap_or_default()))
             .map_err(|why| why.to_string())?
             .to_owned();
@@ -497,7 +495,7 @@ fn triggered_icon(value: &parser::Value) -> Result<TriggeredIcon, String> {
     Ok(icon)
 }
 
-/// 140723270 loads category names before decision bodies; both directories use mode 0.
+/// Load category names before decision bodies; both directories use lexer mode 0.
 pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     let names = layers.key_names()?;
     let mut categories = BTreeSet::new();
@@ -522,15 +520,15 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
         for item in &read.items {
             let id = parser::c_string(item.key.as_deref().unwrap_or_default());
             if database.categories.contains_key(&id.to_ascii_lowercase()) {
-                continue; // First registered category wins (140719560).
+                continue; // First registered category wins.
             }
             database
                 .categories
                 .insert(id.to_ascii_lowercase(), id.to_vec());
         }
     }
-    // 140A7FD10 binds common/bop's decision_category to category+0x3E0;
-    // category ReadKey 140726680 does not own a power_balance field.
+    // `common/bop` binds `decision_category`; category bodies do not
+    // read a `power_balance` field.
     let mut balances = BTreeMap::new();
     for path in layers.directory_files("common/bop", ".txt")? {
         let read = native::read(
@@ -566,7 +564,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
                 .and_then(|item| item.value.scalar())
                 .unwrap_or_default()
                 .to_ascii_lowercase();
-            balances.insert(token, category); // Repeated balance definitions rebuild (140A7F150).
+            balances.insert(token, category); // Repeated balance definitions rebuild.
         }
     }
     database.power_balance_categories.extend(

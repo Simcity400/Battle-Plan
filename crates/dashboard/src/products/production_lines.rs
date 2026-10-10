@@ -15,17 +15,16 @@
 //! Ordinary line values are recorded `ProductionLines` fields, compared with
 //! the save by the fresh-save oracle (`recorder::oracle::production`):
 //!
-//! - `cost_raw` (+0x28) is the IC one unit costs, fixed5, after the organisation's
-//!   cost bonus (`CEquipmentProductionLine::RefreshProductionState@141926db0`).
-//! - `speed_raw` (+0x30) is the IC added at each production tick
-//!   (`CMilitaryProductionLine::ProduceEquipment@140f596c0`); units per week are
+//! - `cost_raw` is the IC one unit costs, fixed5, after the organisation's
+//!   cost bonus.
+//! - `speed_raw` is the IC added at each production tick; units per week are
 //!   the game's weekly formula `speed × 700000 ÷ cost` (`equipment::weekly_units_raw`,
 //!   which says when the game itself shows that unit), sent as `weekly_raw`.
 //! - `efficiency_raw` is the line's current efficiency in Q15 (100% is 3276800),
 //!   the average of its first min(active, maximum) per-factory efficiencies; the
 //!   row shows `(raw + 0x4000) >> 15` percent. `max_factories` is that maximum.
-//! - `priority` (+0x44) is the line's place in the queue from 0; the row shows it
-//!   plus one. `amount` (+0x48) is the units still ordered, −1 for no limit.
+//! - `priority` is the line's place in the queue from 0; the row shows it
+//!   plus one. `amount` is the units still ordered, −1 for no limit.
 //!
 //! **Units completed** come from `ProductionLineOutput`, the collector's count of
 //! every production tick per line (the game keeps none per line; `produced_raw` is
@@ -35,8 +34,7 @@
 //! `since_hour`. An ended line's final rows are published once, at the census that
 //! no longer lists it, and kept here as its final output.
 //!
-//! A line switching variant is the same object (`SetEquipmentVariant@141926570`
-//! edits the line in place), so it keeps its handle and its total.
+//! A line switching variant is edited in place, so it keeps its handle and total.
 //!
 //! Production lines, their output and the organisations are read once a day in one
 //! slot and carried in between (`metadata::slot_read`). Values start only at a
@@ -44,9 +42,8 @@
 //! end at a gap, an incomplete table or a change of identity. A line missing from a
 //! read of its country ended before it.
 //!
-//! Variant names follow `CEquipmentVariant::GetDisplayName@140bcb030`
-//! (`equipment::variant_names`); icons follow `BindEquipmentVariantIcon@140b371f0`
-//! (`equipment_icon`), evaluated at each read with that hour's countries.
+//! Variant names use `equipment::variant_names`; icons use `equipment_icon`,
+//! evaluated at each read with that hour's countries.
 //! Organisations are named as the game names them: the name-key override, else the
 //! script key, localised preferring `<owner tag>_<key>`; their icon is the stored
 //! sprite, else `GFX_<owner tag>_<script key>`, `GFX_<script key>`, or the game's
@@ -97,8 +94,7 @@ pub const DETAIL_HOURS: i32 = 720;
 pub use super::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
 /// Longest side of an equipment or organisation icon.
 const ICON_EDGE: u32 = 96;
-/// The sprite the game shows for an organisation without its own
-/// (`NIndustrialOrganisation::COrganisation::GetIconName@140da4410`).
+/// The fallback sprite for an organisation without its own.
 const UNKNOWN_ORGANISATION_ICON: &str = "GFX_idea_unknown";
 
 /// The kind of line, by its native class: military, naval, ship refit or railway gun.
@@ -352,7 +348,7 @@ pub struct VariantName {
     pub known: bool,
     /// The equipment type's script key.
     pub token: String,
-    /// The row's name (`GetDisplayName`); null when content does not name it.
+    /// The row's variant display name; null when content does not name it.
     pub name: Option<String>,
     /// The row's equipment type line; null when content does not name it.
     pub type_name: Option<String>,
@@ -1220,8 +1216,8 @@ pub fn organisation_icon(raw: &RawOrganisation, exists: impl Fn(&str) -> bool) -
         .flatten()
 }
 
-/// The same native selector (140DA4410), with a token-read witness. An
-/// explicit stored sprite needs neither that token nor the owner's identity.
+/// The same icon selector, with a token-read witness. An explicit stored
+/// sprite needs neither that token nor the owner's identity.
 pub(crate) fn organisation_icon_with_token(
     raw: &RawOrganisation,
     token_known: bool,

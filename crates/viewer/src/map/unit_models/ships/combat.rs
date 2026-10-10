@@ -1,6 +1,6 @@
 //! Recorded combat members projected into the existing model actor library.
-//! 1416539A0 selects the first three screens and prefers a genuine capital over
-//! carriers. Strength uses 140C2B520's live getter, not the CFEX member cache.
+//! The game selects the first three screens and prefers a genuine capital over
+//! carriers. Strength uses the live value, not the equipment-member cache.
 
 use super::*;
 use crate::map::unit_history::naval_combat::{Battle, Health, Sources, impacts};
@@ -124,7 +124,7 @@ impl UnitModelAssets {
                     report.error(format!("naval_combat_effect: registry cardinality is undecided after an unreadable declaration of {name:?}"));
                     return Ok(out);
                 }
-                // 14164F9E0 appends nonnull entity definitions only. A known
+                // The game appends nonnull entity definitions only. A known
                 // registry miss is skipped; a registered failed bake retains
                 // its native ticket as None rather than shifting later names.
                 if !self.registered(name) {
@@ -454,9 +454,9 @@ fn average(sum: i64, count: i32) -> i64 {
 mod tests {
     use super::{average, strength_ratio};
 
-    // 140C2B520 keeps the signed wrapping fixed-point operations and the three
-    // exceptional integer encodings. These values are independent of CFEX's
-    // cached strength, floating point ratios and clamped health percentages.
+    // The game keeps the signed wrapping fixed-point operations and the three
+    // exceptional integer encodings. These values are independent of cached
+    // equipment-member strength, floating point ratios and clamped health percentages.
     #[test]
     fn native_strength_floor_sentinels_and_wrapping_arithmetic() {
         assert_eq!(strength_ratio(1, 0), 1_000);

@@ -1,4 +1,4 @@
-//! Current required-use operands for FuelPanel_BuildBreakdown@1410DE880.
+//! Current required-use operands for the fuel breakdown.
 //! This is a supplying-read rate, not preceding-day applied consumption.
 //! Country roots reuse only the current quiescent callback's certified census.
 
@@ -81,7 +81,7 @@ pub struct Wing {
     pub reason: Option<&'static str>,
 }
 
-/// Effective modifier operands use the shared passive 140551820 reader.
+/// Effective modifier operands use the shared passive modifier reader.
 /// Raw value/presence remain distinct from feature/clamp eligibility.
 pub use crate::modifier_accumulator::RequestedOperand as Modifier;
 
@@ -153,7 +153,7 @@ fn field<T: Raw>(memory: &impl Memory, pointer: usize, offset: usize) -> Result<
     read(memory, at(pointer, offset)?).ok_or("fuel demand operand unreadable")
 }
 
-/// 140F6B7B0's three native return arms; do not cancel fixed5 factors.
+/// Three capacity-gate outcomes; preserve each fixed5 factor.
 pub fn capacity_gate(planes: i32, divisor: i32, threshold: i64) -> bool {
     let denominator = i64::from(divisor).wrapping_mul(100_000);
     if denominator == 0 {
@@ -170,7 +170,7 @@ pub fn capacity_gate(planes: i32, divisor: i32, threshold: i64) -> bool {
     }
 }
 
-/// 14060B790, including the sentinel arm before wrapping multiplication.
+/// Ace-count scaling; the sentinel arm precedes wrapping multiplication.
 fn ace_scale(input: &AirInputs) -> i64 {
     let Some(planes) = input.ace_assigned_planes.filter(|value| *value != 0) else {
         return 100_000;
@@ -186,8 +186,8 @@ fn ace_scale(input: &AirInputs) -> i64 {
     }
 }
 
-/// Current pool contribution@140F46340, context argument zero to 140F4A700.
-/// Native wrapping/truncation is kept separate from widened reporting sums.
+/// Current pool contribution with no context argument. Keep wrapping and
+/// truncation separate from widened reporting sums.
 pub fn wing_rate(input: &AirInputs, weather: &[Weather]) -> Result<i64, &'static str> {
     if !input.reached {
         return Ok(0);
@@ -203,9 +203,8 @@ pub fn wing_rate(input: &AirInputs, weather: &[Weather]) -> Result<i64, &'static
     wing_rate_with_context(input, sums.as_ref())
 }
 
-/// Ordered 140F04500 contributions accumulated exactly as 140E0CB70. Decode
-/// performs this once per captured region, before its compact operands are
-/// shared by the independently decodable country packs.
+/// Ordered weather contributions are accumulated once per captured region.
+/// Compact operands are then shared by independently decodable country packs.
 pub fn context_sums(counts: &[i32; 24], weather: &[Weather]) -> Result<[i64; 24], &'static str> {
     const ONE: i64 = 100_000;
     let mut sums = [0_i64; 24];
@@ -216,7 +215,7 @@ pub fn context_sums(counts: &[i32; 24], weather: &[Weather]) -> Result<[i64; 24]
                 .next()
                 .filter(|sample| usize::from(sample.slot) == slot)
                 .ok_or("fuel demand context occurrence missing or out of order")?;
-            // 140F04500 evaluates coefficient 0, then 2, then 1.
+            // Weather coefficients are evaluated in order zero, two, one.
             let weighted = sample.coefficients[0]
                 .wrapping_mul(sample.cell[0])
                 .wrapping_div(ONE)
@@ -283,7 +282,7 @@ pub fn wing_rate_with_context(
         let mut included = 0_i64;
         for (slot, &sum) in sums.iter().enumerate() {
             let count = input.context_counts[slot];
-            // 140E0CB70 does not simplify the product/divisor.
+            // Preserve the product and divisor as separate ordered operations.
             let average = if count != 0
                 && (sum.wrapping_add(0x7fff_ffff_ffff_fffe) as u64) < 0xffff_ffff_ffff_fffd
             {
@@ -307,7 +306,7 @@ pub fn wing_rate_with_context(
     Ok(term)
 }
 
-/// 1401C6B30, tooltip's 24-hour projection of a current fixed5 rate.
+/// Twenty-four-hour projection of a current fixed5 required-use rate.
 pub fn daily_required(rate: i64) -> i64 {
     rate.wrapping_mul(2_400_000).wrapping_div(100_000)
 }

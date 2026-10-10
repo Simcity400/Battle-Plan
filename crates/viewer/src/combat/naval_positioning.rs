@@ -1,8 +1,7 @@
-//! The active naval window's displayed positioning, `141609460`.
+//! The active naval window's displayed positioning.
 //!
-//! The combatant's stored `positioning` is an hourly simulation input to
-//! other combat calculations. The window recomputes the displayed value from
-//! current shared combatants and matching NDefines instead of binding it.
+//! Stored positioning is an hourly simulation input for other combat calculations.
+//! The window recomputes its display from current combatants and matching defines.
 use super::keyed::Keyed;
 use super::naval_air_groups::{
     self, CarrierJoins, DenseBases, PositioningAir, PositioningAirSources,
@@ -15,7 +14,7 @@ use replay::rows::{
 
 const ONE: i64 = 100_000;
 
-/// `14160C940` returns the current weighted aircraft count and the opponent's
+/// the game returns the current weighted aircraft count and the opponent's
 /// average carrier-base fill as signed fixed5 values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Air {
@@ -37,7 +36,7 @@ pub(super) struct Inputs<'a> {
     pub air: [Air; 2],
 }
 
-/// Fresh 141609460 terms in the order its optional tooltip describes them.
+/// Fresh positioning terms in the order its optional tooltip describes them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Terms {
     pub value: i64,
@@ -54,7 +53,7 @@ fn mul(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / ONE
 }
 
-// `modifier_accumulator::value@140551820`: absence is zero; eligibility
+// `modifier value lookup`: absence is zero; eligibility
 // gates the raw cell before the optional [0, 1] clamp.
 fn modifier(summary: &NavalCombatSummaryInputs, scope: usize, key: usize) -> Option<i64> {
     let cell = &summary.modifiers[scope][key];
@@ -79,7 +78,7 @@ fn modifier(summary: &NavalCombatSummaryInputs, scope: usize, key: usize) -> Opt
 
 /// Scopes 0-2 are the side's country, regional weather and sea terrain; 3 is
 /// its own admiral and 4 the opposing admiral (`naval_combat_summary_inputs`).
-/// `1415B4BB0` sums the three location scopes with one leader's modifiers.
+/// the game sums the three location scopes with one leader's modifiers.
 fn summary_modifiers(
     summary: &NavalCombatSummaryInputs,
     leader_scope: usize,
@@ -149,7 +148,7 @@ fn carrier_ratio_penalty(input: &Inputs<'_>, defines: &Defines) -> i64 {
     .max(0)
 }
 
-/// Native `141609460` without its optional localized tooltip construction.
+/// Positioning without optional localised tooltip construction.
 /// `None` denotes a modifier callback or operand that cannot be resolved.
 pub(super) fn displayed_terms(input: &Inputs<'_>, defines: &Defines) -> Option<Terms> {
     let mut value = defines.summary_fixed[0];
@@ -158,12 +157,10 @@ pub(super) fn displayed_terms(input: &Inputs<'_>, defines: &Defines) -> Option<T
         && input.defender
         && input.duration < defines.summary_integer[1];
     if !summary.countries.is_empty() {
-        // 141609643-14160964C: key 0x1B2 with the side's own commander
-        // (combatant+0x110, loaded at 14160960B).
+        // Key 0x1B2 uses the side's own commander.
         value = value.wrapping_add(summary_modifiers(summary, 3, 2)?);
         if early_defender {
-            // 1416094B1-1416094B8 keep the opposing combatant's +0x110
-            // commander; 14160969A-1416096B5 pass it for key 0x5A.
+            // Key 0x5A uses the opposing commander.
             value = value.wrapping_add(summary_modifiers(summary, 4, 0)?);
         }
         value = value.wrapping_add(summary.escort_bonus);
@@ -197,7 +194,7 @@ pub(super) fn displayed_terms(input: &Inputs<'_>, defines: &Defines) -> Option<T
     })
 }
 
-/// `14160C660` counts each qualifying forward member slot, even when its ship
+/// the game counts each qualifying forward member slot, even when its ship
 /// or convoy handle no longer resolves. Caller supplies one combat's rows.
 pub(super) fn active_ship_slots(rows: &[&NavalCombatShipRow], side: u8) -> i32 {
     rows.iter()
@@ -295,7 +292,7 @@ pub(super) fn positioning_terms_values(
     std::array::from_fn(|side| {
         let opposite = 1 - side;
         let opposing_air = air[opposite]?;
-        // 141609460 calls the own-side air pass only after it sees a positive
+        // the game calls the own-side air pass only after it sees a positive
         // opposing weighted total. An unknown own pass is irrelevant when
         // there are no opposing aircraft to impose a carrier-ratio penalty.
         let own_air = if opposing_air.weighted_planes > 0 {

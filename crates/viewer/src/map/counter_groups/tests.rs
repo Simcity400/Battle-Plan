@@ -263,6 +263,7 @@ fn a_nontransitive_relation_joins_every_accepting_group() {
 
 #[test]
 fn the_indexed_rebuild_matches_the_native_scan_over_every_group() {
+    // Brute force: offer each icon to every group, as the game does.
     fn scan(
         icons: &[Icon],
         at: Level,

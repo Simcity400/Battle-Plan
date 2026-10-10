@@ -1,17 +1,12 @@
 //! Requested countries' casualty totals over a branch, sampled without interpolation.
 //!
-//! AddCasualties@140d04b50 adds to the victim's +0x50/+0x58. Its callers include
-//! land manpower (140c5b350), destroyed divisions (140c58750), SinkShip@140d637c0,
-//! KillAirplanes@140f4e400 and railway-gun damage: these are not land-only totals.
-//! AddUnknownCasualties@140d051d0 has one caller, 140c5b350: a manpower loss with
-//! no attacker is copied into every victim relation of the native war type.
-//! The chain 140c7fd50 -> 140c5b330 -> 140c5b350 is reached from active damage
-//! (140c7bfc0, immediate damage and naval transfers) and paradrop disruption
-//! (140c7ae10 <- ApplyParadropDisruption@140c7b090). Ordinary ApplyAttrition
-//! (140c5fe80 -> 140c5e9c0) removes equipment, not manpower; unknown is not attrition.
-//! GetUnknownCasualties@140d0fc40 feeds the war-side display at 141e64090:
-//! sum known plus maximum unknown per country. The diplomacy tooltip builders
-//! 140d19cf0/140d1a550 do the same and render CASUALTIES_UNKNOWN separately.
+//! Casualty totals add to the victim and include land manpower, destroyed
+//! divisions, ships, aircraft and railway-gun damage. Manpower loss without
+//! an attacker is copied into every victim relation of the war type. Such loss
+//! can come from active damage, immediate damage, naval transfers and paradrop
+//! disruption. Ordinary attrition removes equipment rather than manpower;
+//! unknown losses are not attrition. War-side and diplomacy displays sum known
+//! plus maximum unknown per country and render CASUALTIES_UNKNOWN separately.
 //!
 //! We do not mistake that maximum for a lifetime total. Only a zero first baseline
 //! and agreeing increments on relations spanning consecutive reads establish an
@@ -77,7 +72,7 @@ use ts_rs::TS;
 pub struct WarCasualties;
 pub mod breakdown;
 pub mod pairs;
-// Native diplomacy tooltip entry, 140d19cf0/140d1a550.
+// Diplomacy tooltip localisation entry.
 pub(crate) const UNKNOWN_LABEL: &str = "CASUALTIES_UNKNOWN";
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -719,7 +714,7 @@ impl Scan {
         }
     }
     fn relation(&mut self, first: usize, second: usize, start: i32, values: [i64; 4]) {
-        // GetCasualties@140D0D890 selects by victim, independent of endpoint order.
+        // Casualties select by victim, independent of endpoint order.
         let (first, second, values) = if first < second {
             (first, second, values)
         } else {

@@ -15,7 +15,7 @@ use std::io;
 
 /// The caller loads direct textures once, through the resolved content layers.
 /// Keep the declaration and texture namespaces separate: native icon kind 0/1
-/// means a GFX declaration / a file path (141388180, 140B37430).
+/// means a GFX declaration / a file path.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum PortraitAsset {
     Declaration(String),
@@ -52,8 +52,8 @@ fn texture(bytes: &[u8]) -> Result<PortraitAsset, &'static str> {
     ))
 }
 
-/// 140B3A100 asks for size 1 and maps commander categories to character roles.
-/// 141389840 selects an exact role/size, otherwise the first role at that size.
+/// the game asks for size 1 and maps commander categories to character roles.
+/// the game selects an exact role/size, otherwise the first role at that size.
 /// It does not skip an unset exact match in favour of another role.
 fn portrait_entry(
     presentation: &CombatCommanderPresentation,
@@ -84,21 +84,21 @@ pub(super) fn select_portrait(
     if presentation.character_state == 2 {
         let entry = portrait_entry(presentation, category)
             .filter(|entry| entry.is_set != 0)
-            .ok_or("generated character portrait selection is UNVERIFIED (141388EC0/1406A8D80)")?;
+            .ok_or("generated character portrait selection is unverified")?;
         return match entry.kind {
             0 => Ok(PortraitAsset::Declaration(identity(&entry.text)?)),
             1 => texture(&entry.text),
             _ => Err("unsupported character portrait kind"),
         };
     }
-    // 140C09910 uses +C0 directly when present. +E0 constructs a country
-    // graphics-tag path; do not substitute the political or cosmetic tag until
-    // that distinct 1406DF830 -> 140BA5C20 content selection is ported.
+    // Use the direct fallback texture when present. A country graphics-tag
+    // suffix requires its own content selection; political or cosmetic tags
+    // cannot substitute for it.
     if !presentation.fallback_text[0].is_empty() {
         return texture(&presentation.fallback_text[0]);
     }
     if !presentation.fallback_text[1].is_empty() {
-        return Err("country graphics-tag portrait suffix selection is UNVERIFIED (140C09910)");
+        return Err("country graphics-tag portrait suffix selection is unverified");
     }
     if !presentation.fallback_text[2].is_empty() {
         return Ok(PortraitAsset::Declaration(identity(
@@ -108,13 +108,10 @@ pub(super) fn select_portrait(
     Ok(PortraitAsset::Declaration("GFX_leader_unknown".into()))
 }
 
-/// A present commander's portrait. ResolveLeaderPortrait (140B3A100)
-/// selects it ([`select_portrait`], `GFX_leader_unknown` when nothing is
-/// set) and sets it by name: CIcon::SetSpriteByName (1422E6410) does nothing
-/// when the content does not declare the sprite, so the widget keeps what it
-/// showed before. The viewer then leaves the widget unbound (the .gui's own
-/// sprite shows) and names the gap. A portrait whose selection the port
-/// cannot settle is hidden with the named refusal.
+/// A present commander's portrait from [`select_portrait`], with
+/// GFX_leader_unknown when none is set. An undeclared sprite keeps the existing
+/// widget image in the game; the viewer leaves it unbound so its authored
+/// sprite shows, and reports the gap. Unresolved selection hides the portrait.
 fn portrait(
     out: &mut Bindings,
     has_sprite: &dyn Fn(&str) -> bool,
@@ -125,13 +122,13 @@ fn portrait(
     match select_portrait(presentation, category) {
         Ok(asset) if has_sprite(&asset.key()) => out.bind(key, SPRITE, Ok(asset.key())),
         Ok(PortraitAsset::Declaration(name)) => out.refuse(format!(
-            "Combat portrait {key}: the content does not declare sprite {name}, so the game's sprite setter (1422E6410) keeps the widget's previous image; the viewer shows the window's own sprite"
+            "Combat portrait {key}: the content does not declare sprite {name}, so the game's sprite setter keeps the widget's previous image; the viewer shows the window's own sprite"
         )),
         Ok(asset) => out.bind(
             key,
             SPRITE,
             Err(format!(
-                "Combat portrait {key} is hidden: texture {} cannot be drawn (what the game's loader 1423F2BB0 gives for it is unverified)",
+                "Combat portrait {key} is hidden: texture {} cannot be drawn",
                 asset.key()
             )),
         ),
@@ -143,11 +140,8 @@ fn portrait(
     }
 }
 
-/// A side's tactic picture (`{prefix}_tactic`) for a selected combat tactic
-/// (kind 2): the registry entry's own picture, through the registry's
-/// identity and refusal checks (1406B0A70's +0x98 ID must name the recorded
-/// token; 1406B3CB0, 141C5DD20), when the content has the sprite; else the
-/// widget is hidden with the named refusal.
+/// A side's selected tactic picture comes from its own registry entry after
+/// identity and refusal checks. Missing artwork hides the widget and reports why.
 fn tactic(
     out: &mut Bindings,
     has_sprite: &dyn Fn(&str) -> bool,
@@ -187,8 +181,8 @@ pub(super) fn land_tactics(
                 &side.tactic_token,
             );
         } else if side.tactic_kind == 1 {
-            // 1415C66C0 reaches 141C5DD20 for the nonnull singleton too. Its
-            // empty picture keeps the previous drawable when `.dds` is absent.
+            // The nonnull singleton also attempts picture lookup; an absent `.dds`
+            // keeps the previous drawable.
             if null_picture {
                 let picture = super::tactics::NULL_PICTURE;
                 out.bind(&key, SPRITE, if has_sprite(picture) {
@@ -202,8 +196,8 @@ pub(super) fn land_tactics(
                 widget.retain_sprite = true;
             }
         }
-        // 1406B3670 compares this object's counter ID with the other object's
-        // ID, including CNullCombatTactic's constructor IDs of zero.
+        // the game compares this object's counter ID with the other object's
+        // ID, including the null tactic's zero IDs.
         out.values
             .entry(format!("{prefix}_countered_tactic_overlay"))
             .or_default()
@@ -212,7 +206,7 @@ pub(super) fn land_tactics(
 }
 
 fn exile_entry(out: &mut Bindings, entry: &mut Values, flag: Result<String, String>) {
-    // 141C61C40 fills the exile flag through 140B35990.
+    // Bind the exile country flag.
     match flag {
         Ok(flag) => out.bind_in(entry, "exile_flag", FLAG, Ok(flag)),
         Err(why) => {
@@ -230,8 +224,8 @@ fn traits(
     traits: &[LandCombatCommanderTrait],
     exile: &Result<String, String>,
 ) {
-    // Both filters are enabled by 1415C6AB0 (land), 1417D81B0 (naval),
-    // and 1417C6800 (results). Preserve native assigned order, not token order.
+    // Land, naval and result windows enable both trait filters.
+    // Preserve assigned order rather than token order.
     let mut entries = Vec::new();
     let mut entry_templates = std::collections::BTreeMap::new();
     // Trait sprites that are not loaded, counted by name and why.
@@ -241,7 +235,7 @@ fn traits(
     for value in traits.iter().filter(|t| t.kind != 0 && t.relevant != 0) {
         let mut entry = Values::new();
         if value.kind == 6 {
-            // 141C5EF70 / 141C60E40 switch the assigned-trait entry template.
+            // the game switches the assigned-trait entry template.
             entry_templates.insert(entries.len(), "unit_leader_exile_trait_entry".into());
             exile_entry(out, &mut entry, exile.clone());
         } else {
@@ -250,7 +244,7 @@ fn traits(
             if document.icons.combat.has_sprite(&requested) {
                 sprite(&mut entry, "Background", requested);
             } else {
-                // 141C61C40's actual missing-declaration fallback; the
+                // actual missing-declaration fallback; the
                 // missing sprite is still reported by name. Only the
                 // content's trait names have their sprites loaded
                 // (installed_content::unit_leader::Traits::registered).

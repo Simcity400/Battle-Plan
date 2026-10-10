@@ -35,7 +35,7 @@ fn graph() -> TransportNavalSearch {
 }
 
 #[test]
-fn strategic_search_keeps_native_heap_ties_and_source_inclusive_path() {
+fn strategic_search_keeps_heap_ties_and_source_inclusive_path() {
     let paths = RefCell::new(Vec::new());
     let result = search(
         &graph(),
@@ -57,7 +57,7 @@ fn strategic_search_keeps_native_heap_ties_and_source_inclusive_path() {
 }
 
 #[test]
-fn nullable_rules_unrestricted_edges_and_first_record_keep_native_lazy_or() {
+fn nullable_rules_unrestricted_edges_and_first_record_keep_lazy_or() {
     let mut graph = graph();
     {
         let regions = graph.regions.as_mut().unwrap();
@@ -228,7 +228,7 @@ fn source_inclusive_retry_scan_reaches_source_and_avoids_modes_for_unrestricted_
                 calls.borrow_mut().push(region);
                 Ok(255)
             },
-            |_| panic!("only exact native bytes1/2 trigger retry"),
+            |_| panic!("only exact access bytes 1/2 trigger retry"),
             |_| Ok(true)
         )
         .unwrap()
@@ -250,11 +250,11 @@ fn reached_second_mode_scan_failure_cannot_be_hidden_by_first_true_mode() {
             if mode == 1 {
                 Ok(true)
             } else {
-                Err("native second mode scan refused".into())
+                Err("second mode scan refused".into())
             }
         },
         |_| Ok(true),
     );
     assert_eq!(calls, [1, 2]);
-    assert_eq!(result, Err("native second mode scan refused".into()));
+    assert_eq!(result, Err("second mode scan refused".into()));
 }

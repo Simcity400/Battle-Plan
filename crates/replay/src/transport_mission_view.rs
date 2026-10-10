@@ -14,26 +14,26 @@ pub type Fact<T> = Result<T, &'static str>;
 pub const RISK_REFUSAL_NAMES: [&str; 22] = [
     "transport original embedded mission owner refused",
     "transport original receiver risk graph refused",
-    "transport original contributor stat138 refused",
-    "transport original contributor stat160 refused",
+    "transport original contributor detection stat refused",
+    "transport original contributor carrier detection stat refused",
     "transport original contributor SHIPS header refused",
-    "transport original coordination19 refused",
-    "transport original spotting55 refused",
-    "transport original night spotting108 refused",
-    "transport original visibility19F refused",
+    "transport original coordination modifier refused",
+    "transport original spotting modifier refused",
+    "transport original night spotting modifier refused",
+    "transport original visibility modifier refused",
     "transport original speed base refused",
-    "transport original speed29 refused",
+    "transport original speed modifier refused",
     "transport original terrain class refused",
-    "transport original visibility stat148 refused",
-    "transport original visibility stat150 refused",
+    "transport original primary visibility stat refused",
+    "transport original secondary visibility stat refused",
     "transport original roster owner refused",
     "transport original receiver location refused",
     "transport original receiver region refused",
     "transport original location controller refused",
     "transport original detached activity refused",
-    "transport original targeted spotting1C5 refused",
+    "transport original targeted spotting modifier refused",
     "transport original class terrain speed refused",
-    "transport original contributor combined2A refused",
+    "transport original contributor detection modifier refused",
 ];
 
 /// Current capture admission is independent of any viewer-local selection.
@@ -120,8 +120,8 @@ impl<'a> MissionView<'a> {
     /// adapter. It is never a raw country reference or viewer-selected tag.
     pub fn ledger(&self, slot: u32, region: u32) -> Fact<&'a [u64]> {
         let navies = self.navies?;
-        // GetStrategicNavy returns native null for any requested slot when
-        // the original manager is null or its original array is empty.
+        // A null manager or empty original array supplies null for every
+        // requested strategic navy slot.
         if navies.is_empty() {
             return Ok(&[]);
         }
@@ -171,8 +171,8 @@ impl<'a> MissionView<'a> {
         self.naval_search
     }
 
-    /// F9E3A0/E91150 and E8FD10 consume the exact current physical navy's
-    /// dense byte array. Null/empty managers supply native empty operands.
+    /// Naval access queries use the current physical navy's dense byte array.
+    /// Null or empty managers supply empty operands.
     pub fn access_modes(&self, slot: u32) -> Fact<&'a [u8]> {
         let navies = self.navies?;
         if navies.is_empty() {
@@ -252,8 +252,8 @@ pub struct DetectionOperands {
     pub multiplier: i64,
 }
 
-/// 140F9EE50 -> 140BF0AD0: native lazy gate. Earlier zero/positive values make later
-/// originally refused fields irrelevant; negative combat counts still admit.
+/// Lazy mission gate. Earlier zero/positive values make later refused
+/// fields irrelevant; negative combat counts still admit.
 pub fn demanded(receiver: &TransportMissionReceiver) -> Fact<bool> {
     if receiver
         .in_regions

@@ -1,4 +1,4 @@
-//! Native bloom draw (`140FF1D40`), through the shared content compiler.
+//! Native bloom draw, through the shared content compiler.
 use super::{
     BLOOM_FORMAT, Blur, MapSize,
     fullscreen::{self, Fullscreen},
@@ -21,7 +21,7 @@ pub(super) fn load(
     decode: Decode,
 ) -> io::Result<Arc<Effect>> {
     let (mut library, defines) = fullscreen::library(layers, [map.width, map.height], decode);
-    // 140FF1410 registers this effect and the `bloom` technique.
+    // Register this effect and the `bloom` technique.
     library
         .load(b"gfx/FX/bloom.shader", &defines)
         .map_err(refuse)
@@ -35,7 +35,7 @@ impl Bloom {
         let mut state =
             gpu::State::authored(&effect.source, &effect.source.techniques[selection.index])
                 .map_err(refuse)?;
-        // 142345450 builds the table by physical Index; 140FF1D40 binds only
+        // Build the table by physical Index; binds only
         // table[0] in PS. Other registers retain preceding draws. Until those
         // are supplied, reading them must refuse.
         state
@@ -52,7 +52,7 @@ impl Bloom {
         blur: &Blur,
         source: &wgpu::TextureView,
     ) -> io::Result<gpu::Bindings> {
-        // 140FF1D40 overwrites b2 in VS+PS and t0 in PS for each axis.
+        // Overwrite b2 in both stages and pixel-stage t0 for each axis.
         self.0
             .bindings(arena, 2, bytemuck::bytes_of(blur), source)
             .map_err(refuse)

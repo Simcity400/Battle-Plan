@@ -1,10 +1,8 @@
-//! Actual Country0 raid source lists, not reconstructed global ownership sets.
-//! `140E6DA70` reaches every stored faction member, including actual0;
-//! `140E70210` visits +478/+484 states and `140E6D340` navy+18/+24 bases.
-//! Lists preserve native order and repeats. Private sorted pointer scratch
-//! observes each distinct body once; any failure refuses the whole domain.
-//! All storage is caller-owned and all pointer controls die in the frozen pass.
-//! Source fixtures are not live capture, save agreement or measured cost.
+//! Actual reserved-country raid source lists. Walk every stored faction member,
+//! owned state and naval base in native order with repeats. Private pointer
+//! scratch acquires each distinct body once; any fault refuses its whole domain.
+//! Storage is caller-owned and pointer controls retire within the frozen pass.
+//! Synthetic coverage does not establish live capture, save agreement or cost.
 
 use crate::carmy::country_movement_inputs::DomainCapture;
 use crate::{
@@ -16,7 +14,7 @@ use crate::{
 };
 
 const BATCH: usize = 64;
-/// VisitNavalSources@140E6D340 iterates this physical navy pointer array.
+/// Physical naval-base pointer array visited for launch sources.
 const NAVAL_BASES: usize = 0x18;
 const STATE_FIELDS: [RecordField; 2] = [
     RecordField {
@@ -182,7 +180,7 @@ impl ReservedOwnedStates {
             header[12..].copy_from_slice(&count.to_le_bytes());
             let source =
                 Array::from_header(header, 8).ok_or("reserved launch state descriptor invalid")?;
-            // VisitStateSources@140E70210 reaches the original owned roster.
+            // State source selection visits the original owned-state roster.
             scratch.ensure(required)?;
             output.ensure(required)?;
             if output.len() < required || scratch.len() < required {
@@ -340,8 +338,8 @@ fn capture_state_bodies(
     Ok(())
 }
 
-/// Called only with an authenticated, single-use navy selection. +18 header is
-/// observed before +10 owner; native140E6D340 needs no owner for an empty list.
+/// Called with an authenticated single-use navy selection. Read its header
+/// before owner; an empty list requires no owner operand.
 #[cfg(test)]
 pub(crate) fn capture_naval(
     memory: &impl Memory,
@@ -367,10 +365,9 @@ pub(crate) fn capture_naval_buffer(
     mut output: crate::walk::Buffer<'_, LaunchNavalBase>,
 ) -> NavalCapture {
     if navy == 0 {
-        // GetStrategicNavy@1406ECBF0 selects manager slot0 for actual0;
-        // 140E92F70 leaves that slot null. ForEachStartingPoint@140E6DA70
-        // still passes navy+18 to VisitNavalBasesForSource@140E6D340.
-        // Record the observed null without claiming an empty native list.
+        // The reserved strategic-navy slot can be null after construction, yet
+        // launch selection still reaches its base-list header. Record the observed
+        // null without claiming a known empty list.
         return NavalCapture {
             required: 0,
             provider: Ok(NavalProvider::NativeNull),
@@ -386,7 +383,7 @@ pub(crate) fn capture_naval_buffer(
         if required == 0 {
             return Ok(0);
         }
-        // VisitNavalSources@140E6D340 reaches all original +18 entries.
+        // Visit all original naval-base entries.
         scratch.ensure(required)?;
         output.ensure(required)?;
         if output.len() < required || scratch.len() < required {

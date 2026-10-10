@@ -2,29 +2,18 @@
 //! widget: where each resource comes from and where it goes, and the trade
 //! deals behind its imports and exports.
 //!
-//! Every value is a recorded native pool (`CountryResources`), fixed point with
-//! [`RESOURCE_DECIMALS`] places, kept exact. Against a fresh text save at a
-//! full-refresh hour (W2 part-G, branch 1, hour 60827807) all 3,073 country
-//! resources match the save's `resources` block exactly: `produced`,
-//! `adjustment` (`transfer_overlord_subject`), `imported`, `used` (the first
-//! `to_use` array), `special_total` (the first plus the second), and
-//! `production_demand` (the third), `to_export`, `base_export` and `exported`.
-//! What they mean:
+//! Every value is a recorded pool (`CountryResources`), fixed point with
+//! [`RESOURCE_DECIMALS`] places, kept exact. The pools are `produced`,
+//! `adjustment`, `imported`, `used`, `special_total`, `production_demand`,
+//! `to_export`, `base_export` and `exported`.
 //!
-//! - `used` is what the country has for use: in 3,059 of the 3,073 it is exactly
-//!   produced + adjustment + imported − `to_export`, and the rest differ only by
-//!   the game's rounding. What is taken off is the export reserve the trade law
-//!   sets aside (`to_export`), not what buyers took (`exported`), which differs
-//!   in 266 of them.
-//! - `production_demand` is minus what the production lines need, met or not:
-//!   Germany's lines in the save use aluminium 11, steel 30, coal 17 and
-//!   tungsten 1 and lack 5 rubber, and it holds −11, −30, −17, −1 and −5.
-//! - `special_total` is what is left after the second array, which is never
-//!   positive. The game names that step: its resource breakdown lists "Needed by
-//!   Special Projects" between what it has for use and "Needed by Production
-//!   Lines" (`RESOURCE_DETAILS_SURPLUS`), and special projects declare a
-//!   `resource_cost`. Which other consumers it holds, if any, is not checked.
-//! - `special_total` + `production_demand` is the game's surplus, or its deficit
+//! - `used` is what the country has for use: produced + adjustment + imported
+//!   minus `to_export`, with the game's rounding. What is taken off is the export
+//!   reserve the trade law sets aside, separate from what buyers took (`exported`).
+//! - `production_demand` is minus what the production lines need, met or not.
+//! - `special_total` is what remains after the special-project reduction, which
+//!   is never positive. Other consumers of that reduction are not identified.
+//! - `special_total` + `production_demand` is the surplus, or its deficit
 //!   when negative.
 //!
 //! `adjustment` is resources moved between a subject and its overlord: positive
@@ -42,14 +31,13 @@
 //! still shows the pools, and `deal_hours` says at which hours the deals are
 //! known.
 //!
-//! Resources are told apart by their native index, not their token: the game
+//! Resources are told apart by their recorded index, not their token: the game
 //! keeps every declaration as its own resource (see [`ResourceInfo`]).
 //!
 //! Trades are `ResourceExchanges` rows (a classic trade deal each) naming the
-//! country as exporter or importer. `delivered` is the deal's daily amount,
-//! exact against the save's `delivered`. At the same hour a country's import
-//! deals add up to `imported` in 3,055 of the 3,073 and its export deals to
-//! `exported` in 3,065, so the widget shows any remainder as its own part.
+//! country as exporter or importer. `delivered` is the deal's daily amount.
+//! Import and export deals can leave a remainder against the recorded pools,
+//! so the widget shows that remainder as its own part.
 
 pub use super::resources::{RESOURCE_DECIMALS, ResourceInfo, ordinals};
 use super::{

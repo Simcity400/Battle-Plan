@@ -31,7 +31,7 @@ fn pixel_neighbours_wrap_in_x_and_stop_at_the_poles() {
     assert_eq!(graph.components(&members(&[2, 3])), vec![vec![2, 3]]);
 }
 
-/// provinces and gives id 0 no neighbours.
+/// A four-province crossing joins its diagonal; province zero has no neighbours.
 #[test]
 fn raster_records_include_the_four_province_diagonal() {
     // Rows north first: 1 2 / 3 4 with a sea column; 2 and 3 meet only
@@ -313,6 +313,8 @@ fn names_keep_the_camera_side_margin() {
 
 #[test]
 fn static_names_are_built_once_and_chunked_under_the_buffer_limit() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let placements = many_names(15_000);
     let (chunks, names) = static_names(&placements, u64::MAX);
     assert_eq!(chunks.len(), 1);

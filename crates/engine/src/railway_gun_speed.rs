@@ -1,12 +1,10 @@
 //! On-demand equipment speed for a railway gun's first ordinary route edge.
 //!
-//! `140E74B20` asks `140BC5E60` for stat 0x3E. That path initializes an
-//! accumulator (`141929560`), gathers current inputs (`141927730`) and reduces
-//! it (`140BC6A10`); it never reads the variant's cached stat at +0x2F0.
-//! The variant's +0xD0 list already holds the equipment bonuses selected by
-//! `140BD2040` / `140E4AE40`, so no research or country bonus census is inferred.
-//! Every collection retains native order and first-match semantics. Reads are
-//! fixed for callbacks or growing for workers; unreadable inputs refuse the ETA.
+//! Stat 0x3E is reduced from current variant inputs, without reading the
+//! variant's cached +0x2F0 stat. The +0xD0 list already holds selected
+//! equipment bonuses; no research or country bonus census is inferred.
+//! Collections retain order and first-match semantics. Reads are fixed
+//! for callbacks or growing for workers; unreadable inputs refuse the ETA.
 
 use crate::{
     Memory, ccountry, cequipment_module, cequipment_type, cequipment_upgrade,
@@ -14,36 +12,35 @@ use crate::{
     equipment_module_entry, equipment_upgrade_entry, fixed5, modifier_entry, read, walk::Buffer,
 };
 
-/// `140632AC0` maps stat 0x3E to this token. Static registration `1400EA1E1`
-/// reads 0x2EB2 at `142ACDFE0` and "maximum_speed" at `142ACBBB8`.
-/// The caller must admit it through the existing fixed-layout token check.
+/// Lexer token for maximum-speed stat 0x3E. The caller must admit it
+/// through the existing fixed-layout token check.
 pub const MAXIMUM_SPEED_TOKEN: u32 = 0x2eb2;
 const SPEED_STAT: u32 = 0x3e;
 
-// 141927755: the type's dense stat slots start at +148.
+// The type's dense stat slots start at +0x148.
 const TYPE_STATS: usize = 0x148;
-// 1406E6DB0 returns variant+D0; 14192776E/771 walk its pointer array.
+// The direct bonus list is at variant +0xD0 and holds a pointer array.
 const DIRECT_BONUSES: usize = 0xd0;
-// 140BC6620: variant+E8 handles, production+178 entries of strideC8, handle+C0.
+// Named handles at variant +0xE8 select production +0x178 entries of stride 0xC8, handle at +0xC0.
 const NAMED_HANDLES: usize = 0xe8;
 const NAMED_BONUSES: usize = 0x178;
 const NAMED_STRIDE: usize = 0xc8;
 const NAMED_HANDLE: usize = 0xc0;
-// Constructors 140624790/140E47420 embed CEquipmentBonus at +38/+40;
-// its entry array starts at +8, as 141927790/7F0 read.
+// Embedded equipment bonuses start at +0x38 or +0x40; their entry
+// arrays start at +8.
 const SPECIFIC_VTABLE_RVA: usize = 0x0270_29e8;
 const BONUS_VTABLE_RVA: usize = 0x0270_2990;
 const NAMED_VTABLE_RVA: usize = 0x0295_9ac0;
-// 140BC1190 constructs the MIO CTraitBonus at variant+490.
+// The industrial-organisation trait bonus is embedded at variant +0x490.
 const MIO_BONUS: usize = 0x490;
 const MIO_VTABLE_RVA: usize = 0x0270_2c38;
-// 141525090 / 1415196D0 construct upgrade+40 / module+128 stat groups.
+// Upgrade and module stat groups are embedded at +0x40 and +0x128.
 const GROUP_VTABLE_RVA: usize = 0x0292_17f8;
 const STATS_VTABLE_RVA: usize = 0x0270_2938;
 
-/// Reused caller-owned storage for native `140BC6620`'s selected pointers.
-/// It collects every handle before `141927730` reads any selected stat array.
-/// Fixed shortages report the raw count; workers grow from that original header.
+/// Reused caller-owned storage for selected named-bonus pointers. All
+/// handles are collected before any selected stat array is read. Fixed
+/// shortages report the raw count; workers grow from the original header.
 pub struct NamedBonuses<'a> {
     pub pointers: Buffer<'a, usize>,
     pub required: usize,
@@ -64,7 +61,7 @@ struct Accumulator {
 }
 
 impl Accumulator {
-    // 140BC6A10: average first, then the multiplicative factor for stat3E.
+    // Average first, then apply the multiplicative factor for stat 0x3E.
     fn speed(self) -> Result<i64, &'static str> {
         let average = if self.average_count > 0 {
             fixed5::fraction(self.average, i64::from(self.average_count) * fixed5::SCALE)?
@@ -170,7 +167,7 @@ fn country(
     if raw != 0 {
         return countries.resolve(raw).map(|country| country.pointer);
     }
-    // 140BA56A0 chooses slot zero for a zero reference, without reading a link.
+    // A zero country reference selects slot zero without reading a link.
     let pointer = pointer(memory, element(countries.arrays()[0], 0, 8)?, 0)?;
     authenticate(memory, base, pointer, ccountry::VTABLE_RVA)?;
     if field::<u32>(memory, pointer, ccountry::ID)? != 0 {
@@ -188,7 +185,7 @@ fn collect_named(
 ) -> Result<usize, &'static str> {
     let handles = array(memory, variant, NAMED_HANDLES, 4)?;
     scratch.required = scratch.required.max(handles.count as usize);
-    // 140BC6620 collects every variant+E8 handle before selected stats.
+    // Collect every variant +0xE8 handle before reading selected stats.
     scratch.pointers.ensure(handles.count as usize)?;
     if handles.count == 0 {
         return Ok(0);
@@ -197,7 +194,7 @@ fn collect_named(
         return Err("railway speed named bonus capacity insufficient");
     }
     let countries = ccountry::Reader::new(memory, base, game_state)?;
-    // 140BC666D resolves the creator before the optional origin override.
+    // Resolve the creator before the optional origin override.
     let mut owner = country(
         memory,
         base,
@@ -229,8 +226,8 @@ fn collect_named(
     Ok(len)
 }
 
-// 1419293C0 visits additive, multiplicative, then averaged arrays. Each
-// selected value is scaled before the wrapping merge into the accumulator.
+// Visit additive, multiplicative, then averaged arrays. Scale each
+// selected value before the wrapping merge into the accumulator.
 fn group(
     memory: &impl Memory,
     base: usize,

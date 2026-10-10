@@ -6,7 +6,7 @@ Signed factory IC applied to equipment lines and rocket sites, grouped as produc
 
 ## Products it reads
 
-[`production-spending`](../../../../crates/dashboard/src/products/production_spending.rs) shares Equipment produced’s branch scan and content helpers. [line_output_sites.rs](../../../../crates/engine/src/line_output_sites.rs) holds native field evidence.
+[`production-spending`](../../../../crates/dashboard/src/products/production_spending.rs) shares Equipment produced’s branch scan and content helpers. [line_output_sites.rs](../../../../crates/engine/src/line_output_sites.rs) defines line-output hook sites.
 
 ## Settings
 

@@ -74,7 +74,7 @@ function readNotes(data: EquipmentStockpileReply, hour: number): string | undefi
   return notes.length ? notes.join(' ') : undefined;
 }
 
-/** One country's equipment stockpile (mock-up economy-1): for a player-controlled
+/** One country's equipment stockpile: for a player-controlled
  * country each equipment type's surplus or shortage as a share of what is needed, as
  * bars or over time; for an AI-controlled one, for which the game computes none, what
  * it holds. The hover adds produced per week and the variants in stock. */
@@ -208,7 +208,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
 
 const percent = (fraction: number) => `${Math.round(fraction * 100000) / 1000}%`;
 
-/** One row per group, sliding to a new order (mock-up economy-1). For a
+/** One row per group, sliding to a new order. For a
  * player-controlled country each row's surplus (right) or shortage (left, red) as a
  * share of what is needed, all on one scale, with the exact amount at the bar's end;
  * else a bar from zero to what is in stock. Rows are focusable: hover or focus shows
@@ -336,7 +336,7 @@ function StockBars({ data, tokens, hour, grouping, included, allGroups, order, s
 }
 
 /** The chosen groups over time, each in its own palette colour, with the zero line
- * emphasised and names at the line ends (mock-up economy-1): the surplus as a share
+ * emphasised and names at the line ends: the surplus as a share
  * of need where the game computed it, else what was in stock. */
 function OverTime({ data, tokens, viewport, options, runtime, track, extent, playhead, active, grouping, groups, onMenu, setOption, pickOwner, onPick }: {
   data: EquipmentStockpileReply; tokens: ChartTokens; viewport: number; options: Record<string, unknown>; runtime: WidgetProps['runtime']; track: BoundTrack;

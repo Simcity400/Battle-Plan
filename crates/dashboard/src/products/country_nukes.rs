@@ -1,10 +1,8 @@
 //! Every country's nuclear stockpile as the game's top bar shows it.
 //!
-//! P: UpdateIndicators@14188A020 calls GetNukes@1410828A0 and formats its
-//! signed integer through Int32ToString@1424B56A0. GetNukes truncates each
-//! CNuke.amount (+0x18), then adds with signed-dword wrapping. CNuke.ready
-//! (+0x3c) instead counts queued drops whose delay elapsed, written by
-//! UpdateLaunchReadiness@141085270; it is not the available arsenal.
+//! The top bar displays a signed integer: each nuclear amount truncates,
+//! then the amounts add with signed-dword wrapping. Ready count instead
+//! counts queued drops whose delay elapsed; it is not the available arsenal.
 //! Every value is dated to a complete hourly Nukes read. Missing rows,
 //! incomplete tables, gaps and identity changes never become zero.
 
@@ -101,9 +99,8 @@ pub struct CountryNukesReply {
     pub warnings: Vec<String>,
 }
 
-/// Native CNuke amount -> displayed whole stockpile, including its sentinel and
-/// machine-width multiply/divide/narrowing. GetNukes@1410828A0,
-/// CNuke production tooltip@141083AA0.
+/// Recorded nuclear amount to displayed whole stockpile, including its sentinel
+/// and machine-width multiply/divide/narrowing.
 pub fn displayed_amount(raw: i64) -> i32 {
     if super::finite_fixed64(raw) {
         (raw.wrapping_mul(100_000) / 10_000_000_000_000) as i32
@@ -112,8 +109,8 @@ pub fn displayed_amount(raw: i64) -> i32 {
     }
 }
 
-/// NukeTypeFromToken@141084920 maps them to the native ordinals. These are
-/// executable facts; the spelling and displayed name remain recorded-content facts.
+/// Maps recorded nuclear ordinals to their name tokens. The token spelling
+/// and displayed name come from recorded content.
 fn name_token(ordinal: u32) -> Option<u32> {
     match ordinal {
         0 => Some(NUCLEAR_BOMB_TOKEN),
@@ -270,9 +267,9 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                         value: value.expect("unique row"),
                     })
                     .collect();
-                // GetNukes@1410828A0 sums every array entry, without testing its
-                // type. CNuke.TYPE equals its ordinal (engine::cnuke): only a
-                // missing entry inside this recorded prefix makes the total unknown.
+                // The stockpile sums every array entry without testing its type.
+                // The recorded type equals its ordinal: only a missing entry inside
+                // this recorded prefix makes the total unknown.
                 let total = values
                     .keys()
                     .enumerate()
@@ -304,9 +301,9 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
             }
         }
     }
-    // GetNukes@1410828A0 loops this country's own array count (+0x131c);
-    // save loader@1406BB260 permits independent counts. A complete contiguous
-    // prefix proves that array, even when another country records more types.
+    // Stockpile totals use this country's own array count; independent countries
+    // can have different counts. A complete contiguous prefix proves that array,
+    // even when another country records more types.
     for (tag, track) in tracks {
         if track.runs.is_empty() {
             continue;

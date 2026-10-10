@@ -1,11 +1,10 @@
 //! Occupied states, as recorded, over a whole branch. Daily reads are dated
 //! separately from equal-value runs; neither resumes after a gap without a read.
 //!
-//! P: StartResistance 140F85ED0 stores the OCCUPIED original tag at
-//! CResistance+0x50, not the occupier. RefreshGarrisons 140FE9420 iterates
-//! controlled states with a positive occupied link and CheckActivation(...,1)
-//! (140F86330: stored +0x208). Controller != owner is NOT this test: annexed
-//! non-core states can still require occupation.
+//! Resistance stores the occupied original tag. Garrisons iterate controlled
+//! states with a positive occupied link and active occupation.
+//! Controller != owner is not this test: annexed non-core states can still
+//! require occupation.
 use super::{LoadContext, Product, recorded_rows};
 use crate::{
     Source,
@@ -46,9 +45,6 @@ pub struct OccupiedValues {
     pub occupier: Option<String>,
     /// Original occupied country, which can differ from today's legal owner.
     pub occupied: Option<String>,
-    // P: 140F82ED0 adds speeds to percentage-unit levels; 140F86E10 writes
-    // both signed fixed5 speeds. DailyUpdate 1401D4390 -> 1406DAAD0 ->
-    // 140FE1EC0 calls it daily: speeds are percentage points/day.
     /// Stored fixed5 percentage units. Speeds are percentage points/day.
     pub resistance_raw: String,
     pub compliance_raw: String,
@@ -56,12 +52,11 @@ pub struct OccupiedValues {
     pub compliance_speed_raw: String,
     /// Native displayed strength fraction, signed fixed5 (100000 is full).
     pub garrison_strength_raw: Option<String>,
-    // P: required manpower at +0x88, requirement writer 140FE78B0.
+    // Recorded required manpower.
     pub required_manpower: Option<i32>,
-    // P: 140FE78B0 writes the required template amount at +0xF8.
     /// Recorded required template amount, not garrison strength.
     pub garrison_required_raw: Option<String>,
-    /// +0x60: native requirement failure; its strength getter returns zero.
+    /// Requirement failure makes displayed strength zero.
     pub garrison_alert: bool,
     /// Below the content threshold, only when displayed strength is established.
     pub garrison_red: Option<bool>,
@@ -120,11 +115,11 @@ pub struct OccupiedStatesReply {
     pub warnings: Vec<String>,
 }
 
-// P: UI 14155DAE0 -> 140FE01E0(garrison, out, true); 14155CC50 converts
-// its fraction to the strength bar's percent. It combines assigned manpower (+0x68), required manpower
-// (+0x88), local/required equipment (+0x90/+0xD0), +0x60, and content's
-// GARRISON_STR_POW_{MANPOWER,EQUIPMENT}. StateGarrisons +0xF0 is NOT read
-// by this function. StateGarrisons records the equipment getter's operands.
+// The strength bar converts the displayed fraction to percent. It combines
+// assigned and required manpower, local and required equipment, requirement
+// failure, and content's GARRISON_STR_POW_{MANPOWER,EQUIPMENT}.
+// The saved strength cache is not read by this function.
+// StateGarrisons records the equipment operands.
 const STRENGTH_MISSING: &str = "Garrison strength needs complete equipment operands, assigned manpower and the recorded content strength factors. The row names any missing input.";
 const GROUP_LAW_MISSING: &str = "The law set for this occupied country is not recorded. It takes precedence over the occupier's default, so the state's law cannot be established.";
 
@@ -145,9 +140,9 @@ fn name_of(
     )
 }
 
-/// 140F84BB0 / 140FE2FE0: no group means database fallback, without validation;
-/// otherwise state and group overrides bypass validation. Only the default path
-/// checks IsValidForScope@140A665A0 before choosing the database fallback.
+/// No group means database fallback without validation; otherwise state and
+/// group overrides bypass validation. Only the default path checks scope
+/// availability before choosing the database fallback.
 enum GroupLaw<'a> {
     Missing,
     Law(Option<&'a [u8]>),
@@ -215,7 +210,7 @@ fn occupation_law_valid(
     occupied: u32,
 ) -> Result<bool, String> {
     use scripted_text::{EventObject, EventScope, EventScopes, Link};
-    // 140FE2FE0 sets occupier FROM to occupied and occupied ROOT to occupier.
+    // The occupier FROM points to occupied and occupied ROOT to occupier.
     // Each fresh scope otherwise keeps ROOT/FROM/PREV pointing to itself.
     let mut occupier_scope = EventScope::of(EventObject::Country(controller));
     occupier_scope.from = Link::Scope(1);
@@ -228,7 +223,7 @@ fn occupation_law_valid(
     let evaluator = crate::triggers::Evaluator::new(world, None).with_event_scopes(graph);
     let scope = evaluator.event_scopes(0)?;
     let valid = evaluator.evaluate(&law.visible, scope);
-    // 140A665A0 skips available when raw/canonical country identities match.
+    // Skip availability when raw/canonical country identities match.
     valid
         .and(|| {
             if controller == occupied {
@@ -318,7 +313,7 @@ pub(crate) fn law_content(
     laws: &installed_content::occupation_laws::Laws,
     token: &str,
 ) -> OccupationLawInfo {
-    // P: COccupationLaw ctor 140A63E00 localises the token itself.
+    // Occupation laws localise the token itself.
     let name = cat.localised(token, View::Plain);
     let mut identity = format!("law {token}");
     let icon = (|| -> Result<String, String> {

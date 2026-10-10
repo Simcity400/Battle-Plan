@@ -1,4 +1,4 @@
-//! Preflight-only isolation; submission still follows 140B481A0 on one encoder.
+//! Preflight-only isolation; submission still follows on one encoder.
 use super::super::shader_scene::State;
 use std::{
     cell::RefCell,

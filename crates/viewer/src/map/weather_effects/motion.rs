@@ -1,4 +1,4 @@
-//! Particle space selection1423DDAA0, birth1423E5CD0 and motion1423DAE40.
+//! Particle space selection, birth and motion.
 use installed_content::mesh::Transform;
 
 #[derive(Clone, Copy)]
@@ -15,8 +15,8 @@ impl Space {
                 scale: 1.,
             }
         } else {
-            //142280740 updates runtime+48 only when a top-level subsystem is
-            //local. The scale is shared with every world-space subsystem.
+            // Update displacement scale only for a local top-level subsystem. Every world-space subsystem
+            // shares it.
             let scale = authored
                 * if any_local {
                     crate::map::particle_shader::world_scale(world.basis)
@@ -121,7 +121,8 @@ mod tests {
         let mut position = [0.; 3];
         let mut velocity = [0.; 3];
         space.integrate(&mut position, &mut velocity, [3.1; 3], 0.3, 0.1);
-        //1423DAE40's final loop. Multiplying force by dt first is one ULP higher.
+        // Divide time by mass before applying force. Multiplying force by time first is one ULP higher
+        // in this fixture.
         assert_eq!(velocity[0].to_bits(), 1_065_632_835);
         assert_eq!(velocity, [velocity[0]; 3]);
     }

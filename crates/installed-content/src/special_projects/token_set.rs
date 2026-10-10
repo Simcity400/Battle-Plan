@@ -1,4 +1,4 @@
-//! The breakthrough specialization token set (14048F600/1404951A0).
+//! The breakthrough specialization token set.
 
 #[derive(Clone, Copy, Default)]
 struct Slot {
@@ -22,8 +22,8 @@ fn hash(mut token: u32) -> u32 {
 
 impl Set {
     fn grow(&mut self) {
-        // 1404951A0: eight initial buckets, then double, with log2+2
-        // overflow slots. Reinsert old entries in physical slot order.
+        // Eight initial buckets, then double, with log2+2 overflow slots.
+        // Reinsert old entries in physical slot order.
         let buckets = if self.mask <= 3 {
             8
         } else {
@@ -57,8 +57,8 @@ impl Set {
                 break;
             }
         }
-        // Native constructors 140490CF0/140490D50 keep 0.9f, and the
-        // denominator is the mask, not the number of buckets.
+        // Construction keeps 0.9f, and the denominator is the mask,
+        // not the number of buckets.
         if distance > self.maximum || (self.count + 1) as f32 / self.mask as f32 > 0.9_f32 {
             self.grow();
             self.insert(token);
@@ -93,7 +93,7 @@ impl Set {
     }
 }
 
-/// 140492790/140492DF0 walk occupied physical slots, not authored order.
+/// Walk occupied physical slots, not authored order.
 pub fn order(tokens: &[u32]) -> Vec<u32> {
     let mut set = Set::default();
     for token in tokens {
@@ -110,7 +110,7 @@ pub fn order(tokens: &[u32]) -> Vec<u32> {
 mod tests {
     use super::*;
     #[test]
-    fn breakthrough_set_deduplicates_and_keeps_native_slot_order() {
+    fn breakthrough_set_deduplicates_and_keeps_slot_order() {
         let result = order(&[1, 2, 1, 3]);
         assert_eq!(result.len(), 3);
         assert_eq!(result, order(&[1, 2, 3]));

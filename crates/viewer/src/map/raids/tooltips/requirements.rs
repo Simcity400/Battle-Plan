@@ -1,4 +1,4 @@
-//! Unit requirement text: 141618D30 -> 141579E40 -> 1415790B0/141578C80.
+//! Unit requirement text.
 use super::{
     ensure_newlines,
     rules::{Lines, Text},
@@ -17,14 +17,12 @@ fn stored<'a>(what: &str, bytes: &'a [u8]) -> Result<&'a str, String> {
     parser::text(bytes).map_err(|refused| format!("{what}: {refused}"))
 }
 
-/// 1409FEBA0 over a member list, in authored order: a member naming a group
-/// ([`Groups::group`]: its token, found without case) shows as the group's
-/// key (its description, else its name) localised when that key has
-/// localisation, its terminal members still marked seen (1409FE360, which
-/// does not format them); else as the group's own members, expanded the
-/// same way. Any other member shows localised the first time it is seen,
-/// compared without case (compare_name 14253D9F8). Entries join with ", ".
-/// The recursion has no guard, so a group inside itself is refused by name.
+/// Walk members in authored order. Match group tokens without case through
+/// [`Groups::group`]. Use localized group description (else name) when its
+/// key exists, marking terminal members seen without formatting them; otherwise
+/// expand members recursively. Localize other members only on their first
+/// case-insensitive occurrence. Join entries with a comma and space.
+/// Refuse a group containing itself by name rather than recursing indefinitely.
 fn group(
     loc: &Localisation,
     groups: &Groups,
@@ -41,7 +39,7 @@ fn group(
                     .any(|outer| outer.eq_ignore_ascii_case(&inner.name))
                 {
                     return Err(format!(
-                        "equipment group {} contains itself; 1409FEBA0 recurses into it with no guard",
+                        "equipment group {} contains itself; recursive expansion has no guard",
                         String::from_utf8_lossy(&inner.name)
                     ));
                 }
@@ -65,11 +63,9 @@ fn group(
     Ok(out.join(", "))
 }
 
-/// 14157E990 constructs the anonymous group with InitializeDefaultTokenField
-/// (1424A9460), whose token 0x165 is `none` (140082CB0's native keyword table).
-/// Its description stays empty. 1409FC1E0 tests that token's spelling through
-/// HasLocalizationKeyFromView (14222F900): a hit localises only the wrapper;
-/// a miss enters 1409FEBA0 to expand its members.
+/// An anonymous group starts with token `none` and empty description.
+/// If localization contains that token's spelling, localize only the wrapper;
+/// otherwise expand its members.
 fn anonymous_group(loc: &Localisation, groups: Result<&Groups, String>, names: &[Vec<u8>]) -> Text {
     const KEY: &str = "none";
     if loc.get(KEY).is_some() {
@@ -93,7 +89,7 @@ pub fn build(
         for req in &requirement.equipment {
             if req.types.is_empty() {
                 continue;
-            } // 1415790B0 IsEmpty guard.
+            } // Skip an empty requirement.
             let text = (|| {
                 let types: Vec<Vec<u8>> = req
                     .types
@@ -119,8 +115,7 @@ pub fn build(
                     for alternatives in &req.modules {
                         let mut modules = Vec::new();
                         for module in alternatives {
-                            // GetModuleByToken (1409EB610) skips null; the module's
-                            // own name is localised for the country (140BBA630).
+                            // Skip a null module; localize the module's own name for the country.
                             if let Some(found) = equipment.module(module) {
                                 let found = stored("equipment module name", found)?;
                                 modules.push(localise(
@@ -130,7 +125,7 @@ pub fn build(
                                 )?);
                             }
                         }
-                        let separator = format!(" {} ", localise(loc, "OR", &[])?); // 14295E708.
+                        let separator = format!(" {} ", localise(loc, "OR", &[])?);
                         groups.push_str(&localise(
                             loc,
                             "raid_unit_requirements_module_group",
@@ -255,7 +250,7 @@ mod tests {
             run(&localised, &["cycle"])[0].1.as_deref(),
             Ok("at least 70 \n\n")
         );
-        // 1415790B0 skips an empty requirement before asking for its name.
+        // Skip an empty requirement before asking for its name.
         assert!(run(&localised, &[]).is_empty());
     }
 
@@ -332,10 +327,9 @@ mod tests {
             );
         }
     }
-    /// Groups through the database's load (140165060): a group found by its
-    /// token without case, its description as its key, terminal members
-    /// deduplicated without case, and a group inside itself refused by
-    /// name; a module shows by its own name, found by token (1409EB610).
+    /// Loaded groups match by token without case, use description as key,
+    /// deduplicate terminal members without case, and refuse self-containment
+    /// by name. A module matched by token uses its own name.
     #[test]
     fn group_expansion_preserves_authored_order_deduplication_and_named_failures() {
         let loc: Localisation = [

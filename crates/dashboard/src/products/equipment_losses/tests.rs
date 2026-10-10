@@ -1105,6 +1105,8 @@ fn a_combat_log_value_that_falls_is_a_signed_correction() {
 /// so a mod that renames them names the causes.
 #[test]
 fn interface_authored_cause_names_come_from_the_contents_gui() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4_losses_gui_{}_{:?}",
         std::process::id(),
@@ -1792,7 +1794,7 @@ fn mixed_census_counts_ungrouped_divisions_and_splits_when_the_count_changes() {
 }
 
 /// The localiser fills an unknown `$NAME$` with nothing, so a template with a
-/// fill-in never becomes a complete text (it was shown as "Lost Convoys:  ()").
+/// fill-in leaves an incomplete label with empty parentheses.
 #[test]
 fn templates_with_fill_ins_have_no_complete_text() {
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(

@@ -102,8 +102,8 @@ fn census_compares_all_saved_divisions_groups_and_expeditionary_owners() {
             .any(|text| text.contains("only the named certified omitted members qualify"))
     );
     assert!(report.limitations.keys().any(|text| {
-        text.contains("CArmy::Serialize@140C80E00 omits +0xc0")
-            && text.contains("COrdersGroup::Serialize@140BE8100")
+        text.contains("the army save writer omits the parent reference")
+            && text.contains("the formation save writer")
     }));
     let TableView::Complete(TableRows::DivisionCensus(rows)) =
         &mut *recorded.tables[TableId::DivisionCensus.index()]

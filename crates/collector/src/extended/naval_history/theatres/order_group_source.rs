@@ -33,9 +33,9 @@ impl Memory for OrderGroupSource<'_> {
                 else {
                     return false;
                 };
-                // copy_oob_root_spans emits own +39 then +38 consecutively,
+                // copy_oob_root_spans emits the own flag then its anchor,
                 // including the failed field before continuing its suffix.
-                // Parent flag copies never emit this unique +38 anchor. Its
+                // Parent flag copies never emit this unique anchor. Its
                 // own success is irrelevant: its position selects the flag.
                 if anchor.mask != OOB_MASK
                     || anchor.bulk
@@ -54,7 +54,7 @@ impl Memory for OrderGroupSource<'_> {
                 true
             }
             16 => {
-                // nspan logs each root's full +230 child header exactly once.
+                // nspan logs each root's full child header exactly once.
                 // Refuse missing/repeated headers and retain exact failures;
                 // neither a bulk span nor a newly requested 4B read may heal it.
                 let Some((header, _)) = self.recorded.unique_observation(address, 16) else {

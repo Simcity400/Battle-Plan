@@ -8,10 +8,9 @@ use installed_content::tokens::Token;
 mod tests;
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
-    // 1404909E0 requires CCharacter+0xC0. The active roster is kept in step
-    // with that holder by ProcessCharacterStatus 1410DAE50 -> 1410DAC10.
+    // The active roster is kept in step with the character's scientist holder.
     // An unrostered character's holder is not captured, so absence of a
-    // Scientists row alone cannot prove the native null-pointer gate.
+    // Scientists row alone cannot prove the null-holder gate.
     pub(in crate::effect_description) fn char_scientist(
         &self,
         scopes: Scopes,
@@ -34,14 +33,13 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(None);
         }
         Err(format!(
-            "unrostered character {} scientist holder (CCharacter+0xC0, 1404909E0) is unrecorded",
+            "unrostered character {} scientist holder is unrecorded",
             character.id
         ))
     }
 
-    // LocalizeProjectSpecializationName 140AABD40 -> 14146B5D0 -> 14146B1D0:
-    // TAG_token when that localisation exists, otherwise the token. No scope
-    // expansion occurs in this name or the XP/level wrapper.
+    // Use TAG_token when that localisation exists, otherwise the token.
+    // No scope expansion occurs in this name or the XP/level wrapper.
     pub(in crate::effect_description) fn char_specialization_name(
         &self,
         operand: &[u8],
@@ -75,9 +73,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.localised(key.as_bytes(), &[], scopes, false).map(Some)
     }
 
-    // Own 140493CF0; XP@1427A99D8, SPECIALIZATION@1427A98C0,
-    // SCIENTIST_ADD_XP_SPECIALIZATION_EFFECT@1427A99E0. The character name
-    // (+0x28, 140612C90) and one space precede the wrapper, with no LF.
+    // The character name and one space precede the XP/SPECIALIZATION wrapper.
+    // No LF is appended.
     pub(in crate::effect_description) fn char_add_scientist_xp(
         &self,
         item: &Item,
@@ -86,9 +83,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.char_scientist_change(item, scopes, false)
     }
 
-    // Own 140493630; LEVELS@1427A98D0,
-    // SCIENTIST_ADD_LEVEL_SPECIALIZATION_EFFECT@1427A98D8. Unlike XP this
-    // body emits only the wrapper, with neither character name nor LF.
+    // Unlike XP, the LEVELS/SPECIALIZATION description emits only the wrapper,
+    // with neither character name nor LF.
     pub(in crate::effect_description) fn char_add_scientist_level(
         &self,
         item: &Item,
@@ -142,10 +138,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
     }
 
-    // Own 140494B30; DAYS@14275179C and
-    // SPECIAL_PROJECT_INJURE_SCIENTIST_FOR_DAYS@1427A9C18. Native expansion
-    // uses a fresh default scope set to the character (140528800/14052DAF0),
-    // so ROOT, FROM and PREV are that character, not the calling event.
+    // Expand the injury description in a fresh default scope set to the character,
+    // so ROOT, FROM and PREV are that character rather than the calling event.
     pub(in crate::effect_description) fn char_injure_scientist(
         &self,
         item: &Item,
@@ -154,7 +148,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(character) = self.char_scientist(scopes)? else {
             return Ok(String::new());
         };
-        let days = installed_content::fixed5::decimal_i32(item.value.scalar().unwrap_or_default()); // Reader 140496070 -> 1424B0080.
+        let days = installed_content::fixed5::decimal_i32(item.value.scalar().unwrap_or_default());
         let at = {
             let mut graph = self.graph.borrow_mut();
             let at = graph.scopes.len();
@@ -172,17 +166,15 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 1404938C0; SCIENTIST_ADD_TRAIT_EFFECT@1427A9B00 and
-    // TRAIT_NAME@1427557B0. Reader 140495DC0 marks only a found trait valid.
-    // Name 140A92180 is localised without expansion; modifiers +0x48 use
-    // FormatScopedModifierDescription 14054E520 then two spaces (1424B7850).
+    // Only a found trait is valid. Localise TRAIT_NAME without expansion;
+    // format modifiers in the caller scope, then indent them by two spaces.
     pub(in crate::effect_description) fn char_add_scientist_trait(
         &self,
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // 140495DC0 looks up the held token ID, unlike ReadTokenId. Quoted
-        // and numeric values have the lexer's reserved 0xF/0xC identities.
+        // Look up the held token ID. Quoted and numeric values
+        // have the lexer's reserved identities.
         if item.kind != installed_content::parser::native::Kind::Bare || item.number() {
             return Ok(String::new());
         }
@@ -209,7 +201,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             scopes,
             false,
         )?;
-        // 140493BF5 passes all category bits and the caller scope to 14054E520.
+        // Pass all category bits and the caller scope to the modifier formatter.
         let modifiers = self.modifier_list_with(
             &trait_.modifiers,
             "",
@@ -223,9 +215,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
-    // Own 1403811F0; EFFECT_GENERATE_SCIENTIST_CHARACTER@1427557F8,
-    // TRAITS@1427557EC. 1403396F0 -> 140326D70 preserves authored trait
-    // order, joins the wrappers with ", " and wraps nonempty output in ().
+    // Preserve authored trait order, join the wrappers with commas and spaces,
+    // and wrap nonempty output in parentheses.
     // Portrait, gender and starting skills are execution inputs only.
     pub(in crate::effect_description) fn char_generate_scientist(
         &self,
@@ -269,9 +260,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 140377B00: CHARACTER@142755440 and
-    // EFFECT_ADD_SCIENTIST_ROLE@142755450; ResolveCharacter 140536B10,
-    // then current character fallback, no scientist-role existence gate.
+    // Resolve the named character, then fall back to the current character.
+    // There is no scientist-role existence gate.
     pub(in crate::effect_description) fn char_add_scientist_role(
         &self,
         item: &Item,
@@ -290,8 +280,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 14038B6E0: NAME@142727E7C,
-    // EFFECT_REMOVE_SCIENTIST_ROLE@1427555B8; no LF or scientist gate.
+    // Substitute NAME without appending LF or gating on scientist presence.
     pub(in crate::effect_description) fn char_remove_scientist_role(
         &self,
         item: &Item,

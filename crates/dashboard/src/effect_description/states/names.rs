@@ -7,7 +7,6 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
         key: &[u8],
     ) -> Result<String, String> {
-        // 140378010 / 140398680 / 140378300 / 14038B980 / 14038BC70 / 140393560 / 140393850:
         // the invalid target still produces the localised line with STATE empty.
         let label = self.state_label(self.state_target(item, scopes)?)?;
         self.line(key, &[("STATE", Argument::Text(&label))], scopes, true)
@@ -27,12 +26,10 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
     ) -> Result<String, String> {
         if item.value.scalar().is_some() {
-            return Err(
-                "set_capital requires its native block reader (140534280/1403B4F40)".into(),
-            );
+            return Err("set_capital requires its native block reader".into());
         }
-        // 1403B4F40 reads state as CScopedVariable@140539440, independently
-        // of the effect selector. Constructor 140340860 defaults it to zero.
+        // Read the state integer independently
+        // of the effect selector. It defaults to zero.
         let state = match field(children(item), "state") {
             Some(state) => {
                 let operand = scalar_operand(state)?;
@@ -47,7 +44,7 @@ impl Renderer<'_, '_, '_> {
             scopes,
             true,
         )
-        // 14038FB90 does not read remember_old_capital.
+        // does not read remember_old_capital.
     }
 
     pub(in crate::effect_description) fn state_name_effect(
@@ -56,15 +53,17 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
         reset: bool,
     ) -> Result<String, String> {
-        // 14030A700 stores the name token; 14030A5D0 always clears it.
+        // stores the name token; always clears it.
         let name = if reset {
             &[][..]
         } else {
-            installed_content::parser::c_string(item.value.scalar().ok_or_else(|| {
-                "set_state_name requires one value (141385570/14030A700)".to_string()
-            })?)
+            installed_content::parser::c_string(
+                item.value
+                    .scalar()
+                    .ok_or_else(|| "set_state_name requires one value".to_string())?,
+            )
         };
-        // 1403188E0 localises NAME before substituting it, without expansion.
+        // localises NAME before substituting it, without expansion.
         if name.is_empty() {
             self.line(b"EFFECT_RESET_STATE_NAME", &[], scopes, false)
         } else {
@@ -84,8 +83,8 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
         key: &[u8],
     ) -> Result<String, String> {
-        // 140318680 / 140318BA0 / 1403192B0: LF, without scoped expansion.
-        let country = self.country_target(item, scopes)?.unwrap_or(0); // 140BA5960.
+        // LF, without scoped expansion.
+        let country = self.country_target(item, scopes)?.unwrap_or(0);
         let country = self.country_name(country, false)?;
         self.line(key, &[("COUNTRY", Argument::Text(&country))], scopes, false)
     }

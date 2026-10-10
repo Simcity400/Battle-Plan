@@ -1,5 +1,4 @@
-//! `native_texture_image_layout::load_dds@142410030` (`gfx_dds_loader.cpp`), as the GUI loads a
-//! texture through it (no mip skipped: `CSpriteType::load_base_texture@14222B2A0` passes a zero
+//! DDS texture decoding for the GUI resource path (no mip skipped: sprite loaders pass a zero
 //! skip).
 //!
 //! The engine reads its header fields without checking them: the four-character code alone
@@ -9,19 +8,18 @@
 //! else 1) and never reads the channel masks except to tell the three 16-bit forms apart. A
 //! 32-bit surface is `B8G8R8A8` (format `0xD`) whatever its masks and alpha flag say, a 24-bit
 //! one `B8G8R8` (`0xB`, uploaded with an ignored fourth byte), a 16-bit one kept in its own
-//! words (formats 7 and 8, which `format_to_dxgi@142411320` creates as `B5G6R5_UNORM` and
-//! `B5G5R5A1_UNORM` and `build_upload_rows@1423FC160` uploads unexpanded, so a 5-bit channel
-//! samples as `c / 31`, never as an 8-bit value), so a DX10 file (its 20 extra
+//! words (formats 7 and 8, uploaded as `B5G6R5_UNORM` and `B5G5R5A1_UNORM` unexpanded, so
+//! a 5-bit channel samples as `c / 31`, never as an 8-bit value), so a DX10 file (its 20 extra
 //! header bytes skipped only when the flags are exactly `DDPF_FOURCC`) is read as `B8G8R8A8`
 //! whatever `dxgiFormat` it names. A block texture's extent is rounded up to whole blocks:
 //! that rounded extent is the texture's size, which every sprite size and UV divides. The
 //! chain of levels halves both sides from there, stops after a level with a side of 1, at the
-//! header's mip count (at least one level), or at the first level the file does not hold ("Expected
-//! more data in the texture mipmaps than was actually present"), keeping the levels before it.
+//! header's mip count (at least one level), or at the first level the file does not hold,
+//! keeping the levels before it.
 //! A cube map (`DDSCAPS2_CUBEMAP`) takes the six-face branch: every face, in DDS order, holds
 //! that chain in turn, and the loader reads them without checking the file's length.
 //!
-//! DX10 BC7 alone takes the owner's exception below: its logical DDS extent and complete
+//! DX10 BC7 alone takes the supported exception below: its logical DDS extent and complete
 //! authored mip chain, never the native block-rounded chain.
 
 use super::{Failure, Zero, oversized};
@@ -55,7 +53,7 @@ enum Pixels {
 }
 
 impl Pixels {
-    /// What a zeroed texel of the format samples as once `DecodeTextureImage` has promoted
+    /// What a zeroed texel of the format samples as once texture decoding has promoted
     /// `X1R5G5B5` to `A1R5G5B5`: what the padding fills with (for a 16-bit format, its zeroed
     /// word).
     fn zero(self) -> Zero {
@@ -91,7 +89,7 @@ impl Pixels {
                 Self::B8G8R8A8 => out.extend_from_slice(&[texel[2], texel[1], texel[0], texel[3]]),
                 Self::B8G8R8 => out.extend_from_slice(&[texel[2], texel[1], texel[0], 255]),
                 Self::B5G6R5 | Self::A1R5G5B5 => out.extend_from_slice(texel),
-                // DecodeTextureImage@1423F9A50: `texel | 0x8000`, then format 8.
+                // Set the top bit to make the texel opaque, then keep format 8.
                 Self::X1R5G5B5 => out.extend_from_slice(&[texel[0], texel[1] | 0x80]),
             }
         }
@@ -104,12 +102,12 @@ enum Form {
     Pixels(Pixels),
 }
 
-/// `DXT2`/`DXT4` codes), so the chain goes on. A zero side is kept: `create_texture@1423FB4F0`
-/// refuses it unless `pad_power_of_two` widens it first.
+/// Load a file with DDS magic: `Ok(None)` for `DXT2`/`DXT4`, so the decoding chain goes on.
+/// A zero side is kept: texture creation refuses it unless `pad_power_of_two` widens it first.
 pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
     if bytes.len() < HEADER {
         return Err(Failure::Undefined(format!(
-            "a {}-byte DDS: load_dds@142410030 reads its 128-byte header past the end of the file",
+            "a {}-byte DDS: DDS decoding reads its 128-byte header past the end of the file",
             bytes.len()
         )));
     }
@@ -122,10 +120,10 @@ pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
     } else {
         HEADER
     };
-    // OWNER EXCEPTION (2026-10-01, BC7 only): load_dds@142410030 never reads dxgiFormat,
-    // reads BC7 as BGRA and keeps no levels; create_texture@1423FB4F0 fails. Decode BC7
-    // properly instead, with DDS logical mips and the header's colour space. Other DX10
-    // files and the native BC1-3 chain below are unchanged.
+    // The BC7-only exception decodes DDS logical mips and the header's colour space.
+    // The ordinary DDS path ignores dxgiFormat, reads BC7 as BGRA and keeps no levels,
+    // which texture creation refuses. Other DX10 files use that path; BC1-3 keeps its
+    // block-rounded chain below.
     if start == HEADER + 20 && bytes.len() >= HEADER + 4 && matches!(word(128), 98 | 99) {
         return bc7(bytes, word, word(128) == 99);
     }
@@ -151,17 +149,15 @@ pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
             Pixels::X1R5G5B5
         } else {
             return Err(Failure::Undefined(format!(
-                "a 16-bit DDS with flags {flags:#x} and masks {masks:#x?}: load_dds@142410030 \
-                 loads it as format 0, which create_texture@1423FB4F0 uploads as B8G8R8X8 \
-                 with rows of format_bits_per_pixel@1423F9E10's 0 bits: the texture does not \
-                 hold the file's texels"
+                "a 16-bit DDS with flags {flags:#x} and masks {masks:#x?}: DDS decoding \
+                 loads it as format 0, uploaded as B8G8R8X8 with 0-bit rows: the texture does \
+                 not hold the file's texels"
             )));
         })
     } else {
         return Err(Failure::Undefined(format!(
-            "a {bits}-bit DDS with flags {flags:#x}: load_dds@142410030 loads it as format 0x1A, \
-             which create_texture@1423FB4F0 uploads as B8G8R8X8 with rows of \
-             format_bits_per_pixel@1423F9E10's 0 bits: the texture does not hold the file's texels"
+            "a {bits}-bit DDS with flags {flags:#x}: DDS decoding loads it as format 0x1A, \
+             uploaded as B8G8R8X8 with 0-bit rows: the texture does not hold the file's texels"
         )));
     };
     let cube = word(112) & CUBE_MAP != 0;
@@ -192,7 +188,7 @@ pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
         Form::Pixels(pixels) => (pixels.format(), pixels.zero()),
     };
     if cube {
-        // The six-face branch (`param_1[4] = 1`): each face in DDS order holds its whole chain,
+        // The six-face branch: each face in DDS order holds its whole chain,
         // halved from the (block-rounded) extent, ending after a level with a side of 1 or at the
         // header's count, one level at least. It records where each level lies in the file
         // without checking the file's length.
@@ -206,8 +202,8 @@ pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
                 let source = bytes.get(offset..offset + size).ok_or_else(|| {
                     Failure::Undefined(format!(
                         "a cube-map DDS whose face {face} level {} runs past the file: \
-                         load_dds@142410030 reads the six faces without checking the file's \
-                         length, so create_texture@1423FB4F0 uploads memory past it",
+                         DDS decoding reads the six faces without checking the file's \
+                         length, so texture creation uploads memory past it",
                         levels.len()
                     ))
                 })?;
@@ -258,7 +254,7 @@ pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
         }
         // Two sides of 0 never reach 1: the game appends empty levels up to the header's count.
         // Past the second, none changes the outcome (the texture is refused unpadded, and its
-        // second padded level is already empty), so the port stops there.
+        // second padded level is already empty), so decoding stops there.
         if level_width == 0 && level_height == 0 && levels.len() == 2 {
             break;
         }
@@ -267,8 +263,8 @@ pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
     }
     if levels.is_empty() {
         return Err(Failure::Undefined(
-            "a DDS whose first level runs past the file: load_dds@142410030 keeps no level, and \
-             create_texture@1423FB4F0 then creates the texture without initial data"
+            "a DDS whose first level runs past the file: DDS decoding keeps no level, and \
+             texture creation then creates the texture without initial data"
                 .to_owned(),
         ));
     }

@@ -1240,7 +1240,7 @@ fn copy_oob_registry(job: &mut NavalJob, memory: &impl engine::Memory, base: usi
         None => return false,
     };
     let mut first = 0_usize;
-    // Registry growth@14220A4F0 allocates the complete mask/overflow extent.
+    // Registry growth allocates the complete mask/overflow extent.
     while first < terminal {
         let log = &mut job.log;
         let slots = (terminal - first).min(64);

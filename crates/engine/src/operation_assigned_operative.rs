@@ -1,13 +1,14 @@
-//! Assigned-operative array element; its engine class name is unproved.
+//! Assigned-operative array element.
 
-/// COperationInstance assigned-operative record size; build_profile.rs:531 and read_operation_assigned_operatives advance 0x38 bytes.
+/// Assigned-operative record stride.
 pub const STRIDE: usize = 0x38;
-/// Assigned-operative packed u64 reference at row+0; read_operation_assigned_operatives extracts low u32 type and high u32 id.
+/// Packed full reference with low u32 type and high u32 ID.
 pub const HANDLE: usize = 0x00;
-/// Assigned-operative low-u32 reference type; the old reader compares it to COperationInstance's 4713 without proving a distinct type.
+/// Low u32 reference type shared with operation-instance references.
 pub const REFERENCE_TYPE: u32 = 4_713;
-/// Assigned-operative raw selection word; 13EDEE0 stores its fourth argument at slot+8.
+/// Raw assigned-operative selection word.
 pub const SELECTION: usize = 0x08;
+/// Assigned-slot writer omitting both-zero handles, zero selection and null optional values.
 pub const WRITER_RVA: usize = 0x01bd_1cd0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +26,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn proved_writer_rva_matches_ghidra_verified_address() {
+    fn writer_rva_matches_supported_operation_layout() {
         assert_eq!(WRITER_RVA, 0x1BD1CD0);
         assert_eq!((STRIDE, HANDLE, SELECTION), (0x38, 0x00, 0x08));
     }

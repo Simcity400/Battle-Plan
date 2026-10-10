@@ -1,6 +1,6 @@
-//! Drawn-row naval titles. Losses group builder 1417E6E30 copies the full
-//! CSunkShipInfo+0x98 reference and +0x90 province; header 1417E9B20 calls
-//! 1415B06C0 with that province and no result, including after the combat ends.
+//! Drawn-row naval titles. Loss groups use the full combat reference and
+//! province; headers resolve the province with no result, including after
+//! the combat ends.
 use super::super::{
     LoadContext, Product, ReplyWarnings, check_reply_budget, place_names, recorded_rows, sinkings,
 };
@@ -135,11 +135,11 @@ fn geography(source: &Source, cat: &Arc<Catalogue>) -> Result<Arc<Geography>, St
     geo
 }
 
-// Exe keys/argument at 1415B06C0 and 142727E7C; the game passes text, not a key.
+// Battle title arguments receive text rather than a localisation key.
 fn title(cat: &Catalogue, name: &str) -> Result<String, String> {
     let key = "NAVAL_BATTLE_TITLE";
-    // 1415B06C0 returns 142230F20's result without an emptiness gate;
-    // a missing key is copied by 142230940, a defined empty value survives.
+    // Return plain localisation without an emptiness gate;
+    // a missing key is copied, a defined empty value survives.
     catalogue::localised_with(
         &cat.localisation,
         key,
@@ -264,8 +264,8 @@ impl Product for ShipsSunkBattleTitles {
                 name: None,
                 missing: None,
             });
-            // The full reference identifies the group@1417E9B20; never use a
-            // low word or guess a result by place/date. Causes have no battle.
+            // The full reference identifies the group; never use a low word
+            // or guess a result by place/date. Causes have no battle.
             if ship.entry.battle != 0 && ship.entry.cause_record == 0 {
                 reply.rows[at].missing = Some(
                     if ship.entry.province_present == 0 {
@@ -425,8 +425,7 @@ impl Product for ShipsSunkBattleTitles {
                                 .ok_or_else(|| "Battle-name province not recorded".to_owned())?
                         } else {
                             let key = &geo.regions[region].name_key;
-                            // 1415B06C0 copies GetName@140E0EB10's text,
-                            // including the template's empty default.
+                            // Copy the template's name text, including its empty default.
                             catalogue::localised(&cat.localisation, key, View::Plain)?
                         };
                         title(&cat, &name)

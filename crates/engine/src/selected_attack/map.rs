@@ -1,7 +1,7 @@
-//! Integrated selected-attack map/country operands; source-only and uncompiled.
+//! Selected-attack map and country operands.
 use super::*;
 
-/// 14129F040 own-country GetModifier103/272; AD/1DD region GetModifier.
+/// Own-country modifier keys 0x103/0x272 and region keys 0xAD/0x1DD.
 pub const LAND_NIGHT_ATTACK: u32 = crate::modifier_keys::LAND_NIGHT_ATTACK;
 pub const LAND_BUNKER_FACTOR: u32 = crate::modifier_keys::LAND_BUNKER_EFFECTIVENESS_FACTOR;
 pub const WEATHER_ATTACK: u32 = crate::modifier_keys::ARMY_ATTACK_FACTOR;
@@ -347,9 +347,9 @@ impl MapPacket {
         self.state_indices.clear();
         self.metadata.finish_native();
     }
-    /// Native BA56A0's explicit actual0 path, NOT positive census absence.
-    /// A readable zero link selects the authenticated reserved object under
-    /// the same native lookup law; it never supplies a neutral/null result.
+    /// Explicit reserved-country path. A readable zero link selects the
+    /// authenticated reserved object by the same lookup rule; it never
+    /// supplies a neutral or null result.
     fn owner<M: Memory>(
         &mut self,
         countries: &ccountry::Reader<'_, M>,
@@ -431,9 +431,9 @@ impl MapPacket {
         {
             return Err("selected attack state memo arena exhausted");
         }
-        // Reuse the actual controller's stored+8 ID authenticated by Reader,
-        // never the raw alias used to select it. cstate's selecting law owns
-        // native hash/BA60A0 probes; no custom country override guess is made.
+        // Reuse the actual controller's stored +8 ID authenticated by Reader,
+        // never the selecting raw alias. State lookup owns hash and country
+        // probes; no custom country override is inferred.
         let value = crate::cstate::movement_modifier_with(
             memory,
             base,
@@ -528,8 +528,8 @@ impl MapPacket {
             }?;
             self.required.countries = countries.count() as usize;
             self.required.links = countries.arrays()[1].count as usize;
-            // 14129F040/141296820 consume the original country and province
-            // observations; reserve their complete suffix before publication.
+            // Use the original country and province observations; reserve their
+            // complete suffix before publication.
             if self.growing {
                 self.reserve(self.required)
                     .map_err(|_| "selected attack allocation failed")?;
@@ -585,9 +585,9 @@ impl MapPacket {
                 return Err("selected attack province census identities invalid");
             }
             for province in provinces {
-                // 14129F040 reaches fort modifiers only after the signed
-                // positive target-controller gate. Positive aliases may
-                // still resolve to the genuine reserved country object.
+                // Fort modifiers are reached only after the signed positive target-
+                // controller gate. Positive aliases may still resolve to the genuine
+                // reserved country object.
                 if (province.controller as i32) > 0
                     && province.attack_fort_sum.is_some_and(|sum| sum > 0)
                     && let Err(reason) =

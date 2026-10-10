@@ -519,7 +519,7 @@ fn selected_railway_levels_compare_every_signed_index_without_inferring_pair_cou
         report
             .limitations
             .keys()
-            .any(|reason| reason.contains("no +44 pair count"))
+            .any(|reason| reason.contains("no pair count"))
     );
     for case in 0..6 {
         let mut changed = rows.clone();

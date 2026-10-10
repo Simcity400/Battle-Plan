@@ -6,7 +6,7 @@ fn invalid(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-/// 1415C3AA0's delayed armour text: deflection factors (fixed5) and the
+/// delayed armour text: deflection factors (fixed5) and the
 /// signed integer dice sizes it divides.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ArmourHover {
@@ -18,7 +18,7 @@ pub(crate) struct ArmourHover {
     pub(crate) strength_die: i32,
 }
 
-/// 140C6D610's reserve reinforcement operands, fixed5.
+/// reserve reinforcement operands, fixed5.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Reinforce {
     pub(crate) over_width_penalty: i64,
@@ -32,7 +32,7 @@ pub(crate) struct Reinforce {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct LandDefines {
     /// `COMBAT_{GOOD,SOME}_PIERCING` then `COMBAT_{GOOD,SOME}_ARMOR`, narrowed
-    /// to f32 as the define registry stores them (14205B9E0).
+    /// to f32 as the define registry stores them.
     pub(crate) armour_icons: [f32; 4],
     /// `PIERCING_THRESHOLDS` and `PIERCING_THRESHOLD_DAMAGE_VALUES`, parallel.
     pub(crate) piercing_thresholds: Vec<i64>,
@@ -40,9 +40,9 @@ pub(crate) struct LandDefines {
     /// `ENEMY_AIR_SUPERIORITY_DEFENSE_STEEPNESS` and `_DEFENSE`.
     pub(crate) air_superiority: [i64; 2],
     /// `NAir.ANTI_AIR_ATTACK_TO_DAMAGE_REDUCTION_FACTOR` and
-    /// `ANTI_AIR_MAXIMUM_DAMAGE_REDUCTION_FACTOR` (141298090).
+    /// `ANTI_AIR_MAXIMUM_DAMAGE_REDUCTION_FACTOR`.
     pub(crate) anti_air: [i64; 2],
-    /// `LAND_AIR_COMBAT_MAX_PLANES_PER_ENEMY_WIDTH` (1415C1A60).
+    /// `LAND_AIR_COMBAT_MAX_PLANES_PER_ENEMY_WIDTH`.
     pub(crate) planes_per_width: i64,
     pub(crate) fuel_penalty_start_ratio: i64,
     pub(crate) recon_skill_impact: i32,
@@ -55,7 +55,6 @@ pub(crate) struct LandDefines {
     pub(crate) armour_hover: ArmourHover,
     pub(crate) reinforce: Reinforce,
     /// Country, general and field-marshal preferred-tactic weight factors
-    /// (1412A77A0).
     pub(crate) preference_factors: [i64; 3],
 }
 

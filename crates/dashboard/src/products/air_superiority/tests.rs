@@ -2429,6 +2429,8 @@ fn air_superiority_coalition_key_survives_departure_of_its_first_current_member(
 
 #[test]
 fn air_superiority_region_names_reuse_the_source_content_key_and_invalidate_on_language_change() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_, folder) =
         crate::catalogue::tests::folder_catalogue(&[("settings.txt", "language=\"l_english\"")]);
     let content = super::super::ContentOptions {
@@ -2876,6 +2878,8 @@ fn air_superiority_all_request_modes_reuse_one_country_group_scan() {
 
 #[test]
 fn air_superiority_faction_names_follow_native_operands_and_dictionary_reads() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "common/factions/templates/a.txt",
@@ -2973,6 +2977,8 @@ fn air_superiority_faction_names_follow_native_operands_and_dictionary_reads() {
 
 #[test]
 fn air_superiority_region_names_preserve_empty_results_and_native_key_fallbacks() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "map/strategicregions/empty.txt",
@@ -3048,6 +3054,8 @@ fn air_superiority_region_names_preserve_empty_results_and_native_key_fallbacks(
 
 #[test]
 fn air_superiority_theatre_names_preserve_raw_bytes_and_guard_the_recording_language() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "map/strategicregions/a.txt",

@@ -383,8 +383,8 @@ const NO_DISPATCH: Dispatch = Dispatch {
     winner: 0,
 };
 thread_local! {static DISPATCH:Cell<Dispatch>=const{Cell::new(NO_DISPATCH)};}
-// CheckRoundTermination 1412A3E70 returns 1 after dispatch; manager
-// 140BA9890 removes it in the same update loop. Consume the pointer at
+// Round termination returns 1 after dispatch; the combat manager
+// removes it in the same update loop. Consume the pointer at
 // finalize, paired with its handle, so reuse cannot skip a fallback walk.
 thread_local! {static LAST_DISPATCHED:Cell<(usize,u64,u64)>=const{Cell::new((0,0,0))};}
 fn take_dispatched(combat: usize, handle: u64) -> bool {
@@ -789,8 +789,8 @@ unsafe extern "system-unwind" fn finalize(combat: usize) {
 }
 
 // Observation-only base-lifecycle bridge, after land XP/effect callbacks:
-// Keep tail-jumping: DeleteUnit must see 1413CE9F6, the deletion capture's
-// COMBAT_DELETION_RETURN, through 141299E83 -> 1413CC7A3. Calling the
+// Keep tail-jumping: unit deletion must see the deletion capture's
+// COMBAT_DELETION_RETURN through the original caller chain. Calling the
 // trampoline would replace that PC and break its combat cause classification.
 // Every volatile register and incoming flag is restored before the trampoline;
 // Win64 nonvolatile registers are preserved by the Rust observer's ABI. The
@@ -924,9 +924,9 @@ unsafe extern "system-unwind" fn destruction(army: usize, from: usize, to: usize
                     seen: false,
                     failed: false,
                 });
-                // 140C79E70 calls 140CCC7F0 before deferred deletion
-                // 1401D6FE0. One division can enter again; pair this native
-                // invocation by its reserved record, not its division handle.
+                // Destruction callbacks run before deferred deletion. One division can
+                // enter again; pair this native invocation by its reserved
+                // record, not its division handle.
                 append_at(plan.words, |first, put| {
                     let mut context = DESTRUCTION.get();
                     context.entry = first;
@@ -2235,7 +2235,7 @@ mod tests {
             let mut output = [0u64; 20];
             let flags = unsafe { land_wipe_test_caller(output.as_mut_ptr(), 0x202) };
             assert_eq!(&output[..6], &[0x101, 0x202, 0x808, 0x909, 0xa0a, 0xb0b]);
-            // The mock DeleteUnit receives the CALL's original return PC,
+            // The mock unit deletion receives the CALL's original return PC,
             // including through the installed relay, bridge and trampoline.
             assert_eq!(
                 output[6],

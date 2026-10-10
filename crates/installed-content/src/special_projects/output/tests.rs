@@ -1,7 +1,7 @@
 use crate::special_projects::Catalog;
 
 #[test]
-fn native_project_integer_constants_merge_normalize_and_keep_output() {
+fn project_integer_constants_merge_normalize_and_keep_output() {
     let root =
         std::env::temp_dir().join(format!("installed-content-project-output-{}", std::process::id()));
     let folder = root.join("common/special_projects/projects");

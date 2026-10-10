@@ -1,8 +1,6 @@
-//! CTaskForce's retained name. Primary vtable 14294C480 +0x68 selects
-//! 140BEDEB0, returning primary CUnit+0x258 without generating or changing it.
-//! 140D66770 serializes its secondary base (+0x10) through 140BF7010, whose
-//! name header at secondary+0x248 is this same string. Capture owns all bytes;
-//! the save writer and localisation arguments apply their own C-string law.
+//! Retained task-force name returned without generation or mutation.
+//! Serialization follows the secondary unit base to the same string. Capture
+//! owns all bytes; save writing and localisation apply their own C-string rules.
 
 use super::{SECONDARY_BASE, SECONDARY_VTABLE_RVA, VTABLE_RVA};
 use crate::{
@@ -43,8 +41,8 @@ pub fn cached_name(
     result
 }
 
-/// Same authenticated native cache@140BEDEB0, with worker storage grown from
-/// the original string header before its admitted row can be published.
+/// Same authenticated retained cache, with worker storage grown from its
+/// original string header before publishing an admitted row.
 pub(crate) fn cached_name_buffer(
     memory: &impl Memory,
     base: usize,

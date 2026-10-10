@@ -3,11 +3,11 @@ use replay::rows::{NavalCombatAirEfficiency, NavalShipModifierSource, NavalShipM
 
 #[test]
 fn sortie_content_keys_spell_the_fixed_modifier_keys() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (index, name) in SORTIE.into_iter().zip(SORTIE_KEYS) {
         assert!(
-            keys::ALL
-                .iter()
-                .any(|key| key.index == index && key.name == name),
+            keys::all().any(|key| key.index == index && key.name == name),
             "{name}"
         );
     }
@@ -512,7 +512,7 @@ fn early_sortie_uses_authored_mission_ratio_and_missing_content_is_unavailable()
         Some(40_000)
     );
     // This is the parent NavalCombatDetails.duration; the plane has no
-    // second copy of the same combat+0x44 operand.
+    // second copy of the same duration operand.
     assert_eq!(
         test_efficiency(
             &plane,

@@ -74,7 +74,7 @@ pub struct CarrierPool {
     pub wings_start: usize,
     pub wings_len: u32,
     pub fuel: CarrierPoolFuel,
-    /// Original F47350 signed-i32 wrapping wing+7C sum. Independent of fuel.
+    /// Signed-i32 wrapping sum of each wing's plane count, independent of fuel.
     pub planes_raw: Option<i32>,
 }
 

@@ -1,27 +1,27 @@
-//! Naval combat sides for the engaged flag (`CCombatant+0xBA`), fed to the
+//! Naval combat sides for the engaged flag, fed to the
 //! shared derivation ([`super::engaged`]) through the engaged index.
 //!
-//! A naval side's flag is rebuilt (`UpdateCombatSharedVisionFlag@1413CEBE0`) by:
+//! A naval side's flag is rebuilt (`engagement refresh`) by:
 //!
-//! - `CCombatant::AddUnit` (1413CC2B0) when a task force joins, which appends
+//! - `unit joining` when a task force joins, which appends
 //!   its owners to the lists: the side's recorded task forces
-//!   (`CCombatant+0x20`) gain a handle, and the recorded lists are tested;
-//! - `CNavalCombatant::AddTransferToGroup` (1416084E0) when a transfer's
+//!   gain a handle, and the recorded lists are tested;
+//! - `transfer joining` when a transfer's
 //!   convoys join, which creates their members with fresh combat-wide battle
-//!   slots (`++CNavalCombat+0x108`) and refreshes: a convoy member's slot the
+//!   slots and refreshes: a convoy member's slot the
 //!   previous hour lacked proves a rebuild of the recorded lists, and an hour
 //!   whose participant census is incomplete may hide one
 //!   ([`engaged::Added::Unavailable`]);
-//! - `RemoveUnitFromCombat` (1413CE250), the only naval removal, on both
-//!   sides: each side's `RemoveUnit` (1413CE340) rebuilds its lists from its
-//!   remaining task forces' owners alone (logical owners into `+0x38`,
-//!   positive raw roster owners into `+0x50`), which are the lists that
+//! - `combat unit removal`, the only naval removal, on both
+//!   sides: each side's `side unit removal` rebuilds its lists from its
+//!   remaining task forces' owners alone (logical owners into the primary list,
+//!   positive raw roster owners into the roster-owner list), which are the lists that
 //!   rebuild tests;
 //! - a load, a player change and the local player's controller change.
 //!
 //! Known misses, beyond the shared ones in [`super::engaged`]: the convoy and
 //! transfer owners a removal drops re-enter the lists afterwards without a
-//! refresh (14160ED40), so a later hour's recorded lists can hold owners the
+//! refresh, so a later hour's recorded lists can hold owners the
 //! held flag never tested, until the next rebuild; a task force re-added
 //! while present and a transfer joining without a new convoy member rebuild
 //! without a recorded trace.
@@ -96,7 +96,7 @@ fn naval_sides(frame: &DecodedFrame) -> io::Result<engaged_index::HourSides> {
     // Only the task forces the sides name are read, each found in the census,
     // which is key-sorted by id.
     let forces = rows::<tables::TaskForces>(frame)?.rows();
-    // 1413CE340's lists from the remaining task forces alone; `None` when one
+    // lists from the remaining task forces alone; `None` when one
     // of them is not in the census.
     let unit_lists = |units: &[u64]| {
         let mut lists = (Vec::new(), Vec::new());

@@ -46,9 +46,9 @@ typed_codec!(CountryProductionModifiersRow, 32, |row| row.country as u128,
     Ok(())
 });
 
-/// Line-local cached operands. Country/variant/MIO/count authenticate joins to
-/// ProductionLines at the supplying read. Bonuses are the seven categories of
-/// 1406329E0, after the runtime token mapping; dirty remains explicit.
+/// Line-local cached operands. Country/variant/MIO/count authenticate joins
+/// to ProductionLines at the supplying read. Bonuses are the seven runtime
+/// production categories after token mapping; dirty remains explicit.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProductionLineModifiersRow {
     pub line: u64,

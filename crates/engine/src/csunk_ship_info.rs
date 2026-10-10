@@ -1,0 +1,783 @@
+//! Persistent sunk-ship records. Combat generation, battle slot and hook
+//! sequence are event metadata rather than record fields. Class pointers
+//! resolve to subunit definitions with literal names, separate from inherited
+//! display strings of unresolved meaning. Neither is ship identity. The
+//! equipment-variant reference can be null or shared; records have no ship
+//! reference subobject. Age pruning swap-erases entries, so vector position
+//! is not persistent ship identity.
+
+/// Primary vtable.
+pub const VTABLE_RVA: usize = 0x0294_1608;
+/// CSunkShipInfo allocation size 0xa8.
+pub const SIZE: usize = 0xa8;
+/// CSunkShipInfo std::string victim name.
+pub const SHIP_NAME: usize = 0x08;
+/// Attribution-name string permitting empty text.
+pub const ATTRIBUTION_SOURCE_NAME: usize = 0x28;
+/// CSunkShipInfo u32 victim country link.
+pub const VICTIM_COUNTRY: usize = 0x48;
+/// CSunkShipInfo u32 attacker country link.
+pub const ATTACKER_COUNTRY: usize = 0x4c;
+/// Embedded sink date with primary vtable.
+pub const SINK_DATE: usize = 0x50;
+/// CSunkShipInfo i32 raw sink hour.
+pub const SINK_HOUR: usize = 0x58;
+/// Sink-date secondary persistent-base identity.
+pub const SINK_DATE_PERSISTENT: usize = 0x60;
+/// Victim subunit-definition pointer resolved through its class token.
+pub const SHIP_CLASS: usize = 0x68;
+/// Attribution subunit-definition pointer, initially the null definition.
+pub const ATTRIBUTION_CLASS: usize = 0x70;
+/// Model level, i32, from the dominant equipment variant and serialized.
+pub const MODEL_LEVEL: usize = 0x78;
+/// Full victim equipment-variant handle, separate from ship identity.
+pub const VICTIM_EQUIPMENT_VARIANT: usize = 0x7c;
+/// Full damage-source handle, conditionally serialized.
+pub const DAMAGE_SOURCE_REFERENCE: usize = 0x84;
+/// Province pointer copied from the task force by record creation.
+pub const PROVINCE: usize = 0x90;
+/// Full battle handle serialized and restored with both words.
+pub const BATTLE: usize = 0x98;
+/// Cause-record boolean accepting only zero or one.
+pub const CAUSE_RECORD: usize = 0xa0;
+/// Assisted-kill boolean accepting only zero or one.
+pub const ASSISTED_KILL: usize = 0xa1;
+/// Attributed record constructor writing date and province.
+pub const ATTRIBUTED_CONSTRUCTOR_RVA: usize = 0x00c1_de60;
+/// Combat-source constructor writing date and province.
+pub const COMBAT_SOURCE_CONSTRUCTOR_RVA: usize = 0x00c1_df70;
+/// Cause constructor writing date and province.
+pub const CAUSE_CONSTRUCTOR_RVA: usize = 0x00c1_e220;
+/// Default constructor initializing date subobjects.
+pub const DEFAULT_CONSTRUCTOR_RVA: usize = 0x00c1_e5b0;
+/// Field finisher stamping current hour and resolving both class-name pointers.
+pub const FILL_COMMON_RVA: usize = 0x00c1_e960;
+/// Record loader restoring fields and conditionally clearing equipment handles.
+pub const LOAD_FIELD_RVA: usize = 0x00c1_ebc0;
+/// Serializer emitting names, countries, classes, level, date and optional
+/// resolving references.
+pub const SAVE_RVA: usize = 0x00c1_f090;
+
+use crate::{
+    Memory, cgame_date, cgame_state, cpdx_array::Array, cprovince, csub_unit_definition,
+    msvc_string, read, read_slice, walk::Outcome,
+};
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TextRange {
+    pub start: usize,
+    pub len: usize,
+}
+
+/// An anonymous native list element. Its slice position is collection order,
+/// not a ship id: duplicate names, references and identical records are valid.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Record {
+    pub ship_name: TextRange,
+    pub attribution_name: TextRange,
+    pub class_name: TextRange,
+    pub attribution_class_name: TextRange,
+    pub victim_country: u32,
+    pub attacker_country: u32,
+    pub sink_hour: i32,
+    pub class_token: u32,
+    pub attribution_class_token: u32,
+    pub attribution_class_present: u8,
+    pub model_level: i32,
+    pub victim_equipment_variant: u64,
+    pub damage_source_reference: u64,
+    pub province: u32,
+    pub province_present: u8,
+    pub battle: u64,
+    pub cause_record: u8,
+    pub assisted_kill: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListWalk {
+    pub outcome: Outcome,
+    pub bytes_len: usize,
+    /// Minimum arena size known when the walk stopped. A byte-capacity failure
+    /// includes the entire next record; no partially copied record is returned.
+    pub required_bytes: usize,
+}
+
+/// Copies the retained sequence in native vector order into caller-owned rows
+/// and bytes. Its parent replay row must own the list; these records have no
+/// independent native key. The caller applies the hourly consistency protocol.
+/// No allocation, engine call, retry, pointer retention or sorting occurs.
+pub fn walk(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    current_hour: i32,
+    output: &mut [Record],
+    bytes: &mut [u8],
+) -> ListWalk {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        current_hour,
+        crate::walk::Buffer::Fixed(output),
+        crate::walk::Buffer::Fixed(bytes),
+    )
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    current_hour: i32,
+    output: &mut Vec<Record>,
+    bytes: &mut Vec<u8>,
+) -> ListWalk {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        current_hour,
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(bytes),
+    )
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    current_hour: i32,
+    mut output: crate::walk::Buffer<'_, Record>,
+    mut bytes: crate::walk::Buffer<'_, u8>,
+) -> ListWalk {
+    let result = (|| {
+        if game_state == 0 || current_hour <= 0 {
+            return Err("sunk-ship history context invalid");
+        }
+        let header = game_state
+            .checked_add(cgame_state::SUNK_SHIP_HISTORY)
+            .ok_or("sunk-ship history address overflow")?;
+        let array = Array::read(memory, header, 8).ok_or("sunk-ship history array invalid")?;
+        // Serialization emits every retained record and its full strings.
+        output.ensure(array.count as usize)?;
+        let mut bytes_len = 0_usize;
+        for index in 0..array.count {
+            let len = index as usize;
+            if len == output.len() {
+                return Ok(ListWalk {
+                    outcome: Outcome::Truncated {
+                        len,
+                        unread_rows: array.count - index,
+                    },
+                    bytes_len,
+                    required_bytes: bytes_len,
+                });
+            }
+            let slot = array.element(index, 8).ok_or("sunk-ship slot overflow")?;
+            let pointer = read::<u64>(memory, slot)
+                .and_then(|p| usize::try_from(p).ok())
+                .filter(|&p| p != 0)
+                .ok_or("sunk-ship history pointer unreadable or null")?;
+            let raw =
+                read::<[u8; SIZE]>(memory, pointer).ok_or("sunk-ship history record unreadable")?;
+            if u64_at(&raw, 0)
+                != base
+                    .checked_add(VTABLE_RVA)
+                    .ok_or("module address overflow")? as u64
+            {
+                return Err("sunk-ship history vtable mismatch");
+            }
+            if u64_at(&raw, SINK_DATE)
+                != base
+                    .checked_add(cgame_date::VTABLE_RVA)
+                    .ok_or("module address overflow")? as u64
+                || u64_at(&raw, SINK_DATE_PERSISTENT)
+                    != base
+                        .checked_add(cgame_date::PERSISTENT_VTABLE_RVA)
+                        .ok_or("module address overflow")? as u64
+            {
+                return Err("sunk-ship history date vtable mismatch");
+            }
+            let sink_hour = u32_at(&raw, SINK_HOUR) as i32;
+            if sink_hour <= 0 || sink_hour > current_hour {
+                return Err("sunk-ship history date outside recorded hour");
+            }
+            if raw[CAUSE_RECORD] > 1 || raw[ASSISTED_KILL] > 1 {
+                return Err("sunk-ship history boolean invalid");
+            }
+            let (class_token, class_text) = class(memory, base, u64_at(&raw, SHIP_CLASS))?;
+            let attribution = u64_at(&raw, ATTRIBUTION_CLASS);
+            let (attribution_class_token, attribution_text) = if attribution == 0 {
+                (0, Source::default())
+            } else {
+                class(memory, base, attribution)?
+            };
+            let sources = [
+                string(memory, pointer + SHIP_NAME, &raw[SHIP_NAME..VICTIM_COUNTRY])?,
+                string(
+                    memory,
+                    pointer + ATTRIBUTION_SOURCE_NAME,
+                    &raw[ATTRIBUTION_SOURCE_NAME..VICTIM_COUNTRY],
+                )?,
+                class_text,
+                attribution_text,
+            ];
+            let required_bytes = sources.iter().try_fold(bytes_len, |total, source| {
+                total
+                    .checked_add(source.len)
+                    .ok_or("sunk-ship text size overflow")
+            })?;
+            bytes.ensure(required_bytes)?;
+            if required_bytes > bytes.len() {
+                return Ok(ListWalk {
+                    outcome: Outcome::Truncated {
+                        len,
+                        unread_rows: array.count - index,
+                    },
+                    bytes_len,
+                    required_bytes,
+                });
+            }
+            let mut ranges = [TextRange::default(); 4];
+            for (source, range) in sources.into_iter().zip(&mut ranges) {
+                if !read_slice(
+                    memory,
+                    source.pointer,
+                    &mut bytes[bytes_len..bytes_len + source.len],
+                ) {
+                    return Err("sunk-ship text bytes unreadable");
+                }
+                *range = TextRange {
+                    start: bytes_len,
+                    len: source.len,
+                };
+                bytes_len += source.len;
+            }
+            let province_pointer = u64_at(&raw, PROVINCE);
+            let province = if province_pointer == 0 {
+                0
+            } else {
+                let province_pointer = usize::try_from(province_pointer)
+                    .map_err(|_| "sunk-ship province pointer overflow")?;
+                if read::<u64>(memory, province_pointer)
+                    != Some(
+                        base.checked_add(cprovince::VTABLE_RVA)
+                            .ok_or("module address overflow")? as u64,
+                    )
+                {
+                    return Err("sunk-ship province vtable mismatch");
+                }
+                province_pointer
+                    .checked_add(cprovince::ID)
+                    .and_then(|p| read::<u32>(memory, p))
+                    .ok_or("sunk-ship province id unreadable")?
+            };
+            output[len] = Record {
+                ship_name: ranges[0],
+                attribution_name: ranges[1],
+                class_name: ranges[2],
+                attribution_class_name: ranges[3],
+                victim_country: u32_at(&raw, VICTIM_COUNTRY),
+                attacker_country: u32_at(&raw, ATTACKER_COUNTRY),
+                sink_hour,
+                class_token,
+                attribution_class_token,
+                attribution_class_present: u8::from(attribution != 0),
+                model_level: u32_at(&raw, MODEL_LEVEL) as i32,
+                victim_equipment_variant: u64_at(&raw, VICTIM_EQUIPMENT_VARIANT),
+                damage_source_reference: u64_at(&raw, DAMAGE_SOURCE_REFERENCE),
+                province,
+                province_present: u8::from(province_pointer != 0),
+                battle: u64_at(&raw, BATTLE),
+                cause_record: raw[CAUSE_RECORD],
+                assisted_kill: raw[ASSISTED_KILL],
+            };
+        }
+        Ok(ListWalk {
+            outcome: Outcome::Rows {
+                len: array.count as usize,
+            },
+            bytes_len,
+            required_bytes: bytes_len,
+        })
+    })();
+    result.unwrap_or_else(|reason| ListWalk {
+        outcome: Outcome::Unavailable { reason },
+        bytes_len: 0,
+        required_bytes: 0,
+    })
+}
+
+/// Row/full-string floors for attach/cadence only. Serialization emits both
+/// retained strings and selected class names for each occurrence.
+pub fn storage_demand(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+) -> Result<(usize, usize), &'static str> {
+    let header = game_state
+        .checked_add(cgame_state::SUNK_SHIP_HISTORY)
+        .ok_or("sunk-ship history address overflow")?;
+    let array = Array::read(memory, header, 8).ok_or("sunk-ship history array invalid")?;
+    let mut bytes = 0_usize;
+    crate::cpdx_array::pointers(
+        memory,
+        array,
+        "sunk-ship history pointer unreadable",
+        |_, pointer| {
+            if pointer == 0 {
+                return Err("sunk-ship history pointer unreadable or null");
+            }
+            let mut identity = [0_u8; 8];
+            let mut strings = [0_u8; 64];
+            let mut classes = [0_u8; 16];
+            if memory.copy_scattered(
+                [
+                    pointer,
+                    pointer
+                        .checked_add(SHIP_NAME)
+                        .ok_or("sunk-ship history address overflow")?,
+                    pointer
+                        .checked_add(SHIP_CLASS)
+                        .ok_or("sunk-ship history address overflow")?,
+                ],
+                &mut [&mut identity, &mut strings, &mut classes],
+            ) != 3
+            {
+                return Err("sunk-ship history sizing fields unreadable");
+            }
+            if u64::from_le_bytes(identity)
+                != base
+                    .checked_add(VTABLE_RVA)
+                    .ok_or("module address overflow")? as u64
+            {
+                return Err("sunk-ship history vtable mismatch");
+            }
+            let mut sources = [
+                string(memory, pointer + SHIP_NAME, &strings[..32])?,
+                string(memory, pointer + ATTRIBUTION_SOURCE_NAME, &strings[32..])?,
+                class(memory, base, u64_at(&classes, 0))?.1,
+                Source::default(),
+            ];
+            if u64_at(&classes, 8) != 0 {
+                sources[3] = class(memory, base, u64_at(&classes, 8))?.1;
+            }
+            for source in sources {
+                bytes = bytes
+                    .checked_add(source.len)
+                    .ok_or("sunk-ship text size overflow")?;
+            }
+            Ok(())
+        },
+    )?;
+    Ok((array.count as usize, bytes))
+}
+
+#[derive(Default, Clone, Copy)]
+struct Source {
+    pointer: usize,
+    len: usize,
+}
+
+fn class(memory: &impl Memory, base: usize, pointer: u64) -> Result<(u32, Source), &'static str> {
+    let pointer = usize::try_from(pointer).map_err(|_| "sunk-ship class address overflow")?;
+    let header = read::<[u8; csub_unit_definition::NAME + msvc_string::STRIDE]>(memory, pointer)
+        .ok_or("sunk-ship class unreadable")?;
+    let vtable = u64_at(&header, 0);
+    if vtable
+        != base
+            .checked_add(csub_unit_definition::VTABLE_RVA)
+            .ok_or("module address overflow")? as u64
+        && vtable
+            != base
+                .checked_add(csub_unit_definition::NULL_VTABLE_RVA)
+                .ok_or("module address overflow")? as u64
+    {
+        return Err("sunk-ship class vtable mismatch");
+    }
+    Ok((
+        u32_at(&header, csub_unit_definition::TOKEN),
+        string(
+            memory,
+            pointer + csub_unit_definition::NAME,
+            &header[csub_unit_definition::NAME..],
+        )?,
+    ))
+}
+
+fn string(memory: &impl Memory, address: usize, header: &[u8]) -> Result<Source, &'static str> {
+    let len = u64_at(header, msvc_string::LENGTH);
+    let capacity = u64_at(header, msvc_string::CAPACITY);
+    if len > capacity || capacity < msvc_string::INLINE_CAPACITY {
+        return Err("sunk-ship text header invalid");
+    }
+    let len = usize::try_from(len).map_err(|_| "sunk-ship text length overflow")?;
+    let pointer = if capacity == msvc_string::INLINE_CAPACITY {
+        address
+    } else {
+        usize::try_from(u64_at(header, msvc_string::DATA))
+            .ok()
+            .filter(|&p| p != 0)
+            .ok_or("sunk-ship text pointer invalid")?
+    };
+    let terminator = pointer
+        .checked_add(len)
+        .ok_or("sunk-ship text address overflow")?;
+    if read::<u8>(memory, terminator) != Some(0) {
+        return Err("sunk-ship text terminator invalid");
+    }
+    Ok(Source { pointer, len })
+}
+
+fn u32_at(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(
+        bytes[offset..offset + 4]
+            .try_into()
+            .expect("fixed native field"),
+    )
+}
+
+fn u64_at(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(
+        bytes[offset..offset + 8]
+            .try_into()
+            .expect("fixed native field"),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::SliceMemory;
+
+    const GAME: usize = 0x100;
+    const VECTOR: usize = 0x800;
+    const FIRST: usize = 0x900;
+    const SECOND: usize = 0xb00;
+    const CLASS: usize = 0xd00;
+    const NULL_CLASS: usize = 0xe00;
+    const MAP_PROVINCE: usize = 0xf00;
+
+    fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
+        bytes[at..at + value.len()].copy_from_slice(value);
+    }
+
+    fn short(bytes: &mut [u8], at: usize, value: &[u8]) {
+        put(bytes, at, value);
+        put(
+            bytes,
+            at + msvc_string::LENGTH,
+            &(value.len() as u64).to_le_bytes(),
+        );
+        put(bytes, at + msvc_string::CAPACITY, &15_u64.to_le_bytes());
+    }
+
+    fn fixture() -> Vec<u8> {
+        let mut bytes = vec![0_u8; 0x2000];
+        put(
+            &mut bytes,
+            GAME + cgame_state::SUNK_SHIP_HISTORY,
+            &(VECTOR as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            GAME + cgame_state::SUNK_SHIP_HISTORY_CAPACITY,
+            &2_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            GAME + cgame_state::SUNK_SHIP_HISTORY_COUNT,
+            &2_u32.to_le_bytes(),
+        );
+        put(&mut bytes, VECTOR, &(FIRST as u64).to_le_bytes());
+        put(&mut bytes, VECTOR + 8, &(SECOND as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            CLASS,
+            &(csub_unit_definition::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            CLASS + csub_unit_definition::TOKEN,
+            &123_u32.to_le_bytes(),
+        );
+        short(&mut bytes, CLASS + csub_unit_definition::NAME, b"destroyer");
+        put(
+            &mut bytes,
+            NULL_CLASS,
+            &(csub_unit_definition::NULL_VTABLE_RVA as u64).to_le_bytes(),
+        );
+        short(&mut bytes, NULL_CLASS + csub_unit_definition::NAME, b"");
+        put(
+            &mut bytes,
+            MAP_PROVINCE,
+            &(cprovince::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            MAP_PROVINCE + cprovince::ID,
+            &0x8000_1234_u32.to_le_bytes(),
+        );
+        for (pointer, name) in [(FIRST, b"First".as_slice()), (SECOND, b"Second".as_slice())] {
+            put(&mut bytes, pointer, &(VTABLE_RVA as u64).to_le_bytes());
+            short(&mut bytes, pointer + SHIP_NAME, name);
+            short(&mut bytes, pointer + ATTRIBUTION_SOURCE_NAME, b"");
+            put(
+                &mut bytes,
+                pointer + VICTIM_COUNTRY,
+                &0xf123_4567_u32.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                pointer + SINK_DATE,
+                &(cgame_date::VTABLE_RVA as u64).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                pointer + SINK_DATE_PERSISTENT,
+                &(cgame_date::PERSISTENT_VTABLE_RVA as u64).to_le_bytes(),
+            );
+            put(&mut bytes, pointer + SINK_HOUR, &123_i32.to_le_bytes());
+            put(
+                &mut bytes,
+                pointer + SHIP_CLASS,
+                &(CLASS as u64).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                pointer + ATTRIBUTION_CLASS,
+                &(NULL_CLASS as u64).to_le_bytes(),
+            );
+            put(&mut bytes, pointer + MODEL_LEVEL, &i32::MIN.to_le_bytes());
+            put(
+                &mut bytes,
+                pointer + VICTIM_EQUIPMENT_VARIANT,
+                &0xf123_4567_0000_0046_u64.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                pointer + DAMAGE_SOURCE_REFERENCE,
+                &u64::MAX.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                pointer + PROVINCE,
+                &(MAP_PROVINCE as u64).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                pointer + BATTLE,
+                &0x8765_4321_fedc_ba98_u64.to_le_bytes(),
+            );
+            bytes[pointer + CAUSE_RECORD] = 1;
+        }
+        bytes
+    }
+
+    fn capture(memory: &[u8], rows: &mut [Record], arena: &mut [u8]) -> ListWalk {
+        walk(
+            &SliceMemory {
+                base: 0,
+                bytes: memory,
+            },
+            0,
+            GAME,
+            200,
+            rows,
+            arena,
+        )
+    }
+
+    #[test]
+    fn ordered_list_keeps_duplicate_variant_handles_and_native_values() {
+        let mut memory = fixture();
+        let mut rows = [Record::default(); 2];
+        let mut arena = [0; 128];
+        assert_eq!(
+            capture(&memory, &mut rows, &mut arena).outcome,
+            Outcome::Rows { len: 2 }
+        );
+        assert_eq!(
+            &arena[rows[0].ship_name.start..rows[0].ship_name.start + rows[0].ship_name.len],
+            b"First"
+        );
+        assert_eq!(
+            rows[0].victim_equipment_variant,
+            rows[1].victim_equipment_variant
+        );
+        assert_eq!(rows[0].victim_equipment_variant, 0xf123_4567_0000_0046);
+        assert_eq!(rows[0].damage_source_reference, u64::MAX);
+        assert_eq!(rows[0].model_level, i32::MIN);
+        assert_eq!(rows[0].province, 0x8000_1234);
+        assert_eq!(rows[0].battle, 0x8765_4321_fedc_ba98);
+        // Native swap-removal changes collection order without inventing an id.
+        put(&mut memory, VECTOR, &(SECOND as u64).to_le_bytes());
+        put(
+            &mut memory,
+            GAME + cgame_state::SUNK_SHIP_HISTORY_COUNT,
+            &1_u32.to_le_bytes(),
+        );
+        assert_eq!(
+            capture(&memory, &mut rows, &mut arena).outcome,
+            Outcome::Rows { len: 1 }
+        );
+        assert_eq!(&arena[..rows[0].ship_name.len], b"Second");
+    }
+
+    #[test]
+    fn byte_and_row_capacity_return_whole_native_prefixes() {
+        let memory = fixture();
+        let mut rows = [Record::default(); 2];
+        let mut arena = [0; 14];
+        let result = capture(&memory, &mut rows, &mut arena);
+        assert_eq!(
+            result.outcome,
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 1
+            }
+        );
+        assert_eq!(result.bytes_len, 14);
+        assert_eq!(result.required_bytes, 29);
+        let mut arena = [0; 128];
+        assert_eq!(
+            capture(&memory, &mut rows[..1], &mut arena).outcome,
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 1
+            }
+        );
+    }
+
+    #[test]
+    fn long_engine_text_retains_every_byte_without_utf8_conversion() {
+        let mut memory = fixture();
+        put(&mut memory, FIRST + SHIP_NAME, &0x1800_u64.to_le_bytes());
+        put(
+            &mut memory,
+            FIRST + SHIP_NAME + msvc_string::LENGTH,
+            &300_u64.to_le_bytes(),
+        );
+        put(
+            &mut memory,
+            FIRST + SHIP_NAME + msvc_string::CAPACITY,
+            &300_u64.to_le_bytes(),
+        );
+        memory[0x1800..0x1800 + 300].fill(0xff);
+        let mut rows = [Record::default(); 2];
+        let mut arena = [0; 512];
+        assert_eq!(
+            capture(&memory, &mut rows, &mut arena).outcome,
+            Outcome::Rows { len: 2 }
+        );
+        assert_eq!(rows[0].ship_name.len, 300);
+        assert!(arena[..300].iter().all(|&byte| byte == 0xff));
+    }
+
+    #[test]
+    fn bad_later_records_invalidate_the_list_instead_of_certifying_a_prefix() {
+        for (offset, value) in [
+            (ASSISTED_KILL, 2),
+            (CAUSE_RECORD, 2),
+            (0, 0),
+            (SINK_DATE, 0),
+        ] {
+            let mut memory = fixture();
+            memory[SECOND + offset] = value;
+            let result = capture(&memory, &mut [Record::default(); 2], &mut [0; 128]);
+            assert!(matches!(result.outcome, Outcome::Unavailable { .. }));
+            assert_eq!(result.bytes_len, 0);
+        }
+        let mut memory = fixture();
+        put(&mut memory, SECOND + SINK_HOUR, &201_i32.to_le_bytes());
+        assert!(matches!(
+            capture(&memory, &mut [Record::default(); 2], &mut [0; 128]).outcome,
+            Outcome::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn empty_history_and_optional_nulls_are_explicit() {
+        let mut memory = fixture();
+        put(&mut memory, FIRST + ATTRIBUTION_CLASS, &0_u64.to_le_bytes());
+        put(&mut memory, FIRST + PROVINCE, &0_u64.to_le_bytes());
+        let mut rows = [Record::default(); 2];
+        assert_eq!(
+            capture(&memory, &mut rows, &mut [0; 128]).outcome,
+            Outcome::Rows { len: 2 }
+        );
+        assert_eq!(
+            (rows[0].province_present, rows[0].attribution_class_present),
+            (0, 0)
+        );
+        put(
+            &mut memory,
+            GAME + cgame_state::SUNK_SHIP_HISTORY_COUNT,
+            &0_u32.to_le_bytes(),
+        );
+        assert_eq!(
+            capture(&memory, &mut [], &mut []).outcome,
+            Outcome::Rows { len: 0 }
+        );
+    }
+
+    #[test]
+    fn growing_sunk_history_retains_every_native_occurrence_and_full_text() {
+        let mut bytes = fixture();
+        let data = 0x10000;
+        let mut rows = Vec::new();
+        let mut names = Vec::new();
+        for count in [5_000_u32, 12_000] {
+            bytes.resize(data + count as usize * 8, 0);
+            put(
+                &mut bytes,
+                GAME + cgame_state::SUNK_SHIP_HISTORY,
+                &(data as u64).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                GAME + cgame_state::SUNK_SHIP_HISTORY + 8,
+                &count.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                GAME + cgame_state::SUNK_SHIP_HISTORY + 12,
+                &count.to_le_bytes(),
+            );
+            for index in 0..count as usize {
+                put(&mut bytes, data + index * 8, &(FIRST as u64).to_le_bytes());
+            }
+            let mut fixed = [Record::default(); 1];
+            let mut fixed_names = [0_u8; 14];
+            assert_eq!(
+                capture(&bytes, &mut fixed, &mut fixed_names).outcome,
+                Outcome::Truncated {
+                    len: 1,
+                    unread_rows: count - 1
+                }
+            );
+            let walked = walk_growing(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
+                0,
+                GAME,
+                200,
+                &mut rows,
+                &mut names,
+            );
+            assert_eq!(
+                walked.outcome,
+                Outcome::Rows {
+                    len: count as usize
+                }
+            );
+            assert_eq!(walked.bytes_len, count as usize * 14);
+            assert_eq!(
+                rows[count as usize - 1].ship_name.start,
+                (count as usize - 1) * 14
+            );
+        }
+    }
+}

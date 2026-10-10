@@ -38,9 +38,9 @@ pub(super) fn compare_variants(
     complete &= report.attempt("VariantStats", |report| {
         compare_variant_stats(frame, saved, report)
     });
-    report.limitation("BD4770 does not serialize the classifier_flags or mission_mask caches; their captured native operands have no direct save comparison", "VariantDefinitions.classifier_flags, VariantDefinitions.mission_mask");
+    report.limitation("the variant writer does not serialize the classifier_flags or mission_mask caches; their captured native operands have no direct save comparison", "VariantDefinitions.classifier_flags, VariantDefinitions.mission_mask");
     report.limitation("native boolean serialization maps every nonzero byte to yes; text flags cannot certify raw byte values beyond truthiness", "VariantDefinitions.append_variant_name, VariantDefinitions.obsolete, VariantDefinitions.icon_active, VariantModules.definition_active");
-    report.limitation("BD4770 writes an active icon entry's string without its kind (the loader reclassifies a string holding / or . as a path), and nothing of an inactive entry", "VariantDefinitions.icon_kind, VariantDefinitions.icon of inactive entries");
+    report.limitation("the variant writer writes an active icon entry's string without its kind (the loader reclassifies a string holding / or . as a path), and nothing of an inactive entry", "VariantDefinitions.icon_kind, VariantDefinitions.icon of inactive entries");
     report.limitation("null module definitions currently make the complete native module table unavailable; the oracle never treats a failed module walk as an empty saved module list", "VariantModules");
 
     if complete {
@@ -52,11 +52,11 @@ pub(super) fn compare_variants(
 
 /// `VariantDefinitions.archetype_token` against the content: the save does
 /// not write a variant's archetype, but its equipment type's archetype
-/// (`CEquipmentType+0x4D8`, as the equipment database leaves it: the type
+/// (as the equipment database leaves it: the type
 /// itself when it is an archetype, else its `archetype`, else its parent's)
 /// is a fact of the recorded content stack. The type is found by name
-/// without case (`GetTypeByName@1409EB8B0`), and the archetype matches the
-/// recorded literal under the lexer's token fold (`1424A5EE0`, A-Z).
+/// without case (`type-name lookup`), and the archetype matches the
+/// recorded literal under the lexer's token fold (A-Z).
 /// Content is static within a session, so every recorded row is compared,
 /// not only rows read at the frame's hour.
 pub(in crate::oracle) fn compare_variant_archetypes(
@@ -171,7 +171,7 @@ fn compare_variant_definitions(
             "VariantDefinitions.version",
             format!("{label}.version"),
         ) {
-            // 140BD4770 omits precisely zero and zero-extends every other byte.
+            // The game omits precisely zero and zero-extends every other byte.
             equal(
                 report,
                 format!("{label}.version"),
@@ -212,7 +212,7 @@ fn compare_variant_definitions(
                     "missing serialized tag",
                 );
             } else {
-                report.limitation("BA5C20 maps a zero country reference through the unrecorded country-tag array entry0; its literal spelling is unmapped here, not an omitted field or an assumed tag", format!("{label}.{field}"));
+                report.limitation("country-tag text lookup maps a zero country reference through the unrecorded country-tag array entry0; its literal spelling is unmapped here, not an omitted field or an assumed tag", format!("{label}.{field}"));
             }
         }
     }
@@ -288,7 +288,7 @@ fn compare_variant_modules(
             }
         }
         if actual_modules.len() != visible.len() {
-            report.limitation("191E6F0 omits inactive module definitions; active modules are compared in order, while inactive identities and absolute native source ordinals are not serialized", &label);
+            report.limitation("the module writer omits inactive module definitions; active modules are compared in order, while inactive identities and absolute native source ordinals are not serialized", &label);
         }
     }
     for id in modules.keys() {
@@ -399,7 +399,7 @@ fn compare_variant_stats(
         }
     }
     report.compared("VariantStats", 0);
-    report.limitation("BD4770 does not serialize the ten native stat caches; saved definitions are not recomputed or substituted for speed, range, air attack, agility, maximum speed, reliability, air defense, thrust, fuel or build cost", format!("VariantStats: {} decoded rows, zero save comparisons", stats.len()));
+    report.limitation("the variant writer does not serialize the ten native stat caches; saved definitions are not recomputed or substituted for speed, range, air attack, agility, maximum speed, reliability, air defense, thrust, fuel or build cost", format!("VariantStats: {} decoded rows, zero save comparisons", stats.len()));
     if census_matches {
         Ok(())
     } else {

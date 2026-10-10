@@ -1,8 +1,10 @@
-//! UNRUN. The native token/scan mapping remains held for this private source.
+//! Selected-attack building flags and integer-scan behavior.
 use super::*;
 
 #[test]
-fn signed_land_fort_weight_defaults_to_zero_and_follows_the_native_integer_scan() {
+fn signed_land_fort_weight_defaults_to_zero_and_follows_the_integer_scan() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = super::parse(
         b"@weight=-7 BUILDINGS={odd={LAND_FORT=@weight} empty={} word={land_fort=2147483648} scan={land_fort=010 land_fort=bad}}",
         &KeyNames::default()).unwrap();
@@ -14,6 +16,8 @@ fn signed_land_fort_weight_defaults_to_zero_and_follows_the_native_integer_scan(
 
 #[test]
 fn differing_signed_fort_declarations_are_refused_but_identical_case_aliases_resolve() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = super::parse(
         b"buildings={odd={land_fort=2} odd={land_fort=-2}}",
         &KeyNames::default(),

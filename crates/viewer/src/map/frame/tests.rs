@@ -17,7 +17,7 @@ fn the_reference_hour_reproduces_the_report_sun_and_moon() {
     let direction = day_night.hour_sun_dir();
     assert_eq!(direction[0], 0.75);
     assert_eq!(direction[1], 0.0);
-    // The independent R1 terminator fit is within its 0.2-degree precision.
+    // The independent terminator fit is within its 0.2-degree precision.
     assert!((direction[2] - -0.0282).abs() < 4e-3, "{direction:?}");
     assert!((direction[3] - 0.99960).abs() < 1e-3, "{direction:?}");
 }
@@ -56,10 +56,8 @@ fn the_hour_fraction_wraps_the_way_the_engine_does() {
 
 #[test]
 fn the_shadow_fade_follows_the_camera_past_the_cutoff() {
-    // Flat below the start of the fade, linear across it, zero above the
-    // cutoff. The four fitted `pairE` framings straddle it: 50 and 164 are
-    // heights where the engine draws map shadows, 627 and 1590 heights
-    // where `GetShadowScaled` saturates to a shadow term of exactly 1.
+    // Fade stays flat below its start, falls linearly, and reaches zero above the cutoff.
+    // The fixtures cover both sides of the fade.
     assert_eq!(shadow_fade_factor(&MapDefines::test(), 50.178), 1.0);
     assert_eq!(shadow_fade_factor(&MapDefines::test(), 163.934), 1.0);
     assert_eq!(shadow_fade_factor(&MapDefines::test(), 350.0), 1.0);
@@ -134,20 +132,15 @@ fn the_constant_buffer_matches_the_reference_frame() {
     assert!((look[2] - 0.099282).abs() < 1e-5, "{look:?}");
 }
 
-/// The game's own `cb0`, read out of `hoi4_frame33840.rdc` at draw event
-/// 2777 (the `terrain` effect), against what this file writes for the same
-/// hour and the camera that capture's `vCamPos` and `vCamLookAtDir` name.
+/// Frame-constant numeric regression for one hour and camera.
 ///
-/// Every field is reproduced, `vGBCamDistOverride_GBOutlineCutoff` included:
-/// its `(1, 0, 0.98, 0.973)` is `STRATEGIC_REGIONS` in layer 1 and `COUNTRY`
-/// in layer 2, and [`super::political`] now builds those two layers in that
-/// order.
+/// The fixture includes every field, including the `(1, 0, 0.98, 0.973)` gradient distance and
+/// outline settings for strategic layer 1 and country layer 2, respectively.
 #[test]
 fn the_capture_frame_constants_are_reproduced() {
-    // `vCamPos` is the eye and the camera model puts the eye at
-    // `(cx, h, cz - CAMERA_TILT)`, so the capture's camera is
-    // (3011.74, 1570.27, 263.493); it reproduces the capture's own
-    // `ViewProjectionMatrix` to the precision that is read at.
+    // `vCamPos` is the eye. The camera model offsets it from its ground centre by height and tilt;
+    // the fixture therefore uses centre (3011.74, 1570.27) and height 263.493.
+    // View-projection values retain the fixture precision.
     let camera = super::Camera {
         center: [3011.74, 1570.27],
         height: 263.493,
@@ -162,8 +155,8 @@ fn the_capture_frame_constants_are_reproduced() {
         false,
     )
     .expect("valid reference camera");
-    // The capture prints six significant figures, so the tolerance is
-    // absolute near zero and relative for the world-space fields.
+    // The fixture stores six significant figures, so the tolerance is absolute near zero and relative
+    // for world-space fields.
     let close = |left: f32, right: f32, name: &str| {
         let slack = 1e-3 + 1e-5 * right.abs();
         assert!((left - right).abs() <= slack, "{name}: {left} != {right}");
@@ -218,8 +211,8 @@ fn the_capture_frame_constants_are_reproduced() {
         "DayNight hour",
     );
     close(constants.day_night_hour_sun_dir[1], 0.0, "sun direction y");
-    // The captured 0.0585195 now follows from the integer weather target,
-    // including the engine's approximate trig and renderer normalization.
+    // The 0.0585195 fixture follows from the integer weather target, approximate trigonometry and
+    // renderer normalization.
     assert!((constants.day_night_hour_sun_dir[2] - 0.058_519_5).abs() < 1e-7);
     all(
         constants.ambient_pos_x_shadow_fade,
@@ -251,8 +244,7 @@ fn the_capture_frame_constants_are_reproduced() {
     );
     assert_eq!(constants.gb_texture_height_sun_specular[0], 1024.0);
     assert_eq!(constants.gb_texture_height_sun_specular[1], 1.0);
-    // `FOWFadeFactor` with the fog on: the engine writes 0.152116 at this
-    // camera and 0.9993 at the minimum-height capture's 50.1225.
+    // `FOWFadeFactor` with fog on: 0.152116 at this camera and 0.9993 at height 50.1225.
     close(
         fow_fade_factor(&MapDefines::test(), 263.493, true),
         0.152_116,

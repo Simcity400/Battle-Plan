@@ -271,7 +271,7 @@ impl<'a> Context<'a> {
             let intel = self
                 .vision
                 .land_byte_known(id, owner, division.province)
-                .ok_or_else(|| format!("division {id} unit intel (1416068C0) is unavailable"))?;
+                .ok_or_else(|| format!("division {id} unit intel is unavailable"))?;
             if intel >= 250 {
                 known.push(id);
             }
@@ -288,7 +288,7 @@ impl<'a> Context<'a> {
             .binary_search_by_key(&handle, |row| row.template)
             .map(|i| &rows[i])
             .map_err(|_| format!("DivisionTemplates template {handle} is absent"))?;
-        // 140B88010/140C6BD90 use composition +1D4 (primary +1EC), not the census owner.
+        // Use the recorded composition country rather than the census owner.
         // The country is recorded even when the composition model was unreadable.
         let icons = self
             .frame
@@ -301,7 +301,7 @@ impl<'a> Context<'a> {
         let raw = u32::try_from(icon.country)
             .map_err(|_| format!("template {handle} country {} is unresolved", icon.country))?;
         let slot = self.slot(raw)?;
-        // GetDisplayName@140B91170 -> 140BBA780: literal +20, else key with the raw +1D4 tag.
+        // Use literal text first, otherwise the key and raw composition-country tag.
         // A name_key older recordings lack refuses only the key fallback.
         let name_key: &[u8] = if row.name.is_empty() {
             row.name_key.require("DivisionTemplates.name_key")?
@@ -340,7 +340,7 @@ impl<'a> Context<'a> {
                 Ok(self.names)
             })?;
         let division = self.division(id)?;
-        // 140C6CCA0 uses the roster country; 1406F3A00 picks its red/yellow control.
+        // Use the roster country; the game picks its red/yellow control.
         let owner = self.slot(division.roster_owner)?;
         let country = self.country_name(owner)?;
         let colour = if self.vision.at_war_proven(owner).map_err(|e| e.describe())? {
@@ -396,7 +396,7 @@ impl<'a> Context<'a> {
         if maximum <= 0 {
             return Ok(String::new());
         }
-        // 140C6A3A0: COUNT integer, MAX fixed5, then one newline.
+        // COUNT integer, MAX fixed5, then one newline.
         localise(
             self.loc,
             "ATTRITION_SOME_UNITS",
@@ -488,7 +488,7 @@ fn template_header_key(
     disclosed: bool,
     hostile: impl FnOnce() -> Result<bool, String>,
 ) -> Result<&'static str, String> {
-    // 140C6BD90 checks disclosure before hostility, except for our own country.
+    // The game checks disclosure before hostility, except for our own country.
     Ok(if disclosed && !ours {
         "DIVISION_TEMPLATE_HEADER_FRIEND"
     } else if hostile()? {
@@ -549,7 +549,7 @@ fn statistics(
     }
     let mut text = if single {
         let (division, status) = known[0];
-        // 140C6C3E0: absolute CUR and native getter MAX, never a percentage.
+        // absolute CUR and native getter MAX, never a percentage.
         localise(
             loc,
             "CURRENT_ORGANIZATION",
@@ -564,7 +564,7 @@ fn statistics(
             ],
         )?
     } else {
-        // 140C6A690: mean of known members' vslot+138 ratios, with native wrapping/truncation.
+        // Mean of known members' supply ratios, with wrapping and truncation.
         let value = counter_inputs::member_mean(known.iter().map(|(division, status)| {
             counter_status::ratio(division.organisation, status.maximum_organisation)
         }))
@@ -610,7 +610,7 @@ fn next_hours(members: &[(u64, u32, u32, &Timing)]) -> Result<Option<i32>, Strin
         let remaining = timing
             .next
             .ok_or_else(|| format!("unit {id} first-edge ETA is unavailable"))?;
-        // 140BE8C70 -> 140BECF90 -> 14047BDE0 ceilings each first edge.
+        // The game ceilings each first edge.
         let hours = engine::cunit::eta_hours(remaining) as i32;
         minimum = Some(minimum.map_or(hours, |previous: i32| previous.min(hours)));
     }
@@ -644,14 +644,11 @@ fn supply(
     context: &Context<'_>,
     known: &[(&DivisionRow, &DivisionStatusRow)],
 ) -> Result<String, String> {
-    // 140C6C3E0 uses one getter; 140C6A690 averages known members with fixed5 division.
+    // Use one getter; the game averages known members with fixed5 division.
     let values = known
         .iter()
         .map(|(_, status)| {
-            let historical = || {
-                "maximum and remaining supply grace (CArmy+600/+610, 140C78780) are unrecorded"
-                    .to_owned()
-            };
+            let historical = || "maximum and remaining supply grace are unrecorded".to_owned();
             let maximum = *status
                 .supply_grace_maximum
                 .require("DivisionStatus.supply_grace_maximum")
@@ -766,8 +763,8 @@ fn build_context(
     nato: bool,
     arrival_remaining: impl FnOnce(ArrivalUnit<'_>, bool) -> Result<i64, String>,
 ) -> Tooltip {
-    // The active-ability item has its own handler, not CUnitCounterItem's
-    // representative-reference gate (1418BFCE0 versus 1418C00D0).
+    // The active-ability item has its own handler, independent of the unit counter's
+    // representative-reference gate.
     if matches!(
         input.control,
         super::counters::CounterControl::Ability { .. }
@@ -816,9 +813,8 @@ fn build_context(
     } else {
         build_divisions(context, input, nato, arrival_remaining)
     };
-    // Class 0 and 13 summaries, next-location text, HQ and late supply/order
-    // fragments never set [RBP+1120]. Detailed ETA formatting alone does;
-    // coarse counters always handle (1418C1917). Text presence is not a flag.
+    // Text presence does not establish handling. Detailed arrival formatting marks
+    // the handler, while coarse counters handle their body independently.
     if !input.coarse
         && let Some(authored) = &input.authored
     {
@@ -835,7 +831,7 @@ fn build_context(
     out
 }
 
-/// GetLastRouteProvince@140BED8F0 resolves before either ownership branch,
+/// Resolve before either ownership branch,
 /// including the foreign branch which will query only its first edge.
 fn ordinary_destination(context: &Context<'_>, path: &[u32], count: u32) -> Result<bool, String> {
     if path.len() != count as usize {
@@ -870,7 +866,7 @@ fn build_divisions(
         }
     };
     // The first representative was resolved strictly by the dispatcher.
-    // Generic gather1418C1D05 and coarse119C skip later unresolved refs;
+    // Detailed and coarse gathers skip later unresolved references;
     // those refs neither become unknown-intel units nor alter composition.
     let members: Vec<_> = input
         .members
@@ -897,10 +893,11 @@ fn build_divisions(
     }
     let first = input.members[0];
     let mut handled = Ok(false);
-    // 1418C1983/140BE8C70 test the first member's route and +1E8 target before both lines.
+    // Test the first member's route and target before either line.
     match context.movement(first) {
         Ok(movement) if movement.path_total as i32 > 0 && movement.target == 0 => {
             let arrival: Result<Option<counter_eta::Arrival>, String> = (|| {
+                // Hidden foreign counters omit arrival text.
                 if !input.ours && input.hidden {
                     return Ok(None);
                 }
@@ -937,7 +934,7 @@ fn build_divisions(
                     .iter()
                     .zip(input.timing.iter())
                     // Match timing by original ordinal before omitting a
-                    // complete-census dangling ref (1418C21E0..221D).
+                    // complete-census dangling ref.
                     .filter(|(id, _)| divisions.binary_search_by_key(*id, |row| row.id).is_ok())
                     .map(|(&id, timing)| {
                         let division = context.division(id)?;
@@ -1021,7 +1018,7 @@ fn build_divisions(
                     context.attrition(&known),
                 );
             }
-            // Single undisclosed (140C6C3E0) and zero-known (140C6A690) never reach supply.
+            // Single undisclosed and zero-known never reach supply.
             if !known.is_empty() && (members.len() != 1 || disclosed == Some(true)) {
                 let values = known
                     .iter()
@@ -1326,6 +1323,8 @@ mod tests {
 
     #[test]
     fn status_cached_name_is_authoritative_even_when_combat_has_a_name() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = frame(true);
         put(
             &mut frame,
@@ -1461,6 +1460,8 @@ mod tests {
 
     #[test]
     fn supply_line_uses_grace_and_known_stack_average_and_refuses_historical_gaps() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let vision = Vision::sharing(1, []);
         let mut frame = frame(true);
         let mut status = frame.complete::<tables::DivisionStatus>().unwrap().to_vec();
@@ -1502,8 +1503,7 @@ mod tests {
         status[0].supply_grace_remaining = Recorded::NotRecorded;
         put(&mut frame, TableRows::DivisionStatus(status.clone()));
         let historical = tooltip(&frame, &[1], false, false, &vision);
-        let reason = "counter supply: maximum and remaining supply grace \
-                      (CArmy+600/+610, 140C78780) are unrecorded";
+        let reason = "counter supply: maximum and remaining supply grace are unrecorded";
         assert!(!historical.body.contains("supply "));
         assert_eq!(historical.refused[reason], 1);
         status[0].supply_grace_maximum = Recorded::Value(0);
@@ -1515,6 +1515,8 @@ mod tests {
 
     #[test]
     fn single_tooltip_orders_native_lines_without_a_date_or_unrecorded_name() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let vision = Vision::sharing(1, []);
         let named = tooltip(&frame(true), &[1], false, false, &vision);
         assert_eq!(
@@ -1558,6 +1560,8 @@ mod tests {
 
     #[test]
     fn full_two_template_stack_sorts_headers_and_coarse_counter_bypasses_detail() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = frame(false);
         let vision = Vision::sharing(1, []);
         let detailed = tooltip(&frame, &[1, 2], false, false, &vision);
@@ -1580,6 +1584,8 @@ mod tests {
 
     #[test]
     fn invalid_orders_child_does_not_change_normal_or_coarse_hovers() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut frame = frame(true);
         let vision = Vision::sharing(1, []);
         let expected = [
@@ -2004,6 +2010,8 @@ mod tests {
 
     #[test]
     fn missing_unit_intel_preserves_movement_with_one_eligibility_gap() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = frame(true);
         let vision = Vision::sharing(2, []).with_truncated_unit_intel([]);
         let detailed = tooltip(&frame, &[1], false, false, &vision);
@@ -2073,6 +2081,8 @@ mod tests {
 
     #[test]
     fn only_hidden_foreign_stacks_suppress_the_arrival_line() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = frame(true);
         for ours in [1, 2] {
             let vision = Vision::sharing(ours, [1]);
@@ -2518,6 +2528,8 @@ mod tests {
 
     #[test]
     fn ordinary_authored_fallback_follows_the_class_zero_and_thirteen_handler_result() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::map::counters::CounterControl as Control;
         use replay::rows::{ArmyIconInputRow, RailwayGunCounterInputRow};
         use std::cell::Cell;

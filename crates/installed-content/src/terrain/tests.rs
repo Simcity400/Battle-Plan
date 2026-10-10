@@ -15,6 +15,8 @@ fn category(definitions: &TerrainDefinitions, index: u8) -> Option<&[u8]> {
 
 #[test]
 fn naval_terrain_keeps_common_and_ordered_class_modifier_operands() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let definitions = database(&[
         "categories={ ocean={ minimum_seazone_dominance=250 units={ attack=-0.1 } naval_range=1.25 custom_hull={ naval_range=0.5 units={ movement=-0.2 } } custom_hull={ naval_range=-0.2 units={ defence=0.3 } } } }",
     ]);
@@ -29,8 +31,8 @@ fn naval_terrain_keeps_common_and_ordered_class_modifier_operands() {
     assert_eq!(terrain.class_adjusters.len(), 2);
     assert_eq!(terrain.class_adjusters[0].movement, -20_000);
     assert_eq!(terrain.class_adjusters[1].defence, 30_000);
-    // 14142C780 / 1409DB450 retain the first class bucket on repeated names;
-    // 14142C5C0 adds the common raw value before the effective getter.
+    // Repeated class names retain the first bucket; common raw values
+    // are added before calculating the effective value.
     assert_eq!(
         terrain.modifiers.values[0]
             .value
@@ -41,6 +43,8 @@ fn naval_terrain_keeps_common_and_ordered_class_modifier_operands() {
 
 #[test]
 fn a_redeclared_category_appends_and_a_lookup_takes_the_first() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let definitions = database(&[
         "categories = { plains = { movement_cost = 1 } Plains = { movement_cost = 2 } }",
         "categories = { plains = { movement_cost = 3 } } terrain = { a = { type = PLAINS color = { 0 } } }",
@@ -59,6 +63,8 @@ fn a_redeclared_category_appends_and_a_lookup_takes_the_first() {
 
 #[test]
 fn a_type_sees_only_the_categories_read_before_it() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let definitions = database(&[
         "terrain = { early = { type = hills color = { 1 } } } \
          categories = { plains = { } } \
@@ -79,6 +85,8 @@ fn a_type_sees_only_the_categories_read_before_it() {
 
 #[test]
 fn entries_keep_their_fields_and_the_last_palette_writer_wins() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let definitions = database(&[
         "@snow = yes categories = { plains = { } desert = { } } \
          terrain = { desert = { type = plains color = { 11 } texture = 11 } \
@@ -103,12 +111,13 @@ fn entries_keep_their_fields_and_the_last_palette_writer_wins() {
     assert_eq!(category(&definitions, 11), Some(&b"desert"[..]));
 }
 
-/// ReadMember (14142D0A0) reads each width through ReadFixed5
-/// (1424ABB10): the last value that converts, zero from the constructor
-/// (1414297D0) otherwise; a failed conversion is logged and changes
-/// nothing. Variables hold in document order at any depth (1424AC5E0).
+/// Widths retain the last fixed5 value that converts, or constructor zero.
+/// Failed conversions are logged and change nothing. Variables hold in
+/// document order at every depth.
 #[test]
 fn combat_widths_keep_their_value_past_a_failed_conversion() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let definitions = database(&[
         "@w = 42 categories={urban={combat_width=96 combat_support_width=32 combat_width=@w} \
           marsh={combat_width=0.5} bad={combat_support_width=wide} none={} \
@@ -138,17 +147,15 @@ fn combat_widths_keep_their_value_past_a_failed_conversion() {
     assert!(
         skipped[0].contains("terrain category bad: combat_support_width wide does not convert")
     );
-    assert!(
-        skipped[1].ends_with("keeps 40 (1424ABB10, 1424B0480)"),
-        "{}",
-        skipped[1]
-    );
+    assert!(skipped[1].ends_with("keeps 40"), "{}", skipped[1]);
     assert!(skipped[2].contains("combat_support_width @w does not convert"));
     assert!(skipped[3].contains("combat_width @later does not convert"));
 }
 
 #[test]
-fn authored_cost_uses_native_auto_base_fraction_and_clamp() {
+fn authored_cost_keeps_radix_prefixes_fraction_and_clamp() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let definitions = database(&[
         "categories={octal={movement_cost=010} hex={movement_cost=0x10} suffix={movement_cost=1junk.25} signed={movement_cost=1.-2} clamped={movement_cost=08} invalid={movement_cost=bad} omitted={}}",
     ]);
@@ -157,8 +164,8 @@ fn authored_cost_uses_native_auto_base_fraction_and_clamp() {
         .iter()
         .map(|category| category.movement_cost)
         .collect();
-    // A failed conversion keeps the constructor's zero, then clamps
-    // (14142D0A0); an omitted cost stays zero.
+    // A failed conversion retains zero, then clamps; an omitted cost
+    // stays zero.
     assert_eq!(
         costs,
         [800_000, 1_600_000, 125_000, 98_000, 1_000, 1_000, 0]
@@ -173,11 +180,12 @@ fn authored_cost_uses_native_auto_base_fraction_and_clamp() {
 
 #[test]
 fn a_malformed_entry_is_skipped_and_named_and_unsupported_forms_are_refused() {
-    // Each key of `categories` is a CTerrainType read whatever its value
-    // (140AC6EB0): a key without a value takes the next token as its
-    // operator (1424AC5E0), a scalar value reads the tokens after it as
-    // its fields, so `forest` becomes the first category's per-class
-    // entry. Each place is noted.
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    // A category reads fields whatever its value. A key without a value
+    // consumes the next token as its operator; a scalar entry reads tokens
+    // after it as its fields, so forest becomes the first category's class
+    // entry. Every recovery is noted.
     for (entry, message) in [
         ("plains", "key `plains` has no operator"),
         (
@@ -199,8 +207,8 @@ fn a_malformed_entry_is_skipped_and_named_and_unsupported_forms_are_refused() {
             loaded.skipped
         );
     }
-    // A malformed field is logged and keeps its earlier value; the entry
-    // and its other fields stay (report_field_error, 14142CE60).
+    // A malformed field is logged and retains its previous value;
+    // the entry and its other fields remain.
     let entry = |fields: &str| {
         let source = format!(
             "categories = {{ c = {{ }} }} terrain = {{ a = {{ {fields} }} b = {{ color = {{ 1 }} }} }}"
@@ -214,9 +222,9 @@ fn a_malformed_entry_is_skipped_and_named_and_unsupported_forms_are_refused() {
     let a = &loaded.palette[&3];
     assert_eq!((a.atlas_index, a.perm_snow, a.spawn_city), (5, false, true));
     assert_eq!(loaded.palette[&1].name, "b");
-    // A later bad value leaves the earlier good one. A `type` whose
-    // value is `{` looks up `{` (14142CE60), the null terrain, which is
-    // reported; the block's `}` then ends the entry.
+    // A later bad value preserves an earlier good one. A type value of
+    // `{` looks up that text and reports the null terrain; the block's
+    // closing brace then ends the entry.
     let loaded = entry("color = { 3 } texture = 5 texture = x type = c");
     assert_eq!(loaded.palette[&3].atlas_index, 5);
     assert_eq!(loaded.palette[&3].category, Some(0));
@@ -247,15 +255,13 @@ fn a_malformed_entry_is_skipped_and_named_and_unsupported_forms_are_refused() {
         assert!(!loaded.palette.contains_key(&0), "{fields}");
         assert_eq!(loaded.palette[&1].name, "b");
     }
-    // An entry is read whatever its value (140AC6EB0): a scalar's entry
-    // reads the tokens after it, here none, and without colours it is
-    // deleted.
+    // An entry reads whatever its value. After a scalar it reads the
+    // following tokens, here none, then is discarded without colours.
     let loaded = parse_definitions(b"categories = { c = { } } terrain = { a = 1 }").unwrap();
     assert!(loaded.skipped[0].contains("field `a` is `1` where its reader reads a block"));
     assert!(loaded.palette.is_empty());
-    // A quoted key is token 0xF, no keyword (1424A7A90): the top level
-    // reports and skips it (1424AD100), CTerrainGraphics too (1424A9CE0),
-    // and CTerrainType reads it as a modifier.
+    // Quoted keys are not keywords: file and terrain readers report and
+    // skip them, while a category reads them as modifiers.
     let loaded = parse_definitions(
         b"\"categories\" = { skipped = { } } categories = { a = { \"movement_cost\" # comment
  = 2 } } terrain = { t = { \"texture\" = 1 TEXTURE = 3 Color = { 5 } } }",
@@ -266,22 +272,35 @@ fn a_malformed_entry_is_skipped_and_named_and_unsupported_forms_are_refused() {
     assert_eq!(loaded.palette[&5].atlas_index, 3);
     let error = parse_definitions(b"terrain = { }").unwrap_err().to_string();
     assert!(error.contains("declares no terrain category"), "{error}");
-    // A block under a modifier name in a per-class entry is read by
-    // 1406042A0 as a registered modifier's value or skipped: the file is
-    // refused by name.
+    // A block under a per-class modifier name is either its registered
+    // value or skipped; the file is refused by name.
     let error = parse_definitions(
         b"categories = { a = { units = { attack = -0.1 } forest = { odd = { } } } }",
     )
     .unwrap_err()
     .to_string();
     assert!(
-        error.starts_with("terrain: line 1: odd has a block value, which 1406042A0 reads"),
+        error.starts_with(
+            "terrain: line 1: odd has a block value, which modifier value reader reads"
+        ),
+        "{error}"
+    );
+    let error =
+        parse_definitions(b"categories = { a = { buildings_max_level = { workshop = { } } } }")
+            .unwrap_err()
+            .to_string();
+    assert!(
+        error.starts_with(
+            "terrain: line 1: workshop is read by the terrain building-level statement reader"
+        ),
         "{error}"
     );
 }
 
 #[test]
 fn default_map_names_its_bitmaps_and_tree_indices() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let map = parse_default_map(
         br#"definitions = "definition.csv"
             provinces = "provinces.bmp"
@@ -310,6 +329,8 @@ fn default_map_names_its_bitmaps_and_tree_indices() {
 
 #[test]
 fn a_default_map_without_a_required_name_is_refused() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let complete = br#"definitions = "d" provinces = "p" terrain = "t" rivers = "r"
          heightmap = "h" tree_definition = "td""#;
     assert!(parse_default_map(complete).unwrap().tree_indices.is_empty());
@@ -335,12 +356,13 @@ fn a_default_map_without_a_required_name_is_refused() {
     assert!(parse_default_map(br#"tree = { 300 }"#).is_err());
 }
 
-/// The replay's classes through this reader: a quoted key is no keyword
-/// and a bare one folds; a variable holds within its file only (one
-/// CReader per file); a block where ReadFixed5 takes one value is read
-/// as the category's own fields; the end of the text closes every loop.
+/// Quoted keys are not keywords and bare keys fold. Variables stay within
+/// their file; a block where one fixed5 value is expected becomes the
+/// category's own fields. The end of the text closes every loop.
 #[test]
 fn the_replay_classes_hold_for_terrain() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let definitions = database(&[
         "@w = 30 categories = { a = { \"combat_width\" = 10 COMBAT_WIDTH = @w } \
          b = { movement_cost = { combat_width = 20 } combat_support_width = 5 } }",
@@ -382,9 +404,8 @@ fn the_replay_classes_hold_for_terrain() {
     );
 }
 
-/// A BMP of `rows` (bottom first, each padded already) with a `dib`-byte
-/// header: 40 for 24-bit BI_RGB, 124 for 32-bit BI_BITFIELDS with the
-/// BGRA masks Kaiserreich's `world_normal.bmp` declares.
+/// A BMP of `rows` (bottom first, already padded) with a `dib`-byte header:
+/// 40 for 24-bit BI_RGB or 124 for 32-bit BI_BITFIELDS with BGRA masks.
 fn bitmap(width: i32, rows: &[&[u8]], dib: u32) -> Vec<u8> {
     let offset = 14 + dib;
     let pixels: Vec<u8> = rows.concat();
@@ -413,6 +434,8 @@ fn bitmap(width: i32, rows: &[&[u8]], dib: u32) -> Vec<u8> {
 
 #[test]
 fn the_world_normal_keeps_the_clients_texture_padding() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let bytes = bitmap(
         2,
         &[
@@ -445,6 +468,8 @@ fn the_world_normal_keeps_the_clients_texture_padding() {
 
 #[test]
 fn the_world_normal_loads_as_the_game_decodes_a_texture() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let shipped = bitmap(
         2,
         &[&[1, 2, 3, 4, 5, 6, 0, 0], &[7, 8, 9, 10, 11, 12, 0, 0]],
@@ -461,7 +486,7 @@ fn the_world_normal_loads_as_the_game_decodes_a_texture() {
         world_normal(&read(shipped), Decode::default()).unwrap(),
         expected
     );
-    // Kaiserreich's 32-bit form, whose alpha is all 255.
+    // A 32-bit form with alpha uniformly 255.
     let bitfields = bitmap(
         2,
         &[

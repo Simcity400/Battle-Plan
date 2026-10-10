@@ -1,32 +1,22 @@
-//! Passive current-hour task-force counter ETA operands.
+//! Passive current-hour task-force counter ETA operands. Read stored stats,
+//! actual-location common modifiers and fuel; playback applies the searched
+//! departure's separate terrain adjustment. Speed/visibility modifier results
+//! are recorded before content distance scaling and halving. The reader never
+//! refreshes stored abilities or calls getters. Exile is serialized; the raw
+//! strategic-redeployment request is retained with unresolved task-force save law.
 //!
-//! `140D58800 -> 140C28590` reads stored stats, the actual-location common
-//! modifier `140C296B0(29, province=0, omit_local=0)` and `140D57EC0` fuel.
-//! The searched departure contributes a separate terrain adjuster in playback.
-//! `140C28410(stats, ship=0, leader=0)` uses the same graph for 8A/8B; its
-//! result is recorded before `140D5A810`'s content distance scale and half.
-//! `RefreshAbilities@140D61A30` writes the stored stats; this reader neither
-//! refreshes them nor calls any game getter. The CUnit loader `140BF35B0`,
-//! delegated to by `140D60C40`, establishes the saved exile byte. Strategic
-//! redeployment is the raw `140BED3A0` request operand; its task-force save law
-//! is unproved.
-//!
-//! One receiver packet shares its scalar selectors and three ETA keys with
-//! the risk keys19/2A/55/108/19F. An original F97BF0 ledger contributor demands
-//! only key2A and stat138/160, independently of its own F9EE50 mission gates.
-//! Full risk also borrows original speed, visibility and context attempts.
-//! Every demanded key joins one common graph; no second getter or walk.
-//! Successful repeated ship runs and HQ entries retain their native occurrences;
-//! a source failure ends the receiver graph without retry. A later task force
-//! is a separate receiver observation. Metadata and root failures persist for
-//! this capture only. All loops follow native
-//! array bounds with fixed stack storage. The existing pointer-free ETA packet
-//! is separate from its transient authenticated owner controls; the collector's
-//! shared naval/theatre acquisition consumes and clears those before Ordinary
-//! returns. The combined visitor consumes the original counter gate and signed
-//! combat-header attempt; the risk-only borrower consumes the original nullable
-//! ledger's full receiver certificate. Neither retries a failed common graph.
-//! Callback world/hour admission and live capture proof belong to the caller.
+//! One receiver packet shares selectors and ETA/risk keys. Original ledger
+//! contributors independently demand their limited keys and stat fields without
+//! own mission gates. Full risk borrows original speed, visibility and context
+//! attempts. All demanded keys use one common graph. Repeated ship runs and HQ
+//! entries retain occurrences; failure ends that receiver graph without retry.
+//! Later task forces are separate observations. Metadata/root failures last
+//! only this capture; array bounds and fixed stack storage bound traversal.
+//! The pointer-free packet remains separate from transient authenticated owner
+//! controls, consumed and cleared by shared acquisition before return. Combined
+//! visitors consume original gates/header attempts; risk borrowers consume the
+//! original nullable ledger certificate. Neither retries failures. World/hour
+//! admission and live validation belong to the caller.
 
 use crate::{
     Memory, ccountry, cfleet,
@@ -47,8 +37,8 @@ const KEYS: [u32; 5] = [
     keys::NAVY_WEATHER_PENALTY,
     keys::UNDERWAY_REPLENISHMENT_RANGE_FACTOR,
 ];
-// F9D6C0, F9C6E0, F95500 and D5B000/D5AD50 all call C296B0
-// with province=0 and omit_local=0. Detection keeps its original slot.
+// These common modifier queries use province zero and include local sources.
+// Detection retains its own selection.
 const RISK_KEYS: [u32; 5] = [
     keys::NAVAL_DETECTION,
     keys::NAVAL_COORDINATION,
@@ -58,7 +48,7 @@ const RISK_KEYS: [u32; 5] = [
 ];
 const TERM_COUNT: usize = 3 + RISK_KEYS.len();
 const VALUE_COUNT: usize = KEYS.len() + RISK_KEYS.len();
-// F95500 reads this separate current relation accumulator, not C296B0.
+// Detection reads its separate current-relation accumulator.
 const TARGETED_INDEX: usize = VALUE_COUNT;
 const TARGETED_SPOTTING_KEY: u32 = keys::SPOTTING_CHANCE_AGAINST;
 type Terms = [Result<i64, &'static str>; TERM_COUNT];
@@ -98,17 +88,15 @@ pub struct FreshEtaInputs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MissionRiskInputs {
     pub sample_hour: i32,
-    /// `140F9D6C0 -> 140C296B0(2A, province=0, omit_local=0)` raw fixed5
-    /// result, before `140F9D71A` adds 100000.
+    /// Raw fixed5 spotting result before adding unity.
     pub combined_detection: Result<Option<i64>, &'static str>,
-    /// D58670 supplies raw combined values, without an added unity term.
+    /// Raw combined values without an added unity term.
     pub coordination: Result<Option<i64>, &'static str>,
     pub spotting_chance: Result<Option<i64>, &'static str>,
     pub night_spotting_chance: Result<Option<i64>, &'static str>,
     pub visibility: Result<Option<i64>, &'static str>,
-    /// BEDD50 -> task-force vf27 uses the actual source (D58800 ignores
-    /// its destination operand). Reuse these original ETA speed attempts;
-    /// playback adds that source's terrain speed and EFE0 content scale.
+    /// ETA speed uses actual source, ignoring destination. Reuse original speed
+    /// attempts; playback adds source terrain and loaded content scale.
     pub speed_base: Result<Option<i64>, &'static str>,
     pub speed_modifier: Result<Option<i64>, &'static str>,
     pub terrain_class: Result<Option<i32>, &'static str>,
@@ -123,10 +111,10 @@ pub struct MissionRiskInputs {
     /// Original SHIPS header's signed native count. Zero proves the native
     /// carrier loop is empty; a failed or unobserved header proves nothing.
     pub ship_count: Result<Option<i32>, &'static str>,
-    /// F95500's original roster owner -> actual location controller relation.
+    /// Original roster owner's relation toward actual-location controller.
     pub targeted_spotting_modifier: Result<Option<i64>, &'static str>,
-    /// BEDD50/vf27's actual-source terrain speed; a negative stored class
-    /// borrows the same original ordered SHIPS class observations as C296B0.
+    /// Actual-source terrain speed. Negative stored class borrows the original
+    /// ordered SHIPS class observations.
     pub actual_terrain_speed: Result<Option<i64>, &'static str>,
 }
 
@@ -822,7 +810,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         } else {
             self.effective(4, country_values?[4])?
         };
-        // Native NNavy.UNDERWAY_REPLENISHMENT_RANGE_BONUS, read by 140D52760.
+        // Loaded underway-replenishment range bonus.
         let address = self
             .base
             .checked_add(0x0331_bfc8)
@@ -875,9 +863,9 @@ impl<'a, M: Memory> Reader<'a, M> {
         )
     }
 
-    /// F95500 -> D0EFD0: current diplomacy matrix selected by the original
-    /// roster country and the original actual location controller. Native raw
-    /// zero and readable unlinked references both select physical slot zero.
+    /// Current diplomacy matrix selected by original roster country and actual
+    /// location controller. Raw zero and readable unlinked references select
+    /// physical slot zero.
     fn targeted_spotting(
         &mut self,
         roster: ccountry::Country,

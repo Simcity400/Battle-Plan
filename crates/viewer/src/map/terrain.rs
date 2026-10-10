@@ -6,7 +6,7 @@ use super::camera::Camera;
 ///
 /// At the reference camera one map pixel is 5.73 screen pixels and the visible
 /// ground is about 464 x 252 units, so a step of 1 costs about 140k quads with
-/// the margin (R1 section 5.2). The ceiling only bites when the camera climbs:
+/// the margin. The ceiling only bites when the camera climbs:
 /// at `CAMERA_MAX_HEIGHT` the visible ground is roughly 4400 x 2475 units,
 /// which a step of 1 would turn into 10.9M quads.
 pub const MAX_QUADS: u32 = 600_000;

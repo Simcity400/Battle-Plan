@@ -3,8 +3,7 @@
 //! use. Shared by the analytics formula and the fresh-save oracle, so both read
 //! a recorded Q15 word exactly as the game does.
 
-/// `ConvertFixedQ15ToDecimal5@1424D85B0`, including its saturation and
-/// its i32 truncations (1424D85BF..1424D86D9).
+/// Convert Q15 words to fixed5, preserving saturation and i32 truncations.
 pub fn q15_to_fixed5(value: i64) -> i64 {
     let whole = i64::from((value >> 15) as i32);
     if whole > 0x36f9_bfb1 {
@@ -18,7 +17,7 @@ pub fn q15_to_fixed5(value: i64) -> i64 {
     i64::from(rounded as i32).wrapping_add(whole.wrapping_mul(100_000))
 }
 
-/// `Fixed5ToFixed15@1424D8420`: truncating in both parts.
+/// Convert fixed5 to Q15, truncating in both parts.
 pub fn fixed5_to_q15(value: i64) -> i64 {
     let whole = value / 100_000;
     let rest = value - whole * 100_000;
@@ -26,10 +25,7 @@ pub fn fixed5_to_q15(value: i64) -> i64 {
 }
 
 /// The save writer's rendering of a Q15 word as five decimals: truncated toward
-/// zero, unlike [`q15_to_fixed5`]. Established on a live text save
-/// (`captures/w2_live`, hour 60827895): all 30 nonzero stability and
-/// war-support penalty words of 439 countries match truncation, while rounding
-/// misses 16 of them by one. The native writer function is not yet named.
+/// zero, unlike [`q15_to_fixed5`].
 pub fn q15_to_saved_fixed5(value: i64) -> i64 {
     (i128::from(value) * 100_000 / 32_768) as i64
 }

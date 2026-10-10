@@ -128,7 +128,7 @@ pub struct NavalCommanderInputs {
     pub modifier_feature_flags: u32,
     pub modifier_callback_kind: u8,
     pub tooltips: Vec<LandCombatCommanderPortraitTooltip>,
-    /// CUnitLeader+0xDE0, AddTrait@140BFF6F0 / DailyUpdate@140C03B60.
+    /// Stored timed-trait inputs, updated when traits are added and daily.
     /// NotRecorded in recordings predating this input.
     pub timed_traits: Recorded<Vec<LandCombatCommanderTimedTrait>>,
 }
@@ -138,7 +138,7 @@ value_struct!(NavalCommanderInputs { commander: u64, country: u32, category: i32
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandCombatDivisionCommander {
     pub skill: i32,
-    /// The raw saved name (CUnitLeader+0x20); the viewer localises it.
+    /// The raw saved name; the viewer localises it.
     pub name_token: Vec<u8>,
     pub traits: Vec<LandCombatCommanderTrait>,
 }
@@ -153,9 +153,8 @@ pub struct LandCombatSideDetails {
     pub tactic_counter_id: u32,
     pub tactic_token: Vec<u8>,
     pub air_counts: Vec<i32>,
-    /// CLandCombatant+0x138, the CAS tooltip's AA_EFFECTIVENESS input. Its
-    /// consumer is L4c's CAS tooltip (viewer combat/tooltips.rs, the opposing
-    /// side's value); L4b records it and the oracle compares it to the save.
+    /// The CAS tooltip's AA_EFFECTIVENESS input, using the opposing side's
+    /// value. Capture records it and the oracle compares it to the save.
     pub anti_air_attack: i64,
     pub air_kills: u32,
     pub damage: [i64; 6],
@@ -168,13 +167,12 @@ pub struct LandCombatSideDetails {
     /// Raw CUnitLeader experience. Consumed by L4c's commander skill tooltip
     /// (viewer combat/tooltips.rs); the oracle compares it to the save.
     pub commander_experience: i64,
-    /// Raw saved name (CUnitLeader+0x20) and description (+0x80) tokens; the
-    /// viewer localises both in its own language. The description's consumer
-    /// is L4c's portrait tooltip (viewer combat/commander_tooltips.rs).
+    /// Raw saved name and description tokens; the viewer localises both in its
+    /// own language. The portrait tooltip consumes the description.
     pub commander_name_token: Vec<u8>,
     pub commander_description_token: Vec<u8>,
-    /// CArmyLeader+0x1048 formation reference of a category 0/1 commander,
-    /// for the HQ badge (1415C5F10); zero otherwise.
+    /// Formation reference of a category 0/1 commander, for the HQ badge; zero
+    /// otherwise.
     pub commander_formation: u64,
     pub presentation: CombatCommanderPresentation,
     pub traits: Vec<LandCombatCommanderTrait>,
@@ -183,12 +181,12 @@ pub struct LandCombatSideDetails {
 }
 value_struct!(LandCombatSideDetails { committed: Vec<u64>, reserves: Vec<u64>, tactic_id: i32, tactic_kind: u8, tactic_counter_id: u32, tactic_token: Vec<u8>, air_counts: Vec<i32>, anti_air_attack: i64, air_kills: u32, damage: [i64; 6], organisation_loss: [i64; 24], organisation_loss_count: u32, commander: u64, commander_skill: i32, commander_category: i32, commander_country: u32, commander_experience: i64, commander_name_token: Vec<u8>, commander_description_token: Vec<u8>, commander_formation: u64, presentation: CombatCommanderPresentation, traits: Vec<LandCombatCommanderTrait>, timed_traits: Vec<LandCombatCommanderTimedTrait>, learning_traits: Vec<LandCombatCommanderLearningTrait> });
 
-/// A timed trait of the side's commander (`CUnitLeader+0xDE0`).
+/// A timed trait of the side's commander.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandCombatCommanderTimedTrait {
     pub token_id: i32,
     pub definition_ordinal: i32,
-    /// Signed; -1 is not an expiring trait, zero still is (140C0B3C0).
+    /// Signed; -1 is not an expiring trait, zero still is.
     pub remaining_days: i32,
 }
 value_struct!(LandCombatCommanderTimedTrait {
@@ -219,7 +217,7 @@ value_struct!(LandCombatTacticCountryWeight {
     accumulator_entry_present: u8
 });
 
-/// The per-side simulation operands of 1412A77A0's preferred-tactic weights;
+/// The per-side simulation operands of preferred-tactic weights;
 /// the candidates, weights and unlocks come from content and
 /// CountryTacticUnlocks. A side whose country set emptied has no country
 /// preference or weight.
@@ -258,12 +256,12 @@ value_struct!(LandDivisionWidthTerm {
     width: i64
 });
 
-/// 1415CA660's exile-frame operands for a committed division whose template
-/// is exiled: origin type (+0x1F8) exactly 2 (`CArmy::IsExiled`, 140C79AC0).
+/// Exile-frame operands for a committed division whose template is exiled:
+/// origin type exactly 2.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandCombatExileInputs {
     pub origin_type: i32,
-    /// Template +0x1F4 when positive, else +0x1EC (140C770A0).
+    /// The positive template origin country, otherwise its fallback country.
     pub country: i32,
     pub country_fallback: i32,
     /// The location state's core countries and the exile country's occupier
@@ -377,8 +375,8 @@ pub struct NavalCombatSummaryInputs {
     pub escort_bonus: i64,
     /// The side's ordered primary country list (`+0x38`), raw references.
     pub countries: Vec<u32>,
-    /// Its ordered roster-owner list (`+0x50`), which admits a viewer to the combat's
-    /// shared vision (`UpdateCombatSharedVisionFlag@1413CEBE0`).
+    /// Its ordered roster-owner list, which admits a viewer to the combat's
+    /// shared vision.
     pub secondary_countries: Vec<u32>,
     pub modifiers: [[NavalCombatSummaryModifier; 5]; 5],
     pub modifier_metadata: [[u32; 2]; 5],
@@ -441,9 +439,9 @@ value_struct!(NavalCombatAirWingKill {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalCombatPlane {
-    /// CSubUnitDefinition+0x58C indices for the +0x40 wing references,
-    /// aligned by occurrence. MAX means the historical wing no longer resolves.
-    /// 141963460/140F4A4B0 derive the hover's localized short-name list.
+    /// Sub-unit definition indices for wing references, aligned by occurrence.
+    /// MAX means the historical wing no longer resolves. They supply the
+    /// hover's localised short-name list.
     pub wing_types: Vec<u32>,
     pub source: u8,
     /// Side forward-group ordinal, or MAX for a paired-only group.
@@ -486,10 +484,9 @@ pub struct NavalCombatSideDetails {
     pub planes: Vec<NavalCombatPlane>,
     pub summary: NavalCombatSummaryInputs,
     pub commander_inputs: Option<NavalCommanderInputs>,
-    /// The side's task-force handles (`CCombatant+0x20`) in stored order:
-    /// `CNavalCombatant::AddUnit@141608EC0` admits only navies, and
-    /// `CNavalCombatant::Serialize@14160FF40` saves each as `unit`.
-    /// Engaged-flag derivation compares these handles hour over hour.
+    /// The side's task-force handles in stored order. Only navies are admitted,
+    /// and the save writes each as `unit`. Engaged-flag derivation compares
+    /// these handles hour over hour.
     pub units: Vec<u64>,
 }
 value_struct!(NavalCombatSideDetails { damage_history: [[i64; 6]; 6], original_health: i64, total_damage: i64, damage_by_type: Vec<NavalDamageSource>, commander: u64, engaged: u8, retreating: u8, capital_screening: i64, carrier_screening: i64, positioning: i64, anti_air: i64, planes: Vec<NavalCombatPlane>, summary: NavalCombatSummaryInputs, commander_inputs: Option<NavalCommanderInputs>, units: Vec<u64> });
@@ -649,7 +646,7 @@ pub struct NavalResultSideDetails {
 }
 value_struct!(NavalResultSideDetails { leader: u64, hq_leader: u64, hq_influences: Vec<u64>, ships: Vec<NavalResultShip>, planes: Vec<NavalResultPlane>, hq_modifiers: Vec<NavalShipModifierSource>, commander_context: Option<NavalCommanderInputs>, hq_commander_context: Option<NavalCommanderInputs> });
 
-/// Stored operands of 1413D69D0, sampled only for border-war combats.
+/// Stored border-war simulation operands, sampled only for border-war combats.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandBorderWarSide {
     pub country: i32,
@@ -662,10 +659,10 @@ pub struct LandBorderWarSide {
 value_struct!(LandBorderWarSide { country: i32, state: i32, win_event: Vec<u8>, lose_event: Vec<u8> });
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandBorderWarInputs {
-    /// CLandBorderWarCombat+0xF0, exact byte; any nonzero transfers the state.
+    /// Exact transfer-state byte; any nonzero transfers the state.
     pub transfer_state: u8,
     pub sides: [LandBorderWarSide; 2],
-    /// CLandBorderWarCombat+0xD8, fixed5 base width (1413D6800).
+    /// Stored fixed5 base width.
     pub combat_width: Recorded<i64>,
 }
 value_struct!(LandBorderWarInputs {
@@ -701,11 +698,10 @@ pub struct LandCombatDivisionRow {
     pub role: u8,
     pub province: u32,
     pub division: u64,
-    /// Naming operands (CNameGroupMember): type, order, ordered and
-    /// programmatic flags, the stored +0x88 name where 1409B5640 shows it
-    /// (+0xA9 clear, or set with a null group), and the selected historical
-    /// group key, empty for a null group; the viewer renders the name from
-    /// content.
+    /// Naming operands: type, order, ordered and programmatic flags, the stored
+    /// name shown when the programmatic flag is clear or the group is null,
+    /// and the selected historical group key, empty for a null group. The
+    /// viewer renders the name from content.
     pub name_type: i32,
     pub name_order: i32,
     pub name_ordered: u8,
@@ -730,13 +726,11 @@ pub struct LandCombatDivisionRow {
     pub reinforcement_supply: Vec<LandReinforcementSupplyTerm>,
     pub reinforcement_acclimatization: Vec<LandReinforcementAcclimatization>,
     pub reinforcement_transport: Vec<LandReinforcementTransportTerm>,
-    /// Raw CUnit+0x4A8 latch word of the direction count (141298E00).
+    /// Raw latch word of the direction count.
     pub direction_group: i32,
     pub exile: Option<LandCombatExileInputs>,
-    /// The unit stat block's equipment category mask, `*(CUnit+0x138)+0x5A8`
-    /// as stored: CEquipmentTypeTrigger::vf23 (141390370) counts the
-    /// CLandCombatant units whose mask meets a category trigger's
-    /// (140F731B0).
+    /// The unit stat block's stored equipment category mask. A category trigger
+    /// counts land combatant units whose masks meet its category mask.
     pub categories: u64,
 }
 typed_codec!(LandCombatDivisionRow, 97, |row| (row.combat as u128) << 33 | (row.side as u128) << 32 | row.ordinal as u128,
@@ -754,15 +748,15 @@ typed_codec!(LandCombatModifierRow, 65, |row| (row.combat as u128) << 1 | row.si
  |key| Self { combat: (key >> 1) as u64, side: (key & 1) as u8, ..Default::default() },
  { 0 => (border_values): Opaque, 1 => (divisions): Opaque }, |row| { let _ = row; if row.side > 1 { return Err(invalid("invalid combat side")); } Ok(()) });
 
-/// Hourly side operands of one land combat, for its map marker (1418B4BD0) and
-/// window. The country sets keep raw references in native order; the viewer
-/// applies the visibility and side rules for any viewing country.
+/// Hourly side operands of one land combat, for its map marker and window.
+/// Country sets keep raw references in stored order; the viewer applies
+/// visibility and side rules for any viewing country.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandCombatSideRow {
     pub combat: u64,
-    /// CLandCombat +0x98, the marker's frame and the window's indicator icon.
+    /// The marker's frame and the window's indicator icon.
     pub indicator: u8,
-    /// Attacker then defender CLandCombatant +0x08 flag words.
+    /// Attacker then defender land-combatant flag words.
     pub flags: [u32; 2],
     pub attacker_primary: Vec<u32>,
     pub attacker_secondary: Vec<u32>,
@@ -781,19 +775,19 @@ pub struct NavalCombatDetailsRow {
     pub duration: i32,
     pub progress: i64,
     pub sides: [NavalCombatSideDetails; 2],
-    /// SWeatherPerRegion+0x30 active i16 values, little endian, in this
-    /// live combat's strategic template order (140F0CF40, 141D8A3B0).
+    /// Active i16 weather values, little endian, in this live combat's
+    /// strategic template order.
     pub custom_sea: Option<Vec<u8>>,
     /// 0 complete; 1 guarded custom-grid read failed. No diagnostic text is
-    /// serialized per combat (140F0CF40, 141D8A3B0).
+    /// serialized per combat.
     pub custom_sea_error: u8,
 }
 typed_codec!(NavalCombatDetailsRow, 64, |row| row.combat as u128,
  |key| Self { combat: key as u64, ..Default::default() },
  { 0 => (province): U32, 1 => (day): I32, 2 => (duration): I32, 3 => (progress): I64, 4 => (sides): Opaque, 5 => (custom_sea): Opaque, 6 => (custom_sea_error): U8 }, |row| { if row.custom_sea.as_ref().is_some_and(|sea| sea.len() % 2 != 0) { return Err(invalid("odd custom sea i16 bytes")); } else if row.custom_sea_error > 1 || (row.custom_sea.is_some() == (row.custom_sea_error != 0)) { return Err(invalid("custom sea capture status conflicts with values")); } Ok(()) });
 
-/// Ordered wing-handle occurrences in the native dense CAirBase+0x48 walk for
-/// a base referenced by naval combat. Repeated handles are meaningful. Every
+/// Ordered wing-handle occurrences in the dense wing walk for a base
+/// referenced by naval combat. Repeated handles are meaningful. Every
 /// resolved referenced base has a row, including one with an empty wing list.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalCombatAirBaseWingHandlesRow {

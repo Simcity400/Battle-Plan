@@ -2,13 +2,10 @@
 //! classic resource trade deal (`ResourceExchanges`) as a flow from its seller
 //! (the exporter) to its buyer (the importer) for one resource.
 //!
-//! The values are the ones Resource balance already shows per country, with the
-//! same evidence (`resource_balance.rs`): `delivered` is a deal's daily amount,
-//! exact against the save's `delivered`; `assigned_factories` is the civilian
-//! factories the buyer pays, exact against the save's `lended_cic`. The convoys
-//! (`convoys_assigned` of `convoys_required`) are shown as recorded: the save
-//! only confirms whether a deal needs convoys at all (the fresh-save oracle's
-//! `convoys_required_nonzero`), not the counts.
+//! The values are the ones Resource balance already shows per country
+//! (`resource_balance.rs`): `delivered` is a deal's daily amount and
+//! `assigned_factories` is the civilian factories the buyer pays. The convoys
+//! (`convoys_assigned` of `convoys_required`) are shown as recorded.
 //!
 //! A flow is one (native seller holder, native buyer holder, resource): several
 //! deals between the same two countries for the same resource are summed, and `deals` says how many there

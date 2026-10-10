@@ -179,8 +179,8 @@ export function percentFull(read: Pick<FuelRead, 'fuelRaw' | 'capacityRaw'>): bi
 export interface FuelPart { id: string; label: string; raw: bigint; consumer?: number; muted?: boolean; reason?: string | null }
 export type FuelPartLabels = Pick<FuelReply, 'gainLabels' | 'transferLabels'>;
 
-/** Native FuelPanel_BuildBreakdown@1410DE880 uses NUM and, for oil, OIL.
- * The recorded catalogue has already expanded references and removed markup. */
+/** Fuel labels use NUM and, for oil, OIL placeholders. The recorded catalogue
+ * has already expanded references and removed markup. */
 export function fuelLabel(label: FuelLabel | undefined, raw: bigint, scale: bigint): string | null {
   return label?.template?.replaceAll('{NUM}', formatFuelPart(raw, scale)).replaceAll('{OIL}', '?') ?? null;
 }

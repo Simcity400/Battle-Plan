@@ -2,11 +2,11 @@
 
 use crate::{Memory, read};
 
-/// Primary vtable, installed by the type constructor; RTTI at VA1429258A0.
+/// Primary type vtable.
 pub const VTABLE_RVA: usize = 0x0292_58a0;
-/// Lexer type token; CWarGoalType::Read@140A2C950 and SerializeData@1415CE460.
+/// Declared lexer type token.
 pub const TOKEN: usize = 8;
-/// MSVC string loaded from `war_name` (token 0x2C18), read by 140D0BCA0.
+/// Authored war-name override string used by naming.
 pub const WAR_NAME: usize = 0x2a8;
 
 pub fn token(memory: &impl Memory, base: usize, pointer: usize) -> Result<u32, &'static str> {

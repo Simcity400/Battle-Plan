@@ -4,13 +4,11 @@ use super::{
 };
 use crate::{Memory, carmy, cland_combatant, cpdx_array::Array, read, walk::Buffer};
 
-/// Each side's selected commander, made once per combat side and shared by
-/// that combat's window, detail and tactic readers. 14129E190
-/// (`CLandCombatant` vslot 29) selects from the side's own unit list alone, so
-/// a selection is keyed by that list (its data and count): the pass holds the
-/// simulation thread, and a second selection over the same list would read
-/// the same words. Each reader meets the selection's result, or its failure,
-/// where it would select; any other list selects afresh.
+/// A selected commander is shared by a combat side's window, detail and
+/// tactic readers. Selection uses only that side's unit list and is keyed by
+/// its data and count. The pass holds the simulation thread, so the same
+/// list would supply the same words. Each reader receives the original
+/// selection or failure where it would select; other lists select afresh.
 #[derive(Default, Clone, Copy)]
 pub struct Commanders {
     sides: [Option<(Array, Selection)>; 2],
@@ -36,7 +34,7 @@ pub struct CommanderTrait {
     pub token_id: i32,
     pub definition_ordinal: i32,
     pub kind: u32,
-    /// 141C60E40 filters on CUnitLeaderTrait+A74 for combat-relevant traits.
+    /// Combat-relevant trait byte used by the trait filter.
     pub relevant: u8,
     pub token_start: usize,
     pub token_len: usize,
@@ -185,14 +183,13 @@ pub struct SideDetails {
     pub reserve_start: usize,
     pub reserve_len: usize,
     pub tactic_id: i32,
-    /// 0: null pointer (1415C66C0 returns); 1: CNullCombatTactic; 2: CCombatTactic.
+    /// Tactic kind: 0 null pointer, 1 null tactic, 2 ordinary tactic.
     pub tactic_kind: u8,
     pub tactic_counter_id: u32,
     /// Spans of the text and air arenas.
     pub tactic_token: Span,
     pub air_counts: Span,
-    /// The side's anti-air attack, which the CAS tooltip (1415C1A60) shows as
-    /// AA_EFFECTIVENESS through 141298090; replayed by L4c's CAS tooltip.
+    /// Side anti-air attack used as the CAS tooltip's effectiveness input.
     pub anti_air_attack: i64,
     pub air_kills: u32,
     /// Air strength/org, ground strength/org, prevented strength/org damage.
@@ -208,20 +205,19 @@ pub struct SideDetails {
     /// The raw saved name at CUnitLeader+0x20 (a localisation key or literal);
     /// the localised +0x40 copy is the recording client's cache.
     pub commander_name_token: Span,
-    /// The raw saved description token at +0x80; 140C0C950 localises it into
-    /// the client cache at +0x60. L4c's portrait tooltip localises it instead.
+    /// Raw saved commander-description token at +0x80. The game caches
+    /// localised text at +0x60; the viewer localises the retained token.
     pub commander_description_token: Span,
-    /// CArmyLeader+0x1048, the commander's formation reference, for the HQ badge
-    /// (1415C5F10); zero when absent or the category cannot carry the badge.
+    /// Commander formation reference at +0x1048 used by the HQ badge;
+    /// zero for absence or an ineligible category.
     pub commander_formation: u64,
     pub presentation: crate::naval_commander_inputs::Presentation,
     /// The assigned-trait vector (+0xDC8) in native order, as a span of the
     /// caller's [`DetailArenas`]; each trait's token is a span of its text.
     pub traits_start: usize,
     pub traits_len: usize,
-    /// The timed-trait vector (+0xDE0) in native order, as a span of the
-    /// caller's arena; the trait tooltip's expiry line (141C5F730) reads the
-    /// first entry matching a trait.
+    /// Ordered timed traits at +0xDE0 in the caller arena. Expiry display
+    /// uses the first entry matching a trait.
     pub timed_traits_start: usize,
     pub timed_traits_len: usize,
     /// The trait-experience vector (+0xDF8) in native order.
@@ -277,7 +273,7 @@ pub(super) fn read_border_war(
         if state <= 0 {
             return Err("border-war state id invalid");
         }
-        // 1413D69D0 permits either event length to be zero.
+        // Either border-war event identifier may be empty.
         let events = reader.field::<[u8; 64]>(pointer, side::WIN_EVENT)?;
         let lose_offset = side::LOSE_EVENT - side::WIN_EVENT;
         row.sides[index] = BorderWarSide {
@@ -345,10 +341,10 @@ const SELECTED_DESCRIPTION: crate::cname_group_member::StringErrors = [
     "land combat commander description token terminator unreadable or invalid",
 ];
 
-/// Capture window operands from the authenticated census. Committed/reserve
-/// references retain native order in the caller arena. Nothing calls the engine,
-/// computes UI totals, or records a native pointer. Loss history is sampled only
-/// when its native count admits all 24 entries, exactly as 1412A2AA0 does.
+/// Capture window operands from the authenticated census. Committed and
+/// reserve references keep stored order in the caller arena. No game calls,
+/// UI totals or process pointers are recorded. Loss history is reached only
+/// when its count admits all 24 entries.
 pub fn read_details(
     memory: &impl Memory,
     base: usize,
@@ -396,8 +392,9 @@ pub fn read_details(
         defender_bonus: i64::from_le_bytes(defender_bonus),
         ..DetailsRow::default()
     };
-    // 1413D69D0 consumes only the two sides and +F0. Side identity/backlinks
-    // were authenticated by header; identifiers use the existing unbounded arena.
+    // Border tooltip consumes only both sides and the transfer byte.
+    // Header authentication already proved side identity and backlinks;
+    // event identifiers use the unbounded arena.
     if border {
         row.border_war = Some(read_border_war(&reader, source, arenas)?);
     }
@@ -607,17 +604,16 @@ impl<M: Memory> Reader<'_, M> {
         arenas: &mut DetailArenas<'_>,
     ) -> Result<(), &'static str> {
         use crate::{carmy_leader, cunit_leader, cunit_leader_trait};
-        // 14129E190 selects the first highest skill, except an equal category-1
-        // candidate replaces a category-0 leader. The selected reference is an
-        // identity; numeric bonuses are kept as raw source fields.
+        // Select the first highest-skill leader, except equal category 1
+        // replaces category 0. Keep the reference as identity and bonuses as raw fields.
         let commander = self.selected(commanders, members, index, units)?;
         let selected = commander.pointer;
         row.commander = commander.handle;
         row.commander_skill = commander.skill;
         row.commander_category = commander.category;
         if selected == 0 {
-            // 1415C5F10 falls back to the first country-set entry, then the
-            // attacked province controller when that set's +48 count is zero.
+            // Fall back to the first side-country entry, then the attacked-province
+            // controller when its country-set count is zero.
             row.commander_country = if self.field::<i32>(side, 0x48)? == 0 {
                 let combat = self.pointer(side, cland_combatant::COMBAT)?;
                 self.field(self.pointer(combat, PROVINCE)?, 0x188)?
@@ -626,13 +622,12 @@ impl<M: Memory> Reader<'_, M> {
             };
             return Ok(());
         }
-        // Country +120 is consumed by 1415C5F10 and the trait-grid call in
-        // 1415C8950. Preserve the exact tag rather than a canonicalized slot.
+        // Portrait and trait display use the exact country tag at +0x120.
+        // Preserve it without canonical-slot substitution.
         row.commander_country = self.field(selected, 0x120)?;
         row.commander_experience = self.field(selected, cunit_leader::EXPERIENCE)?;
-        // 140C16FB0 stores +0x20 as an ordinary MSVC string and hands it to
-        // 142230F20, which takes any length, empty included; +0x80 is the same
-        // kind of string. Both keep the game's own length.
+        // Both name and description are ordinary MSVC strings, including empty
+        // strings. Preserve their stored lengths.
         for (offset, unreadable, errors, span) in [
             (
                 cunit_leader::TOKEN,

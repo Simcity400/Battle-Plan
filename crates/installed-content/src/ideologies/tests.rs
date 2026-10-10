@@ -30,10 +30,12 @@ fn fixture(name: &str, files: &[(&str, &str)]) -> (Ideologies, Vec<String>) {
     (ideologies, messages)
 }
 
-// 140A38190: a duplicate skips its body, not the rest of the file.
+// A duplicate skips its body, not the rest of the file.
 #[cfg(feature = "test-support")]
 #[test]
 fn duplicate_groups_keep_the_first_file_and_skip_the_later_body() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (db, warnings) = fixture(
         "duplicates",
         &[
@@ -70,10 +72,12 @@ fn duplicate_groups_keep_the_first_file_and_skip_the_later_body() {
     );
 }
 
-// 140A38A00 stops this file; 1401886F0 reads the next file.
+// An unexpected top-level key stops this file; the next file still loads.
 #[cfg(feature = "test-support")]
 #[test]
 fn top_level_stop_keeps_the_prefix_and_only_stops_its_file() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (db, warnings) = fixture(
         "top-stop",
         &[
@@ -101,10 +105,12 @@ fn top_level_stop_keeps_the_prefix_and_only_stops_its_file() {
     );
 }
 
-// 140A38190 rereads owned groups; 140A38FE0 resets omitted groups.
+// Later blocks reread owned groups and reset omitted groups.
 #[cfg(feature = "test-support")]
 #[test]
 fn later_blocks_in_the_defining_file_reset_group_contents() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (db, warnings) = fixture(
         "same-file",
         &[(
@@ -120,11 +126,13 @@ fn later_blocks_in_the_defining_file_reset_group_contents() {
     assert!(warnings.is_empty(), "{warnings:?}");
 }
 
-/// CColor::vf3 (142237160): three `%f` components, each divided by 255
-/// when above 1.0, the alpha set to 1.0; a fourth component is the alpha
-/// as read. No `color` leaves CColor::construct's white (142236FA0).
+/// Three floating-point components, each divided by 255 when above 1.0,
+/// with alpha set to 1.0; a fourth component is the alpha as read.
+/// No `color` leaves the initial white.
 #[test]
 fn groups_keep_colours_and_sub_ideologies() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let ideologies = parsed(
             b"ideologies = { democratic = { types = { conservatism = { } liberalism = { } } color = { 0 0 255 } rules = { a = yes } } \
               fascism = { types = { nazism = { } } color = { 150 75 0 128 } } odd = { color = { 0.1 0.5 0.5 } } \
@@ -146,12 +154,14 @@ fn groups_keep_colours_and_sub_ideologies() {
     assert!(ideologies.group_of("unknown").unwrap().is_none());
 }
 
-/// A later `color` reads into the same CColor from where the last left
-/// it, a component `%f` cannot read keeps its value, a `{`-less form is
-/// refused by name when it is a packed number (`%x`, 1424B01A0) and
-/// otherwise changes nothing (reported), and a variable resolves first.
+/// A later `color` updates the same colour from where the last left
+/// it. A component that cannot be scanned keeps its value; a `{`-less form
+/// is refused by name when it is a packed hexadecimal number and otherwise
+/// changes nothing (reported). A variable resolves first.
 #[test]
-fn colours_follow_ccolors_reads_in_order() {
+fn colours_follow_component_reads_in_order() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let ideologies = parsed(
             b"@r = 2 ideologies = { a = { color = { 0 0 255 } COLOR = { @r x 0.5 } } b = { color = 16711680 } \
               c = { color = { 1tail 0 0 } } }",
@@ -193,11 +203,11 @@ fn a_group_that_is_not_text_stops_the_file() {
     );
 }
 
-/// CColor (142237160) reads a number token or `{`: `rgb` is reported
+/// The colour reader accepts a number token or `{`: `rgb` is reported
 /// and nothing more read, so the block after it is read as the group's
 /// fields and its `}` ends the group.
 #[test]
-fn a_tagged_colour_is_not_read_by_ccolor() {
+fn a_tagged_colour_leaves_its_block_to_the_group_reader() {
     let (read, _, _) = read_file_in(
         b"ideologies = { fascism = { color = rgb { 150 75 0 } types = { nazism = { } } } }",
         "",
@@ -210,13 +220,13 @@ fn a_tagged_colour_is_not_read_by_ccolor() {
     assert!(
         read.misreads[0]
             .what
-            .contains("where CColor reads a number or `{`"),
+            .contains("where the colour reader reads a number or `{`"),
         "{:?}",
         read.misreads
     );
 }
 
-/// A sub-ideology's other keys go to its CModifier (14117C960 -> +0x40):
+/// A sub-ideology's other keys go to its modifier object:
 /// a block value there is a modifier block the registry decides.
 #[test]
 fn a_sub_ideologys_other_keys_are_its_modifier() {
@@ -230,9 +240,9 @@ fn a_sub_ideologys_other_keys_are_its_modifier() {
 }
 
 /// The replay's classes through this reader: a quoted key is no keyword
-/// (1424A7A90) and a bare one folds; a variable holds within its file;
-/// a block where ReadStringList or one value is read is read as the
-/// reader reads it; the end of the text closes every loop.
+/// and a bare one folds; a variable holds within its file; a block where
+/// a string list or one value is expected reads as the reader reads it;
+/// the end of the text closes every loop.
 #[test]
 fn the_replay_classes_hold_for_ideologies() {
     let (read, _, _) = read_file_in(
@@ -264,10 +274,10 @@ fn the_replay_classes_hold_for_ideologies() {
     assert_eq!(groups(&read.items).0[0].types, ["y"]);
 }
 
-/// `140A38A00` numbers each group by its place in its block's list (`140A38190`): a key
-/// repeated in the block, or first read by an earlier file, takes no place and keeps its
-/// first number; a later block of the same file resets the groups it omits (`140A38FE0`)
-/// and numbers its own; a file stopping short refuses all.
+/// Each group is numbered by its place in its block's list: a key
+/// repeated in the block, or first read by an earlier file, takes no place
+/// and keeps its first number; a later block of the same file resets the
+/// groups it omits and numbers its own; a file stopping short refuses all.
 #[cfg(feature = "test-support")]
 #[test]
 fn a_group_frame_is_its_place_in_the_defining_block() {
@@ -287,7 +297,7 @@ fn a_group_frame_is_its_place_in_the_defining_block() {
         "common/ideologies/b.txt",
         "ideologies = { COMMUNISM = { } democratic = { } }",
     );
-    // Two blocks: 140A38FE0 resets anarchism when the second omits it; monarchism is 1.
+    // Two blocks: the second resets anarchism by omitting it; monarchism is 1.
     write(
         "common/ideologies/c.txt",
         "ideologies = { anarchism = { } } ideologies = { monarchism = { } } \
@@ -312,6 +322,8 @@ fn a_group_frame_is_its_place_in_the_defining_block() {
 
 #[test]
 fn count_names_preserve_sub_ideology_identity() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let db = parsed(b"ideologies={synthetic_group={types={synthetic_type={}}}}");
     let names = crate::trigger_keys::CountTriggerNames::new(
         &crate::buildings::Buildings::default(),

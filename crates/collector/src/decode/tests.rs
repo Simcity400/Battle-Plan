@@ -2715,7 +2715,7 @@ fn production_rest_calibration_counters_are_monotonic_and_additive_per_table() {
 
 #[test]
 fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
-    // S4: two families decode in one process_job on one Shared. Both
+    // Two families decode in one process_job on one Shared. Both
     // payloads' rows install identically, both family counters advance
     // (REFRESH_JOBS +2), and per-frame table_ns stays copy-only (the
     // worker never writes it; decode ns goes to the calibration

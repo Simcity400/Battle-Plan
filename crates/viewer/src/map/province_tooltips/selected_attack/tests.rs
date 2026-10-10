@@ -1,4 +1,4 @@
-//! UNRUN fixtures for the proposed real packet adapter and native arithmetic.
+//! Selected-attack packet adapter and arithmetic fixtures.
 use super::*;
 use crate::map::{test_frame, test_put as put};
 use arithmetic::{ONE, Projection, Row};
@@ -299,7 +299,6 @@ fn unknown_earlier_wrapper_cannot_promote_a_later_representative() {
     assert_eq!(first_template(Ok(2), &mut seen, &mut unknown), Ok(None));
 }
 
-// Append to selected_attack/tests.rs. All fixtures UNRUN.
 #[test]
 fn template_fallback_callback_converts_key_before_the_shared_country_localizer() {
     use replay::rows::TemplateDisplayNameParts as Parts;
@@ -363,7 +362,7 @@ fn template_literal_or_known_empty_key_never_runs_the_fallback_conversion() {
     }
 }
 
-// New R3 source fixtures. All UNRUN.
+// Attack-preview source fixtures.
 fn fallback_localisation(entries: &[(&str, &str)]) -> installed_content::localisation::Localisation {
     entries
         .iter()
@@ -568,8 +567,10 @@ fn tag_nul_precedes_utf8_and_unknown_exact_raw_tag_cannot_use_plain_fallback() {
 }
 
 fn recorded_layout_frame() -> DecodedFrame {
+    engine::executable_tables::initialize_for_tests()
+        .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let mut frame = test_frame(42);
-    let mut keys = engine::modifier_keys::ALL.to_vec();
+    let mut keys = engine::modifier_keys::all().collect::<Vec<_>>();
     keys.sort_unstable_by_key(|key| key.index);
     put(
         &mut frame,

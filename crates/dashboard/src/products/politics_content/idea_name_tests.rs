@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 #[test]
 fn idea_case_aliases_use_authored_name_description_and_picture_keys() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/mod.lua",
@@ -45,6 +47,8 @@ fn idea_case_aliases_use_authored_name_description_and_picture_keys() {
 
 #[test]
 fn unknown_gui_decode_reaches_idea_and_portrait_problems() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/mod.lua",
@@ -86,11 +90,13 @@ fn unknown_gui_decode_reaches_idea_and_portrait_problems() {
     assert!(why.contains(reason), "{why}");
 }
 
-/// 140FBCF90 localises the key it selects and nothing else; 140FC16E0
+/// Name selection localises only its chosen key; description selection
 /// takes `token_desc` before the override's. Read from a content folder
 /// through the Politics content loader.
 #[test]
 fn an_idea_name_is_its_selected_key_alone() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "localisation/test_l_english.yml",
@@ -139,7 +145,7 @@ fn an_idea_name_is_its_selected_key_alone() {
         "{:?}",
         content.catalogue.refusal_lines()
     );
-    // An override content lacks is its own bytes (142230940); the token's
+    // An override content lacks is its own bytes; the token's
     // text does not stand in.
     let (other, _) = content.idea_artwork("MOD_other", None, country);
     assert_eq!(other.name.as_deref(), Some("MOD_other_override"));
@@ -176,12 +182,14 @@ fn an_idea_name_is_its_selected_key_alone() {
     );
 }
 
-/// 140FBCF90's country steps: `TAG_token` before the token for a
+/// Country name selection tries `TAG_token` before the token for a
 /// country that is not dynamic; a dynamic country, or one the hour does
 /// not place, is refused by name, as is the generated advisor name
-/// (140FBBEE0) of an idea without keys in a category of type 0.
+/// of an idea without keys in a category of type 0.
 #[test]
 fn an_idea_is_named_for_its_country() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "localisation/test_l_english.yml",
@@ -189,7 +197,7 @@ fn an_idea_is_named_for_its_country() {
                 "\u{feff}l_english:\n",
                 " MOD_spirit:0 \"Token Name\"\n",
                 " GER_MOD_spirit:0 \"German Name\"\n",
-                " POLITICS_ADVISOR_NAME_PATTERN:0 \"$NAME$ $SURNAME$\"\n",
+                " POLITICS_ADVISOR_NAME_PATTERN:0 \"$NAME$ :: $SURNAME$\"\n",
             ),
         ),
         (
@@ -249,7 +257,8 @@ fn an_idea_is_named_for_its_country() {
         .idea_name("MOD_spirit", country("D01", Some(dynamic)))
         .unwrap_err();
     assert!(
-        refused.contains("140D2BD20") && refused.ends_with("CountryCivilWars is unavailable"),
+        refused.contains("whether it is in civil war")
+            && refused.ends_with("CountryCivilWars is unavailable"),
         "{refused}"
     );
     assert!(
@@ -258,14 +267,13 @@ fn an_idea_is_named_for_its_country() {
             .unwrap_err()
             .contains("CountryAppearance.name_tag")
     );
-    // No key and a category of type 0: the name 140FBBEE0 generates
+    // No key and a category of type 0: generate a name
     // from GER's names: one name and one surname, so the draw is fixed.
     assert_eq!(
         content.idea_name("MOD_nameless", country("GER", Some(fixed))),
-        Ok(IdeaName::Generated("Karl Weber".to_owned()))
+        Ok(IdeaName::Generated("Karl :: Weber".to_owned()))
     );
-    // The seed is +0xAB8 (its database index, 2, from 140A31D80), the
-    // slot (3) and the level (2).
+    // The seed sums the database index (2), slot (3) and level (2).
     let nameless = content.idea("MOD_nameless").unwrap().unwrap();
     assert_eq!(nameless.position, 2);
     let ita = content.names.for_country("", "ITA");
@@ -273,13 +281,13 @@ fn an_idea_is_named_for_its_country() {
     assert_eq!(
         content.idea_name("MOD_nameless", country("ITA", Some(italian))),
         Ok(IdeaName::Generated(format!(
-            "{} {}",
+            "{} :: {}",
             String::from_utf8_lossy(first),
             String::from_utf8_lossy(surname)
         )))
     );
-    // An empty override, or one ReadStringInto cuts at a NUL to empty,
-    // goes on down 140FBCF90's ladder (+0xC70 is its length).
+    // An empty override, including one cut at a leading NUL terminator,
+    // continues down the naming ladder.
     for token in ["MOD_empty", "MOD_cut"] {
         assert!(
             matches!(
@@ -298,7 +306,7 @@ fn an_idea_is_named_for_its_country() {
     };
     assert_eq!(
         content.idea_name("MOD_nameless", country("GER", Some(cosmetic))),
-        Ok(IdeaName::Generated("Rosa Rot".to_owned()))
+        Ok(IdeaName::Generated("Rosa :: Rot".to_owned()))
     );
     // A country without names or surnames draws from the default, which
     // has none: empty text.
@@ -310,6 +318,8 @@ fn an_idea_is_named_for_its_country() {
 
 #[test]
 fn generated_advisor_names_read_the_ungated_original_only_after_cosmetic_miss() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::identity::NamingCountry;
     use replay::{
         frame::TableView,
@@ -321,7 +331,7 @@ fn generated_advisor_names_read_the_ungated_original_only_after_cosmetic_miss() 
             concat!(
                 "\u{feff}l_english:\n",
                 " GER_MOD_keyed:0 \"Own idea key\"\n",
-                " POLITICS_ADVISOR_NAME_PATTERN:0 \"$NAME$ $SURNAME$\"\n",
+                " POLITICS_ADVISOR_NAME_PATTERN:0 \"$NAME$ :: $SURNAME$\"\n",
             ),
         ),
         (
@@ -352,7 +362,7 @@ fn generated_advisor_names_read_the_ungated_original_only_after_cosmetic_miss() 
     };
     assert_eq!(
         name(&frame, "MOD_generated"),
-        Ok(IdeaName::Generated("Own Name".into()))
+        Ok(IdeaName::Generated("Own :: Name".into()))
     );
     for nonpositive in [0, -1] {
         if let TableView::Complete(TableRows::CountryAppearance(rows)) =
@@ -363,7 +373,7 @@ fn generated_advisor_names_read_the_ungated_original_only_after_cosmetic_miss() 
         }
         assert_eq!(
             name(&frame, "MOD_generated"),
-            Ok(IdeaName::Generated("Own Name".into()))
+            Ok(IdeaName::Generated("Own :: Name".into()))
         );
     }
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
@@ -375,7 +385,7 @@ fn generated_advisor_names_read_the_ungated_original_only_after_cosmetic_miss() 
     }
     assert_eq!(
         name(&frame, "MOD_generated"),
-        Ok(IdeaName::Generated("Original Name".into()))
+        Ok(IdeaName::Generated("Original :: Name".into()))
     );
     for (reference, unread, reason) in [
         (
@@ -423,7 +433,7 @@ fn generated_advisor_names_read_the_ungated_original_only_after_cosmetic_miss() 
         }
         assert_eq!(
             name(&frame, "MOD_generated"),
-            Ok(IdeaName::Generated("Cosmetic Name".into()))
+            Ok(IdeaName::Generated("Cosmetic :: Name".into()))
         );
         if let TableView::Complete(TableRows::CountryAppearance(rows)) =
             &mut *frame.tables[TableId::CountryAppearance.index()]
@@ -434,15 +444,16 @@ fn generated_advisor_names_read_the_ungated_original_only_after_cosmetic_miss() 
     }
 }
 
-/// 140FBCF90 for a dynamic country (SOV, named after GER) read from a
-/// recorded hour: 140D2BD20 on its CCountry+0xF88 holds when its own
-/// civil-war list (+0x12F0, CountryCivilWars) names a country owning a
-/// state (+0x484), or an enemy (+0x98: CountryWars where read, else
-/// the ongoing WarRelations) owning a state lists it. Then neither
+/// Name a dynamic country (SOV, named after GER) from a recorded hour.
+/// Civil war holds when its own CountryCivilWars list names a country owning
+/// a state, or an enemy (CountryWars where read, else ongoing WarRelations)
+/// owning a state lists it. Then neither
 /// `TAG_token` nor the token is asked, and an advisor name is generated
-/// only while the cosmetic tag (+0x1488, length +0x1498) is empty.
+/// only while the cosmetic tag is empty.
 #[test]
 fn a_dynamic_country_in_civil_war_skips_its_keys() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::identity::NamingCountry;
     use replay::{
         frame::{DecodedFrame, TableView},
@@ -458,7 +469,7 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
                 "\u{feff}l_english:\n",
                 " MOD_spirit:0 \"Token Name\"\n",
                 " SOV_MOD_spirit:0 \"Soviet Name\"\n",
-                " POLITICS_ADVISOR_NAME_PATTERN:0 \"$NAME$ $SURNAME$\"\n",
+                " POLITICS_ADVISOR_NAME_PATTERN:0 \"$NAME$ :: $SURNAME$\"\n",
             ),
         ),
         (
@@ -526,7 +537,7 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
     assert_eq!(name(&own, "MOD_spirit"), key("MOD_spirit"));
     assert_eq!(
         name(&own, "MOD_nameless"),
-        Ok(IdeaName::Generated("Karl Weber".to_owned()))
+        Ok(IdeaName::Generated("Karl :: Weber".to_owned()))
     );
     let mut cosmetic = own.clone();
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
@@ -576,7 +587,8 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
     };
     let refused = name(&unread, "MOD_spirit").unwrap_err();
     assert!(
-        refused.contains("140D2BD20") && refused.contains("CountryCivilWars is unavailable"),
+        refused.contains("whether it is in civil war")
+            && refused.contains("CountryCivilWars is unavailable"),
         "{refused}"
     );
     // A country outside the dynamic gate never asks about civil war.

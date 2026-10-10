@@ -1,4 +1,4 @@
-//! 1414536D0/1414545D0: the first resolving army, otherwise wing.
+//! Use the first resolving army, otherwise the wing.
 use super::{content::Content, rules::Text};
 use crate::combat::text::localise;
 use engine::{cname_group_member as member, raid_tooltip_operands::*};
@@ -148,8 +148,8 @@ impl<'a> Name<'a> {
                 .bytes(WING_NAME)
                 .map_err(|reason| format!("raid wing name was not recorded: {reason}"))?
                 .ok_or("raid wing name was not recorded")?;
-            // 140F51FB0 keeps neither generated inputs nor a rename marker.
-            // Share PLAN #164's ship-name fallback, including language refusal.
+            // Generated inputs and a rename marker are not retained. Share the
+            // ship-name fallback, including language refusal.
             return dashboard::scripted_text::stored_text(
                 loc,
                 recorded_language,
@@ -173,18 +173,16 @@ impl<'a> Name<'a> {
         if self.value(scalar, member::FLAG_B as u32)? != 0
             && self.value(scalar, member::OVERRIDE_NAME_LENGTH as u32)? != 0
         {
-            return Err(
-                "programmatic unit name 1409B4C40 has no retained localisation provenance".into(),
-            );
+            return Err("programmatic unit name has no retained localisation provenance".into());
         }
         if self.value(scalar, member::TYPE as u32)? != expected {
             return Err(format!(
-                "unsupported CNameGroupMember type for naming family {scalar}"
+                "unsupported name-group member type for naming family {scalar}"
             ));
         }
         let group = self
             .string(group)?
-            .ok_or("name uses generated fallback 1409B4CE0 without retained choice provenance")?;
+            .ok_or("name uses generated fallback without retained choice provenance")?;
         content.unit_names.as_ref().map_err(Clone::clone)?.name(
             &group,
             self.value(scalar, member::ORDER as u32)? as i32,

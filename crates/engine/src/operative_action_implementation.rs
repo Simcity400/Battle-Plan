@@ -1,17 +1,13 @@
-//! NOperativeMissions implementations behind COperativeMission+0x10.
+//! Polymorphic operative-action implementations selected by a mission.
 
-/// Stored raw country tag; GetCountryTag@140FAE550 -> virtual+0x50 ->
-/// 141A1DD30 copies this word for all eight concrete implementations.
+/// Stored raw country tag shared by all eight action implementations.
 pub const TARGET_COUNTRY: usize = 0x10;
-/// CStateBased's state pointer (not a network); getter 1401F6A80 and
-/// serializer 141A1E080. Country-based implementations have no state here.
+/// State-based action state pointer; country-based forms have no state here.
 pub const TARGET_POINTER: usize = 0x18;
-/// Operative boost-ideology implementation ideology pointer; old a30_non_operation_action_identity.rs:23, class-specific validity still needs proof.
+/// Boost-ideology action ideology pointer; class-specific validity is not established here.
 pub const BOOST_IDEOLOGY: usize = 0x40;
 
-/// Concrete RTTI vtables; dispatch 140FAFAA0 establishes variant order,
-/// each vtable's +0x50 is GetCountryTag@141A1DD30. These are executable
-/// implementation classes, independent of authored mission definitions.
+/// Concrete action vtables in dispatch order, independent of authored mission definitions.
 pub const VTABLE_RVAS: [usize; 8] = [
     0x02a0_8b18,
     0x02a0_9268,
@@ -23,9 +19,9 @@ pub const VTABLE_RVAS: [usize; 8] = [
     0x02a1_2848,
 ];
 
-/// Virtual +0x50 for all concrete mission implementations; 140FAE550 calls
-/// it and 141A1DD30 copies +0x10. Authenticate each executable vtable once
-/// per walk, retaining failures; every object's own vtable is still checked.
+/// Country-tag virtual dispatch shared by concrete action implementations.
+/// Authenticate each executable vtable once per walk, retaining failures, while
+/// checking every object's own vtable.
 const COUNTRY_GETTER_SLOT: usize = 0x50;
 const COUNTRY_GETTER_RVA: usize = 0x01a1_dd30;
 

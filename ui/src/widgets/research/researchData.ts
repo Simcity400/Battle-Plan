@@ -48,7 +48,7 @@ export function researchProgressAt(slot: ResearchSlotHistory, entryFirstObserved
   return done >= base ? 1 : Number(done * 10_000n / base) / 10_000;
 }
 
-/** EC1810/ABE4C0 integer formula, evaluated at the selected hour. */
+/** Integer research rate with the selected hour's ahead-of-time penalty. */
 export function researchRateAt(state: ResearchSlotState, hour: number): { rateRaw: string; penaltyRaw: string; floored: boolean } | null {
   const modifiers = state.details?.modifiers;
   if (!modifiers || state.aheadReductionYearsRaw === null) return null;

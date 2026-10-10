@@ -96,9 +96,9 @@ pub(super) fn candidate(
     Ok(Some((other, status, target)))
 }
 
-/// D11030 then D11080, on the ORIGINAL authenticated status. First raw/alias
-/// equality returns before the second endpoint is demanded. No dates or
-/// retired filter is substituted for the current +288 pointer.
+/// First-party then second-party subject predicates use the original
+/// authenticated status. Raw/alias equality can return before the second
+/// endpoint is demanded. Dates and retirement never replace the current pointer.
 pub(super) fn capture(
     memory: &impl Memory,
     base: usize,
@@ -184,7 +184,7 @@ mod tests {
         let mut bytes = fixture();
         bytes[0x310..0x314].copy_from_slice(&7_u32.to_le_bytes());
         bytes[0x314..0x318].copy_from_slice(&11_u32.to_le_bytes());
-        bytes[0x349] = 1; // Retired is irrelevant to D11030/D11080.
+        bytes[0x349] = 1; // Retirement is irrelevant to the subject endpoint predicates.
         assert_eq!(
             capture(
                 &SliceMemory {

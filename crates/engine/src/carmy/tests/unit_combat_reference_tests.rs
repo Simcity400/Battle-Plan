@@ -92,7 +92,7 @@ fn with_selected_inputs(mut legacy: super::super::MovementRow) -> super::super::
     assert_eq!(legacy.selected_retreat, [None; 2]);
     assert_eq!(legacy.selected_retreat_failures, [None; 2]);
     // All fixture armies have a zero exile byte and no orders group. Current
-    // hourly capture records that byte and BEAA60/C5F0E0's null commander,
+    // hourly capture records that byte and a null commander,
     // which contributes zero for both retreat modifier keys.
     legacy.selected_exiled = Some(0);
     legacy.selected_commander = Some(false);

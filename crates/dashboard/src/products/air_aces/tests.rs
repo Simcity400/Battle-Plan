@@ -341,6 +341,8 @@ fn air_aces_product_caches_branch_and_serves_all_campaign_reads() {
 
 #[test]
 fn air_aces_mod_content_portrait_name_and_opaque_tag_override_through_stack() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::catalogue::tests::{folder_catalogue, layers_catalogue};
     use installed_content::ResolvedLayers;
     let (base_cat, base) = folder_catalogue(&[(
@@ -1121,7 +1123,7 @@ fn air_aces_windows_carry_reads_clip_ends_and_date_changed_text() {
     use crate::catalogue::tests::folder_catalogue;
     let (cat, _folder) = folder_catalogue(&[(
         "localisation/english/aces_l_english.yml",
-        "\u{feff}l_english:\n ACE_FULL_NAME:0 \"$NAME$ $SUR$\"\n",
+        "\u{feff}l_english:\n ACE_FULL_NAME:0 \"Pilot $SUR$, $NAME$\"\n",
     )]);
     let mut scan = Scan {
         first: 100,
@@ -1187,8 +1189,11 @@ fn air_aces_windows_carry_reads_clip_ends_and_date_changed_text() {
             .collect::<Vec<_>>(),
         [(100, 103), (104, 105)]
     );
-    assert_eq!(after.texts[runs[0].name.unwrap()], "Mod name Surname");
-    assert_eq!(after.texts[runs[1].name.unwrap()], "Changed Surname");
+    assert_eq!(
+        after.texts[runs[0].name.unwrap()],
+        "Pilot Surname, Mod name"
+    );
+    assert_eq!(after.texts[runs[1].name.unwrap()], "Pilot Surname, Changed");
     assert_eq!(runs[0].callsign, runs[1].callsign);
     assert_eq!(
         runs[0].name, after.aces[1].runs[0].name,
@@ -1374,6 +1379,8 @@ fn air_aces_multi_year_window_size_is_flat_and_manifest_has_only_identities() {
 
 #[test]
 fn air_aces_generic_portrait_preserves_retained_pool_and_native_culture_holes() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::catalogue::tests::folder_catalogue;
     use replay::rows::{AirAcePortraitInputs, AirAcePresentation, Recorded};
     let (cat, folder) = folder_catalogue(&[(

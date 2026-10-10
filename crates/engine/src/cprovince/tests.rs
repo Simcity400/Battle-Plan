@@ -286,7 +286,7 @@ fn province_names_fixture() -> Vec<u8> {
     put(&mut bytes, heap, &0x9000_u64.to_le_bytes());
     put(&mut bytes, heap + 16, &6_u64.to_le_bytes());
     put(&mut bytes, heap + 24, &31_u64.to_le_bytes());
-    put(&mut bytes, 0x8000, b"Gdansk\0");
+    put(&mut bytes, 0x8000, b"Sample\0");
     bytes
 }
 
@@ -327,7 +327,7 @@ fn name_census_is_sparse_lossless_and_capacity_bounded() {
             assert_eq!(&arena[..3], &[b'A', 0, 255]);
         }
         if expected == 2 {
-            assert_eq!(&arena[3..9], b"Gdansk");
+            assert_eq!(&arena[3..9], b"Sample");
         }
     }
 }

@@ -57,8 +57,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .map_err(|why| why.to_string())
     }
 
-    // 140529310: scope +0x50 is a character reference. SetUnitLeader
-    // (14052EFD0) installs the leader's character reference, not the leader.
+    // A unit-leader scope carries the leader's character reference,
+    // rather than the leader itself.
     pub(super) fn effect_character(
         &self,
         scope: Scope,
@@ -88,9 +88,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .find(|row| row.id == id))
     }
 
-    // ResolveCharacter 140536B10: evaluated scope, named lookup 140536BB0,
-    // then current character. The named lookup takes the country's first
-    // active character of the token, then retired (1410D6BF0, include_retired=1).
+    // Try the evaluated scope, named lookup, then the current character.
+    // Named lookup selects the country's first active character of the token,
+    // then searches the retired roster.
     pub(super) fn effect_character_target(
         &self,
         operand: Option<&[u8]>,
@@ -106,8 +106,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0 => {
                     Some(country)
                 }
-                // 140536BB0 chooses a ROOT with a positive state-owner tag,
-                // but then requires that scope's own +8 country to be positive.
+                // Choose a ROOT with a positive state-owner tag,
+                // but require that scope's own country to be positive.
                 Scope::State(state) if state != NULL_STATE && state != 0 => {
                     let world = self.context.world()?;
                     let state = world
@@ -174,19 +174,19 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.effect_character(scopes.this)
     }
 
-    // GetNameStringAt28 140612C90 copies +0x28 verbatim; no token fallback.
-    // Without the original key, nonempty stored text follows the shared
-    // recording-language rule rather than being relocalised heuristically.
+    // Copy the stored character name verbatim, without a token fallback.
+    // Nonempty text without its original key follows the shared recording-language
+    // rule rather than being relocalised heuristically.
     pub(super) fn effect_character_name(&self, row: &CharacterRow) -> Result<String, String> {
         crate::scripted_text::stored_text(
             self.context.localisation,
             self.context.text.recorded_language(),
             &row.name,
-            &format!("character {} name (+0x28)", row.id),
+            &format!("character {} name", row.id),
         )
     }
 
-    // 1405294F0 / 140F8A840: the character's direct role, else reference role.
+    // Use the character's direct role, else its reference role.
     pub(super) fn effect_unit_leader(
         &self,
         scopes: Scopes,
@@ -202,12 +202,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             self.context.localisation,
             self.context.text.recorded_language(),
             &row.inherited_text_b,
-            &format!("unit leader {} name (+0x40)", row.id),
+            &format!("unit leader {} name", row.id),
         )
     }
 
-    // 140F8A840 may select a registry-only role. Text rows join the full
-    // reference without inventing a direct CCharacter+0xA8 association.
+    // A registry-only role joins text rows by the full reference,
+    // without inventing a direct character association.
     pub(super) fn effect_resolved_leader_name(
         &self,
         leader: UnitLeader<'f>,
@@ -215,17 +215,14 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         match leader {
             UnitLeader::Direct(row) => self.effect_leader_name(row),
             UnitLeader::Referenced(row) => {
-                // Format 98 retains the referenced role's own +0x40 bytes
-                // (140C16FB0); older recordings may join an exact direct handle.
+                // Format 98 retains the referenced role's own name bytes;
+                // older recordings may join an exact direct handle.
                 if let replay::rows::Recorded::Value(Some(name)) = &row.name {
                     return crate::scripted_text::stored_text(
                         self.context.localisation,
                         self.context.text.recorded_language(),
                         name,
-                        &format!(
-                            "character {} referenced unit leader name (+0x40)",
-                            row.character
-                        ),
+                        &format!("character {} referenced unit leader name", row.character),
                     );
                 }
                 let named = self
@@ -237,7 +234,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     })
                     .ok_or_else(|| {
                         format!(
-                            "character {} referenced unit leader name (+0x40, 140C16FB0) {}",
+                            "character {} referenced unit leader name {}",
                             row.character,
                             if matches!(row.name, replay::rows::Recorded::NotRecorded) {
                                 "not recorded"
@@ -251,9 +248,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
     }
 
-    // Own 140391DB0; reader 1403AB590. NAME@142727E7C, COUNTRYDEF@142764D78;
-    // EFFECT_SET_LEADER_NATIONALITY@142764D88;
-    // expansion precedes the explicit LF. Missing operand character falls back.
+    // Substitute NAME and COUNTRYDEF, then expand before the explicit LF.
+    // A missing operand character falls back to the current character.
     pub(in crate::effect_description) fn character_set_nationality(
         &self,
         item: &Item,
@@ -286,8 +282,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 1402EDA60: NAME@142727E7C, COUNTRY@142728968, no scope expansion;
-    // CCharacter::country_reference 140A5BF80 supplies the character's country.
+    // Use the character's country for COUNTRY and its name for NAME.
+    // Do not expand the containing scope.
     pub(in crate::effect_description) fn character_retire(
         &self,
         scopes: Scopes,
@@ -319,9 +315,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 1402F8130: ResolveArmyLeader 1405292D0 accepts categories <2.
-    // NAME@142727E7C copies +0x40; COUNTRY_NAME_DEF@14272BA20; no LF/expansion.
-    // ReadEffect 1402F8640 reads country, not target; vf7 requires country >0.
+    // Accept army-leader categories below 2. Copy the leader name for NAME
+    // and the definite country name for COUNTRY_NAME_DEF, without LF or expansion.
+    // The block reads country, not target, and requires a positive country.
     pub(in crate::effect_description) fn character_capture_by(
         &self,
         item: &Item,
@@ -357,9 +353,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 140374C60 gates on ResolveAbilityCaster/category 3 and a positive
-    // country. NAME is +0x40, CODENAME is 140C06040, and NATIONALITY
-    // is ccountry_tag::adjective 140BA5560; only the containing text expands.
+    // Require an operative ability caster and a positive country.
+    // Use the leader name, codename and country adjective for the arguments;
+    // only the containing text expands.
     pub(in crate::effect_description) fn character_add_nationality(
         &self,
         item: &Item,
@@ -389,14 +385,13 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // 140C06040 returns the embedded name member's +0x60. Format 98
-    // retains its selected operands; the shared name catalogue implements
-    // 1409B5640/1409B57C0, without selecting or reserving another name.
+    // Format 98 retains the selected codename operands. The shared name
+    // catalogue formats them without selecting or reserving another name.
     pub(super) fn effect_operative_codename(
         &self,
         leader: UnitLeader<'f>,
     ) -> Result<String, String> {
-        let field = "operative codename (COperativeLeader+0x1030, 140C06040)";
+        let field = "operative codename";
         let recorded = match leader {
             UnitLeader::Direct(row) => &row.codename,
             UnitLeader::Referenced(row) => &row.codename,

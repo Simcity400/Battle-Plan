@@ -696,9 +696,8 @@ fn scaled(countries: usize) -> Vec<u8> {
     bytes
 }
 
-/// The live #63 attach hour read 336 of 440 raid parents: the type
-/// token arena (4,096 by default) filled first. The observed demand
-/// sizes an arena that reads every parent of a first hour.
+/// A short type-token arena must not omit parents after the observed
+/// demand sizes storage for the complete hour.
 #[test]
 fn the_type_token_demand_sizes_a_first_hour_past_the_default_arena() {
     let countries = 600;

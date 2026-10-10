@@ -37,7 +37,7 @@ pub(in crate::oracle) fn compare_railway_buildings(
             report.limitation("the rail-info's observed null selected-building pointer is runtime state; independently saved status buildings do not certify this cache's null-to-absence equivalence", &label);
             continue;
         };
-        // 140E7D110/140E806E0 select database+3A8's railway template.
+        // The game selects the database's railway template.
         // Resolve its token through the recording, never a vanilla name.
         let name = *names
             .get(&engine::cbuilding_template::RAIL_WAY_TOKEN)
@@ -94,7 +94,7 @@ fn compare_selected_building(
         return Ok(());
     };
     let Some(level) = level else {
-        report.limitation("selected railway +18 null building is a runtime cache pointer, not proof of an absent saved status building", label);
+        report.limitation("selected railway null building is a runtime cache pointer, not proof of an absent saved status building", label);
         return Ok(());
     };
     let name = *names
@@ -173,7 +173,7 @@ pub(super) fn compare_railways(
                         }
                         match inputs.pair_count {
                             None => report.difference(format!("{selection_label}.pair_count"), "unavailable", "raw native signed pair count"),
-                            Some(count) => report.limitation("E80C40 serializes every indexed railway level but no +44 pair count; E80070 rebuilds only positive pairs and E806E0 can retain nonpositive pairs, so a save cannot certify the raw count", format!("{selection_label}.pair_count={count}")),
+                            Some(count) => report.limitation("the railway writer serializes every indexed railway level but no pair count; railway loading rebuilds only positive pairs and railway editing can retain nonpositive pairs, so a save cannot certify the raw count", format!("{selection_label}.pair_count={count}")),
                         }
                     }
                 }
@@ -193,7 +193,7 @@ pub(super) fn compare_railways(
                 "omitted signed-nonpositive value",
             );
         } else {
-            report.limitation("E80C40 omits signed-nonpositive cooldown; absence verifies that predicate but not the exact native integer", label);
+            report.limitation("the railway writer omits signed-nonpositive cooldown; absence verifies that predicate but not the exact native integer", label);
         }
     }
     for province in rows.keys() {
@@ -241,7 +241,7 @@ pub(in crate::oracle) fn compare_rail_edges(
                 equal(report, format!("{label}.level"), actual, level);
                 compared += 1;
             } else if level > 0 {
-                // E80070 reconstructs every positive entry in the sorted pairs.
+                // Railway loading reconstructs every positive entry in the sorted pairs.
                 report.difference(label, "absent", level);
             }
             if level <= 0 {
@@ -258,7 +258,7 @@ pub(in crate::oracle) fn compare_rail_edges(
     }
     report.compared("RailEdges", compared);
     if nonpositive != 0 {
-        // E80070 loads only positive pairs, while E806E0 can insert a pair
+        // Railway loading loads only positive pairs, while railway editing can insert a pair
         // after a signed max/clamp produces zero. The serialized indexed array
         // therefore does not encode the presence of every nonpositive pair.
         report.limitation("saved nonpositive railway levels do not uniquely encode sorted-pair presence; present recorded pairs compare their exact signed level, and every positive saved edge is required", format!("RailEdges: {nonpositive} nonpositive saved neighbor positions"));

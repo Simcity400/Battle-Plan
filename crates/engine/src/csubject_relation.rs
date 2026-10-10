@@ -10,23 +10,25 @@ use crate::{
     walk::Outcome,
 };
 
-/// CSubjectRelation primary vtable; build_profile.rs:349, confirmed by pinned-image RTTI.
+/// CSubjectRelation primary vtable.
 pub const VTABLE_RVA: usize = 0x0294_9f18;
-/// CSubjectRelation inherited type word; build_profile.rs:629 and the D53 intel-visibility subject check.
+/// Inherited relation type word.
 pub const TYPE_ID: usize = 0x08;
-/// CSubjectRelation expected type word; build_profile.rs:632, D53 intel-visibility reader compares this exact value.
+/// Expected subject-relation type word.
 pub const TYPE_VALUE: u32 = 0x30d1;
-/// CSubjectRelation overlord country link u32; build_profile.rs:361, D53 read_subject_relation_from_ptr.
+/// Overlord country-link reference, u32.
 pub const OVERLORD: usize = 0x10;
-/// CSubjectRelation subject country link u32; build_profile.rs:362, D53 authenticates direction from this pair.
+/// Subject country-link reference, u32; the endpoint pair fixes direction.
 pub const SUBJECT: usize = 0x14;
-/// CSubjectRelation start hour i32; build_profile.rs:378 and D53 subject reader.
+/// Start hour, i32.
 pub const START_HOUR: usize = 0x20;
-/// CSubjectRelation autonomy-state definition pointer; build_profile.rs:363, D53 reads its name at +8.
+/// Autonomy-state definition pointer; the name is at +8.
 pub const AUTONOMY_STATE: usize = 0x58;
-/// CSubjectRelation raw autonomy ratio i64/100000; build_profile.rs:365, old D53 narrowed it to i32.
+/// CSubjectRelation raw autonomy ratio i64/100000.
 pub const AUTONOMY_RATIO: usize = 0x60;
 
+/// Subject constructor initializing base relation with subject type before
+/// installing its primary vtable.
 pub const CONSTRUCTOR_RVA: usize = 0x00d0_3810;
 
 /// A complete byte string in the caller-owned arena. Empty names remain empty.
@@ -618,11 +620,9 @@ impl<'a, M: Memory> Reader<'a, M> {
         let retired = self.field::<u8>(pointer, crelation::RETIRED)? != 0;
         let overlord = self.field::<u32>(pointer, OVERLORD)?;
         let subject = self.field::<u32>(pointer, SUBJECT)?;
-        // The shared-vision subject terms (140D11030, 140D11080) read only the
-        // status +0x288 pointer and its type, never the retired byte, and
-        // clear_link (vf22@140D12990) is what uninstalls a subject. So a
-        // retired relation counts exactly while it is still installed; one
-        // left only in an owned vector is skipped.
+        // Shared-vision subject predicates read the current status pointer and type,
+        // never retirement. Link removal uninstalls the subject: retired relations
+        // count while installed, while relations left only in owned vectors do not.
         if retired && matrix_index.is_none() && !self.installed(pointer, overlord, subject, pass) {
             return Ok(None);
         }

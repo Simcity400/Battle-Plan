@@ -765,8 +765,8 @@ fn copy_production_licenses(log: &mut RawLog<8>, memory: &impl Memory, manager: 
     }
 }
 
-/// Mirror of `walk_license_records`' read set: array header, per-record
-/// 0x58 heads, parent identities, equipment headers plus per-handle pointers
+/// Mirror of `walk_license_records`' read set: array header, record heads,
+/// parent identities, equipment headers plus per-handle pointers
 /// and identities.
 fn copy_production_records(log: &mut RawLog<8>, memory: &impl Memory, manager: usize) {
     let Some(header_start) = pspan(
@@ -888,8 +888,8 @@ fn copy_deployment_queue(log: &mut RawLog<8>, memory: &impl Memory, base: usize,
             copy_production_string(log, memory, name, M_P_DEPLOY);
         }
         // Line array header as its own exact span: the walk reads it via
-        // `Array::read` at +0x78, which exact-match service does not derive
-        // from the 0x9c head span above.
+        // `Array::read`, which exact-match service does not derive from
+        // the head span above.
         let _ = pspan(
             log,
             memory,

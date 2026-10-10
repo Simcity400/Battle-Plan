@@ -1,26 +1,14 @@
-//! The flags a native GUI window draws, resolved as the game resolves them, for
-//! [`super::native_gui::Resources::text_flag`] and [`super::native_gui::Resources::shield_flag`]:
-//! a caller binds the recorded country data and the content's flag artwork ([`FlagSource`]) and
-//! answers both through [`text_flag`] and [`shield_flag`], so every window resolves a tag, a
-//! slot and an atlas record the same way, with the game's own out-of-range and missing-cell
-//! behaviour.
+//! Flags resolved for native GUI text and masked shields.
 //!
-//! - A text's inline flag (`0x12` and up to three codepoints, `CGameBitmapFont::DrawInlineFlag
-//!   @14162EC30`): a tag of fewer than three bytes draws nothing; `FindCountryIndexByTag
-//!   @14070F050` gives the database index (-1 for a tag it lacks), `GetTagByIndex@14070F0E0`
-//!   its tag (entry 0 for an index out of range), and `canonical_slot@140BA6240` the tag's slot
-//!   (0 for the tag id 0 without the lookup); the small atlas's record for that slot, record 0
-//!   past its count, draws 10 by 7 at `[x, y, x + w, y + h]` when the record is valid (`+0x10`)
-//!   and its page (`+0x11`) is loaded.
-//! - A masked shield's flag (`CShieldObject::Draw@1416304E0`): the atlas `SelectFlagAtlas
-//!   @14162FC20` picks (`graphics+0x32858` the small one under `small`, else `+0x325F8`), the
-//!   record at the shield's index (`+0x1E0`, compared signed with the count `+0x6C`: record 0
-//!   past it), drawn through `SubmitMaskedFlagDraw@14162FDC0` with the record's coordinates when
-//!   valid and its page loaded; the overlay draws either way.
+//! [`FlagSource`] binds recorded countries and resolved artwork for [`text_flag`]
+//! and [`shield_flag`]. Inline text flags need at least three tag bytes. Database
+//! lookup and canonical slots preserve their out-of-range fallback to entry zero.
+//! A valid loaded small-atlas record draws a ten-by-seven flag.
 //!
-//! The atlases are `FlagTextureAtlas` (`flagtextureatlas.h`): 0x18-byte records at `+0x60`, their
-//! count at `+0x6C`, the pages at `+0x48`. Which flag each slot's record holds is the country's
-//! current flag, which the caller binds from the recording and the content's flag files.
+//! Masked shields choose the requested atlas and compare their index signed against
+//! its count, falling back to record zero beyond it. A valid record with a loaded
+//! page draws at its stored coordinates. The overlay draws independently.
+//! Atlas slots contain each country's current flag from the recording and content.
 
 // The layers above this one bind their windows' flags through this module; until they are
 // stacked on it, only the tests use it.
@@ -28,7 +16,7 @@
 
 use super::native_gui::Texture;
 
-/// Small atlas keys may fall back to the plain three-byte tag (load_tags@14070E900).
+/// Small atlas keys may fall back to the plain three-byte tag.
 pub(crate) fn resolved_flag_cell(
     atlas: &super::counters::FlagAtlas,
     key: &str,
@@ -49,7 +37,7 @@ pub(crate) fn resolved_flag_cell(
     })
 }
 
-/// A producer-resolved key keeps its selected art; DrawInlineFlag@14162EC30 uses 10x7.
+/// A producer-resolved key keeps its selected art; the game uses 10x7.
 pub(crate) fn resolved_text_flag(
     atlas: &super::counters::FlagAtlas,
     key: &[u8],
@@ -65,10 +53,10 @@ pub(crate) fn resolved_text_flag(
 /// One atlas record as the draw reads it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FlagRecord {
-    /// The record's valid byte (`+0x10`) is clear: nothing is drawn.
+    /// The record is invalid: nothing is drawn.
     Invalid,
-    /// A valid record: its coordinates `[x, y, w, h]` in its page (`+0x0` to `+0xC`), and its
-    /// page as loaded, `None` when the page pointer is null (nothing is drawn).
+    /// A valid record's `[x, y, w, h]` page coordinates and loaded page.
+    /// `None` for a null page pointer, which draws nothing.
     Cell {
         coords: [f32; 4],
         page: Option<Texture>,
@@ -78,30 +66,24 @@ pub enum FlagRecord {
 /// What a flag draw reads that the caller binds from the recording and the content. Each `Err`
 /// names the operand the recording or the content lacks, which the window is refused by.
 pub trait FlagSource {
-    /// `FindCountryIndexByTag@14070F050` and `canonical_slot@140BA6240` of its tag: the
-    /// canonical slot of the country the database names `tag` (its bytes, hashed and compared
-    /// as the game compares them); `Ok(None)` for a tag the database does not hold.
+    /// Resolve `tag` to its country's canonical slot using the database's byte
+    /// hashing and comparison rules. `Ok(None)` when the database does not hold it.
     fn tag_slot(&self, tag: &[u8]) -> Result<Option<u32>, String>;
-    /// `GetTagByIndex@14070F0E0(0)`'s slot: the database's first tag's, which an unknown tag
-    /// draws (0 when that tag's id is 0, without the lookup).
+    /// Unknown tag indices fall back to the database's first tag and canonical slot.
     fn first_tag_slot(&self) -> Result<u32, String>;
-    /// The atlas's record count (`+0x6C`), `small` the atlas at `graphics+0x32858`, else
-    /// `+0x325F8`.
+    /// The atlas's record count; `small` selects the small atlas, otherwise the ordinary atlas.
     fn atlas_len(&self, small: bool) -> Result<i32, String>;
     /// Record `index` of the atlas, `0 <= index < atlas_len`.
     fn atlas_record(&self, small: bool, index: i32) -> Result<FlagRecord, String>;
 }
 
-/// The atlas record the draws read for `index` (`flagtextureatlas.h:0x30`): the record itself
-/// when `index` is below the count (signed), else record 0 ("To large index", an assertion the
-/// release build passes). A negative index is below every count and reads before the records.
+/// Use atlas record `index` when it is below the signed count, else record 0.
+/// A negative index is below every count and reads before the records.
 fn record(source: &dyn FlagSource, small: bool, index: i32) -> Result<FlagRecord, String> {
     let len = source.atlas_len(small)?;
     if index < 0 {
         return Err(format!(
-            "draws flag record {index}, which the signed count test (CShieldObject::Draw\
-             @1416304E0, DrawInlineFlag@14162EC30) admits and the draw reads {} bytes before \
-             the atlas's records: an invalid read",
+            "draws flag record {index}, which the signed count test admits and the draw reads {} bytes before the atlas's records: an invalid read",
             i64::from(index).unsigned_abs() * 0x18
         ));
     }
@@ -112,7 +94,7 @@ fn record(source: &dyn FlagSource, small: bool, index: i32) -> Result<FlagRecord
 /// atlas's cell as a [`Texture`] of 10 by 7, or `Ok(None)` when nothing is drawn.
 pub fn text_flag(source: &dyn FlagSource, tag: &str) -> Result<Option<Texture>, String> {
     let tag = tag.as_bytes();
-    // `DrawInlineFlag` measures the tag as a C string: a NUL ends it.
+    // `inline flag drawing` measures the tag as a C string: a NUL ends it.
     let tag = installed_content::parser::c_string(tag);
     if tag.len() <= 2 {
         return Ok(None);

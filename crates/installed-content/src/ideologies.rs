@@ -3,10 +3,9 @@
 //! by a sub-ideology; this joins both to the group and its colour, so a mod's
 //! ideologies chart with their own colours.
 //!
-//! Each file is read by its own CReader through the reader replay
-//! ([`native`]): CIdeologyGroupDatabase::vf6 (140A38A00) reads `ideologies`
-//! (0x2FD1) through its group loop (140A38190), each group a CIdeologyGroup
-//! (CIdeologyGroup::vf4 14117C9C0), and stops that file at any other top-level key.
+//! Each file has its own reader replay ([`native`]): `ideologies` opens
+//! the group loop, which reads each group and its fields. Any other
+//! top-level key stops that file.
 
 use crate::{
     ResolvedLayers,
@@ -22,13 +21,13 @@ use crate::{
 };
 use std::{collections::BTreeMap, io};
 
-// CColor::construct@142236FA0.
+// Default colours start white.
 const WHITE: [f32; 4] = [1.0; 4];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ideology {
     pub token: String,
-    /// The group's CColor (+0x460) as its reads leave it (red, green, blue,
+    /// The group's colour as its reads leave it (red, green, blue,
     /// alpha), or why a read the port does not follow makes it unknown.
     pub color: Result<[f32; 4], String>,
     /// Sub-ideologies (`types`), in source order.
@@ -39,8 +38,8 @@ pub struct Ideology {
 pub struct Ideologies {
     /// In load order.
     groups: Vec<Ideology>,
-    /// Each group's `CIdeologyGroup+0x40` ([`Ideologies::frame`]) and the file that first read
-    /// it, by the token's lexer fold (`A`-`Z` joined, `1424A65A0`).
+    /// Each group's frame ([`Ideologies::frame`]) and the file that first read
+    /// it, by the token's ASCII case fold (`A`-`Z` joined).
     frames: BTreeMap<String, (u32, String)>,
     coverage: Coverage,
 }
@@ -67,10 +66,10 @@ impl Ideologies {
         }
     }
 
-    /// A group's `CIdeologyGroup+0x40` as its raw bits, the frame `1418C4B50` sets on a naval
-    /// counter's `counter_ideology` (`number_groups`): its place in the last `ideologies` block
-    /// of its file that listed it, or `0xFFFFFFFF` (the constructor's, `14117C030`) when a later
-    /// block of that file reset it (`140A38FE0`). `Ok(None)` when no file defines the group;
+    /// The group's frame as raw bits, used by a naval counter's
+    /// `counter_ideology` (`number_groups`): its place in the last `ideologies`
+    /// block of its file that listed it, or `0xFFFFFFFF` when a later block
+    /// of that file reset it. `Ok(None)` when no file defines the group;
     /// `Err` when any file stops short (it could define the group first or shift its place).
     pub fn frame(&self, token: &str) -> Result<Option<u32>, String> {
         if let Some(gap) = self.coverage.any_gap() {
@@ -106,44 +105,41 @@ impl Ideologies {
 /// Which reader a field goes to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Node {
-    /// 140A38A00's file loop.
+    /// The file loop.
     Top,
-    /// 140A38190's group loop.
+    /// The ideology-group loop.
     Groups,
-    /// CIdeologyGroup::vf4 (14117C9C0).
+    /// One ideology group and its fields.
     Group,
-    /// `types`' own loop (140A37930): each key a CIdeology.
+    /// The `types` loop: each key a sub-ideology.
     Types,
-    /// CIdeology::vf4 (14117C960).
+    /// One sub-ideology and its fields.
     Ideology,
     Rule(RuleNode),
     Modifier(modifiers::Node),
 }
 
-/// CIdeologyGroup::vf4 (14117C9C0) per key (keyword ids from
-/// register_authored_keys 140082CB0).
+/// Dispatch one ideology-group field by its keyword.
 fn group_field(field: &Field<'_>) -> Shape<Node> {
     match field.keyword().as_deref() {
-        // `color` 0x56: its CColor (+0x460) through ReadObjectFromParser.
+        // `color` reads into the group's stored colour.
         Some(b"color") => Shape::Color,
-        // `types` 0x300C: its own loop.
+        // `types` opens its own loop.
         Some(b"types") => Shape::Object(Node::Types),
-        // `rules` 0x317B its CRule (+0x60); `modifiers` 0x31E6 and
-        // `faction_modifiers` 0x344A its CModifiers (+0x480, +0x540), each
-        // through ReadObjectFromParser.
+        // `rules` opens the group's rule object; `modifiers` and
+        // `faction_modifiers` each read into their own modifier object.
         Some(b"rules") => Shape::Object(Node::Rule(RuleNode::Rule)),
         Some(b"modifiers" | b"faction_modifiers") => {
             Shape::Object(Node::Modifier(modifiers::Node::Modifier))
         }
-        // `dynamic_faction_names` 0x3500 ReadStringList.
+        // `dynamic_faction_names` reads a string list.
         Some(b"dynamic_faction_names") => Shape::List,
-        // ReadFixed5: `war_impact_on_world_tension` 0x34E3,
-        // `faction_impact_on_world_tension` 0x34E4,
-        // `ai_ideology_wanted_units_factor` 0x3133; ReadScriptSignedInt32:
-        // `ai_give_core_state_control_threshold` 0x27DF; read_bool_field:
-        // `ai_democratic` 0x3334, `ai_fascist` 0x3335, `ai_communist` 0x3336,
-        // `can_be_boosted` 0x3475, `ai_neutral` 0x3491, `can_collaborate`
-        // 0x379E, `can_host_government_in_exile` 0x3AB8.
+        // Fixed5 fields: `war_impact_on_world_tension`,
+        // `faction_impact_on_world_tension`, `ai_ideology_wanted_units_factor`;
+        // signed integer: `ai_give_core_state_control_threshold`;
+        // boolean fields: `ai_democratic`, `ai_fascist`, `ai_communist`,
+        // `can_be_boosted`, `ai_neutral`, `can_collaborate`,
+        // `can_host_government_in_exile`.
         Some(
             b"war_impact_on_world_tension"
             | b"faction_impact_on_world_tension"
@@ -157,12 +153,12 @@ fn group_field(field: &Field<'_>) -> Shape<Node> {
             | b"can_collaborate"
             | b"can_host_government_in_exile",
         ) => Shape::One,
-        // Serializable_ReportUnexpectedToken (1424A9CE0).
+        // Unknown fields are reported and skipped.
         _ => Shape::Skip,
     }
 }
 
-/// 140A38190: duplicates skip their bodies; later blocks in the owning file reread the group.
+/// Duplicates skip their bodies; later blocks in the owning file reread the group.
 fn read_file_in(
     input: &[u8],
     path: &str,
@@ -175,7 +171,7 @@ fn read_file_in(
         .collect();
     let mut listed = Vec::new();
     let mut refusals = Vec::new();
-    // 1401886F0: one mode-0 lexer per file.
+    // One mode-0 lexer per file.
     let read = native::read(
         input,
         native::Mode::KeepMark,
@@ -186,16 +182,16 @@ fn read_file_in(
                 listed.clear();
                 Shape::Object(Node::Groups)
             }
-            // 140A38A00 reports (1424AD100) then returns; the next file still loads.
+            // An unexpected top-level key reports and returns; the next file still loads.
             Node::Top => Shape::StopFile,
             Node::Groups => {
-                // AddOrFindDynamicToken@1424A6500 folds once for the stored group identity.
+                // Fold once for the stored group identity.
                 let key = crate::parser::c_string(&field.key.text).to_ascii_lowercase();
                 if let Some(owner) = owners.get(&key)
                     && (owner != path || listed.contains(&key))
                 {
                     refusals.push(format!(
-                        "Ideologies in {path}: line {}: Duplicate database id `{}` refused (140A38190); first defined in {}; later block and its sub-ideologies skipped.",
+                        "Ideologies in {path}: line {}: Duplicate database id `{}` refused; first defined in {}; later block and its sub-ideologies skipped.",
                         field.key.line, String::from_utf8_lossy(&key), owner,
                     ));
                     Shape::Discard
@@ -206,12 +202,10 @@ fn read_file_in(
                 }
             }
             Node::Group => group_field(field),
-            // Each key a CIdeology read through its Read (CPersistent::Read).
+            // Each key reads one sub-ideology object.
             Node::Types => Shape::Object(Node::Ideology),
-            // `color` 0x56 its CColor (+0x100), `can_be_randomly_selected`
-            // 0x4CCF read_bool_field; any other key goes to its CModifier
-            // (+0x40, CIdeology::CIdeology 14117BEE0) through the modifier's
-            // ReadToken (vtable +0x20, 1406039A0 -> 1406031A0).
+            // `color` reads the sub-ideology colour, and `can_be_randomly_selected`
+            // reads a boolean. Any other key goes to its modifier object.
             Node::Ideology => match field.keyword().as_deref() {
                 Some(b"color") => Shape::Color,
                 Some(b"can_be_randomly_selected") => Shape::One,
@@ -233,21 +227,19 @@ fn read_file_in(
     (read, undecided, refusals)
 }
 
-/// One `color` read into a CColor (CColor::vf3 142237160), from the state
-/// the earlier reads left (CColor::construct 142236FA0: all 1.0). After
-/// `{`, each of three components is read by `%f` (read_float_token
-/// 1424B0320, whatever the token's kind; a failed scan leaves the
-/// component) and then, stored or not, divided by 255 when above 1.0
-/// (14270E270, 1427200C8), the alpha is set to 1.0, and a fourth component
-/// is the alpha as read, not divided. The lexer's current token as a
-/// number token (0xC) alone is a packed value read by `%x` (1424B01A0),
-/// which the port refuses by name; any other token, a quoted one included,
-/// is reported and changes nothing.
+/// One `color` read updates the state earlier reads left (initially all
+/// 1.0). After `{`, three components are scanned as floating-point text,
+/// whatever the token kind; a failed scan keeps the component. Each
+/// component, stored or not, is then divided by 255 when above 1.0.
+/// Alpha is set to 1.0; a fourth component is the alpha as read, not divided.
+/// A number token alone is a packed hexadecimal value, which the port
+/// refuses by name; any other token, a quoted one included, is reported
+/// and changes nothing.
 fn read_color(color: &mut [f32; 4], item: &Item) -> Result<(), String> {
     let Some(components) = item.value.items() else {
         if item.number() {
             return Err(format!(
-                "the packed colour {} (read by `%x`, 1424B01A0) is not converted",
+                "the packed colour {} (read as hexadecimal) is not converted",
                 item.value.scalar().unwrap_or_default().escape_ascii()
             ));
         }
@@ -288,15 +280,14 @@ fn groups(items: &[Item]) -> (Vec<Ideology>, Option<String>) {
         let mut types: Vec<String> = Vec::new();
         for field in item.value.items().unwrap_or_default() {
             if field.keyword_is("color") {
-                // Each read goes into the one CColor, from where the last
-                // left it.
+                // Each read updates the same colour from where the last left it.
                 if let Ok(state) = &mut color
                     && let Err(cause) = read_color(state, field)
                 {
                     color = Err(cause);
                 }
             } else if field.keyword_is("types") {
-                // Every `types` loop adds its keys (140A37930).
+                // Every `types` loop adds its keys.
                 for kind in field
                     .value
                     .items()
@@ -322,7 +313,7 @@ fn groups(items: &[Item]) -> (Vec<Ideology>, Option<String>) {
     (groups, None)
 }
 
-/// 140A38A00 numbers accepted groups from 1; 140A38FE0 resets omitted groups to 14117C030's -1.
+/// Accepted groups are numbered from 1; omitted groups reset to -1.
 fn number_groups(path: &str, items: &[Item], frames: &mut BTreeMap<String, (u32, String)>) {
     for block in items
         .iter()
@@ -349,8 +340,8 @@ pub fn parse(input: &[u8]) -> Vec<Ideology> {
     groups(&read_file_in(input, "", &BTreeMap::new()).0.items).0
 }
 
-/// Every ideology group in native file order (1401886F0): one CReader per
-/// enumerated file. The first file defining a group owns it (140A38190).
+/// Every ideology group in file order: one reader per enumerated file.
+/// The first file defining a group owns it.
 pub fn read(layers: &ResolvedLayers) -> io::Result<(Ideologies, Vec<crate::Diagnostic>)> {
     let mut warnings = Vec::new();
     let mut result = Ideologies::default();
@@ -387,7 +378,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(Ideologies, Vec<crate::Diagn
             result.coverage.gap(&path, cause.clone());
         }
         number_groups(&path, &read.items, &mut result.frames);
-        // 140A38FE0 resets this file's groups omitted by each later block.
+        // Each later block resets this file's omitted groups.
         for root in read
             .items
             .iter()

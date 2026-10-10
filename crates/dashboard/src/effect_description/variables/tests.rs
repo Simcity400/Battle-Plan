@@ -25,6 +25,8 @@ fn fixture() -> Fixture {
 
 #[test]
 fn persistent_arithmetic_keeps_unchanged_prefix_without_rng_seed() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     for seed in [
         Recorded::Value(None),
@@ -49,6 +51,8 @@ fn persistent_arithmetic_keeps_unchanged_prefix_without_rng_seed() {
 
 #[test]
 fn persistent_arithmetic_only_describes_authored_tooltips() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     for operation in [
         "set_variable",
@@ -62,7 +66,7 @@ fn persistent_arithmetic_only_describes_authored_tooltips() {
         ), &mut fresh(), Content::default());
         assert_eq!(out.text, "AAA:3/4\nXP3\n", "{operation}");
         assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-        // 14039A7D0 never evaluates the otherwise unsupported RHS without a tooltip.
+        // never evaluates the otherwise unsupported RHS without a tooltip.
         let out = fixture.render(
             &format!("{operation}={{var=x value=random_seed tooltip=\"\"}}"),
             &mut fresh(),
@@ -74,6 +78,8 @@ fn persistent_arithmetic_only_describes_authored_tooltips() {
 
 #[test]
 fn tooltip_evaluates_right_before_left_and_repeats_temp_rhs() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
@@ -81,11 +87,11 @@ fn tooltip_evaluates_right_before_left_and_repeats_temp_rhs() {
         panic!("fixture has a complete CountryAppearance table");
     };
     let country = rows.iter_mut().find(|row| row.country == 100).unwrap();
-    // GetOriginalTagOrTag@1406DF830 takes own+8 for a recorded nonpositive
+    // takes own for a recorded nonpositive
     // original reference; an unread field must not silently select AAA.
     country.original_tag_reference = Recorded::Value(Some(0));
     country.original_tag = Recorded::Value(Some(Vec::new()));
-    // AliasResolve@1407141F0 accepts its original candidate before reading
+    // accepts its original candidate before reading
     // either native list when this candidate's condition succeeds.
     *fixture.frame.tables[TableId::ReservedCountryNaming.index()] = TableView::Unavailable {
         reason: "unused alias country lists not sampled".into(),
@@ -112,6 +118,8 @@ fn tooltip_evaluates_right_before_left_and_repeats_temp_rhs() {
 
 #[test]
 fn temporary_scalars_execute_before_tooltip_in_one_session() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let out = fixture.render(
         "set_temp_variable={n={value=3 add=1} tooltip=VARIABLE_TIP}
@@ -138,6 +146,8 @@ fn temporary_scalars_execute_before_tooltip_in_one_session() {
 
 #[test]
 fn effect_division_reads_if_zero_from_tls_even_for_nonzero_divisors() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let out = fixture().render(
         "set_temp_variable={n=8} set_temp_variable={fallback=3}
          divide_temp_variable={n=0 if_zero=fallback tooltip=VARIABLE_TIP}
@@ -165,6 +175,8 @@ fn effect_division_reads_if_zero_from_tls_even_for_nonzero_divisors() {
 
 #[test]
 fn clamp_and_modulo_execute_but_empty_setters_do_not() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let out = fixture.render(
         "set_temp_variable={n=7.9} clamp_temp_variable={var=n min=5 max=2}
@@ -191,6 +203,8 @@ fn clamp_and_modulo_execute_but_empty_setters_do_not() {
 
 #[test]
 fn global_tooltip_target_replaces_in_order_and_cleans_up() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let mut graph = fresh();
     let out = fixture.render(
@@ -221,6 +235,8 @@ fn global_tooltip_target_replaces_in_order_and_cleans_up() {
 
 #[test]
 fn known_noops_do_not_need_rng_or_supply_totals() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let out = fixture.render(
         "set_temp_variable={n=5} set_temp_variable_to_random={var=n min=3 max=2}
@@ -233,7 +249,10 @@ fn known_noops_do_not_need_rng_or_supply_totals() {
     assert_eq!(out.text, "XP5\nXP0\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     for (script, expected) in [
-        ("set_temp_variable_to_random={var=n}", "CVariables+8"),
+        (
+            "set_temp_variable_to_random={var=n}",
+            "ScriptVariables.seed",
+        ),
         (
             "get_supply_vehicles_temp={var=n type=truck need=yes}",
             "TrainInventory.required_trucks_raw",
@@ -246,7 +265,7 @@ fn known_noops_do_not_need_rng_or_supply_totals() {
             "get_supply_vehicles_temp={var=n type=train need=yes}",
             "TrainInventory.required_trains",
         ),
-        ("get_supply_vehicles={var=n}", "description is not ported"),
+        ("get_supply_vehicles={var=n}", "description is unsupported"),
     ] {
         let out = fixture.render(script, &mut fresh(), Content::default());
         assert_eq!(
@@ -281,6 +300,8 @@ fn known_noops_do_not_need_rng_or_supply_totals() {
 
 #[test]
 fn format98_random_temp_uses_store_seed_and_keeps_one_tls_session() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     let TableView::Complete(TableRows::ScriptVariables(rows)) =
         &mut *fixture.frame.tables[TableId::ScriptVariables.index()]
@@ -291,7 +312,7 @@ fn format98_random_temp_uses_store_seed_and_keeps_one_tls_session() {
     let mut graph = fresh();
     fixture.with_renderer(&mut graph, Content::default(), |renderer| {
         let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
-        // 1405354A0: 37 + THIS(1*31)*13 + FROM(1*31)*17 = 967.
+
         assert_eq!(
             renderer
                 .evaluator()
@@ -368,7 +389,9 @@ fn format98_random_temp_uses_store_seed_and_keeps_one_tls_session() {
 }
 
 #[test]
-fn format98_random_seed_uses_immediate_from_and_native_integer_flooring() {
+fn format98_random_seed_uses_immediate_from_and_integer_flooring() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     let TableView::Complete(TableRows::ScriptVariables(rows)) =
         &mut *fixture.frame.tables[TableId::ScriptVariables.index()]
@@ -414,7 +437,9 @@ fn format98_random_seed_uses_immediate_from_and_native_integer_flooring() {
 }
 
 #[test]
-fn format98_variable_rng_selects_native_state_character_and_global_stores() {
+fn format98_variable_rng_selects_state_character_and_global_stores() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(
@@ -439,8 +464,8 @@ fn format98_variable_rng_selects_native_state_character_and_global_stores() {
             character_id: 9,
             ..Default::default()
         }]));
-    // 1405354A0 selects country before state, then character, else global.
-    // 140529EE0 hashes state 3 as 177 and character type 73/id 9 as 2033816002.
+    // selects country before state, then character, else global.
+    // hashes state 3 as 177 and character type 73/id 9 as 2033816002.
     for (object, expected) in [
         (
             EventObject::CountryState {
@@ -452,7 +477,7 @@ fn format98_variable_rng_selects_native_state_character_and_global_stores() {
         (EventObject::State(3), 5_317),
         (EventObject::Character(9), 884_937_927),
         (EventObject::UnitLeader(4 << 32), 884_937_927),
-        (EventObject::State(0), 35), // Empty scope uses its +0x0C seed 1.
+        (EventObject::State(0), 35), // Empty scope uses its seed 1.
     ] {
         let mut graph = EventScopes::new(vec![EventScope::of(object)]);
         fixture.with_renderer(&mut graph, Content::default(), |renderer| {
@@ -465,6 +490,8 @@ fn format98_variable_rng_selects_native_state_character_and_global_stores() {
 
 #[test]
 fn format98_random_seed_unavailable_or_old_records_refuse_without_losing_prefix() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     for seed in [Recorded::NotRecorded, Recorded::Value(None)] {
         let TableView::Complete(TableRows::ScriptVariables(rows)) =
@@ -482,7 +509,7 @@ fn format98_random_seed_unavailable_or_old_records_refuse_without_losing_prefix(
         assert!(
             out.refusals
                 .keys()
-                .any(|why| why.contains("ScriptVariables.seed (CVariables+8)")),
+                .any(|why| why.contains("ScriptVariables.seed")),
             "{:?}",
             out.refusals
         );
@@ -497,7 +524,9 @@ fn format98_random_seed_unavailable_or_old_records_refuse_without_losing_prefix(
 }
 
 #[test]
-fn format98_supply_temps_use_stored_scalars_native_ceiling_and_content_minimum() {
+fn format98_supply_temps_use_stored_scalars_ceiling_and_content_minimum() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     for (kind, need, raw, expected) in [
         ("truck", false, -4, -400_000),
@@ -547,7 +576,7 @@ fn format98_supply_temps_use_stored_scalars_native_ceiling_and_content_minimum()
     assert!(
         out.refusals
             .keys()
-            .any(|why| why.contains("CCountrySupplySystem+0x110 i32 are not recorded")),
+            .any(|why| why.contains("actual train count is not recorded")),
         "{:?}",
         out.refusals
     );
@@ -555,6 +584,8 @@ fn format98_supply_temps_use_stored_scalars_native_ceiling_and_content_minimum()
 
 #[test]
 fn format98_supply_unavailable_and_old_scalars_keep_named_refusals() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     for unavailable in [false, true] {
         let TableView::Complete(TableRows::TrainInventory(rows)) =

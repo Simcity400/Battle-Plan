@@ -1,20 +1,18 @@
-//! Every country's ace roster, dated by successful AirAces reads. CAce has no
-//! creation/death timestamp: MarkDead@14060F060 writes alive, cause and killers
-//! (+158/+15C/+160/+168), never a date. First sightings are upper bounds; death
-//! is (last alive read, first dead read], or unknown for an ace first seen dead.
+//! Every country's ace roster, dated by successful AirAces reads. Aces have no
+//! creation/death timestamp: marking one dead stores alive, cause and killers,
+//! never a date. First sightings are upper bounds; death is
+//! (last alive read, first dead read], or unknown for an ace first seen dead.
 //!
-//! GenerateAceForAirWing@14060BD20 chooses weighted definitions sharing an
-//! aircraft mask and stores the selected definition at CAce+170 (string +8,
-//! Serialize@14060F1F0). The recorded selected modifier is distinct from the
-//! compatibility mask +18 and the aircraft assigned to the wing.
+//! Ace generation chooses weighted definitions sharing an aircraft mask and
+//! stores the selected definition. The recorded selected modifier is distinct
+//! from the compatibility mask and the aircraft assigned to the wing.
 //!
 //! One per-source branch scan is shared by manifest, windows and portraits.
 //! Windows come from recording blocks, with no player gate or truncation;
 //! only the transport reply budget may refuse it.
-//! Field evidence is the current cace reader and collector air writer: id is
-//! the full +8 reference, country the owner-roster link (+E0), ordinal the
-//! roster position, mask +18, wing +E8, strings +F0/+110/+130, alive +158,
-//! handled +16C, cause +15C and dead-only killer reference/country +160/+168.
+//! The ace reader and air writer retain the full reference, owner-roster link,
+//! roster position, aircraft mask, wing, name fields, alive and handled flags,
+//! death cause, and dead-only killer reference and country.
 
 use super::{
     LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
@@ -588,9 +586,9 @@ fn text(bytes: &[u8], identity: &str, refusals: &mut Refusals) -> Option<String>
         .ok()
 }
 fn ace_name(row: &AirAceRow, cat: Option<&Catalogue>, refusals: &mut Refusals) -> Option<String> {
-    // 14060DA90 uses ACE_FULL_NAME_WITH_CALLSIGN for a nonempty callsign.
-    // The approved separate columns use its plain ACE_FULL_NAME(NAME, SUR)
-    // template here and retain callsign in its own column.
+    // A nonempty callsign selects ACE_FULL_NAME_WITH_CALLSIGN in the game.
+    // The separate columns use its plain ACE_FULL_NAME(NAME, SUR) template here
+    // and retain callsign in its own column.
     let Some(cat) = cat else {
         refusals.note(
             "ACE_FULL_NAME content unavailable; name order unknown",
@@ -814,8 +812,8 @@ fn recording_available(
     Ok((!unread).then_some(false))
 }
 
-// 140B34A50: named literal first, then the retained country/gender pool.
-// Only an empty native country pool builds culture sprites, stopping at the
+// The portrait ladder uses a named literal first, then the retained country/gender pool.
+// Only an empty country pool builds culture sprites, stopping at the
 // first missing sprite or the game's own 256-entry bound; global pool last.
 fn portrait(facts: &Facts, cat: &Catalogue) -> Result<String, String> {
     let tag = facts.tag.as_ref().ok_or("Ace country not recorded")?;
@@ -862,8 +860,8 @@ fn portrait(facts: &Facts, cat: &Catalogue) -> Result<String, String> {
                     format!("Native ace portrait sprite {key} absent from recorded content")
                 })?
             } else {
-                // Native signed IDIV@140B34FD5. A negative remainder is an
-                // out-of-bounds native access, never rem_euclid or abs here.
+                // Signed division keeps its remainder sign. A negative remainder is an
+                // out-of-bounds game access, never rem_euclid or abs here.
                 let index = fields.pool_index % (culture_pool.len() as i32);
                 culture_pool
                     .get(

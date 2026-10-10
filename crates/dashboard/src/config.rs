@@ -53,6 +53,7 @@ impl Config {
     /// Stores the folders, keeping the saved standalone display choices.
     pub fn save(&self) -> io::Result<()> {
         self.resolve_options()?;
+        engine::executable_tables::initialize(&self.game_dir)?;
         self.save_at(&Self::path()?)
     }
 

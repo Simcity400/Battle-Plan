@@ -1,5 +1,5 @@
-//! FA1E90/F922B0/F91960 strategic-region search. The stored neighbour
-//! order, centroid, native heap ties and repeated entries are preserved.
+//! Strategic-region search. Preserve stored neighbour order, centroids,
+//! heap ties and repeated entries.
 use super::super::Fact;
 use crate::province_graph::{heap_pop, heap_push};
 use replay::rows::{TransportNavalRegion, TransportNavalSearch};
@@ -49,8 +49,8 @@ fn heuristic(from: [i32; 2], to: [i32; 2], width: i32) -> i64 {
     i64::from(root).wrapping_mul(100_000)
 }
 
-/// F9E3A0 takes the FIRST adjacency whose target ID matches the neighbour,
-/// then accepts a native unrestricted byte or the first nullable/rule OR.
+/// Take the first adjacency whose target ID matches the neighbour,
+/// then admit an unrestricted edge or the first passing nullable/rule OR.
 fn edge(
     graph: &TransportNavalSearch,
     from: u32,
@@ -102,7 +102,7 @@ fn search(
     let width = graph
         .width
         .filter(|width| *width > 0)
-        .ok_or("transport native search map width refused")?;
+        .ok_or("transport search map width refused")?;
     let regions = graph
         .regions
         .as_ref()
@@ -122,7 +122,7 @@ fn search(
             while let Some(parent) = nodes[*path.last().unwrap() as usize].parent {
                 path.push(parent);
             }
-            path.reverse(); // C97F00 emits source through destination, inclusive.
+            path.reverse(); // Include both source and destination.
             return Ok(path);
         }
         let current = nodes[at as usize];
@@ -165,10 +165,10 @@ fn search(
     Ok(Vec::new())
 }
 
-/// FA1E90 first searches without access filtering. Only a mode1/2 region
-/// on that exact path triggers the retry. Mode2 stays blocked; mode1 retries
-/// once more with its block removed, only if its first retry was empty.
-/// The native context's two region exemptions are null in this caller.
+/// First search without access filtering. Only a mode-1/2 region on that
+/// exact path triggers retry. Mode 2 stays blocked; mode 1 retries once
+/// more with its block removed only when the first retry was empty.
+/// Neither region exemption is set for this caller.
 pub fn admit(
     graph: &TransportNavalSearch,
     from: u32,

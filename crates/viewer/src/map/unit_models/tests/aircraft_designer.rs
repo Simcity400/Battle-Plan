@@ -198,6 +198,8 @@ const ALL: [&str; 3] = [
 
 #[test]
 fn with_the_dlc_an_archetype_without_a_saved_model_takes_its_pool_model() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = assets(&ALL);
     let recorded = frame(ARCHETYPE, "", DLC);
     assert_eq!(
@@ -214,8 +216,10 @@ fn with_the_dlc_an_archetype_without_a_saved_model_takes_its_pool_model() {
 
 #[test]
 fn a_saved_model_is_answered_before_the_pools_are_run() {
-    // `ResolveEquipmentVariantModel@14191A580` returns a nonempty
-    // `+0x430` without running `141918420`, so with the DLC the saved
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    // A nonempty saved entity name returns before graphics selection,
+    // so with the DLC the saved
     // model is the result even where a pool model is declared.
     let assets = assets(&ALL);
     assert_eq!(
@@ -231,9 +235,11 @@ fn a_saved_model_is_answered_before_the_pools_are_run() {
 
 #[test]
 fn an_undeclared_pool_model_falls_through_to_the_aircraft_ladder() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // No pool or conventional candidate is declared: the result is
-    // null, the empty `+0x430` gives nothing, and
-    // `FindAircraftEquipmentEntity@141236950` answers.
+    // null, the empty saved entity name gives nothing, and
+    // aircraft equipment model selection answers.
     let assets = assets(&["ENG_transport_plane_entity"]);
     let recorded = frame(ARCHETYPE, "", DLC);
     assert_eq!(
@@ -250,6 +256,8 @@ fn an_undeclared_pool_model_falls_through_to_the_aircraft_ladder() {
 
 #[test]
 fn without_the_dlc_or_a_sub_unit_list_the_pools_are_not_run() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let assets = assets(&ALL);
     // No DLC: the saved model, then the ladder.
     assert_eq!(
@@ -260,6 +268,7 @@ fn without_the_dlc_or_a_sub_unit_list_the_pools_are_not_run() {
         resolve(&assets, ARCHETYPE, "", 0),
         Ok(Some("ENG_transport_plane_entity".into()))
     );
+    // A non-archetype type has no sub-unit list: the game gives
     // only its saved model.
     let recorded = frame(MODEL, "", DLC);
     assert_eq!(

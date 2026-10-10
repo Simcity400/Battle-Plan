@@ -1,4 +1,4 @@
-//! Border power and tooltip (1409C8D50 / 1409C9B50 / 140C6E140).
+//! Border power and tooltip.
 use super::localise;
 use installed_content::localisation::{Argument as Arg, Localisation};
 use replay::{
@@ -49,7 +49,7 @@ fn combat_value(d: &DivisionRow, stats: [i64; 3], skill: i32, defines: &Defines)
     (factor.wrapping_mul(stats) / 100_000).wrapping_mul(100) / 100_000
 }
 
-/// 1409C8D50 returns the enemy fraction; its tooltip substitutes the complement.
+/// Power returns the enemy fraction; tooltip text uses its complement.
 fn enemy_ratio(power: [i64; 2]) -> i64 {
     let total = power[0].wrapping_add(power[1]);
     if total < 1 {
@@ -166,7 +166,7 @@ fn power(
                         let leader = leaders
                             .get(&group.leader)
                             .ok_or("border army leader absent")?;
-                        // GetSkillLevel@140C0A4A0 reads +0x1B8 without the +0x18 validity gate.
+                        // Read the skill value without testing the validity gate.
                         if leader.skill_status == 0 {
                             return Err("border army leader skill unavailable".into());
                         }
@@ -296,8 +296,8 @@ pub(super) fn build(
     let share = 100_000_i64.wrapping_sub(enemy_ratio(power));
     let mut text = format!("    {}", localise(loc, "BORDER_WAR_HEADER", &[])?);
     let mut block = String::new();
-    // 140DEBC90 appends 140DE8E30's indented block directly after the header.
-    // 1409C8D50 leaves a blank line before the ratio and the final hint.
+    // Append the indented block directly after the header. Leave a blank line
+    // before the ratio and final hint.
     for (key, value, blank) in [
         ("BORDER_WAR_POWER", power[0], false),
         ("BORDER_WAR_POWER_ENEMY", power[1], true),
@@ -322,7 +322,7 @@ pub(super) fn build(
             text.push('\n');
         }
         if !part.is_empty() {
-            text.push_str("        "); // 140DE8D90: level 2 is eight spaces.
+            text.push_str("        "); // Level 2 is eight spaces.
             text.push_str(part);
         }
     }

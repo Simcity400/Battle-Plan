@@ -182,7 +182,7 @@ fn tall_rectangle_takes_the_vertical_axis() {
 #[test]
 fn the_axis_bias_keeps_a_slightly_taller_area_horizontal() {
     // 100 wide by 105 tall: the vertical span is the longer one, but 99^2 * 1.2 > 104^2, so
-    // the horizontal regression still wins (report 4.3 step 4).
+    // the horizontal regression still wins.
     let mut canvas = Canvas::new(200, 200);
     canvas.rect(1, 50, 50, 149, 154);
     let font = TestFont::new();

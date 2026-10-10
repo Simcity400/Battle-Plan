@@ -1,6 +1,6 @@
-//! Retained CAirWing+0x998 text (getter 140F4B8F0, setter 140F51FB0).
-//! Current capture failures never fall back; older prefixes can use the
-//! authenticated active-raid projection shared by native effect text.
+//! Retained wing-name text. Current capture failures never fall back; older
+//! prefixes can use the authenticated active-raid projection shared by
+//! effect descriptions.
 
 use crate::catalogue::Refusals;
 use replay::{
@@ -115,9 +115,7 @@ fn raid_names(
     for &reference in requested {
         let result = (|| {
             let selected = selected.get(&reference).ok_or_else(|| {
-                format!(
-                    "WING {reference:#x} name outside selected active raids is not recorded (CAirWing+0x998; writers 140F48F90/140F51FB0)"
-                )
+                format!("WING {reference:#x} name outside selected active raids is not recorded")
             })?;
             operands.as_ref().map_err(|why| why.to_string())?;
             let mut name = None;
@@ -139,8 +137,8 @@ fn raid_names(
     names
 }
 
-// 141454480/1414536D0 select a resolving Army before the wing. 140F51FB0
-// retains no naming provenance; callers display these bytes with stored_text.
+// The name selection resolves an Army before the wing. Retained wing names
+// have no source marker; callers display these bytes with stored_text.
 fn raid_bytes(
     raid: &RaidRow,
     reference: u64,

@@ -1,5 +1,5 @@
-//! Tag aliases resolved as AliasResolve (1407141F0) resolves them: the
-//! alias's candidates, each checked against its triggers in a scope whose
+//! Tag aliases are resolved through their
+//! candidates, each checked against its triggers in a scope whose
 //! THIS is the candidate, PREV the scope that used the alias and ROOT and
 //! FROM that scope's; the first to pass, or the best `country_score`, else
 //! the fallback. Nothing caches the answer natively, so it is recomputed
@@ -12,8 +12,7 @@ use super::{Eval, Scope, Scopes, eval::Evaluator};
 type Candidates = Vec<Result<u32, String>>;
 
 impl Evaluator<'_, '_> {
-    /// A country tag or tag alias as ResolveScriptCountryTag (140BA5D10)
-    /// resolves it in `scopes`: an alias through AliasResolve (1407141F0),
+    /// Resolve a country tag or tag alias in `scopes`: an alias through its candidates,
     /// with no original-tag substitution of its answer; a tag through the
     /// recorded resolver (crate::scope). `None` is no country.
     pub(super) fn resolve_tag(&self, tag: &str, scopes: Scopes) -> Result<Option<u32>, String> {
@@ -24,7 +23,7 @@ impl Evaluator<'_, '_> {
         }
     }
 
-    /// AliasResolve (1407141F0) of `alias` for the scope `caller`.
+    /// Resolve `alias` for the scope `caller`.
     fn resolve_alias(
         &self,
         name: &str,
@@ -37,8 +36,8 @@ impl Evaluator<'_, '_> {
         if let Some(why) = &alias.refused {
             return Err(within(why.clone()));
         }
-        // The variable, event target or global event target (+0x110)
-        // decides alone (EvaluateCountryTag 140536ED0), in the caller's
+        // The variable, event target or global event target
+        // decides alone, in the caller's
         // scope.
         if let Some((key, text)) = &alias.variable {
             return match key {
@@ -51,8 +50,8 @@ impl Evaluator<'_, '_> {
                     } else {
                         "event_target:"
                     };
-                    // 140539800/14053BD20 prepend the prefix and append
-                    // ".id" (1427BED90), then parse through 140539B50.
+                    // Prepend the target prefix and append ".id", then
+                    // parse the resulting scoped operand.
                     self.scoped_country(&[prefix.as_bytes(), text, b".id"].concat(), caller)
                         .map_err(within)
                 }
@@ -63,8 +62,8 @@ impl Evaluator<'_, '_> {
             return Err(why);
         }
         // The frame holds through the fallback too, so a self or mutual
-        // fallback cycle, which the game follows without a guard
-        // (1407141F0 -> 140536ED0), is refused by name.
+        // fallback cycle, which the game follows without a guard,
+        // is refused by name.
         let resolved = self
             .choose(alias, caller)
             .map_err(within)
@@ -72,7 +71,7 @@ impl Evaluator<'_, '_> {
                 if found.is_some() {
                     return Ok(found);
                 }
-                // Only when nothing won (+0x298): neither checked nor tested for
+                // Only when nothing won: neither checked nor tested for
                 // existence.
                 match &alias.fallback {
                     Some(fallback) => self
@@ -85,8 +84,8 @@ impl Evaluator<'_, '_> {
         resolved
     }
 
-    /// A country text a CScopedVariable holds (EvaluateCountryTag
-    /// 140536ED0): a recorded tag or an alias, else a variable evaluated in
+    /// A scoped operand's country text: a recorded tag or an alias,
+    /// else a variable evaluated in
     /// `scopes`.
     fn operand_tag(&self, text: &[u8], scopes: Scopes) -> Result<Option<u32>, String> {
         let recorded = self.world().recorded();
@@ -116,7 +115,7 @@ impl Evaluator<'_, '_> {
         }
         if alias.original_tag_assignments > 1 {
             return Err(super::refused(format!(
-                "it assigns original_tag {} times, and the country specifier's state across assignments (AssignCountrySpecifierFromString 140BA53F0, read by 140BA5D10) is not replayed",
+                "it assigns original_tag {} times, and the country specifier's state across assignments is not replayed",
                 alias.original_tag_assignments
             )));
         }
@@ -162,7 +161,7 @@ impl Evaluator<'_, '_> {
         }
         if !alias.unported.is_empty() {
             return Err(format!(
-                "its targets read {}, which the port does not follow (ReadScriptTargetsMember 140C1D730, resolved by 140C1C820)",
+                "its targets read {}, which the selector does not follow",
                 alias.unported.join(", ")
             ));
         }
@@ -176,7 +175,7 @@ impl Evaluator<'_, '_> {
         Ok(targets.into_iter().map(Ok).collect())
     }
 
-    /// CScriptTargets::GetTargets (140C1C820), shared by aliases and scorers.
+    /// Script target selection, shared by aliases and scorers.
     pub(crate) fn script_target_candidates(
         &self,
         targets: &installed_content::country_scorers::ScriptTargets,
@@ -196,12 +195,11 @@ impl Evaluator<'_, '_> {
         if !targets.unported.is_empty() {
             return Err(format!("script targets: {}", targets.unported.join("; ")));
         }
-        // No reached temporary scorer requests the dynamic tail. Its start is
-        // CCountryDatabase+0x88, which this selector does not yet resolve.
+        // The dynamic tail requires a country slot boundary
+        // that this selector does not yet resolve.
         if targets.dynamic {
             return Err(
-                "script targets_dynamic: dynamic country slot boundary is unported (140C1C820)"
-                    .into(),
+                "script targets_dynamic: dynamic country slot boundary is not supported".into(),
             );
         }
         let mut selected = Vec::new();
@@ -211,7 +209,7 @@ impl Evaluator<'_, '_> {
             }
             if !targets.target_limit.is_empty() {
                 // The target filter runs on the initiator with FROM=target;
-                // the score subsequently reverses them (140C1D5B0/14047BB20).
+                // the score subsequently reverses them.
                 let target = self.fresh_country_scope(Some(slot), None)?;
                 let initiator = self.fresh_country_scope(country, Some(target))?;
                 if !self.evaluate(&targets.target_limit, initiator).decided()? {

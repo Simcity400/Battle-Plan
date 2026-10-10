@@ -11,6 +11,8 @@ fn collection(text: &str) -> installed_content::collections::Collection {
 
 #[test]
 fn collection_selection_uses_order_limits_and_fresh_root_environment() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = frame(
         &[(100, 1, "AAA", 2, "", ""), (200, 2, "GER", 1, "", "")],
         &[],
@@ -96,6 +98,8 @@ fn collection_selection_uses_order_limits_and_fresh_root_environment() {
 
 #[test]
 fn unrecorded_subjects_refuse_country_and_all_subjects() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut f = frame(
         &[(100, 1, "AAA", 2, "", ""), (200, 2, "GER", 1, "", "")],
         &[],
@@ -126,7 +130,9 @@ fn unrecorded_subjects_refuse_country_and_all_subjects() {
 }
 
 #[test]
-fn format98_collections_select_first_passing_native_owned_and_controlled_state() {
+fn format98_collections_select_first_passing_owned_and_controlled_state() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::rows::StateRow;
     let mut f = frame(&[(100, 1, "AAA", 2, "", "")], &[]);
     *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
@@ -218,6 +224,8 @@ fn format98_collections_select_first_passing_native_owned_and_controlled_state()
 
 #[test]
 fn collection_constant_arrays_keep_content_order_and_default_seeds() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::rows::StateRow;
     let mut f = frame(
         &[(100, 1, "AAA", 2, "", ""), (200, 2, "GER", 1, "", "")],
@@ -266,11 +274,11 @@ fn collection_constant_arrays_keep_content_order_and_default_seeds() {
         );
     }
     let invalid = collection("input=constant:states.invalid");
-    assert!(
+    assert_eq!(
         evaluator
             .collection_representative(&invalid, caller)
-            .unwrap_err()
-            .contains("null pointer")
+            .unwrap_err(),
+        "collection constant state 0 resolves to a null state pointer"
     );
     assert_eq!(graph.borrow().scopes[0].random_seed, 77);
 }

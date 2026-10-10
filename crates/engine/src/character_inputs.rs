@@ -1,22 +1,16 @@
-//! The character-scope trigger inputs the role tables do not hold, from one
-//! pass over the character roster (`ccharacter_manager`): the trait arrays of
-//! every country-leader, advisor and scientist role (CharacterRoleTraits) and
-//! the unit-leader reference with the operands of the object it resolves to
-//! (CharacterOperatives).
+//! Character-scope inputs absent from role tables, acquired in one pass over
+//! `ccharacter_manager`: leader, advisor and scientist role trait arrays, plus
+//! the unit-leader reference and resolved operands.
 //!
-//! `CHasTraitTrigger::Evaluate@1403D7D20` searches a character's unit leader's
-//! traits, then (for a country-leader trait) every advisor role's
-//! `CAdvisor+0xC8` and every country-leader role's `CCountryLeader+0x50`, then
-//! (for a scientist trait) `CScientist+0x30` of `CCharacter+0xC0`. Its unit
-//! leader, like that of `tag` (`CTagTrigger::Evaluate@1403DCDF0`, which
-//! compares `CUnitLeader+0x120`) and `skill`, is
-//! `CCharacter::GetUnitLeader@140F8A840`: `+0xA8`, else `+0xC8` resolved
-//! through the reference registry. The roster's pointers are copied in pages
-//! and each page's identities and role fields in one guarded gather; the maps,
-//! roles and trait arrays are read as the role walks read them.
+//! Trait predicates search unit-leader traits, then every matching advisor
+//! and country-leader role, or the scientist role for scientist traits.
+//! The unit leader comes from +0xA8, otherwise registry resolution of +0xC8;
+//! tag and skill predicates use the same selection. Roster pointers copy in
+//! pages, with identities and role fields in one guarded gather per page.
+//! Maps, roles and trait arrays follow their role walks.
 //!
-//! Synthetic fixtures cover the role-trait and unit-leader input walks; live
-//! capture and fresh-save agreement remain unverified.
+//! Synthetic fixtures cover these walks; live capture and fresh-save agreement
+//! remain unverified.
 
 use crate::{
     Memory, cadvisor,
@@ -69,7 +63,8 @@ pub struct Leader {
     pub category: i32,
     /// `CUnitLeader+0x120`, the raw country reference.
     pub owner: u32,
-    /// `*(CUnitLeader+0xE60)+0x1B8`; `None` for a null skill object.
+    /// Skill level at +0x1B8 in the unit leader's optional skill object
+    /// selected at +0xE60; `None` when that object is null.
     pub skill_level: Option<i32>,
 }
 
@@ -210,7 +205,7 @@ impl<'a, R: Default, V: Default> Table<'a, R, V> {
             .required
             .checked_add(count)
             .ok_or("character input value count overflow")?;
-        // CHasTraitTrigger@1403D7D20 visits every role's full trait array.
+        // Trait predicates visit every reached role trait array.
         self.rows.ensure(
             self.len
                 .checked_add(1)
@@ -649,7 +644,7 @@ fn operative(
         {
             return Err("operative skill unreadable");
         }
-        // GetSkillLevel@140C0A4A0 reads the level of either class.
+        // Read the skill level of either leader class.
         let vtable = u64::from_le_bytes(vtable);
         if vtable != at(base, cunit_leader_skill::VTABLE_RVA)? as u64
             && vtable != at(base, null_unit_leader_skill::VTABLE_RVA)? as u64
@@ -726,7 +721,7 @@ fn operative(
             Ok(u32::from_le_bytes(ordinal))
         },
     )?;
-    // Only an admitted old row commits its optional name spans.
+    // Only an admitted row commits optional name spans.
     names.len = bytes_len;
     table.push(OperativeRow {
         character,
@@ -1175,7 +1170,7 @@ mod tests {
             rows[0].codename_reason,
             Some("operative codename byte capacity exceeded")
         );
-        // A withheld old row must not commit either appended string.
+        // A withheld row commits neither appended string.
         let withheld = capture(&memory, &mut [], &mut definitions, &mut bytes);
         assert_eq!((withheld.bytes_len, withheld.required_bytes), (0, 10));
         memory.u32(OPERATIVE + cunit_leader::CATEGORY, 0);

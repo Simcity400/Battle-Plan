@@ -10,9 +10,7 @@ fn reference() -> Camera {
 }
 const VIEWPORT: [u32; 2] = [2048, 1152];
 
-/// R1 section 1.5 lists measured icon centres in the 2560x1440 screenshot,
-/// which is the 2048x1152 frame upscaled by 1.25 (R1 section 0). The world
-/// anchors are `map/unitstacks.txt` type 38 positions.
+/// World anchors and projected icon centres for a 2048x1152 frame presented at scale 1.25.
 const FITTED_CITIES: [([f32; 3], [f32; 2]); 6] = [
     ([2956.37, 10.35, 1569.00], [982.1, 711.9]),
     ([3068.02, 10.40, 1541.38], [1629.1, 871.9]),
@@ -22,7 +20,7 @@ const FITTED_CITIES: [([f32; 3], [f32; 2]); 6] = [
     ([3103.20, 9.70, 1464.00], [1847.1, 1335.9]),
 ];
 
-/// R1 section 1.5 fixes the icon centre at `anchor + (9.5, -1.5)` GUI pixels.
+/// The icon centre is offset from its anchor by 9.5 and -1.5 GUI pixels.
 const ICON_OFFSET: [f32; 2] = [9.5, -1.5];
 
 #[test]
@@ -30,7 +28,7 @@ fn projection_reproduces_the_fitted_city_positions() {
     for (world, measured) in FITTED_CITIES {
         let screen = reference().project(world, VIEWPORT).unwrap();
         let icon = [screen[0] + ICON_OFFSET[0], screen[1] + ICON_OFFSET[1]];
-        // The report measures in the 1.25x screenshot; compare there.
+        // Compare in screenshot coordinates after the 1.25 presentation stretch.
         let residual = [icon[0] * 1.25 - measured[0], icon[1] * 1.25 - measured[1]];
         assert!(
             residual[0].abs() < 2.0 && residual[1].abs() < 2.0,
@@ -121,7 +119,7 @@ fn zooming_keeps_the_ground_point_under_the_cursor_and_clamps_height() {
 #[test]
 fn the_centre_is_clamped_to_the_map_plus_the_outside_distance() {
     // A camera looking past the top edge is pulled back until the visible
-    // ground stops at the map height + MapDefines::test().outside[0].
+    // ground stops at the map height + MapDefines::test.outside[0].
     let mut camera = Camera {
         center: [3010.0, 2200.0],
         height: 600.0,
@@ -134,7 +132,7 @@ fn the_centre_is_clamped_to_the_map_plus_the_outside_distance() {
         (rect[3] - (MapSize::TEST.y() + MapDefines::test().outside[0])).abs() < 1e-2,
         "{rect:?}"
     );
-    // And past the bottom edge, back to -MapDefines::test().outside[0].
+    // And past the bottom edge, back to -MapDefines::test.outside[0].
     let mut camera = Camera {
         center: [3010.0, -400.0],
         height: 600.0,
@@ -147,9 +145,8 @@ fn the_centre_is_clamped_to_the_map_plus_the_outside_distance() {
         (rect[1] - -MapDefines::test().outside[0]).abs() < 1e-2,
         "{rect:?}"
     );
-    // A view taller than the allowance is centred on it instead, which is
-    // what `pairD_out40` fits: at CAMERA_MAX_HEIGHT the clamp lands within
-    // 0.9 world units of that frame's fitted centre of 1017.96.
+    // A view taller than the allowance is centred on it. The maximum-height fixture checks
+    // a centre near 1017.96.
     let mut camera = Camera {
         center: [3011.2, 1600.0],
         height: MapDefines::test().heights[1],
@@ -158,7 +155,7 @@ fn the_centre_is_clamped_to_the_map_plus_the_outside_distance() {
     };
     camera.clamp_center(VIEWPORT);
     assert!((camera.center[1] - 1017.96).abs() < 1.5, "{camera:?}");
-    // A camera already inside is not moved at all: `pairD_out20`'s fit.
+    // A camera already inside is not moved.
     let mut camera = Camera {
         center: [3011.86, 1364.30],
         height: 2122.295,
@@ -275,10 +272,8 @@ fn a_degenerate_camera_is_refused() {
     assert!(reference().validate().is_ok());
 }
 
-/// Finding 5: a map icon's projection (`14117BC60` from `14162D5B0`) is never refused. A
-/// point behind the camera, which [`Camera::project`] refuses, lands where the division by
-/// its negative w puts it; a point in front lands where [`Camera::project`] puts it; and an
-/// anchor a map width away is first moved to the copy within half a width of the camera
+/// Map-icon projection retains signed-w results behind the eye. Front points agree with
+/// Camera::project. A distant anchor first shifts to the copy within half a map width of the camera.
 #[test]
 fn a_map_icon_projection_divides_by_any_w() {
     let camera = reference();

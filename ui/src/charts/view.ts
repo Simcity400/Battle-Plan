@@ -1,5 +1,5 @@
-/** A time chart's zoom: wheel, box, pan and dragging either axis, ported from the
- * signed-off mock-up. The state holds only what the user changed; anything left
+/** A time chart's zoom: wheel, box, pan and dragging either axis.
+ * The state holds only what the user changed; anything left
  * null follows playback or auto-fit, so a zoomed chart keeps its range while
  * playback continues and "Reset zoom" returns it to following. */
 

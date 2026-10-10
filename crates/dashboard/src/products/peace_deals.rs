@@ -578,9 +578,9 @@ fn existence_snapshot(
         .collect()
 }
 
-/// 141509550's state-action branch and 141506C80's name constructor (see
-/// engine::peace_conference): the native keyword selects the semantic binding;
-/// the recording supplies its spelling, and content supplies its display name.
+/// The state-action keyword selects the semantic binding; the recording
+/// supplies its spelling, and content supplies its display name.
+/// See engine::peace_conference.
 fn state_action_key(frame: &DecodedFrame) -> Result<String, String> {
     let rows = frame
         .complete::<tables::LexicalTokens>()
@@ -1166,9 +1166,7 @@ fn transfers(before: &Snapshot, after: &Snapshot, recorded: bool) -> Vec<PeaceIt
                 }
             }
             None => {
-                // Peace 140E2D670 -> EndWar 140D08520 -> clear_link 140D12D10
-                // -> ReplaceLinkedRelation 140D18990 -> ReplaceRelation 140D02DF0
-                // removes both endpoint pointers and destroys the owned relation.
+                // Peace removes both endpoint pointers and destroys the owned relation.
                 // An unresolved/conflicting row is not evidence of its removal.
                 if unidentified_pair
                     || unresolved_pairs.contains(&key)

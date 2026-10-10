@@ -1,8 +1,12 @@
-//! CSubUnitStatBonus::Describe (140635420), shared by add_unit_bonus,
-//! technology (140EC5F90) and special-project rewards.
+//! Sub-unit stat bonus descriptions shared by add_unit_bonus,
+//! technology and special-project rewards.
 
 use super::*;
-use installed_content::{equipment::STAT_METADATA, tokens::Token, unit_leader::Adjuster};
+use installed_content::{
+    equipment::{STAT_COUNT, stat_metadata},
+    tokens::Token,
+    unit_leader::Adjuster,
+};
 
 fn newline(text: &mut String) {
     if !text.is_empty() && !text.ends_with('\n') {
@@ -10,15 +14,15 @@ fn newline(text: &mut String) {
     }
 }
 
-fn stats(items: &[Item]) -> [i64; STAT_METADATA.len()] {
-    let mut values = [0; STAT_METADATA.len()];
+fn stats(items: &[Item]) -> [i64; STAT_COUNT] {
+    let mut values = [0; STAT_COUNT];
     for item in items {
         if let Some(index) = item
             .keyword()
             .and_then(|key| installed_content::equipment::stat_index(&key.folded()))
             && let Some(value) = installed_content::modifiers::read_fixed5(item)
         {
-            values[index] = value; // 1413D22A0: a failed scan keeps the destination.
+            values[index] = value; // A failed scan keeps the destination.
         }
     }
     values
@@ -41,7 +45,7 @@ fn adjuster(key: &str, items: &[Item]) -> Adjuster {
                 continue;
             };
             if let Some(value) = installed_content::modifiers::read_fixed5(item) {
-                *target = value; // CUnitAdjuster::vf4 141001740.
+                *target = value;
             }
         }
     }
@@ -94,8 +98,8 @@ impl Renderer<'_, '_, '_> {
             }
         }
         let mut text = String::new();
-        // Separate +8 sub-unit and +0x20 category vectors preserve authored
-        // order within each vector, including repeated selectors (140636690).
+        // Separate sub-unit and category vectors preserve authored order
+        // within each vector, including repeated selectors.
         for category in [false, true] {
             for (_, name, fields) in entries.iter().filter(|entry| entry.0 == category) {
                 match self.units_bonus_body(name, fields, category, units, scopes) {
@@ -111,7 +115,7 @@ impl Renderer<'_, '_, '_> {
     }
 
     fn units_bonus_stat(&self, index: usize, value: i64, scopes: Scopes) -> Result<String, String> {
-        let (_, label, _) = STAT_METADATA[index];
+        let (_, label, _) = stat_metadata()[index];
         let mut text = self.localised(label.as_bytes(), &[], scopes, false)?;
         let candidate = format!("{label}_MOD_VALUE");
         let key = if self.context.localisation.get(&candidate).is_some() {
@@ -125,7 +129,7 @@ impl Renderer<'_, '_, '_> {
             scopes,
             false,
         )?);
-        text.push('\n'); // 1413D1220 / 1413D1C30: raw fixed5, no scaling.
+        text.push('\n'); // Raw fixed5, without scaling.
         Ok(text)
     }
 
@@ -134,8 +138,8 @@ impl Renderer<'_, '_, '_> {
         if lines.is_empty() {
             return Ok(lines);
         }
-        // 141490970 -> 140FFFDD0(1, NULL, 1, 3): unindented
-        // highlighted token header, then three-space component lines.
+        // Use an unindented highlighted token header,
+        // then three-space component lines.
         let name = self.localised(adjuster.key.as_bytes(), &[], scopes, false)?;
         Ok(format!(
             "\u{11}H{name}\u{11}!\n{}",
@@ -195,7 +199,7 @@ impl Renderer<'_, '_, '_> {
         }
         if category {
             return Ok(text);
-        } // Category branch describes only +0xA0 stats.
+        } // The category branch describes only stats.
         for key in ["night", "amphibious", "river", "fort", "snow"] {
             match self.units_bonus_adjuster(&adjuster(key, items), scopes) {
                 Ok(body) => text.push_str(&body),
@@ -259,7 +263,7 @@ impl Renderer<'_, '_, '_> {
         {
             let mut category = None;
             let mut percentage = false;
-            let mut add = false; // 141411340 zeroes +0x28/+0x29.
+            let mut add = false; // Both flags default to false.
             let mut values = Vec::new();
             for item in children(block) {
                 if item.keyword_is("category") {
@@ -275,7 +279,7 @@ impl Renderer<'_, '_, '_> {
                     };
                     if let Some(value) = parser::read_bool(item.value.scalar().unwrap_or_default())
                     {
-                        *target = value; // read_bool_field keeps a failed destination.
+                        *target = value; // A failed boolean scan keeps the destination.
                     }
                 } else if let Some(index) = item
                     .keyword()
@@ -283,11 +287,10 @@ impl Renderer<'_, '_, '_> {
                     && let Some(value) = installed_content::modifiers::read_fixed5(item)
                     && value != 0
                 {
-                    values.push((index, value)); // 1414157A0 appends each successful nonzero stat.
+                    values.push((index, value)); // Append each successful nonzero stat.
                 }
             }
-            let category =
-                category.ok_or("battalion_mult has no resolved sub-unit category (1413CF030)")?;
+            let category = category.ok_or("battalion_mult has no resolved sub-unit category")?;
             if previous != Some(category) {
                 let name = self.units_current_name(category.as_bytes(), scopes)?;
                 text.push_str(&self.localised(
@@ -300,7 +303,7 @@ impl Renderer<'_, '_, '_> {
                 previous = Some(category);
             }
             for (index, value) in values {
-                let (_, label, positive) = STAT_METADATA[index];
+                let (_, label, positive) = stat_metadata()[index];
                 let key: &[u8] = match (positive, percentage && !add) {
                     (true, true) => b"SUBUNIT_CATEGORY_ADD_STAT",
                     (true, false) => b"SUBUNIT_CATEGORY_MULT_STAT",

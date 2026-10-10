@@ -5,13 +5,14 @@ use crate::{
     walk::Outcome,
 };
 
+/// CFactionSystem primary vtable.
 pub const VTABLE_RVA: usize = 0x0294_faf8;
 
-/// CFactionSystem faction pointer-array data; build_profile.rs:392 and D53 read_faction_rows.
+/// CFactionSystem faction pointer-array data.
 pub const FACTIONS: usize = 0x20;
-/// CFactionSystem signed live count; D7D620 appends/increments +2C, D7DB10 decrements it, and 1F2A20 serializes it.
+/// CFactionSystem signed live count.
 pub const FACTION_COUNT: usize = 0x2c;
-/// CFactionSystem signed capacity; D7D620 compares/grows +28 independently of live count +2C.
+/// CFactionSystem signed capacity.
 pub const FACTION_CAPACITY: usize = 0x28;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -125,7 +126,7 @@ fn walk_members_buffer(
                 .checked_add(cfaction::MEMBERS)
                 .and_then(|p| Array::read(memory, p, 8))
                 .ok_or("faction members unreadable or invalid")?;
-            // CFaction::AddMember@140D75210 extends +0x58 from this live count.
+            // The faction member roster grows from this live count.
             output.ensure(
                 len.checked_add(members.count as usize)
                     .ok_or("faction member count overflow")?,

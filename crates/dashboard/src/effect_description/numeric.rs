@@ -25,8 +25,8 @@ impl Renderer<'_, '_, '_> {
         self.numeric_leaf(item, scopes, key, NumericFormat::Fixed5)
     }
 
-    // Shared 532-byte vf7 template: Evaluate@1405382B0, substitution@142230F20,
-    // Expand@1410CF560, LF. Other forms retain their native integer conversion.
+    // Evaluate the value, substitute it, expand the text and append LF.
+    // Other forms retain their integer conversion.
     pub(super) fn numeric_leaf(
         &self,
         item: &Item,
@@ -37,7 +37,7 @@ impl Renderer<'_, '_, '_> {
         let value = if matches!(format, NumericFormat::Xp | NumericFormat::Threat) {
             i64::from(self.numeric_int_operand(item, scopes)?) * 100_000
         } else if scope_selector(item).is_some() {
-            0 // ParseScopeSelector@14137DCD0 leaves CScopedVariable +58 at zero.
+            0 // scope-selector parsing leaves scoped variable at zero.
         } else {
             self.scoped_value(item.value.scalar().unwrap_or(b"0"), scopes)?
         };
@@ -55,30 +55,30 @@ impl Renderer<'_, '_, '_> {
                 Argument::Int32(crate::triggers::fixed_round(value) as i32),
                 false,
                 true,
-            ), // Skill vf7@1402E9B70..1402EAC20; round@1424D8760.
+            ), // Skill effects share numeric formatting.
             NumericFormat::Rounded => (
                 "VAL",
                 Argument::Int32(crate::triggers::fixed_round(value) as i32),
                 true,
                 true,
-            ), // CAddNukeEffect@140375150.
+            ),
             NumericFormat::Truncated | NumericFormat::Size => {
                 ("VAL", Argument::Int32((value / 100_000) as i32), true, true)
-            } // CIC@14048E850, task capacity@1402FD1E0, size@1402FCCF0.
+            }
             NumericFormat::Xp => (
                 "VALUE",
                 Argument::Int32(((value / 100_000) as i32).max(0)),
                 false,
                 false,
-            ), // CGainXpEffect@1402EC4D0 / vf26@1402EF010.
+            ),
             NumericFormat::Threat => (
                 "THREAT",
                 Argument::Int32(((value / 100_000) as i32).wrapping_abs()),
                 true,
                 true,
-            ), // CAddThreatEffect@1403785F0, zero takes REMOVE.
+            ), // zero takes REMOVE.
             NumericFormat::Garrison => {
-                // FormatColoredFixed5Value@142257CE0: scale 1, precision 1,
+                // scale 1, precision 1,
                 // positive-good, '%' suffix and '+' even for zero; no expansion.
                 let scaled = value.wrapping_mul(100_000) / 100_000;
                 let colour = if scaled > 0 {
@@ -113,7 +113,7 @@ impl Renderer<'_, '_, '_> {
             return Ok(0);
         }
         let operand = scalar_operand(item)?;
-        // CIntEffect::vf6@14137DD70 / vf26@141384870: literal %i or
+        // literal %i or
         // signed fixed5 division, narrowed to i32. Shares the existing parser.
         match installed_content::fixed5::int_operand(operand, item.quoted()) {
             installed_content::fixed5::IntOperand::Integer(value) => Ok(value),
@@ -121,7 +121,7 @@ impl Renderer<'_, '_, '_> {
             installed_content::fixed5::IntOperand::Scoped => {
                 Ok((self.scoped_value(operand, scopes)? / 100_000) as i32)
             }
-            _ => Err("CIntEffect operand was not stored (14137DD70)".into()),
+            _ => Err("integer effect operand was not stored".into()),
         }
     }
 
@@ -131,7 +131,7 @@ impl Renderer<'_, '_, '_> {
             .unwrap_or(Ok(0))
     }
 
-    // CountryTag_FormatMarkedName@140BA59E0 -> capitalized +50@1406E63A0.
+    // Capitalized definite country name.
     fn numeric_marked_country(&self, country: u32) -> Result<String, String> {
         let name =
             installed_content::localisation::crt_case_text(&self.country_name(country, true)?, true, true);
@@ -150,10 +150,7 @@ impl Renderer<'_, '_, '_> {
             .complete::<tables::SimulationFeatures>()
             .map_err(|why| why.to_string())?
         else {
-            return Err(
-                "SimulationFeatures lacks the collaboration feature mask (1401AE640 case 0x1B)"
-                    .into(),
-            );
+            return Err("SimulationFeatures lacks the collaboration feature mask".into());
         };
         if features.dlc_mask & (1 << 5) == 0 {
             return Ok(String::new());
@@ -185,7 +182,7 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             true,
-        ) // 140371C60: feature gate, nonzero value, no LF.
+        ) // feature gate, nonzero value, no LF.
     }
 
     pub(super) fn numeric_decryption(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -227,7 +224,7 @@ impl Renderer<'_, '_, '_> {
                 scopes,
                 true,
             )
-        } // 140373590: ratio's assigned flag +130 wins over amount; LF.
+        } // ratio's assigned flag wins over amount; LF.
     }
 
     pub(super) fn numeric_intel(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -289,7 +286,7 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             true,
-        ) // 140373D80 ->141409250 /141085460 /141085540; no LF.
+        ) // no LF.
     }
 
     pub(super) fn numeric_mines(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -303,7 +300,7 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         }
         Err(format!(
-            "strategic region {region} needs unrecorded CStrategicRegion instance name +0x38/+0x48 (140374410 ->140E0EB10; writers 141B50C80/141B4F0B0)"
+            "strategic region {region} needs its unrecorded instance name"
         ))
     }
 
@@ -326,7 +323,7 @@ impl Renderer<'_, '_, '_> {
             scopes,
             true,
         )
-        // 1403941B0: start of current day + rounded days; FormatDayMonthYear@140526FD0.
+        // start of current day + rounded days.
     }
 
     pub(super) fn numeric_import(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -343,13 +340,13 @@ impl Renderer<'_, '_, '_> {
         let mut matched = resources
             .iter()
             .filter(|row| row.token.eq_ignore_ascii_case(resource));
-        let definition = matched.next().ok_or_else(|| format!("create_import resource {resource} needs the native null resource signed icon_frame +0xDC (14037C2F0/140BBB090), not preserved by content"))?;
+        let definition = matched.next().ok_or_else(|| format!("create_import resource {resource} needs the null resource signed icon_frame, which content does not preserve"))?;
         if matched.any(|row| row.icon_frame != definition.icon_frame) {
             return Err(format!(
-                "create_import resource {resource} repeated native database record identity is unverified (140AB2DF0)"
+                "create_import resource {resource} repeated native database record identity is unverified"
             ));
         }
-        let icon = definition.icon_frame.filter(|frame| *frame <= i32::MAX as u32).ok_or_else(|| format!("create_import resource {resource} signed/default icon_frame +0xDC is not preserved by installed_content::resources (14037C2F0/140BBB090)"))?;
+        let icon = definition.icon_frame.filter(|frame| *frame <= i32::MAX as u32).ok_or_else(|| format!("create_import resource {resource} signed/default icon_frame is not preserved by installed_content::resources"))?;
         let amount = fields
             .iter()
             .filter(|item| item.keyword_is("amount"))
@@ -360,12 +357,11 @@ impl Renderer<'_, '_, '_> {
                 },
             )
             .next_back()
-            .unwrap_or(0); // ReadScriptSignedInt32@1424AB970 retains failed writes.
-        let resource = format!("{amount}\u{13}resources_strip|{icon} "); // Literal14275B798.
+            .unwrap_or(0); // integer parsing retains failed writes.
+        let resource = format!("{amount}\u{13}resources_strip|{icon} "); // Literal.
         let source = self.current_country(scopes)?;
-        let target =
-            field(fields, "exporter").ok_or("create_import exporter is absent (140BA5D10)")?;
-        let target = self.country_target(target, scopes)?.unwrap_or(0); // 140BA5960.
+        let target = field(fields, "exporter").ok_or("create_import exporter is absent")?;
+        let target = self.country_target(target, scopes)?.unwrap_or(0);
         let source = self.country_name(source, false)?;
         let target = self.country_name(target, false)?;
         let mut args = vec![
@@ -383,7 +379,7 @@ impl Renderer<'_, '_, '_> {
                 value.to_owned()
             };
             let stored = installed_content::save::SavedDate::parse(value.as_bytes()).map_err(|why| {
-                format!("create_import date requires CGameDate parser (140527450): {why}")
+                format!("create_import date requires the game-date parser: {why}")
             })?;
             if stored != installed_content::save::SavedDate::Invalid {
                 let (year, _, day) =
@@ -405,11 +401,11 @@ impl Renderer<'_, '_, '_> {
             scopes,
             true,
         )
-        // 14037C2F0 /1403B1260: factories have no description operand, no LF.
+        // factories have no description operand, no LF.
     }
 
     pub(super) fn numeric_license(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
-        let equipment = self.units_equipment_reference_name(children(item), scopes)?; //141411150.
+        let equipment = self.units_equipment_reference_name(children(item), scopes)?;
         let target = if field(children(item), "target").is_none() {
             match scopes.this {
                 Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0 => {
@@ -420,7 +416,7 @@ impl Renderer<'_, '_, '_> {
         } else {
             self.country_target(item, scopes)?
         };
-        let target = target.unwrap_or(0); // 14049C740 -> 140BA56A0.
+        let target = target.unwrap_or(0);
         self.char_native_line(
             b"EFFECT_CREATE_LICENSE_PRODUCTION",
             &[
@@ -430,7 +426,7 @@ impl Renderer<'_, '_, '_> {
             scopes,
             true,
         )
-        // 14049C740: priority/cost change execution only, explicit LF.
+        // priority/cost change execution only, explicit LF.
     }
 
     pub(super) fn numeric_launch_nuke(
@@ -438,13 +434,12 @@ impl Renderer<'_, '_, '_> {
         _item: &Item,
         _scopes: Scopes,
     ) -> Result<String, String> {
-        // 140383630 constructs and destroys the formatted state text, then
-        // unconditionally clears RSI at 140383B03..140383B18 (assembly).
+        // constructs and destroys the formatted state text, then
+        // unconditionally clears the output.
         Ok(String::new())
     }
 }
 
-// GetMonth@140177140 / GetDay@140176DB0, FormatDayMonthYear@140526FD0.
 pub(super) fn numeric_date_parts(hour: i32) -> (i32, &'static str, i32) {
     let hours = hour.wrapping_sub(engine::cdate::HOUR_EPOCH);
     let mut day = hours / 24 % 365;

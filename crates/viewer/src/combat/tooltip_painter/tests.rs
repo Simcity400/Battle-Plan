@@ -69,6 +69,8 @@ const POINT: Option<[f32; 2]> = Some([2.0, 3.0]);
 
 #[test]
 fn naval_tooltip_width_uses_authored_fallback_and_counts_missing_or_wrong_types() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_gui::tests::{fixture, fixture_with};
     let read = installed_content::gui::native::read;
     let fallback = fixture_with(read(
@@ -188,7 +190,7 @@ fn shortcut_only_hover_waits_for_show_delay_and_tail_follows_delayed_body() {
     let shortcut = "Shortcut: \u{13}ESCAPE";
     let mut hover = HoverState::default();
     let hit = Some(("", None, Some(shortcut), RECT));
-    // 1402A4080 appends the shortcut before applying the ordinary show deadline.
+    // the game appends the shortcut before applying the ordinary show deadline.
     assert_eq!(hover.shown(hit, POINT, start, TIMING), None);
     assert_eq!(
         hover.shown(hit, POINT, start + Duration::from_millis(50), TIMING),
@@ -308,7 +310,7 @@ fn hide_delay_retains_last_text_and_reentry_cancels_hiding() {
     );
 }
 
-/// The delays are the game's floats, only compared (1402A4080): a
+/// The delays are the game's floats, only compared: a
 /// negative `TOOLTIP_DELAYED_DELAY` passes `delay < elapsed` at once, so
 /// the body joins on the first frame, and a negative show delay shows at
 /// once; neither disables the tooltip.
@@ -354,8 +356,8 @@ fn negative_delays_follow_the_native_comparisons() {
     );
 }
 
-/// 1402A4080 keeps the show deadline on the presentation clock
-/// (142238C90) and reads one at or below 0 as unset, setting it again on
+/// the game keeps the show deadline on the presentation clock
+/// and reads one at or below 0 as unset, setting it again on
 /// each frame: with a show delay of -1, a hover in the clock's first
 /// second waits until the deadline `now - 1` rises above 0, then shows at
 /// once. The hide deadline follows the same rule.

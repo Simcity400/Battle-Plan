@@ -27,7 +27,7 @@ impl Capacities {
         memory: &impl Memory,
         base: usize,
     ) -> Result<(), &'static str> {
-        // 140BDFD90 selects at most one leader per orders root.
+        // Select at most one leader per orders root.
         let count = crate::country_scale::table_demand::rows(engine::corders_group::walk_roots(
             memory,
             base,

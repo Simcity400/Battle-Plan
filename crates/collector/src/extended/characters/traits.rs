@@ -495,8 +495,8 @@ impl TraitCapture {
             let array = header
                 .and_then(|header| Array::from_header(header, params.stride))
                 .ok_or("unit leader trait vector invalid or unreadable")?;
-            // 140C0D920 bounds these vectors by +0xDD4/+0xE04. Their
-            // original acquired counts reserve every occurrence before reads.
+            // The vectors' original acquired counts reserve every occurrence
+            // before reads.
             if self.growing {
                 engine::allocation::reserve(&mut self.occurrences[table], array.count as usize)
                     .map_err(|_| "character trait occurrence allocation failed")?;

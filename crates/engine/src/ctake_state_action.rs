@@ -1,4 +1,4 @@
-//! CTakeStateAction layout for the hash-pinned executable.
+//! Take-state peace-action layout for the supported executable.
 
-/// Primary vtable, confirmed by a729 RTTI and constructor 141506F60.
+/// Primary vtable.
 pub const VTABLE_RVA: usize = 0x029b_c2f0;

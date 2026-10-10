@@ -1,14 +1,11 @@
-//! Whether an offer is launchable (bit 15 of `EvaluateTarget@14199A190`),
-//! which draws its frame enabled rather than grey:
+//! Whether an offer is launchable (bit 15), enabling its frame:
 //!
-//! 1. affordable (`HasPreparationResources@140A8D610`): command power within
-//!    capacity (`CCountry::CanAffordCommandPower@1406F0380`), and nukes and
-//!    every essential archetype in the stockpile (`CheckRaidEquipmentRequirements@14157A760`);
-//! 2. off cooldown (`IsTargetOnCooldown@1414D7630`);
-//! 3. `available`;
-//! 4. some unit of the country matches the type (`UpdateRaidTypeUnits`,
-//!    `CollectCountryRaidUnits@140E6E160`);
-//! 5. some source and unit can reach the target (`HasFeasibleSource@140E70C00`).
+//! 1. Affordable: command power within capacity, plus nukes and every
+//!    essential archetype in the stockpile.
+//! 2. Off cooldown.
+//! 3. `available`.
+//! 4. Some country unit matches the type.
+//! 5. Some source and unit can reach the target.
 //!
 //! Units, sources and range limits depend only on the country and type, so
 //! they are prepared once per type; a target then costs one distance per source.
@@ -44,7 +41,7 @@ use super::{
     script::{Eval, Scopes, World},
 };
 
-/// A naval-base or building source (`CRaidSource` kinds 2 and 5).
+/// A naval-base or building source (kinds 2 and 5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PathSource {
     pub kind: u8,
@@ -55,9 +52,8 @@ pub struct PathSource {
 /// on other threads share the hour's ([`Launcher`]); each part's view of
 /// them is its own ([`Local`]).
 pub trait RaidPaths {
-    /// `CalculateRaidTargetDistance@141581090` for a naval-base or building
-    /// source: `Some(fixed5)`, or `None` when the game finds no distance.
-    /// `asked` says whether the game certainly asked it here.
+    /// Distance for a naval-base or building source: `Some(fixed5)`, or `None`
+    /// when no distance is found. `asked` says whether it was certainly queried here.
     fn distance(
         &self,
         world: &World<'_>,
@@ -73,8 +69,7 @@ pub trait RaidPaths {
     fn recorded_rows(&self) -> Option<&[RaidPathDistanceRow]>;
     /// The province a path source of `kind` measures `target` to.
     fn path_target(&self, kind: u8, target: &RaidScope) -> Result<Option<u32>, String>;
-    /// `FindArmyPathToSource@1419F6640`: the division (`Divisions.id`) can
-    /// move to the source province.
+    /// Whether the division (`Divisions.id`) can move to the source province.
     fn army_reaches(&self, world: &World<'_>, division: u64, source_province: u32) -> Eval;
     /// The hour's searches, when a batch may be split across threads with
     /// them ([`super::paths::PartPaths`]); `None` evaluates every batch in
@@ -134,7 +129,7 @@ fn lazy<T>(cell: &Lazy<T>, build: impl FnOnce() -> Result<T, String>) -> Result<
     cell.get_or_init(build).as_ref().map_err(Clone::clone)
 }
 
-/// A raid unit (`NRaids::CRaidUnit`): an army or an air wing.
+/// A raid unit: an army or an air wing.
 #[derive(Clone, Copy, Debug)]
 enum Unit<'a> {
     Division(&'a DivisionRow),
@@ -150,7 +145,7 @@ impl Unit<'_> {
     }
 }
 
-/// A unit's range limit (`GetRaidUnitRangeLimit@141453E10`); `None` is none.
+/// A unit's range limit; `None` means no limit.
 type Limit = Option<i64>;
 
 /// Wider limit: `None` (no limit) is widest.
@@ -230,8 +225,8 @@ struct Shared {
 /// One [`Shared`] search's answers so far in a [`Local`].
 #[derive(Default)]
 struct Memo {
-    /// `CanRaidUnitReachSource@141453C20` by (source, candidate), asked on
-    /// first need: army reach is the gate's costliest input.
+    /// Cache by (source, candidate), on first need: army reach is the gate's
+    /// costliest input.
     reach: HashMap<(usize, usize), Eval>,
     /// Each target province's answer, for a pathless search.
     answers: HashMap<Option<u32>, Eval>,
@@ -694,8 +689,8 @@ impl<'w, 'a> Launcher<'w, 'a> {
             .map_err(Clone::clone)
     }
 
-    /// Diagnostic-mode 140A8C290 still asks equipment after command power
-    /// fails. Reuse the same stored operands as the icon's admission gate.
+    /// Diagnostic mode asks equipment even after command power fails.
+    /// Reuse the icon admission gate's stored operands.
     pub(super) fn command_power(&self, kind: &RaidType) -> Eval {
         match self.diagnostic_context() {
             Ok(c) => c.command_power(kind),
@@ -738,11 +733,9 @@ impl<'w, 'a> Launcher<'w, 'a> {
         self.launchable_in(&self.local(), kind, scope, scopes, asked)
     }
 
-    /// Bit 15 for this type and target: `EvaluateTarget@14199A190`'s `&&`
-    /// chain, whose last gate runs the path searches only when every earlier
-    /// one passed.
-    /// `asked` says whether the game certainly evaluates this row: an
-    /// undecided shown bit leaves its searches maybe asked. `local` holds the
+    /// Launchable bit 15 for this type and target. Run path searches only after
+    /// all earlier gates pass. `asked` says whether this row is certainly evaluated;
+    /// an undecided shown bit leaves its searches maybe asked. `local` holds the
     /// evaluating part's memos and path searches.
     pub fn launchable_in(
         &self,
@@ -886,12 +879,9 @@ impl<'w, 'a> Launcher<'w, 'a> {
         })
     }
 
-    /// `ForEachStartingPoint@140E6DA70` over the prepared sources, each unit
-    /// passing `IsRaidSourceInRange@141580FE0` then `CanRaidUnitReachSource@141453C20`
-    /// (`IsUnitUsableFromSource@140E6FDF0`): the game measures every visited
-    /// source on its first unit, whether a unit can reach it or not, asks a
-    /// unit's reach only once the target is in its range, and stops at the
-    /// first usable source.
+    /// Visit prepared sources and units in order. Measure each visited source on
+    /// its first unit, whether any unit can reach it or not. Query unit reach
+    /// only once the target is in range, stopping at the first usable source.
     fn feasible(
         &self,
         local: &Local<'_, 'a>,
@@ -1017,7 +1007,7 @@ impl<'w, 'a> Launcher<'w, 'a> {
         target: Option<u32>,
         asked: &mut Asked,
     ) -> Eval {
-        // `IsHostShipFree@141580F50`: a busy carrier is not visited.
+        // Do not visit a busy carrier.
         if source.valid == Eval::False {
             return Eval::False;
         }
@@ -1259,7 +1249,7 @@ impl<'w, 'a> Launcher<'w, 'a> {
         usable
     }
 
-    /// `CanRaidUnitReachSource@141453C20`, once per source and unit.
+    /// Source reach, once per source and unit.
     fn reach(
         &self,
         local: &Local<'_, 'a>,
@@ -1287,8 +1277,7 @@ impl<'w, 'a> Launcher<'w, 'a> {
                 Ok(province) => local.paths.army_reaches(self.world, division.id, *province),
                 Err(reason) => Eval::unknown(reason.clone()),
             },
-            // `CRaidSource::GetAirBase@141580C30` has no base for a
-            // naval-base or building source.
+            // Naval-base and building sources have no air base.
             Unit::Wing(wing) => match (source.site, self.context.get()) {
                 (None, _) => Eval::False,
                 (Some((base, capacity)), Some(Ok(context))) => {
@@ -1335,7 +1324,6 @@ impl<'w, 'a> Launcher<'w, 'a> {
         }
     }
 
-    /// `CalculateRaidTargetDistance@141581090`.
     fn distance(
         &self,
         local: &Local<'_, 'a>,
@@ -1371,8 +1359,8 @@ impl<'w, 'a> Launcher<'w, 'a> {
 }
 
 impl<'a> Launcher<'_, 'a> {
-    /// `IsTargetOnCooldown@1414D7630`: a cooldown of this type whose scope's
-    /// building, province, state and leader arms match; `+0x20` is ignored.
+    /// Cooldown of this type with matching building, province, state and leader
+    /// arms; ignore the auxiliary scope word.
     fn cooldown(&self, kind: &RaidType, scope: &RaidScope) -> Eval {
         let cooldowns = match lazy(&self.cooldowns, || {
             let mut out = Cooldowns::default();
@@ -1448,10 +1436,8 @@ struct Context<'w, 'a> {
     modules: Lazy<BTreeMap<u64, Vec<&'a [u8]>>>,
     /// Ships to their task forces.
     ships: Lazy<BTreeMap<u64, &'a TaskForceRow>>,
-    /// Units a live raid holds (`CRaidInstance+0xC8`) and ships a live raid
-    /// launches from (`CRaidSource+0x10`): `AssignUnit@140FDA400` and
-    /// `SetSource@140FDA3B0` write the back-references with them and
-    /// `End@140FD7600` clears both.
+    /// Units held by a live raid and ships from which it launches. Assignment
+    /// and source changes set matching back-references; ending clears both.
     held: Lazy<(BTreeSet<u64>, BTreeSet<u64>)>,
     /// Our nukes of each type, and our stockpile's archetype totals.
     nukes: Lazy<[Option<&'a NukeRow>; 2]>,
@@ -1697,12 +1683,10 @@ impl<'w, 'a> Context<'w, 'a> {
 
     // --- Resources ---------------------------------------------------------
 
-    /// `HasPreparationResources@140A8D610`.
     fn resources(&self, kind: &RaidType) -> Eval {
         self.command_power(kind).and(|| self.equipment(kind))
     }
 
-    /// `CCountry::CanAffordCommandPower@1406F0380(country, cost, true)`.
     fn command_power(&self, kind: &RaidType) -> Eval {
         let cost = kind.command_power_raw;
         if self.country.command_power_raw < cost {
@@ -1730,7 +1714,6 @@ impl<'w, 'a> Context<'w, 'a> {
         Eval::from_bool(capacity >= cost)
     }
 
-    /// `HasEssentialEquipmentInStockpile@140A8C760`.
     fn equipment(&self, kind: &RaidType) -> Eval {
         let mut result = self.nukes(kind);
         // The native map keeps the last amount of a repeated key.
@@ -1815,7 +1798,7 @@ impl<'w, 'a> Context<'w, 'a> {
         Ok(have.max(self.convoys()?))
     }
 
-    /// `CConvoys::GetAvailableCountForPriority@14100C970` at `NAVAL_INVASION_PRIORITY`.
+    /// Available convoys at `NAVAL_INVASION_PRIORITY`.
     fn convoys(&self) -> Result<i32, String> {
         let cache = self
             .country
@@ -1887,9 +1870,8 @@ impl<'w, 'a> Context<'w, 'a> {
         }))
     }
 
-    /// The type's units (`CollectCountryRaidUnits@140E6E160`): the country's
-    /// divisions, then wings, not held by a raid that some requirement block
-    /// admits, each with whether that is proved.
+    /// The type's units: country divisions, then wings, not held by a raid and
+    /// admitted by some requirement block, each with whether that is proved.
     fn units(&self, kind: &RaidType) -> Result<Vec<(Unit<'a>, Eval)>, String> {
         let mut out = Vec::new();
         if kind.unit_requirements.is_empty() {
@@ -1919,7 +1901,6 @@ impl<'w, 'a> Context<'w, 'a> {
         Ok(out)
     }
 
-    /// `CRaidType::UnitMatchesRequirements@140A8DC90`.
     fn admits(&self, kind: &RaidType, unit: Unit<'a>) -> Eval {
         let mut result = Eval::False;
         for block in &kind.unit_requirements {
@@ -1931,7 +1912,6 @@ impl<'w, 'a> Context<'w, 'a> {
         result
     }
 
-    /// `SUnitRequirement::Matches@14157B050`.
     fn block_admits(&self, block: &UnitRequirement, unit: Unit<'a>) -> Eval {
         let mut result = Eval::True;
         if !block.battalions.is_empty() {
@@ -1952,8 +1932,7 @@ impl<'w, 'a> Context<'w, 'a> {
         result
     }
 
-    /// The standard template's subunit counts (`CDivisionTemplateData+0xA8`,
-    /// grouped over the three grids by `RecalculateDerivedStats@140B94FA0`).
+    /// Standard-template sub-unit counts grouped over the three grids.
     fn battalions(&self, block: &UnitRequirement, division: &DivisionRow) -> Eval {
         let template = match self.template(division.template) {
             Ok(Some(template)) => template,
@@ -2027,9 +2006,7 @@ impl<'w, 'a> Context<'w, 'a> {
         })
     }
 
-    /// `SEquipmentRequirement::MatchesPool@14157D040` on a unit's pool. The
-    /// pool's archetype totals (its first array) are sums of its variants, as
-    /// `CEquipmentVariantPool::AddVariantQuantity@140FF7A30` keeps them.
+    /// A unit pool's archetype totals are sums of its variants in the first array.
     fn pool_matches(
         &self,
         requirement: &EquipmentRequirement,
@@ -2119,7 +2096,6 @@ impl<'w, 'a> Context<'w, 'a> {
 
     // --- Range -------------------------------------------------------------
 
-    /// `GetRaidUnitRangeLimit@141453E10`.
     fn limit(&self, kind: &RaidType, unit: Unit<'a>) -> Result<Limit, String> {
         let factor = kind.range_factor_raw.wrapping_add(100_000);
         let scale = self.assets.defines.map_scale;
@@ -2163,7 +2139,6 @@ impl<'w, 'a> Context<'w, 'a> {
         Ok(None)
     }
 
-    /// `CAirWing::GetModifiedMapRange@140F49440`.
     fn wing_range(&self, wing: &AirWingRow) -> Result<i64, String> {
         air_range::wing_range(wing, self.range_defines(), self)
     }
@@ -2177,8 +2152,8 @@ impl<'w, 'a> Context<'w, 'a> {
         }
     }
 
-    /// The best stockpiled transport plane (`GetVariantMapRange@1415A1530`),
-    /// from the daily stockpile and variant tables, once per country and hour.
+    /// Best stockpiled transport plane from daily stockpile and variant tables,
+    /// once per country and hour.
     fn transport_range(&self) -> Result<Option<i64>, String> {
         lazy(&self.transport, || {
             let definitions = self.definitions()?;
@@ -2197,7 +2172,7 @@ impl<'w, 'a> Context<'w, 'a> {
             if transports.is_empty() {
                 return Ok(None);
             }
-            // `GetVariantMapRange@1415A1530` reads the first stat, the range.
+            // Read the first stat, range.
             let mut stats = BTreeMap::new();
             for row in table::<tables::VariantStats>(self.world)? {
                 if transports.contains(&row.variant) {
@@ -2221,7 +2196,6 @@ impl<'w, 'a> Context<'w, 'a> {
         .copied()
     }
 
-    /// `CCountry::IsAIControlledOrOverride@1406F3240`.
     fn ai_controlled(&self) -> Eval {
         let features = match table::<tables::SimulationFeatures>(self.world) {
             Ok(rows) => rows,
@@ -2234,7 +2208,6 @@ impl<'w, 'a> Context<'w, 'a> {
             Ok(inputs) => inputs,
             Err(reason) => return Eval::unknown(reason),
         };
-        // `CGameState::IsCountryAIControlled@1401E1FE0`.
         match inputs.autonomous {
             Some(flag) => {
                 let humans = match table::<tables::HumanControllers>(self.world) {
@@ -2315,9 +2288,9 @@ impl<'w, 'a> Context<'w, 'a> {
         Ok(states)
     }
 
-    /// CNavalBase::GetProvince@140E91030 uses 1401C9D30's signed-positive
-    /// provider. The complete hourly census proves a positive slot absent;
-    /// a partial census never proves null. Neither branch selects province0.
+    /// Resolve the base province through a signed-positive provider. A complete
+    /// hourly census proves a positive slot absent; a partial census cannot prove
+    /// null. Neither branch selects province zero.
     fn reserved_base_province(&self, stored: u32) -> Result<u32, String> {
         if (stored as i32) <= 0 {
             return Ok(0);
@@ -2357,9 +2330,8 @@ impl<'w, 'a> Context<'w, 'a> {
                     valid: Eval::True,
                     unknown: None,
                 },
-                // Distance and division reach do not read the source's raw
-                // holder country (141581090, 141453C20). Keep its recorded
-                // bits in the packet without demanding CountryLinks here.
+                // Distance and division reach do not read the source's raw holder country.
+                // Keep its recorded bits without demanding CountryLinks here.
                 Ok(province) => path_source(2, province),
                 Err(reason) => Source::unknown(reason),
             };
@@ -2389,8 +2361,7 @@ impl<'w, 'a> Context<'w, 'a> {
         let has = |source| kind.starting_point.types.contains(&source);
         let bases = self.bases()?;
         for site in self.air_sites()? {
-            // `VisitAirSitesForSource@140E6CF80`: list0 holds air bases and
-            // carriers, list1 rocket sites and submarines.
+            // List 0 holds air bases and carriers; list 1 holds rocket sites and submarines.
             let wanted = |stated: bool| match (site.list, stated) {
                 (0, true) => has(SourceKind::AirBase),
                 (0, false) => has(SourceKind::Carrier),
@@ -2513,7 +2484,7 @@ impl<'w, 'a> Context<'w, 'a> {
         true
     }
 
-    /// `ForEachStartingPoint@140E6DA70`'s sources in its order.
+    /// Enumerate sources in their stored order.
     fn sources(&self, kind: &RaidType) -> Result<Vec<Source<'a>>, String> {
         let has = |source| kind.starting_point.types.contains(&source);
         let mut out = Vec::new();
@@ -2523,8 +2494,8 @@ impl<'w, 'a> Context<'w, 'a> {
                 true
             })?;
         }
-        // Native member enumeration is reached only for naval sources or
-        // authored faction building sources (ForEachStartingPoint@140E6DA70).
+        // Enumerate faction members only for naval sources or authored faction
+        // building sources.
         let faction = if has(SourceKind::NavalBase)
             || (!kind.starting_point.building_types.is_empty()
                 && kind.starting_point.allow_faction_buildings)
@@ -2578,11 +2549,10 @@ impl<'w, 'a> Context<'w, 'a> {
         Ok(out)
     }
 
-    /// `VisitBuildingSources@140E70210`: province buildings of owned states,
-    /// of the faction's members when the type allows. With `indexed`, a state
-    /// whose provinces are the content's gives its wanted buildings from the
-    /// content-ordered building index, without a look at its other provinces;
-    /// whether its provinces are the content's is checked once per hour.
+    /// Province buildings of owned states, or faction members' states when the
+    /// type allows. With `indexed`, states whose provinces match content supply
+    /// wanted buildings through the content-ordered index without scanning other
+    /// provinces. Check that province match once per hour.
     fn building_sources(
         &self,
         kind: &RaidType,
@@ -2709,8 +2679,8 @@ impl<'w, 'a> Context<'w, 'a> {
                         continue;
                     }
                 }
-                // Its runtime province list (`CState+0x18`) is the content's:
-                // its sources are its wanted buildings in content order.
+                // The runtime province list matches the content's; its sources are
+                // its wanted buildings in content order.
                 if indexed && orderly(state) {
                     let mut listed = buildings
                         .by_state
@@ -2864,8 +2834,7 @@ impl<'w, 'a> Context<'w, 'a> {
         crate::map::memo::TableKey::of(self.world.frame(), tables)
     }
 
-    /// The country's faction members in faction order, when it has a faction
-    /// (`CDiplomacyStatus+0x290`, members at `+0x58`).
+    /// The country's faction members in faction order, when it has a faction.
     fn faction(&self) -> Result<&LaunchMembers, String> {
         lazy(&self.faction, || {
             let members = table::<tables::FactionMembers>(self.world)?;
@@ -2914,8 +2883,8 @@ impl<'w, 'a> Context<'w, 'a> {
 
     /// An air site source: its province and validity.
     fn air_source(&self, base: &'a AirBaseRow, capacity: Option<i64>) -> Source<'a> {
-        // `CRaidSource::GetProvince@141581650`: the base province, or a host
-        // ship's task force location, zero when the ship is gone.
+        // Use the base province or host ship's task-force location; zero when the
+        // ship is gone.
         let province = if base.state.is_some() {
             base.province
                 .ok_or_else(|| "an air site has no recorded province".to_owned())
@@ -2923,7 +2892,6 @@ impl<'w, 'a> Context<'w, 'a> {
             self.ships()
                 .map(|ships| ships.get(&base.host).map_or(0, |force| force.province))
         };
-        // `CRaidSource::IsHostShipFree@141580F50`.
         let valid = match self.held() {
             _ if base.state.is_some() => Eval::True,
             Ok((_, busy_ships)) => Eval::from_bool(!busy_ships.contains(&base.host)),
@@ -2938,8 +2906,7 @@ impl<'w, 'a> Context<'w, 'a> {
         }
     }
 
-    /// `CanRaidUnitReachSource@141453C20`'s wing arm: the wing is at the site,
-    /// or `CAirWing::air_base_admission@140F47D60` admits it there.
+    /// A wing reaches a source when already at the site or admitted to its air base.
     fn wing_reaches(&self, wing: &AirWingRow, site: &AirBaseRow, capacity: Option<i64>) -> Eval {
         let bases = match self.bases() {
             Ok(bases) => bases,
@@ -2953,14 +2920,14 @@ impl<'w, 'a> Context<'w, 'a> {
         if current == site.id {
             return Eval::True;
         }
-        // `CAirBase::has_access@140C47CC0` for the pool's country.
+        // Require air-base access for the pool's country.
         let Some(capacity) = capacity else {
             return Eval::False;
         };
         let Some(pool) = bases.get(&wing.air_base) else {
             return Eval::unknown("a wing's pool base is not in AirBases");
         };
-        // pool's own base refuses.
+        // Refuse a rocket site on either side, a gun site, or the pool's own base.
         if [site.kind, pool.kind]
             .iter()
             .any(|&kind| kind == 1 || kind == 2)
@@ -2968,7 +2935,6 @@ impl<'w, 'a> Context<'w, 'a> {
         {
             return Eval::False;
         }
-        // `CAirBase::CanRegisterCountryPool@140C4BA80`.
         if capacity <= 0 {
             return Eval::False;
         }
@@ -3025,8 +2991,7 @@ impl<'w, 'a> Context<'w, 'a> {
         }
     }
 
-    /// `CAirBase::GetControllerTag@140C448F0`: the base province's controller,
-    /// or the host ship's owner.
+    /// Base province controller, or host ship owner.
     fn controller(&self, base: &AirBaseRow) -> Result<Option<u32>, String> {
         if base.state.is_some() {
             let province = base
@@ -3081,7 +3046,7 @@ fn described(sources: &[Source<'_>]) -> Vec<String> {
         .collect()
 }
 
-/// A naval-base or building source (`CRaidSource` kinds 2 and 5).
+/// A naval-base or building source (kinds 2 and 5).
 fn path_source<'a>(kind: u8, province: u32) -> Source<'a> {
     Source {
         province: Ok(province),

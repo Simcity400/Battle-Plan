@@ -1,4 +1,4 @@
-//! Derive research speed from recorded EC1810 operands, never staggered tables.
+//! Derive research speed from recorded hourly operands, never staggered tables.
 use crate::{ResearchModifier, ResearchModifierSource, ResearchModifiers};
 use replay::rows::{ResearchInputRow, ResearchModifierRow as R};
 
@@ -247,7 +247,7 @@ fn source(row: &R, raw: String) -> ResearchModifierSource {
     }
 }
 
-/// EC1810/ABE4C0/ABEBF0: integer days, half-away rounding of reduced years,
+/// Integer days, half-away rounding of reduced years,
 /// then denominator penalty and minimum clamp. Positive fixed5 is faster.
 pub(super) fn rate(modifiers: &ResearchModifiers, reduction: i64, hour: i32) -> Option<i128> {
     let reduction = i128::from(reduction) * 365;

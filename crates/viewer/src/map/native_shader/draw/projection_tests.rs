@@ -1,7 +1,7 @@
 use super::*;
 
-/// A text projects through the GUI viewport, or through its font's when a component wrote
-/// it: `2.0f / (float)font+0x50` exactly (`CBitmapFont::draw@14228B2F0`), then (-1, +1).
+/// Text projects through the GUI viewport, or the font's viewport when a
+/// component set it, using 2.0 divided by each viewport axis, then the (-1, +1) offset.
 #[test]
 fn a_written_font_viewport_is_the_compiled_projection() {
     let program = installed_content::pdxshader::program::read_with(b"t.lua", &|_| None).unwrap();
@@ -33,6 +33,6 @@ fn a_written_font_viewport_is_the_compiled_projection() {
     assert_eq!((plain[0], plain[5]), (2. / 800., 2. / 600.));
     assert_eq!((written[0], written[5]), (2. / 333., 2. / 600.));
     assert_eq!(written[12..14], [-1., 1.]);
-    // 1422206C0: the logical extent is truncated.
+    // the logical extent is truncated.
     assert_eq!(gui_viewport([1366, 768], 1.25), [1092, 614]);
 }

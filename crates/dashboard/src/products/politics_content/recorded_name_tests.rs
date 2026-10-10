@@ -15,7 +15,7 @@ fn a_saved_name_is_localised_scoped_or_literal_as_recorded() {
         name("MOD_advisor"),
         RecordedName::Named("Current Name".into())
     );
-    // Character names are plain (140FB5FD0): brackets are glyphs.
+    // Character names are plain: brackets are glyphs.
     assert_eq!(
         name("SCOPED_NAME"),
         RecordedName::Named("[ROOT.GetLeader]".into())
@@ -27,11 +27,11 @@ fn a_saved_name_is_localised_scoped_or_literal_as_recorded() {
             "localisation GAP_NAME holds the control byte 0x14 (an authored `¤`), which plain text cannot show".into()
         )
     );
-    // A nested key the content lacks writes nothing (142230940).
+    // A nested key the content lacks writes nothing.
     assert_eq!(name("BROKEN_NAME"), RecordedName::Named(String::new()));
     assert_eq!(name("Álex Reed"), RecordedName::Named("Álex Reed".into()));
     // A saved name equal to the script token is localised the same way:
-    // one the content does not define is its own bytes (140FB5FD0).
+    // one the content does not define is its own bytes.
     assert_eq!(name("MOD_other"), RecordedName::Named("MOD_other".into()));
     assert_eq!(name(""), RecordedName::None);
 }

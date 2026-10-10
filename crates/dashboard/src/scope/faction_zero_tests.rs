@@ -33,7 +33,7 @@ fn raw_zero_first_member_clears_only_the_event_selector() {
     assert_eq!(scopes.slot(0), None);
     assert_eq!(scopes.faction_leader_raw(1), Ok(Some(0)));
     assert_eq!(scopes.raw_slot(0), Ok(0));
-    // Scalar consumers retain their separate unported raw-zero disposition.
+    // Scalar consumers retain their separate unsupported raw-zero disposition.
     assert!(
         scopes
             .faction_leader(1)

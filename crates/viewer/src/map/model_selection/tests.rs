@@ -35,6 +35,8 @@ fn from_documents(documents: &[&[u8]]) -> Content {
 
 #[test]
 fn an_archetype_lists_the_subunits_needing_it_in_database_order() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content =
         content_with(b"sub_units = { militia = { type = infantry need = { rifles_1 = 5 } } }");
     let keys = |key: &str| -> Vec<String> {
@@ -54,10 +56,12 @@ fn an_archetype_lists_the_subunits_needing_it_in_database_order() {
     assert!(content.archetype_subunits("zeppelins").is_err());
 }
 
-/// 140FFC070 reports and drops a `need` entry naming no equipment; the
+/// The game reports and drops a `need` entry naming no equipment; the
 /// sub-unit keeps its other needs.
 #[test]
 fn a_need_naming_no_equipment_is_dropped() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = content_with(
         b"sub_units = { police = { type = infantry need = { motorbikes = 20 rifles_1 = 5 } } }",
     );
@@ -137,6 +141,8 @@ fn variants() -> BTreeMap<u64, &'static VariantDefinitionRow> {
 
 #[test]
 fn equipment_types_resolve_their_token_under_the_lexers_fold() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let authored = content();
     let names = names();
     let variant = |equipment_token| VariantDefinitionRow {
@@ -159,7 +165,7 @@ fn equipment_types_resolve_their_token_under_the_lexers_fold() {
         "variant 1 equipment type: token 105 is not in LexicalTokens"
     );
     // A later key equal under the fold redefines the same type
-    // (1409E5170 finds it by hash_name and `_stricmp`), which keeps its
+    // (lookup uses its hash and case-insensitive name), which keeps its
     // first spelling.
     let redefined = content_with(b"equipments = { Tanks_1 = { archetype = rifles } }");
     assert_eq!(
@@ -171,6 +177,8 @@ fn equipment_types_resolve_their_token_under_the_lexers_fold() {
 
 #[test]
 fn an_unnamed_candidate_refuses_the_pair_instead_of_ranking_the_next() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = content();
     let template = content
         .template(&row((2, 0), &[(2, 0, 1), (1, 0, 1)]), &sources(&[]))
@@ -259,6 +267,8 @@ fn sub_units_come_from_the_direct_unit_files_in_path_byte_order() {
 
 #[test]
 fn duplicate_archetypes_copy_model_inputs_and_remap_the_parent_chain() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = from_documents(&[br#"
         equipment_modules = { turret = { add_equipment_type = artillery } }
         equipments = {
@@ -317,6 +327,8 @@ fn duplicate_archetypes_copy_model_inputs_and_remap_the_parent_chain() {
 
 #[test]
 fn enabled_module_slots_follow_copied_slots_and_effective_category() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = from_documents(&[br#"
         equipments = {
             tanks = { is_archetype = yes type = armor
@@ -352,6 +364,8 @@ fn enabled_module_slots_follow_copied_slots_and_effective_category() {
 
 #[test]
 fn requirement_aliases_overwrite_in_source_order_after_archetype_resolution() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = content_with(
         b"sub_units = { aliases = { need = { rifles = 1 tanks = 9 rifles_1 = 2 rifles = 3 } } }",
     );
@@ -371,6 +385,8 @@ fn requirement_aliases_overwrite_in_source_order_after_archetype_resolution() {
 
 #[test]
 fn without_a_category_the_representative_largest_need_filters_by_quantity_then_order() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = content();
     let template = content
         .template(&row((2, 0), &[(2, 0, 1), (1, 0, 1)]), &sources(&[]))
@@ -403,6 +419,8 @@ fn without_a_category_the_representative_largest_need_filters_by_quantity_then_o
 
 #[test]
 fn a_category_scores_the_stored_groups_and_skips_excluded_variants() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = content();
     let template = content
         .template(&row((3, 0), &[(2, 0, 1), (1, 0, 2)]), &sources(&[]))
@@ -443,6 +461,8 @@ fn a_category_scores_the_stored_groups_and_skips_excluded_variants() {
 
 #[test]
 fn local_clones_group_apart_and_take_their_recorded_requirements() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = content();
     // Local infantry needs tanks, not rifles.
     let local = sources(&[((7, 1), vec![(5, 200_000)])]);
@@ -492,6 +512,8 @@ fn local_clones_group_apart_and_take_their_recorded_requirements() {
 
 #[test]
 fn sub_unit_and_requirement_tokens_resolve_under_the_lexers_fold() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = content();
     // The hour spells each token as the lexer first saw it, which may
     // differ in ASCII case from the authored key.
@@ -543,7 +565,6 @@ fn sub_unit_and_requirement_tokens_resolve_under_the_lexers_fold() {
     );
     // Two authored sub-unit keys equal under the fold are refused by
     // name; two equipment keys are one type, the later redefining it
-    // (1409E5170).
     let ambiguous = content_with(
         br#"
         sub_units = { ARMOR = { type = armor need = { tanks = 50 } } }
@@ -620,6 +641,8 @@ fn sub_unit_keys_come_from_the_effective_direct_unit_files() {
 
 #[test]
 fn country_override_requires_exact_category_and_signed_positive_origin() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = content();
     let subunit = content.subunit("armor").unwrap();
     let mut variant = VariantDefinitionRow {

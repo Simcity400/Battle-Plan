@@ -1,7 +1,7 @@
 //! Cross-ship effects, separate from ordinary state particle events.
 //!
-//! `14164F560` copies the normal attack/defend list once; `1416541B0`
-//! compares its times with the current clip phase, even after damage. Target
+//! Copy the normal attack/defend list once; impact events
+//! compare their times with the current clip phase, even after damage. Target
 //! choices and actor clocks belong to this viewer, never to the recording.
 
 use std::sync::Arc;
@@ -23,7 +23,7 @@ pub struct Info {
 
 impl Info {
     pub fn new(rig: Arc<Rig>, palette: Arc<Vec<PaletteJoint>>, normal_state: &str) -> Self {
-        // 14227E790 walks compiled states by hash and returns the first match,
+        // The game walks compiled states by hash and returns the first match,
         // independently of the animation player's weighted variant choice.
         let timings = rig.nodes.first().map_or_else(
             || Err("naval impact hull has no root actor".to_owned()),
@@ -140,7 +140,7 @@ pub struct TargetView<'a> {
     pub tracker: &'a Tracker,
 }
 
-/// `141652E50`: choose among the opposite side's surviving actors in slot
+/// Choose among the opposite side's surviving actors in slot
 /// order, then choose its hit/miss locator and a registered big effect.
 /// The history supplies the new effect's incarnation and animation seed.
 pub fn choose(
@@ -190,9 +190,9 @@ pub fn choose(
     Ok(Some((mesh, effect_instance(matrix, root_scale, animation))))
 }
 
-/// Native cleanup (`1416537D0`) subtracts the stored double birth timestamp
-/// before comparing the raw float duration. Impacts store birth = now +10
-/// (`141652E50`); detached hull roots store now.
+/// Native cleanup subtracts the stored double birth timestamp
+/// before comparing the raw float duration. Impact birth timestamps are ten
+/// seconds ahead of creation time; detached hull roots store creation time.
 pub fn expired(now: f64, birth: f64, death_time: f32) -> bool {
     f64::from(death_time) < now - birth
 }
@@ -226,7 +226,7 @@ fn contiguous_locators(rig: &Rig, prefix: &str) -> Result<Vec<String>, String> {
         .and_then(|root| root.native.as_ref())
         .ok_or("naval impact hull has no native root source")?;
     let mut names = Vec::new();
-    // 141651610 starts at 1 and stops at the first missing name. Successful
+    // The game starts at 1 and stops at the first missing name. Successful
     // iterations are bounded by the finite locator/joint names in this rig.
     for number in 1.. {
         let name = format!("{prefix}{number}");
@@ -238,7 +238,7 @@ fn contiguous_locators(rig: &Rig, prefix: &str) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
-/// Shared root-actor locator resolution (`14227AB70` / `14227AC70`). The
+/// Shared root-actor locator resolution. The
 /// caller has evaluated the player and passes its current native actor poses.
 pub(super) fn locator_matrix(
     rig: &Rig,
@@ -306,7 +306,7 @@ fn matrix(transform: Transform) -> Matrix {
 }
 
 fn effect_instance(matrix: Matrix, root_scale: f32, animation: u32) -> ModelInstance {
-    // 1424E7450 scales the basis again and leaves world translation unchanged.
+    // The game scales the basis again and leaves world translation unchanged.
     ModelInstance {
         position: matrix[3][..3].try_into().unwrap(),
         scale: 1.0,
@@ -314,7 +314,7 @@ fn effect_instance(matrix: Matrix, root_scale: f32, animation: u32) -> ModelInst
         native_basis: std::array::from_fn(|axis| {
             std::array::from_fn(|component| matrix[axis][component] * root_scale)
         }),
-        // The factory uses the definition's default state (142273FB0),
+        // The factory uses the definition's default state,
         // which the caller resolved from this effect's baked rig.
         animation,
         ..ModelInstance::default()

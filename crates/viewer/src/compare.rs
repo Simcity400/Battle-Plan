@@ -1,7 +1,7 @@
 //! Scoring for reference pairs: the metrics, masks and difference image behind `--compare`.
 //!
 //! A reference pair is a game screenshot and the viewer's render of the same hour and camera
-//! ([archived rendering notes](#) section 2). This module turns such a pair into numbers: mean absolute error
+//! position. This module turns such a pair into numbers: mean absolute error
 //! in gamma space, a luminance SSIM on a three level pyramid, and a mean CIE76 colour distance,
 //! reported once for the frame and once per cell of a region grid so a worker can see which part
 //! of the frame is wrong. Everything here is a pure function over decoded images except
@@ -18,35 +18,23 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// Width of the game screenshots the 2560x1440 exclusion set was measured on.
+/// Width supported by the standard interface exclusion set.
 pub const GAME_UI_WIDTH: u32 = 2560;
-/// Height of the game screenshots both built-in exclusion sets were measured on.
+/// Height supported by both built-in interface exclusion sets.
 pub const GAME_UI_HEIGHT: u32 = 1440;
-/// Width of the ultrawide game screenshots the second exclusion set was measured on.
+/// Width supported by the ultrawide interface exclusion set.
 pub const GAME_UI_WIDE_WIDTH: u32 = 3440;
 
 /// The game's interface regions at 2560x1440, excluded by `--exclude-game-ui`.
 ///
-/// These are measured on `captures\m21_takeover_20260913\array_loaded.png`
-/// (the game at 19:00 23 Aug 1943 on the load camera), not estimated:
+/// These regions exclude the fixed interface at the supported frame size:
 ///
-/// - Top bar `0,0 2560x100`. Sampling every 128th column, the last row of the dark top chrome is
-///   row 99 in every column outside the army group buttons below, and row 100 is already map: the
-///   row mean jumps from `(34, 45, 70)` at row 99 to `(54, 71, 110)` at row 100 and the fraction
-///   of near black pixels in the row falls from 0.48 to 0.12.
-/// - Army group buttons `890,100 190x66`. Three counters hang under the top bar between x 897 and
-///   x 1072 and end at row 165 including their flag strips; the columns at x 896 and x 1024 carry
-///   dark chrome down to rows 178 and 153 where every other sampled column stops at row 99.
-/// - Right side panels `2440,980 120x460`. The map mode compass, the map mode buttons, the right
-///   edge strip and the bottom right button block. The fraction of near black pixels over
-///   x 2440..2560 is 0.05 at row 972 and 0.52 at row 988, and over y 985..1440 it is 0.10 at
-///   x 2432 against 0.22 at x 2440.
-/// - Bottom centre portraits `1186,1286 216x154`. The two leader cards with their tab and banner,
-///   measured on a pixel grid as x 1188..1400 and y 1288..1440, rounded outwards by two pixels.
+/// - Top bar `0,0 2560x100`.
+/// - Army group buttons `890,100 190x66`, including their flag strips.
+/// - Right side panels `2440,980 120x460`, including map mode controls and the bottom button block.
+/// - Bottom centre portraits `1186,1286 216x154`, including their tabs and banners.
 ///
-/// The Windows "Device Setup" toast at roughly `2100,1150 440x220` in that screenshot is an
-/// operating system overlay rather than game interface, so it is not part of this set; exclude it
-/// with `--exclude 2100,1150,440,220` when comparing against that capture.
+/// Operating system overlays require additional rectangles supplied through `--exclude`.
 pub const GAME_UI_EXCLUSIONS: [Rect; 4] = [
     Rect {
         x: 0,
@@ -77,8 +65,7 @@ pub const GAME_UI_EXCLUSIONS: [Rect; 4] = [
 /// The game's interface regions at 3440x1440 (the same 1.25 interface scale on an ultrawide
 /// window), excluded by `--exclude-game-ui`.
 ///
-/// Measured on the 24 GER frames of `captures\political_live\part-A` (12:00-13:00
-/// 24 Oct 1943, cameras from the far map to close zoom): the interface is every pixel whose
+/// Across changing map views, the interface consists of pixels whose
 /// luminance varies by at most 6 across those different map views, and each box is that static
 /// region rounded outwards by two pixels:
 ///
@@ -122,7 +109,7 @@ pub const GAME_UI_WIDE_EXCLUSIONS: [Rect; 5] = [
     },
 ];
 
-/// The measured interface rectangles for a game screenshot of this size, if one was measured.
+/// The interface exclusion rectangles for a supported game screenshot size.
 pub fn game_ui_exclusions(width: u32, height: u32) -> Option<&'static [Rect]> {
     match (width, height) {
         (GAME_UI_WIDTH, GAME_UI_HEIGHT) => Some(&GAME_UI_EXCLUSIONS),
@@ -206,9 +193,7 @@ impl Image {
 
 /// Bilinearly resamples an image by `factor`.
 ///
-/// The reference screenshots are 2560x1440 bilinear upscales of the game's
-/// 2048x1152 frame (R1 section 0), so the viewer renders at the native size and
-/// this puts its frame in the screenshot's pixel space before scoring. Pixel
+/// Use this to align the viewer frame with a larger screenshot before scoring. Pixel
 /// centres are aligned: destination pixel `i` samples source coordinate
 /// `(i + 0.5) / factor - 0.5`, clamped at the edges.
 pub fn upscale(image: &Image, factor: f64) -> io::Result<Image> {

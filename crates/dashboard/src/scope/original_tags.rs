@@ -1,5 +1,5 @@
-//! Exact hourly CGameState original-tag buckets (+0x988) and physical country
-//! array (+0x310). SetOriginalTag can reorder a bucket without changing final
+//! Exact hourly original-tag buckets and physical country-array order.
+//! Changing an original tag can reorder a bucket without changing final
 //! country operands; canonical country rows cannot reconstruct either list.
 
 use replay::{
@@ -47,7 +47,7 @@ impl OriginalTagLists {
             .original_tag_buckets
             .require("ReservedCountryNaming.original_tag_buckets")?
             .as_ref()
-            .ok_or("ReservedCountryNaming.original_tag_buckets capture refused (1401DB900)")?;
+            .ok_or("ReservedCountryNaming.original_tag_buckets capture refused")?;
         buckets
             .get(canonical as usize)
             .map(Vec::as_slice)
@@ -58,34 +58,30 @@ impl OriginalTagLists {
             })
     }
 
-    /// Reserved country +0x484, demanded independently of the list payloads.
+    /// Reserved country owned state count, demanded independently of the lists.
     pub(crate) fn reserved_owned_states(&self) -> Result<i32, String> {
         self.row()?
             .owned_state_count
             .require("ReservedCountryNaming.owned_state_count")?
-            .ok_or_else(|| {
-                "ReservedCountryNaming.owned_state_count capture refused (CCountry+0x484)".into()
-            })
+            .ok_or_else(|| "ReservedCountryNaming.owned_state_count capture refused".into())
     }
 
-    /// Actual reserved country +0x290: native null is None, not a missing read.
+    /// Actual reserved country faction: null is None, not a missing read.
     pub(crate) fn reserved_faction(&self) -> Result<Option<u64>, String> {
         self.row()?
             .faction
             .require("ReservedCountryNaming.faction")?
-            .ok_or_else(|| {
-                "ReservedCountryNaming.faction capture refused (CDiplomacyStatus+0x290)".into()
-            })
+            .ok_or_else(|| "ReservedCountryNaming.faction capture refused".into())
             .map(|faction| (faction != 0).then_some(faction))
     }
 
-    /// Physical CGameState country-array order, including aliases and zero.
+    /// Physical country-array order, including aliases and zero.
     pub fn country_array(&self) -> Result<&[u32], String> {
         self.row()?
             .country_array
             .require("ReservedCountryNaming.country_array")?
             .as_deref()
-            .ok_or_else(|| "ReservedCountryNaming.country_array capture refused (1407141F0)".into())
+            .ok_or_else(|| "ReservedCountryNaming.country_array capture refused".into())
     }
 
     /// Read requested snapshots independently; no earlier-hour reconstruction

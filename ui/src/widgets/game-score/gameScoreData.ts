@@ -221,7 +221,7 @@ export function gameScoreRace(rows: readonly ScoreRow[], split: boolean): Countr
       ? BAR_PARTS.map(id => ({ id, raw: BigInt(row.cells[id].raw!) })) : null;
     const sum = parts?.reduce((sum, part) => sum + part.raw, 0n) ?? 0n;
     return { tag: row.tag, entityKey: row.key, hour: row.hour, value: total, label: formatScore(row.cells.total.raw), stretch: row.stretch,
-      // Total@1406D90B6 applies its multiplier and truncation after summing.
+      // Total score applies its multiplier and truncation after summing.
       // Only plot widths scale to that recorded result; raw part cells stay exact.
       ...(parts ? { parts: parts.map(part => ({ id: part.id,
         value: sum === 0n ? 0 : total * (Number(part.raw) / Number(sum)) })) } : {}),

@@ -1,12 +1,12 @@
-//! Selected-unit ribbons from `CArrowObject::Build@1422BEEB0`.
+//! Selected-unit ribbons.
 //!
-//! The caller supplies the flat, unwrapped movement controls. The native sharp-turn
-//! smoother is shared with raid arrows; the Catmull-Rom evaluator is shared with
-//! the movement animator. `1422BE7E0` emits a triangle strip with 32-byte vertices.
+//! The caller supplies the flat, unwrapped movement controls. The sharp-turn
+//! smoother is shared with raid arrows; the Catmull-Rom evaluator is shared
+//! with the movement animator. Output is a triangle strip with 32-byte vertices.
 
 use super::super::{borders::HeightField, counter_move, raids::arrows::smooth_sharp_turns};
 
-/// `1422BF160`: position at 0, lateral/arc UV at 12, forward tangent at 20.
+/// Position at byte 0, lateral/arc UV at 12, forward tangent at 20.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
@@ -18,17 +18,18 @@ pub struct Vertex {
 #[derive(Clone, Debug, Default)]
 pub struct Strip {
     pub vertices: Vec<Vertex>,
-    /// `1422BEEB0`: bounds of the smoothed controls, before height sampling or ribbon width.
+    /// Bounds of the smoothed controls, before height sampling or ribbon width.
     pub bounds: [[f32; 3]; 2],
-    /// The terminal vertex's arc UV, stored by `1422BE7E0` at arrow +0x98.
+    /// The terminal vertex's arc UV.
     pub length: f32,
 }
 
+/// Samples per spline interval for the supported executable.
 const SUBDIVISIONS: usize = 20;
 
-/// `1422BEEB0` smooths at the authored `size`; `1422BE7E0` passes twice that
-/// size as the ribbon's half-width to `1422BF160`. No terrain lift is added:
-/// `1416311F0` tail-calls `140A51F30(x, z, true)`.
+/// Smooth at the authored `size`, then use twice that size as the ribbon's
+/// half-width. Add no terrain lift: the height callback uses the sea-clamped
+/// terrain sample.
 pub fn build(controls: &[[f32; 3]], size: f32, heights: HeightField<'_>) -> Result<Strip, String> {
     if controls.len() < 4 {
         return Ok(Strip::default());
@@ -83,9 +84,9 @@ pub fn build(controls: &[[f32; 3]], size: f32, heights: HeightField<'_>) -> Resu
             // The native chord-length summation is y*y + x*x + z*z.
             let chord = (delta[1] * delta[1] + delta[0] * delta[0] + delta[2] * delta[2]).sqrt();
             let raw_side = normalize([-delta[2], 0.0, delta[0]]);
-            // `1422BF427` tests the control interval, not the sample number:
-            // every sample after the first interval averages the previous RAW
-            // normal with this one, then normalises that average.
+            // Test the control interval, not the sample number: every sample after the
+            // first interval averages the previous raw normal with this one, then
+            // normalizes that average.
             let side = if segment == 0 {
                 raw_side
             } else {
@@ -99,8 +100,7 @@ pub fn build(controls: &[[f32; 3]], size: f32, heights: HeightField<'_>) -> Resu
             let tangent = normalize(delta);
             let advance = 2.0 * chord / width;
             let center = if last {
-                // `1422BF500`: the final backward chord contributes to the
-                // final vertex before emission, rather than after it.
+                // The final backward chord contributes to the final vertex before emission.
                 arc += advance;
                 b
             } else {
@@ -116,7 +116,7 @@ pub fn build(controls: &[[f32; 3]], size: f32, heights: HeightField<'_>) -> Resu
                 center[1] + side[1] * width,
                 center[2] + side[2] * width,
             ];
-            // `1422BF620..64F`: both vertices share the higher terrain height.
+            // Both vertices share the higher terrain height.
             let height = heights
                 .native_height(plus[0], plus[2])
                 .max(heights.native_height(minus[0], minus[2]));
@@ -153,7 +153,7 @@ pub fn build(controls: &[[f32; 3]], size: f32, heights: HeightField<'_>) -> Resu
     })
 }
 
-/// `NormalizeVector3@1424E7120` leaves a zero-length vector unchanged.
+/// Leave a zero-length vector unchanged.
 fn normalize(vector: [f32; 3]) -> [f32; 3] {
     let length = (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt();
     if length != 0.0 {
@@ -181,8 +181,8 @@ mod tests {
 
     #[test]
     fn straight_strip_uses_native_width_uv_order_and_terminal_chord() {
-        // 1422BF18A: 2*(4-3)*20+2 vertices. 1422BF515 and 1422BF693:
-        // the terminal backward chord is added again, reaching (10+0.5)*2/2.
+        // There are 2*(4-3)*20+2 vertices. The terminal backward chord is added
+        // again, reaching (10+0.5)*2/2.
         let strip = build(
             &[
                 [-10.0, 0.0, 0.0],
@@ -210,8 +210,10 @@ mod tests {
 
     #[test]
     fn sharp_turn_preserves_inserted_corner_controls_and_uv_continuity() {
-        // 141CD53A0 inserts each corner a quarter-segment in and pushes
-        // sideways 3*size. This 180-degree turn therefore inserts (7.5,+/-3).
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        // Insert each corner a quarter-segment in and push sideways 3*size.
+        // This 180-degree turn therefore inserts (7.5,+/-3).
         let strip = build(
             &[
                 [-10.0, 0.0, 0.0],
@@ -236,10 +238,9 @@ mod tests {
         assert_eq!(center(40), [10.0, 0.0]);
         assert_eq!(center(60), [7.5, -3.0]);
         assert_eq!(center(80), [0.0, 0.0]);
-        // Scalar-instruction fixtures from 1422BE5D0 and 1422BF427..49F.
-        // Sample 20 averages across intervals; sample 21 proves that the
-        // averaging continues within the second interval, using raw normals.
-        // Preserve the exact scalar-instruction reference literals above.
+        // Sample 20 averages across intervals; sample 21 proves that averaging
+        // continues within the second interval, using raw normals.
+        // Preserve the exact floating-point reference values above.
         #[allow(clippy::excessive_precision)]
         let samples = [
             (20, [7.5101194, 1.0000256], [7.4898806, 4.9999743]),
@@ -272,8 +273,8 @@ mod tests {
 
     #[test]
     fn both_edges_use_the_higher_sampled_terrain_height() {
-        // 1422BF620..64F compares both callback results and writes their max
-        // to both vertices. The lower edge is not allowed to pierce terrain.
+        // Both callback results contribute their maximum to both vertices.
+        // The lower edge is not allowed to pierce terrain.
         let heights = HeightField {
             width: 4,
             height: 4,

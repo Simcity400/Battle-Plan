@@ -5369,7 +5369,7 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
         (carmy_leader::MOVEMENT_MODIFIER, 0x21000),
         (carmy_leader::SEPARATE_HQ_MOVEMENT_MODIFIER, 0x21100),
     ] {
-        // The CModifier's value accumulator sits at +0x10 (C0AB20 callers).
+        // The CModifier's value accumulator sits at +0x10.
         array(b, LEADER + block + 0x10, data, 2);
         p32(b, data, carmy_leader::CANNOT_RETREAT_WHILE_DEFENDING);
         p64(b, data + 8, 1);

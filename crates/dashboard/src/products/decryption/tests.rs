@@ -165,8 +165,8 @@ fn missing_thresholds_retain_amounts_and_count_the_target_once() {
 
 #[test]
 fn signed_division_overflow_retains_amounts_and_counts_the_pair_once() {
-    // cipher_row_bind@141A0EC20 wraps the fixed5 product before signed
-    // division: this numerator is i64::MIN and the threshold is -1.
+    // The fixed5 product wraps before signed division: this numerator is
+    // i64::MIN and the threshold is -1.
     let reply = scan_frames(
         [100, 101]
             .into_iter()

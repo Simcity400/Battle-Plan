@@ -1,5 +1,5 @@
-//! Opinion descriptions: direct files in mode 0 (140A72FE0), wrapped in
-//! `opinion_modifiers` (140A71A60), token-first lookup (140A71060).
+//! Opinion descriptions: direct files in lexer mode 0, wrapped in
+//! `opinion_modifiers`, with token-first lookup.
 
 use crate::{
     ResolvedLayers,
@@ -15,7 +15,7 @@ use std::io;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Opinion {
     pub token: String,
-    /// Localisation key +0x18 (140A71130 / 140A731F0).
+    /// Localisation key.
     pub name: String,
     pub opinion: i16,
     pub trade: bool,
@@ -23,8 +23,8 @@ pub struct Opinion {
 
 #[derive(Default)]
 pub struct Database {
-    /// The normal roster +0x28, with the null object omitted. Target
-    /// overrides use +0x40 and never replace this lookup (140A72E60).
+    /// The normal roster with the null object omitted. Target
+    /// overrides remain separate and never replace this lookup.
     pub definitions: Vec<Opinion>,
     pub notes: Vec<String>,
     gap: Option<String>,
@@ -33,7 +33,7 @@ pub struct Database {
 impl Database {
     pub fn find(&self, name: &str) -> Result<Option<&Opinion>, String> {
         let token = Token::c_str(name.as_bytes());
-        // 140A71060 scans from the first definition and folds by token.
+        // Scan from the first definition and fold by token.
         if let Some(found) = self
             .definitions
             .iter()
@@ -102,7 +102,7 @@ fn parse_with_notes(input: &[u8], bounds: [i16; 2]) -> io::Result<(Vec<Opinion>,
             };
             let (mut min, mut max) = (bounds[0], bounds[1]);
             let mut target = false;
-            // COpinionModifier::vf4 140A731F0, then clamp at 140A71A60.
+            // Read the opinion fields, then clamp the stored value.
             for field in item.value.items().unwrap_or_default() {
                 match field.keyword().map(|key| key.folded()).as_deref() {
                     Some(b"value" | b"min_trust" | b"max_trust") => {
@@ -111,7 +111,7 @@ fn parse_with_notes(input: &[u8], bounds: [i16; 2]) -> io::Result<(Vec<Opinion>,
                             Scanned::NoMatch => 0,
                             Scanned::End => {
                                 return Err(invalid(format!(
-                                    "opinion modifier {}: empty short operand has no stored value (1424B0220)",
+                                    "opinion modifier {}: empty short operand has no stored value",
                                     definition.token
                                 )));
                             }
@@ -141,7 +141,7 @@ fn parse_with_notes(input: &[u8], bounds: [i16; 2]) -> io::Result<(Vec<Opinion>,
                         if target {
                             if definition.token.len() + 7 >= 128 {
                                 return Err(invalid(format!(
-                                    "opinion modifier {}: target name exceeds FormatCString128 (14021F840)",
+                                    "opinion modifier {}: target name exceeds the 128-byte formatting buffer",
                                     definition.token
                                 )));
                             }
@@ -169,7 +169,7 @@ pub fn read(layers: &ResolvedLayers, defines: &crate::defines::Defines) -> io::R
     if paths.is_empty() {
         return Ok(Database::default());
     }
-    // Constructor 140A71130 narrows these stored integer defines to short.
+    // Construction narrows these stored integer defines to a short.
     let bounds = [
         defines.int32("NDiplomacy", "MIN_TRUST_VALUE")? as i16,
         defines.int32("NDiplomacy", "MAX_TRUST_VALUE")? as i16,
@@ -189,7 +189,7 @@ pub fn read(layers: &ResolvedLayers, defines: &crate::defines::Defines) -> io::R
                 database.notes.push(reason.clone());
                 database.gap = Some(reason);
                 // A future definition cannot supersede an unknown first
-                // one (140A71060), so later files remain uncertain too.
+                // one, so later files remain uncertain too.
                 break;
             }
         }

@@ -176,7 +176,7 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
             .collect::<Vec<_>>()
     };
     let types = definitions(&mut writer, TYPES, cequipment_type::VTABLE_RVA, "type");
-    // Each type is its own archetype (`CEquipmentType+0x4D8`), which the
+    // Each type is its own archetype, which the
     // definitions walk authenticates for the archetype token.
     for &equipment in &types {
         writer.u64(equipment + cequipment_type::ARCHETYPE, equipment as u64);

@@ -67,8 +67,8 @@ export function formatFixed(raw: string | bigint, scale: number, digits: number)
   return `${negative && /[1-9]/.test(text) ? '−' : ''}${grouped}${fraction}`;
 }
 
-/** Fixed5ToString's fixed-digit mode (1424B6200 -> 1424B89F0 mode 1).
- * The whole part narrows to i32 through 1424B7A80; fraction digits truncate,
+/** Fixed5 formatting with a fixed number of digits.
+ * The whole part narrows to i32; fraction digits truncate,
  * keep trailing zeros and have no grouping. Sort/tooltips retain the exact raw. */
 export function formatNativeFixed5(raw: string | bigint, digits = 2): string {
   if (!Number.isInteger(digits) || digits < 0 || digits > 5) throw new RangeError('Native fixed5 precision must be 0–5.');

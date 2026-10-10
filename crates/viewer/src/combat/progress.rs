@@ -1,10 +1,8 @@
 //! Land combat progress and side perspective, derived from recorded simulation
 //! state for any viewing country.
 //!
-//! The game stores neither: `1413CCB10` computes the attacker fraction on demand
-//! from both sides' organisation sums (`1412A02A0`, every ordered member
-//! including reserves), and the map icon mirrors it for a viewer on the
-//! defending side.
+//! Attacker progress is computed on demand from both sides' ordered
+//! organisation sums, reserves included. A defending viewer sees it mirrored.
 
 use super::engaged;
 use crate::{
@@ -66,7 +64,7 @@ impl Progresses {
     }
 }
 
-/// `1413CCB10`'s qword arithmetic, including its guard for extreme sums.
+/// Wrapping 64-bit arithmetic, including its guard for extreme sums.
 fn attacker_progress(attacker: i64, defender: i64) -> i64 {
     let total = attacker.wrapping_add(defender);
     if total < 1 {
@@ -95,9 +93,9 @@ pub(crate) fn undefended(cause: SharingUnknown) -> &'static str {
     }
 }
 
-/// Whether the viewer sits on the defending side: `1418AEDE0` mirrors the
-/// marker when a member of either defender set shares vision with it
-/// (1406F3A90), live each hour. `resolve` maps a raw reference to its
+/// Whether the viewer sits on the defending side: the game mirrors the
+/// marker when a member of either defender set shares vision with it,
+/// evaluated each hour. `resolve` maps a raw reference to its
 /// canonical slot. A proven positive stands; otherwise an unresolved
 /// reference, or relations that cannot prove a defender does not share,
 /// leaves the answer unknown ([`Vision::sees_combat`]).
@@ -147,7 +145,7 @@ fn land_sides(frame: &DecodedFrame) -> io::Result<engaged_index::HourSides> {
     let mut out = engaged_index::HourSides {
         sides: BTreeMap::new(),
         complete: combats.is_complete(),
-        // A land unit can leave one side alone in a round retreat (1413CE670).
+        // A land unit can leave one side alone in a round retreat.
         removal: engaged::Removal::BothSidesUnlessRoundRetreat,
     };
     for combat in combats.rows() {
@@ -169,8 +167,8 @@ fn land_sides(frame: &DecodedFrame) -> io::Result<engaged_index::HourSides> {
             out.sides.insert(
                 (combat.id, side),
                 // Land lists come from the side's units alone: a join appends
-                // its owners (1413CC0D0) and a removal rebuilds them from the
-                // rest (1413CE340), so the recorded lists are the unit lists.
+                // its owners and a removal rebuilds them from the
+                // rest, so the recorded lists are the unit lists.
                 engaged::Side {
                     units: Some(units),
                     added: engaged::Added::NoTrigger,

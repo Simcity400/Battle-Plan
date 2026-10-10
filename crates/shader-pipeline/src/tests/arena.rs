@@ -45,6 +45,7 @@ fn texel(device: &wgpu::Device, queue: &wgpu::Queue, rgba: [u8; 4]) -> wgpu::Tex
 #[test]
 #[ignore = "requires a shader compiler and GPU"]
 fn cached_groups_and_arena_offsets_follow_each_draw_across_frames() {
+    crate::tests::initialize_runtime_tables();
     let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
     let program = program(
         r#"VertexStruct I { float3 position : POSITION;
@@ -146,6 +147,7 @@ Effect Test { VertexShader = V PixelShader = P }
 #[test]
 #[ignore = "requires a shader compiler and GPU"]
 fn programs_past_the_dynamic_offset_limit_are_refused_by_name() {
+    crate::tests::initialize_runtime_tables();
     let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
     let (device, _) = device();
     let limit = device

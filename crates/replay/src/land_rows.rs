@@ -76,8 +76,8 @@ pub struct LandCombatResultsRow {
     pub id: u64,
     pub combat: u64,
     pub province: u32,
-    /// Native round counter: CheckRoundTermination 1412A3E70 increments +0x40
-    /// every non-terminating round. It is not elapsed days or a start date.
+    /// Round counter incremented after each non-terminating round. It is not
+    /// elapsed days or a start date.
     pub day: i32,
     pub duration: i32,
     pub end_hour: i32,
@@ -97,8 +97,8 @@ pub struct LandCombatResultsRow {
     /// Exact post-finalizer end-history projection, distinct from pre-retreat
     /// `sides`. Zero denotes the native null country reference.
     pub history_countries: [u32; 2],
-    /// Exact raw-tag strings 140BA5C20 uses for saved history, independent of
-    /// canonical country-link aliases or later country-slot reuse.
+    /// Exact raw-tag strings used for saved history, independent of canonical
+    /// country-link aliases or later country-slot reuse.
     pub history_tags: [Vec<u8>; 2],
     /// Attacker then defender, after FinalizeCombat's pending-damage flush.
     pub losses: [LandSideLosses; 2],

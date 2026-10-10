@@ -1,15 +1,12 @@
 //! An exact table of shared per-country measures. There is no overall score.
-//! Factories reuse the game's whole-count parts and count modes (140E57F10,
-//! 14187F760); political/command balances reuse country_measure (stored fixed5
-//! CPoliticalStatus+0xE0, AddPoliticalPower 140B98130; CCountry+0x1F0,
-//! AddCommandPower 1406C3320); stability and
-//! war support reuse GetStability 1406EBBE0 / GetWarSupport 1406ED300 arithmetic;
-//! nukes reuse GetNukes 1410828A0. Equipment totals reuse the cached production
-//! scan and its exact delivered-unit helper, never another production walk.
-//! Owned states use the recorded native roster count: SetOwner 1409D1710,
-//! AddOwnedState 1406C52B0 (+0x478/+0x484), excluding zero-province templates.
-//! This uses the shared unambiguous country-link join. Identities
-//! are independent of value coverage, so unknown amounts rank last, never zero.
+//! Factories reuse the game's whole-count parts and count modes.
+//! Political/command balances reuse country_measure's stored fixed5 values;
+//! stability, war support and nukes reuse their shared arithmetic.
+//! Equipment totals reuse the cached production scan and its exact delivered-unit
+//! helper, never another production walk. Owned states use the recorded roster
+//! count, excluding zero-province templates.
+//! This uses the shared unambiguous country-link join. Identities are independent
+//! of value coverage, so unknown amounts rank last, never zero.
 
 use super::{
     LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, air_force, army_size,
@@ -179,8 +176,7 @@ pub struct ScoreboardReply {
 /// UI words for counts with no matching game label; native GUI label bindings
 /// are resolved from the recorded content by registry(). No vanilla text is
 /// used as a content lookup key.
-/// S: The specific in-game display binding for the proven owned-state roster
-/// count is unverified; "States owned" is a plain UI description.
+/// The owned-state roster count uses the plain UI description "States owned".
 struct ColumnDescriptor {
     label: &'static str,
     unit: &'static str,
@@ -279,11 +275,8 @@ pub(crate) fn registry(catalogue: Option<&Catalogue>) -> Vec<ScoreboardColumn> {
         .map(|key| {
             let description = descriptor(key);
             let reason = key.unavailable_reason().map(str::to_owned);
-            // P: Political tooltip 140B9A1D0 binds POLITICAL_POWER (142939A20).
-            // GetStability 1406EBBE0 / GetWarSupport 1406ED300 and the top-bar
-            // tooltip 1418845C0 bind STABILITY (1427D1B08) / WAR_SUPPORT (1427D1C58).
-            // Its command-power heading binds COMMAND_POWER at 141886ED7.
-            // These keys are executable facts; every translation is recorded content.
+            // Political, stability, war-support and command-power headings use
+            // their localisation keys; every translation is recorded content.
             let native_key = match key {
                 ScoreboardColumnKey::PoliticalPower => Some("POLITICAL_POWER"),
                 ScoreboardColumnKey::CommandPower => Some("COMMAND_POWER"),

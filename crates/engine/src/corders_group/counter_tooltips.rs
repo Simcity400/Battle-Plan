@@ -1,11 +1,8 @@
-//! Current HQ cooldown for the counter's commander (`1418C00D0`).
-//!
-//! CArmyLeader slot26 (`140C09F40`) combines the tracked date with deployment
-//! cooldown (`14159DC20` -> `14159DDE0`). The latter follows the leader's own
-//! formation reference; group+190 is a referenced HQ division template,
-//! established by `140BE6E60`, and template+190 is its manpower operand.
-//! All reads are passive and callback-local; no rendered text or UI cache is
-//! copied. The existing UnitLeaders name at +40 supplies the tooltip's name.
+//! Current commander HQ cooldown. Tracked date and deployment cooldown
+//! combine using the leader's own formation reference. The group points to
+//! a referenced HQ division template whose manpower is independent. Reads
+//! are passive and callback-local; tooltip naming uses the stored UnitLeaders
+//! name without copying rendered text or UI cache.
 
 use super::LEADER;
 use crate::{
@@ -13,15 +10,15 @@ use crate::{
     creference_registry::HeaderResolver, creferenced_division_template, cunit_leader, fixed5, read,
 };
 
-// 140C09F40 / 140C0A130: tracked modifier kind and CGameDate end.
+// Tracked modifier kind and end date.
 const COOLDOWN_TYPE: usize = 0xe84;
 const COOLDOWN_END: usize = 0xea0;
-// 140C09F40's formation+19A selects the pending deployment contribution.
+// Formation pending-deployment byte selecting its contribution.
 const DEPLOYMENT_PENDING: usize = 0x19a;
-// 140BDFEF0 resolves group+190; 140BE6E60 writes referenced template+8.
+// Group HQ template resolution follows its referenced-template identity.
 const HQ_TEMPLATE: usize = 0x190;
 const TEMPLATE_MANPOWER: usize = 0x190;
-// 14159DC20 loads signed dword defines; 14159DDE0 loads the qword pair.
+// Deployment defines are signed dwords; the date pair uses qwords.
 const DEPLOY_DAYS_RVA: usize = 0x0331_e4ec;
 const DEPLOY_MIN_RVA: usize = 0x0331_e56c;
 const REFERENCE_MANPOWER_RVA: usize = 0x0331_e760;

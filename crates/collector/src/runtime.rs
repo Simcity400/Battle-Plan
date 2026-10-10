@@ -619,8 +619,9 @@ fn run(
     if session.sample_boundary != sampling::SAMPLE_BOUNDARY {
         return Err("collector sample boundary differs from session");
     }
+    let executable_path = module_path(ptr::null_mut())?;
     let exe = hash_executable(
-        File::open(module_path(ptr::null_mut())?)
+        File::open(&executable_path)
             .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?,
     )
     .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
@@ -630,6 +631,9 @@ fn run(
     if session.identity.exe_hash != exe.sha256 || session.identity.exe_size != exe.size {
         return Err("collector config executable identity differs from running build");
     }
+    // Prepare immutable metadata on this loader worker before publishing hooks.
+    engine::executable_tables::initialize_executable(&executable_path)
+        .map_err(|error| error_reason(error, "collector executable tables preparation failed"))?;
     let dll = hash_executable(
         File::open(&dll_path).map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?,
     )
@@ -1803,7 +1807,7 @@ fn restore_round(
     for family in RestoreFamily::ALL {
         let index = family as usize;
         if !restored[index] {
-            // World invalidation@1401D09E5/1401BF509/1401C9080 stays published
+            // World invalidation stays published
             // through other native returns. Recheck after this round's restores:
             // they can finish the last flight and consume the retry budget.
             if family == RestoreFamily::WorldLifetime && !world_restore_ready(restored, active()) {

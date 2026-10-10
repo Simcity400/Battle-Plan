@@ -1,4 +1,4 @@
-//! Water draw 1412661E0; registration141261100 and strip allocation141267C51.
+//! Water draw ; registration and strip allocation.
 use eframe::wgpu::{self, util::DeviceExt};
 use installed_content::{
     ResolvedLayers,
@@ -23,7 +23,7 @@ pub fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Resul
 }
 
 pub fn technique(high: bool, refractions: bool) -> &'static str {
-    // 141266258..2B0: graphics+18 wins over graphics+15; debug gate14306E9DB defaults1.
+    // Low-graphics selection precedes underwater selection; debug drawing defaults on.
     if !high {
         "water_low_gfx"
     } else if refractions {
@@ -34,7 +34,7 @@ pub fn technique(high: bool, refractions: bool) -> &'static str {
 }
 
 fn quad(map: [u32; 2]) -> [[i16; 2]; 4] {
-    // 141267C5F..C84 stores the map bitmap dimensions as16-bit words.
+    // Store the map bitmap dimensions as16-bit words.
     let [w, h] = map.map(|v| v as i16);
     [[w, 0], [0, 0], [w, h], [0, h]]
 }
@@ -72,7 +72,7 @@ impl Water {
         let mut state =
             gpu::State::authored(&effect.source, &effect.source.techniques[selection.index])
                 .map_err(refuse)?;
-        // 14126639E binds at most16 physical PS texture/sampler slots.
+        // Bind at most16 physical PS texture/sampler slots.
         state
             .samplers
             .retain(|slot, _| (0..16).any(|i| *slot == binding(i, Stage::Pixel)));
@@ -102,8 +102,8 @@ impl Water {
             step: wgpu::VertexStepMode::Vertex,
             attributes,
         }];
-        // 141268F22 restores renderer+C0 before water. Depth is retained renderer+90:
-        // rivers/railways restore it, trees do not replace it. Defaults1423F7140/7180.
+        // Restore renderer raster state before water. Retain renderer depth restored by rivers and
+        // railways; trees do not replace it.
         let raster = RasterizerState::default();
         pass.primitive = gpu::primitive(&raster, wgpu::PrimitiveTopology::TriangleStrip).0;
         pass.depth_stencil =
@@ -150,8 +150,8 @@ impl Water {
             .enumerate()
             .map(|(i, v)| (binding(i as u32, Stage::Pixel), (*v).clone()))
             .collect();
-        // 141266229..244 clears all112bytes of b1. b3 alloc16 at141267CCF;
-        // 14126645B..4AF initialize only12: time,0.5/width,0.5/height. Last4 unknown.
+        // Clear all 112 bytes of b1; b3 has a 16-byte allocation.
+        // Initialize only 12 bytes: time,0.5/width,0.5/height. Last4 unknown.
         let b3 = bytemuck::cast_slice(&[
             inputs.time,
             0.5 / inputs.size[0] as f32,

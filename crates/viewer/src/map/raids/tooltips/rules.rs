@@ -21,8 +21,8 @@ pub struct Raid {
     pub description: Text,
     pub outcome: i32,
     pub progress: Known<Option<i64>>,
-    /// Diagnostic-mode CanExecute's return, and its accumulated reasons.
-    /// `140FD6550` returns the final trigger step even if unit/pool failed.
+    /// Diagnostic execution result and accumulated reasons. Return the final
+    /// trigger step even if the unit or pool failed.
     pub gate: (Known<bool>, Lines),
     pub assigned_unit: Known<Option<Text>>,
     pub owner: Text,
@@ -34,8 +34,8 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
     let mut out = Tooltip::default();
     let plain = |key| localise(loc, key, &[]);
     if input.ended {
-        // `141613BE0`: same result for own and incoming; description here
-        // uses plain location (`140FD60B0`), unlike active descriptions.
+        // Own and incoming raids share results; describe the plain location here,
+        // separately from active descriptions.
         out.line(
             false,
             0,
@@ -69,7 +69,7 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
         return out;
     }
     if incoming {
-        // `141617380`, header, description, success, optional counterplay.
+        // Append header, description, success and optional counterplay in order.
         out.line(
             false,
             0,
@@ -120,7 +120,7 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
         }
         return out;
     }
-    // `141E72380` puts prompts in CToolTip+0x20, main text in +0x00.
+    // Store prompts separately from the main tooltip text.
     out.line(
         true,
         0,
@@ -147,8 +147,8 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
             }
         }),
     );
-    // `141612820`: prepare reasons unconditionally in phase 1; execute
-    // reasons only when the diagnostic-path return is false in phase 3.
+    // Prepare reasons unconditionally in phase 1. Append execute reasons
+    // in phase 3 only when the diagnostic result is false.
     if input.phase == 1 || input.phase == 3 {
         match input.gate {
             (allowed, reasons) if input.phase == 1 || allowed == Ok(false) => {
@@ -210,9 +210,9 @@ pub struct Type {
     pub once: bool,
 }
 
-/// `141615C50` -> `1416151F0` -> `141612FC0`. Only the candidate list is
-/// cached; other facts are the shown hour's. Compact means anything except
-/// one target with exactly one type; it suppresses description/launch text.
+/// Cache only the candidate list; other facts come from the shown hour.
+/// Compact means anything except one target with exactly one type; it
+/// suppresses description and launch text.
 pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> Tooltip {
     let compact = targets.len() != 1 || targets[0].types.len() != 1;
     let mut out = Tooltip::default();
@@ -336,7 +336,7 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
                         localise(
                             loc,
                             TOOLTIP_POTENTIAL_TARGET_RAID_DESC,
-                            // 141612FC0: TEXT, literal at 14292F680.
+                            // Bind the name under TEXT.
                             &[("TEXT", Arg::Text(&desc))],
                         ),
                     ),

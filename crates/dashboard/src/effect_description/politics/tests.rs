@@ -67,7 +67,7 @@ pub(super) fn fixture() -> (Fixture, Folder) {
                 " EFFECT_RELEASE_NATION:0 \"Release $COUNTRY$ [Root.GetTag]\"\n CHANGE_TAG_EFFECT:0 \"Change $COUNTRY$ [Root.GetTag]\"\n",
                 " EFFECT_ADD_THREAT:0 \"Add $THREAT|2$\"\n EFFECT_REMOVE_THREAT:0 \"Remove $THREAT|2$\"\n",
                 " EFFECT_SEND_EMBARGO:0 \"Embargo $COUNTRY$\"\n EFFECT_BREAK_EMBARGO:0 \"Unembargo $COUNTRY$\"\n",
-                " EFFECT_SCOPED_SOUND_DESC:0 \"Sound $SOUND_NAME$ for $COUNTRY$\"\n EFFECT_SOUND_DESC:0 \"Sound $SOUND_NAME$\"\n SYN_SOUND:0 \"Localised sound\"\n",
+                " EFFECT_SCOPED_SOUND_DESC:0 \"Sound $SOUND_NAME$ for $COUNTRY$\"\n EFFECT_SOUND_DESC:0 \"Sound $SOUND_NAME$\"\n SYN_CHIME:0 \"Localised chime\"\n",
                 " EFFECT_SET_MAJOR_YES:0 \"Major $COUNTRY$\"\n EFFECT_SET_MAJOR_NO:0 \"Minor $COUNTRY$\"\n",
                 " EFFECT_RECALL_VOLUNTEERS_FROM:0 \"Volunteers $COUNTRY$\"\n EFFECT_RECALL_ATTACHE:0 \"Attache $COUNTRY$\"\n POLITICS_HOLD_ELECTION:0 \"Election $COUNTRY$\"\n",
                 " POLITICS_SET_POLITICAL_POWER:0 \"Power $VAL|2$\"\n",
@@ -169,10 +169,13 @@ fn state_from_root() -> EventScopes {
     EventScopes::new(vec![state, EventScope::of(EventObject::Country(1))])
 }
 
-macro_rules! ported {
+macro_rules! description_case {
     ($name:ident, $body:expr, $expected:expr, $scopes:expr) => {
         #[test]
         fn $name() {
+            engine::executable_tables::initialize_for_tests().expect(
+                "BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests",
+            );
             let (fixture, _folder) = fixture();
             let content = fixture
                 .catalogue
@@ -187,58 +190,60 @@ macro_rules! ported {
     };
 }
 
-// Authored witness forms; identifiers and all localisation are synthetic.
-// common/bop/swi.txt:31, common/decisions/afg.txt:1094, chi_decisions.txt:5596.
-ported!(log, "log=\"synthetic log\"", "", fresh());
-ported!(
+// Core, opinion and political actions cover scalar and block operands.
+
+description_case!(log, "log=\"synthetic log\"", "", fresh());
+description_case!(
     add_core_of,
     "add_core_of=ROOT",
     "Core Alpha [Root.GetTag]\n",
     state_from_root()
 );
-ported!(
+description_case!(
     add_claim_by,
     "add_claim_by=ROOT",
     "Claim \u{12}AAAAlpha [Root.GetTag]\n",
     state_from_root()
 );
-// common/decisions/cze.txt:177, bel.txt:865, ast.txt:3452.
-ported!(
+
+description_case!(
     load_oob,
     "load_oob=\"SYN_OOB\"",
     "Load SYN_OOB AAA",
     fresh()
 );
-ported!(
+description_case!(
     load_focus_tree,
-    "load_focus_tree={tree=SYN_TREE keep_completed=yes}",
+    "load_focus_tree={keep_completed=no tree=SYN_TREE}",
     "Use Tree AAA\n",
     fresh()
 );
-ported!(release, "release=BBB", "Release Beta AAA\n", fresh());
-// common/decisions/cze.txt:3609, chi_decisions.txt:9558, cze.txt:68, bol.txt:65.
-ported!(
+description_case!(release, "release=BBB", "Release Beta AAA\n", fresh());
+
+description_case!(
     remove_core_of,
     "remove_core_of=BBB",
     "Uncore Beta [Root.GetTag]\n",
     state_from_root()
 );
-ported!(
+description_case!(
     add_named_threat,
-    "add_named_threat={threat=2 name=SYN_REASON}",
-    "Add 2.00\n",
+    "add_named_threat={name=SYN_REASON threat=4.35}",
+    "Add 4.35\n",
     fresh()
 );
-ported!(
+description_case!(
     change_tag_from,
     "change_tag_from=BBB",
     "Change Alpha AAA\n",
     fresh()
 );
 #[test]
-fn change_tag_from_state_keeps_the_native_source_name_refusal_counted() {
+fn change_tag_from_state_keeps_the_source_name_refusal_counted() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
-    // Target 14052B6A0 resolves THIS to the state's owner, but own 14037B2B0
+    // resolves THIS to the state's owner, but own
     // names scope.country, which remains zero for a state scope.
     let output = fixture.render(
         "change_tag_from=THIS change_tag_from=THIS",
@@ -249,164 +254,167 @@ fn change_tag_from_state_keeps_the_native_source_name_refusal_counted() {
     assert_eq!(
         output.refusals,
         BTreeMap::from([(
-            "synthetic effect CChangeTagEffect: key change_tag_from: current scope has no country (1405336C0)".to_owned(),
+            "synthetic effect change_tag_from: key change_tag_from: current scope has no country"
+                .to_owned(),
             2,
         )]),
     );
 }
-ported!(
+description_case!(
     remove_claim_by,
     "remove_claim_by=ROOT",
     "Unclaim \u{12}AAAAlpha [Root.GetTag]\n",
     state_from_root()
 );
-// common/decisions/ita.txt:4860, ast.txt:808, common/national_focus/argentina.txt:844.
-ported!(
+
+description_case!(
     create_intelligence_agency,
     "create_intelligence_agency=yes",
     "Agency AAA\n",
     fresh()
 );
-ported!(
+description_case!(
     reduce_focus_completion_cost,
-    "reduce_focus_completion_cost={focus={SYN_FOCUS_ONE SYN_FOCUS_TWO} cost=-7}",
-    "Extend 7 [Root.GetTag]\n First AAA\n Second\n",
+    "reduce_focus_completion_cost={cost=-11 focus={SYN_FOCUS_TWO SYN_FOCUS_ONE}}",
+    "Extend 11 [Root.GetTag]\n Second\n First AAA\n",
     fresh()
 );
-ported!(send_embargo, "send_embargo=BBB", "Embargo Beta\n", fresh());
-// events/pb_superevents.txt:36, mun_czechoslovakia.txt:927, bba_italy.txt:9334.
-ported!(
+description_case!(send_embargo, "send_embargo=BBB", "Embargo Beta\n", fresh());
+
+description_case!(
     scoped_sound_effect,
-    "scoped_sound_effect=SYN_SOUND",
-    "Sound SYN_SOUND for Alpha",
+    "scoped_sound_effect=SYN_CHIME",
+    "Sound SYN_CHIME for Alpha",
     fresh()
 );
-ported!(
+description_case!(
     scoped_play_song,
-    "scoped_play_song=\"SYN_SOUND\"",
-    "Sound SYN_SOUND for Alpha",
+    "scoped_play_song=\"SYN_CHIME\"",
+    "Sound SYN_CHIME for Alpha",
     fresh()
 );
-ported!(
+description_case!(
     release_on_controlled,
     "release_on_controlled=BBB",
     "Release Beta AAA\n",
     fresh()
 );
-// common/decisions/ita.txt:1576; common/national_focus/australia_taog.txt:2274, italy.txt:18842.
-ported!(
+
+description_case!(
     sound_effect,
-    "sound_effect=SYN_SOUND",
-    "Sound SYN_SOUND",
+    "sound_effect=SYN_CHIME",
+    "Sound SYN_CHIME",
     fresh()
 );
-ported!(set_major, "set_major=yes", "Major Alpha\n", fresh());
-ported!(
+description_case!(set_major, "set_major=yes", "Major Alpha\n", fresh());
+description_case!(
     play_song,
-    "play_song=\"SYN_SOUND\"",
-    "Sound SYN_SOUND",
+    "play_song=\"SYN_CHIME\"",
+    "Sound SYN_CHIME",
     fresh()
 );
-// common/decisions/bul.txt:4015; common/national_focus/hungary.txt:858, lep focus (league of eight provinces).txt:61.
-ported!(
+
+description_case!(
     recall_volunteers_from,
     "recall_volunteers_from=ROOT",
     "Volunteers alpha\n",
     fresh()
 );
-ported!(
+description_case!(
     hold_election,
     "hold_election=BBB",
     "Election Beta\n",
     fresh()
 );
-ported!(
+description_case!(
     set_political_power,
-    "set_political_power=0",
-    "Power 0.00\n",
+    "set_political_power=1.75",
+    "Power 1.75\n",
     fresh()
 );
-// common/decisions/fra.txt:1360; common/on_actions/10_toa_on_actions.txt:20; fra.txt:1367.
-ported!(
+
+description_case!(
     set_mio_name_key,
     "set_mio_name_key=SYN_MIO",
     "Rename Foundry AAA\n",
     fresh()
 );
-ported!(
+description_case!(
     break_embargo,
     "break_embargo=ROOT",
     "Unembargo Alpha\n",
     fresh()
 );
-ported!(set_mio_icon, "set_mio_icon=SYN_ICON", "Icon AAA\n", fresh());
-// common/raids/land_infiltration_raids.txt:140; common/operations/00_operations.txt:155.
-ported!(
+description_case!(set_mio_icon, "set_mio_icon=SYN_ICON", "Icon AAA\n", fresh());
+
+description_case!(
     release_from_captivity,
     "release_from_captivity=yes",
     "Free [Root.GetTag]",
     fresh()
 );
-ported!(
+description_case!(
     release_captured_generals_from,
     "release_captured_generals_from=ROOT",
     "Generals alpha [Root.GetTag]",
     fresh()
 );
-// events/generic.txt:1433, tno_ukraine.txt:8202.
-ported!(
+
+description_case!(
     recall_attache,
     "recall_attache=ROOT",
     "Attache alpha\n",
     fresh()
 );
-ported!(set_oob, "set_oob=\"SYN:OOB\"", "Set SYN:OOB AAA", fresh());
+description_case!(set_oob, "set_oob=\"SYN:OOB\"", "Set SYN:OOB AAA", fresh());
 
-ported!(
+description_case!(
     negative_and_zero_named_threat,
     "add_named_threat={threat=-1.25 name=SYN_REASON} add_named_threat={threat=0}",
     "Remove 1.25\nRemove 0.00\n",
     fresh()
 );
-ported!(
+description_case!(
     minor_uses_bool_not_country_selector,
     "set_major=no set_major=\"yes\" set_major=invalid",
     "Minor Alpha\nMajor Alpha\nMinor Alpha\n",
     fresh()
 );
-ported!(
+description_case!(
     single_focus_cost,
     "reduce_focus_completion_cost={focus=SYN_FOCUS_ONE cost=0x7}",
     "Reduce First AAA 7\n",
     fresh()
 );
-ported!(
+description_case!(
     focus_cost_appends_repeated_lists,
     "reduce_focus_completion_cost={focus=SYN_FOCUS_ONE focus={SYN_FOCUS_TWO} cost=9}",
     "Reduce 9 [Root.GetTag]\n First AAA\n Second\n",
     fresh()
 );
-ported!(
+description_case!(
     empty_focus_cost,
     "reduce_focus_completion_cost={focus={} cost=7}",
     "",
     fresh()
 );
-ported!(
+description_case!(
     captured_generals_block,
     "release_captured_generals_from={province=2 target=BBB}",
     "Generals beta [Root.GetTag]",
     fresh()
 );
-ported!(
-    captured_generals_ignores_non_native_captured_by,
+description_case!(
+    captured_generals_ignores_captured_by_field,
     "release_captured_generals_from={captured_by=BBB}",
     "",
     fresh()
 );
 
 #[test]
-fn agency_feature_and_created_gates_do_not_read_more_than_native() {
+fn agency_feature_and_created_gates_limit_recorded_reads() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::SimulationFeatures.index()] =
         TableView::Complete(TableRows::SimulationFeatures(vec![
@@ -444,6 +452,8 @@ fn agency_feature_and_created_gates_do_not_read_more_than_native() {
 
 #[test]
 fn missing_agency_facts_are_named_and_counted() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::SimulationFeatures.index()] = TableView::Unavailable {
         reason: "missing mask".into(),
@@ -459,13 +469,14 @@ fn missing_agency_facts_are_named_and_counted() {
         output
             .refusals
             .keys()
-            .all(|why| why.contains("CCreateIntelligenceAgencyEffect")
-                && why.contains("missing mask"))
+            .all(|why| why.contains("create_intelligence_agency") && why.contains("missing mask"))
     );
 }
 
 #[test]
 fn empty_agency_own_text_uses_core_projection_and_child_walk() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::IntelligenceAgencies.index()] =
         TableView::Complete(TableRows::IntelligenceAgencies(vec![
@@ -475,7 +486,7 @@ fn empty_agency_own_text_uses_core_projection_and_child_walk() {
                 ..Default::default()
             },
         ]));
-    // 1403B1480 keeps name/icon as own fields and forwards the effect child.
+    // keeps name/icon as own fields and forwards the effect child.
     let output = fixture.render(
         "create_intelligence_agency={name=SYN_NAME icon=SYN_ICON army_experience=2}",
         &mut fresh(),
@@ -487,6 +498,8 @@ fn empty_agency_own_text_uses_core_projection_and_child_walk() {
 
 #[test]
 fn country_targets_support_five_thousand_synthetic_countries() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let countries = (1..=5_000)
         .map(|id| CountryRow {
@@ -545,44 +558,45 @@ fn country_targets_support_five_thousand_synthetic_countries() {
     }
 }
 
-// Each unavailable dependency remains a class-specific, counted refusal.
+// Each unavailable dependency remains an effect-specific, counted refusal.
 macro_rules! refused {
     ($name:ident, $body:expr, $why:expr) => {
         #[test]
         fn $name() {
+            engine::executable_tables::initialize_for_tests().expect(
+                "BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests",
+            );
             let (fixture, _folder) = fixture();
             let body = $body;
             let key = body.split('=').next().unwrap();
-            let class = installed_content::effect_keys::native_class(key.as_bytes()).unwrap();
             let output = fixture.render(body, &mut fresh(), Content::default());
             assert_eq!(output.text, "");
             assert_eq!(
                 output.refusals,
-                BTreeMap::from([(
-                    format!("synthetic effect {}: key {key}: {}", class.name, $why),
-                    1
-                )])
+                BTreeMap::from([(format!("synthetic effect {key}: key {key}: {}", $why), 1)])
             );
         }
     };
 }
-// Authored witness: common/decisions/jap2.txt:172.
-ported!(
+
+description_case!(
     add_contested_owner,
-    "add_contested_owner=2",
-    "Add contested AAA/Two/AAA/AAA/AAA",
+    "add_contested_owner=1",
+    "Add contested AAA/One/AAA/AAA/AAA",
     fresh()
 );
-// Authored witness: common/decisions/ser.txt:2115.
-ported!(
+
+description_case!(
     remove_contested_owner,
-    "remove_contested_owner=BBB",
-    "Remove contested BBB/Two/BBB/BBB/BBB",
+    "remove_contested_owner=CCC",
+    "Remove contested CCC/Two/CCC/CCC/CCC",
     state_from_root()
 );
 
 #[test]
-fn contested_owner_uses_both_native_operand_branches_and_fresh_links() {
+fn contested_owner_uses_both_operand_branches_and_fresh_links() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     for (body, object, expected) in [
         (
@@ -629,6 +643,8 @@ fn contested_owner_uses_both_native_operand_branches_and_fresh_links() {
 
 #[test]
 fn contested_owner_evaluates_scoped_operands() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![
@@ -647,6 +663,7 @@ fn contested_owner_evaluates_scoped_operands() {
                 scope_id: 2,
                 entries: vec![ScriptVariableEntry {
                     name: b"chosen_country".to_vec(),
+                    // The encoded country tag, not a numeric state.
                     value_raw: i64::from(u32::from_le_bytes(*b"BBB\0") | 0x4000_0000),
                 }],
             },
@@ -666,19 +683,19 @@ fn contested_owner_evaluates_scoped_operands() {
     assert_eq!(output.text, "Remove contested BBB/Two/BBB/BBB/BBB");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
-ported!(
+description_case!(
     add_popularity,
     "add_popularity={ideology=ROOT popularity=-0.05}",
     "Popularity Noun AAA: -0.05\n",
     fresh()
 );
-ported!(
+description_case!(
     set_party_name,
     "set_party_name={ideology=SYN_IDEOLOGY long_name=SYN_LONG name=SYN_PARTY}",
     "Party name Ideology AAA => Long party AAA\n",
     fresh()
 );
-ported!(
+description_case!(
     set_party_name_short_name_does_not_fill_long_name,
     "set_party_name={ideology=SYN_IDEOLOGY name=SYN_PARTY}",
     "Party name Ideology AAA => \n",
@@ -686,7 +703,9 @@ ported!(
 );
 
 #[test]
-fn absent_ideology_uses_native_null_object_without_evaluating_an_operand() {
+fn absent_ideology_uses_null_object_without_evaluating_an_operand() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     // An absent specifier is not numeric zero, even if that ID names a group.
     if let TableView::Complete(TableRows::PoliticalParties(parties)) =
@@ -703,22 +722,10 @@ fn absent_ideology_uses_native_null_object_without_evaluating_an_operand() {
         .unwrap()
         .effects()
         .unwrap();
-    for (class, key, body) in [
-        (
-            "CAddPopularityEffect",
-            "add_popularity",
-            "add_popularity={popularity=0.03}",
-        ),
-        (
-            "CSetPartyNameEffect",
-            "set_party_name",
-            "set_party_name={name=SYN_PARTY}",
-        ),
-        (
-            "CSetPartyRuleEffect",
-            "set_party_rule",
-            "set_party_rule={can_send_volunteers=yes}",
-        ),
+    for (key, body) in [
+        ("add_popularity", "add_popularity={popularity=0.03}"),
+        ("set_party_name", "set_party_name={name=SYN_PARTY}"),
+        ("set_party_rule", "set_party_rule={can_send_volunteers=yes}"),
     ] {
         let output = fixture.render(body, &mut fresh(), content.view(None));
         assert_eq!(output.text, "");
@@ -726,51 +733,51 @@ fn absent_ideology_uses_native_null_object_without_evaluating_an_operand() {
             output.refusals,
             BTreeMap::from([(
                 format!(
-                    "synthetic effect {class}: key {key}: ideology database null-object identity (+0x78, 1402EE8E0) is unrecorded"
+                    "synthetic effect {key}: key {key}: ideology database null-object identity is unrecorded"
                 ),
                 1,
             )])
         );
     }
 }
-ported!(
+description_case!(
     set_cosmetic_tag,
     "set_cosmetic_tag=SYN_COSMETIC",
     "Cosmetic alpha => Costume AAA AAA\n",
     fresh()
 );
-ported!(
+description_case!(
     activate_shine_on_focus,
     "activate_shine_on_focus=SYN_FOCUS",
     "",
     fresh()
 );
-ported!(
+description_case!(
     deactivate_shine_on_focus,
     "deactivate_shine_on_focus=SYN_FOCUS",
     "",
     fresh()
 );
-ported!(
+description_case!(
     set_rule,
     "set_rule={can_send_volunteers=yes}",
     "Rules AAA:[yes] Volunteers.\n",
     fresh()
 );
-ported!(
+description_case!(
     set_party_rule,
     "set_party_rule={ideology=SYN_IDEOLOGY desc=SYN_DESC can_create_factions=no}",
     "Rules Ideology AAA:[no] Factions.\n",
     fresh()
 );
 
-ported!(
+description_case!(
     remove_relation_rule_override,
     "remove_relation_rule_override={target=BBB can_send_volunteers=yes}",
     "Unrelation Alpha->Beta:[yes]Volunteers",
     fresh()
 );
-ported!(
+description_case!(
     explicit_relation_rule_override,
     "add_relation_rule_override={target=BBB can_send_volunteers=no}",
     "Relation Alpha->Beta:[no]Volunteers",
@@ -779,11 +786,13 @@ ported!(
 refused!(
     remove_relation_rule_does_not_accept_add_only_usage_desc,
     "remove_relation_rule_override={target=BBB usage_desc=SYN_DESC can_send_volunteers=yes}",
-    "unknown relation rule usage_desc (1403AF060/1403B4150)"
+    "unknown relation rule usage_desc"
 );
 
 #[test]
 fn named_party_effect_keeps_plain_text_without_unrelated_map_or_variable_inputs() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = folder_catalogue(&[
         (

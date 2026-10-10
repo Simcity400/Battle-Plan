@@ -54,6 +54,8 @@ fn building_tokens_fold_like_the_lexer_and_refuse_ambiguity() {
 /// carrying that token is refused by name instead of read as the icon's building.
 #[test]
 fn a_type_sharing_its_lexer_token_with_an_ordinary_type_is_refused() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = installed_content::buildings::parse(
         b"buildings={
             Dock={naval_headquarter=yes} dock={show_on_map=1}
@@ -134,12 +136,14 @@ fn a_type_sharing_its_lexer_token_with_an_ordinary_type_is_refused() {
     assert_eq!(icons.unnamed_facility(&unnamed), Some("Yard"));
 }
 
-/// `140673560` builds the port buckets from every record, so a bucket only an earlier
+/// Build the port buckets from every record, so a bucket only an earlier
 /// declaration of a repeated port redirects into is still a port bucket, and ambiguous:
 /// the HQ anchored there is refused before it can fall back to slot 0. The earlier
 /// redirects are spelled in another case and still bind by token.
 #[test]
 fn a_bucket_a_repeated_declaration_reaches_refuses_before_the_fallback() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = installed_content::buildings::parse(
         b"buildings={
             port={is_port=yes spawn_point=SHARED}
@@ -239,6 +243,8 @@ fn building(location: u32, building_type: u32, ordinal: u32, level: i16) -> Buil
 /// the classification; provinces it cannot reach keep their decision.
 #[test]
 fn repeated_icon_templates_are_refused_by_name() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = installed_content::buildings::parse(
         b"buildings={
             hq={naval_headquarter=yes} later_hq={naval_headquarter=yes}
@@ -294,7 +300,7 @@ fn repeated_icon_templates_are_refused_by_name() {
         icons.headquarter(&[&later], &unnamed).unwrap_err(),
         "naval HQ building hq has no single token this hour"
     );
-    // The facility is the first active specialized building in `+0x38` order.
+    // The facility is the first active specialized building in recorded building order.
     let names: BTreeMap<u32, &str> = tokens
         .iter()
         .map(|(name, token)| (*token, name.as_str()))
@@ -314,9 +320,11 @@ fn repeated_icon_templates_are_refused_by_name() {
 }
 
 /// Bucket names are lexer tokens: a redirect and a slot name spelled in another case
-/// reach the declared bucket (`140679740`, `140676D30`), for the HQ and the facility.
+/// reach the declared bucket, for the HQ and the facility.
 #[test]
 fn icons_anchor_only_at_buckets_their_kind_redirects_into() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = installed_content::buildings::parse(
         b"buildings={
             port={is_port=yes spawn_point=Port_Spawn}
@@ -376,11 +384,13 @@ fn icons_anchor_only_at_buckets_their_kind_redirects_into() {
     assert_eq!(icons.anchor(8, facility, slot0), Ok([1.5, 2.0, 0.5]));
 }
 
-/// The anchors search only the records `LoadAuthoredMapBuildings@14165F630` admits, by
+/// The anchors search only the records the game admits, by
 /// the building layer's own rules: a rejected first record gives way to the next
 /// admitted one, and a bucket with none left falls back to slot 0.
 #[test]
 fn icons_anchor_only_at_records_the_loader_admits() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use installed_content::{
         map::{CountryColors, MapData, ProvinceDefinition, ProvinceKind},
         mesh::Roster,

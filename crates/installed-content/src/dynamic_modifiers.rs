@@ -1,6 +1,6 @@
-//! CDynamicModifier descriptions from `common/dynamic_modifiers`.
-//! The native loader uses mode 0 and direct files (1406004F0), and prepends
-//! each exact-name definition to its bucket (140600AD0 / 14054E630).
+//! Dynamic modifier descriptions from `common/dynamic_modifiers`.
+//! Direct files use lexer mode 0; each exact-name definition is prepended
+//! to its bucket.
 
 use crate::{
     ResolvedLayers,
@@ -15,12 +15,12 @@ use std::{collections::BTreeMap, io};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Dynamic {
-    /// Definition id +0x28; `icon` changes +8, never this name (1406035A0).
+    /// The definition identity is retained when `icon` changes.
     pub name: String,
-    /// The constant CModifier +0xF8 (14054DAD0).
+    /// The constant modifier.
     pub modifiers: modifiers::Modifiers,
-    /// +0x1B8/count +0x1C4, stride 0xD8: token +0, scoped operand +8.
-    /// Repeats append and preserve their own description line (1406035A0).
+    /// Scoped modifier token and operand pairs; repeats append and retain
+    /// separate description lines.
     pub scoped_modifiers: Vec<(String, Vec<u8>)>,
 }
 
@@ -34,7 +34,7 @@ pub struct Database {
 
 impl Database {
     pub fn find(&self, name: &str) -> Result<Option<&Dynamic>, String> {
-        // 14054E630 compares the stored id's bytes without case folding.
+        // Stored definition identities compare exact bytes without case folding.
         let name = parser::text(parser::c_string(name.as_bytes())).map_err(|e| e.to_string())?;
         if let Some(reason) = self.refused.get(name) {
             return Err(reason.clone());
@@ -56,8 +56,8 @@ enum Node {
     Modifier(modifiers::Node),
 }
 
-// 140603646-14060366E: only -+0123456789. (including empty text)
-// delegates to the embedded constant CModifier. Other values are scoped.
+// Values containing only `-+0123456789.` (including empty text) use the
+// constant modifier. Other values are scoped operands.
 fn constant(text: &[u8]) -> bool {
     parser::c_string(text)
         .iter()
@@ -90,13 +90,13 @@ fn parse_with_notes(input: &[u8], names: &KeyNames) -> io::Result<(Vec<Dynamic>,
                         .map(Node::Modifier)
                 }
                 // The scoped branch asks by the key token directly, so a
-                // quoted key cannot resolve here (140603683 / 14054FDB0).
+                // quoted key cannot resolve here.
                 _ if field.keyword().is_none() => Shape::Skip,
                 _ => match registry(&field.key.text) {
                     Some(true) => Shape::One,
                     Some(false) => Shape::Skip,
                     None => Shape::Unsettled(format!(
-                        "dynamic modifier {}: modifier token registry unavailable (140603683)",
+                        "dynamic modifier {}: modifier token registry unavailable",
                         String::from_utf8_lossy(&field.key.text)
                     )),
                 },

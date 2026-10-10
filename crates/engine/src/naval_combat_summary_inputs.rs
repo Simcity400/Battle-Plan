@@ -1,28 +1,26 @@
-//! Raw side operands for positioning141609460, screening14160A7B0 and
-//! carrier crowding14160C430. Ship/plane counts and sums remain viewer work.
+//! Raw side operands for positioning, screening and carrier crowding.
+//! Ship and plane counts and sums remain viewer work.
 use crate::{
     Memory, ccountry, cnaval_combatant, cpdx_array::Array, modifier_accumulator as accumulator,
     modifier_definition as metadata,
 };
 use cnaval_combatant::field;
 
-/// Ordered country linked list;1417DA860/1406D7F90 iterate node+10.
-/// CCombatant::AddUnit1413CC2B0 ->1413CC0D0 appends a 0x20-byte node only
-/// when CountryTagListContainsEquivalent1406D7F90 finds no equivalent tag, so
-/// the list holds at most one entry per country object. There is no native
-/// size limit; the live country table header bounds the walk.
+/// Ordered country linked list, appending a node only when no equivalent tag
+/// is present. It has at most one entry per country object. The live country
+/// table bounds the walk, without a chosen size limit.
 pub const COUNTRIES: usize = 0x38;
-/// Signed i32 node count, incremented by1413CC0D0.
+/// Signed i32 linked-list node count.
 pub const COUNTRY_COUNT: usize = 0x48;
-/// The second ordered list1413CC0D0 fills: canonically distinct roster owners of the side's
-/// units. `UpdateCombatSharedVisionFlag@1413CEBE0` admits the viewer through it.
+/// Second ordered list of canonically distinct roster owners of the side's
+/// units, used to admit viewers through shared vision.
 pub const SECONDARY_COUNTRIES: usize = 0x50;
 /// Each list's signed count follows its head by 0x10.
 const LIST_COUNT: usize = COUNTRY_COUNT - COUNTRIES;
-/// Node layout written by1413CC0D0: raw u32 tag +0, next pointer +0x10.
+/// Linked-list node: raw u32 tag followed by its next pointer.
 pub const NODE_TAG: usize = 0;
 pub const NODE_NEXT: usize = 0x10;
-///141609460 subtracts recent joins and adds convoy escort raw values.
+/// Positioning subtracts recent joins and adds raw convoy-escort values.
 pub const RECENT_JOIN: usize = 0x140;
 pub const ESCORT: usize = 0x148;
 /// Sorted raw lookup keys:initial positioning, screening, positioning,
@@ -170,8 +168,8 @@ pub fn read(
 ) -> Result<Row, &'static str> {
     let count = field::<i32>(memory, side, COUNTRY_COUNT)?;
     let secondary = field::<i32>(memory, side, SECONDARY_COUNTRIES + LIST_COUNT)?;
-    // Native1415B4BB0 only resolves countries for nonempty membership; the
-    // country-table header then also bounds the list walks.
+    // Resolve countries only for nonempty membership; the country-table header
+    // then bounds the list walks.
     let reader = if count > 0 || secondary > 0 {
         Some(ccountry::Reader::new(memory, base, state)?)
     } else {
@@ -214,8 +212,8 @@ pub fn read(
             row.modifiers[scope] = values(memory, add(leader, 0x418)?)?;
         }
     }
-    // Native1415B4BB0 only runs country/region/terrain branches for nonempty
-    // side-country membership. Its country is the first linked-list node.
+    // Country, region and terrain branches require nonempty side membership.
+    // The selected country comes from the first linked-list node.
     if let Some(reader) = reader.filter(|_| count > 0) {
         let country = reader.resolve(arena[row.countries[0]])?;
         row.modifiers[0] = values(

@@ -156,6 +156,8 @@ fn complete_empty_and_absent_history_are_different_and_coverage_is_preserved() {
 
 #[test]
 fn modded_sub_unit_and_renamed_sea_zone_use_the_effective_content_stack() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_, base) = folder_catalogue(&[
         (
             "common/units/base.txt",
@@ -273,6 +275,8 @@ fn repeated_provinces_in_one_region_keep_the_sinking_place() {
 
 #[test]
 fn absent_class_art_and_ambiguous_places_are_not_invented() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (cat, _folder) = folder_catalogue(&[
         (
             "common/units/classes.txt",

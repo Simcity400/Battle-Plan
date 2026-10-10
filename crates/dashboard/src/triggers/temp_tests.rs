@@ -12,7 +12,9 @@ fn temp_effects(text: &str) -> installed_content::parser::native::Read {
 }
 
 #[test]
-fn temp_modulo_uses_native_integer_operands_and_guards() {
+fn temp_modulo_uses_integer_operands_and_guards() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = with_variables(variables_frame(), &[(1, 100, &[("bottom", i64::MIN)])]);
     with_world(&frame, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
@@ -46,7 +48,9 @@ fn temp_modulo_uses_native_integer_operands_and_guards() {
 }
 
 #[test]
-fn temp_modulo_consumes_the_native_effect_reader_form() {
+fn temp_modulo_consumes_the_effect_reader_form() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let read = temp_effects(
         "body = { set_temp_variable = { n = 8.9 }
                   modulo_temp_variable = { var = n value = 2.5 }
@@ -73,6 +77,8 @@ fn temp_modulo_consumes_the_native_effect_reader_form() {
 
 #[test]
 fn temp_random_bare_scalar_keeps_the_counted_reader_refusal() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let read = temp_effects("body = { set_temp_variable_to_random = runtime_name }");
     let refusals: Vec<_> = read
         .misreads
@@ -84,13 +90,16 @@ fn temp_random_bare_scalar_keeps_the_counted_reader_refusal() {
         .collect();
     assert_eq!(refusals.len(), 1, "{read:?}");
     assert!(
-        refusals[0].what.contains("14047EF60") && refusals[0].what.contains("140481030"),
+        refusals[0].what.contains("its value reader is unsupported")
+            && refusals[0].what.contains("by-key reading retained"),
         "{read:?}"
     );
 }
 
 #[test]
 fn temp_modulo_caches_the_target_before_rhs_alias_mutations() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     with_world(
         &positive_variables_frame(),
         "ALI = { original_tag = GER set_temp_variable = { n = 9 } }",
@@ -118,6 +127,8 @@ fn temp_modulo_caches_the_target_before_rhs_alias_mutations() {
 
 #[test]
 fn temp_variables_follow_order_across_scripted_triggers_and_scopes() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use installed_content::scripted_triggers::Template;
 
     let frame = positive_variables_frame();
@@ -164,7 +175,9 @@ fn temp_variables_follow_order_across_scripted_triggers_and_scopes() {
 }
 
 #[test]
-fn temp_variables_use_native_fixed5_arithmetic() {
+fn temp_variables_use_fixed5_arithmetic() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = with_variables(variables_frame(), &[(1, 100, &[("huge", i64::MAX)])]);
     with_world(&frame, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
@@ -224,6 +237,8 @@ fn temp_variables_use_native_fixed5_arithmetic() {
 
 #[test]
 fn temp_variables_read_the_destination_after_rhs_alias_conditions() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     with_world(
         &positive_variables_frame(),
         "ALI = { original_tag = GER set_temp_variable = { n = 7 }
@@ -253,6 +268,8 @@ fn temp_variables_read_the_destination_after_rhs_alias_conditions() {
 
 #[test]
 fn temp_variables_override_caller_temps_and_reset_for_the_next_context() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = variables_frame();
     let scopes = Scopes {
         target_state: Some(64),
@@ -301,6 +318,8 @@ fn temp_variables_override_caller_temps_and_reset_for_the_next_context() {
 
 #[test]
 fn temp_variables_keep_pending_writers_expressions_and_residuals_named() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = variables_frame();
     with_world(&frame, "", Err("none"), |world| {
         let scopes = Scopes::of(Scope::Country(0));
@@ -312,7 +331,7 @@ fn temp_variables_keep_pending_writers_expressions_and_residuals_named() {
         assert!(
             reasons
                 .iter()
-                .any(|why| why.contains("ScriptVariables.seed (CVariables+8)")),
+                .any(|why| why.contains("ScriptVariables.seed")),
             "{reasons:?}"
         );
         assert!(
@@ -329,7 +348,7 @@ fn temp_variables_keep_pending_writers_expressions_and_residuals_named() {
             .decided()
             .unwrap_err();
         assert!(
-            why.contains(REFUSED) && why.contains("CExpression") && why.contains("pow"),
+            why.contains(REFUSED) && why.contains("expression") && why.contains("pow"),
             "{why}"
         );
         // OR is true, but the first condition may skip the setter.
@@ -355,7 +374,9 @@ fn temp_variables_keep_pending_writers_expressions_and_residuals_named() {
 }
 
 #[test]
-fn format98_random_temp_trigger_and_mtth_share_the_native_seed_context() {
+fn format98_random_temp_trigger_and_mtth_share_the_seed_context() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = variables_frame();
     let TableView::Complete(TableRows::ScriptVariables(rows)) =
         &mut *frame.tables[TableId::ScriptVariables.index()]
@@ -392,7 +413,7 @@ fn format98_random_temp_trigger_and_mtth_share_the_native_seed_context() {
                 .decided(),
             Ok(true)
         );
-        // Each modifier consumes the next TLS fraction in one native MTTH context.
+        // Each modifier consumes the next TLS fraction in one mean-time context.
         let fields = installed_content::parser::parse(
             b"base=1 modifier={always=yes factor=random} modifier={always=yes factor=random}",
         )

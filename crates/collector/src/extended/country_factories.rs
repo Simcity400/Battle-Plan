@@ -1,4 +1,4 @@
-//! Each country's stored factory totals (CProductionStatus +0x2b0..+0x4a8):
+//! Each country's stored factory totals:
 //! the military, naval and civilian groups and the civilian consumers, one
 //! row per canonical country, read hourly in the Slow job.
 use crate::{sampling::qpc, spooling::table, table_capture::CaptureRows};

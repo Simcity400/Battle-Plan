@@ -545,6 +545,8 @@ fn project(scanned: &ScannedNavy, request: &NavyParams) -> NavyReply {
 
 #[test]
 fn navy_lexical_spelling_recovers_without_backdating_or_merging_reloaded_tokens() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut first = fleet_frame(0);
     *first.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
         reason: "unread".into(),
@@ -604,6 +606,8 @@ fn navy_lexical_spelling_recovers_without_backdating_or_merging_reloaded_tokens(
 
 #[test]
 fn navy_selected_parts_use_layered_mod_classes_and_native_role_masks() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!("hoi4_navy_mod_{}", uuid::Uuid::new_v4()));
     let base = root.join("base");
     let addon = root.join("mod");
@@ -702,7 +706,7 @@ fn navy_strength_is_exact_fixed5_hp_with_independently_known_maximum() {
             }),
             ..Default::default()
         },
-        // Native GetMaximumStrength clamps stored maxima to at least 100.
+        // Maximum strength clamps stored maxima to at least 100.
         ShipModelRow {
             ship: 32,
             counter: Some(ShipCounterInputs {

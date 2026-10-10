@@ -252,7 +252,7 @@ export function operationTooltip(reply: EspionageLogReply, row: LogRow<Operation
       { label: 'Detected', value: end.outcome.detected ? 'Yes' : 'No' });
   }
   if (current) {
-    // P: 142259590 -> Fixed5ToString@1424B6200(...,0) truncates native percent.
+    // Preparation percentages truncate to whole percent.
     if (at.state === 'running') rows.push({ label: 'Execution progress', value: current.elapsedDays === null ? 'Not recorded (native elapsed-day sentinel)' : `${current.elapsedDays} / ${current.durationDays} days` });
     rows.push({ label: 'Phases', value: current.currentPhase === null ? `${current.phaseCount} selected phases; current phase not recorded`
       : `Phase ${current.currentPhase + 1} of ${current.phaseCount}; phase names not recorded` },
@@ -260,7 +260,7 @@ export function operationTooltip(reply: EspionageLogReply, row: LogRow<Operation
       { label: 'Equipment readiness', value: 'Not recorded' },
       { label: 'Automatic commencement', value: current.autoCommence ? 'Enabled' : 'Disabled' },
       { label: 'Automatic repeat', value: current.autoRepeat ? 'Enabled' : 'Disabled' },
-      // P: 1413E9210 counts all +E0 slots, including the unassigned +EC slots.
+      // The slot count includes unassigned slots.
       { label: 'Operative slots (including unassigned)', value: String(current.assignedSlots) });
     if (current.operatives === null) rows.push({ label: 'Assigned operatives', value: 'Not recorded' });
     else {

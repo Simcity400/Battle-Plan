@@ -11,11 +11,11 @@ fn text(fields: &[Item], name: &str) -> Vec<u8> {
 }
 
 fn same(left: &[u8], right: &[u8]) -> bool {
-    left.eq_ignore_ascii_case(right) // _stricmp 14253D9F8, hashed-name lookup.
+    left.eq_ignore_ascii_case(right) // case-insensitive matching, hashed-name lookup.
 }
 
 fn absolute(value: i64) -> i64 {
-    value.wrapping_abs() // Int64_AbsToOutput 1424DA860.
+    value.wrapping_abs() // wrapping absolute value.
 }
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
@@ -32,13 +32,13 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<&installed_content::power_balance::Definition, String> {
         self.balance_database()?.definition(id).ok_or_else(|| {
             format!(
-                "balance {} is absent from content (140A7EA60)",
+                "balance {} is absent from content",
                 String::from_utf8_lossy(id)
             )
         })
     }
 
-    // FindByCountry 140E424F0: first manager entry containing the caller tag.
+    // country lookup: first manager entry containing the caller tag.
     fn balance_current(&self, scopes: Scopes) -> Result<Option<&'f PowerBalanceRow>, String> {
         let country = self.current_country(scopes)?;
         let frame = self.context.text.frame();
@@ -78,10 +78,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .complete::<tables::PowerBalances>()
             .map_err(|why| why.to_string())?
             .iter()
-            .find(|row| same(&row.balance, id))) // FindById 140E425D0.
+            .find(|row| same(&row.balance, id))) // ID lookup.
     }
 
-    // 140A7E7B0 localises/expands in a default EMPTY CEventScope.
+    // localises/expands in a default EMPTY event scope.
     fn balance_name(&self, key: &[u8]) -> Result<String, String> {
         if key.is_empty() {
             return Ok(String::new());
@@ -96,7 +96,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<String, String> {
         match definition.sides.iter().find(|side| same(side, id)) {
             Some(side) => self.balance_name(side),
-            None => Ok(String::new()), // FindSide 140A7E960's null side.
+            None => Ok(String::new()), // The null side.
         }
     }
 
@@ -123,7 +123,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 ..Default::default()
             },
         )?;
-        // 140482860/1404844F0: raw static text, expanded wrapper, no LF.
+        // raw static text, expanded wrapper, no LF.
         self.char_native_text(
             if remove {
                 b"EFFECT_REMOVE_POWER_BALANCE_MODIFIER"
@@ -158,7 +158,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             &[("POWER_BALANCE", Argument::Text(&balance))],
             scopes,
             true,
-        ) // 140484040.
+        )
     }
 
     pub(in crate::effect_description) fn balance_set(
@@ -200,7 +200,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let trend = self.balance_side(definition, if value < 0 { &left } else { &right })?;
         let balance = self.balance_name(&definition.id)?;
         let mut out = String::new();
-        // 140484970: changing the definition emits removal then one 5-arg add.
+        // changing the definition emits removal then one 5-arg add.
         if changed {
             if let Some(current) = current {
                 let old = self.balance_name(&self.balance_definition(&current.balance)?.id)?;
@@ -233,7 +233,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 continue;
             }
             if old.is_empty() && definition.sides.iter().any(Vec::is_empty) {
-                return Err("PowerBalances lacks the valid/null identity of an unnamed current side (+0x18/+0x20, 140484970; writer 140E43A30)".into());
+                return Err(
+                    "PowerBalances lacks the valid/null identity of an unnamed current side".into(),
+                );
             }
             if !old.is_empty() {
                 let old = self.balance_side(definition, old)?;
@@ -308,7 +310,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 "\u{13}BoP_{}_texticon ",
                 if value < 0 { "left" } else { "right" }
             )
-        }; // 140485AE0.
+        };
         let balance = self.balance_name(&definition.id)?;
         let mut out = self.char_native_text(
             b"EFFECT_ADD_POWER_BALANCE_VALUE",
@@ -333,13 +335,16 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .complete::<tables::PowerBalanceRanges>()
             .map_err(|why| why.to_string())?;
         let mut selected = None;
-        // 140482CE0: last STRICT interval match in the recorded runtime array.
+        // last STRICT interval match in the recorded runtime array.
         for row in rows.iter().filter(|row| row.record == current.ordinal) {
             let Some(range) = self
                 .balance_database()?
                 .range(&definition.id, &row.identity)?
             else {
-                return Err("PowerBalanceRanges has an unnamed runtime range; native range identity/provenance is unrecorded (+0x68, 140482CE0)".into());
+                return Err(
+                    "PowerBalanceRanges has an unnamed runtime range; range identity is unrecorded"
+                        .into(),
+                );
             };
             if range.min < predicted && predicted < range.max {
                 selected = Some(range);
@@ -354,10 +359,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let old = self
             .balance_database()?
             .range(&definition.id, &current.active_range)?;
-        let range = self.localised(&selected.id, &[], scopes, true)?; // vf9 140A7E780.
+        let range = self.localised(&selected.id, &[], scopes, true)?;
         while !out.ends_with("\n\n") {
             out.push('\n');
-        } // EnsureTrailingNewlines 1424B6660.
+        } // trailing newlines.
         out.push_str(&self.char_native_text(
             b"EFFECT_POWER_BALANCE_VALUE_MOVED",
             &[
@@ -371,7 +376,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if !out.is_empty() && !out.ends_with('\n') {
             out.push('\n');
         }
-        // 14054AD00/14054AE00 accumulate only numeric entries, not source tooltips/hidden sets.
+        // accumulate only numeric entries, not source tooltips/hidden sets.
         let mut difference = Modifiers::default();
         for (source, scale) in old
             .into_iter()

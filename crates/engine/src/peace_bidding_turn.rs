@@ -1,12 +1,12 @@
-//! CPeaceBiddingTurn, owned by one conference history node until 140BAE7C0.
+//! Peace bidding turn owned by one conference history node until destruction.
 
 use crate::{Memory, cpdx_array::Array, read};
 
-/// Primary vtable: a729 RTTI and constructors 1419E0B20/1419E0CD0/1419E0D30.
+/// Bidding-turn primary vtable.
 pub const VTABLE_RVA: usize = 0x0295_7900;
-/// Raw country reference; 1419E1A20 serializes it.
+/// Serialized raw country reference.
 pub const COUNTRY: usize = 0x08;
-/// Ordered owning action-pointer array; 1419E1A20 serializes it, E23760 deletes it.
+/// Ordered owning action-pointer array, serialized before destruction.
 pub const ACTIONS: usize = 0x10;
 
 pub fn copy(

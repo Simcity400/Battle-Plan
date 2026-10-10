@@ -135,7 +135,7 @@ pub(super) fn presize(
             .checked_add(tactic.required_token_bytes)
             .ok_or("preferred tactic sizing byte count overflow")?;
         // Hints use fallible advisory storage: a failed hint cannot terminate
-        // capture. 140EBDB60/140ECE4F0 supply the original slot population.
+        // capture. The original slot population supplies the demand.
         let mut local_slots = 0;
         let prepared = add_rows(&mut local_slots, slot_demand).and_then(|()| {
             research_inputs

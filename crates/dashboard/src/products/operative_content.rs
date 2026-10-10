@@ -57,7 +57,7 @@ pub struct CapturedStatus {
 }
 
 fn capture_duration_days(layers: &installed_content::ResolvedLayers) -> Result<i32, String> {
-    // RemainingCaptureDays@140C01EA0 reads this native Int32 define.
+    // Remaining capture days uses this Int32 define.
     installed_content::defines::read(layers)
         .and_then(|defines| defines.int32("NOperatives", "OPERATIVE_CAPTURE_DURATION_IN_DAYS"))
         .map_err(|error| {
@@ -144,8 +144,8 @@ impl OperativeContent {
         } else {
             Vec::new()
         };
-        // The native mission/status branches are the same ones the roster uses
-        // (140FADF90 / 141E2DC80); no recorded assignment is invented here.
+        // The mission/status branches are the same ones the roster uses;
+        // no recorded assignment is invented here.
         assignments
             .extend((0..=8).map(|variant| (format!("mission {variant}"), self.mission(variant))));
         assignments.extend(
@@ -164,10 +164,10 @@ impl OperativeContent {
         findings
     }
 
-    /// LookupCharacter@140C0EEF0 must have proved the operative's full
-    /// reference. ResolveLeaderPortrait@140B3A100 selects character role4,
-    /// large size1 for native category3. Without that link it uses the
-    /// leader's own +0x100 portrait, which this recording does not hold.
+    /// Character lookup must prove the operative's full reference.
+    /// Portrait selection uses character role 4, large size 1 for category 3.
+    /// Without that link it uses the leader's own portrait, which this
+    /// recording does not hold.
     pub fn portrait(
         &self,
         character: u32,
@@ -182,9 +182,8 @@ impl OperativeContent {
         experience(&self.catalogue.localisation, &self.skills, skill, raw)
     }
 
-    /// Captured agency status@141E2D760 returns two strings and a fraction.
-    /// +0xFB8 is its inline CGameDate (getter140C06020), so +8 is exactly
-    /// the recorded capture raw hour +0xFC0, not another date.
+    /// Captured agency status returns two strings and a fraction.
+    /// Its date operand is exactly the recorded capture raw hour.
     pub fn captured_status(
         &self,
         captured_hour: i32,
@@ -198,15 +197,14 @@ impl OperativeContent {
             ..CapturedStatus::default()
         };
         let duration = if captured_hour == engine::cgame_date::NULL_RAW_HOUR {
-            Err("Native captured duration and progress have no recorded capture date (+0xFC0; 141E2D760).".to_owned())
+            Err("Captured duration and progress have no recorded capture date.".to_owned())
         } else {
             self.capture_duration_days.clone()
         };
         let duration = duration.and_then(|duration| {
             let (remaining, progress) = capture_progress(captured_hour, now, duration);
             status.progress = Some(progress);
-            // MOV@141E2D9F0 copies RemainingCaptureDays' ESI into NUM as
-            // localiser type5 (Int32), then calls DURATION_DAYS@141E2DA08.
+            // Remaining capture days is passed as Int32 NUM to DURATION_DAYS.
             catalogue::localised_with(
                 &self.catalogue.localisation,
                 "DURATION_DAYS",
@@ -226,7 +224,7 @@ impl OperativeContent {
         status
     }
 
-    /// Cooldown status@141E2DC80 localises two independent strings and an f32 fraction.
+    /// Cooldown status localises two independent strings and an f32 fraction.
     pub fn cooldown_status(&self, kind: u32, start: i32, end: i32, now: i32) -> CapturedStatus {
         let (remaining, progress) = cooldown_progress(kind, start, end, now);
         let mut status = CapturedStatus {
@@ -236,7 +234,7 @@ impl OperativeContent {
         let assignment = self.cooldown_name(kind);
         status.name = assignment.name;
         status.missing = assignment.missing;
-        // MOV@141E2DE0B passes GetModifierCooldownDays' R15D as Int32 NUM.
+        // Cooldown days is passed as Int32 NUM.
         match catalogue::localised_with(
             &self.catalogue.localisation,
             "DURATION_DAYS",
@@ -255,7 +253,7 @@ impl OperativeContent {
     }
 
     fn cooldown_name(&self, kind: u32) -> Assignment {
-        // Executable literals in141E2DC80, resolved through recorded localisation.
+        // Status keys resolve through recorded localisation.
         let key = match kind {
             2 => "OPERATIVE_HARMED_IN_MISSION",
             3 => "OPERATIVE_FORCED_INTO_HIDING",
@@ -281,7 +279,7 @@ impl OperativeContent {
                 "OPERATIVE_CAPTURED_BY",
                 &[("CAPTURER", Argument::Text(name))],
                 View::Plain,
-            )), //141E2D760
+            )),
             None => Assignment {
                 missing: Some("The capturer's name at this hour is unknown.".into()),
                 ..Assignment::default()
@@ -298,10 +296,9 @@ impl OperativeContent {
         if operative_rows::captured(row.assignment) {
             return self.captured_name(capturer_name);
         }
-        // 140C17DF0's state dispatch: cooldown1, disbanded2,
-        // mission3, operation4, killed5.
-        // Agency status141E2F4C0 only presents 0/1/3/4; terminal2/5 have
-        // no agency status text.
+        // Assignment states are cooldown 1, disbanded 2, mission 3,
+        // operation 4 and killed 5. Agency status presents only 0/1/3/4;
+        // terminal 2/5 have no agency status text.
         match row.assignment {
             1 => match operative_rows::cooldown(row) {
                 Ok(Some((kind, _, _))) => self.cooldown_name(kind),
@@ -312,14 +309,11 @@ impl OperativeContent {
                 Ok(None) => Assignment::default(),
             },
             2 => Assignment {
-                missing: Some(
-                    "Native disbanded assignment has no active agency status text (141E2F4C0)."
-                        .into(),
-                ),
+                missing: Some("Disbanded assignment has no active agency status text.".into()),
                 ..Assignment::default()
             },
-            // The collector stores discriminator0 as None; this is a known
-            // native no-mission value (+0x18 getter140FADB40), not a gap.
+            // The collector stores discriminator 0 as None; this is a known
+            // no-mission value, not a gap.
             3 => self.mission(row.action_variant.unwrap_or(0)),
             4 => match operation_token {
                 Some(token) => self.operation(token),
@@ -329,9 +323,7 @@ impl OperativeContent {
                 },
             },
             5 => Assignment {
-                missing: Some(
-                    "Native killed assignment has no active agency status text (141E2F4C0).".into(),
-                ),
+                missing: Some("Killed assignment has no active agency status text.".into()),
                 ..Assignment::default()
             },
             other => Assignment {
@@ -356,7 +348,7 @@ impl OperativeContent {
                 ..Assignment::default()
             };
         };
-        // 140FADF90 appends the executable's _TITLE then localises.
+        // Mission titles append _TITLE before localisation.
         let mut result = named(catalogue::localised_with(
             &self.catalogue.localisation,
             &format!("{key}_TITLE"),
@@ -364,10 +356,9 @@ impl OperativeContent {
             View::Plain,
         ));
         if variant != 0 {
-            // 140FAE190 creates operative_mission_icons_small|<enum>.
-            // CGameBitmapFont::text_icon_lookup@14162E880 first searches
-            // the executable's GFX_ prefix, then bare alias, and subtracts
-            // one from the decimal frame. No GUI fallback on this path.
+            // Mission icons use operative_mission_icons_small|<enum>.
+            // Text-icon lookup first searches the GFX_ prefix, then the bare alias,
+            // and subtracts one from the decimal frame. No GUI fallback on this path.
             const ALIAS: &str = "operative_mission_icons_small";
             let mut icons = self.icons.lock().unwrap_or_else(|error| error.into_inner());
             let icon = icons
@@ -416,16 +407,15 @@ impl OperativeContent {
                 };
             }
         };
-        // LocalizeOperationName@140A6DF00 localises definition+0x4D0;
-        // COperation's constructor140A6C9F0 leaves it empty, no token fallback.
+        // Operation names localise the stored name key, initially empty,
+        // with no token fallback.
         let mut result = named(catalogue::localised_with(
             &self.catalogue.localisation,
             &metadata.name,
             &[],
             View::Plain,
         ));
-        // Agency portrait141E21710 uses definition+0x4B0 (map_icon),
-        // rather than the operation card's +0x490 icon.
+        // Agency portraits use map_icon, separate from the operation card's icon.
         if !metadata.map_icon.is_empty() {
             match self.icon(&metadata.map_icon, 0) {
                 Ok(icon) => result.icon = Some(icon),
@@ -473,9 +463,9 @@ fn named(name: Result<String, String>) -> Assignment {
     }
 }
 
-/// 140C01EA0 day-rounds both raw hours before subtracting; 141E2D760
-/// clamps elapsed to zero and elapsed+remaining to one, then divides as f32.
-/// Subtraction/addition are native signed dword wrapping operations.
+/// Day-round both raw hours before subtracting; clamp elapsed to zero
+/// and elapsed+remaining to one, then divide as f32.
+/// Subtraction/addition are signed dword wrapping operations.
 fn capture_progress(captured_hour: i32, now: i32, duration: i32) -> (i32, f32) {
     let captured_day = captured_hour.wrapping_sub(engine::cdate::HOUR_EPOCH) / 24;
     let now_day = now.wrapping_sub(engine::cdate::HOUR_EPOCH) / 24;
@@ -485,7 +475,7 @@ fn capture_progress(captured_hour: i32, now: i32, duration: i32) -> (i32, f32) {
     (remaining, elapsed as f32 / denominator as f32)
 }
 
-/// GetModifierCooldownDays@140C0A130 uses signed hour arithmetic and truncation.
+/// Cooldown days uses signed hour arithmetic and truncation.
 pub(super) fn cooldown_remaining(kind: u32, end: i32, now: i32) -> i32 {
     if kind == 0 {
         return 0;
@@ -503,8 +493,8 @@ fn cooldown_progress(kind: u32, start: i32, end: i32, now: i32) -> (i32, f32) {
     (remaining, elapsed as f32 / duration as f32)
 }
 
-// GetOperativeMissionLocalizationKey@140FADB60: these are executable
-// literal keys, not a catalogue of authored mission types.
+// These are mission localisation interface keys,
+// not a catalogue of authored mission types.
 fn mission_key(variant: u32) -> Option<&'static str> {
     Some(match variant {
         0 => "OPERATIVE_MISSION_NO_MISSION",
@@ -520,8 +510,8 @@ fn mission_key(variant: u32) -> Option<&'static str> {
     })
 }
 
-/// experience_ratio@140C0A4B0: next skill/category3, signed cost*100000,
-/// native signed multiply wraps, signed division truncates toward zero.
+/// Experience uses next skill/category 3 and signed cost*100000.
+/// Signed multiply wraps; signed division truncates toward zero.
 /// The sentinel is present, not missing; negative/over-full ratios stand.
 fn native_progress(raw: i64, cost: i32) -> i64 {
     let denominator = i64::from(cost) * 100_000;
@@ -569,8 +559,8 @@ fn experience(
         };
     };
     let progress_raw = cost.map(|cost| native_progress(raw, cost));
-    // COperativeLeaderItem skill tooltip141AB3910 (also140C03FC0):
-    // SKILL is Int32, PROGRESS is Fixed5, native-selected progress/cap key.
+    // Skill tooltip arguments: SKILL is Int32, PROGRESS is Fixed5,
+    // with the selected progress/cap key.
     let text = match progress_raw {
         Some(progress) => catalogue::localised_with(
             localisation,
@@ -653,6 +643,8 @@ mod tests {
 
     #[test]
     fn operations_reuse_native_metadata_variables_and_nested_reached_forms() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (operations, _) = installed_content::intelligence::parse_operations(
             br#"@name = MOD_OPERATION_NAME
             operation_test = {
@@ -673,6 +665,8 @@ mod tests {
 
     #[test]
     fn operations_keep_named_refusals_for_unsupported_targets_and_bad_text() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         for (bytes, reason) in [
             (
                 b"operation_test = { name = label operation_target = { target_array = scope } }"
@@ -693,6 +687,8 @@ mod tests {
 
     #[test]
     fn duplicate_native_operation_definitions_keep_first_and_unrelated_names() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (content, _folder) = test_content(&[
             (
                 "common/operations/fixture.txt",
@@ -715,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn mission_discriminators_are_executable_keys_and_unknown_is_refused() {
+    fn mission_discriminators_select_keys_and_unknown_is_refused() {
         for variant in 0..=8 {
             assert!(mission_key(variant).is_some());
         }
@@ -766,6 +762,8 @@ mod tests {
 
     #[test]
     fn captured_status_uses_content_define_and_separate_native_strings() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (content, _folder) = test_content(&[
             (
                 "common/defines/zz_capture.lua",
@@ -791,11 +789,13 @@ mod tests {
             content.captured_status(engine::cgame_date::NULL_RAW_HOUR, epoch, Some("Name"));
         assert!(null_date.duration.is_none());
         assert!(null_date.progress.is_none());
-        assert!(null_date.missing.unwrap().contains("capture date (+0xFC0"));
+        assert!(null_date.missing.unwrap().contains("recorded capture date"));
     }
 
     #[test]
     fn captured_status_names_an_unavailable_define_and_keeps_empty_assignment_text() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (content, _folder) = test_content(&[
             (
                 "localisation/english/fixture_l_english.yml",
@@ -859,6 +859,8 @@ mod tests {
 
     #[test]
     fn assignment_uses_native_keys_and_refuses_details_the_recording_lacks() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (content, _folder) = test_content(&[
             (
                 "localisation/english/fixture_l_english.yml",
@@ -898,6 +900,8 @@ mod tests {
     }
     #[test]
     fn cooldown_status_uses_remaining_hours_native_clamping_and_modded_text() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (content, _folder) = test_content(&[(
             "localisation/english/fixture_l_english.yml",
             "\u{feff}l_english:\n OPERATIVE_HARMED_IN_MISSION:0 \"Authored injury\"\n OPERATIVE_FORCED_INTO_HIDING:0 \"Authored hiding\"\n DURATION_DAYS:0 \"$NUM|.0$ authored days\"\n",

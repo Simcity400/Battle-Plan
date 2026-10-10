@@ -1061,7 +1061,7 @@ fn cause(message: &str) -> String {
 }
 
 /// `word` with each number that starts at a word boundary masked, hex
-/// digits and dots included (an address such as `1424AC5E0`, a date such
+/// digits and dots included (a hexadecimal value such as `123ABCDEF`, a date such
 /// as `1936.1.1`); digits inside a name are kept.
 fn numbers(word: &str) -> String {
     let mut out = String::with_capacity(word.len());
@@ -1214,7 +1214,7 @@ mod tests {
             "Ideas unavailable in <file>: line N: a block <text> at N"
         );
         assert_eq!(
-            cause("common/x/N_1.txt line 4: key_2 has no operator: 1424AC5E0 reads 1936.1.1"),
+            cause("common/x/N_1.txt line 4: key_2 has no operator: 123ABCDEF reads 1936.1.1"),
             "<file> line N: key_2 has no operator: N reads N"
         );
         let about = Diagnostic::about("r", Kind::Refused, "raid GER_1", "3 is bad");
@@ -1461,7 +1461,7 @@ mod tests {
     #[test]
     fn causes_keep_producer_reasons_without_wording_specific_grouping() {
         assert_eq!(
-            cause("localisation key_a holds the scripted expression \"[ROOT.GetName]\""),
+            cause("localisation key_a holds the scripted expression \"[SCOPE.ExampleLabel]\""),
             "localisation key_a holds the scripted expression <text>"
         );
         assert_eq!(

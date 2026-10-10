@@ -1,4 +1,4 @@
-//! Compiled mesh passes. Native material/state14224BB00, submission1422644C0.
+//! Compiled mesh passes with retained material state and ordered submission.
 use super::*;
 use crate::map::{mesh_pose, mesh_shader, shader_scene};
 use installed_content::pdxshader::program::Stage;
@@ -36,7 +36,7 @@ pub(super) struct Descriptor {
     pub lods: Vec<Vec<Part>>,
 }
 
-///1422F55B0 groups accepted materials, then appends the unnumbered records.
+/// The game groups accepted materials, then appends the unnumbered records.
 fn lods<T>(records: impl IntoIterator<Item = (Option<i32>, T)>) -> io::Result<Vec<Vec<T>>> {
     let mut lods = Vec::new();
     let mut unnumbered = Vec::new();
@@ -106,7 +106,7 @@ pub(super) fn descriptor(
 }
 
 impl Descriptor {
-    ///1422611D0 compares y²+x²+z² against the squared ladder backwards;
+    /// The game compares y²+x²+z² against the squared ladder backwards;
     ///below every threshold (or without a ladder), use the last descriptor LOD.
     fn lod(&self, position: [f32; 3], eye: [f32; 3]) -> io::Result<Option<usize>> {
         let Some(last) = self.lods.len().checked_sub(1) else {
@@ -134,11 +134,11 @@ pub struct Inputs<'a> {
     pub samples: u32,
     pub frames: &'a [&'a [u8]],
     pub grid: &'a [u8],
-    ///140B47790 physicalPS4..13, independent of material samplers.
+    /// Physical pixel slots 4..13, independent of material samplers.
     pub textures: [&'a wgpu::TextureView; 10],
 }
 
-///1422611D0 appends regular/alternate/caster queues without sorting.
+/// The game appends regular/alternate/caster queues without sorting.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Queue {
     Regular,
@@ -156,9 +156,9 @@ impl Queue {
     }
 }
 
-///1422644C0 zeroes CPU scratch once per queue invocation. Later actors without
-///userdata retain its preceding bytes. The mode0 buffer (1422626F0) selects a
-///new allocation on each upload (1423FB9F0); a VS-only bind retains PS's snapshot.
+/// The game zeroes CPU scratch once per queue invocation. Later actors without
+///userdata retain its preceding bytes. The mode0 buffer selects a
+///new allocation on each upload; a VS-only bind retains PS's snapshot.
 pub struct ObjectConstants {
     bytes: [u8; 208],
     pixel: Option<[u8; 208]>,
@@ -496,7 +496,7 @@ fn select(library: &mut Library, part: &Part, caster: bool) -> io::Result<Select
     {
         return Ok(selection);
     }
-    //14208CA80/142251E30 install the fallback without material UV defines.
+    // Install the fallback without material UV defines.
     library
         .load(b"gfx/FX/pdxmesh.lua", &[])
         .map_err(invalid)?
@@ -505,8 +505,8 @@ fn select(library: &mut Library, part: &Part, caster: bool) -> io::Result<Select
         .ok_or_else(|| invalid("native PdxMeshColor fallback is unavailable"))
 }
 
-///14224BB00 appends Alpha to the skin suffix; absent Alpha retains the base
-///variant (not PdxMeshColor).1422644C0 uses this handle for object+78.
+/// The game appends Alpha to the skin suffix; absent Alpha retains the base
+/// variant (not PdxMeshColor). Draws use this handle as the alpha variant.
 fn select_alpha(library: &mut Library, part: &Part) -> io::Result<Selection> {
     let base = select(library, part, false)?;
     let defines = if part.geometry.uv1 {
@@ -536,8 +536,8 @@ fn select_alpha(library: &mut Library, part: &Part) -> io::Result<Selection> {
         .unwrap_or(base))
 }
 
-///14224F250 stores material+7C (caster texture) and+7D (alternate queue).
-///The shadow-state check runs only when the lit state did not admit a texture.
+/// Select whether the material uses a caster texture and the alternate queue.
+/// The shadow-state check runs only when the lit state did not admit a texture.
 fn material_flags(
     lit: &installed_content::pdxshader::BlendState,
     shadow: &installed_content::pdxshader::BlendState,
@@ -569,7 +569,7 @@ fn userdata(
     instance: ModelInstance,
     alpha: f32,
 ) -> io::Result<Option<[f32; 8]>> {
-    //141633D00/141663E70/1416542A0/1412354B0 copy1427115B0 then142711570.
+    // Initialize actor userdata from the two default payload blocks.
     let mut data = [0., 0., 1., 1., 1., 0., 0., 0.];
     match label {
         "city sprawl" | "railway bridges" => return Ok(None),
@@ -579,7 +579,7 @@ fn userdata(
                 && let Some(authored) = &source.game_data
             {
                 let authored = authored.as_ref().map_err(|e| invalid(e.clone()))?;
-                //141276C20: initialize the last (at most fourth) atlas column.
+                // Initialize the last (at most fourth) atlas column.
                 data[0] = authored.atlas_size[0].wrapping_sub(1).min(3) as f32;
                 data[2] = authored.atlas_size[0] as f32;
                 data[3] = authored.atlas_size[1] as f32;
@@ -591,7 +591,7 @@ fn userdata(
             }
         }
         "supply trains" => {
-            //141C503B0 sends32 bytes recursively; TrainColor plus endpoint plane.
+            // Send 32 bytes recursively; TrainColor plus endpoint plane.
             data = [
                 1.,
                 1.,
@@ -653,7 +653,7 @@ impl ModelPass {
             return Ok(());
         }
         let caster = queue == Queue::Caster;
-        //141C507B0 ->14227B390 forces every train actor and attachment.
+        // The game forces every train actor and attachment.
         let forced = self.label == "supply trains";
         let mut native = self.native.borrow_mut();
         if native.is_none() {
@@ -692,7 +692,7 @@ impl ModelPass {
         let mut previous: Option<(Key, shader_pipeline::gpu::Bindings)> = None;
         let mut bound_vertices = None;
         let mut bound_indices = None;
-        //140B47790 physical PS4..13; material slots 0..2 are replaced per draw.
+        // Physical pixel slots 4..13; material slots 0..2 are replaced per draw.
         let mut textures: Textures = std::array::from_fn(|_| None);
         if !caster {
             for (i, texture) in inputs.textures.iter().enumerate() {
@@ -761,8 +761,8 @@ impl ModelPass {
                                     return Err(PrepareError::Actor(invalid(why.clone())));
                                 }
                             }
-                            // No rest palette: 142399990 returns without a played clip;
-                            // 14239B0B0/1422644C0 still upload the allocated bytes.
+                            // No rest palette: the game returns without a played clip;
+                            // Draws still upload the allocated bytes.
                             let skin_pose = descriptor.lods[lod]
                                 .iter()
                                 .any(|source| !source.geometry.skin.is_empty())
@@ -800,7 +800,7 @@ impl ModelPass {
                             } {
                                 return Ok(());
                             }
-                            //14227B410 propagates the ROOT actor payload to every child.
+                            // The game propagates the ROOT actor payload to every child.
                             let root = rig.nodes[0].native.as_ref().ok_or_else(|| {
                                 PrepareError::Actor(invalid("native root actor source unavailable"))
                             })?;
@@ -869,7 +869,7 @@ impl ModelPass {
                                         source.geometry.uv1,
                                         !source.geometry.skin.is_empty(),
                                     )?;
-                                    // Retained declarations bind 142250C70's compact stride.
+                                    // Retained declarations bind the game's compact stride.
                                     layouts[0].stride = source.geometry.stride;
                                     let geometry = match native.geometry.get(&source.geometry_key) {
                                         Some(geometry) => geometry.clone(),
@@ -1165,7 +1165,7 @@ mod tests {
         };
         //A textured lit cutout never reaches the shadow-state alternate override.
         assert_eq!(material_flags(&cutout, &cutout, true), (true, false));
-        //The same shadow state sets+7D if the lit state had no textured test.
+        // The same shadow state selects the alternate queue when the lit state had no textured test.
         assert_eq!(material_flags(&opaque, &cutout, true), (true, true));
         assert_eq!(material_flags(&cutout, &cutout, false), (false, true));
         assert_eq!(material_flags(&opaque, &opaque, true), (false, false));
@@ -1324,7 +1324,7 @@ mod tests {
 
     #[test]
     fn actor_matrix_keeps_affine_w_and_separate_import_scale() {
-        //1424E7450 scales the twelve basis floats, never the homogeneous row.
+        // The game scales the twelve basis floats, never the homogeneous row.
         let actor = mesh::Transform {
             basis: [[0., 0., 2.], [0., 2., 0.], [-2., 0., 0.]],
             translation: [7., 11., 13.],

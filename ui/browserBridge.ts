@@ -125,7 +125,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     return library;
   };
   return {
-    name: 'hoi4-browser-recordings', apply: 'serve',
+    name: 'battle-plan-browser-recordings', apply: 'serve',
     configureServer(server) {
       server.httpServer?.once('close', () => { picker?.abort(); fail('Development server stopped'); });
       server.middlewares.use('/api/recordings', async (request, response) => {

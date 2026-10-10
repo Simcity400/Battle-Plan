@@ -1,4 +1,4 @@
-//! CEventScope copies and description-only target storage (14146BB30).
+//! Event scope copies and description-only target storage.
 
 use std::{cell::RefCell, rc::Rc};
 
@@ -49,13 +49,13 @@ pub(super) fn linked(graph: &EventScopes, at: usize, link: Link) -> Result<usize
     match link {
         Link::Itself if at < graph.scopes.len() => Ok(at),
         Link::Scope(to) if to < graph.scopes.len() => Ok(to),
-        Link::Unknown => Err("event scope link is not known here (14146BB30)".into()),
+        Link::Unknown => Err("event scope link is not known here".into()),
         _ => Err("event scope link is outside the caller graph".into()),
     }
 }
 
 fn terminal(graph: &EventScopes, mut at: usize, root: bool) -> Result<usize, String> {
-    // Both native storage walks stop after 101 links (140529520/14052D4F0).
+    // Both storage walks stop after 101 links.
     for _ in 0..101 {
         let current = graph.scopes.get(at).ok_or("event scope is not given")?;
         let next = linked(graph, at, if root { current.root } else { current.from })?;
@@ -99,8 +99,8 @@ pub(crate) fn project(graph: &EventScopes, at: usize) -> Result<Scopes, String> 
         target_state: graph.variables.target_state,
         target_province: graph.variables.target_province,
         target_leader: graph.variables.target_leader,
-        // Clearing country/state/combat setters (14052DD00/14052ECE0/
-        // 14052DC80 -> 14052F3F0) leave no character+50. Retained operands
+        // Clearing country/state/combat setters
+        // leave no character. Retained operands
         // use distinct combined carriers, including after link copies.
         bare: matches!(
             scope.this,
@@ -110,7 +110,7 @@ pub(crate) fn project(graph: &EventScopes, at: usize) -> Result<Scopes, String> 
     })
 }
 
-/// Native outer completion is independent of whether an operand needed World.
+/// Outer completion is independent of whether an operand needed World.
 pub(crate) fn cleanup_description(graph: &mut EventScopes, at: usize) -> Result<(), String> {
     if !graph.tooltip_targets.is_empty() {
         let owner = terminal(graph, at, false)?;
@@ -120,7 +120,7 @@ pub(crate) fn cleanup_description(graph: &mut EventScopes, at: usize) -> Result<
     Ok(())
 }
 
-/// 14146BB30/1410CFF00: local tooltip, local saved, global tooltip.
+/// Target lookup order: local tooltip, local saved, global tooltip.
 pub(crate) fn event_tooltip_target(
     graph: &EventScopes,
     at: usize,
@@ -178,7 +178,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         project(&graph, at)
     }
 
-    /// BeginScopedVariableRandomSeed@1405354A0: nested checks share TLS temps.
+    /// Nested checks share TLS temps.
     pub fn begin_description(&self) {
         if self.description_depth.get() == 0 && self.checking.get() == 0 {
             self.local_temps.borrow_mut().clear();
@@ -187,7 +187,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         self.description_depth.set(self.description_depth.get() + 1);
     }
 
-    /// 1405354A0 begins TLS in the outer caller, before child scope changes.
+    /// Begin TLS in the outer caller, before child scope changes.
     /// Retain an unavailable seed as a failed temp, without refusing unrelated text.
     pub(crate) fn begin_description_in(&self, scopes: Scopes) {
         let outer = self.description_depth.get() == 0 && self.checking.get() == 0;
@@ -197,7 +197,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         }
     }
 
-    /// 140529520 clears only terminal FROM storage and global tooltip targets.
+    /// Clear only terminal FROM storage and global tooltip targets.
     pub fn end_description(&self, scopes: Scopes) -> Result<(), String> {
         let depth = self.description_depth.get();
         if depth == 0 {
@@ -216,7 +216,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(())
     }
 
-    /// 14038D670 -> 14052D4F0: save the current object on terminal ROOT.
+    /// Save the current object on terminal ROOT.
     pub fn save_tooltip_target(&self, name: &[u8], scopes: Scopes) -> Result<(), String> {
         let at = scopes
             .cursor
@@ -227,11 +227,11 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             .ok_or("description target needs caller scope graph")?
             .borrow_mut();
         let owner = terminal(&graph, at, true)?;
-        // 14052DE40 projects UNIT/RAID, but has no PROJECT+0x90 arm.
+        // Saved targets project UNIT/RAID, but have no PROJECT arm.
         let target = match graph.scopes[at].this {
             EventObject::Project { .. } => EventObject::State(super::NULL_STATE),
-            // 14052DE40 checks country+8 before character+50 and writes one
-            // CSavedEventTarget arm; scope copies still retain both operands.
+            // Check country before character and write one
+            // saved-target arm; scope copies still retain both operands.
             EventObject::CountryUnitLeader { country, leader } => {
                 if self.variable_scope_has_country(country)? {
                     EventObject::Country(country)
@@ -254,8 +254,8 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(())
     }
 
-    /// 14038D6B0 -> 1401ED290 writes the description registry (+0x6D8),
-    /// not saved globals (+0x6C0). State precedes country in a combined scope.
+    /// Write the description registry, not saved globals.
+    /// State precedes country in a combined scope.
     pub(crate) fn save_global_tooltip_target(
         &self,
         name: &[u8],
@@ -279,7 +279,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 EventObject::State(state)
             }
             EventObject::CountryState { country, .. } => EventObject::Country(country),
-            // 1401ED290 also chooses positive country before ability caster.
+            // Choose positive country before ability caster.
             EventObject::CountryUnitLeader { country, leader } => {
                 if self.variable_scope_has_country(country)? {
                     EventObject::Country(country)
@@ -291,9 +291,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 return Ok(());
             }
             EventObject::Province(_) => {
-                return Err(
-                    "global target's province scope is not a native CEventScope (1401ED290)".into(),
-                );
+                return Err("global target's province scope is not an event scope".into());
             }
             target => target,
         };
@@ -329,7 +327,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             event_tooltip_target(&graph, at, name)?
         };
         Ok(target.map(|target| match (reader, target) {
-            // 14146BB30 and 1410CFF00 have no saved RAID context/text setter;
+            // Context and text have no saved RAID setter;
             // text also has no saved UNIT setter. Keep the caller's object.
             (Reader::Context | Reader::Text, EventObject::Raid(_))
             | (Reader::Text, EventObject::Unit(_)) => scopes.this,
@@ -388,7 +386,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             let Some(result) = self.enter_graph(then, head)? else {
                 return Ok(None);
             };
-            // Dotted-tail exit restores the original PREV (14146D64E).
+            // Dotted-tail exit restores the original PREV.
             let binding = self.event_graph.borrow();
             let mut graph = binding
                 .as_ref()
@@ -494,7 +492,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             Link::Itself => Link::Scope(source),
             other => other,
         };
-        // copy_members@1405296C0 carries links; only following one reads it.
+        // Copying members carries links; only following one reads it.
         copied.root = match graph.scopes[caller].root {
             Link::Itself => Link::Scope(caller),
             root => root,
@@ -503,7 +501,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         copied.this = event_object(this)?;
         let index = graph.scopes.len();
         graph.scopes.push(copied);
-        // copy_members@1405296C0 copies storage rather than sharing it.
+        // Copying members copies storage rather than sharing it.
         if let Some(targets) = graph.tooltip_targets.get(&source).cloned() {
             graph.tooltip_targets.insert(index, targets);
         }
@@ -513,14 +511,14 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(index)
     }
 
-    /// Fresh scorer scope with FROM copied independently (14047BB20/140C1D5B0).
+    /// Fresh scorer scope with FROM copied independently.
     pub(crate) fn fresh_country_scope(
         &self,
         country: Option<u32>,
         from: Option<Scopes>,
     ) -> Result<Scopes, String> {
         let binding = self.event_graph.borrow();
-        // Default construction keeps country zero (140528800).
+        // Default construction keeps country zero.
         let this = EventObject::Country(country.unwrap_or(0));
         let Some(graph) = binding.as_ref() else {
             let this = object(this);
@@ -572,7 +570,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         self.event_scopes(index)
     }
 
-    /// Set each target on the same copied scope (14036AA80/1402F4BA0).
+    /// Set each target on the same copied scope.
     pub(crate) fn repoint_this(&self, scopes: Scopes, this: Scope) -> Result<Scopes, String> {
         let Some(at) = scopes.cursor else {
             return Ok(scopes.with_this(this));
@@ -591,7 +589,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         })
     }
 
-    /// Collection setters keep caller ROOT/FROM and install PREV (1413AE780).
+    /// Collection setters keep caller ROOT/FROM and install PREV.
     pub fn with_this(&self, scopes: Scopes, this: Scope) -> Result<Scopes, String> {
         let Some(at) = scopes.cursor else {
             return Ok(scopes.with_this(this));
@@ -604,7 +602,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     }
 
     /// Fresh collection scopes use default seeds; terminal representatives
-    /// follow the caller's ROOT environment (1404BEDA0/1404C1760).
+    /// follow the caller's ROOT environment.
     pub(crate) fn collection_scope(
         &self,
         scopes: Scopes,
@@ -612,7 +610,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         terminal: bool,
     ) -> Result<Scopes, String> {
         let Some(caller) = scopes.cursor else {
-            return Err("collection description needs its event graph (1404BEDA0)".into());
+            return Err("collection description needs its event graph".into());
         };
         let index = {
             let binding = self.event_graph.borrow();

@@ -49,8 +49,8 @@ struct IteratorKind {
     random: bool,
 }
 
-// Vtables distinguish template classes with identical RTTI names. Selection
-// virtuals feed 1402F4200 / 14036AA80 / 140312880 and 1402F4BA0.
+// Class identity distinguishes template classes with identical names. Selection
+// feeds the header and iterator.
 fn iterator_kind(class: u64) -> Option<IteratorKind> {
     let (roster, random) = match class {
         0x142756730 => (
@@ -181,7 +181,7 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
         indent: usize,
     ) -> Result<String, String> {
-        // 1404C3640: first representative, caller header (140A0ED70), child indent +1.
+        // first representative, caller header, child indent.
         let Some(input) = field(children(item), "input") else {
             return Ok(String::new());
         };
@@ -197,7 +197,7 @@ impl Renderer<'_, '_, '_> {
             installed_content::collections::Header::Key(key) => self.localised(key, &[], scopes, true)?,
             installed_content::collections::Header::Bound(item) => {
                 let Some(key) = item.value.scalar() else {
-                    return Err("collection bound-name argument tree is not ported (1423912A0); corpus reach zero".into());
+                    return Err("collection bound-name argument tree is unsupported".into());
                 };
                 if key.is_empty() {
                     String::new()
@@ -210,7 +210,7 @@ impl Renderer<'_, '_, '_> {
         Ok("   ".repeat(indent) + &header + ":\n" + &self.group(&body, selected, indent + 1))
     }
 
-    /// Fresh combined localisation environment; no caller links (1404A5070/1404A5160).
+    /// Fresh combined localisation environment; no caller links.
     #[allow(
         dead_code,
         reason = "staged core entry point for lead F's contested-owner leaves"
@@ -333,7 +333,7 @@ impl Renderer<'_, '_, '_> {
                     ],
                     selected,
                     false,
-                )? // 141382590.
+                )?
             }
             Scope::Project { owner, id } => {
                 if self
@@ -342,7 +342,10 @@ impl Renderer<'_, '_, '_> {
                     .get("EFFECT_CONTEXT_SPECIAL_PROJECT")
                     .is_none()
                 {
-                    return Err("native carrier localisation key EFFECT_CONTEXT_SPECIAL_PROJECT is not defined (141382590)".into());
+                    return Err(
+                        "carrier localisation key EFFECT_CONTEXT_SPECIAL_PROJECT is not defined"
+                            .into(),
+                    );
                 }
                 let country = self
                     .context
@@ -359,17 +362,17 @@ impl Renderer<'_, '_, '_> {
                     ],
                     selected,
                     false,
-                )? // 141382590 -> 140FCDDF0.
+                )?
             }
-            // 141382590 has no raid/unit header arm; still walk the children.
+            // has no raid/unit header arm; still walk the children.
             Scope::Raid(_) | Scope::Unit(_) => String::new(),
-            _ => return Err("context header kind is not ported (141382590)".into()),
+            _ => return Err("context header kind is unsupported".into()),
         };
         Ok(Some((selected, header)))
     }
 
-    // 14052B240 reads ROOT's country or state owner, falling back to THIS only
-    // when ROOT carries neither; 141382590 uses it for perspective suppression.
+    // reads ROOT's country or state owner, falling back to THIS only
+    // when ROOT carries neither; uses it for perspective suppression.
     fn origin_country(&self, scopes: Scopes) -> Result<Option<u32>, String> {
         match scopes.root {
             Scope::Country(country) | Scope::CountryLeader { country, .. } => {
@@ -381,7 +384,7 @@ impl Renderer<'_, '_, '_> {
                     .world()?
                     .states
                     .get(&state)
-                    .ok_or("ROOT state owner is not recorded (14052B240)")?;
+                    .ok_or("ROOT state owner is not recorded")?;
                 self.context
                     .world()?
                     .recorded()
@@ -415,7 +418,7 @@ impl Renderer<'_, '_, '_> {
             let multiple = self.multiple(children(item), selected);
             let failed = self.out.refusals != before;
             if failed {
-                return String::new(); // Preserve the probe's leaf causes once (140533D80).
+                return String::new(); // Preserve the probe's leaf causes once.
             }
             self.out.refusals = before;
             if multiple {
@@ -437,7 +440,7 @@ impl Renderer<'_, '_, '_> {
             } else {
                 self.builder(child, selected, child_indent)
             };
-            text.push_str(&line); // 141381200 concatenates children directly.
+            text.push_str(&line); // concatenates children directly.
         }
         if text.is_empty() {
             text
@@ -471,7 +474,7 @@ impl Renderer<'_, '_, '_> {
         Some(match result {
             Ok(text) => text,
             Err(why) => {
-                self.refuse(class.name, why);
+                self.refuse(&key(item), why);
                 String::new()
             }
         })
@@ -480,7 +483,7 @@ impl Renderer<'_, '_, '_> {
     pub(super) fn iterator_multiple(&self, item: &Item) -> bool {
         self.effect_class(item).is_some_and(|class| {
             iterator_kind(class.vtable).is_some() || class.vtable == 0x14272B088
-        }) // vf11 ReturnTrue@1401802A0.
+        })
     }
 
     fn roster(&self, source: Roster, item: &Item, scopes: Scopes) -> Result<Vec<Scope>, String> {
@@ -509,24 +512,18 @@ impl Renderer<'_, '_, '_> {
                     return Ok(Vec::new());
                 };
                 let inputs = world.country_counter_inputs(caller)?;
-                // vf28@14039D200/140319610/14039D1A0 copies these arrays;
-                // random vf25@140337AA0/1403377B0 preserves the same order.
+                // copies these arrays;
+                // random preserves the same order.
                 let (recorded, name) = if owned {
-                    (
-                        &inputs.owned_states,
-                        "CountryCounterInputs.owned_states (CCountry+0x478)",
-                    )
+                    (&inputs.owned_states, "CountryCounterInputs.owned_states")
                 } else if controlled {
                     (
                         &inputs.controlled_states,
-                        "CountryCounterInputs.controlled_states (CCountry+0x460)",
+                        "CountryCounterInputs.controlled_states",
                     )
                 } else {
                     debug_assert!(core);
-                    (
-                        &inputs.core_states,
-                        "CountryCounterInputs.core_states (CCountry+0x4A8)",
-                    )
+                    (&inputs.core_states, "CountryCounterInputs.core_states")
                 };
                 let states = recorded
                     .require(name)?
@@ -540,7 +537,7 @@ impl Renderer<'_, '_, '_> {
                         })?;
                         if slot(row.controller)? != caller {
                             continue;
-                        } // CRandomOwnedControlledStateEffect vf25@1403377B0.
+                        } // random owned controlled state effect.
                     }
                     out.push(Scope::State(id));
                 }
@@ -565,10 +562,10 @@ impl Renderer<'_, '_, '_> {
                     field.value.scalar().and_then(installed_content::parser::read_bool) == Some(true)
                 });
                 if !operative {
-                    // 140338ED0 combines army then navy only; operatives have
-                    // their separate 1403388C0 selector.
+                    // combines army then navy only; operatives have
+                    // their separate selector.
                     let repeats = if global {
-                        // 140338900 (asm 140338B48) resolves the CALLER for
+                        // Resolve the CALLER for
                         // each other existing country, repeating its army roster.
                         let mut count = 0;
                         for row in frame
@@ -595,12 +592,12 @@ impl Renderer<'_, '_, '_> {
                             (
                                 army,
                                 &inputs.army_leaders,
-                                "CountryCounterInputs.army_leaders (CCountryCharacters+0x70)",
+                                "CountryCounterInputs.army_leaders",
                             ),
                             (
                                 navy,
                                 &inputs.navy_leaders,
-                                "CountryCounterInputs.navy_leaders (CCountryCharacters+0x88)",
+                                "CountryCounterInputs.navy_leaders",
                             ),
                         ] {
                             if !enabled {
@@ -614,7 +611,7 @@ impl Renderer<'_, '_, '_> {
                                 let row = world.unit_leader(reference)?.ok_or_else(|| {
                                     format!("iterator unit leader {reference:#x} is not recorded")
                                 })?;
-                                // CollectVisibleArmy/NavyLeaders@1406CE170/1406CE1D0.
+                                // Collect visible armies before navies.
                                 if invisible || self.evaluator()?.leader_visible(row).decided()? {
                                     out.push(Scope::Leader(reference));
                                 }
@@ -631,7 +628,7 @@ impl Renderer<'_, '_, '_> {
                         member.roster_kind == 0 && world.slot(member.roster_country) == Some(caller)
                     })
                     .collect::<Vec<_>>();
-                // 1403388C0 / 140368C10 copy the active operative array.
+                // copy the active operative array.
                 // Older rows can still settle a pure empty/singleton selection;
                 // the iterator also checks reached limit writes/RNG below.
                 members.sort_by_key(|member| {
@@ -672,7 +669,7 @@ impl Renderer<'_, '_, '_> {
                         rows.push(row);
                     }
                 }
-                rows.sort_by_key(|row| row.ordinal); // CProductionStatus+0x130, 14139AB30.
+                rows.sort_by_key(|row| row.ordinal); // production status.
                 let mut out = Vec::new();
                 for row in rows {
                     if invisible || self.organisation_visible(row)? {
@@ -685,7 +682,7 @@ impl Renderer<'_, '_, '_> {
                 frame
                     .complete::<tables::States>()
                     .map_err(|why| why.to_string())?;
-                // 14039D260 walks CGameState's state-id vector, not ownership order.
+                // walks game state's state-id vector, not ownership order.
                 Ok(world
                     .states
                     .keys()
@@ -704,14 +701,14 @@ impl Renderer<'_, '_, '_> {
                     .map_err(|why| why.to_string())?
                     .iter()
                     .collect::<Vec<_>>();
-                rows.sort_by_key(|row| row.canonical_slot); // 1413DE860.
+                rows.sort_by_key(|row| row.canonical_slot);
                 let caller = if other || enemy {
                     Some(country()?)
                 } else {
                     None
                 };
-                // WarRelations contains only matrix wars with retired +0x49 == 0
-                // (engine cwar_relation::active), exactly 1406F3A00's predicate.
+                // WarRelations contains only matrix wars with retired == 0
+                // as required by the active-relation predicate.
                 let mut enemies = std::collections::BTreeSet::new();
                 if enemy {
                     for row in frame
@@ -751,7 +748,7 @@ impl Renderer<'_, '_, '_> {
                         Vec::new()
                     } else {
                         vec![Scope::Country(caller)]
-                    }); // 1404B0D70.
+                    });
                 };
                 let mut rows = frame
                     .complete::<tables::FactionMembers>()
@@ -759,7 +756,7 @@ impl Renderer<'_, '_, '_> {
                     .iter()
                     .filter(|row| row.faction == faction)
                     .collect::<Vec<_>>();
-                rows.sort_by_key(|row| row.ordinal); // CFaction+0x58, 14039D140.
+                rows.sort_by_key(|row| row.ordinal); // faction.
                 let mut out = Vec::new();
                 for row in rows {
                     let target = slot(row.country)?;
@@ -777,13 +774,13 @@ impl Renderer<'_, '_, '_> {
                     .subjects
                     .require("CountryAppearance.subjects")?
                 {
-                    // CDiplomacyStatus+0x170, 14039D560.
+                    // diplomacy status.
                     if raw <= 0 {
                         continue;
                     }
                     let target = slot(raw as u32)?;
-                    // vf25 1413DE2A0/1413DE500 reads +0x484 before
-                    // vf32 1403A3870 excludes the caller, including aliases.
+                    // Read subject count before
+                    // excludes the caller, including aliases.
                     if world.exists(target)? && target != caller {
                         out.push(Scope::Country(target));
                     }
@@ -794,7 +791,7 @@ impl Renderer<'_, '_, '_> {
                 .country_characters(country()?)?
                 .into_iter()
                 .map(|id| Scope::Character(id.unwrap_or(0)))
-                .collect()), // 14138B830.
+                .collect()),
             Roster::Scientists { .. } => {
                 let caller = country()?;
                 let mut rows = Vec::new();
@@ -806,7 +803,7 @@ impl Renderer<'_, '_, '_> {
                         rows.push(row);
                     }
                 }
-                rows.sort_by_key(|row| row.ordinal); // 14048F3F0 -> 140490C00.
+                rows.sort_by_key(|row| row.ordinal);
                 Ok(rows
                     .into_iter()
                     .map(|row| Scope::Character(row.character))
@@ -814,7 +811,7 @@ impl Renderer<'_, '_, '_> {
             }
             Roster::PartyLeaders => {
                 let mut out = Vec::new();
-                // 1402F7180 requires has_ideology and exactly one passing target.
+                // requires has_ideology and exactly one passing target.
                 // Without that mandatory predicate the selector returns none.
                 if !self
                     .limit(children(item))?
@@ -824,10 +821,10 @@ impl Renderer<'_, '_, '_> {
                     return Ok(out);
                 }
                 for party in world.party_leaders(country()?)? {
-                    // CPoliticsStatus+0x20, 1402F3570.
+                    // politics status.
                     if let Some(first) = party.leaders.iter().min_by_key(|leader| leader.ordinal) {
                         if first.ordinal != 0 {
-                            return Err("PartyLeaders lacks ordinal zero (14118E5A0)".into());
+                            return Err("PartyLeaders lacks ordinal zero".into());
                         }
                         if let Some(id) = first.character {
                             out.push(Scope::Character(id));
@@ -850,24 +847,24 @@ impl Renderer<'_, '_, '_> {
                         .map_err(|why| why.to_string())?
                         .iter()
                         .find(|row| world.slot(row.country) == Some(caller))
-                        .ok_or("CountryCounterInputs lacks neighbor roster (14039D4E0)")?
+                        .ok_or("CountryCounterInputs lacks neighbor roster")?
                         .neighbors
                         .require("CountryCounterInputs.neighbors")?
                         .as_ref()
-                        .ok_or("CountryCounterInputs.neighbors capture refused (14039D4E0)")?
+                        .ok_or("CountryCounterInputs.neighbors capture refused")?
                 } else {
                     frame
                         .complete::<tables::OccupationSettings>()
                         .map_err(|why| why.to_string())?
                         .iter()
                         .find(|row| world.slot(row.country) == Some(caller))
-                        .ok_or("OccupationSettings lacks occupied roster (1413DE730)")?
+                        .ok_or("OccupationSettings lacks occupied roster")?
                         .occupied
                         .require("OccupationSettings.occupied")?
                         .as_ref()
-                        .ok_or("OccupationSettings.occupied capture refused (1413DE730)")?
+                        .ok_or("OccupationSettings.occupied capture refused")?
                 };
-                // 14039D4E0 / 1413DE730 copy the stored roster in order.
+                // copy the stored roster in order.
                 refs.iter()
                     .map(|raw| slot(*raw).map(Scope::Country))
                     .collect()
@@ -881,7 +878,7 @@ impl Renderer<'_, '_, '_> {
                     return Ok(Vec::new());
                 };
                 if caller == 0 {
-                    return Ok(Vec::new()); // 14143D4A0 case 4.
+                    return Ok(Vec::new()); // case 4.
                 }
                 let status: std::collections::BTreeMap<_, _> = frame
                     .complete::<tables::DivisionStatus>()
@@ -899,10 +896,10 @@ impl Renderer<'_, '_, '_> {
                     }
                     let ordinal = status
                         .get(&row.id)
-                        .ok_or("DivisionStatus lacks country ordinal (14143D4A0)")?
+                        .ok_or("DivisionStatus lacks country ordinal")?
                         .country_ordinal
                         .require("DivisionStatus.country_ordinal")?
-                        .ok_or("DivisionStatus.country_ordinal capture refused (14143D4A0)")?;
+                        .ok_or("DivisionStatus.country_ordinal capture refused")?;
                     rows.push((ordinal, row.id));
                 }
                 rows.sort_by_key(|row| row.0);
@@ -911,7 +908,9 @@ impl Renderer<'_, '_, '_> {
                     .enumerate()
                     .any(|(index, row)| row.0 as usize != index)
                 {
-                    return Err("DivisionStatus.country_ordinal is not a complete country roster (14143D4A0)".into());
+                    return Err(
+                        "DivisionStatus.country_ordinal is not a complete country roster".into(),
+                    );
                 }
                 Ok(rows
                     .into_iter()
@@ -929,7 +928,7 @@ impl Renderer<'_, '_, '_> {
                     .complete::<tables::States>()
                     .map_err(|why| why.to_string())?;
                 if !world.states.contains_key(&state) {
-                    return Ok(Vec::new()); // 14143D4A0 case 2: invalid state.
+                    return Ok(Vec::new()); // case 2: invalid state.
                 }
                 let order: std::collections::BTreeMap<_, _> = frame
                     .complete::<tables::ProvinceUnitOrder>()
@@ -944,15 +943,13 @@ impl Renderer<'_, '_, '_> {
                     .map(|row| row.id)
                     .collect();
                 let mut out = Vec::new();
-                // 14143D4A0 walks CState+0x18, then each province's +0xE0.
+                // Walk state divisions, then each province's divisions.
                 // state_order verifies runtime membership against the native
                 // content order. Divisions authenticates class-0 full handles;
                 // the reference type alone cannot distinguish unit classes.
                 for &province in world.state_order(state)? {
                     let row = order.get(&province).ok_or_else(|| {
-                        format!(
-                            "ProvinceUnitOrder lacks state {state} province {province} (14143D4A0)"
-                        )
+                        format!("ProvinceUnitOrder lacks state {state} province {province}")
                     })?;
                     for &unit in &row.mixed {
                         if armies.contains(&unit) {
@@ -966,11 +963,11 @@ impl Renderer<'_, '_, '_> {
                                 .ok()
                                 .is_some_and(|rows| rows.iter().any(|row| row.gun == unit))
                         {
-                            // Only class 0 passes the native +8 check; known
+                            // Only class 0 passes the native check; known
                             // task forces (1) and railway guns (13) are skipped.
                         } else {
                             return Err(format!(
-                                "state iterator unit {unit:#x} has no recorded class census (14143D4A0)"
+                                "state iterator unit {unit:#x} has no recorded class census"
                             ));
                         }
                     }
@@ -988,7 +985,7 @@ impl Renderer<'_, '_, '_> {
                     .flatten()
                     .copied()
                     .map(Scope::State)
-                    .collect()) // 140319670 / 1413AB2C0.
+                    .collect())
             }
             Roster::OriginalTags => {
                 let operand = field(children(item), "original_tag")
@@ -1003,7 +1000,7 @@ impl Renderer<'_, '_, '_> {
                 }
                 let recorded = world.recorded();
                 let mut out = Vec::new();
-                // 1413DE2A0/1413DE500 skip signed-nonpositive raw entries
+                // skip signed-nonpositive raw entries
                 // before resolving and testing existence; preserve duplicates.
                 for raw in recorded
                     .original_bucket(selected)?
@@ -1035,7 +1032,7 @@ impl Renderer<'_, '_, '_> {
             )
             .ok_or("random description cursor is absent")?;
         let draw = scope.random_draw()?;
-        scope.random_seed = scope.random_seed.wrapping_add(1); // 1402F70C0, including singleton.
+        scope.random_seed = scope.random_seed.wrapping_add(1); // including singleton.
         Ok(draw)
     }
 
@@ -1053,12 +1050,10 @@ impl Renderer<'_, '_, '_> {
                 Eval::True => {
                     if active_scientist {
                         let Scope::Character(character) = target else {
-                            return Err(
-                                "active scientist target is not a character (14048F1D0)".into()
-                            );
+                            return Err("active scientist target is not a character".into());
                         };
-                        // Every scientist evaluates the limit; 14048F1D0 checks
-                        // +0x130 only after that limit succeeds.
+                        // Every scientist evaluates the limit; membership is checked
+                        // only after that limit succeeds.
                         let row = self
                             .context
                             .world()?
@@ -1067,11 +1062,11 @@ impl Renderer<'_, '_, '_> {
                             .map_err(|why| why.to_string())?
                             .iter()
                             .find(|row| row.character == character)
-                            .ok_or("Scientists lacks active iterator target (14048F1D0)")?;
+                            .ok_or("Scientists lacks active iterator target")?;
                         if row
                             .active
                             .require("Scientists.active")?
-                            .ok_or("Scientists.active capture refused (14048F1D0)")?
+                            .ok_or("Scientists.active capture refused")?
                             == 0
                         {
                             continue;
@@ -1103,20 +1098,20 @@ impl Renderer<'_, '_, '_> {
                         false,
                     );
                 }
-                self.context.text.country_marked_name(country)? // 140BA59E0.
+                self.context.text.country_marked_name(country)?
             }
             Scope::State(0) => String::new(),
             Scope::State(id) => self.state_name(id)?,
             Scope::Character(0) => String::new(),
             Scope::Character(id) => self.character_label(id)?,
-            Scope::IndustrialOrganisation(reference) => self.organisation_name(reference)?, // 14139AD50 -> 140DA44C0.
+            Scope::IndustrialOrganisation(reference) => self.organisation_name(reference)?,
             Scope::Leader(id) => {
                 let leader = self
                     .context
                     .world()?
                     .unit_leader(id)?
                     .ok_or("UnitLeaders lacks iterator target")?;
-                String::from_utf8_lossy(&leader.inherited_text_a).into_owned() // 14138BC80 / 14138BE40, +0x40.
+                String::from_utf8_lossy(&leader.inherited_text_a).into_owned()
             }
             _ => return Err("iterator target label kind is unported".into()),
         };
@@ -1127,7 +1122,7 @@ impl Renderer<'_, '_, '_> {
         })
     }
 
-    // GetNameStringAt28@140612C90: this is the stored name, even when empty.
+    // this is the stored name, even when empty.
     fn character_label(&self, id: u32) -> Result<String, String> {
         if id == 0 {
             return Ok(String::new());
@@ -1140,7 +1135,7 @@ impl Renderer<'_, '_, '_> {
         String::from_utf8(row.name.clone()).map_err(|_| "character name is not UTF-8".into())
     }
 
-    // 140A3B740/140A3CFE0: default country/organisation pair; FROM is owner.
+    // default country/organisation pair; FROM is owner.
     fn organisation_scopes(
         &self,
         row: &replay::rows::IndustrialOrganisationRow,
@@ -1182,8 +1177,8 @@ impl Renderer<'_, '_, '_> {
             .ok_or_else(|| self.content_gap("industrial organisation visibility"))?;
         let template = database.template(token)?;
         let evaluator = self.evaluator()?;
-        // Getter 140A44870 selects own +0xB0, else the direct inherited
-        // pointer +0x360. Finalizer 140A45170/140A45AC0 installs that pointer
+        // selects own, else the direct inherited
+        // pointer. The reader installs that pointer
         // only for no children and no delete_included_values visible token.
         let visible = if !evaluator.has_children(&template.visible)? && !template.delete_visible {
             match &template.include {
@@ -1195,7 +1190,7 @@ impl Renderer<'_, '_, '_> {
         };
         if !evaluator.has_children(visible)? {
             return Ok(true);
-        } // 141399450.
+        }
         evaluator
             .evaluate(visible, self.organisation_scopes(row)?)
             .decided()
@@ -1222,7 +1217,7 @@ impl Renderer<'_, '_, '_> {
         } else {
             name.as_bytes()
         };
-        self.localised(key, &[], self.organisation_scopes(row)?, true) // 140DA44C0/14146B1D0.
+        self.localised(key, &[], self.organisation_scopes(row)?, true)
     }
 
     fn iterator(
@@ -1270,7 +1265,7 @@ impl Renderer<'_, '_, '_> {
             Some((evaluator.variable_effects(), evaluator.variable_session()))
         };
         let mut targets = Vec::new();
-        // CRandomStateEffectBase vf25@1403374B0/140337D80: priority
+        // random state effect base: priority
         // membership preserves roster order; retry all only if none pass.
         if kind.random
             && matches!(
@@ -1320,7 +1315,9 @@ impl Renderer<'_, '_, '_> {
                         .any(|target| unordered_operatives.contains(target))
             {
                 evaluator.restore_variable_session(&session);
-                return Err("OperativeMemberships.ordinal not recorded for native limit/selection order (1403388C0/140368C10)".into());
+                return Err(
+                    "OperativeMemberships.ordinal not recorded for limit/selection order".into(),
+                );
             }
         }
         let body = self.effect_children(item);
@@ -1330,15 +1327,12 @@ impl Renderer<'_, '_, '_> {
         {
             let amount = integer(amount);
             if amount < 0 {
-                return Err(
-                    "negative random_select_amount underflows native target removal (1402F76E0)"
-                        .into(),
-                );
+                return Err("negative random_select_amount underflows target removal".into());
             }
             while targets.len() > amount as usize {
                 let at = self.draw(scopes)? as usize % targets.len();
                 targets.swap_remove(at);
-            } // 1402F76E0.
+            }
         }
         let visible = field(items, "visible_when_empty").is_some_and(|field| {
             field.value.scalar().and_then(installed_content::parser::read_bool) == Some(true)
@@ -1350,7 +1344,7 @@ impl Renderer<'_, '_, '_> {
             .filter(|field| !field.value.scalar().is_some_and(|key| key.is_empty()));
         if kind.random {
             let target = if matches!(kind.roster, Roster::PartyLeaders) {
-                // 1402F7180 requires a top-level has_ideology and exactly one
+                // requires a top-level has_ideology and exactly one
                 // match. This selector does not draw from the caller seed.
                 let mandatory = self
                     .limit(items)?
@@ -1378,7 +1372,7 @@ impl Renderer<'_, '_, '_> {
                     .map(|target| self.label(target, scopes, false))
                     .transpose()?
                     .unwrap_or_default();
-                let mut text = format!("(\u{11}Y{label}\u{11}!): "); // 1402F4BA0, 14270C620 / 14271BBBC.
+                let mut text = format!("(\u{11}Y{label}\u{11}!): ");
                 let before = self.out.refusals.clone();
                 let probe = self.group(&body, selected, 0);
                 if probe.bytes().filter(|byte| *byte == b'\n').count() < 2 {
@@ -1435,7 +1429,7 @@ impl Renderer<'_, '_, '_> {
             selected = self.evaluator()?.repoint_this(selected, targets[0])?;
             text.push_str(&self.group(&body, selected, indent + 1));
         }
-        Ok(indent_nonempty_lines(&text, indent)) // 1402F4200 / 14036AA80 / 140312880.
+        Ok(indent_nonempty_lines(&text, indent))
     }
 
     fn array_scope(
@@ -1457,10 +1451,10 @@ impl Renderer<'_, '_, '_> {
         if targets.is_empty() {
             return Ok(String::new());
         }
-        let target = targets[self.draw(scopes)? as usize % targets.len()]; // 1403A3930.
+        let target = targets[self.draw(scopes)? as usize % targets.len()];
         let selected = self.evaluator()?.with_this(scopes, target)?;
         let label = self.label(target, scopes, false)?;
-        let mut text = format!("\u{11}H{label}:\n\u{11}!"); // 14036B940.
+        let mut text = format!("\u{11}H{label}:\n\u{11}!");
         let body = self.effect_children(item);
         text.push_str(&self.group(&body, selected, indent + 1));
         Ok(text)
@@ -1485,9 +1479,12 @@ impl Renderer<'_, '_, '_> {
             if let Some(leader) = tables.unit_leader(id)?
                 && leader.category() < 3
             {
-                // 1402F5F60 reads these independent assignment references,
+                // reads these independent assignment references,
                 // not the inverse formation/fleet leader binding.
-                return Err("character_list_tooltip command-size inputs CArmyLeader +0x1048 / CNavyLeader +0xF60 are not recorded (1402F53E0/140C07780/140C077C0)".into());
+                return Err(
+                    "character_list_tooltip army/navy leader command-size inputs are not recorded"
+                        .into(),
+                );
             }
         }
         let roles = frame
@@ -1501,7 +1498,7 @@ impl Renderer<'_, '_, '_> {
             .map_err(|why| why.to_string())?;
         let country = self.current_country(scopes)?;
         let mut text = String::new();
-        // Native slot strings, 1402F2830/1402F3060/1402F29F0/1402F3A50.
+        // Registered advisor slot strings.
         for (slots, heading, sorted) in [
             (
                 &[b"political_advisor".as_slice()][..],
@@ -1558,7 +1555,7 @@ impl Renderer<'_, '_, '_> {
                     continue;
                 }
                 let mut score = 0;
-                // Comparator 1402F6C40 -> 1402F3880 visits every advisor role,
+                // visits every advisor role,
                 // including roles outside the displayed section.
                 for row in traits.iter().filter(|row| {
                     row.character == id && row.kind == replay::rows::CharacterRoleTraitRow::ADVISOR
@@ -1581,7 +1578,7 @@ impl Renderer<'_, '_, '_> {
             }
             if sorted {
                 members.sort_by_key(|member| std::cmp::Reverse(member.2));
-            } // stable merge/insertion sort 1402F1B00.
+            } // stable merge/insertion sort.
             if members.is_empty() {
                 continue;
             }
@@ -1599,7 +1596,7 @@ impl Renderer<'_, '_, '_> {
                             .map_err(|_| "advisor trait name is not UTF-8")
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                // 1410D7B80 searches the hired role, then compares its slot;
+                // searches the hired role, then compares its slot;
                 // a hired role in this section must belong to this character.
                 if hired.iter().any(|row| {
                     world.slot(row.country) == Some(country)
@@ -1620,16 +1617,16 @@ impl Renderer<'_, '_, '_> {
         let mut text = indent_nonempty_lines(&text, indent);
         while text.bytes().rev().take_while(|byte| *byte == b'\n').count() < 2 {
             text.push('\n');
-        } // EnsureTrailingNewlines@1424B6660, including empty lists.
+        } // trailing newlines, including empty lists.
         Ok(text)
     }
 
     pub(super) fn set_politics(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let items = children(item);
-        let mut text = self.line(b"EFFECT_SET_POLITICS", &[], scopes, false)?; // 14036C090 -> 1403A0010.
+        let mut text = self.line(b"EFFECT_SET_POLITICS", &[], scopes, false)?;
         if let Some(ideology) = field(items, "ruling_party").and_then(|item| item.value.scalar()) {
             let country = self.current_country(scopes)?;
-            let ideology = self.politics_ideology(Some(ideology), scopes)?; // 1402EE8E0.
+            let ideology = self.politics_ideology(Some(ideology), scopes)?;
             let name = match field(items, "long_name")
                 .and_then(|item| item.value.read_string())
                 .filter(|key| !key.is_empty())
@@ -1650,7 +1647,7 @@ impl Renderer<'_, '_, '_> {
                     )?);
                     name
                 }
-                None => self.selected_party_name(country, &ideology)?, // 14118F860, not GetLongName.
+                None => self.selected_party_name(country, &ideology)?, // Use the ordinary name rather than the long name.
             };
             text.push_str(&self.line(
                 b"EFFECT_SET_POLITICS_RULING_PARTY",
@@ -1686,6 +1683,6 @@ impl Renderer<'_, '_, '_> {
             }
             None => {}
         }
-        Ok(text) // Build@14036C090 aliases own-description and ignores indent.
+        Ok(text) // aliases own-description and ignores indent.
     }
 }

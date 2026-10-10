@@ -118,20 +118,20 @@ pub(crate) fn agency_feature(frame: &DecodedFrame) -> Option<bool> {
     let [features] = frame.complete::<tables::SimulationFeatures>().ok()? else {
         return None;
     };
-    // CreateStrategicOperativeManager@1401F0600 requires feature 0x19;
-    // has_feature@1401AE640 implements it as runtime DLC-mask bit 5.
+    // Strategic operative support requires feature 0x19,
+    // represented by runtime DLC-mask bit 5.
     Some(features.dlc_mask & (1 << 5) != 0)
 }
 
-/// IsCaptured@140C0E060 tests assignment+0x1080 == 0, not the capturer link.
+/// Capture is assignment 0, independent of the capturer link.
 pub(crate) fn captured(assignment: u32) -> bool {
     assignment == 0
 }
 
 pub(crate) fn supported_kind_assignment(kind: u8, assignment: u32) -> Result<(), String> {
-    // Agency active vector@140FC21D0 and recruitment's three vectors
-    // @141569770 supply kinds 0..3. Status@141E2F4C0 dispatches 0/1/3/4;
-    // AddOperative@140FC21D0 separately identifies terminal assignment 5.
+    // The active agency vector and recruitment's three vectors supply
+    // kinds 0..3. Status dispatches 0/1/3/4; terminal assignment 5
+    // is identified separately.
     if kind > 3 || assignment > 5 {
         Err(format!(
             "Unsupported operative assignment {assignment} / roster {kind}"
@@ -142,8 +142,8 @@ pub(crate) fn supported_kind_assignment(kind: u8, assignment: u32) -> Result<(),
 }
 
 pub(crate) fn mission_variant(variant: Option<u32>) -> Result<bool, String> {
-    // ResetToNoMission@140FB07E0 leaves the outer assignment unchanged.
-    // GetMissionTargetKind@140FAE0D0 dispatches native variants 1..8.
+    // Resetting to no mission leaves the outer assignment unchanged.
+    // Mission target kind dispatches variants 1..8.
     match variant {
         None | Some(0) => Ok(false),
         Some(1..=8) => Ok(true),
@@ -159,8 +159,8 @@ pub(crate) struct SavedName {
 }
 
 pub(crate) fn saved_name(localisation: Option<&Localisation>, bytes: &[u8]) -> SavedName {
-    // set_name@140C16FB0 resolves saved +0x20 through plain localiser
-    // @142230F20 without name generation; missing keys retain their bytes.
+    // Saved names use the plain localiser without name generation;
+    // missing keys retain their bytes.
     let literal = Localisation::default();
     let name = catalogue::localised_bytes(localisation.unwrap_or(&literal), bytes, View::Plain);
     match name {
@@ -209,10 +209,7 @@ pub(crate) fn cooldown(row: &OperativeMembershipRow) -> Result<Option<(u32, i32,
         .require("OperativeMemberships.cooldown_end_hour")?;
     match (kind, start, end) {
         (Some(kind), Some(start), Some(end)) => Ok(Some((kind, start, end))),
-        _ => Err(
-            "Native cooldown kind or dates were not recorded (+0xE84/+0xE90/+0xEA8; 141E2DC80)"
-                .into(),
-        ),
+        _ => Err("Cooldown kind or dates were not recorded".into()),
     }
 }
 

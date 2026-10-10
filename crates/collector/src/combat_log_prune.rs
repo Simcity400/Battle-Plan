@@ -2,7 +2,7 @@
 //!
 //! The game deletes a group's Combat Log in its daily prune
 //! ([`engine::ncombat_log_cmanager::PRUNE_RVA`], per country inside
-//! CGameState::DailyUpdate) once the group's orders group is gone. Orders
+//! the daily update) once the group's orders group is gone. Orders
 //! groups can be deleted inside the hourly update that runs the prune, after
 //! the hourly sample, so no sample can see those logs' last changes. A detour
 //! at the prune's entry reads, before the original runs, every log it is
@@ -11,11 +11,9 @@
 //! the rows are their final values. The detour only reads and calls the
 //! original; it never changes game behaviour and calls no game function.
 //!
-//! DailyUpdate@1401d4390 dispatches its lambda_3 as a TBB start_for task;
-//! its vf1@1401f6e20 -> 1401b7b80 -> range body 1401ba1e0 calls 1406db660
-//! for each country, which calls the prune at 1406dba6a. This is a daily job
-//! worker path; the simulation thread may also execute the task. Its wall
-//! cost belongs to that thread, outside the hourly callback's timing.
+//! The daily update dispatches the per-country prune as a TBB task. This
+//! is a daily job worker path; the simulation thread may also execute the task.
+//! Its wall cost belongs to that thread, outside the hourly callback's timing.
 //! The log is multi-producer: a writer reserves its rows with one `fetch_add`.
 //! The hourly callback, which runs while no daily update does, hands them over
 //! ([`drain`]). A log that fills, a read that fails or does not fit, or hooks
@@ -72,7 +70,7 @@ struct Logged {
 /// - Each writer runs inside a [`Call`], which increments `ACTIVE` before the
 ///   reservation and decrements it (`SeqCst`) after its last write.
 /// - The drain runs at the hourly sample, when no prune can run: the prune
-///   runs only inside CGameState::DailyUpdate, which the hourly update runs
+///   runs only inside the daily update, which the hourly update runs
 ///   after the sample, and the callback holds the game thread while it
 ///   drains. It reads only after loading `ACTIVE` as 0: every `ACTIVE` change
 ///   is a read-modify-write, so that load synchronises with every writer's
@@ -334,7 +332,7 @@ impl Hooks {
     }
 }
 
-/// The prune takes the CManager* in RCX and returns nothing.
+/// The prune takes the combat log manager pointer in RCX and returns nothing.
 unsafe extern "system" fn prune(manager: usize) {
     let _call = Call::enter();
     if ENABLED.load(Ordering::SeqCst) {

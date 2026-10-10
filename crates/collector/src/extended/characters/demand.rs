@@ -46,7 +46,7 @@ pub(super) fn presize(
     base: usize,
     state: usize,
 ) -> Result<(), &'static str> {
-    // 1406AE170 serializes both native character vectors. Every occurrence
+    // Both character vectors retain every occurrence, and each occurrence
     // keeps its own leader; duplicate pointers are demand, not deduplication.
     let roster = FAILURES[0].observe(ccharacter_manager::Roster::read(memory, base, state))?;
     super::census::remember_roster(roster.count() as usize);

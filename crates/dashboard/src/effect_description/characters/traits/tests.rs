@@ -15,7 +15,7 @@ fn fixture() -> (Fixture, Folder) {
         ),
         (
             "common/country_leader/test.txt",
-            "leader_traits={syn_country={custom_modifier_tooltip=COUNTRY_BODY} syn_old={political_power_gain=0.1} syn_new={political_power_gain=0.3} syn_hidden={hidden_modifier={political_power_gain=0.3} custom_modifier_tooltip=COUNTRY_BODY} syn_equipment={equipment_bonus={syn_gun={soft_attack=0.1 supply_consumption=-0.2}}} syn_targeted={targeted_modifier={tag=BBB political_power_gain=0.2}} syn_targeted_custom={targeted_modifier={tag=BBB custom_modifier_tooltip=TARGET_BODY}} syn_targeted_dynamic={targeted_modifier={tag=event_target:syn_target political_power_gain=0.1}} syn_targeted_multi={targeted_modifier={tag=BBB political_power_gain=0.2 political_power_cost=-0.1} targeted_modifier={tag=ROOT political_power_gain=0.3 custom_modifier_tooltip=TARGET_RAW}} syn_empty={}}",
+            "leader_traits={syn_country={custom_modifier_tooltip=COUNTRY_BODY} syn_old={political_power_gain=0.11} syn_new={political_power_gain=0.37} syn_hidden={hidden_modifier={political_power_gain=0.3} custom_modifier_tooltip=COUNTRY_BODY} syn_equipment={equipment_bonus={syn_gun={soft_attack=0.1 supply_consumption=-0.2}}} syn_targeted={targeted_modifier={tag=BBB political_power_gain=0.2}} syn_targeted_custom={targeted_modifier={tag=BBB custom_modifier_tooltip=TARGET_BODY}} syn_targeted_dynamic={targeted_modifier={tag=event_target:syn_target political_power_gain=0.1}} syn_targeted_multi={targeted_modifier={tag=BBB political_power_gain=0.2 political_power_cost=-0.1} targeted_modifier={tag=ROOT political_power_gain=0.3 custom_modifier_tooltip=TARGET_RAW}} syn_empty={}}",
         ),
         (
             "common/unit_leader/test.txt",
@@ -35,7 +35,7 @@ fn fixture() -> (Fixture, Folder) {
                 " syn_sub:0 \"Sub\"\n syn_sub_full:0 \"Sub full\"\n syn_corps_sub:0 \"Corps sub\"\n syn_hidden_sub:0 \"Hidden sub\"\n syn_foot:0 \"Foot\"\n POWER_SCOPE:0 \"Power [Root.GetTag]\"\n POWER_ARGUMENT:0 \"Power $ARG$\"\n SCOPED_SUFFIX:0 \"[Root.GetTag]\"\n ARG:0 \"Literal argument\"\n",
                 " syn_hidden:0 \"Hidden\"\n",
                 " syn_held:0 \"Held\"\n",
-                " syn_targeted_custom:0 \"Target custom\"\n TARGET_BODY:0 \"Target first\\n  - target second\\n\"\n POWER_LF:0 \"Power first\\nPower second\"\n POSTFIX_LF:0 \"Postfix first\\nPostfix second\\n\"\n YES:0 \"Yes first\\nYes second\"\n NO:0 \"No\"\n",
+                " syn_targeted_custom:0 \"Target custom\"\n TARGET_BODY:0 \"Target first\\n  - target second\\n\"\n POWER_LF:0 \"Power first\\nPower second\"\n POSTFIX_LF:0 \"Postfix first\\nPostfix second\\n\"\n YES:0 \"Yes first\\nYes second\"\n NO:0 \"Disabled\"\n",
                 " syn_scientist:0 \"Synthetic\"\n SCIENTIST_ADD_TRAIT_EFFECT:0 \"scientist[$TRAIT_NAME$]\"\n POWER_SCOPED_LF:0 \"Power [Root.GetTag]\\nAgain\"\n",
                 " TARGET_RAW:0 \"Raw [Root.GetTag]\"\n",
                 " COUNTRY_BODY:0 \"Country body [Root.GetTag]\"\n UNIT_BODY:0 \"Unit body [Root.GetTag]\"\n NON_SHARED:0 \"Other\"\n OVERRIDE:0 \"Override [Root.GetTag]\"\n IGNORED:0 \"Must not appear\"\n",
@@ -172,9 +172,11 @@ fn assert_render(body: &str, scopes: &mut EventScopes, expected: &str) {
     assert!(result.refusals.is_empty(), "{:?}", result.refusals);
 }
 
-// Authored block: common/characters/swe.txt:1731.
+// A block selects a country trait for the current character.
 #[test]
 fn add_trait() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_trait={trait=syn_country}",
         &mut character(),
@@ -182,9 +184,11 @@ fn add_trait() {
     );
 }
 
-// Authored block: common/characters/swe.txt:1740.
+// Remove a trait selected by block.
 #[test]
 fn remove_trait() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "remove_trait={trait=syn_country}",
         &mut character(),
@@ -192,9 +196,11 @@ fn remove_trait() {
     );
 }
 
-// Authored scalar: common/decisions/ast.txt:1484.
+// A scalar country trait uses the ruling leader.
 #[test]
 fn add_country_leader_trait() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_country_leader_trait=syn_country",
         &mut country(),
@@ -202,9 +208,11 @@ fn add_country_leader_trait() {
     );
 }
 
-// Authored scalar: common/decisions/ita.txt:2013.
+// A scalar country trait uses the character leader.
 #[test]
 fn remove_country_leader_trait() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "remove_country_leader_trait=syn_country",
         &mut character(),
@@ -212,9 +220,11 @@ fn remove_country_leader_trait() {
     );
 }
 
-// Authored scalar: common/decisions/bul.txt:5238.
+// A scalar unit trait uses the viewing-country label.
 #[test]
 fn add_unit_leader_trait() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_unit_leader_trait=syn_unit",
         &mut character(),
@@ -222,9 +232,11 @@ fn add_unit_leader_trait() {
     );
 }
 
-// Authored scalar: common/decisions/pol.txt:1011.
+// Remove a scalar unit trait.
 #[test]
 fn remove_unit_leader_trait() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "remove_unit_leader_trait=syn_unit",
         &mut character(),
@@ -232,10 +244,12 @@ fn remove_unit_leader_trait() {
     );
 }
 
-// Untimed classes use ReadValue 141385570; only the timed key reader
-// 1402F0FF0 consumes a trait/days block.
+// Untimed effects read a scalar; only the timed reader
+// consumes a trait/days block.
 #[test]
 fn untimed_unit_traits_do_not_read_timed_own_fields() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for key in ["add_unit_leader_trait", "remove_unit_leader_trait"] {
         assert_render(
             &format!("{key}={{trait=syn_held days=10}}"),
@@ -245,63 +259,75 @@ fn untimed_unit_traits_do_not_read_timed_own_fields() {
     }
 }
 
-// Authored remove/add: common/decisions/formable_nation_decisions.txt:7565.
+// Replace a ruling leader trait by removing and adding definitions.
 #[test]
 fn swap_ruler_traits() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
-        "swap_ruler_traits={remove=syn_old add=syn_new}",
+        "swap_ruler_traits={add=syn_new remove=syn_old}",
         &mut country(),
-        "swap<Current>/Old/New AAA\nPower: \u{11}G+0.20\u{11}!\n",
+        "swap<Current>/Old/New AAA\nPower: \u{11}G+0.26\u{11}!\n",
     );
 }
 
-// Authored remove/add: common/decisions/swe.txt:1280.
+// Replace a character leader trait with raw wrapper text.
 #[test]
 fn swap_country_leader_traits() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
-        "swap_country_leader_traits={remove=syn_old add=syn_new}",
+        "swap_country_leader_traits={add=syn_new remove=syn_old}",
         &mut character(),
-        "swap<Current>/Old/New [Root.GetTag]\nPower: \u{11}G+0.20\u{11}!\n",
+        "swap<Current>/Old/New [Root.GetTag]\nPower: \u{11}G+0.26\u{11}!\n",
     );
 }
 
-// Authored days/trait: common/national_focus/siam.txt:403.
+// The timed block accepts an integer with leading zeroes.
 #[test]
 fn add_timed_unit_leader_trait() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
-        "add_timed_unit_leader_trait={trait=syn_unit days=010}",
+        "add_timed_unit_leader_trait={days=017 trait=syn_unit}",
         &mut character(),
-        "timed[Viewing Unit trait]/10|      - Unit body [Root.GetTag]\n",
+        "timed[Viewing Unit trait]/17|      - Unit body [Root.GetTag]\n",
     );
 }
 
-// Authored list: common/national_focus/china_warlord.txt:1205.
+// A list filters out already held traits before selecting.
 #[test]
 fn add_random_trait() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
-        "add_random_trait={syn_held syn_unit}",
+        "add_random_trait={syn_unit syn_held}",
         &mut character(),
         "unit+[Viewing Unit trait]|      - Unit body [Root.GetTag]\n",
     );
 }
 
-// Authored scalar: common/decisions/_generic_decisions.txt:2549.
+// Half-way fixed5 values round away from zero.
 #[test]
 fn add_max_trait() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
-        "add_max_trait=2.5",
+        "add_max_trait=6.5",
         &mut character(),
-        "maximum 3 [Root.GetTag]\n",
+        "maximum 7 [Root.GetTag]\n",
     );
     assert_render(
-        "add_max_trait=-2.5",
+        "add_max_trait=-6.5",
         &mut character(),
-        "maximum -3 [Root.GetTag]\n",
+        "maximum -7 [Root.GetTag]\n",
     );
 }
 
 #[test]
 fn named_character_trait_uses_raw_modifiers() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_trait={character=syn_character trait=syn_country}",
         &mut country(),
@@ -310,7 +336,9 @@ fn named_character_trait_uses_raw_modifiers() {
 }
 
 #[test]
-fn native_empty_trait_gates_and_swap_error_literal() {
+fn empty_trait_gates_and_swap_error_literal() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_trait={trait=absent} remove_trait={trait=absent} add_country_leader_trait=absent remove_country_leader_trait=absent add_unit_leader_trait=absent remove_unit_leader_trait=absent",
         &mut character(),
@@ -329,7 +357,9 @@ fn native_empty_trait_gates_and_swap_error_literal() {
 }
 
 #[test]
-fn numeric_trait_preserves_native_separator_and_raw_tooltip() {
+fn numeric_trait_preserves_separator_and_raw_tooltip() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_unit_leader_trait=syn_numeric",
         &mut character(),
@@ -339,6 +369,8 @@ fn numeric_trait_preserves_native_separator_and_raw_tooltip() {
 
 #[test]
 fn unit_trait_body_preserves_block_order_and_fixed5_scale() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_trait={trait=syn_full}",
         &mut character(),
@@ -348,6 +380,8 @@ fn unit_trait_body_preserves_block_order_and_fixed5_scale() {
 
 #[test]
 fn unit_helper_override_suppresses_modifiers_and_separate_custom_lines() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_trait={trait=syn_override}",
         &mut character(),
@@ -356,7 +390,9 @@ fn unit_helper_override_suppresses_modifiers_and_separate_custom_lines() {
 }
 
 #[test]
-fn country_helper_equipment_uses_native_stat_labels_and_polarity() {
+fn country_helper_equipment_uses_stat_labels_and_polarity() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_country_leader_trait=syn_equipment",
         &mut character(),
@@ -366,7 +402,9 @@ fn country_helper_equipment_uses_native_stat_labels_and_polarity() {
 
 #[test]
 fn targeted_trait_uses_country_prefix_and_default_mask() {
-    // 14238C1A0 stores the authored flag marker as control byte 0x12.
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    // Store the authored flag marker as control byte 0x12.
     assert_render(
         "add_country_leader_trait=syn_targeted",
         &mut character(),
@@ -374,10 +412,12 @@ fn targeted_trait_uses_country_prefix_and_default_mask() {
     );
 }
 
-// 140712BE0 uses the caller separator for numeric rows and successive
-// targets; 140712850 resolves ROOT in a fresh empty scope, not our caller.
+// Use the caller separator for numeric rows and successive targets.
+// Resolve ROOT in a fresh empty scope rather than the caller scope.
 #[test]
 fn targeted_trait_keeps_raw_prefix_separator_and_empty_target_scope() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     fixture.with_renderer(&mut character(), Content::default(), |renderer| {
         let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
@@ -393,6 +433,8 @@ fn targeted_trait_keeps_raw_prefix_separator_and_empty_target_scope() {
 
 #[test]
 fn discarded_targeted_operand_refuses_instead_of_inventing_unprefixed_text() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let result = fixture.render(
         "add_country_leader_trait=syn_targeted_dynamic",
@@ -401,15 +443,17 @@ fn discarded_targeted_operand_refuses_instead_of_inventing_unprefixed_text() {
     );
     assert_eq!(result.text, "");
     assert_eq!(result.refusals, BTreeMap::from([(
-        "synthetic effect CAddCountryLeaderTraitEffect: key add_country_leader_trait: country trait syn_targeted_dynamic targeted-country operand is not retained by the shared catalogue (1406039B0/140712850)".into(),
+        "synthetic effect add_country_leader_trait: key add_country_leader_trait: country trait syn_targeted_dynamic targeted-country operand is not retained by the shared catalogue".into(),
         1,
     )]));
 }
 
-// Unit/country blocks use all 32 bits (140AD929B/140712180), while
-// targeted blocks keep FormatDescription's 24-bit mask (140712BE0).
+// Unit/country blocks use all 32 category bits, while targeted blocks
+// keep the formatter's 24-bit default mask.
 #[test]
-fn trait_native_masks_keep_high_categories_only_in_primary_blocks() {
+fn trait_masks_keep_high_categories_only_in_primary_blocks() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::ModifierDefinitions(definitions)) =
         &mut *fixture.frame.tables[TableId::ModifierDefinitions.index()]
@@ -434,7 +478,7 @@ fn trait_native_masks_keep_high_categories_only_in_primary_blocks() {
     );
     assert_eq!(
         result.text,
-        "country+<Current>\n    \u{11}HNew\u{11}!\n  - Power: \u{11}G+0.30\u{11}!\n\nEND",
+        "country+<Current>\n    \u{11}HNew\u{11}!\n  - Power: \u{11}G+0.37\u{11}!\n\nEND",
     );
     assert!(result.refusals.is_empty(), "{:?}", result.refusals);
     fixture.with_renderer(&mut character(), Content::default(), |renderer| {
@@ -451,6 +495,8 @@ fn trait_native_masks_keep_high_categories_only_in_primary_blocks() {
 
 #[test]
 fn random_trait_reference_role_uses_recorded_assigned_definition_ordinals() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
         TableView::Complete(TableRows::UnitLeaders(vec![]));
@@ -466,7 +512,7 @@ fn random_trait_reference_role_uses_recorded_assigned_definition_ordinals() {
             },
         ]));
     let result = fixture.render(
-        "add_random_trait={syn_held syn_unit}",
+        "add_random_trait={syn_unit syn_held}",
         &mut character(),
         Content::default(),
     );
@@ -478,7 +524,9 @@ fn random_trait_reference_role_uses_recorded_assigned_definition_ordinals() {
 }
 
 #[test]
-fn empty_country_trait_keeps_native_name_and_bullet() {
+fn empty_country_trait_keeps_name_and_bullet() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_country_leader_trait=syn_empty",
         &mut character(),
@@ -488,6 +536,8 @@ fn empty_country_trait_keeps_native_name_and_bullet() {
 
 #[test]
 fn unknown_trait_modifier_has_named_definition_refusal() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] =
         TableView::Complete(TableRows::ModifierDefinitions(vec![]));
@@ -498,13 +548,15 @@ fn unknown_trait_modifier_has_named_definition_refusal() {
     );
     assert_eq!(result.text, "");
     assert_eq!(result.refusals, BTreeMap::from([(
-        "synthetic effect CAddUnitLeaderTraitEffect: key add_unit_leader_trait: idea modifier political_power_gain has no recorded definition".into(),
+        "synthetic effect add_unit_leader_trait: key add_unit_leader_trait: idea modifier political_power_gain has no recorded definition".into(),
         1,
     )]));
 }
 
 #[test]
 fn sub_unit_modifiers_keep_first_nonempty_definition() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_trait={trait=syn_sub}",
         &mut character(),
@@ -514,6 +566,8 @@ fn sub_unit_modifiers_keep_first_nonempty_definition() {
 
 #[test]
 fn sub_unit_prefix_applies_to_every_numeric_row_and_no_custom_tooltip() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_trait={trait=syn_sub_full}",
         &mut character(),
@@ -523,6 +577,8 @@ fn sub_unit_prefix_applies_to_every_numeric_row_and_no_custom_tooltip() {
 
 #[test]
 fn sub_unit_buffer_appends_directly_after_corps_modifiers() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_trait={trait=syn_corps_sub}",
         &mut character(),
@@ -531,7 +587,9 @@ fn sub_unit_buffer_appends_directly_after_corps_modifiers() {
 }
 
 #[test]
-fn hidden_sub_unit_keeps_native_header_without_numeric_line() {
+fn hidden_sub_unit_keeps_header_without_numeric_line() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_trait={trait=syn_hidden_sub}",
         &mut character(),
@@ -541,6 +599,8 @@ fn hidden_sub_unit_keeps_native_header_without_numeric_line() {
 
 #[test]
 fn trait_modifier_lookup_preserves_shared_token_ambiguity() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     fixture.with_renderer(&mut character(), Content::default(), |renderer| {
         assert_eq!(
@@ -567,13 +627,15 @@ fn trait_modifier_lookup_preserves_shared_token_ambiguity() {
     );
     assert_eq!(result.text, "");
     assert_eq!(result.refusals, BTreeMap::from([(
-        "synthetic effect CAddTraitEffect: key add_trait: refused token: POLITICAL_POWER_GAIN names several lexer tokens".into(),
+        "synthetic effect add_trait: key add_trait: refused token: POLITICAL_POWER_GAIN names several lexer tokens".into(),
         1,
     )]));
 }
 
 #[test]
 fn conditional_unit_catalogue_preserves_shared_token_ambiguity() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let (catalogue, _conditional_folder) = folder_catalogue(&[
         (
@@ -584,8 +646,8 @@ fn conditional_unit_catalogue_preserves_shared_token_ambiguity() {
             "common/unit_leader/test.txt",
             "leader_traits={syn_conditional={modifier={syn_modifier={}}}}",
         ),
-        // 140ADD97F -> 1410017D1 tries terrain before the modifier fallback
-        // at 140ADDB66; this fixture must supply that first catalogue.
+        // Try terrain before the modifier fallback;
+        // the fixture must supply that first catalogue.
         ("common/terrain/test.txt", "categories={syn_plain={}}"),
     ]);
     catalogue
@@ -630,6 +692,8 @@ fn conditional_unit_catalogue_preserves_shared_token_ambiguity() {
 
 #[test]
 fn empty_plain_trait_needs_no_recorded_modifier_tables() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     for table in [TableId::ModifierDefinitions, TableId::LexicalTokens] {
         *fixture.frame.tables[table.index()] = TableView::Unavailable {
@@ -648,10 +712,12 @@ fn empty_plain_trait_needs_no_recorded_modifier_tables() {
 
 #[test]
 fn swap_root_delta_does_not_copy_custom_tooltips_or_hidden_sets() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "swap_ruler_traits={remove=syn_old add=syn_hidden}",
         &mut country(),
-        "swap<Current>/Old/Hidden AAA\nPower: \u{11}G+0.20\u{11}!\n",
+        "swap<Current>/Old/Hidden AAA\nPower: \u{11}G+0.19\u{11}!\n",
     );
     assert_render(
         "swap_country_leader_traits={remove=syn_country add=syn_country}",
@@ -662,6 +728,8 @@ fn swap_root_delta_does_not_copy_custom_tooltips_or_hidden_sets() {
 
 #[test]
 fn targeted_custom_trait_keeps_embedded_separator_and_trailing_lf() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_render(
         "add_country_leader_trait=syn_targeted_custom",
         &mut character(),
@@ -671,6 +739,8 @@ fn targeted_custom_trait_keeps_embedded_separator_and_trailing_lf() {
 
 #[test]
 fn scoped_modifier_entry_point_allows_expressions_and_embedded_lf() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::ModifierDefinitions(definitions)) =
         &mut *fixture.frame.tables[TableId::ModifierDefinitions.index()]

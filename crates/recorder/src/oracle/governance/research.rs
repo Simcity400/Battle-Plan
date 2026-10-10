@@ -41,8 +41,8 @@ pub(super) fn compare_research(
     let spellings = reverse_spellings(names);
     for row in definitions {
         let token = literal(report, "TechnologyDefinitions.id", &row.id);
-        // ED02A0 writes CTechnology+8 through 1424ADEC0/1424AF2C0.
-        // The lexer (1424A6500/1424A65A0) interns case aliases and keeps
+        // The technology writer emits its name token.
+        // The lexer interns case aliases and keeps
         // its first spelling; the authored name need not be those bytes.
         let subject = format!(
             "technology {:?} handle {} lexical binding",
@@ -76,7 +76,7 @@ pub(super) fn compare_research(
                 String::from_utf8_lossy(writer),
             )));
         }
-        // 140ABBF20 / 1424A65A0: separate indexes may share an interned token.
+        // Separate indexes may share an interned token.
         if row.database_index <= 0
             || name_handles
                 .insert(writer, row.technology_handle)
@@ -210,7 +210,7 @@ pub(super) fn compare_research_slots(
                     )
                 })
                 .collect::<Vec<_>>();
-            // ECFF80 does not serialize the native slot index. Compare complete
+            // the research writer does not serialize the native slot index. Compare complete
             // entries with multiplicity, rather than inventing an ordinal join.
             actual.sort_unstable();
             expected.sort_unstable();
@@ -307,7 +307,7 @@ pub(super) fn compare_research_technologies(
         if !keys.insert((tag, row.database_index)) {
             return Err(invalid("duplicate research technology occurrence"));
         }
-        // 140ED02A0: scan native indexed order, filter each exact instance.
+        // The game: scan native indexed order, filter each exact instance.
         if row.level > 0
             || row.progress_raw > 0
             || (row.level < max_level
@@ -335,7 +335,7 @@ pub(super) fn compare_research_technologies(
             .unwrap_or_default();
         if ambiguous.contains(tag.as_slice()) {
             report.limitation("research occurrence order, multiplicity and serialized fields cannot be certified without exact active-slot filtering", label(tag, "technology"));
-            // 140ED02A0 still requires every positive level/progress or bonus
+            // The game still requires every positive level/progress or bonus
             // occurrence. Unknown active instances may interleave them, but
             // cannot remove or change this ordered serialized subsequence.
             let mut saved = expected.iter();
@@ -403,7 +403,7 @@ pub(super) fn compare_research_technologies(
         return Err(invalid("research occurrences have no saved country"));
     }
     report.compared("ResearchTechnologies", technology_count);
-    report.limitation("140ED02A0 filters each indexed instance; omitted nonpositive state is not serialized, and a text save does not certify omitted database indexes", format!("ResearchTechnologies: {omitted_count} omitted records"));
+    report.limitation("the game filters each indexed instance; omitted nonpositive state is not serialized, and a text save does not certify omitted database indexes", format!("ResearchTechnologies: {omitted_count} omitted records"));
     report.limitation("technology classifier and independent researched-vector membership are not serialized directly; saved level is not substituted for either", "ResearchTechnologies");
     active.map(|_| ()).map_err(|error| invalid(format!("active-slot omission checks unavailable after serialized technology comparisons: {error}")))
 }

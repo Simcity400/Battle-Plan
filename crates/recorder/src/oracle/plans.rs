@@ -25,7 +25,7 @@ fn orders(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
         .flat_map(|theatre| &theatre.definitions)
         .map(|group| (group.id, (group.is_army_group, group.children.len())))
         .collect();
-    // Only successors are serialized (COrderInstance::serialize@1410362c0);
+    // Only successors are serialized (the order save writer);
     // reciprocal predecessor membership is exact, its order is not saved.
     let mut predecessors: BTreeMap<(u64, u32), Vec<u32>> = BTreeMap::new();
     for (&(group, instance), order) in &save.plans.orders {
@@ -400,7 +400,7 @@ fn group_plans(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Re
         let [saved_primary, saved_fallback] =
             save.plans.group_orders.get(&row.group).unwrap_or(&empty);
         let label = format!("OrdersGroupPlans {}", row.group);
-        // 140BE8100 tests stored length before 1424ADF40 writes the first-NUL
+        // The game tests stored length before the game writes the first-NUL
         // prefix. A leading NUL emits name=""; a zero-length string omits it.
         let name = (!row.name.is_empty()).then(|| installed_content::parser::c_string(&row.name));
         if name.is_some_and(|prefix| prefix.len() < row.name.len()) {
@@ -469,6 +469,7 @@ fn group_plans(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Re
 }
 fn fronts(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::Fronts>()?;
+    // The game writes root_front for any nonnull binding, including one
     // whose CFront was destroyed before its order; only live theatre fronts
     // have sections, so only those bindings require a Fronts row.
     let required: BTreeSet<_> = save
@@ -512,8 +513,8 @@ fn fronts(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
 
 /// InvasionPreparations against the saved naval invasions: one row per saved
 /// type-3 order, keyed as ArmyOrders, whose `progress` is the saved `time`
-/// (`COrderInstance+0xD8`, which `COrderInstance::serialize@1410362C0`
-/// writes only when nonzero) exactly.
+/// (the accumulated preparation, which the order writer
+/// emits only when nonzero) exactly.
 fn invasions(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
     let mut rows = BTreeMap::new();
     for row in frame.complete::<tables::InvasionPreparations>()? {
@@ -550,8 +551,8 @@ fn invasions(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
             "absent",
         );
     }
-    report.limitation("GetRequiredInvasionPreparationHours@141016930's operands are live getter inputs the order serializer does not write: the target (the first path province's state controller), the country, relation and leader modifier terms, and whether the leader term counts (the HQ provider's root order) are not compared; the invasion census and the accumulated preparation are", "InvasionPreparations");
-    report.limitation("CheckNavalInvasionRoute@1410277D0's path-cost operands are runtime state the save never writes: the route unit's CUnit+0x1E0 owner remains InvasionPreparations.unit_owner, while its owner's slot-0 war-pointer presence and retired byte (+0x2E8/+0x49) and directed +0x310 targets now come from shared CountryCounterInputs.zero_war/co_belligerents. Those runtime operands are not compared; the published InvasionPreparations zero_* and co_belligerents prefix fields remain legacy evidence. The roster fallback unit is compared as CountryCounterInputs.first_division", "InvasionPreparations.unit_owner and legacy zero_war_present/zero_war_retired/zero_co_belligerent/co_belligerents; CountryCounterInputs.zero_war/co_belligerents");
+    report.limitation("invasion preparation's operands are live getter inputs the order serializer does not write: the target (the first path province's state controller), the country, relation and leader modifier terms, and whether the leader term counts (the HQ provider's root order) are not compared; the invasion census and the accumulated preparation are", "InvasionPreparations");
+    report.limitation("invasion routing's path-cost operands are runtime state the save never writes: the route unit's logical owner remains InvasionPreparations.unit_owner, while its owner's slot-0 war-pointer presence and retired byte and directed targets now come from shared CountryCounterInputs.zero_war/co_belligerents. Those runtime operands are not compared; the published InvasionPreparations zero_* and co_belligerents prefix fields remain legacy evidence. The roster fallback unit is compared as CountryCounterInputs.first_division", "InvasionPreparations.unit_owner and legacy zero_war_present/zero_war_retired/zero_co_belligerent/co_belligerents; CountryCounterInputs.zero_war/co_belligerents");
     Ok(())
 }
 

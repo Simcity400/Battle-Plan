@@ -1,4 +1,4 @@
-//! Land-combat windows, bound by 1418B99C0 and updated by 1418B4BD0.
+//! Land-combat windows and their retained control updates.
 
 use super::*;
 use crate::map::{
@@ -50,8 +50,7 @@ struct Controls<'a> {
 }
 
 fn controls(root: &native::Element) -> Result<Controls<'_>, String> {
-    // BindCombatMapIconChildren@1418B99C0: local button@1422A4A20, icon@1422A6FD0,
-    // instant-text@1422A7520 lookups.
+    // Find buttons, icons and instant text within this window.
     let find = |kind, name: &str| {
         root.find(kind, name)
             .ok_or_else(|| format!("no control named {name}"))
@@ -81,7 +80,7 @@ fn update(
         Entry::Occupied(entry) => entry.get() != &placed.terrain,
     };
     if changed {
-        // ResolveCombatTerrainSprite@1418A79B0 uses the background's authored sprite name.
+        // Use the background's authored sprite name.
         let native::Fields::Button(button) = &c.background.fields else {
             return Err("bg_btn is not a standard button".into());
         };
@@ -98,15 +97,14 @@ fn update(
         instance.set_sprite(root, c.background, sprite, SpriteSetter::ButtonStandard)?;
         previous.insert_entry(placed.terrain.clone());
     }
-    // Update@1418B4BD0: the political map always hides the air icon.
+    // the political map always hides the air icon.
     instance.hide(root, c.air)?;
     instance.show(root, c.progress)?;
     instance.set_text(root, c.progress, &placed.text, resources)?;
     let frame = match marker.frame {
         Some(frame) => frame.wrapping_add(1) as i32,
         None => {
-            // CIconType+0x134: constructor@142358490, token 0xFC reader@142358910,
-            // factory@142358760. Owner ruling 2026-10-06 uses the authored initial frame.
+            // Use the control's authored initial frame until an update writes it.
             let native::Fields::Icon(icon) = &c.frame.fields else {
                 return Err("mapicon_land_combat_frame is not a standard icon".into());
             };
@@ -286,6 +284,8 @@ mod tests {
 
     #[test]
     fn combat_binder_does_not_bind_nested_controls() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut root = window("Main_14");
         let mut background = root.children.remove(0);
         background.path = "test.nested.bg_btn".into();
@@ -300,6 +300,8 @@ mod tests {
 
     #[test]
     fn unseen_frame_draws_authored_initial_or_last_seen_frame_with_native_children() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut resources = fixture();
         resources.add_sprite("GFX_synthetic_frame", [20, 10], 2);
         for authored in [1, 2] {
@@ -369,6 +371,8 @@ mod tests {
 
     #[test]
     fn a_withheld_score_background_does_not_invent_a_window_hit() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = window("Main_14");
         let resources = fixture();
         let mut placed = placed();
@@ -399,6 +403,8 @@ mod tests {
 
     #[test]
     fn unsupported_progress_font_is_refused_by_name_and_counted() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use native_gui::lifecycle::{Admission, Pool};
         let root = window("Unsupported_14");
         let resources = fixture();
@@ -443,6 +449,8 @@ mod tests {
 
     #[test]
     fn local_controls_use_authored_terrain_sprite_and_preserve_unchanged_drawable() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = window("Main_14");
         let mut resources = fixture();
         resources

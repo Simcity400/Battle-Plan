@@ -15,12 +15,12 @@ pub struct Site {
     pub sentinel: [u8; 16],
 }
 
-/// AtWar1406F3A00 reaches A52 only after raw/canonical self, positive receiver
-/// and nonnull status gates. RSI=receiver, RDI=raw+canonical target pair,
-/// RAX=status. IsFriendly1406F3B00 reaches B28 with RDI=receiver, RSI=target
-/// pair, RBX=status. Both copied spans are seven-byte MOVs, with no incoming
-/// branch/return PC, stack change or RIP operand. Their original unwind state
-/// is shared (RVA2DE1FD4, flags0); observe before resuming the relocated MOV.
+/// War queries reach this load after self/alias, positive-receiver and
+/// non-null-status gates: RSI receiver, RDI raw/canonical target pair, RAX status.
+/// Friendly queries use RDI receiver, RSI target pair and RBX status. Both
+/// copied seven-byte spans are loads with no interior branch or return address,
+/// stack change or RIP operand. They share their original handler-free unwind
+/// state; observe before resuming the relocated load.
 pub const SITES: [Site; 2] = [
     Site {
         rva: 0x006f_3a52,
@@ -43,11 +43,10 @@ pub struct Frame {
     pub status: usize,
 }
 
-/// Native pointers are callback/world-scoped demand keys, never replay IDs.
-/// CDiplomacyStatus ctor140D1E540 eagerly allocates each status; status ctor
-/// 140D03410 fixes target+50 and owner+1F0 (only owner store140D0356C).
-/// Destructor140D1EE00 retires the matrix with its world. Collector must
-/// invalidate on reset/destruction/construction and reauthenticate at capture.
+/// Pointers are callback/world-scoped demand keys, never replay IDs. Every
+/// diplomacy object eagerly owns its status matrix, with fixed target and
+/// owner backlinks. Destruction retires the matrix with its world. Collector
+/// invalidates on reset, destruction and construction and reauthenticates at capture.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Demand {
     pub receiver: usize,
@@ -156,7 +155,7 @@ pub(crate) fn resolve_target<M: Memory>(
 }
 
 /// Authenticate the exact reached cell, without reading status+2E8 or CRelation.
-/// Getter1406F3A00/1406F3B00 selects the matrix by passed canonical target.
+/// The passed canonical target selects the exact matrix cell.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn authenticate_status(
     memory: &impl Memory,

@@ -46,9 +46,8 @@ pub struct CountryIndex {
     tags: BTreeMap<u32, String>,
     /// Canonical slot to the country's own raw link id, from `Countries`.
     ids: BTreeMap<u32, u32>,
-    /// Canonical slot to the cosmetic tag and exact original-or-own flag tag
-    /// by, from `CountryAppearance`: whatever rows the hour holds, so a
-    /// country the table lacks has none.
+    /// Canonical slot to cosmetic tag and exact original-or-own flag tag from `CountryAppearance`.
+    /// Only rows present in the hour supply these values.
     flag_tags: BTreeMap<u32, FlagTags>,
 }
 

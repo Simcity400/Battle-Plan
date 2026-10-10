@@ -35,11 +35,11 @@ pub(super) fn compare(frame: &DecodedFrame, report: &mut Report) -> io::Result<(
         ));
     }
     report.limitation(
-        "the actual reserved receiver's diplomacy matrix count/order and each cell's raw +0x50 target association have no direct text-save counterpart; a matched same-hour native witness is required, including literal target0 versus positive target aliases to canonical0",
+        "the actual reserved receiver's diplomacy matrix count/order and each cell's raw target association have no direct text-save counterpart; a matched same-hour native witness is required, including literal target0 versus positive target aliases to canonical0",
         format!("{LABEL}: {} native matrix ordinals", packet.cells.len()),
     );
     report.limitation(
-        "reverse cells' +0x2E8 war-pointer presence and raw retirement bytes are runtime receiver status; saved WarRelations payload equality cannot certify the current cell association or an active/retired transition, so a matched same-hour native witness is required",
+        "reverse cells' war-pointer presence and raw retirement bytes are runtime receiver status; saved WarRelations payload equality cannot certify the current cell association or an active/retired transition, so a matched same-hour native witness is required",
         format!("{LABEL}.war"),
     );
     report.limitation(
@@ -47,7 +47,7 @@ pub(super) fn compare(frame: &DecodedFrame, report: &mut Report) -> io::Result<(
         format!("{LABEL}.subject"),
     );
     report.limitation(
-        "reverse cells' +0x2A0 military-access pointer presence is runtime receiver status; saved relation payloads cannot certify the current cell's exact pointer presence, so a matched same-hour full-width native witness is required",
+        "reverse cells' military-access pointer presence is runtime receiver status; saved relation payloads cannot certify the current cell's exact pointer presence, so a matched same-hour full-width native witness is required",
         format!("{LABEL}.military_access"),
     );
     for (ordinal, cell) in packet.cells.iter().enumerate() {

@@ -1,15 +1,13 @@
-//! Per-combat simulation operands of the possible-tactics weights
-//! (141299340 -> 1412A77A0): each side's country, general and field-marshal
-//! preferred tactics and the country preference modifier. Tactic definitions,
-//! weights and preference factors are content; unlocks are the daily
-//! CountryTacticUnlocks census.
+//! Per-combat country, general and field-marshal tactic preferences and the
+//! country preference modifier. Definitions, weights and factors are content;
+//! unlocks come from the daily CountryTacticUnlocks census.
 
 use crate::{
     Memory, ccombat_tactic, ccountry, cland_combat, cnull_combat_tactic, cpdx_array::Array, read,
     walk::Outcome,
 };
 
-///1412A77A0 reads the general's preferred tactic pointer directly.
+/// General's stored preferred-tactic pointer.
 pub const LEADER_PREFERRED_TACTIC: usize = 0x10b0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -93,8 +91,8 @@ fn authentic(
     }
 }
 
-///1412A77A0 finds the first formation in native theatre order with this
-/// commander and a parent. This intentionally does not substitute leader+1048.
+/// First formation in theatre order with this commander and a parent.
+/// The leader's stored formation pointer does not substitute for that selection.
 fn parent_commander(
     memory: &impl Memory,
     base: usize,
@@ -110,7 +108,7 @@ fn parent_commander(
         let theatre = pointer(memory, theatres.data, ordinal as usize * 8)?;
         authentic(memory, base, theatre, &[crate::ctheatre::VTABLE_RVA])?;
         let groups = array(memory, theatre, 0x80, 8)?;
-        // 1412A77A0 traverses each original signed vector count to its end.
+        // Traverse every original signed vector count to its end.
         for index in 0..groups.count {
             let group = pointer(memory, groups.data, index as usize * 8)?;
             authentic(
@@ -162,9 +160,8 @@ pub fn capture_context(
         ];
         let weight_context = ccombat_tactic::WeightContext::read(memory, base)?;
         for (index, side) in sides.into_iter().enumerate() {
-            //141299340 passes the first linked-set node as a CCountryTag*.
-            // A side whose last unit has left keeps an empty set until the
-            // combat is removed: no country scope, preference or weight.
+            // The first linked-set node supplies the country reference. Empty sets
+            // remain until combat removal and supply no country scope, preference or weight.
             let first = pointer(memory, side, crate::cland_combatant::COUNTRIES)?;
             if first != 0 {
                 let tag = field::<u32>(memory, first, 0)?;
@@ -172,8 +169,7 @@ pub fn capture_context(
                     return Err("tactic side country scope is null");
                 }
                 let country = countries.resolve(tag)?;
-                // 1412A77A0 weighs the selection without its name, so a name
-                // of any length is not read here.
+                // Tactic weighting does not read the name, regardless of its length.
                 let preferred =
                     ccombat_tactic::preferred_identity(memory, base, country.pointer, country.id);
                 if preferred.outcome != (Outcome::Rows { len: 1 }) {

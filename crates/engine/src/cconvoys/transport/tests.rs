@@ -116,7 +116,7 @@ fn dynamic_country_renumbering_keeps_the_original_embedded_convoy_inputs() {
 fn first_nonzero_negative_variant_is_unfiltered_and_keeps_signed_cached_stats() {
     let mut memory = MemoryFixture::new();
     memory.pool(&[0, -1, 100_000]);
-    // There are deliberately no classifier bytes. Held-stock and C740 never
+    // There are deliberately no classifier bytes. Held-stock and first-variant selection never
     // require them, and an empty first occurrence cannot select the variant.
     let mut scratch = Scratch::try_new(1).unwrap();
     let mut output = [PoolEntry::default(); 3];

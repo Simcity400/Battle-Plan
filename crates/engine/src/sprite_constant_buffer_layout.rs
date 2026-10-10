@@ -1,25 +1,24 @@
-//! Anonymous CPU constant packet written by CSpriteType::Draw (FUN14222D5A0).
-//! Offsets describe native f32 uploads, not a simulation struct. The ordinary
-//! button-state shader allocates 112 bytes but native writes end at byte 104;
-//! the eight alignment bytes are not established data and must not be invented.
+//! CPU constant packet for sprite drawing. The ordinary button-state
+//! shader allocates 112 bytes, but writes end at byte 104. The eight
+//! alignment bytes have no established contents.
 
-/// Sprite constant-buffer handle global; the archived FUN14222D5A0 decompile passes DAT14343A178 to upload and bind dispatches.
+/// Sprite constant-buffer handle global.
 pub const BUFFER_HANDLE_RVA: usize = 0x0343_a178;
-/// Uploaded world-view-projection matrix, sixteen native f32 words; container_sprite_draw.rs:424-446 and :481 confirm byte range 0..64.
+/// World-view-projection matrix, sixteen f32 words at bytes 0..64.
 pub const WORLD_VIEW_PROJECTION_MATRIX: usize = 0;
-/// Uploaded color, four native f32 words; FUN14222D5A0 writes ModColor with multiplied opacity and container_sprite_draw.rs:482 maps it to +64.
+/// Color, four f32 words at +64, with multiplied opacity.
 pub const COLOR: usize = 64;
-/// Current frame's UV offset, two native f32 words; FUN14222D5A0 calls FUN14222A990 and container_sprite_draw.rs:486 maps the result to +80.
+/// Current-frame UV offset, two f32 words at +80.
 pub const OFFSET: usize = 80;
-/// Next frame's UV offset, two native f32 words; FUN14222D5A0 repeats FUN14222A990 with frame+1 and container_sprite_draw.rs:488 maps it to +88.
+/// Next-frame UV offset, two f32 words at +88.
 pub const NEXT_OFFSET: usize = 88;
-/// Current native UI clock, f32; FUN14222D5A0 copies its context+32590 value and container_sprite_draw.rs:491 maps it to +96.
+/// Current UI clock, f32 at +96, from draw context +0x32590.
 pub const TIME: usize = 96;
-/// Retained sprite animation clock, f32; FUN14222D5A0 copies its sixth argument and container_sprite_draw.rs:492-494 maps it to +100.
+/// Retained animation clock, f32 at +100, supplied as argument six.
 pub const ANIMATION_TIME: usize = 100;
-/// Number of bytes written by native draw; container_sprite_draw.rs:430 distinguishes the 104 initialized bytes from alignment tail.
+/// Initialized draw byte extent.
 pub const WRITTEN_BYTES: usize = 104;
-/// Ordinary button-state shader packet size; container_sprite_draw.rs:453-459 confirms reflection expects 112 including eight alignment bytes.
+/// Ordinary button-state reflected packet size including alignment tail.
 pub const BUTTON_STATE_BUFFER_BYTES: usize = 112;
-/// Ordinary static-button shader packet size; container_sprite_draw.rs:455-456 confirms reflection consumes the 96-byte prefix, with only X at +80.
+/// Static-button reflected packet size; consumes the 96-byte prefix, with only X at +80.
 pub const STATIC_BUTTON_BUFFER_BYTES: usize = 96;

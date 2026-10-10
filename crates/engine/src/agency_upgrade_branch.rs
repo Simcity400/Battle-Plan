@@ -1,18 +1,17 @@
-//! CAgencyUpgradeBranch definitions owned by CAgencyUpgradeDatabase.
-//! Loader@140617860 reuses a branch across files; reader@140618C40 rebuilds an
-//! existing same-name definition within its exact branch. Authored identity
-//! comes from the live lexical dictionary, never a vanilla catalog.
+//! Agency upgrade branch definitions owned by the database. The loader reuses
+//! a branch across files and rebuilds same-name definitions within that branch.
+//! Authored identity comes from the live lexical dictionary.
 
-/// Loader@140617860 constructs this primary vtable; confirmed pinned RTTI.
+/// Primary branch vtable.
 pub const VTABLE_RVA: usize = 0x027c_8cc0;
-/// Loader@140617860 stores the lexer token returned by AddOrFindDynamicToken.
+/// Branch lexer token.
 pub const TOKEN: usize = 0x08;
-/// Loader@140617860 constructs non-null branches with a nonzero valid byte.
+/// Non-null branch valid byte; any nonzero value is valid.
 pub const VALID: usize = 0x10;
 
-/// Reader@140618C40 owns this member-pointer array; unlike the DB, it has no sentinel.
+/// Member-pointer array with no sentinel.
 pub const UPGRADES: usize = 0x40;
-/// Signed live count, reader@140618C40. CPdxArray validation admits its nonnegative range.
+/// Signed member count; array validation admits its nonnegative range.
 pub const UPGRADE_COUNT: usize = 0x4c;
-/// Reader@140618C40 indexes definition pointers by eight bytes.
+/// Definition-pointer stride.
 pub const UPGRADE_STRIDE: usize = 8;

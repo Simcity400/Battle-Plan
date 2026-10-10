@@ -677,7 +677,7 @@ fn country_groups_faction_names_refuse_invalid_literal_bytes() {
     assert_eq!(factions[0].name, None);
     assert_eq!(
         factions[0].name_reason.as_deref(),
-        Some("faction name (140D77360) is not UTF-8")
+        Some("faction name is not UTF-8")
     );
 }
 
@@ -1414,7 +1414,7 @@ fn country_groups_faction_literals_refuse_a_different_viewer_language() {
     assert_eq!(
         factions[0].name_reason.as_deref(),
         Some(
-            "faction name (140D77360) is text the game stored in english without its key, and the viewer's language is french"
+            "faction name is text the game stored in english without its key, and the viewer's language is french"
         )
     );
 }
@@ -1524,6 +1524,8 @@ fn faction_source(frame: DecodedFrame) -> crate::Source {
 
 #[test]
 fn country_groups_literal_names_do_not_resolve_content_but_check_viewer_language() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{ContentOptions, LoadContext, Product};
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[]);
     std::fs::write(folder.0.join("settings.txt"), "language=\"l_french\"").unwrap();
@@ -1551,7 +1553,7 @@ fn country_groups_literal_names_do_not_resolve_content_but_check_viewer_language
     assert_eq!(
         reply.factions[0].name_reason.as_deref(),
         Some(
-            "faction name (140D77360) is text the game stored in english without its key, and the viewer's language is french"
+            "faction name is text the game stored in english without its key, and the viewer's language is french"
         )
     );
     std::fs::write(folder.0.join("settings.txt"), "language=\"l_english\"").unwrap();
@@ -1570,6 +1572,8 @@ fn country_groups_literal_names_do_not_resolve_content_but_check_viewer_language
 
 #[test]
 fn country_groups_template_names_ignore_gfx_failures_and_unrelated_warnings() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{ContentOptions, LoadContext, Product};
     use std::sync::Arc;
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[

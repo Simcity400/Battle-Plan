@@ -1,31 +1,30 @@
-//! Native texture conversion and upload functions with no proven C++ receiver type.
-//! a729 presentation knowledge only, harvested from container_sprite_resources_gpu.rs
-//! and its retained decompiles; resource cache/lifetime and execution order remain unproved.
-//! Values here describe the native format mapping, not viewer fallbacks or D3D SDK layouts.
+//! Texture conversion and upload metadata for presentation. Resource
+//! cache lifetime and execution order are unestablished. Format mappings
+//! describe game texture codes rather than viewer fallback choices.
 
-/// Native D3D11 texture creator; container_sprite_resources_gpu.rs:26,125-128 and retained FUN1423FB4F0 confirm descriptor lowering and source-row upload.
+/// D3D11 texture creator lowering descriptors and uploading source rows.
 pub const CREATE_TEXTURE_RVA: usize = 0x023f_b4f0;
-/// Native source-mip to upload-row conversion; container_sprite_resources_gpu.rs:65,73 and retained FUN1423FC160 confirm compressed pitches and BGR expansion.
+/// Mip-to-upload conversion with compressed pitches and BGR expansion.
 pub const BUILD_UPLOAD_ROWS_RVA: usize = 0x023f_c160;
-/// BGR expansion helper; container_sprite_resources_gpu.rs:65 and retained FUN1423F8E90 confirm triples become B,G,R,0 with no alpha repair.
+/// BGR expansion to B,G,R,0 without alpha repair.
 pub const EXPAND_BGR_RVA: usize = 0x023f_8e90;
-/// Native pixel-format bit-count helper; retained FUN1423FC160 calls FUN1423F9E10 before row-pitch calculation, overriding formats 11/12 to 32 upload bits.
+/// Pixel-format bit count before pitch calculation; formats 11/12 use 32 upload bits.
 pub const FORMAT_BITS_PER_PIXEL_RVA: usize = 0x023f_9e10;
-/// Native-to-DXGI format conversion; container_sprite_resources_gpu.rs:60,65 and retained FUN142411320 confirm the switch below.
+/// Texture-code to DXGI conversion.
 pub const FORMAT_TO_DXGI_RVA: usize = 0x0241_1320;
-/// Native DDS DXT1 code; container_sprite_resources_gpu.rs:73 and FUN142410030 select 1 while retaining compressed blocks.
+/// DDS DXT1 code retaining compressed blocks.
 pub const FORMAT_DXT1: u32 = 1;
-/// Native DDS DXT3 code; container_sprite_resources_gpu.rs:73 and FUN142410030 select 3 while retaining compressed blocks.
+/// DDS DXT3 code retaining compressed blocks.
 pub const FORMAT_DXT3: u32 = 3;
-/// Native DDS DXT5 code; container_sprite_resources_gpu.rs:73 and FUN142410030 select 5 while retaining compressed blocks.
+/// DDS DXT5 code retaining compressed blocks.
 pub const FORMAT_DXT5: u32 = 5;
-/// Native 24-bit BGR code; container_sprite_resources_gpu.rs:65 and FUN142410030 select 11, then FUN1423F8E90 expands its upload bytes.
+/// 24-bit BGR code whose upload expands each source triple.
 pub const FORMAT_BGR24: u32 = 11;
-/// Native 32-bit BGRA code; container_sprite_resources_gpu.rs:60 and FUN142410030 select 13, preserving the fourth source byte.
+/// 32-bit BGRA code preserving its fourth source byte.
 pub const FORMAT_BGRA32: u32 = 13;
-/// Fourth byte written when expanding native BGR triples; retained FUN1423F8E90 explicitly stores zero, with sampled opacity provided by the DXGI X format.
+/// Fourth byte after BGR expansion; DXGI X-format sampling supplies opacity.
 pub const EXPANDED_BGR_FOURTH_BYTE: u8 = 0;
-/// Native format-switch cases; retained FUN142411320 maps these engine codes to exact DXGI values, independently of SDK enum names.
+/// Texture-code switch mapping to DXGI values.
 pub const FORMAT_TO_DXGI_CASES: &[(u32, u32)] = &[
     (1, 0x47),
     (2, 0x48),
@@ -49,5 +48,5 @@ pub const FORMAT_TO_DXGI_CASES: &[(u32, u32)] = &[
     (0x18, 6),
     (0x19, 2),
 ];
-/// Native format switch default result, including code 11; retained FUN142411320 returns 0x58 for every code absent from its cases.
+/// Default DXGI result for every unlisted code, including code 11.
 pub const FORMAT_TO_DXGI_DEFAULT: u32 = 0x58;

@@ -724,8 +724,8 @@ fn format98_optional_empty_inputs_remain_distinct_from_absent_inputs() {
     assert!(leader.check_key_fields().is_err());
     let leader = UnitLeaderRow { kind: 3, ..leader };
     assert!(leader.check_key_fields().is_ok());
-    // 140BFC8D0 constructs the codename for native kind 3 independently of
-    // the skill category. This host records category, but has no kind field.
+    // Kind 3 constructs a codename independently of skill category. This host
+    // records category but has no kind field.
     let operative = CharacterOperativeRow {
         character: 7,
         reference: 9,

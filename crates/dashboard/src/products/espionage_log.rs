@@ -2,13 +2,12 @@
 //! estimates. A missing hour breaks runs; a complete later census can establish
 //! only that an absent operation ended *by* that read.
 //!
-//! COperationInstance completion 1413EE390 writes terminal +0x42 and the
-//! generated outcome description +0xA0 and independent +0xC0/+0xC1 results.
-//! Completion hooks retain outcomes even when the manager deletes an AI instance.
-//! Terminal state never establishes success or operative capture.
-//! OperationTokens is an independent owner-target token set, added/removed by
-//! authored effects (1413F10D0/1413F22B0, 14034AD00/14035E450), without an
-//! operation handle. It is therefore no outcome source and is not decoded here.
+//! Operation completion writes terminal state, a generated outcome description
+//! and independent result flags. Hooks retain outcomes even when the manager
+//! deletes an AI instance. Terminal state never establishes success or
+//! operative capture. OperationTokens is an independent owner-target token
+//! set, added/removed by authored effects without an operation handle. It is
+//! therefore no outcome source and is not decoded here.
 
 use super::{
     BranchParams, LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
@@ -84,20 +83,20 @@ pub struct EspionageOperationRun {
     pub target_tag: Option<String>,
     /// Null when this read did not record the definition token's name.
     pub type_key: Option<String>,
-    /// Selected definitions, not completed phases (1413EB710).
+    /// Selected definitions, not completed phases.
     pub phase_count: u32,
-    /// Manager 14118B110 tests +0x41 after completion.
+    /// Manager removal flag tested after completion.
     pub auto_repeat: bool,
-    /// Launch writes duration and start on the same instance (1413EAD80).
+    /// Launch writes duration and start on the same instance.
     pub duration_days: i32,
-    /// All +0xE0 slots, including unassigned ones (1413E9210/141BD1CD0).
+    /// All assignment slots, including unassigned ones.
     pub assigned_slots: u32,
-    /// 1413EC160 signed day result at this read; native -1 stays unknown.
+    /// Signed day result at this read; -1 stays unknown.
     pub elapsed_days: Option<i32>,
     /// Zero-based native phase at the supplying read; names/IDs are not captured.
     pub current_phase: Option<u32>,
     pub terminal: bool,
-    /// Auto-commence, tested by 141189630 before 1413EF490 starts it.
+    /// Auto-commence flag tested before the operation starts.
     pub auto_commence: bool,
     pub start_hour: Option<i32>,
     /// Non-null handles in native slot order; null means assignments unread.
@@ -116,10 +115,10 @@ pub enum EspionageEndReason {
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct EspionageOutcome {
-    /// Stored independent trials, +C0/+C1 (1413EE390), never success/failure.
+    /// Stored independent trials, never success/failure.
     pub bonus: bool,
     pub detected: bool,
-    /// Language of the stored +0xA0 text, not the viewer's display language.
+    /// Language of the stored description, not the viewer's display language.
     pub recorded_language: String,
     pub description_ref: Option<super::operation_description::OperationDescriptionRef>,
     pub description_unrecorded: Option<String>,
@@ -148,7 +147,7 @@ pub struct EspionageOperationEnd {
 #[serde(rename_all = "camelCase")]
 pub struct EspionageOperation {
     /// Full native handle and episode's first read. Auto-repeat creates a fresh
-    /// identity (14118B110 -> 141A13EA0 -> 141189390 -> 142209A50).
+    /// identity.
     pub id: String,
     pub first_read: i32,
     pub start_hour: Option<i32>,
@@ -727,12 +726,11 @@ fn supplying_read(reads: &[i32], hour: i32) -> i32 {
     reads[reads.partition_point(|read| *read <= hour) - 1]
 }
 
-/// +0x38 sums civilian days * fixed5 (constructor 1413E9210), +0x30
-/// stores elapsed civilian work. This is their recorded aggregate ratio;
-/// equipment requirements and readiness are not captured. The resource meter
-/// 141E1CFA0/141E1DAA0 uses signed wrapping IMUL (141E1D13E), IDIV
-/// (141E1D147), a zero-denominator zero, and clamp [0,100000]. Its three
-/// fixed5 sentinels go through 0xFFFFFFFF and clamp to a full meter.
+/// Recorded total civilian days (fixed5) and elapsed civilian work supply this
+/// aggregate ratio; equipment requirements and readiness are not captured.
+/// The resource meter uses signed wrapping multiplication and division,
+/// a zero-denominator zero, and clamp [0,100000]. Its three fixed5 sentinels
+/// go through u32::MAX and clamp to a full meter.
 fn preparation_ratio(row: &OperationRow) -> Option<i32> {
     let current = row.preparation_current;
     let ratio = if row.preparation_required == 0 {
@@ -745,22 +743,22 @@ fn preparation_ratio(row: &OperationRow) -> Option<i32> {
             .checked_div(row.preparation_required)?
             .clamp(0, 100_000)
     };
-    // Float is geometry only. FormatFixed5Percent 142259590 displays the
-    // integer percentage, ratio / 1000, with precision zero and truncation.
+    // Float is geometry only. The fixed5 formatter displays integer percent,
+    // ratio / 1000, with precision zero and truncation.
     Some(ratio as i32)
 }
 
-/// Elapsed days 1413EC160 uses separately truncated signed dates, offset by
-/// the executable's epoch (ASM 1413EC27F..1413EC2C2). The phase view
-/// 1413EB760 wraps the signed product and divides by duration. Pointer getter
-/// 1413EB710 rejects -1 and indices >= count; an unsafe negative index has no
-/// representable phase here. This runs only at a read, never between reads.
+/// Elapsed days uses separately truncated signed dates, offset by the
+/// game's epoch. The phase view wraps the signed product and divides by
+/// duration. Phase selection rejects -1 and indices >= count; an unsafe
+/// negative index has no representable phase here. This runs only at a read,
+/// never between reads.
 fn elapsed_days(row: &OperationRow, hour: i32) -> Option<i32> {
     if row.duration_days == 0 || row.terminal != 0 {
         return None;
     }
-    // Native epoch constant, not content: signed i32 SUB and /24 truncate
-    // toward zero separately (1413EC27F..1413EC2C2).
+    // Game epoch constant, not content: signed i32 subtraction and /24
+    // truncate toward zero separately.
     let day = |hour: i32| hour.wrapping_sub(43_800_000) / 24;
     let elapsed = day(hour).wrapping_sub(day(row.start_hour));
     (elapsed != -1 && elapsed != row.duration_days).then_some(elapsed)
@@ -776,8 +774,8 @@ fn current_phase(row: &OperationRow, hour: i32) -> Option<u32> {
         .filter(|phase| *phase < row.phase_count)
 }
 
-/// Completion1413EE390 writes independent +0xC0/+0xC1 results. Exact
-/// client-language +0xA0 text is fetched separately for the active tooltip.
+/// Completion writes independent result flags. Exact client-language
+/// description text is fetched separately for the active tooltip.
 fn outcome_at_end(
     bonus: Option<u8>,
     detected: Option<u8>,
@@ -1801,8 +1799,7 @@ mod tests {
         builder.observe(&sample);
         assert_eq!(builder.operations[0].end.as_ref().unwrap().by_hour, 102);
         sample.hour = 103;
-        // Native repeat constructs a new identity rather than resetting the old
-        // instance (141189390 -> 1413E9210 -> 142209A50).
+        // Repeat constructs a new identity rather than resetting the old instance.
         row.id = 2;
         row.terminal = 0;
         row.duration_days = 0;

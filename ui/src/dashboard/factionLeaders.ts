@@ -2,8 +2,8 @@ import type { CountryGroupReply } from '../generated/dashboard';
 import type { NameAt } from './countryFacts';
 import type { Rgb } from '../shell/appearance/color';
 
-/** Which leader a faction's default campaign colour comes from (spec 2.1: the
- * leader's map colour, fixed): the leader it had when first recorded, on any branch
+/** Which leader a faction's default campaign map colour comes from:
+ * the leader it had when first recorded, on any branch
  * of the campaign, and the hour and branch it is read at. A later change of leader
  * does not change the colour. Factions whose leader was never recorded have none,
  * and take the palette. */

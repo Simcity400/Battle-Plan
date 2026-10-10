@@ -37,6 +37,8 @@ fn rendered(
 
 #[test]
 fn entry_invocations_detect_cycles_and_render_finite_scope_changes() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         r#"entry = { name = Walk text = { trigger = { tag = GER } localization_key = DONE } text = { localization_key = NEXT } }
            entry = { name = SelfLoop text = { localization_key = SELF } }
@@ -90,6 +92,8 @@ fn entry_invocations_detect_cycles_and_render_finite_scope_changes() {
 
 #[test]
 fn entry_invocations_refuse_growing_history_at_the_backstop_without_stack_overflow() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "entry = { name = Grow text = { localization_key = GROW } }",
         " GROW:0 \"[GER.Grow]\"\n",
@@ -118,6 +122,8 @@ fn entry_invocations_refuse_growing_history_at_the_backstop_without_stack_overfl
 
 #[test]
 fn entry_invocations_guard_fresh_balance_contexts() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "entry = { name = Cross text = { localization_key = CROSS } }",
         " CROSS:0 \"[ROOT.GetActiveRangeName]\"\n RANGE:0 \"[Cross]\"\n SELF_RANGE:0 \"[ROOT.GetActiveRangeName]\"\n",
@@ -162,7 +168,9 @@ fn entry_invocations_guard_fresh_balance_contexts() {
 }
 
 #[test]
-fn province_text_uses_native_members_name_precedence_and_recorded_perspective() {
+fn province_text_uses_members_name_precedence_and_recorded_perspective() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use installed_content::movement::{MovementMap, ProvinceTerrain};
     let (catalogue, _folder) = tests::catalogue(
         "entry = { name = Echo text = { localization_key = WRONG } }",
@@ -335,7 +343,7 @@ fn province_text_uses_native_members_name_precedence_and_recorded_perspective() 
     assert!(
         render(&f, 5, "[GetName]")
             .unwrap_err()
-            .contains("capture refused (1406DF830)")
+            .contains("capture refused")
     );
     let TableView::Complete(TableRows::CountryAppearance(appearance)) =
         &mut *f.tables[TableId::CountryAppearance.index()]
@@ -357,6 +365,8 @@ fn province_text_uses_native_members_name_precedence_and_recorded_perspective() 
 
 #[test]
 fn saved_globals_promote_text_and_missing_names_leave_its_context_unchanged() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue("", " NAME:0 \"Saved character\"\n");
     let mut f = frame();
     set::<tables::Characters>(
@@ -408,7 +418,9 @@ fn saved_globals_promote_text_and_missing_names_leave_its_context_unchanged() {
 }
 
 #[test]
-fn random_lists_use_raw_fixed5_seed_scope_identity_and_native_fast_paths() {
+fn random_lists_use_raw_fixed5_seed_scope_identity_and_fast_paths() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         r#"
         a = { name = Default text = { random_list = { 30 = { localization_key = A } 10 = { localization_key = B } 20 = { localization_key = C } } } }
@@ -438,7 +450,7 @@ fn random_lists_use_raw_fixed5_seed_scope_identity_and_native_fast_paths() {
         Ok("C|B|B|A|||A")
     );
     // The default scope draws 54/60; a promoted object uses the second
-    // constructor hash lane of 424242, drawing 57/60 (1410CDDF0).
+    // constructor hash lane of 424242, drawing 57/60.
     assert_eq!(
         text.expand("[Promoted]|[SOV.Promoted]").as_deref(),
         Ok("A|B")
@@ -452,8 +464,8 @@ fn random_lists_use_raw_fixed5_seed_scope_identity_and_native_fast_paths() {
         random_seed_refusal: Some("decision random-count is unrecorded"),
         ..EventScope::of(EventObject::Country(1))
     }]);
-    // CRandomLocList 140A9CD8A returns a sole member before seed/weights;
-    // 140A9CF27 uses an explicit seed, 140A9CF9A/BD read the default lanes.
+    // A sole member returns before seed/weights are read; an explicit
+    // seed takes precedence over the default lanes.
     assert_eq!(
         text.expand_in("[Default]", &missing),
         Err("[Default]: scripted localisation Default: decision random-count is unrecorded".into())
@@ -463,7 +475,7 @@ fn random_lists_use_raw_fixed5_seed_scope_identity_and_native_fast_paths() {
             .as_deref(),
         Ok("B|A|||A")
     );
-    // An event-scoped invocation preserves its lanes (1410CDDF0 cases 0-2),
+    // An event-scoped invocation preserves its lanes,
     // while an object promotion constructs a known seed from 424242.
     assert_eq!(
         text.expand_in("[Promoted]", &missing),
@@ -480,6 +492,8 @@ fn random_lists_use_raw_fixed5_seed_scope_identity_and_native_fast_paths() {
 
 #[test]
 fn recorded_factory_counts_wrap_convert_and_drive_a_seeded_pick() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "a = { name = Pick text = { trigger = {} random_list = { seed = num_of_controlled_factories 30 = { localization_key = A } 10 = { localization_key = B } 20 = { localization_key = C } } } }",
         " A:0 \"A\"\n B:0 \"B\"\n C:0 \"C\"\n",
@@ -516,7 +530,7 @@ fn recorded_factory_counts_wrap_convert_and_drive_a_seeded_pick() {
         Ok(700_000)
     );
     // (MAX + MAX + 9) wraps to 7; raw 700000 + slot 2*31 draws
-    // 152552670, %60 = 30: subtract 30 then 10 to choose B (140A9CD70).
+    // 152552670, %60 = 30: subtract 30 then 10 to choose B.
     assert_eq!(text.expand("[Pick]").as_deref(), Ok("B"));
     drop(text);
     set::<tables::CountryFactories>(&mut f, Vec::new());
@@ -540,6 +554,8 @@ fn recorded_factory_counts_wrap_convert_and_drive_a_seeded_pick() {
 
 #[test]
 fn scriptable_random_weights_use_the_unified_operands_and_ignore_modifier_conditions() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue("", "");
     let content = catalogue.scripted_content().unwrap();
     assert!(
@@ -588,6 +604,8 @@ fn scriptable_random_weights_use_the_unified_operands_and_ignore_modifier_condit
 
 #[test]
 fn seeded_random_lists_use_canonical_slots_across_five_thousand_countries() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "a = { name = Pick text = { random_list = { seed = 7 30 = { localization_key = A } 10 = { localization_key = B } 20 = { localization_key = C } } } }",
         " A:0 \"A\"\n B:0 \"B\"\n C:0 \"C\"\n",
@@ -638,13 +656,15 @@ fn seeded_random_lists_use_canonical_slots_across_five_thousand_countries() {
             other => panic!("unexpected selection at slot {slot}: {other}"),
         }] += 1;
     }
-    // Independently worked 140A9CD70 hashes of raw seed 700000 + slot*31,
+    // Independently worked hashes of raw seed 700000 + slot*31,
     // modulo 60, split at 30 and 40. Raw country ids are deliberately distinct.
     assert_eq!(counts, [2_494, 802, 1_704]);
 }
 
 #[test]
 fn first_party_leaders_and_custom_party_names_use_the_real_localiser() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "",
         concat!(
@@ -757,11 +777,13 @@ fn first_party_leaders_and_custom_party_names_use_the_real_localiser() {
 }
 
 #[test]
-fn genders_manpower_and_agency_preserve_native_empty_and_wrapping_rules() {
+fn genders_manpower_and_agency_preserve_empty_and_wrapping_rules() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "",
         concat!(
-            " EV_SHE:0 \"she\"\n EV_HE:0 \"he\"\n EV_HER:0 \"her\"\n EV_HERS:0 \"hers\"\n EV_HERSELF:0 \"herself\"\n",
+            " EV_SHE:0 \"f-subject\"\n EV_HE:0 \"m-subject\"\n EV_HER:0 \"f-object\"\n EV_HERS:0 \"f-possessive\"\n EV_HERSELF:0 \"f-reflexive\"\n",
             " AGENCY_NAME:0 \"No agency\"\n",
             " TEST:0 \"[ROOT.GetSheHeCap]|[ROOT.GetHerHim]|[ROOT.GetHerHis]|[ROOT.GetHersHis]|[ROOT.GetHerselfHimselfCap]|[ROOT.GetManpower]|[ROOT.GetAgency]\"\n"
         ),
@@ -845,11 +867,11 @@ fn genders_manpower_and_agency_preserve_native_empty_and_wrapping_rules() {
         created,
         ..Default::default()
     };
-    // Not created: the executable's key, whatever name is already stored.
+    // Not created: the localisation key, whatever name is already stored.
     set::<tables::IntelligenceAgencies>(&mut f, vec![agency(b"Abwehr", 0)]);
     assert_eq!(
         rendered(&catalogue, &f, "TEST").unwrap(),
-        "She|her|her|hers|Herself|-2147483647|No agency"
+        "F-subject|f-object|f-object|f-possessive|F-reflexive|-2147483647|No agency"
     );
     // Created: the stored bytes, empty included, never localised again.
     set::<tables::IntelligenceAgencies>(&mut f, vec![agency(b"", 1)]);
@@ -878,6 +900,8 @@ fn genders_manpower_and_agency_preserve_native_empty_and_wrapping_rules() {
 
 #[test]
 fn stored_text_needs_the_recording_language() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut catalogue, _folder) = tests::catalogue(
         "",
         " AGENCY_NAME:0 \"No agency\"\n TEST:0 \"[ROOT.GetAgency]\"\n",
@@ -905,6 +929,8 @@ fn stored_text_needs_the_recording_language() {
 
 #[test]
 fn old_names_copy_the_retained_caches_or_the_current_name() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "",
         " TEST:0 \"[ROOT.GetOldName]|[ROOT.GetOldNameDefCap]|[ROOT.GetOldAdjective]|[ROOT.GetOldAdjectiveCap]\"\n",
@@ -925,12 +951,14 @@ fn old_names_copy_the_retained_caches_or_the_current_name() {
     assert!(
         rendered(&catalogue, &f, "TEST")
             .unwrap_err()
-            .contains("GetOldAdjective: the old adjective (CCountry+0xB0) was unreadable")
+            .contains("GetOldAdjective: the old adjective was unreadable")
     );
 }
 
 #[test]
-fn date_election_and_support_formats_are_native_not_ui_formats() {
+fn date_election_and_support_formats_preserve_game_text() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "",
         concat!(
@@ -975,6 +1003,8 @@ fn date_election_and_support_formats_are_native_not_ui_formats() {
 
 #[test]
 fn scripted_entries_order_triggers_replacements_and_gaps() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let scripts = r#"entry = { name = Choose text = { localization_key = OLD } }
         entry = { name = Choose text = { trigger = { always = yes } }
             text = { trigger = { tag = SOV } localization_key = WRONG }
@@ -1016,6 +1046,8 @@ fn scripted_entries_order_triggers_replacements_and_gaps() {
 
 #[test]
 fn state_names_prefer_the_stored_custom_and_owner_names_to_the_template() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "",
         " MOD_STATE:0 \"A $PART$\"\n PART:0 \"state\"\n TEST:0 \"[ROOT.Capital.GetName]\"\n",
@@ -1049,6 +1081,8 @@ fn state_names_prefer_the_stored_custom_and_owner_names_to_the_template() {
 
 #[test]
 fn balance_names_selection_change_binding_and_icon_direction() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "",
         " MOD_BALANCE:0 \"Balance\"\n MOD_LEFT:0 \"Left\"\n MOD_RIGHT:0 \"Right\"\n MOD_RANGE:0 \"[ROOT.GetTag] range\"\n BOP_CHANGE_RATE_DAILY:0 \"Daily $VALUE|2$\"\n BOP_CHANGE_RATE_WEEKLY:0 \"Weekly $VALUE|2$\"\n TEST:0 \"[ROOT.GetPowerBalanceName]|[ROOT.GetLeftSideName]|[ROOT.GetRightSideName]|[ROOT.GetActiveSideName]|[ROOT.GetTrendingSideName]|[ROOT.GetActiveRangeName]|[ROOT.GetChangeRateDesc]\"\n",
@@ -1096,6 +1130,8 @@ fn balance_names_selection_change_binding_and_icon_direction() {
 
 #[test]
 fn balance_modifier_description_uses_recorded_values_and_localised_static_keys() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "",
         " SOURCE:0 \"Source\"\n TEST:0 \"[ROOT.GetPowerBalanceModDesc]\"\n",
@@ -1177,10 +1213,12 @@ fn balance_modifier_description_uses_recorded_values_and_localised_static_keys()
 
 #[test]
 fn character_pronouns_and_literal_names_differ_from_party_display_names() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "",
         concat!(
-            " EV_HE:0 \"he\"\n EV_HIM:0 \"him\"\n EV_HIS:0 \"his\"\n EV_HIMSELF:0 \"himself\"\n",
+            " EV_HE:0 \"m-subject\"\n EV_HIM:0 \"m-object\"\n EV_HIS:0 \"m-possessive\"\n EV_HIMSELF:0 \"m-reflexive\"\n",
             " TEST:0 \"[ROOT.GER_erwin_rommel.GetName]|[ROOT.GER_erwin_rommel.GetSheHeCap]|[ROOT.GER_erwin_rommel.GetHerHimCap]|[ROOT.GER_erwin_rommel.GetHerHisCap]|[ROOT.GER_erwin_rommel.GetHersHisCap]|[ROOT.GER_erwin_rommel.GetHerselfHimself]\"\n"
         ),
     );
@@ -1191,7 +1229,7 @@ fn character_pronouns_and_literal_names_differ_from_party_display_names() {
     set::<tables::Characters>(&mut f, characters.clone());
     assert_eq!(
         rendered(&catalogue, &f, "TEST").unwrap(),
-        "|He|Him|His|His|himself"
+        "|M-subject|M-object|M-possessive|M-possessive|m-reflexive"
     );
     characters[0].name = b"Literal Name".to_vec();
     set::<tables::Characters>(&mut f, characters);
@@ -1204,6 +1242,8 @@ fn character_pronouns_and_literal_names_differ_from_party_display_names() {
 
 #[test]
 fn promoted_entry_binds_this_and_preserves_root_and_from() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         r#"entry = { name = Country text = { trigger = { tag = SOV ROOT = { tag = GER } FROM = { tag = GER } PREV = { tag = GER } } localization_key = YES } }
            entry = { name = State text = { trigger = { ROOT = { tag = GER } } localization_key = YES } }"#,
@@ -1274,9 +1314,11 @@ fn raid_frame() -> DecodedFrame {
 }
 
 /// A viewer (GER), a raiding country (SOV) and its target (ENG): the raid's
-/// scope is SOV with FROM a default scope of ENG (140A8D3F0 -> 141580600).
+/// scope is SOV with FROM a default scope of ENG.
 #[test]
 fn raid_text_follows_the_active_event_scope_through_chains_and_entries() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         r#"entry = { name = Side text = { trigger = { tag = SOV ROOT = { tag = SOV } FROM = { tag = ENG } PREV = { tag = SOV } } localization_key = YES } text = { localization_key = NO } }
            entry = { name = Target text = { trigger = { tag = ENG ROOT = { tag = ENG } FROM = { tag = ENG } PREV = { tag = ENG } } localization_key = YES } text = { localization_key = NO } }
@@ -1303,8 +1345,8 @@ fn raid_text_follows_the_active_event_scope_through_chains_and_entries() {
         EventScope::of(EventObject::Country(3)),
     ]);
     let expand = |text_: &str, scopes: &EventScopes| text.expand_in(text_, scopes);
-    // Each keyword moves the active scope (141A81250); each bracket starts
-    // again from the caller's (1410D0900).
+    // Each keyword moves the active scope; each bracket starts
+    // again from the caller's.
     assert_eq!(
         expand(
             "[THIS.GetTag] [ROOT.GetTag] [FROM.GetTag] [FROM.ROOT.GetTag] [ROOT.FROM.PREV.GetTag] [PREV.GetTag]",
@@ -1313,16 +1355,15 @@ fn raid_text_follows_the_active_event_scope_through_chains_and_entries() {
         .as_deref(),
         Ok("SOV SOV ENG ENG ENG SOV")
     );
-    // Entries see the active scope, not the viewer: in place (1410CE090),
-    // after a keyword, and bound as THIS with PREV the active scope
-    // (1410CDDF0).
+    // Entries see the active scope, not the viewer: in place, after a
+    // keyword, and bound as THIS with PREV the active scope.
     assert_eq!(
         expand("[Side] [FROM.Target] [ENG.Named]", &raid).as_deref(),
         Ok("yes yes yes")
     );
     assert_eq!(text.expand("[Side]").as_deref(), Ok("no"));
-    // An entry's own brackets expand in the scope it was evaluated in
-    // (1410CE090 -> 1402F6340 -> 1410CF560), not the caller's.
+    // An entry's own brackets expand in the scope it was evaluated in,
+    // not the caller's.
     assert_eq!(
         expand("[Echo] [FROM.Echo] [ENG.Echo]", &raid).as_deref(),
         Ok("SOV/SOV/SOV ENG/ENG/ENG ENG/SOV/SOV")
@@ -1365,11 +1406,13 @@ fn raid_text_follows_the_active_event_scope_through_chains_and_entries() {
 }
 
 /// Scopes the caller cannot fully describe refuse only what reads them: an
-/// unknown link only in a condition that reads it (`always` reads none,
-/// 1403CE520), a state or character scope's missing country only where
-/// 1410CF9C0 would search it, and a unit leader only through its character.
+/// unknown link only in a condition that reads it (`always` reads none),
+/// a state or character scope's missing country only where a lookup would
+/// search it, and a unit leader only through its character.
 #[test]
 fn unknown_scope_parts_refuse_only_where_they_are_read() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         r#"entry = { name = Always text = { trigger = { always = yes } localization_key = YES } text = { localization_key = NO } }
            entry = { name = ThisOnly text = { trigger = { tag = SOV } localization_key = YES } text = { localization_key = NO } }
@@ -1456,16 +1499,16 @@ fn unknown_scope_parts_refuse_only_where_they_are_read() {
         Ok("64")
     );
     assert!(text.expand_in("[THIS.rommel.GetID]", &state).is_ok());
-    // A unit leader's scope reads as its character (140529310).
+    // A unit leader's scope reads as its character.
     let leader = unknown(EventObject::UnitLeader(9 << 32 | 3));
     assert_eq!(
         text.expand_in("[THIS.GetName] [THIS.64.GetID]", &leader)
             .as_deref(),
         Ok("Erwin Rommel 64")
     );
-    // A promoted country is bound with clearing (1410CDDF0 -> 14052F3F0), so
-    // it carries no character and a character trigger is false whatever its
-    // PREV (140542CA0 reads THIS alone).
+    // A promoted country is bound with clearing, so it carries no
+    // character and a character trigger is false whatever its PREV,
+    // since it reads THIS alone.
     assert_eq!(text.expand_in("[SOV.Choice]", &sov).as_deref(), Ok("no"));
     assert_eq!(
         text.expand_in("[THIS.Holder]", &leader).as_deref(),
@@ -1475,8 +1518,8 @@ fn unknown_scope_parts_refuse_only_where_they_are_read() {
         .expand_in("[THIS.GetName]", &unknown(EventObject::Province(5)))
         .unwrap_err();
     assert!(refused.contains("province 5"), "{refused}");
-    // A unit leader's scope holds no country (14052EFD0), so a number is a
-    // state id without the character inventory (1410CF9C0).
+    // A unit leader's scope holds no country, so a number is a state ID
+    // without the character inventory.
     *f.tables[TableId::Characters.index()] = TableView::Unavailable {
         reason: "test gap".into(),
     };
@@ -1487,13 +1530,15 @@ fn unknown_scope_parts_refuse_only_where_they_are_read() {
     );
 }
 
-/// A promoted character (1410CDDF0) is THIS in a character scope: without
+/// A promoted character is THIS in a character scope: without
 /// a unit leader `tag` compares the character's own country and `skill` is
 /// 0; `has_trait` of a name no trait database holds is false; a country
-/// trigger is false there (its scope mask rejects a character scope,
-/// 140542CA0), so no alternative passes.
+/// trigger is false there (its scope mask rejects a character scope),
+/// so no alternative passes.
 #[test]
 fn promoted_character_entry_evaluates_in_a_character_scope() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         r#"entry = { name = Char text = { trigger = { tag = GER skill = 0 NOT = { tag = SOV } ROOT = { tag = GER } } localization_key = YES } text = { localization_key = NO } }
            entry = { name = Trait text = { trigger = { has_trait = unknown_trait } localization_key = YES } text = { localization_key = NO } }
@@ -1524,6 +1569,8 @@ fn promoted_character_entry_evaluates_in_a_character_scope() {
 
 #[test]
 fn ability_text_promotes_character_but_keeps_country_for_named_lookup_and_entries() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         r#"entry={name=Mixed text={trigger={has_country_flag=x has_character_flag=x tag=SOV}
             localization_key=YES} text={localization_key=NO}}"#,
@@ -1605,8 +1652,8 @@ fn ability_text_promotes_character_but_keeps_country_for_named_lookup_and_entrie
         country: 1,
         leader: 9 << 32 | 3,
     })]);
-    // ROOT/FROM/PREV copy the same full scope, but 141A81250 chooses the
-    // character object first. 1410CF9C0 still searches active scope country.
+    // ROOT/FROM/PREV copy the same full scope, but text selects the
+    // character object first. Character lookup still searches its country.
     assert_eq!(
         text.expand_in(
             "[ROOT.GetName]/[FROM.GetName]/[PREV.GetName]/[ROOT.peer.GetName]",

@@ -39,12 +39,10 @@ fn parse_file(
         Modifier(modifiers::Node),
     }
     let mut undecided = Vec::new();
-    // LoadFile 140AB2ED0 reads both loops without an opening-brace check.
-    // CStrategicResource::vf4 140BBD150 reads icon_frame (0x2F58), cic
-    // (0x305F), convoys (0x3062), and reports/skips every unknown field.
-    // Its modifier branch (0x2965) forwards this same field to CModifier's
-    // vf4, NOT Read: verified by the tail jump at 140BBD1B0.
-    // 140AB3660 constructs each file's lexer in mode 0 (1424A6370).
+    // Both database loops read without an opening-brace check. Resource
+    // fields consume icon_frame, cic and convoys, and report/skip unknown
+    // fields. The modifier branch forwards the same field to modifier
+    // dispatch rather than opening a separate persistent-reader block.
     let read = native::read(
         input,
         native::Mode::KeepMark,
@@ -94,8 +92,8 @@ fn parse_file(
                     invalid(format!("resource name: {error}")),
                 )
             })?;
-            // Constructor 140BBB090 initializes +0xDC to zero. Each %i
-            // scan (1424AB970 -> 1424B02C0) retains it on a failed scan.
+            // The frame starts at zero. Each signed integer scan retains
+            // its previous value on failure.
             let mut icon_frame = 0;
             for field in item.value.items().unwrap_or_default() {
                 if field.keyword_is("icon_frame") {
@@ -126,10 +124,9 @@ fn parse_file(
     Ok((resources, warnings))
 }
 
-/// Every resource declaration in load order. A token declared again is kept as
-/// another resource, as the game keeps it: its loader
-/// (`CStrategicResourceDatabase::load_file@140AB2ED0`) interns each declared key
-/// and appends a new item and key without looking for an earlier one.
+/// Every resource declaration in load order. A repeated token is another
+/// resource: each declared key is interned and appended with a new item,
+/// without looking for an earlier declaration.
 pub fn read(layers: &ResolvedLayers) -> io::Result<(Vec<Resource>, Vec<crate::Diagnostic>)> {
     let mut warnings = Vec::new();
     let mut result: Vec<Resource> = Vec::new();
@@ -157,6 +154,8 @@ mod tests {
 
     #[test]
     fn native_dispatch_variables_recovery_and_integer_scans() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = parse(
             br#"
             @frame = "0x10"
@@ -191,6 +190,8 @@ mod tests {
 
     #[test]
     fn resources_keep_their_icon_frames_and_refuse_unusable_ones() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = parse(
             b"resources = { oil = { icon_frame = 1 cic = 0.125 } mod_ore = { icon_frame = 9 } \
               broken = { icon_frame = 0 } scripted = { icon_frame = @frame } bare = { } }",

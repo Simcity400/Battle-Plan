@@ -46,6 +46,8 @@ fn with_world<T>(frame: &DecodedFrame, run: impl FnOnce(World<'_>) -> T) -> T {
 
 #[test]
 fn genuine_member_zero_does_not_poison_positive_faction_absence() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = frame();
     set::<tables::FactionMembers>(
         &mut frame,
@@ -83,6 +85,8 @@ fn genuine_member_zero_does_not_poison_positive_faction_absence() {
 
 #[test]
 fn reserved_faction_uses_its_fresh_getter_including_null_and_refusals() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = frame();
     // An empty member table does not reverse-certify Country0's getter.
     for (captured, expected) in [
@@ -243,6 +247,8 @@ fn assert_reserved_empty(world: &World<'_>) {
 
 #[test]
 fn certified_empty_reserved_groups_ignore_unavailable_order_tables() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for unavailable in [
         TableId::ArmyOrders,
         TableId::ArmyOrderPlans,
@@ -302,6 +308,8 @@ fn certified_empty_reserved_groups_ignore_unavailable_order_tables() {
 
 #[test]
 fn empty_primary_roots_ignore_unavailable_order_payloads() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for unavailable in [TableId::ArmyOrders, TableId::ArmyOrderPlans] {
         let mut frame = empty_reserved_group_and_positive_invasion();
         *frame.tables[unavailable.index()] = TableView::Unavailable {
@@ -380,6 +388,8 @@ fn empty_primary_roots_ignore_unavailable_order_payloads() {
 
 #[test]
 fn reserved_theatre_group_faults_stay_with_their_owner() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = frame();
     theatres(&mut frame, Recorded::Value(Some(1)));
     set::<tables::OrdersGroups>(
@@ -407,6 +417,8 @@ fn reserved_theatre_group_faults_stay_with_their_owner() {
 
 #[test]
 fn reserved_invasions_use_certified_roster_and_keep_unknown_positive_owners_unknown() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = frame();
     theatres(&mut frame, Recorded::Value(Some(1)));
     set::<tables::OrdersGroups>(
@@ -529,6 +541,8 @@ fn reserved_invasions_use_certified_roster_and_keep_unknown_positive_owners_unkn
 
 #[test]
 fn reserved_invasion_certificate_never_substitutes_zero_for_refusal() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = frame();
     for count in [
         Recorded::NotRecorded,

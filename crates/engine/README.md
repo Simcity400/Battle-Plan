@@ -2,26 +2,39 @@
 
 The boundary between HOI4's native memory and the recorder. This crate owns the supported executable identity, native layouts and offsets, guarded readers, table walkers and hook site descriptors. Replay encoding belongs to [replay](../replay/README.md), hook installation and acquisition to [collector](../collector/README.md), and presentation to the consumers.
 
-Shared rules and checks live in [AGENTS.md](../../AGENTS.md). Use the [hoi4re guide](../../tools/re/README.md) when investigating native behaviour.
+Shared rules and checks live in [AGENTS.md](../../AGENTS.md).
 
 ## Source map
 
 | Area | Start here |
 |---|---|
 | Executable identity and sampling operands | [build.rs](src/build.rs), [cgame_state.rs](src/cgame_state.rs) and the collector's [hook.rs](../collector/src/hook.rs). |
+| Immutable executable metadata and file-backed image reads | [executable_tables.rs](src/executable_tables.rs) and [executable_tables/pe.rs](src/executable_tables/pe.rs). |
 | Guarded copies, exact-field gathers and accounting | [memory.rs](src/memory.rs), [seh_read.c](src/seh_read.c) and [read_counts.rs](src/read_counts.rs). |
 | Walk results, checked storage and prepared reads | [walk.rs](src/walk.rs), [allocation.rs](src/allocation.rs) and [read_plan.rs](src/read_plan.rs). |
 | Native containers and strings | [cpdx_array.rs](src/cpdx_array.rs), [msvc_tree_node.rs](src/msvc_tree_node.rs) and [msvc_string.rs](src/msvc_string.rs). |
 | Country identity and native order | [ccountry_tag.rs](src/ccountry_tag.rs), [country_memory.rs](src/country_memory.rs), [country_roster.rs](src/country_roster.rs) and [original_tag_lists.rs](src/original_tag_lists.rs). |
 | Full reference handles | [creference_registry.rs](src/creference_registry.rs); shared registry counts bound storage, not one reference type's population. |
-| Modifier names, definitions and fixed tokens | [modifier_keys.rs](src/modifier_keys.rs), [modifier_keys/builtins.rs](src/modifier_keys/builtins.rs), [modifier_definition.rs](src/modifier_definition.rs) and [fixed_layout.rs](src/fixed_layout.rs). |
-| Struct layouts and field evidence | The corresponding module under [src](src/); [lib.rs](src/lib.rs) lists the public modules. |
+| Modifier indices, definitions and fixed tokens | [modifier_keys.rs](src/modifier_keys.rs), [modifier_definition.rs](src/modifier_definition.rs), [fixed_layout.rs](src/fixed_layout.rs) and [executable_tables/keywords.rs](src/executable_tables/keywords.rs). |
+| Struct layouts and field contracts | The corresponding module under [src](src/); [lib.rs](src/lib.rs) lists the public modules. |
 | Hook boundaries and operands | Domain site modules, for example [line_output_sites.rs](src/line_output_sites.rs), [peace_finalizer_site.rs](src/peace_finalizer_site.rs) and [event_feed_sites.rs](src/event_feed_sites.rs). |
 | Save comparisons | [installed-content save readers](../installed-content/src/save/) and [recorder oracle comparators](../recorder/src/oracle/). |
 
-Offsets, widths, native functions and field-specific limitations stay beside the reader. Stored fields, calculated getters and renderer caches are different sources; a similar save value does not establish equivalence.
+Executable version text is loaded into owned metadata from the hash-verified installation before recording. Offsets, widths, calling conventions and field-specific limitations stay beside the reader. Stored fields, calculated getters and renderer caches are different sources; a similar save value does not establish equivalence.
 
-Fixed modifier keys and lexer tokens require the live layouts to match their native registration names; a mismatch refuses fixed keys by name. Dynamic definitions size and resolve from live data.
+Fixed modifier keys and lexer tokens require the live layouts to match the verified executable's registration names; a mismatch refuses fixed keys by name. Dynamic definitions size and resolve from live data.
+
+## Executable metadata
+
+Call `executable_tables::initialize(game_dir)` or `initialize_executable(exe_path)` before using installation-dependent tables. Initialization reads one owned executable buffer, verifies its size and SHA-256 against [the supported build](src/build.rs), and decodes keywords, modifier names, trigger/effect registries, equipment metadata, rules, AI enums and numeric properties. Variable names come from the selected installation's shipped documentation. Each decoded table must match its semantic digest before publication.
+
+The public `EXECUTABLE_TABLES` holds the immutable `Arc<ExecutableTables>` for the process. Repeated initialization still verifies the selected executable bytes and variable documentation before returning that handle. `get()` reports a programming error if initialization has not succeeded; failures never supply empty registries. Runtime names have process lifetimes, and no table cache is written to disk. Shared registry and variable views use `RuntimeTable`, whose once cell can retry after an access before initialization; that access still reports the missing setup.
+
+`PeImage` validates AMD64 PE32+ headers, section ranges, directories and exception-directory function extents. RVA reads require complete raw file backing in one section; virtual zero-fill tails do not authorize reads. Instruction decoding uses preferred virtual addresses for instruction pointers and operands, while image reads use RVAs. The crate never invokes code from the executable.
+
+Registry factory decoding follows bounded instruction branches and tracks the object identity returned by each reachable path. Known allocated objects exclude their null-failure paths; unknown conditions retain both paths, and conflicting returned identities are refused. Constructor calls preserve receiver identities and derived overrides, while embedded helpers retain separate identities.
+
+Ordinary decoder tests use small synthetic PE and documentation fixtures. Installation digest tests explicitly use `BATTLE_PLAN_GAME_DIR` through `initialize_for_tests()`, which checks that the variable is set on every call and caches the initialization result once per process. Returned failures preserve their kind and message without poisoning later test calls. These tests read the installation without launching the game.
 
 ## Reader safety
 
@@ -29,9 +42,9 @@ Fixed modifier keys and lexer tokens require the live layouts to match their nat
 - Preserve native order, repeated occurrences, signed widths and arithmetic. Deduplicate only where native behaviour permits it. Scope shared reads to the selecting table, identity and occurrence; address equality alone is insufficient.
 - Command-power ownership authenticates the country independently of political status. Political-power ownership also authenticates the selected political status and its backlink.
 - Preserve the first independent failure and each consumer's failure boundary. A short or failed read cannot become a complete row, empty table or zero. Distinguish known absence, unavailable data and capacity truncation, counting unread occurrences as the walker requires. Do not retry to hide a failure.
-- Read passively at the collector's established boundary. Never call game getters, refresh caches, wait for memory to change or infer freshness beyond the native writers. Registry walks require a quiescent boundary.
+- Read passively at the collector's established boundary. Never call game getters, refresh caches, wait for memory to change or infer freshness beyond the game writers. Registry walks require a quiescent boundary.
 - Copy everything deferred decoding needs into owned storage during acquisition. Deferred code must not follow game pointers. Native string descriptors, including ace portrait descriptors, authorize immediate acquisition only; copy their payload before deferring work.
-- Reuse buffers and plans only within a proved identity, ownership and invalidation lifetime. Reloadable defines, weather and mutable definitions are not automatically session-static; a sizing hint is not a recorded value or validation of a later read.
+- Reuse buffers and plans only within a verified identity, ownership and invalidation lifetime. Reloadable defines, weather and mutable definitions are not automatically session-static; a sizing hint is not a recorded value or validation of a later read.
 
 Size variable capture storage from live demand. Use [allocation.rs](src/allocation.rs) for potentially large or live-sized buffers, reserve a known batch before filling it, and keep callback reads within caller-owned capacity. Preserve the existing growth boundaries when filtering determines the output count. Allocation failure must retain its terminal `OutOfMemory` distinction through the collector callback, including readers that otherwise return a static refusal or optional value. See the collector guide for accepted standard-library allocation residuals.
 
@@ -47,18 +60,18 @@ Preparing a read plan is fallible; executing it does not allocate. Its controls 
 
 ## Adding a layout or reader
 
-1. Establish the native writer, getter or serializer with `C:\Tools\hoi4_mcp\hoi4re.cmd fn|asm|data|callers <addr>`. Derive widths, signedness, ownership, gates and arithmetic from that evidence. Inspect instructions when the decompile omits an argument or operation; distinguish virtual addresses from RVAs. Old readers are research leads.
-2. Keep one source file per native struct and register it in [lib.rs](src/lib.rs). Cite the native address and what it establishes beside each constant or operation; keep a longer field audit beside the module when needed. Save established names, fields and notes through hoi4re.
-3. Implement guarded reads with the existing containers, gathers and caller-owned arenas. Preserve independent failures and native reach: skipped branches should not acquire operands. Resolve content through [installed-content](../installed-content/README.md); built-in modifier names and fixed tokens use the witnessed layouts above, while dynamic definitions size and resolve from live data.
+1. Establish each field's width, signedness, ownership, gates and arithmetic, including whether it stores a value or exposes a calculated or cached value. Preserve the selecting branch's operand reach and failure order.
+2. Keep one source file per game struct and register it in [lib.rs](src/lib.rs). Name constants for their purpose and document field contracts, calculations and limitations beside the reader.
+3. Implement guarded reads with the existing containers, gathers and caller-owned arenas. Preserve independent failures and game reach: skipped branches should not acquire operands. Resolve content through [installed-content](../installed-content/README.md); built-in modifier names and fixed tokens use verified executable metadata, while dynamic definitions size and resolve from live data.
 4. Add synthetic-memory cases that fail on the old behaviour: aliases, invalid identities, short reads, overflow, cycles where relevant and insufficient capacity. Follow AGENTS.md for scale and local checks, and the [recorder guide](../recorder/README.md) for the affected capture oracle and smoke workflow. Update the collector, replay and consumers together when the recorded meaning changes.
 
 ## Adding a hook site
 
-Put the site's RVA, exact instruction sentinel, operand layouts and caller evidence in its domain module. Establish whether it is a function entry, CALL or interior instruction, and document the register/stack ABI, original continuation and safe observation phase. Pre/post readers must reauthenticate identities when the native call can replace or free objects.
+Put the site's purpose-named RVA, exact instruction sentinel, operand layouts and caller requirements in its domain module. Establish whether it is a function entry, CALL or interior instruction, and document the register/stack ABI, original continuation and safe observation phase. Pre/post readers must reauthenticate identities when the game call can replace or free objects.
 
 Verify both [the pinned executable](src/build.rs) and the site's bytes before installation. A matching sentinel alone proves neither executable support nor hook, lifetime or unwind safety. An interior site must resume its relocated instruction and original continuation correctly; it cannot be invoked as a function. Collector owns patching, dispatch, teardown and runtime coverage. Keep engine operands separate from replay event IDs and never publish a native pointer as history identity.
 
-## Native distinctions to preserve
+## Game distinctions to preserve
 
 [world_lifetime_sites.rs](src/world_lifetime_sites.rs) authenticates current-world invalidation markers before reset, deletion and construction publish or retire data. These markers supply occurrence changes to collector; they do not infer successful load completion from a clock or singleton address.
 
@@ -67,7 +80,7 @@ Verify both [the pinned executable](src/build.rs) and the site's bytes before in
 - [Equipment destruction](src/equipment_destruction.rs) retains signed pre/post pool differences, including gain corrections and supplemental writers; requested removal does not prove actual removal.
 - [Air loss](src/air_loss_sites.rs) and [building damage](src/building_damage_sites.rs) retain native bookkeeping and signed health changes, including gains above a full level, independently of returned budgets.
 - [Event feed](src/event_feed_sites.rs) reauthenticates action roles and reciprocal war links after native execution; world lifetime comes from the collector's reset/construction signal, not from these reads.
-- Cached rates and tooltip inputs retain native gates, stale values and source order. Their formula and lifetime evidence belongs in the corresponding reader; save serialization may omit those operands.
+- Cached rates and tooltip inputs retain native gates, stale values and source order. Their formula and lifetime requirements belong in the corresponding reader; save serialization may omit those operands.
 
 [Retained naval result sides](src/cnaval_combat_result_side.rs) visit the borrowed HQ range only when the retained HQ commander resolves, as the native result window does. A known absent commander supplies no HQ; an unreadable registry or borrowed input stays unknown.
 

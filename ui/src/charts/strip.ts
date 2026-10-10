@@ -4,8 +4,8 @@ import type { KeyTarget } from './hover.ts';
 import type { Range } from './view.ts';
 import type { ChartTokens } from './tokens.ts';
 
-/** A bar strip under a time chart, on the same time axis (mock-up economy-1's fuel
- * gain and burn): each bar spans its hours with one amount up from a midline and
+/** A bar strip under a time chart, on the same time axis:
+ * each bar spans its hours with one amount up from a midline and
  * one down, on a scale shared by both halves. Bars too narrow to see apart share a
  * pixel column that keeps the largest of each, so a short peak is never lost; a
  * hover is about the bar whose amount is drawn where the pointer is. */

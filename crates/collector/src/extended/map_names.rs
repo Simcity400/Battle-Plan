@@ -29,7 +29,7 @@ impl Capacities {
         base: usize,
         state: usize,
     ) -> Result<(), &'static str> {
-        // Serialize@140E6CA90 retains each override's observed string length.
+        // Retain each override's observed string length.
         let demand = cprovince::walk_names(memory, base, state, &mut [], &mut []);
         let rows = crate::country_scale::table_demand::rows(demand.outcome)?;
         crate::country_scale::raise(&mut self.rows, rows);

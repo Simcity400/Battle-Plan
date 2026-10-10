@@ -36,8 +36,8 @@ export function producedDrillBands(model: ProducedModel, tag: string, range: Spa
   return bands.map(runs => shownRuns(runs, null, range));
 }
 
-/** Units are the existing product's exact delivered counts (logistics accounting
- * 14135F0E0, cited in equipment_produced.rs), never inferred from active lines. */
+/** Units are the product's exact delivered counts from logistics accounting,
+ * never inferred from active lines. */
 export function producedDrillData(model: ProducedModel): CountryPartsData {
   const measure = MEASURES.find(item => item.value === model.reply.measure)!;
   const parts = (hour: number) => model.reply.keys.map((key, index) => ({ id: key.key, label: keyLabel(model, index, hour) }));

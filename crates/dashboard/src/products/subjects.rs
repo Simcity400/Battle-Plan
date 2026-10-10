@@ -12,8 +12,8 @@
 //! when recording began is dated as the game dates it. Two runs of one pair with
 //! different start hours are different relations.
 //!
-//! The level is the subject's current autonomy state (`Autonomy.state`, the
-//! game's `CCurrentAutonomyStatus`), not `Subjects.state`: that is the relation's
+//! The level is the subject's current autonomy state (`Autonomy.state`),
+//! not `Subjects.state`: that is the relation's
 //! initial definition, which normal autonomy changes leave as it was (the
 //! viewer's political map and `installed_content::country_names` read it the same way).
 //! An hour whose Autonomy table is not complete, or that names no state for the
@@ -505,10 +505,9 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                     let new_identity =
                         identity_key.is_some_and(|identity| seen_starts.insert(identity));
                     if new_identity && row.start_hour > first_observed {
-                        // CRelation serializes start_date from +0x20@140D19260;
-                        // names are exact only while both raw links keep their tags.
-                        // A start at or before the first observed frame is an
-                        // initial snapshot, even if first published later.
+                        // Relations serialize start_date; names are exact only while both raw
+                        // links keep their tags. A start at or before the first observed frame is
+                        // an initial snapshot, even if first published later.
                         let date_named =
                             [row.overlord, row.subject].into_iter().all(|raw| {
                                 named_since

@@ -1,4 +1,4 @@
-//! Lazy current-hour F97BF0 context admission and CEE3A0 reciprocal raw lanes.
+//! Lazy current-hour spotting context admission and reciprocal raw intel lanes.
 //! The caller supplies the recording's authenticated current raw-country link
 //! mapping. Viewer selection never becomes a recorder query or native read.
 use crate::rows::{
@@ -68,8 +68,8 @@ impl<'a> View<'a> {
             .map_err(|_| "selected transport original spotting region absent")?;
         Ok(&regions[index])
     }
-    /// The raw radar zero gate does not demand region runtime slot or array
-    /// body. F97BF0 still needs the stored signed province denominator.
+    /// The raw radar zero gate skips the region runtime slot and array body.
+    /// Strategic spotting still needs the stored signed province denominator.
     pub fn radar_counts(
         &self,
         owner: u32,
@@ -111,8 +111,8 @@ impl<'a> View<'a> {
             provinces,
         ))
     }
-    /// CEE3A0: target signed nonpositive and target owned-state-count <1
-    /// short circuit before any reciprocal intel root/lane demand.
+    /// A signed nonpositive target or target owned-state count below 1
+    /// short-circuits before any reciprocal intel root/lane demand.
     pub fn navy_intel_difference(
         &self,
         owner: u32,

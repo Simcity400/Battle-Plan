@@ -1,8 +1,7 @@
 //! Country flag artwork as the engine reads it.
 //!
-//! `CGameGraphics::BuildFlagAtlases` (`140b31570`) builds one atlas per
-//! [`FlagSet`]; every flag file, and the medium set's cloth overlay, goes
-//! through `DecodeFlagTga` (`14122ab00`), which [`decode`] reproduces.
+//! Each [`FlagSet`] has its own atlas. Every flag file and the medium set's
+//! cloth overlay use the same flag-image decoding rules in [`decode`].
 
 use std::io;
 
@@ -33,10 +32,9 @@ impl FlagSet {
     /// The exact size every file of the set must have:
     /// `NGraphics.COUNTRY_FLAG[_MEDIUM|_SMALL]_TEX_WIDTH/HEIGHT`.
     ///
-    /// `BuildFlagAtlas` (`141228870`) lays each page out as
-    /// `(MAX_SIZE / width) x (MAX_SIZE / height)` cells of the set's
-    /// `_TEX_MAX_SIZE` square and divides the flag count by that capacity, so
-    /// a cell larger than the page holds no flag at all; it is refused.
+    /// Each page holds `(MAX_SIZE / width) x (MAX_SIZE / height)` cells in the
+    /// set's `_TEX_MAX_SIZE` square. A cell larger than the page holds no flags,
+    /// so it is refused before dividing the flag count by the page capacity.
     pub fn cell(self, defines: &Defines) -> io::Result<[u32; 2]> {
         let prefix = match self {
             Self::Normal => "COUNTRY_FLAG_TEX",
@@ -61,7 +59,7 @@ impl FlagSet {
     }
 }
 
-/// A flag file as `DecodeFlagTga` takes it: an uncompressed true-colour Targa
+/// A flag file is an uncompressed true-colour Targa
 /// (type 2, no colour map) of exactly `cell` size at 3 or 4 bytes per pixel
 /// (`depth >> 3`). The first stored row is always the bottom one: the engine
 /// never reads the descriptor's origin bits. With an identification field it
@@ -82,8 +80,8 @@ pub enum DecodeFailure {
     Truncated,
 }
 
-/// DecodeFlagTga 14122AB00 tests the header, but ignores failed pixel reads.
-/// A truncated input is therefore a port refusal, not evidence of engine parity.
+/// Flag decoding checks the header but ignores failed pixel reads.
+/// A truncated input is refused here because its pixel output is undefined.
 pub fn decode_checked(bytes: &[u8], cell: [u32; 2]) -> Result<Rgba8Image, DecodeFailure> {
     let head = bytes.get(..18).ok_or(DecodeFailure::Truncated)?;
     let size = [[head[12], head[13]], [head[14], head[15]]].map(u16::from_le_bytes);

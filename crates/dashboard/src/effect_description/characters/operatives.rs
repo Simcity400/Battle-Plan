@@ -7,8 +7,8 @@ use crate::scripted_text::{EventObject, EventScope, Link, random};
 mod tests;
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
-    // 1403AA100: a scalar in a character scope is the country operand;
-    // in other scopes it is the operative selector at +0x130.
+    // In a character scope a scalar is the country operand;
+    // in other scopes it is the operative selector.
     fn char_action_operands<'a>(
         &self,
         item: &'a Item,
@@ -30,7 +30,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // 140536B10 -> 140F8A840, then current scope's 1405294F0 fallback.
+    // Resolve the selected character's role, then the current scope's role.
     fn char_action_operative(
         &self,
         operand: Option<&[u8]>,
@@ -48,8 +48,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(leader.filter(|leader| leader.category() == 3))
     }
 
-    // 140536ED0, then scope+8 and ResolveCountryScope 1405336C0. The core
-    // has already applied the effect's country selector to this scope.
+    // Resolve the carried country. The core has already applied
+    // the effect's country selector to this scope.
     fn char_action_country(
         &self,
         operand: Option<&[u8]>,
@@ -73,8 +73,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         })
     }
 
-    // Own 14037AFB0; EFFECT_CAPTURE_OPERATIVE@142762440,
-    // CAPTURED_BY@142762430, OPERATIVE@142762420. No appended LF.
+    // Substitute OPERATIVE and CAPTURED_BY without appending LF.
     pub(in crate::effect_description) fn char_capture_operative(
         &self,
         item: &Item,
@@ -89,7 +88,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 1403834B0; EFFECT_KILL_OPERATIVE@142762568; 140327550 expands.
+    // Expand the kill description after substituting the operative and killer.
     pub(in crate::effect_description) fn char_kill_operative(
         &self,
         item: &Item,
@@ -104,7 +103,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 140398B70; EFFECT_TURN_OPERATIVE@1427626E8; 140327550 expands.
+    // Expand the turn description after substituting the operative and target.
     pub(in crate::effect_description) fn char_turn_operative(
         &self,
         item: &Item,
@@ -137,8 +136,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let name = self.effect_resolved_leader_name(operative)?;
         let mut country = self.country_name(country, true)?;
         if country_key == "captured_by" {
-            // CountryTag_GetCapitalizedCountryName 140BA59B0 uses +0x50,
-            // the definite name, then the shared native CRT case operation.
+            // Use the stored definite country name, then capitalise it
+            // with the shared text case operation.
             country = installed_content::localisation::crt_case_text(&country, true, true);
         }
         self.char_native_text(
@@ -152,8 +151,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 140380F70 queries 140FC7860's exact captured-reference roster.
-    // OperativeMemberships has four other rosters; +0xFB0 is not membership.
+    // Query the exact captured-reference roster;
+    // the other operative rosters do not establish captured membership.
     pub(in crate::effect_description) fn char_free_random_operative(
         &self,
         item: &Item,
@@ -179,14 +178,14 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             if world.slot(row.country) != Some(capturer) {
                 continue;
             }
-            // 140FC7860 skips null/unresolved references before same_country.
+            // Skip null or unresolved references before comparing countries.
             if let Some(raw) = row.owner {
                 let country = if raw == 0 {
                     0
                 } else {
                     world
                         .slot(raw)
-                        .ok_or("CountryLinks lacks captured-operative owner (140FC7860)")?
+                        .ok_or("CountryLinks lacks captured-operative owner")?
                 };
                 if country == owner {
                     found = true;
@@ -198,7 +197,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(String::new());
         }
         let name = self.country_name(capturer, false)?;
-        let name = format!("\u{11}Y{name}\u{11}!"); // 140BA59E0.
+        let name = format!("\u{11}Y{name}\u{11}!");
         self.char_native_text(
             if field(children(item), "all")
                 .and_then(|item| item.value.scalar())
@@ -215,7 +214,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // CIntEffect reader 14137DD70 and evaluator 141384870 narrow to i32.
+    // Both the integer reader and evaluator narrow to i32.
     fn char_operative_days(&self, item: &Item, scopes: Scopes) -> Result<i32, String> {
         let operand = item.value.scalar().unwrap_or_default();
         match installed_content::crt::scan_i32(operand).stored() {
@@ -257,8 +256,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
-    // Own 140380AB0: EFFECT_FORCE_OPERATIVE_INTO_HIDING@142762C28,
-    // NAME@142727E7C, CODENAME@142728860, DAYS@14275179C; no LF.
+    // Substitute NAME, CODENAME and DAYS without appending LF.
     pub(in crate::effect_description) fn char_hide_operative(
         &self,
         item: &Item,
@@ -272,7 +270,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 140382790: EFFECT_HARM_OPERATIVE@142762AB8; same args, then LF.
+    // Use the same hiding arguments, then append LF.
     pub(in crate::effect_description) fn char_harm_operative(
         &self,
         item: &Item,
@@ -281,7 +279,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.char_operative_codename_days(item, scopes, b"EFFECT_HARM_OPERATIVE", true)
     }
 
-    // 14052B630 -> ProcessString 1412B9CA0 expands the raw authored bytes.
+    // Expand the raw authored tooltip bytes.
     fn char_event_tooltip(&self, item: &Item, scopes: Scopes) -> Result<Option<String>, String> {
         let Some(text) = field(children(item), "tooltip")
             .and_then(|item| item.value.read_string())
@@ -290,7 +288,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(None);
         };
         let text = std::str::from_utf8(installed_content::parser::c_string(text))
-            .map_err(|_| "event tooltip is not UTF-8 (14052B630)")?;
+            .map_err(|_| "event tooltip is not UTF-8")?;
         let mut text = self.expanded(text, scopes)?;
         text.push('\n');
         Ok(Some(text))
@@ -321,8 +319,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .ok_or("event caller scope is not given")?;
         let seed = random::scoped_draw(parent.random_seed, parent.random_counter) as u32;
         parent.random_seed = parent.random_seed.wrapping_add(1);
-        // 1402EE390/1402F1360 derive title lanes; preserve an unavailable input
-        // until a title selection actually reads them (140A9CD70).
+        // Derive title lanes while preserving an unavailable input
+        // until title selection actually reads it.
         Ok((
             random::scope_seed(seed),
             random::scope_counter(seed),
@@ -345,8 +343,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
     }
 
-    // Own 1402EE390: fresh default empty scope, seeded from caller +0x0C/+0x10;
-    // FROM is caller ROOT. EVENT@142729920, wrapper@142729928, no expansion/LF.
+    // Use a fresh default empty scope seeded from the caller.
+    // FROM is caller ROOT; substitute EVENT without expansion or LF.
     pub(in crate::effect_description) fn char_unit_leader_event(
         &self,
         item: &Item,
@@ -383,8 +381,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Inherited own 141383540; title scopes 1402F1360 / 14137E4A0.
-    // This wrapper's argument is EFFECT, unlike CUnitLeaderEventEffect's EVENT.
+    // The operative-event wrapper uses EFFECT for its title,
+    // while the unit-leader-event wrapper uses EVENT.
     pub(in crate::effect_description) fn char_operative_leader_event(
         &self,
         item: &Item,
@@ -418,8 +416,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .cursor
             .ok_or("operative_leader_event needs caller scope graph")?;
         let (seed, counter, refusal) = self.char_event_draw(cursor)?;
-        // SetUnitLeader 14052EFD0 copies +0xF48, including a referenced role's
-        // own character. That field is not present in CharacterOperatives.
+        // Installing a unit leader copies its own character, including a referenced
+        // role's character. That field is not present in CharacterOperatives.
         let character = match leader {
             UnitLeader::Direct(row) => row.character_id,
             UnitLeader::Referenced(row) => self
@@ -431,7 +429,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .map(|leader| leader.character_id)
                 .ok_or_else(|| {
                     format!(
-                        "referenced unit leader {} character (+0xF48) is unrecorded",
+                        "referenced unit leader {} character is unrecorded",
                         row.reference
                     )
                 })?,
@@ -460,8 +458,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             let Some(override_item) = field(children(item), key) else {
                 continue;
             };
-            // Native 14137E6AB evaluates +0x258 (set_from) for set_root,
-            // despite its reader storing set_root's operand at +0x3F8.
+            // set_root evaluates the set_from operand,
+            // even though the reader stores a separate set_root operand.
             let operand = if key == "set_root" {
                 field(children(item), "set_from").and_then(|item| item.value.scalar())
             } else {

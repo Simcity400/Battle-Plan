@@ -1,7 +1,7 @@
 //! Script scope targets resolved over one recorded hour.
 //!
 //! [`installed_content::scope::parse`] reads a scope as the game's event target
-//! reader does (14146DB00); this resolves it against what the recording
+//! reader does; this resolves it against what the recording
 //! holds. Whatever the recording cannot reach is refused by name with the
 //! missing input, never guessed. The viewer and the dashboard both reach it
 //! (the viewer depends on the dashboard), behind [`RecordedScopes::resolve`].
@@ -29,11 +29,9 @@ pub enum Target {
 }
 
 impl Target {
-    /// The scope kind the target is, for [`installed_content::scope::TriggerScopes`]
-    /// (140542CA0). A scope set with the clearing flag (set_country or
-    /// SetState with 1, ClearCarriedTargets 14052F3F0) carries only this
-    /// kind; a caller whose native path keeps other carried targets passes
-    /// them itself.
+    /// The target's kind for [`installed_content::scope::TriggerScopes`]. A scope
+    /// set with the clearing flag carries only this kind; callers that keep
+    /// other carried targets pass them themselves.
     pub fn kind(self) -> ScopeKind {
         match self {
             Self::Country(_) => ScopeKind::Country,
@@ -104,7 +102,7 @@ pub struct RecordedScopes {
     capitals: BTreeMap<u32, i32>,
     /// Canonical slot to raw overlord link (`CountryAppearance.overlord`).
     overlords: BTreeMap<u32, i32>,
-    /// Faction membership with each member's order (`CFaction+0x58`).
+    /// Faction membership with each member's recorded order.
     faction_members: Vec<FactionMemberRow>,
     faction_members_complete: bool,
     /// Character script token, folded as the lexer folds a token (the
@@ -114,12 +112,12 @@ pub struct RecordedScopes {
     /// Whether `Characters` and `LexicalTokens` are complete, so a token
     /// no row has names no live character.
     characters_complete: bool,
-    /// Canonical slot to owned state count (CCountry+0x484,
-    /// `CountryCounterInputs.owned_state_count`).
+    /// Canonical slot to owned state count
+    /// (`CountryCounterInputs.owned_state_count`).
     owned: BTreeMap<u32, i32>,
-    /// Exact native country-list snapshots (CGameState+0x988 and +0x310).
+    /// Exact recorded original-tag buckets and physical country-array order.
     original_tags: OriginalTagLists,
-    /// The content's tag alias database (143316AA8).
+    /// The content's tag alias database.
     aliases: Arc<TagAliases>,
     saved_targets: Vec<replay::rows::GlobalSavedEventTargetRow>,
     saved_targets_complete: bool,
@@ -142,7 +140,7 @@ fn table<T: TableSchema>(frame: &DecodedFrame) -> (&[T::Row], String) {
     }
 }
 
-/// CSavedEventTarget::vf9@14052BE50, using captured object liveness.
+/// Saved-target validity using captured object liveness.
 pub(crate) fn valid_saved_target(r: &replay::rows::GlobalSavedEventTargetRow) -> bool {
     !r.name.is_empty()
         && (r.state != 0
@@ -270,8 +268,8 @@ impl RecordedScopes {
         }
     }
 
-    /// FindGlobalSavedEventTarget@1401DB7B0 returns the first name match,
-    /// even when that record is invalid (14052BE50); no later duplicate wins.
+    /// Return the first name match, even when that record is invalid;
+    /// no later duplicate wins.
     pub(crate) fn saved_target(
         &self,
         name: &[u8],
@@ -312,10 +310,10 @@ impl RecordedScopes {
         })
     }
 
-    /// ResolveScriptCountryTag@140BA5D10: an owning own country wins;
-    /// otherwise 1401DA520 takes the first owning bucket member, or the first
-    /// member when none owns a state. The caller accepts only an owning result,
-    /// so a nonowning member or an empty bucket keeps the own country.
+    /// An owning own country wins; otherwise use the first owning bucket
+    /// member, or the first member when none owns a state. The caller accepts
+    /// only an owning result, so a nonowning member or an empty bucket keeps
+    /// the own country.
     pub fn resolve_tag(&self, tag: &str) -> Result<u32, String> {
         if let Some(refusal) = self.alias(tag) {
             return Err(refusal);
@@ -334,8 +332,8 @@ impl RecordedScopes {
         for &member in self.original_tags.bucket(canonical)? {
             let member = self.raw_slot(member)?;
             if self.owned_states(member)? >= 1 {
-                // 1401DA520 stops at this owning pointer; 140BA5D10 accepts
-                // only a positive returned own word, otherwise keeps its own.
+                // Stop at this owning member and accept only a positive
+                // returned own word; otherwise keep the own country.
                 let raw = if member == 0 {
                     0
                 } else {
@@ -361,8 +359,8 @@ impl RecordedScopes {
             .ok_or_else(|| format!("country raw reference {raw} is not in CountryLinks"))
     }
 
-    /// Iterators that resolve a pointer then test CCountry+8 retain only
-    /// signed-positive own tag words (14043B6A0, 1407141F0).
+    /// Country iterators retain only signed-positive own tag words
+    /// after resolving a raw reference.
     pub(crate) fn positive_country(&self, raw: u32) -> Result<Option<u32>, String> {
         let slot = self.raw_slot(raw)?;
         let own = if slot == 0 {
@@ -375,8 +373,8 @@ impl RecordedScopes {
         Ok(((own as i32) > 0).then_some(slot))
     }
 
-    /// Native bucket selected by a positive tag word, before appending that
-    /// selected word (1413AA900). Nonpositive words do not demand the snapshot.
+    /// Original-tag bucket selected by a positive tag word, before appending
+    /// that word. Nonpositive words do not demand the snapshot.
     pub(crate) fn original_bucket(&self, selected: i32) -> Result<&[u32], String> {
         if selected <= 0 {
             return Ok(&[]);
@@ -385,9 +383,9 @@ impl RecordedScopes {
     }
 
     /// Why a three-byte name that is no recorded country tag is refused
-    /// when it is, or may be, a tag alias: 140BA53F0 looks it up in the
-    /// tag alias database (143316AA8) after the country tags, and the
-    /// country an alias names is chosen at run time by its targets and
+    /// when it is, or may be, a tag alias: the alias database is checked
+    /// after the country tags, and the country an alias names is chosen
+    /// at run time by its targets and
     /// triggers, which are not evaluated yet.
     pub fn alias(&self, tag: &str) -> Option<String> {
         if self.slots.contains_key(tag) {
@@ -395,20 +393,20 @@ impl RecordedScopes {
         }
         if self.aliases.get(tag).is_some() {
             return Some(format!(
-                "tag alias {tag}: AliasResolve (1407141F0) runs its triggers in the trigger evaluator (crate::triggers), not in a scope read alone"
+                "tag alias {tag}: its triggers run in the trigger evaluator (crate::triggers), not in a scope read alone"
             ));
         }
         (tag.len() == 3 && !self.aliases.unknown.is_empty()).then(|| {
             format!(
-                "{tag}: whether it is a tag alias (143316AA8) is unknown: {}",
+                "{tag}: whether it is a tag alias is unknown: {}",
                 self.aliases.unknown.join("; ")
             )
         })
     }
 
     /// The body of the tag alias a three-byte name is, when it is no
-    /// recorded country tag: 140BA53F0 looks the alias database (143316AA8)
-    /// up after the country tags.
+    /// recorded country tag: the alias database is checked after the
+    /// country tags.
     pub fn alias_entry(&self, tag: &str) -> Option<&TagAlias> {
         if self.slots.contains_key(tag) {
             return None;
@@ -421,14 +419,14 @@ impl RecordedScopes {
     pub fn roster(&self) -> Result<impl Iterator<Item = u32> + '_, String> {
         if !self.countries_complete {
             return Err(format!(
-                "the country roster (CGameState+0x310) is not complete: {}",
+                "the country roster is not complete: {}",
                 self.gaps.get("Countries").cloned().unwrap_or_default()
             ));
         }
         Ok(self.tags.keys().copied())
     }
 
-    /// A country's owned state count (CCountry+0x484), or why it is not
+    /// A country's owned state count, or why it is not
     /// recorded.
     pub fn owned_states(&self, slot: u32) -> Result<i32, String> {
         if slot == 0 {
@@ -436,14 +434,14 @@ impl RecordedScopes {
         }
         self.owned.get(&slot).copied().ok_or_else(|| {
             format!(
-                "the owned state count (CountryCounterInputs.owned_state_count, CCountry+0x484) of {} is not recorded: {}",
+                "the owned state count (CountryCounterInputs.owned_state_count) of {} is not recorded: {}",
                 self.describe(Target::Country(slot)),
                 self.gaps.get("CountryCounterInputs").cloned().unwrap_or_default()
             )
         })
     }
 
-    /// Exact native country-list snapshots (CGameState+0x988 and +0x310).
+    /// Exact recorded original-tag buckets and physical country-array order.
     pub fn original_tags(&self) -> &OriginalTagLists {
         &self.original_tags
     }
@@ -463,7 +461,7 @@ impl RecordedScopes {
         self.links.get(&link).copied()
     }
 
-    /// The actual country's faction. Country0 uses its retained +0x290 getter.
+    /// The actual country's faction. Country0 uses its recorded faction field.
     pub(crate) fn faction(&self, slot: u32) -> Result<Option<u64>, String> {
         if slot == 0 {
             return self.original_tags.reserved_faction();
@@ -494,7 +492,7 @@ impl RecordedScopes {
         Ok(None)
     }
 
-    /// The exact first member's own raw country word (CFaction+0x58 ordinal0).
+    /// The exact first member's own raw country word (ordinal zero).
     /// Literal raw0 is an authenticated Country0 member, never a null placeholder.
     pub(crate) fn faction_first_raw(&self, faction: u64) -> Result<u32, String> {
         self.faction_members
@@ -546,8 +544,7 @@ impl RecordedScopes {
     /// input it would need ([`Unresolved::Missing`]).
     ///
     /// Not yet implemented: the `occupied` promotion, which
-    /// `StateResistance.country` (the occupied country's original tag,
-    /// StartResistance 140F85ED0 writes CResistance+0x50) would
+    /// `StateResistance.country` (the occupied country's original tag) would
     /// answer; it is refused as unrecorded until a consumer needs it.
     pub fn resolve(&self, scope: &Scope, context: &Context) -> Result<Target, Unresolved> {
         use Unresolved::{Missing, Nothing};
@@ -566,15 +563,13 @@ impl RecordedScopes {
                 }
             }
             Scope::Country(tag) => self.resolve_tag(tag).map(Target::Country).map_err(Missing),
-            // 14146BB30 looks the token up among the scope country's
-            // characters (CCountry::GetCharacters 1406E03C0, 1410D6BF0) and
-            // logs "Country is mandatory" without a country; a character it
-            // does not find is logged ("could not find this character in
-            // country") and the scope's character is the invalid reference.
+            // Look the token up among the scope country's characters.
+            // Missing country or character lookups are logged by the game;
+            // a missing character leaves the scope's character invalid.
             Scope::Character(token) => {
                 let Some(Target::Country(country)) = context.this else {
                     return Err(Nothing(format!(
-                        "character {token}: the scope has no country, which the game requires (14146BB30)"
+                        "character {token}: the scope has no country, which the game requires"
                     )));
                 };
                 let found = self
@@ -612,25 +607,23 @@ impl RecordedScopes {
                 "var:{name}: runtime script variables are not recorded"
             ))),
             Scope::EventTarget { name, .. } => Err(Missing(format!(
-                "event_target:{name}: saved targets resolve in the trigger evaluator (14146BB30)"
+                "event_target:{name}: saved targets resolve in the trigger evaluator"
             ))),
             // Generic prefix accepted by the parser, with no matching resolver
-            // case: only CScopedVariable handles global_event_target: (14146BB30).
+            // case: only script variables handle the global_event_target: prefix.
             Scope::Prefixed { prefix, value }
                 if prefix.eq_ignore_ascii_case("global_event_target") =>
             {
-                Err(Nothing(format!(
-                    "{prefix}:{value}: invalid context scope (14146BB30)"
-                )))
+                Err(Nothing(format!("{prefix}:{value}: invalid context scope")))
             }
             Scope::Prefixed { prefix, value } => Err(Missing(format!(
                 "{prefix}:{value}: {prefix} scopes are not recorded"
             ))),
             Scope::ZeroNumber(text) => Err(Nothing(format!(
-                "{text}: the event target reader keeps a zero number as a scope that names nothing (14146DA20 accepts id 0xC)"
+                "{text}: the event target reader keeps a zero number as a scope that names nothing"
             ))),
             Scope::Unknown(text) => Err(Nothing(format!(
-                "{text} is no scope the event target reader (14146DB00) accepts"
+                "{text} is no scope the event target reader accepts"
             ))),
         }
     }
@@ -723,7 +716,7 @@ impl RecordedScopes {
                     self.describe(other)
                 ))),
             },
-            // 14146BB30 has no country-presence gate on this fallback. Known
+            // This fallback has no country-presence gate. Known
             // clearing state/character/empty scopes ask actual Country0's faction.
             // A directly carried faction remains outside these supported carriers.
             Keyword::FactionLeader => {
@@ -771,23 +764,22 @@ impl RecordedScopes {
 }
 
 impl Names for RecordedScopes {
-    /// A recorded country's tag, or a tag alias (140BA53F0), which then
+    /// A recorded country's tag, or a tag alias, which then
     /// resolves to a named refusal ([`Self::alias`]).
     fn is_country(&self, tag: &str) -> bool {
         self.slots.contains_key(tag) || self.alias(tag).is_some()
     }
 
-    /// A live character's token; the load-time classification
-    /// (14146DB00 -> 1406B0030) reads the content's templates instead.
+    /// A live character's token; load-time classification reads the
+    /// content's templates instead.
     fn is_character(&self, token: &str) -> bool {
         self.characters.contains_key(&token.to_ascii_lowercase())
     }
 
-    /// The prefixes 14146E4E0 compares (`mio` 0x4D37, `sp` 0x4D38, `scope`
-    /// 0x2996); any other keyword prefix parses as well but resolves to the
-    /// same refusal.
+    /// Recognized keyword prefixes; any other keyword prefix parses
+    /// as well but resolves to the same refusal.
     fn is_keyword(&self, text: &str) -> bool {
-        // global_event_target is native lexer token 0x3D94 (14146DB00).
+        // global_event_target is recognized by the lexer.
         ["mio", "sp", "scope", "global_event_target"]
             .iter()
             .any(|prefix| text.eq_ignore_ascii_case(prefix))
@@ -959,8 +951,8 @@ pub(crate) mod tests {
         frame
     }
 
-    /// ResolveScriptCountryTag (140BA5D10): a tag owning no state stands
-    /// for the first country of its original-tag list that owns one.
+    /// A tag owning no state stands for the first country of its
+    /// original-tag list that owns one.
     #[test]
     fn a_tag_without_states_resolves_as_the_game_substitutes_it() {
         let counts = |ger: i32, sov: i32| {
@@ -1088,7 +1080,7 @@ pub(crate) mod tests {
             RecordedScopes::read(&frame, Arc::default()).resolve_tag("GER"),
             Ok(2)
         );
-        // SetOriginalTag can remove/reappend D01 between samples while every
+        // An original-tag change can remove/reappend D01 between samples while every
         // final original operand remains identical. The stored order wins.
         if let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
             &mut *frame.tables[TableId::ReservedCountryNaming.index()]
@@ -1111,8 +1103,8 @@ pub(crate) mod tests {
             rows[1].owned_state_count = 0;
             rows[2].owned_state_count = 0;
         }
-        // 1401DA520 returns its first nonowning member; 140BA5D10 rejects
-        // that result's zero state count and keeps the own country.
+        // The first nonowning member is rejected for its zero state count,
+        // retaining the own country.
         assert_eq!(
             RecordedScopes::read(&frame, Arc::default()).resolve_tag("GER"),
             Ok(1)
@@ -1163,8 +1155,8 @@ pub(crate) mod tests {
             match count {
                 Recorded::Value(Some(raw)) => {
                     assert_eq!(scopes.owned_states(0), Ok(raw));
-                    // Reserved owns states: native helper stops and returns0;
-                    // public caller rejects that zero result and keeps GER.
+                    // Reserved owns states: selection stops and returns zero;
+                    // the caller rejects that zero result and keeps GER.
                     assert_eq!(result, Ok(if raw > 0 { 1 } else { 2 }));
                 }
                 _ => assert!(
@@ -1212,7 +1204,7 @@ pub(crate) mod tests {
             resolve("ROOT.overlord.capital_scope", &sov),
             Ok(Target::State(64))
         );
-        // A character of the scope country only (14146BB30), found by its
+        // A character of the scope country only, found by its
         // token, so without case; another country's names nothing there.
         for token in ["GER_erwin_rommel", "ger_ERWIN_rommel"] {
             assert_eq!(
@@ -1249,7 +1241,7 @@ pub(crate) mod tests {
             ),
             (
                 "GER.owner",
-                "GER.owner is no scope the event target reader (14146DB00) accepts",
+                "GER.owner is no scope the event target reader accepts",
             ),
             (
                 "owner",
@@ -1272,7 +1264,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// The event-target selector (14146BB30) takes the faction's first
+    /// The event-target selector takes the faction's first
     /// member; without a faction it clears the target's validity.
     #[test]
     fn faction_leader_scope_uses_the_first_member_and_clears_an_absent_target() {
@@ -1313,11 +1305,13 @@ pub(crate) mod tests {
         ));
     }
 
-    /// A three-byte name that is no country tag but a tag alias
-    /// (140BA53F0 -> 143316AA8) parses as a country scope and is refused by
-    /// name; while an alias file stops short, any unknown three-byte name is.
+    /// A three-byte name that is no country tag but a tag alias parses as
+    /// a country scope and is refused by name; while an alias file stops
+    /// short, any unknown three-byte name is.
     #[test]
     fn a_tag_alias_scope_is_refused_by_name() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let aliases = installed_content::tag_aliases::parse(
             &[("a.txt", b"SPA = { }")],
             &installed_content::key_names::KeyNames::default(),
@@ -1327,7 +1321,7 @@ pub(crate) mod tests {
         assert_eq!(
             scopes.resolve_text("SPA", false, &sov),
             Err(Unresolved::Missing(
-                "tag alias SPA: AliasResolve (1407141F0) runs its triggers in the trigger evaluator (crate::triggers), not in a scope read alone"
+                "tag alias SPA: its triggers run in the trigger evaluator (crate::triggers), not in a scope read alone"
                     .into()
             ))
         );

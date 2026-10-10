@@ -118,8 +118,8 @@ impl Capacities {
         self.scores.regions = self.scores.regions.max(regions.count as usize);
         let mut countries = 0usize;
         let mut missions = 0usize;
-        // RegisterMission@140C4E360 appends the same ordinary occurrences to
-        // +B0 and +98; +C8 additionally includes carrier-only regions.
+        // Ordinary mission occurrences appear in both country lists;
+        // the complete region list additionally includes carrier-only regions.
         engine::cstrategic_air::visit(memory, base, state, |root| {
             let active = root
                 .address
@@ -149,7 +149,7 @@ impl Capacities {
             .ok_or("air reference sizing count overflow")?;
         self.wings = self.wings.max(wings).max(missions);
         self.rows[8] = self.rows[8].max(handles);
-        // 141237D20 reaches native task-force combat occurrences. Every
+        // Naval-patrol missions reach task-force combat occurrences. Every
         // task-force roster occurrence is an independent upper bound.
         let task_forces = engine::cfleet::walk(memory, base, state, &mut [], &mut [], &mut []);
         self.rows[10] = self.rows[10].max(crate::country_scale::table_demand::rows(
@@ -1202,7 +1202,7 @@ fn scenario_history_regions_buffer(
 /// mission region, unregistered training pools and transfer bases. The idle
 /// branch owns its pool demand even when registered, so at most two entries
 /// per wing are needed. Each distinct nonzero host is then resolved once,
-/// including stateful bases (`140F4E0E0`, `140FFDCD0`).
+/// including stateful bases.
 #[cfg(test)]
 fn capture_references(
     memory: &impl Memory,
@@ -1307,9 +1307,8 @@ fn capture_references_buffer(
     })
 }
 
-/// `CanLayMinesInRegion@140F65E40`: each registered mine-laying wing's
-/// effective-country mines in its mission region, once per pair. `pairs` is
-/// scratch with one entry per registration.
+/// Each registered mine-laying wing's effective-country mines in its mission
+/// region, once per pair. `pairs` is scratch with one entry per registration.
 #[cfg(test)]
 fn capture_mines(
     memory: &impl Memory,
@@ -1392,8 +1391,8 @@ fn capture_mines_buffer(
     })
 }
 
-/// `141237D20`'s first input for the registered naval-patrol missions: each
-/// effective country's task forces in a naval combat in one of its patrolled
+/// The first input for registered naval-patrol missions: each effective
+/// country's task forces in a naval combat in one of its patrolled
 /// regions, in native order. `scratch` holds the (country, region) pairs and
 /// then the regions those combats are in, whose span it returns.
 fn capture_patrol_combats(
@@ -1565,9 +1564,8 @@ fn read_equipment_buffer(
 ) -> (Outcome, usize) {
     let mut required = 0;
     let result = (|| {
-        // CAirWing constructor 140F445E0 owns the pool at +0x1D8;
-        // CEquipmentVariantPool::serialize@140FFDB00 walks +0x2C rows at
-        // +0x20 with stride 0x10. Grow from that original header once.
+        // Each wing owns an equipment pool whose full entry count is retained.
+        // Grow from that original header once before reading the rows.
         let entries = cair_wing::equipment_pool(memory, base, source.pointer)?;
         required = entries.count as usize;
         let end = start

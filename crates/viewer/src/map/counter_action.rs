@@ -1,10 +1,9 @@
 //! Land-counter action frames from recorded simulation state.
 //!
-//! `Unit_GetActionCode@140BEF850` classifies movement, not battle-plan orders.
-//! `1418C5DAF` classifies the representative before `1418C632E` compares fully
-//! visible division members. `1418C645E` writes `ActionCodeToFrame@140BEF9F0`:
-//! code + 1 in native one-based frames. Own code 1 hides the child; mixed code
-//! 0 shows the first frame. The sprite and placement remain authored GUI facts.
+//! Actions classify movement rather than battle-plan orders. The representative is
+//! classified before fully visible division members are compared. Frames are code + 1;
+//! own code 1 hides the child and mixed code 0 shows the first frame. The sprite and
+//! placement remain authored GUI facts.
 
 use std::{
     cell::RefCell,
@@ -24,12 +23,12 @@ use super::{directed_wars::Owner, tables::rows};
 
 pub(super) type Action = Result<u8, &'static str>;
 
-/// Missing current-hour operands for the native `140C79B70` decision.
+/// Missing current-hour strategic-redeployment modifier operands.
 pub(super) const CURRENT_RAIL_MODIFIERS: &str = "current strategic-redeployment modifier operands";
 const STRATEGIC_NOT_RECORDED: &str = "DivisionMovement.strategic_action not recorded";
 pub(super) const STRATEGIC_LAYOUT: &str = "division strategic action fixed layout";
 
-/// `140BEF850`, class 0. Branch operands are consulted only where native does.
+/// Division movement action. Reached branches alone demand their operands.
 pub(super) fn action_code(
     movement: &DivisionMovementRow,
     any_attacking: Option<bool>,
@@ -38,7 +37,7 @@ pub(super) fn action_code(
 ) -> Action {
     if (movement.path_total as i32) <= 0 {
         return if idle(movement.path_total, movement.combat_count) {
-            // CArmy primary vtable +0x178 is ReturnZero@14011CD10.
+            // Idle land units use action code one.
             Ok(1)
         } else {
             any_attacking
@@ -75,12 +74,12 @@ pub(super) fn action_code(
     )
 }
 
-/// Signed route/combat guards in `Unit_GetActionCode@140BEF850`.
+/// Signed route and combat counts decide the idle action.
 pub(super) fn idle(path_count: u32, combat_count: u32) -> bool {
     (path_count as i32) <= 0 && (combat_count as i32) <= 0
 }
 
-/// Common route tail in `140BEF850`, after target, retreat, rail and transfer combat.
+/// Route action after target, retreat, redeployment and transfer-combat checks.
 pub(super) fn route_tail(
     enemy: Result<bool, &'static str>,
     transfer: bool,
@@ -95,8 +94,8 @@ pub(super) fn route_tail(
     })
 }
 
-/// `140BF0EF0`: ordinary-route destination controller, raw identity first,
-/// then canonical country identity and active war (`1406F3A00`).
+/// ordinary-route destination controller, raw identity first,
+/// then canonical country identity and active war.
 pub(super) struct DestinationHostility<'a> {
     frame: &'a DecodedFrame,
     controllers: BTreeMap<u32, u32>,
@@ -124,7 +123,7 @@ impl<'a> DestinationHostility<'a> {
         total: u32,
         owner: Option<u32>,
     ) -> Result<bool, &'static str> {
-        // 140BF0EF0 tests the signed ordinary count before looking up its tail.
+        // Test the signed ordinary count before looking up its tail.
         if (total as i32) <= 0 {
             return Ok(false);
         }
@@ -134,7 +133,7 @@ impl<'a> DestinationHostility<'a> {
         let last = *path
             .last()
             .ok_or("last ordinary-route province hostility")?;
-        // Province provider@1401C9D30 rejects signed nonpositive IDs.
+        // Reject signed nonpositive province IDs.
         if (last as i32) <= 0 {
             return Ok(false);
         }
@@ -149,7 +148,7 @@ impl<'a> DestinationHostility<'a> {
         if controller == owner {
             return Ok(false);
         }
-        // 140BF0EF0 -> 1406F3A00 receives the destination controller and
+        // The game receives the destination controller and
         // targets the unit's raw logical owner. Reverse truth is no evidence.
         let mut owners = self.owners.borrow_mut();
         let receiver = owners
@@ -163,11 +162,9 @@ impl<'a> DestinationHostility<'a> {
     }
 }
 
-/// `140E111B0/140E11360` link a unit in both directions; `140E13F20`
-/// removes both links. `1415B1960 -> 140E110D0` links a registered combat
-/// to its transfer in both directions; `1415B0500 -> 140E13180` removes it.
-/// The hourly inverse census therefore proves the transfer's +0x24 nonzero
-/// test without another recorded field. A prefix proves positives only.
+/// Unit and combat membership links are maintained in both directions.
+/// The hourly inverse census proves transfer combat membership without another
+/// recorded field. A partial census proves positive membership only.
 struct TransferCombatUnits {
     units: BTreeSet<u64>,
     complete: bool,
@@ -302,10 +299,9 @@ impl Actions {
     }
 }
 
-/// `140BEF850` scans the unit's +1A8 references and each attacker's +38
-/// country list in order. Fresh packets retain that order and its early return.
-/// NavalCombatDetails already owns the naval side's ordered primary list.
-/// This action path does not call combat vf12 or inspect side unit membership.
+/// Scan unit combat references and ordered attacker countries, preserving early
+/// return. Naval details supply their side's ordered primary list. This path
+/// does not inspect combat-side unit membership.
 fn recorded_standing(
     frame: &DecodedFrame,
     packet: &replay::rows::UnitCombatReferences,
@@ -323,8 +319,7 @@ fn recorded_standing(
                 &side.attacker_primary
             }
             2 => {
-                // CNavalCombat+28 -> CCombatant+38 is the same native
-                // list, captured by naval_combat_summary_inputs::countries.
+                // Naval details carry this same ordered primary country list.
                 let naval = rows::<tables::NavalCombatDetails>(frame).ok()?;
                 let combat = naval
                     .rows()
@@ -346,12 +341,10 @@ fn recorded_standing(
     Some(false)
 }
 
-/// Historical inverse proof: `1413CB9C0/1413CBD30 -> 140BEA140` add both the
-/// combat-side member
-/// and the unit's combat pointer; removal (`1413CE250/140BF48D0`) removes
-/// both. `LandCombats` plus the attacker's primary +0x38 country set can
-/// therefore prove any-attacking. A negative also requires every reference
-/// to be covered; naval or missing references remain a named gap.
+/// Combat-side membership and unit combat references are added and removed
+/// together. Land combats and their attacker countries can prove an attack.
+/// A negative requires coverage of every reference; naval or missing references
+/// remain a named gap.
 fn standing_attacks(
     frame: &DecodedFrame,
     movements: &[DivisionMovementRow],
@@ -468,7 +461,7 @@ fn strategic_unknown(reason: &str) -> bool {
 }
 
 /// Representative unconditional, then fully visible members only. Different
-/// known actions prove mixed 0. A strategic gap permits only 6/11 (140BEF850),
+/// known actions prove mixed 0. A strategic gap permits only 6/11,
 /// so a participating known action outside that pair also proves mixed 0.
 pub(super) fn aggregate_actions(
     representative: Action,
@@ -1212,7 +1205,7 @@ mod tests {
             );
             assert_eq!(check(&frame, owner, &links), Ok(expected));
         }
-        // Neither duration nor task-force membership is part of 140BEF850.
+        // Duration and task-force membership do not affect this action.
         // Raw equality returns before resolving aliases or any later country.
         naval.sides[0].summary.countries = vec![100, 999];
         set(

@@ -1,5 +1,5 @@
-//! Native stored army-group child sections (141246280).
-//! Child slots preserve duplicate groups; their spans use the first matching stored entry.
+//! Stored army-group child sections. Child slots preserve duplicate groups;
+//! their spans use the first matching stored entry.
 
 use super::{
     chain::{self, Pair},
@@ -12,7 +12,7 @@ use std::{cell::OnceCell, collections::BTreeMap};
 
 pub const TYPE_NAME: &str = "ag_child_defence_line";
 
-/// 14123C3F0 arg7: small areas suppress the extra offset without reading the header.
+/// Small areas suppress the extra offset without reading the header.
 pub fn extra_units(plan: &ArmyOrderPlanRow) -> Result<u8, &'static str> {
     let inputs = match &plan.child_fronts {
         Recorded::NotRecorded => return Err("front controller-area and child inputs not recorded"),
@@ -162,9 +162,9 @@ pub fn prepare(
     Ok((prepared, refused))
 }
 
-/// 141241340 updates each child through14123FF10 with its group parameter:
-/// group-filtered assignments, that group's HQ/name, and ordinary label variants.
-/// Execution state is the parent's callback, not the child display group's.
+/// Update each child with its group parameter: group-filtered assignments,
+/// that group's HQ/name, and ordinary label variants. Execution state is the
+/// parent's callback, not the child display group's.
 #[allow(clippy::too_many_arguments)]
 pub fn emit(
     field: &mut super::OrderField,
@@ -322,16 +322,16 @@ pub fn children<'a>(
         first.entry(section.group).or_insert(section);
     }
     let mut output = Children::default();
-    // 14101E8A0 returns group0 past +38C; 14101E760 then returns
-    // (-1,-1), destroying those ribbons. When slots<=count, each indexed group
-    // first-matches at or before its index. Only that exact demanded prefix is
-    // captured; no unused tail can change these matches. When slots>count the
-    // complete stored array above is authenticated nonnull, so group0 matches
-    // nothing. Omit that suffix without iterating an untrusted signed count.
+    // Past the stored group array, use group zero and endpoints (-1,-1),
+    // destroying those ribbons. When slots<=count, each indexed group first-matches
+    // at or before its index. Capture only that demanded prefix; an unused tail
+    // cannot change these matches. When slots>count, the complete stored array
+    // above is authenticated nonnull, so group zero matches nothing. Omit that
+    // suffix without iterating an untrusted signed count.
     for slot in (0..sections.len()).rev() {
         let indexed = &sections[slot];
         let section = first[&indexed.group];
-        // 14101E760 returns signed endpoints; negative start destroys this ribbon.
+        // Endpoints are signed; a negative start destroys this ribbon.
         if section.segment_start < 0 {
             continue;
         }
@@ -343,8 +343,8 @@ pub fn children<'a>(
             });
             continue;
         }
-        // 14123C710 adds parent+A0. Checked addition refuses unsupported overflow;
-        // the physical section bounds are independently checked by front_pairs.
+        // Add the parent section offset. Checked addition refuses unsupported
+        // overflow; front_pairs independently checks physical section bounds.
         if plan
             .segment_start
             .checked_add(section.segment_start)

@@ -724,8 +724,8 @@ impl Captured {
                     .len
                     .checked_add(subjects.count as usize)
                     .ok_or("country subject arena demand overflow")?;
-                // Native faction previews name the stored roster in its order
-                // (1404AC450). Read no payload for countries without subjects.
+                // Faction previews name the stored roster in its order.
+                // Read no payload for countries without subjects.
                 let copied = self
                     .subjects
                     .first

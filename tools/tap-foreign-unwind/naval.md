@@ -41,20 +41,19 @@ This isolated single-hook diagnostic does not certify whole-family installation,
 concurrent detach, persistent/transient constructor birth reads, game handler
 scopes, asynchronous faults at arbitrary Rust instructions, or final artifact
 unwind metadata. It introduces no production recovery/reset. Fresh-save, smoke,
-live capture, cost and actual unload remain separate parent gates.
+live capture, cost and actual unload require separate validation.
 
-## Parent-only build and run
+## Build and run
 
-At the final reviewed worktree root in an x64 MSVC developer environment, wait
-for the coordinator's build window. Keep every artifact and log outside Git.
+Run from the repository root in an x64 MSVC developer environment. Keep
+every artifact and log outside Git.
 
 ```powershell
-$proofOutput = 'captures/widget_completion/naval-foreign-proof'
-$env:JOBS = '4'
+$proofOutput = Join-Path $env:TEMP 'battle-plan-naval-foreign-proof'
 New-Item -ItemType Directory -Force -Path $proofOutput | Out-Null
-& tools/build-slot.ps1 -Owner 'dev/naval-foreign-proof' -Command "cl.exe /nologo /LD /O2 /EHa /W4 /WX tools/tap-foreign-unwind/probe.cpp /Fo:$proofOutput/probe.obj /Fe:$proofOutput/tap_foreign_probe.dll /link /IMPLIB:$proofOutput/tap_foreign_probe.lib"
+cl.exe /nologo /LD /O2 /EHa /W4 /WX tools/tap-foreign-unwind/probe.cpp "/Fo:$proofOutput/probe.obj" "/Fe:$proofOutput/tap_foreign_probe.dll" /link "/IMPLIB:$proofOutput/tap_foreign_probe.lib"
 if ($LASTEXITCODE -ne 0) { throw 'Shared native probe build failed' }
-& tools/build-slot.ps1 -Owner 'dev/naval-foreign-proof' -Command "cl.exe /nologo /LD /O2 /EHa /W4 /WX crates/collector/tests/naval_unwind_probe.cpp /Fo:$proofOutput/naval.obj /Fe:$proofOutput/naval_unwind_probe.dll /link /IMPLIB:$proofOutput/naval_unwind_probe.lib"
+cl.exe /nologo /LD /O2 /EHa /W4 /WX crates/collector/tests/naval_unwind_probe.cpp "/Fo:$proofOutput/naval.obj" "/Fe:$proofOutput/naval_unwind_probe.dll" /link "/IMPLIB:$proofOutput/naval_unwind_probe.lib"
 if ($LASTEXITCODE -ne 0) { throw 'Existing Naval C++ probe build failed' }
 $env:BATTLE_PLAN_TAP_UNWIND_PROBE = "$proofOutput/tap_foreign_probe.dll"
 $env:BATTLE_PLAN_NAVAL_UNWIND_PROBE = "$proofOutput/naval_unwind_probe.dll"
@@ -63,7 +62,7 @@ $navalProofFilters = @(
     'naval_result_sources::tests::foreign_unwind::naval_original_cpp_seh_preserves_cleanup_storage_and_restores_hooks'
 )
 foreach ($proofFilter in $navalProofFilters) {
-    & tools/build-slot.ps1 -Owner 'dev/naval-foreign-proof' -Command "cargo test -p collector --features tap-foreign-probe $proofFilter -- --exact --ignored --nocapture --test-threads=1"
+    cargo test -p collector --features tap-foreign-probe $proofFilter -- --exact --ignored --nocapture --test-threads=1
     if ($LASTEXITCODE -ne 0) { throw "Naval foreign proof failed: $proofFilter" }
 }
 ```
@@ -78,6 +77,6 @@ Record exact source, Rust/MSVC versions/profile, commands, exit status, output
 and executable/DLL hashes. Repeat with the final collector profile if it differs.
 Inspect the actual PE unwind tables and, under a Windows debugger at each native
 raise, the printed caller/site/bridge/original PCs and Hook-owned ranges. Keep
-disassembly, registered runtime entries and handler evidence in the private proof
+disassembly, registered runtime entries and handler evidence in the chosen proof
 folder. Earlier artifacts or virtual-unwind reconstruction do not replace this
-evidence. No build, native call or passing execution is claimed by this source.
+evidence.

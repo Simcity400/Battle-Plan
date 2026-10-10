@@ -1,6 +1,5 @@
-//! State-8 member escape speed from 14195C7D0. The native getter computes
-//! this on demand; the replay stores the mutable speed base and the source
-//! operands, while the content stack supplies NNavy defines.
+//! State-8 member escape speed computed on demand. The replay stores the
+//! mutable speed base and source operands; resolved content supplies NNavy defines.
 use engine::modifier_keys;
 use installed_content::{
     ResolvedLayers,
@@ -12,13 +11,13 @@ use replay::rows::{
 use std::collections::BTreeMap;
 
 const ONE: i64 = 100_000;
-const SCREENING_NAMES: [&str; 2] = ["screening_bonus", "capital_screening_bonus"]; // 140600CF0
+const SCREENING_NAMES: [&str; 2] = ["screening_bonus", "capital_screening_bonus"];
 pub(super) const ESCAPE_KEYS: [u32; 4] = [
     modifier_keys::NAVAL_RETREAT_SPEED,
     modifier_keys::SUB_RETREAT_SPEED,
     modifier_keys::NAVAL_RETREAT_SPEED_AFTER_INITIAL_COMBAT,
     modifier_keys::CONVOY_RETREAT_SPEED,
-]; // 14195C7D0
+];
 
 #[derive(Debug)]
 pub(super) struct Screening {
@@ -32,7 +31,7 @@ impl Screening {
             .flat_map(|&modifier| {
                 ESCAPE_KEYS.iter().map(move |&key| Request {
                     modifier,
-                    key: engine::modifier_keys::NAMES[key as usize],
+                    key: engine::modifier_keys::names()[key as usize],
                 })
             })
             .collect();
@@ -106,9 +105,8 @@ fn pool_flags(row: &NavalCombatShipRow) -> u64 {
         .fold(0_u64, |flags, source| flags | source.weights[1] as u64)
 }
 
-/// 14195EEC0 adds a source modifier and then screening by display box. The
-/// static modifier names are the executable's 140600CF0 slots; their values
-/// come from matching authored content and the recorded definition metadata.
+/// Add the source modifier, then screening by display box. Named static
+/// modifier values come from resolved content and recorded definition metadata.
 pub(super) fn modifier_value(
     row: &NavalCombatShipRow,
     side: &NavalCombatSideDetails,
@@ -192,16 +190,16 @@ impl Defines {
                 .map_err(|error| error.to_string())
         };
         Ok(Self {
-            base: fixed("BASE_ESCAPE_SPEED")?, // 14195C7D0 / 14331F128
-            per_day: fixed("ESCAPE_SPEED_PER_COMBAT_DAY")?, // 14331EF48
-            duration_max: fixed("MAX_ESCAPE_SPEED_FROM_COMBAT_DURATION")?, // 14331EFF0
-            speed_factor: fixed("SPEED_TO_ESCAPE_SPEED")?, // 14331F090
-            hidden_sub: fixed("ESCAPE_SPEED_HIDDEN_SUB")?, // 14331F280
-            sub_base: fixed("ESCAPE_SPEED_SUB_BASE")?, // 14331F1D8
-            out_of_fuel: fixed("OUT_OF_FUEL_SPEED_FACTOR")?, // 140C2B000 / 14331BD80
+            base: fixed("BASE_ESCAPE_SPEED")?,
+            per_day: fixed("ESCAPE_SPEED_PER_COMBAT_DAY")?,
+            duration_max: fixed("MAX_ESCAPE_SPEED_FROM_COMBAT_DURATION")?,
+            speed_factor: fixed("SPEED_TO_ESCAPE_SPEED")?,
+            hidden_sub: fixed("ESCAPE_SPEED_HIDDEN_SUB")?,
+            sub_base: fixed("ESCAPE_SPEED_SUB_BASE")?,
+            out_of_fuel: fixed("OUT_OF_FUEL_SPEED_FACTOR")?,
             initial_duration: numbers
                 .int32("NNavy", "COMBAT_INITIAL_DURATION")
-                .map_err(|error| error.to_string())?, // 14331D1AC
+                .map_err(|error| error.to_string())?,
         })
     }
 }
@@ -217,8 +215,8 @@ pub(super) struct Parts {
 }
 
 fn guard(value: i64) -> bool {
-    // 14195C7D0 and 140D57EC0 use this unsigned overflow sentinel before
-    // fixed division. The instruction sequence does not use checked_mul.
+    // Apply the unsigned overflow sentinel before fixed division; multiplication
+    // wraps rather than failing on overflow.
     (value as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd
 }
 
@@ -230,7 +228,7 @@ fn terrain_speed(context: &NavalShipWeaponContext) -> i64 {
             .filter(|source| source.scope == 20)
             .fold(0_i64, |sum, source| sum.wrapping_add(source.movement))
     } else {
-        // 140D5A6B0 averages all task-force roster ships' +0x20 adjusters.
+        // Average the escape-speed adjusters of all task-force roster ships.
         let (sum, count) = context
             .sources
             .iter()
@@ -249,7 +247,7 @@ fn terrain_speed(context: &NavalShipWeaponContext) -> i64 {
 }
 
 fn fuel_fraction([current, capacity]: [i64; 2]) -> i64 {
-    // 140D57EC0: no capacity means full fuel; otherwise clamp the ratio.
+    // no capacity means full fuel; otherwise clamp the ratio.
     if capacity < 1 || !guard(current) {
         return ONE;
     }
@@ -270,7 +268,7 @@ pub(super) fn ship_speed(row: &NavalCombatShipRow, speed_modifier: i64, defines:
         modifier =
             modifier.wrapping_add(ONE.wrapping_sub(fuel).wrapping_mul(defines.out_of_fuel) / ONE);
     }
-    // 140C2B000 clamps the multiplier before multiplying the stored +0x228.
+    // Clamp the multiplier before multiplying the recorded escape-speed base.
     ONE.wrapping_add(modifier)
         .max(10_000)
         .wrapping_mul(row.escape_speed_base)

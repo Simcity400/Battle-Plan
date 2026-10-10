@@ -31,7 +31,7 @@ export const settingsSections: { id: SettingsSection; label: string; icon: IconN
 export interface SettingsTarget { section: SettingsSection; title: string; id?: string; keywords?: string }
 
 const searchItems: SettingsTarget[] = [
-  { section: 'folders', title: 'the game installation', keywords: 'game folder install steam path' },
+  { section: 'folders', title: 'Game installation', keywords: 'game folder install steam path' },
   { section: 'folders', title: 'Paradox user folder', keywords: 'documents mods user path' },
   { section: 'folders', title: 'Replay folder', keywords: 'recordings library replays path' },
   { section: 'appearance', title: 'Colour scheme', id: 'appearance-scheme', keywords: 'color dark light system mode' },

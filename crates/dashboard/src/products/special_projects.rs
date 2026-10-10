@@ -34,8 +34,7 @@ mod history;
 mod completions;
 pub(crate) use completions::completion_events;
 
-// Native string and sentinel facts, not content assumptions: 141ED9730,
-// SProjectHistory completion constructor 141A249B0, 140FCDD00/14296C3A8.
+// Project localisation keys and history sentinels.
 const ITERATIONS_KEY: &str = "ONGOING_PROJECT_BREAKTHROUGHS_NUMBER";
 const COMPLETION_MARKER: u32 = 0x4c17;
 const PLACEHOLDER_ICON: &str = "GFX_PLACEHOLDER_sp_project_icon";
@@ -107,12 +106,12 @@ pub struct SpecialProjectRun {
     pub first_hour: i32,
     pub last_hour: i32,
     pub presentation: u32,
-    /// Percent from prototype +0x88, clamped as 141A238C0. No phase ratio.
+    /// Clamped prototype percent, separate from the phase ratio.
     pub progress: i32,
     pub state: ProjectState,
     pub completion: Option<ProjectDate>,
     pub cancellation: Option<ProjectDate>,
-    /// Native history length minus IsCompleted. Missing history is null.
+    /// Recorded history length minus the completion entry. Missing history is null.
     pub iterations: Option<i32>,
 }
 
@@ -142,17 +141,15 @@ pub struct SpecialProjectsReply {
     pub warnings: Vec<String>,
 }
 
-/// IsCompleted@140FCE610 -> 141A23AA0. The saved completed byte is not
-/// this predicate (move constructor 140FCAA30 clears it independently).
+/// Completion follows the state predicate. The saved completed byte is
+/// cleared independently when moving a project and does not establish it.
 fn completed(project: &ProjectRow) -> bool {
     project.state.not_completed == 0 && project.state.current_offset == 0xe8
 }
 
-/// Start 141A24490; pause 141A244B0; cancellation 141A24690/141A23B30;
-/// completion 141A24650 and IsCompleted 141A23AA0. Offsets are machine-relative.
-/// A scripted cancel (StopProject 140FD04F0 -> CancelProject 140FCF450)
-/// invalidates the program reference (+0x60) and clears started only without
-/// history, leaving the machine at 0x18: running needs both.
+/// State offsets are machine-relative. A scripted cancel invalidates the
+/// program reference and clears started only without history, leaving
+/// the machine at 0x18: running needs both.
 fn project_state(project: &ProjectRow) -> ProjectState {
     match project.state.current_offset {
         0x18 if project.started != 0 && project.program_reference != 0 => ProjectState::Running,
@@ -172,8 +169,8 @@ fn visible(project: &ProjectRow, already_open: bool) -> bool {
             && project.state.current_offset != 0x18)
 }
 
-/// 141EDA6E0 -> 140FCDFE0 -> 141A238C0: fixed5 ratio of prototype
-/// progress/100, clamped to [-1,1]; completed views force the meter to 1.
+/// Fixed5 ratio of prototype progress/100, clamped to [-1,1];
+/// completed views force the meter to 1.
 fn progress(project: &ProjectRow) -> i32 {
     if completed(project) {
         100
@@ -208,7 +205,7 @@ fn completion_date(
         )
 }
 
-/// Country key selection 14146B1D0, shared by name and specialization.
+/// Country key selection, shared by name and specialization.
 fn country_key(catalogue: &Catalogue, tag: &str, key: &str) -> String {
     let prefixed = format!("{tag}_{key}");
     if catalogue.localisation.get(&prefixed).is_some() {
@@ -218,8 +215,8 @@ fn country_key(catalogue: &Catalogue, tag: &str, key: &str) -> String {
     }
 }
 
-/// GetIcon@140FCDD00 -> 14146B450/14146AC80. Nonempty authored icon
-/// wins even if missing. Native prefix string GFX_ is at 14292ADB8.
+/// A nonempty authored icon wins even if missing.
+/// The fallback uses the GFX_ prefix.
 fn icon_key(
     project: &installed_content::special_projects::Project,
     token: &str,
@@ -318,11 +315,9 @@ impl Content {
         frame: &DecodedFrame,
         definition_id: u32,
     ) -> Option<String> {
-        // 140FCDDF0 -> 140A81BB0/14146B580: authored narrative name
-        // when nonempty, otherwise the definition's default name; then
-        // TAG_key if defined, then scope expansion in the owner's country.
-        // Template post-load 140A852A0 writes the LexerToken string to
-        // template+0x238 (narrative+0x48), proving the default key.
+        // Use the authored narrative name when nonempty, otherwise the definition's
+        // default name; then TAG_key if defined, then scope expansion in the owner's
+        // country. The default key is the template token's string.
         let selected = country_key(&self.catalogue, tag, project_name_key(definition, token));
         if needs_scope(&self.catalogue.localisation, &selected) {
             return self
@@ -368,7 +363,7 @@ impl Content {
     }
 
     fn iterations(&self, count: Option<i32>) -> Option<String> {
-        // 141ED9730 passes NUMBER as native argument type 5 (Int32).
+        // NUMBER is passed as Int32 (argument type 5).
         let count = count?;
         self.catalogue.localisation.get(ITERATIONS_KEY)?;
         self.catalogue.localised_with_refusals(
@@ -582,7 +577,7 @@ impl Builder {
         if let Some(id) = self.person_cache.get(&project.program_reference) {
             return *id;
         }
-        // AssignScientist@141431670 -> 14142FA60: full CCharacter ref.
+        // Scientist assignment uses the full character reference.
         // The low reference type is 73; program reference type is 83.
         let mut assigned = None;
         let person = (|| {
@@ -629,8 +624,8 @@ impl Builder {
                     .politics
                     .character_name_with_refusals(script, &saved, &content.refusals)
             });
-            // ScientistItem::Refresh 141F03DE0 requests role 4, size 1.
-            // Use the shared native holder selection, including its fallback.
+            // Scientist portraits request role 4, size 1.
+            // Use shared holder selection, including its fallback.
             let portrait = recorded_portrait(
                 frame.complete::<tables::CharacterPortraits>().ok(),
                 id,
@@ -678,8 +673,8 @@ impl Builder {
     ) -> u32 {
         let mut scientist = self.person(frame, project, content.as_deref());
         let mut scientist_as_of = None;
-        // CompleteProject@140FCEC50 clears the program. Retain a dated last
-        // assignment only within this episode, never claim a current one.
+        // Completion clears the program. Retain a dated last assignment only
+        // within this episode, never claim a current one.
         if completed(project)
             && let Some(previous) =
                 previous.filter(|run| run.last_hour.checked_add(1) == Some(frame.hour))
@@ -716,7 +711,7 @@ impl Builder {
             self.content_ids.insert(key, id);
             return id;
         }
-        // CProject ctor 140FCADC0 copies template+8, a LexerToken.
+        // Project construction copies the template token.
         let token = frame
             .complete::<tables::LexicalTokens>()
             .ok()
@@ -774,8 +769,8 @@ impl Builder {
                         token.clone()
                     });
                 info.specialization = definition.specialization.clone();
-                // 140FCE010/140AABD40/14146B5D0: specialization token,
-                // not blueprint_image or a vanilla type enumeration.
+                // Use the specialization token, not blueprint_image
+                // or a vanilla type enumeration.
                 if let Some(kind) = &definition.specialization {
                     if content.definitions.specializations.contains(kind) {
                         info.specialization_name = content.specialization_name(kind, Some(tag));
@@ -969,8 +964,8 @@ impl Builder {
             let index = match self.open.get(&key) {
                 Some(index) => *index,
                 None => {
-                    // StartProject@140FD02E0 records no start event. First
-                    // observation is an upper bound, when no matching episode exists.
+                    // Starting records no start event. First observation is an upper bound
+                    // when no matching episode exists.
                     let index = self.episodes.len();
                     self.episodes.push(ProjectEpisode {
                         id: format!("{}:{hour}:{index}", project.local_id),
@@ -981,8 +976,8 @@ impl Builder {
                 }
             };
             next.insert(key, index);
-            // BuildAcceptanceTooltip@141ED9730: count minus the completion
-            // entry; do not substitute state.iterations or saturate at zero.
+            // Acceptance shows count minus the completion entry;
+            // do not substitute state.iterations or saturate at zero.
             let completion = done.then(|| {
                 let date = completion_date(history, hour, self.campaign_start.unwrap_or(hour));
                 if !date.exact {
@@ -1080,7 +1075,7 @@ impl Builder {
     }
 }
 
-/// Scope selection after 142230F20 expands aliases; literal dollars need no frame.
+/// Scope selection after plain localisation expands aliases; literal dollars need no frame.
 fn needs_scope(loc: &installed_content::localisation::Localisation, key: &str) -> bool {
     loc.localise(key.as_bytes())
         .is_ok_and(|text| text.contains('['))
@@ -1395,6 +1390,8 @@ mod tests {
 
     #[test]
     fn scripted_cancel_leaves_offset_0x18_but_ends_the_episode_cancelled() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sample = frame(100, true, 1);
         let mut project = sample.complete::<tables::Projects>().unwrap()[0].clone();
         let mut builder = Builder::default();
@@ -1403,7 +1400,7 @@ mod tests {
             builder.episodes[0].runs.last().unwrap().state,
             ProjectState::Running
         );
-        // CancelProject 140FCF450 invalidates the program reference only.
+        // Cancellation invalidates the program reference only.
         sample.hour = 101;
         project.program_reference = 0;
         *sample.tables[TableId::Projects.index()] =
@@ -1428,6 +1425,8 @@ mod tests {
     }
     #[test]
     fn native_states_pause_cancel_and_unset_completion_dates_are_explicit() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sample = frame(100, true, 1);
         let mut project = sample.complete::<tables::Projects>().unwrap()[0].clone();
         let mut builder = Builder::default();
@@ -1482,6 +1481,8 @@ mod tests {
 
     #[test]
     fn gaps_keep_an_episode_but_resets_and_changed_owners_do_not() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut builder = Builder::default();
         let mut sample = frame(100, true, 1);
         builder.observe(&sample, "mod tag", None);
@@ -1562,6 +1563,8 @@ mod tests {
 
     #[test]
     fn reads_are_admitted_by_the_slot_and_runs_break_at_gaps_and_incomplete_tables() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut builder = Builder::default();
         builder.observe(&frame(99, false, 1), "mod tag", None);
         assert!(builder.episodes.is_empty());
@@ -1595,6 +1598,8 @@ mod tests {
 
     #[test]
     fn all_recorded_projects_are_kept_at_five_thousand_without_player_inputs() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut builder = Builder::default();
         builder.observe(&frame(100, true, 5000), "mod tag", None);
         assert_eq!(builder.episodes.len(), 5000);
@@ -1604,6 +1609,8 @@ mod tests {
 
     #[test]
     fn completion_keeps_only_a_dated_last_assignment_and_a_gap_cannot_supply_it() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sample = frame(100, true, 1);
         let mut project = ProjectRow {
             owner: 5,
@@ -1657,6 +1664,8 @@ mod tests {
 
     #[test]
     fn person_cache_tracks_program_and_character_views() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sample = frame(100, true, 1);
         let mut project = sample.complete::<tables::Projects>().unwrap()[0].clone();
         project.program_reference = (12_u64 << 32) | 83;
@@ -1710,6 +1719,8 @@ mod tests {
 
     #[test]
     fn country_roster_at_five_thousand_keeps_the_requested_ai_or_human_country() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sample = frame(100, true, 1);
         *sample.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
             (1..=5000)
@@ -1749,6 +1760,8 @@ mod tests {
 
     #[test]
     fn history_count_uses_native_vector_length_missing_is_unknown_and_reset_is_a_new_episode() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sample = frame(100, true, 1);
         let mut project = ProjectRow {
             owner: 5,
@@ -1831,6 +1844,8 @@ mod tests {
 
     #[test]
     fn recorded_mod_stack_adds_projects_and_overrides_names_and_icons() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let guard = TempRoot::new("mod");
         let root = &guard.0;
         let base = root.join("base");

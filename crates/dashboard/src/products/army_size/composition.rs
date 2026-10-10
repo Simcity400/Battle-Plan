@@ -1,8 +1,7 @@
 //! Battalion composition from the hourly template companion's grouped grids.
-//! Group token +0x5A4 is authored, preserved by 141004D20 and copied by
-//! 140B87080 / 141005F00; no template representative enters this calculation.
-//! 141678490 reads a placed regiment's group through grid getter 140FAA260;
-//! the shared database's air/naval inventory does not establish army reach.
+//! The sub-unit's authored group survives template copying; no template
+//! representative enters this calculation. Placed regiments use their grid's
+//! group; the shared database's air/naval inventory does not establish army reach.
 use super::*;
 use crate::catalogue::{Catalogue, catalogue};
 use installed_content::unit_leader::SubUnits;
@@ -38,8 +37,7 @@ fn group_info(
             };
             (format!("group:{identity}"), group, None)
         }
-        // CSubUnitDefinition::constructor@141002DD0 clears +0x5A4 to
-        // token zero; an omitted group is a known native default.
+        // An omitted authored group is a known token-zero default.
         Ok(None) => ("group:".into(), "", None),
         Err(why) => (
             format!("unknown:{name}"),
@@ -47,8 +45,8 @@ fn group_info(
             Some(format!("{name}: unknown unit group: {why}")),
         ),
     };
-    // The native group-localisation key is unproven. Resolved groups display
-    // the authored token read at 141008E80 (+0x5A4), not a guessed lookup key.
+    // The group-localisation key is unproven. Resolved groups display the
+    // authored token, not a guessed lookup key.
     let label = if key.starts_with("unknown:") {
         let localised = catalogue.map(|catalogue| {
             crate::catalogue::localised(
@@ -243,6 +241,8 @@ mod tests {
     use super::*;
     #[test]
     fn army_size_grouping_uses_authored_groups_and_keeps_unknown_names() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut units = SubUnits::default();
         units.read(
             b"sub_units = { foot = { group = mod_group } \
@@ -269,6 +269,8 @@ mod tests {
 
     #[test]
     fn army_size_content_accepts_native_default_groups_without_claiming_army_reach() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
             "common/units/mod.txt",
             "sub_units={foot={group=mod_group} ungrouped={} air={} naval={}}",

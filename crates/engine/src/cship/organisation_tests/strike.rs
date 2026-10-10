@@ -1,6 +1,4 @@
-//! Authored focused cases for the optional lane. Parent runs these only after
-//! source review/integration. Reuse the existing organisation fixtures instead
-//! of constructing another native-world or modifier framework.
+//! Focused optional-lane cases using the existing organisation fixtures.
 use super::*;
 use crate::cship::{
     TorpedoCooldownMemo, read_maximum_organisation_and_torpedo_cooldown, read_strike_bases,
@@ -300,7 +298,7 @@ fn original_four_key_read_sequence_is_identical_in_combined_call() {
     assert_eq!(*old.reads.borrow(), *new.reads.borrow());
 }
 
-// Append to reviewed organisation_tests/strike.rs. Authoring only; unexecuted.
+// Additional optional cooldown cases use the same fixture.
 #[test]
 fn count_preparation_is_storage_only_and_current_header_refusal_is_sticky() {
     let mut f = prepared_fixture(fixture());
@@ -357,7 +355,7 @@ fn count_hint_growth_and_base_binding_happen_before_the_next_capture() {
         Ok(0)
     );
 }
-// Append to the reviewed strike fixture module; authored, not executed.
+// Prepared-storage cases use the same strike fixture.
 #[test]
 fn lower_sizing_hint_never_shrinks_the_prepared_definition_floor() {
     let mut f = prepared_fixture(fixture());

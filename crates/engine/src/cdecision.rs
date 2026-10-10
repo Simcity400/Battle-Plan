@@ -1,18 +1,16 @@
-//! CDecision definition identity. Completion/effect functions are retained knowledge only.
-//! Authored CDecision+0x140 is the token's folded FNV-1a hash: loader
-//! 1407198A0/hash 140BBA1B0 and authored constructor 140716650. The default
-//! constructor 140716320 instead writes the 0xFFFFFFFF sentinel from
-//! 1427C79D0 at 1407163A5; its only caller 140716C90 creates the database's
-//! TNullObject placeholder, then replaces its vtable, outside content reach.
-//! Effect ownership follows the authored-definition argument and its +0x120 token read;
-//! the old untyped hook ABI does not independently establish the methods' RTTI owner.
+//! CDecision definition identity. Completion/effect functions are retained sites.
+//! Authored definitions store the token's folded FNV-1a hash at +0x140. The
+//! default placeholder stores the 0xFFFFFFFF sentinel and is outside content reach.
+//! Effect ownership follows the authored-definition argument and its +0x120 token.
+//! The untyped hook ABI does not establish the concrete receiver class.
 
 use crate::{Memory, msvc_string, read};
 
-/// CDecision MSVC string token; offsets.rs:292 and direct_frd_transitions_live/a729_hook.rs:41,1374 agree on the read.
+/// CDecision MSVC string token.
 pub const TOKEN: usize = 0x120;
+/// CDecision primary vtable.
 pub const VTABLE_RVA: usize = 0x027d_4f00;
-/// Native fixed_random_seed content byte; reader@140725B40 (token 0x398D).
+/// Native fixed_random_seed content byte.
 pub const FIXED_RANDOM_SEED: usize = 0x962;
 
 /// Exact token location. The caller copies bytes into its preallocated arena.
@@ -67,27 +65,27 @@ pub(crate) fn token(
     })
 }
 
-/// Authored-decision cancel-effect entry FUN14071b350; direct_frd_transitions_live/lib.rs:62 and hook_decision_cancel_effect observe invocation only.
+/// Authored-decision cancel-effect entry; observes invocation only.
 pub const CANCEL_EFFECT_RVA: usize = 0x0071_b350;
-/// Authored-decision removal-effect entry FUN14071b590; direct_frd_transitions_live/lib.rs:63 and hook_decision_remove_effect observe invocation only.
+/// Authored-decision removal-effect entry; observes invocation only.
 pub const REMOVE_EFFECT_RVA: usize = 0x0071_b590;
-/// Authored-decision timeout-effect entry FUN14071c490; direct_frd_transitions_live/lib.rs:64 and hook_decision_timeout_effect observe invocation only.
+/// Authored-decision timeout-effect entry; observes invocation only.
 pub const TIMEOUT_EFFECT_RVA: usize = 0x0071_c490;
-/// Three ordinary terminal-effect entry prefixes; direct_frd_transitions_live/a729_hook.rs:72-74,150-160 bind these same bytes to all three RVAs.
+/// Three ordinary terminal-effect entry prefixes.
 pub const TERMINAL_EFFECT_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x81, 0xec, 0xf0, 0x00,
 ];
-/// Authored targeted-decision cancel effect FUN14071b7d0; direct_frd_transitions_live/lib.rs:65 and prepare_terminal_row read definition token +0x120.
+/// Authored targeted-decision cancel-effect entry.
 pub const TARGETED_CANCEL_EFFECT_RVA: usize = 0x0071_b7d0;
-/// Authored targeted-decision removal effect FUN14071be10; direct_frd_transitions_live/lib.rs:66 and prepare_terminal_row read definition token +0x120.
+/// Authored targeted-decision removal-effect entry.
 pub const TARGETED_REMOVE_EFFECT_RVA: usize = 0x0071_be10;
-/// Targeted cancel/removal entry prefixes; direct_frd_transitions_live/a729_hook.rs:75-77,165-170 bind these bytes to both excluded hooks.
+/// Targeted cancel/removal entry prefixes.
 pub const TARGETED_TERMINAL_EFFECT_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20, 0x55,
 ];
-/// Authored targeted-decision timeout effect FUN14071c130; direct_frd_transitions_live/lib.rs:67 and prepare_terminal_row read definition token +0x120.
+/// Authored targeted-decision timeout-effect entry.
 pub const TARGETED_TIMEOUT_EFFECT_RVA: usize = 0x0071_c130;
-/// FUN14071c130 entry prefix; direct_frd_transitions_live/a729_hook.rs:78-80,175 bound and checked these bytes before its excluded hook.
+/// Exact targeted timeout-effect entry bytes.
 pub const TARGETED_TIMEOUT_EFFECT_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x55, 0x57, 0x41, 0x55, 0x41, 0x56,
 ];

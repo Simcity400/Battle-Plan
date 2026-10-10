@@ -1,5 +1,5 @@
-//! Test-only round-2 acquisition baseline, frozen from 2910d2a9c5.
-//! Keeps before/after counts and timings on the exact same synthetic world.
+//! Test-only acquisition baseline using the same synthetic world for count
+//! and timing comparisons.
 use super::super::*;
 pub fn walk(
     memory: &impl Memory,

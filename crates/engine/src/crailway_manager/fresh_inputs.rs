@@ -1,11 +1,10 @@
-//! Fresh railway ETA operands from this hour's authenticated map censuses.
-//!
-//! `1409C6D70` divides the selected infrastructure's healthy signed short by
-//! `1414A74C0`'s maximum. It is not CState's additive normal movement term.
-//! `140E65A40` uses the departure info's selected building only after a
-//! nonpositive cooldown and a matching directed edge. The existing walk owns
-//! the info/province authentication; this supplement cannot alter its rows.
-//! No native call, allocation, retry, or pointer survives either capture.
+//! Fresh railway ETA operands from authenticated hourly map censuses.
+//! Infrastructure divides the selected healthy signed-short level by effective
+//! maximum, independently of the state additive movement term. Railway
+//! efficiency reaches selected building health only after nonpositive cooldown
+//! and a matching directed edge. Existing info/province authentication owns
+//! rows; this supplement cannot alter them. No call, allocation, retry or
+//! pointer retention crosses capture.
 
 use super::{eta_address, eta_array, eta_building_efficiency, eta_pointer, eta_ratio, eta_read};
 use crate::{
@@ -202,9 +201,8 @@ impl Window {
             self.completed[start..start + complete_rows].fill(fields);
             start += complete_rows;
             if start < self.len {
-                // 1409C6D70 and 140E65A40/140E7E510 select only this
-                // row's state or building. Keep its completed prefix and
-                // skip its failed/dependent suffix without another attempt.
+                // Only this row's state or building is selected. Retain its completed
+                // prefix and skip failed/dependent suffixes without another attempt.
                 self.completed[start] = copied % fields;
                 start += 1;
             }
@@ -248,7 +246,7 @@ impl Controls {
     fn definition(&mut self, memory: &impl Memory, base: usize) -> Input<Definition> {
         once(&mut self.definition, || {
             let database = eta_pointer(memory, base, database::SINGLETON_RVA)?;
-            // 1409C6D70 chooses database+3b0, not a guessed building type.
+            // Select the infrastructure definition from its database field.
             let template = eta_pointer(memory, database, 0x3b0)?;
             let enabled =
                 eta_read::<u8>(memory, template, template::LOOKUP_ENABLED_CANDIDATE)? != 0;
@@ -279,8 +277,8 @@ impl Controls {
     }
     fn maximum(&mut self, memory: &impl Memory, base: usize, definition: Definition) -> Input<i32> {
         once(&mut self.maximum, || {
-            // 1414A74C0: preferred +2bc, fallback +2b8, then signed global;
-            // neither the healthy level nor the effective maximum is clamped.
+            // Prefer the first local maximum, then second, then signed global.
+            // Neither healthy level nor effective maximum is clamped.
             let preferred = eta_read::<i32>(memory, definition.template, 0x2bc)?;
             if preferred > 0 {
                 return Ok(preferred);
@@ -526,9 +524,8 @@ pub(super) fn railway_buildings(
                     if source.cooldown? != 0 {
                         return Ok(false);
                     }
-                    // Union of E733D0's positive indexed level and E765F0's
-                    // raw signed nonzero count. Either independent proof
-                    // admits the SAME building read even if the other failed.
+                    // Either positive indexed level or raw signed nonzero pair count admits
+                    // the same building read, independently of failure in the other input.
                     if selected.pair_count.is_ok_and(|count| count != 0)
                         || selected.levels.is_ok_and(|levels| levels.positive)
                     {
@@ -690,8 +687,8 @@ pub fn building_efficiency(health: RailwayBuildingHealth) -> Input<i64> {
     eta_building_efficiency(health.level, health.healthy, partial)
 }
 
-/// 140E65A40: absent edge and positive cooldown do not demand health. A null
-/// selected building is known efficiency zero; missing reached health refuses.
+/// Absent edge and positive cooldown do not demand health. Null selected
+/// building supplies known zero efficiency; unreadable reached health refuses.
 pub fn directed_percentage(
     cooldown: i32,
     edge_level: Option<i32>,
@@ -717,7 +714,7 @@ pub fn directed_percentage(
     }
 }
 
-/// 141954F90 before CArmy's outer scale; signed maximum and fixed5 wrapping.
+/// Railway speed before the army outer scale, with signed maximum and fixed5 wrapping.
 pub fn road_or_rail_speed(infrastructure: i64, railway: i64, defines: [i64; 4]) -> i64 {
     let [road_base, road_scale, rail_base, rail_scale] = defines;
     let road = road_base.wrapping_add(infrastructure.wrapping_mul(road_scale) / 100_000);

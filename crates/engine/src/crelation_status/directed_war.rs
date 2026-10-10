@@ -1,17 +1,11 @@
-//! Optional observed direct-war inputs of the existing sparse `links` pass.
-//!
-//! `CCountry::at_war@1406F3A00` and selected attack use status+2E8 nonnull
-//! and pointed CRelation+49==0. Owned, typed CWarRelation endpoints are ONLY
-//! observation candidates: the exhaustive direct/generic-slot writer census,
-//! endpoint association and native writer lifetime proof remain HELD. This
-//! module deliberately provides NO completeness certificate. A missing cell
-//! is unknown, never false. Dates, symmetric rows and enemy sets are unused.
-//! Exact native query identities supply additional sparse demand only under
-//! the existing admitted hourly boundary; values are never carried from queries.
-//!
-//! Called before the old linking-type continue and retired classification.
-//! Every candidate occurrence stays in native order, including repetitions.
-//! Optional reader faults never alter the existing LinkWalk's outcomes.
+//! Optional direct-war observations in the sparse `links` pass. Direct-war
+//! and selected-attack predicates use a nonnull war pointer and its nonretired
+//! byte. Owned typed war endpoints are candidates, without a completeness
+//! certificate. Missing cells remain unknown; dates, symmetry and enemy sets
+//! do not substitute. Exact query identities add sparse demand only at the
+//! admitted hourly boundary; query values are never carried.
+//! Visit every candidate in original order, including repeats, before the
+//! existing type and retirement branches. Optional faults do not alter LinkWalk.
 
 use super::{DIPLOMACY_STATUS, Resolver, TARGET_COUNTRY, VTABLE_RVA, WAR_RELATION};
 use crate::{
@@ -174,7 +168,7 @@ impl<'a> Observer<'a> {
             }
         };
         let output = self.output.as_mut().unwrap();
-        // at_war@1406F3A00 visits owned candidates and admitted query identities.
+        // Direct-war demand visits owned candidates and admitted query identities.
         if let Err(reason) = output
             .owners
             .ensure(self.walk.required_owners)
@@ -206,8 +200,8 @@ impl<'a> Observer<'a> {
             .checked_add(cdiplomacy_status::RELATIONS)
             .and_then(|at| Array::read(memory, at, 8))
             .ok_or("relation matrix unreadable or invalid");
-        // 1406F3A00 indexes this native array with a signed 32-bit slot;
-        // Array retains 140D1E540's signed count without a 16-bit restriction.
+        // Direct-war lookup uses full signed-32-bit slots; retain the signed array
+        // count without a 16-bit restriction.
         match matrix {
             Ok(matrix) if matrix.count != 0 && country.canonical_slot < matrix.count => {
                 if let (Some(output), Some(current)) = (self.output.as_mut(), self.current) {
@@ -386,10 +380,9 @@ impl<'a> Observer<'a> {
                 )?;
                 Ok(target)
             })();
-            // A previously attempted sparse cell retains its value or first
-            // failure. Authentication never retries status+2E8 or pointed+49.
-            // 1406F3A00/1406F3B00 use full signed slots. Consult the original
-            // sparse span without retrying a value or its first failure.
+            // An attempted sparse cell retains its value or first failure. Authentication
+            // never retries war pointer or retirement reads. Consult the original sparse
+            // span using full signed slots.
             let observed = demand.target_slot
                 < self.output.as_ref().unwrap().owners[current].matrix_count
                 && {
@@ -465,8 +458,8 @@ impl<'a> Observer<'a> {
 }
 
 fn active(memory: &impl Memory, status: usize) -> Result<bool, &'static str> {
-    // AtWar1406F3A52 / IsFriendly1406F3B28: exact pointer presence followed
-    // by the pointed byte. No type, date, opposite cell or enemy-set gate.
+    // War and friendliness predicates require pointer presence followed by
+    // the pointed byte. No type, date, opposite cell or enemy-set gate.
     let war = status
         .checked_add(WAR_RELATION)
         .and_then(|at| read::<u64>(memory, at))

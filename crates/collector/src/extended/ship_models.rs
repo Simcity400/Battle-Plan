@@ -1,7 +1,7 @@
 //! Hourly ship model operands, sharing the authenticated Ships census.
 //!
 //! The census runs in its own job. The details, mostly the recomputed maximum
-//! organisation (the game never stores it: hoi4re note on 140c28730), then run
+//! organisation (the game never stores it), then run
 //! in up to [`MAX_PARTS`] parts on separate workers, each over a contiguous
 //! range of the census in native order. The family's capture keeps the first
 //! range and lends one part capture per further range; outcomes and rows join
@@ -938,8 +938,8 @@ impl Captured {
         self.strike_refusals = [0; 5];
         self.optional_refusals = [0; OPTIONAL_REFUSAL_REASONS.len()];
         self.strike_modifiers.get_mut().clear();
-        // 140C29020 follows the live ship/medal/critical/support accumulators;
-        // 140551820 reads each +0/+C array extent without an aggregate ceiling.
+        // Read the live ship/medal/critical/support accumulators and their
+        // complete array extents without an aggregate ceiling.
         self.strike_modifiers.get_mut().enable_worker_growth();
         self.strike_metadata.begin_capture(base);
         if self.worker_growth {
@@ -963,7 +963,7 @@ impl Captured {
         self.record(|this| {
             let suffix_memory = memory;
             let (mut row, selected, torpedo_cooldown_modifier) = {
-                // 140C29020 follows the complete current ship accumulators;
+                // Read the complete current ship accumulators;
                 // the original native observations have no aggregate read cap.
                 let memory = ModifierMemory {
                     inner: memory,
@@ -1052,7 +1052,7 @@ impl Captured {
         });
     }
     /// Fixed current-source operands are independent of the core model attempt.
-    /// 140C24460 replaces ship+80; 140BC88A0 reads the selected hull's terms.
+    /// The ship's selected hull may change; read its current terms.
     fn capture_model_suffixes(
         &mut self,
         memory: &impl Memory,

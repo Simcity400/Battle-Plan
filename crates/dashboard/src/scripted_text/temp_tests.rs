@@ -2,6 +2,8 @@ use super::*;
 
 #[test]
 fn temp_variables_drive_localisation_conditions_and_text_weights() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = catalogue(
         r#"
         a = { name = Pick text = {

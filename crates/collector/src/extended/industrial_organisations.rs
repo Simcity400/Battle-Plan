@@ -1,4 +1,4 @@
-//! Each country's military-industrial organisations (CProductionStatus +0x130)
+//! Each country's military-industrial organisations
 //! in array order, and each one's produced-units history. Daily, in the
 //! production lines' slot, from one walk.
 use crate::{

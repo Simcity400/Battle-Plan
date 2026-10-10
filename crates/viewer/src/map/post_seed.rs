@@ -1,4 +1,4 @@
-//! Bright/log seed at140FF3450; the same native b1 remains bound through restore.
+//! Bright/log seed; the same native b1 remains bound through restore.
 use std::{io, sync::Arc};
 
 use eframe::wgpu;
@@ -36,8 +36,8 @@ impl Seed {
         let mut state =
             gpu::State::authored(&effect.source, &effect.source.techniques[selection.index])
                 .map_err(refuse)?;
-        // 140FF3450 binds program/blend plus physical PS table[0]; depth is
-        // forced off, raster is retained CGraphics+c0. Other reads still refuse.
+        // Bind the program, blend and physical PS table[0]. Depth is forced off and renderer raster state
+        // is retained. Other reads still refuse.
         state
             .samplers
             .retain(|key, _| *key == binding(0, Stage::Pixel));
@@ -54,8 +54,8 @@ impl Seed {
         source: &wgpu::TextureView,
         target: &wgpu::TextureView,
     ) -> io::Result<()> {
-        // 140FF3450 uploads b1 in VS+PS. The initialized payload is68 bytes;
-        // 140FF2E00 allocates80. The unused final register padding is unrecorded.
+        // Bind b1 to both stages with a 68-byte initialized payload in an 80-byte allocation. The final
+        // register padding remains unknown.
         let bindings = self
             .0
             .bindings(arena, 1, bytemuck::cast_slice(constants), source)

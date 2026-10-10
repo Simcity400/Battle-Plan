@@ -31,7 +31,7 @@ import './factions.css';
 const NO_WARNINGS: string[] = [];
 const NOTE = 'Faction membership is recorded every hour. The leader is the member the game lists first.';
 
-/** Every recorded faction over time (mock-up style-4's timeline): a band per faction
+/** Every recorded faction over time: a band per faction
  * whose thickness follows its member count, and a lane per member from join to
  * leave, the leader's stretch marked. Factions founded and dissolved partway through
  * are included; names, members and leaders come from the recording. */

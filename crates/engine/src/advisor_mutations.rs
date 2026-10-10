@@ -1,18 +1,13 @@
-//! Advisor mutation boundaries for hash-pinned a729. These observe native calls;
-//! recording never invokes a game function to obtain data.
+//! Advisor mutation boundaries for the supported executable. Observers never
+//! invoke game functions to obtain data.
 //!
-//! CAdvisor ctor/dtor, idea setter and ReadToken cover captured role fields.
-//! Factories 1412898d0/141289cf0 initialize new objects after construction;
-//! map insertion/publication is covered separately. Generated idea prefixing
-//! 1403b7de0 calls the setter. Character parser creates then publishes roles.
-//! The two insertion helpers are shared with templates: watch exact map
-//! addresses, never infer the receiver class from the helper alone. Merge
-//! inlines insertion and therefore has its own boundary. Range erase and
-//! recursive clear destroy values; character destruction covers empty maps.
-//! Evidence: pinned full decompiles/callers/RTTI and executable prefixes,
-//! advisor_mutation_audit_20260922. Fresh-read verification remains available
-//! in the collector's diagnostic feature; native writer coverage is required
-//! independently of exercised-path comparisons.
+//! Construction, destruction, idea changes and role parsing cover captured role
+//! fields. Factories finish initialization after construction; map publication
+//! is a separate boundary. Insertion helpers are shared with templates: observe
+//! exact map addresses, without inferring the receiver type. Merge has its own
+//! boundary because it inlines insertion. Range erase and recursive clear destroy
+//! values; character destruction also covers empty maps. Fresh-read diagnostics
+//! do not replace complete writer coverage.
 
 pub struct MutationSite {
     pub name: &'static str,

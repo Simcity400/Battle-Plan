@@ -12,11 +12,10 @@ fn rows(outcome: Outcome) -> Result<usize, &'static str> {
     }
 }
 
-/// Reference registry buckets grow in 14220A4F0; the existing group/order
-/// walkers preserve every registered root and ordinary/virtual successor.
-/// 141016930, 1410186E0 and 14101DC30 select preparation and assigned-unit
-/// operands. Their original reads, including faults, establish unique scalar
-/// and modifier-array demand instead of a per-country storage guess.
+/// Reference-registry buckets and group/order rosters supply every registered
+/// root and ordinary/virtual successor. Preparation and assigned-unit selection
+/// retain their original reads and faults to establish unique scalar and
+/// modifier-array demand, without a per-country estimate.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Demand {
     pub capacity: Capacity,

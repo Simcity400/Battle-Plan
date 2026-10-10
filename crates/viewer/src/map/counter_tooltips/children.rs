@@ -1,4 +1,4 @@
-//! `1418C00D0` child matches use the primary control offsets plus 0x18.
+//! Counter child tooltip matches use the child control's tooltip target.
 
 use super::*;
 use crate::map::{counter_action, counters::CounterControl, railway_gun_counter};
@@ -84,7 +84,7 @@ fn dig_in(context: &Context<'_>, input: &CounterHover) -> Result<String, String>
     };
     if input.members.len() == 1 {
         let status = context.status(input.members[0])?;
-        // 1418C029D..03D3: singleton scales by the define before the fresh
+        // A singleton scales by the define before the fresh
         // commander factor. The multi-member arm multiplies in reverse order.
         let factor = factor(status)?;
         let define = define()?;
@@ -105,7 +105,7 @@ fn dig_in(context: &Context<'_>, input: &CounterHover) -> Result<String, String>
         .map_err(|error| error.to_string())?;
     let mut values = Vec::with_capacity(input.members.len());
     for &id in input.members.iter() {
-        // Multi1418C0C87..0Dxx skips an unresolved contribution, but divides
+        // Skip an unresolved contribution, but divides
         // by the original member count. Keep its zero in that denominator.
         if divisions.binary_search_by_key(&id, |row| row.id).is_err() {
             values.push(0);
@@ -127,8 +127,8 @@ fn leader_enroute_eligible(context: &Context<'_>, input: &CounterHover) -> Resul
     let Some(&id) = input.members.first() else {
         return Ok(false);
     };
-    // The hover tests the first Army's cached +0x630 byte, independently
-    // of the group's +0x19B glyph and HQ-suffix gates (1418C093F..0954).
+    // The hover tests the first division's cached withdrawing flag, independently
+    // of the group's glyph and HQ-suffix gates.
     let icons = context
         .frame
         .complete::<tables::ArmyIconInputs>()
@@ -137,7 +137,7 @@ fn leader_enroute_eligible(context: &Context<'_>, input: &CounterHover) -> Resul
         .binary_search_by_key(&id, |row| row.division)
         .map(|index| &icons[index])
         .map_err(|_| format!("ArmyIconInputs division {id} is absent"))?;
-    // 1418C093F..09D5 falls through to the generic callback when this is zero.
+    // Fall through to the generic callback when this is zero.
     Ok(icon.separate_counter != 0)
 }
 
@@ -176,7 +176,7 @@ fn no_orders(context: &Context<'_>, input: &CounterHover, out: &mut Tooltip) {
         );
         return;
     }
-    // 1418C0F66..1033: a border-war group suppresses only that member's
+    // A border-war group suppresses only that member's
     // no-order check. The two final fragments remain independent.
     let mut border = false;
     let mut missing = false;
@@ -188,7 +188,7 @@ fn no_orders(context: &Context<'_>, input: &CounterHover, out: &mut Tooltip) {
             .as_ref()
             .is_ok_and(|rows| rows.binary_search_by_key(&id, |row| row.id).is_err())
         {
-            // Unlike the other member loops,0F5F/0F69 ->0F8F/0F92 dereferences
+            // Unlike the other member loops, this one dereferences
             // a null native pointer. The loop never short-circuits on earlier
             // positives, and emits final fragments only after every member.
             refuse(
@@ -254,7 +254,7 @@ fn railway_warning(context: &Context<'_>, input: &CounterHover) -> Result<String
         .map_err(|error| error.to_string())?;
     let mut unknown = None;
     for &id in input.members.iter() {
-        // 1418C106A..107D skips complete-census dangling gun references.
+        // Skip complete-census dangling gun references.
         let Ok(index) = rows.binary_search_by_key(&id, |row| row.gun) else {
             continue;
         };
@@ -316,7 +316,7 @@ fn stack_attrition(context: &Context<'_>, input: &CounterHover) -> Result<String
     let mut count = 0_i32;
     let mut maximum = 0_i64;
     for &id in input.members.iter() {
-        // Multi1418C0B18..0B24 skips an unresolved reference before the getter.
+        // Skip an unresolved reference before the getter.
         if divisions.binary_search_by_key(&id, |row| row.id).is_err() {
             continue;
         }
@@ -351,7 +351,7 @@ fn actions(context: &Context<'_>, input: &CounterHover) -> Result<String, String
             .complete::<tables::RailwayGunCounterInputs>()
             .map_err(|e| e.to_string())?;
         for &id in input.members.iter() {
-            // 1418C3A80 skips unresolved full refs before incrementing a bucket.
+            // The game skips unresolved full refs before incrementing a bucket.
             let Ok(index) = rows.binary_search_by_key(&id, |row| row.gun) else {
                 continue;
             };
@@ -383,7 +383,7 @@ fn actions(context: &Context<'_>, input: &CounterHover) -> Result<String, String
 }
 
 fn action_text(loc: &Localisation, counts: &[i32; 13]) -> Result<String, String> {
-    // `140BECBA0` leaves code zero empty; its caller still appends the LF.
+    // Leave code zero empty; its caller still appends the LF.
     const KEYS: [&str; 12] = [
         "ACTION_UNIT_STANDING_STILL",
         "ACTION_UNIT_DEFENDING",
@@ -476,7 +476,7 @@ fn invalid_orders(context: &Context<'_>, input: &CounterHover) -> Result<String,
         .complete::<tables::Divisions>()
         .map_err(|error| error.to_string())?;
     for &id in input.members.iter() {
-        // Late1418C3900..3935 resolves each original full ref before reading
+        // Resolve each original full ref before reading
         // the warning byte. Only a complete census proves a dangling skip.
         if divisions.binary_search_by_key(&id, |row| row.id).is_err() {
             continue;
@@ -1060,7 +1060,7 @@ mod tests {
                 "cached",
             ),
             (Recorded::NotRecorded, 1, 1, Some(""), "cached"),
-            // Native +630 zero declines this child arm, even if +19B is set.
+            // A clear division withdrawing flag declines this arm even when its group is withdrawing.
             (Recorded::Value(Some(1)), 1, 0, None, "cached one 1"),
         ] {
             put(

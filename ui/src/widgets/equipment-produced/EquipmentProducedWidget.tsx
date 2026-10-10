@@ -27,7 +27,7 @@ import type { Grouping, KeyBand, Measure } from './producedData';
 import { producedDrillData, producedDrillNumbers } from './producedDrill';
 import './equipmentProduced.css';
 
-/** Equipment each country produced (spec 4.2 Equipment produced): a race re-ranked
+/** Equipment each country produced: a race re-ranked
  * every hour, the same values as lines over time, or one country's equipment stacked
  * by group. */
 export default function EquipmentProducedWidget(props: WidgetProps) {
@@ -70,8 +70,8 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const pickGroups = grouped ? numericGroups : undefined;
   const pickOwner = useMemo(() => ({ scope: pickScope, numbers: pickNumbers, membership: pickGroups }), [pickScope, pickNumbers, pickGroups]);
   const bands = useMemo(() => model ? keyBands(model, tokens.categories, tokens.muted) : [], [model, tokens]);
-  // A country's bands: by exact variant each keeps its own largest in colour (user
-  // decision, 29 Sep), else the reply's, the same for every country.
+  // A country's bands: by exact variant each keeps its own largest in colour;
+  // otherwise they use the reply's bands, the same for every country.
   const bandsFor = useMemo(() => {
     const own = new Map<string, KeyBand[]>();
     return (tag: string): readonly KeyBand[] => {
@@ -81,7 +81,7 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
     };
   }, [model, bands, tokens]);
   const slots = resolved.top ?? Math.max(1, resolved.tags.length);
-  // The top N rank only countries that have produced something (user decision).
+  // The top N rank only countries that have produced something.
   const produced = resolved.top != null;
   // The hours a country is shown: in the top N (from the product), or a member of a
   // group counted at each hour; null shows it whenever recorded.

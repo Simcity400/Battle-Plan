@@ -24,11 +24,10 @@ impl<M: Memory> Memory for Counting<'_, M> {
     }
 }
 
-/// Passive off-thread demand; no payload survives this hint. Country resolution
-/// at 140BA56A0/140BA6240 uses the live +310/+340 roots. The shared census
-/// authenticates each non-sentinel slot with seven scalar spans (40 bytes).
-/// Carrier inputs use the existing 140C449F0 dense, 140C44FC0 retained-name and
-/// 140F46340/140F46E40 fuel readers, preserving their native gates and counts.
+/// Passive off-thread demand; no payload survives this hint. Country
+/// resolution uses the live roots. The shared census authenticates each
+/// non-sentinel slot with seven scalar spans totaling forty bytes. Carrier
+/// inputs retain dense occurrence, cached name and fuel gates and counts.
 pub(super) fn raw_demand(
     memory: &impl Memory,
     image: usize,

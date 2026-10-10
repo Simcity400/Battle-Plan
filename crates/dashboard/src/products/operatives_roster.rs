@@ -1,6 +1,6 @@
-//! Agency operatives, dated by each membership read. AddOperative@140FC21D0
-//! owns agency+0xD8; the three recruitment vectors are not that roster.
-//! Capture is assignment 0 (IsCaptured@140C0E060), not a nonzero capturer.
+//! Agency operatives, dated by each membership read. The active roster is
+//! separate from the three recruitment vectors. Capture is assignment 0,
+//! independent of the capturer link.
 use super::country_name_cache::CountryNameCache;
 use super::{
     LoadContext, Product,
@@ -183,8 +183,8 @@ impl Held {
         if self.value.captured == Some(true)
             && let Some(content) = content
         {
-            // Captured status141E2D760 uses the current definite capturer
-            // name and native day operands. The capture date stays read-dated.
+            // Captured status uses the current definite capturer name and day
+            // operands. The capture date stays read-dated.
             let name = self
                 .capturer
                 .ok_or("The captured operative's country identity is unknown at this hour")
@@ -830,7 +830,7 @@ pub(super) fn scan(
                             complete = false;
                             continue;
                         }
-                        // AddOperative@140FC21D0 owns only agency+0xD8.
+                        // Only the active agency roster establishes membership.
                         if row.roster_kind != 0 {
                             continue;
                         }
@@ -867,8 +867,8 @@ pub(super) fn scan(
                             .copied()
                             .flatten()
                             .and_then(|raw| identity(raw, links, &slots));
-                        // Status141E2D760 ->140BA59E0 resolves raw zero to the
-                        // reserved slot (140BA56A0); it needs no Countries row.
+                        // Captured status resolves raw zero to the reserved slot;
+                        // it needs no Countries row.
                         let capturer = (value.captured == Some(true))
                             .then(|| {
                                 if row.capturer_country == 0
@@ -919,8 +919,8 @@ pub(super) fn scan(
                             cooldown: operative_rows::cooldown(row).ok().flatten(),
                             cooldown_remaining: None,
                         };
-                        // P: 140C17DF0 writes 2 on disband and 5 on death;
-                        // native status dispatcher 141E2F4C0 has neither arm.
+                        // Disband writes assignment 2 and death writes 5;
+                        // the agency status dispatcher has neither arm.
                         if matches!(row.assignment, 2 | 5) {
                             departed.push((
                                 row.id,
@@ -1052,8 +1052,8 @@ pub(super) fn scan(
     Ok(reply)
 }
 
-// LookupCharacter@140C0EEF0 matches the full leader reference; only native
-// operative category3 reaches role4 portrait selection (140B3A100).
+// Character lookup matches the full leader reference; only operative
+// category 3 reaches role 4 portrait selection.
 fn character_links(
     rows: &[CharacterOperativeRow],
     refused: &mut BoundedRefusals,

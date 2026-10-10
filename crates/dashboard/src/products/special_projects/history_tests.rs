@@ -232,10 +232,12 @@ fn content(root: &std::path::Path, project_name: &str) {
 
 #[test]
 fn scoped_world_variable_names_share_one_pass_and_failures_belong_only_to_the_requested_actor() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let folder = tests::TempRoot::new("shared-scope");
     content(&folder.0, "[ROOT.ProjectStage]");
-    // An absent scripted property is native empty text (1410CE090); use a
-    // reached flag lookup whose recorded table is missing for this actor.
+    // An absent scripted property is empty text; use a reached flag lookup
+    // whose recorded table is missing for this actor.
     std::fs::write(
         folder.0.join("common/scripted_localisation/refusal.txt"),
         "entry={name=MissingProjectProperty text={trigger={has_country_flag=mod_project} localization_key=ACTIVE}}",
@@ -246,7 +248,7 @@ fn scoped_world_variable_names_share_one_pass_and_failures_belong_only_to_the_re
         .into_iter()
         .map(|hour| {
             let mut frame = frame(hour, hour == 100, 5000);
-            // tag_string@140BA5C20 uses the reserved tag at slot zero.
+            // Tag text uses the reserved tag at slot zero.
             let TableView::Complete(TableRows::Countries(countries)) =
                 &mut *frame.tables[TableId::Countries.index()]
             else {
@@ -355,6 +357,8 @@ fn scoped_world_variable_names_share_one_pass_and_failures_belong_only_to_the_re
 
 #[test]
 fn content_readiness_changes_rename_cached_data_without_another_recording_scan() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let folder = tests::TempRoot::new("shared-ready");
     content(&folder.0, "Prepared project");
     let path = folder.0.join("localisation/mod_l_english.yml");
@@ -406,6 +410,8 @@ fn content_readiness_changes_rename_cached_data_without_another_recording_scan()
 
 #[test]
 fn scientist_name_refusals_stay_local_through_person_and_reply_caches() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::rows::{CharacterPortrait, CharacterPortraitRow, CharacterRow, PORTRAIT_LARGE};
 
     let folder = tests::TempRoot::new("scientist-refusals");

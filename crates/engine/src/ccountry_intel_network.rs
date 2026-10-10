@@ -1,0 +1,841 @@
+//! CCountryIntelNetwork topology and cached coverage inputs.
+//! Writer ownership and hourly consistency remain unverified.
+
+use crate::{
+    Memory, ccountry, cgame_state, clocal_intel_network, cpdx_array::Array, cstrategic_operative,
+    cstrategic_operative_manager, csub_intel_network, intel_network_graph, intel_network_graph_row,
+    intel_network_graph_vertex, memory::Raw, read, read_slice, walk::Outcome,
+};
+
+/// Intel-network vtable.
+pub const VTABLE_RVA: usize = 0x298_ab48;
+/// Target country id, read as i32.
+pub const TARGET: usize = 0x08;
+/// Constructor initializing the vtable and embedded objects.
+pub const CONSTRUCTOR_RVA: usize = 0x11b_a760;
+/// Embedded local network.
+pub const LOCAL_NETWORK: usize = 0x10;
+/// Subnetwork array data.
+pub const SUBNETWORKS_DATA: usize = 0x78;
+/// Subnetwork capacity, i32.
+pub const SUBNETWORKS_CAPACITY: usize = 0x80;
+/// Subnetwork count, i32.
+pub const SUBNETWORKS_COUNT: usize = 0x84;
+/// Subnetwork allocator pointer.
+pub const SUBNETWORKS_ALLOCATOR: usize = 0x88;
+/// Embedded static-intel-source reference.
+pub const STATIC_SOURCE_REFERENCE: usize = 0xa8;
+/// Subnetwork-cache preparation function.
+pub const PREPARE_SUBNETWORK_CACHE_RVA: usize = 0x11b_c200;
+/// Covered core-state count, u32.
+pub const COVERED_CORE_STATES: usize = 0xc0;
+/// Covered controlled-state count, u32.
+pub const COVERED_CONTROLLED_STATES: usize = 0xc4;
+/// Covered state worth, u32.
+pub const COVERED_WORTH: usize = 0xc8;
+/// Controlled-state strength sum, signed i64.
+pub const CONTROLLED_STRENGTH_SUM: usize = 0xd0;
+/// Core-state strength sum, signed i64.
+pub const CORE_STRENGTH_SUM: usize = 0xd8;
+/// Network serializer.
+pub const SAVE_RVA: usize = 0x011c_1be0;
+/// Network loader.
+pub const LOAD_RVA: usize = 0x011c_0e70;
+/// Always-serialized target token.
+pub const TOKEN_TARGET: u32 = 0x006b;
+/// Always-serialized local-network token.
+pub const TOKEN_LOCAL_NET: u32 = 0x3d1d;
+/// Extra-list token emitted for a nonzero count.
+pub const TOKEN_EXTRA_3D1E: u32 = 0x3d1e;
+/// Subnetwork token emitted for a nonzero count.
+pub const TOKEN_SUBNETWORKS: u32 = 0x4b6d;
+/// Records token emitted for a nonzero count.
+pub const TOKEN_RECORDS: u32 = 0x4c00;
+/// Always-serialized static-source token.
+pub const TOKEN_STATIC_SOURCE: u32 = 0x4b34;
+/// Always-serialized coverage token.
+pub const TOKEN_COVERAGE: u32 = 0x30b5;
+/// Always-serialized controlled-strength sum token.
+pub const TOKEN_CONTROLLED_SUM: u32 = 0x4c03;
+/// Always-serialized core-strength sum token.
+pub const TOKEN_CORE_SUM: u32 = 0x4c04;
+/// Always-serialized maximum-strength token.
+pub const TOKEN_MAX_STRENGTH: u32 = 0x4c6a;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Row {
+    /// Raw country references, including authenticated aliases.
+    pub owner_country: u32,
+    pub target_country: u32,
+    pub state_id: i32,
+    /// Subnetwork strength qword; negative selectors have no strength value.
+    pub strength_raw: Option<i64>,
+    /// Signed graph-row selector retained exactly, including unassigned values.
+    pub subnetwork_selector: i32,
+    /// Graph-row +0x28, used by raid target intel; independent of selector.
+    pub local_strength_raw: i64,
+}
+
+/// Reads the country-rooted network roster and its state-to-subnetwork mapping.
+/// A network has no single stored national strength; each row retains the native
+/// strength of the subnetwork selected by that state's graph vertex.
+pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<Row>,
+) -> Outcome {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(output),
+    )
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    mut output: crate::walk::Buffer<'_, Row>,
+) -> Outcome {
+    let result = (|| {
+        let countries = ccountry::Reader::new(memory, base, game_state)?;
+        let manager = pointer(memory, game_state, cgame_state::STRATEGIC_OPERATIVE_MANAGER)?;
+        // The constructor leaves this root null when La Resistance is disabled.
+        if manager == 0 {
+            return Ok(Outcome::Rows { len: 0 });
+        }
+        let strategic = array(
+            memory,
+            manager,
+            cstrategic_operative_manager::OPERATIVES_DATA,
+            8,
+        )?;
+        let mut len = 0_usize;
+        let mut unread_rows = 0_u32;
+        let mut seen = crate::slot_set::SlotSet::new();
+        for slot in 1..countries.count() {
+            let Some(country) = countries.at(slot)? else {
+                continue;
+            };
+            let operative = element_pointer(memory, strategic, slot)?;
+            vtable(memory, base, operative, cstrategic_operative::VTABLE_RVA)?;
+            let owner = field::<u32>(memory, operative, cstrategic_operative::OWNER)?;
+            if countries.resolve(owner)?.pointer != country.pointer {
+                return Err("intel strategic owner does not match country slot");
+            }
+            let networks = array(memory, operative, cstrategic_operative::NETWORKS_DATA, 8)?;
+            seen.clear();
+            for network_slot in 0..networks.count {
+                let network = element_pointer(memory, networks, network_slot)?;
+                vtable(memory, base, network, VTABLE_RVA)?;
+                let target = field::<u32>(memory, network, TARGET)?;
+                let target_country = countries.resolve(target)?;
+                if target_country.pointer == country.pointer {
+                    return Err("intel network target equals its owner");
+                }
+                // Networks are not sorted: the native removal path swaps the
+                // last pointer into the removed slot. Reject duplicate targets
+                // by canonical slot in O(1); the exact fallback rereads.
+                if seen.insert(target_country.canonical_slot, || {
+                    for previous in 0..network_slot {
+                        let earlier = element_pointer(memory, networks, previous)?;
+                        let earlier_target = field::<u32>(memory, earlier, TARGET)?;
+                        if countries.resolve(earlier_target)?.pointer == target_country.pointer {
+                            return Ok(true);
+                        }
+                    }
+                    Ok(false)
+                })? {
+                    return Err("duplicate intel network target for owner");
+                }
+                let local = network
+                    .checked_add(LOCAL_NETWORK)
+                    .ok_or("intel address overflow")?;
+                vtable(memory, base, local, clocal_intel_network::VTABLE_RVA)?;
+                let graph = pointer(memory, local, clocal_intel_network::GRAPH)?;
+                if graph == 0 {
+                    return Err("intel graph is null");
+                }
+                let begin = pointer(memory, graph, intel_network_graph::ROWS_BEGIN)?;
+                let end = pointer(memory, graph, intel_network_graph::ROWS_END)?;
+                let row_bytes = end.checked_sub(begin).ok_or("intel graph range reversed")?;
+                if row_bytes % intel_network_graph_row::STRIDE != 0
+                    || (row_bytes != 0 && begin == 0)
+                {
+                    return Err("intel graph row range invalid");
+                }
+                let row_count = row_bytes / intel_network_graph_row::STRIDE;
+                let vertices = array(
+                    memory,
+                    graph,
+                    intel_network_graph::VERTICES_DATA,
+                    intel_network_graph_vertex::STRIDE,
+                )?;
+                let subnetworks = array(
+                    memory,
+                    network,
+                    SUBNETWORKS_DATA,
+                    csub_intel_network::STRIDE,
+                )?;
+                output.ensure(
+                    len.checked_add(vertices.count as usize)
+                        .ok_or("intel network row demand overflow")?,
+                )?;
+                let mut previous_state = None;
+                let mut vertex_index = 0;
+                while vertex_index < vertices.count {
+                    if len == output.len() {
+                        unread_rows = unread_rows
+                            .checked_add(vertices.count - vertex_index)
+                            .ok_or("intel unread row count overflow")?;
+                        break;
+                    }
+                    const BATCH: usize = 64;
+                    let count = BATCH
+                        .min((vertices.count - vertex_index) as usize)
+                        .min(output.len() - len);
+                    let vertex = vertices
+                        .element(vertex_index, intel_network_graph_vertex::STRIDE)
+                        .ok_or("intel vertex address overflow")?;
+                    let mut vertex_bytes = [0_u8; BATCH * intel_network_graph_vertex::STRIDE];
+                    if !read_slice(
+                        memory,
+                        vertex,
+                        &mut vertex_bytes[..count * intel_network_graph_vertex::STRIDE],
+                    ) {
+                        return Err("intel vertex unreadable");
+                    }
+                    let mut selector_addresses = [0; BATCH];
+                    for (index, bytes) in vertex_bytes[..count * intel_network_graph_vertex::STRIDE]
+                        .chunks_exact(intel_network_graph_vertex::STRIDE)
+                        .enumerate()
+                    {
+                        let state_id = i32::from_le_bytes(bytes[..4].try_into().unwrap());
+                        let row_index = u64::from_le_bytes(bytes[8..].try_into().unwrap());
+                        if state_id <= 0
+                            || previous_state.is_some_and(|previous| previous >= state_id)
+                        {
+                            return Err("intel state ids are invalid or not strictly ordered");
+                        }
+                        previous_state = Some(state_id);
+                        let row_index =
+                            usize::try_from(row_index).map_err(|_| "intel row index overflow")?;
+                        if row_index >= row_count {
+                            return Err("intel graph row index outside rows");
+                        }
+                        selector_addresses[index] = row_index
+                            .checked_mul(intel_network_graph_row::STRIDE)
+                            .and_then(|offset| begin.checked_add(offset))
+                            .and_then(|address| {
+                                address.checked_add(intel_network_graph_row::SUBNETWORK_SELECTOR)
+                            })
+                            .ok_or("intel graph row address overflow")?;
+                    }
+                    const ROW_END: usize = intel_network_graph_row::STATE_STRENGTH + 8
+                        - intel_network_graph_row::SUBNETWORK_SELECTOR;
+                    let mut selectors = [[0_u8; ROW_END]; BATCH];
+                    let mut fields = selectors.iter_mut().enumerate();
+                    let mut destinations = std::array::from_fn(|_| {
+                        let (index, bytes) = fields.next().unwrap();
+                        &mut bytes[..if index < count { ROW_END } else { 0 }]
+                    });
+                    if memory.copy_scattered(selector_addresses, &mut destinations) != BATCH {
+                        return Err("intel graph selector unreadable");
+                    }
+                    let mut strength_addresses = [0; BATCH];
+                    for (index, bytes) in selectors[..count].iter().enumerate() {
+                        let selector = i32::from_le_bytes(bytes[..4].try_into().unwrap());
+                        // Only nonnegative selectors reach strength. Negative vertices remain
+                        // present without strength.
+                        if selector >= 0 {
+                            strength_addresses[index] = subnetworks
+                                .element(selector as u32, csub_intel_network::STRIDE)
+                                .ok_or("intel subnetwork selector outside array")?;
+                        }
+                    }
+                    // Copy the authenticated prefix through the saved strength,
+                    // excluding the unrelated gain modifier at +0x08.
+                    const STRENGTH_END: usize = csub_intel_network::STRENGTH + 8;
+                    let mut strengths = [[0_u8; STRENGTH_END]; BATCH];
+                    let mut fields = strengths.iter_mut().enumerate();
+                    let mut destinations = std::array::from_fn(|_| {
+                        let (index, bytes) = fields.next().unwrap();
+                        &mut bytes[..if strength_addresses[index] != 0 {
+                            STRENGTH_END
+                        } else {
+                            0
+                        }]
+                    });
+                    if memory.copy_scattered(strength_addresses, &mut destinations) != BATCH {
+                        return Err("intel subnetwork strength unreadable");
+                    }
+                    let expected_vtable =
+                        base.checked_add(csub_intel_network::VTABLE_RVA)
+                            .ok_or("intel module address overflow")? as u64;
+                    for index in 0..count {
+                        let selector =
+                            i32::from_le_bytes(selectors[index][..4].try_into().unwrap());
+                        let strength_raw = if selector < 0 {
+                            None
+                        } else {
+                            if u64::from_le_bytes(strengths[index][..8].try_into().unwrap())
+                                != expected_vtable
+                            {
+                                return Err("intel network object vtable mismatch");
+                            }
+                            Some(i64::from_le_bytes(
+                                strengths[index][csub_intel_network::STRENGTH..]
+                                    .try_into()
+                                    .unwrap(),
+                            ))
+                        };
+                        let at = index * intel_network_graph_vertex::STRIDE;
+                        output[len] = Row {
+                            owner_country: owner,
+                            target_country: target,
+                            state_id: i32::from_le_bytes(
+                                vertex_bytes[at..at + 4].try_into().unwrap(),
+                            ),
+                            strength_raw,
+                            subnetwork_selector: selector,
+                            local_strength_raw: i64::from_le_bytes(
+                                selectors[index][ROW_END - 8..].try_into().unwrap(),
+                            ),
+                        };
+                        len += 1;
+                    }
+                    vertex_index += count as u32;
+                }
+            }
+        }
+        Ok(if unread_rows == 0 {
+            Outcome::Rows { len }
+        } else {
+            Outcome::Truncated { len, unread_rows }
+        })
+    })();
+    result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
+}
+
+fn field<T: Raw>(memory: &impl Memory, object: usize, offset: usize) -> Result<T, &'static str> {
+    object
+        .checked_add(offset)
+        .and_then(|address| read(memory, address))
+        .ok_or("intel network field unreadable or address overflow")
+}
+
+fn pointer(memory: &impl Memory, object: usize, offset: usize) -> Result<usize, &'static str> {
+    usize::try_from(field::<u64>(memory, object, offset)?).map_err(|_| "intel pointer overflow")
+}
+
+fn array(
+    memory: &impl Memory,
+    object: usize,
+    offset: usize,
+    stride: usize,
+) -> Result<Array, &'static str> {
+    object
+        .checked_add(offset)
+        .and_then(|address| Array::read(memory, address, stride))
+        .ok_or("intel array unreadable or invalid")
+}
+
+fn element_pointer(memory: &impl Memory, array: Array, index: u32) -> Result<usize, &'static str> {
+    array
+        .element(index, 8)
+        .and_then(|address| read::<u64>(memory, address))
+        .and_then(|pointer| usize::try_from(pointer).ok())
+        .filter(|&pointer| pointer != 0)
+        .ok_or("intel roster pointer unreadable, null or outside array")
+}
+
+fn vtable(
+    memory: &impl Memory,
+    base: usize,
+    object: usize,
+    rva: usize,
+) -> Result<(), &'static str> {
+    let expected = base
+        .checked_add(rva)
+        .ok_or("intel module address overflow")?;
+    if read::<u64>(memory, object) == Some(expected as u64) {
+        Ok(())
+    } else {
+        Err("intel network object vtable mismatch")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::SliceMemory;
+
+    const GS: usize = 0x1000;
+    const MANAGER: usize = 0x9000;
+    const STRATEGIC: usize = 0xa000;
+    const NETWORK: usize = 0xb000;
+    const GRAPH: usize = 0xc000;
+    const VERTICES: usize = 0xd000;
+    const GRAPH_ROWS: usize = 0xe000;
+    const SUBNETWORKS: usize = 0xf000;
+
+    fn p32(bytes: &mut [u8], at: usize, value: u32) {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    fn p64(bytes: &mut [u8], at: usize, value: u64) {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
+        p64(bytes, at, data as u64);
+        p32(bytes, at + 8, count);
+        p32(bytes, at + 12, count);
+    }
+    #[test]
+    fn growing_intel_network_rows_follow_new_native_vertices_without_new_countries() {
+        let mut bytes = fixture();
+        let mut rows = Vec::new();
+        let mut expected = [Row::default(); 2];
+        assert_eq!(capture(&bytes, &mut expected), Outcome::Rows { len: 2 });
+        assert_eq!(
+            walk_growing(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &bytes
+                },
+                0,
+                GS,
+                &mut rows
+            ),
+            Outcome::Rows { len: 2 }
+        );
+        assert_eq!(&rows[..2], &expected);
+        const COUNT: usize = 5_000;
+        const VERTEX_DATA: usize = 0x20000;
+        const ROW_DATA: usize = 0x40000;
+        bytes.resize(ROW_DATA + COUNT * intel_network_graph_row::STRIDE, 0);
+        p64(
+            &mut bytes,
+            GRAPH + intel_network_graph::ROWS_BEGIN,
+            ROW_DATA as u64,
+        );
+        p64(
+            &mut bytes,
+            GRAPH + intel_network_graph::ROWS_END,
+            (ROW_DATA + COUNT * intel_network_graph_row::STRIDE) as u64,
+        );
+        header(
+            &mut bytes,
+            GRAPH + intel_network_graph::VERTICES_DATA,
+            VERTEX_DATA,
+            COUNT as u32,
+        );
+        for index in 0..COUNT {
+            let vertex = VERTEX_DATA + index * intel_network_graph_vertex::STRIDE;
+            p32(&mut bytes, vertex, index as u32 + 1);
+            p64(&mut bytes, vertex + 8, index as u64);
+            let row = ROW_DATA + index * intel_network_graph_row::STRIDE;
+            p32(
+                &mut bytes,
+                row + intel_network_graph_row::SUBNETWORK_SELECTOR,
+                u32::MAX,
+            );
+            p64(
+                &mut bytes,
+                row + intel_network_graph_row::STATE_STRENGTH,
+                index as u64,
+            );
+        }
+        let mut expected = vec![Row::default(); COUNT];
+        let outcome = capture(&bytes, &mut expected);
+        assert_eq!(outcome, Outcome::Rows { len: COUNT });
+        assert_eq!(
+            walk_growing(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &bytes
+                },
+                0,
+                GS,
+                &mut rows
+            ),
+            outcome
+        );
+        assert_eq!(&rows[..COUNT], expected.as_slice());
+    }
+
+    #[test]
+    fn one_owner_with_networks_in_5000_countries_is_checked_for_duplicates() {
+        use crate::ccountry::synthetic::World;
+        const COUNT: u32 = 5_000;
+        let mut world = World::new(0, COUNT, 0x10);
+        let manager = world.alloc(0x100);
+        let operatives = world.alloc((COUNT as usize + 1) * 8);
+        let operative_objects = world.alloc((COUNT as usize + 1) * 0x20);
+        let graph = world.alloc(0x100);
+        let pointers = world.alloc((COUNT as usize - 1) * 8);
+        let networks = world.alloc((COUNT as usize - 1) * 0x100);
+        let gs = world.game_state();
+        world.u64(
+            gs + cgame_state::STRATEGIC_OPERATIVE_MANAGER,
+            manager as u64,
+        );
+        world.array(
+            manager + cstrategic_operative_manager::OPERATIVES_DATA,
+            operatives,
+            COUNT + 1,
+        );
+        for slot in 1..=COUNT as usize {
+            let operative = operative_objects + slot * 0x20;
+            world.u64(operatives + slot * 8, operative as u64);
+            world.u64(operative, cstrategic_operative::VTABLE_RVA as u64);
+            world.u32(operative + cstrategic_operative::OWNER, slot as u32);
+        }
+        // Country 1 runs a network against every other country; the shared
+        // graph has no rows or vertices, so each network yields no rows.
+        let owner = operative_objects + 0x20;
+        world.array(
+            owner + cstrategic_operative::NETWORKS_DATA,
+            pointers,
+            COUNT - 1,
+        );
+        for index in 0..COUNT as usize - 1 {
+            let network = networks + index * 0x100;
+            world.u64(pointers + index * 8, network as u64);
+            world.u64(network, VTABLE_RVA as u64);
+            world.u32(network + TARGET, index as u32 + 2);
+            world.u64(
+                network + LOCAL_NETWORK,
+                clocal_intel_network::VTABLE_RVA as u64,
+            );
+            world.u64(
+                network + LOCAL_NETWORK + clocal_intel_network::GRAPH,
+                graph as u64,
+            );
+        }
+        let run = |world: &World| walk(&world.memory(), 0, gs, &mut []);
+        assert_eq!(run(&world), Outcome::Rows { len: 0 });
+        // The last network repeats the first target.
+        world.u32(networks + (COUNT as usize - 2) * 0x100 + TARGET, 2);
+        assert_eq!(
+            run(&world),
+            Outcome::Unavailable {
+                reason: "duplicate intel network target for owner"
+            }
+        );
+    }
+
+    fn fixture() -> Vec<u8> {
+        let mut bytes = vec![0; 0x11000];
+        header(&mut bytes, GS + cgame_state::COUNTRIES, 0x3000, 4);
+        header(&mut bytes, GS + cgame_state::COUNTRY_LINKS, 0x3100, 4);
+        for (index, (country, link)) in [(0, 0), (0x4000, 1), (0x6000, 2), (0x4000, 1)]
+            .into_iter()
+            .enumerate()
+        {
+            p64(&mut bytes, 0x3000 + index * 8, country);
+            p32(&mut bytes, 0x3100 + index * 4, link);
+        }
+        for (country, id) in [(0x4000, 3), (0x6000, 2)] {
+            p64(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+            p32(&mut bytes, country + ccountry::ID, id);
+        }
+        p64(
+            &mut bytes,
+            GS + cgame_state::STRATEGIC_OPERATIVE_MANAGER,
+            MANAGER as u64,
+        );
+        header(
+            &mut bytes,
+            MANAGER + cstrategic_operative_manager::OPERATIVES_DATA,
+            0x9100,
+            4,
+        );
+        p64(&mut bytes, 0x9108, STRATEGIC as u64);
+        p64(&mut bytes, 0x9110, 0xa400);
+        p64(
+            &mut bytes,
+            STRATEGIC,
+            cstrategic_operative::VTABLE_RVA as u64,
+        );
+        p32(&mut bytes, STRATEGIC + cstrategic_operative::OWNER, 3);
+        p64(&mut bytes, 0xa400, cstrategic_operative::VTABLE_RVA as u64);
+        p32(&mut bytes, 0xa400 + cstrategic_operative::OWNER, 2);
+        header(
+            &mut bytes,
+            STRATEGIC + cstrategic_operative::NETWORKS_DATA,
+            0xa800,
+            1,
+        );
+        p64(&mut bytes, 0xa800, NETWORK as u64);
+        p64(&mut bytes, NETWORK, VTABLE_RVA as u64);
+        p32(&mut bytes, NETWORK + TARGET, 2);
+        p64(
+            &mut bytes,
+            NETWORK + LOCAL_NETWORK,
+            clocal_intel_network::VTABLE_RVA as u64,
+        );
+        p64(
+            &mut bytes,
+            NETWORK + LOCAL_NETWORK + clocal_intel_network::GRAPH,
+            GRAPH as u64,
+        );
+        p64(
+            &mut bytes,
+            GRAPH + intel_network_graph::ROWS_BEGIN,
+            GRAPH_ROWS as u64,
+        );
+        p64(
+            &mut bytes,
+            GRAPH + intel_network_graph::ROWS_END,
+            (GRAPH_ROWS + 2 * intel_network_graph_row::STRIDE) as u64,
+        );
+        header(
+            &mut bytes,
+            GRAPH + intel_network_graph::VERTICES_DATA,
+            VERTICES,
+            2,
+        );
+        header(&mut bytes, NETWORK + SUBNETWORKS_DATA, SUBNETWORKS, 2);
+        for (index, (id, strength)) in [(1, i64::MIN), (i32::MAX, i64::MAX)]
+            .into_iter()
+            .enumerate()
+        {
+            p32(
+                &mut bytes,
+                VERTICES + index * intel_network_graph_vertex::STRIDE,
+                id as u32,
+            );
+            p64(
+                &mut bytes,
+                VERTICES + index * intel_network_graph_vertex::STRIDE + 8,
+                index as u64,
+            );
+            p32(
+                &mut bytes,
+                GRAPH_ROWS
+                    + index * intel_network_graph_row::STRIDE
+                    + intel_network_graph_row::SUBNETWORK_SELECTOR,
+                index as u32,
+            );
+            p64(
+                &mut bytes,
+                GRAPH_ROWS
+                    + index * intel_network_graph_row::STRIDE
+                    + intel_network_graph_row::STATE_STRENGTH,
+                (!strength) as u64,
+            );
+            let subnetwork = SUBNETWORKS + index * csub_intel_network::STRIDE;
+            p64(
+                &mut bytes,
+                subnetwork,
+                csub_intel_network::VTABLE_RVA as u64,
+            );
+            p64(
+                &mut bytes,
+                subnetwork + csub_intel_network::STRENGTH,
+                strength as u64,
+            );
+        }
+        bytes
+    }
+    fn capture(bytes: &[u8], output: &mut [Row]) -> Outcome {
+        walk(&SliceMemory { base: 0, bytes }, 0, GS, output)
+    }
+
+    #[test]
+    fn state_strengths_preserve_native_aliases_and_all_i64_bits() {
+        let bytes = fixture();
+        let mut output = [Row::default(); 2];
+        assert_eq!(capture(&bytes, &mut output), Outcome::Rows { len: 2 });
+        assert_eq!(
+            output[0],
+            Row {
+                owner_country: 3,
+                target_country: 2,
+                state_id: 1,
+                strength_raw: Some(i64::MIN),
+                subnetwork_selector: 0,
+                local_strength_raw: i64::MAX,
+            }
+        );
+        assert_eq!(output[1].state_id, i32::MAX);
+        assert_eq!(output[1].strength_raw, Some(i64::MAX));
+        assert_eq!(output[1].subnetwork_selector, 1);
+        assert_eq!(output[1].local_strength_raw, i64::MIN);
+        assert_eq!(
+            capture(&bytes, &mut output[..1]),
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 1
+            }
+        );
+        assert_eq!(
+            capture(&bytes, &mut []),
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 2
+            }
+        );
+    }
+
+    #[test]
+    fn every_negative_selector_preserves_vertex_without_reading_a_subnetwork() {
+        let mut bytes = fixture();
+        header(&mut bytes, NETWORK + SUBNETWORKS_DATA, 0, 0);
+        let mut output = [Row::default(); 2];
+        for first in [-1_i32, -2, i32::MIN] {
+            for index in 0..2 {
+                p32(
+                    &mut bytes,
+                    GRAPH_ROWS
+                        + index * intel_network_graph_row::STRIDE
+                        + intel_network_graph_row::SUBNETWORK_SELECTOR,
+                    first as u32,
+                );
+            }
+            assert_eq!(capture(&bytes, &mut output), Outcome::Rows { len: 2 });
+            assert_eq!(output[0].state_id, 1);
+            assert_eq!(output[1].state_id, i32::MAX);
+            assert!(
+                output
+                    .iter()
+                    .all(|row| row.strength_raw.is_none() && row.subnetwork_selector == first)
+            );
+        }
+    }
+
+    #[test]
+    fn scattered_graph_rows_cross_batch_boundary_and_capacity_remains_exact() {
+        let mut bytes = fixture();
+        bytes.resize(0x14000, 0);
+        let begin = 0x12000;
+        p64(
+            &mut bytes,
+            GRAPH + intel_network_graph::ROWS_BEGIN,
+            begin as u64,
+        );
+        p64(
+            &mut bytes,
+            GRAPH + intel_network_graph::ROWS_END,
+            (begin + 65 * intel_network_graph_row::STRIDE) as u64,
+        );
+        header(
+            &mut bytes,
+            GRAPH + intel_network_graph::VERTICES_DATA,
+            VERTICES,
+            65,
+        );
+        for index in 0..65 {
+            p32(
+                &mut bytes,
+                VERTICES + index * intel_network_graph_vertex::STRIDE,
+                index as u32 + 1,
+            );
+            p64(
+                &mut bytes,
+                VERTICES + index * intel_network_graph_vertex::STRIDE + 8,
+                (64 - index) as u64,
+            );
+            p32(
+                &mut bytes,
+                begin
+                    + (64 - index) * intel_network_graph_row::STRIDE
+                    + intel_network_graph_row::SUBNETWORK_SELECTOR,
+                if index % 2 == 0 { 1 } else { (-2_i32) as u32 },
+            );
+        }
+        let mut rows = [Row::default(); 65];
+        assert_eq!(capture(&bytes, &mut rows), Outcome::Rows { len: 65 });
+        for (index, row) in rows.iter().enumerate() {
+            assert_eq!(row.state_id, index as i32 + 1);
+            assert_eq!(row.strength_raw, (index % 2 == 0).then_some(i64::MAX));
+            assert_eq!(row.subnetwork_selector, if index % 2 == 0 { 1 } else { -2 });
+        }
+        // A bad row outside retained capacity does not turn truncation into a
+        // guessed failure; reading that row with enough capacity must fail.
+        p32(
+            &mut bytes,
+            begin + intel_network_graph_row::SUBNETWORK_SELECTOR,
+            2,
+        );
+        assert_eq!(
+            capture(&bytes, &mut rows[..64]),
+            Outcome::Truncated {
+                len: 64,
+                unread_rows: 1
+            }
+        );
+        assert!(matches!(
+            capture(&bytes, &mut rows),
+            Outcome::Unavailable {
+                reason: "intel subnetwork selector outside array"
+            }
+        ));
+    }
+
+    #[test]
+    fn network_absence_and_empty_graph_are_valid_but_corrupt_headers_are_not() {
+        let mut bytes = fixture();
+        let mut output = [Row::default(); 2];
+        p64(&mut bytes, GS + cgame_state::STRATEGIC_OPERATIVE_MANAGER, 0);
+        assert_eq!(capture(&bytes, &mut output), Outcome::Rows { len: 0 });
+        p64(
+            &mut bytes,
+            GS + cgame_state::STRATEGIC_OPERATIVE_MANAGER,
+            MANAGER as u64,
+        );
+        header(&mut bytes, GRAPH + intel_network_graph::VERTICES_DATA, 0, 0);
+        p64(&mut bytes, GRAPH + intel_network_graph::ROWS_BEGIN, 0);
+        p64(&mut bytes, GRAPH + intel_network_graph::ROWS_END, 0);
+        header(&mut bytes, NETWORK + SUBNETWORKS_DATA, 0, 0);
+        assert_eq!(capture(&bytes, &mut output), Outcome::Rows { len: 0 });
+        p32(&mut bytes, NETWORK + SUBNETWORKS_COUNT, 1);
+        assert!(matches!(
+            capture(&bytes, &mut output),
+            Outcome::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn invalid_roots_graph_indices_selectors_and_partial_strength_reads_fail() {
+        let fixture = fixture();
+        let mut output = [Row::default(); 2];
+        for (offset, value) in [
+            (STRATEGIC + cstrategic_operative::OWNER, 2),
+            (NETWORK + TARGET, 3),
+            (NETWORK + SUBNETWORKS_COUNT, u32::MAX),
+            (GRAPH_ROWS + intel_network_graph_row::SUBNETWORK_SELECTOR, 2),
+            (VERTICES + intel_network_graph_vertex::STRIDE, 1),
+        ] {
+            let mut bytes = fixture.clone();
+            p32(&mut bytes, offset, value);
+            assert!(
+                matches!(capture(&bytes, &mut output), Outcome::Unavailable { .. }),
+                "offset {offset:#x}"
+            );
+        }
+        let mut bytes = fixture.clone();
+        p64(&mut bytes, VERTICES + 8, u64::MAX);
+        assert!(matches!(
+            capture(&bytes, &mut output),
+            Outcome::Unavailable { .. }
+        ));
+        let mut bytes = fixture.clone();
+        p64(&mut bytes, SUBNETWORKS, 0);
+        assert!(matches!(
+            capture(&bytes, &mut output),
+            Outcome::Unavailable { .. }
+        ));
+        let end = SUBNETWORKS + csub_intel_network::STRIDE + csub_intel_network::STRENGTH + 7;
+        assert!(matches!(
+            capture(&fixture[..end], &mut output),
+            Outcome::Unavailable { .. }
+        ));
+    }
+}

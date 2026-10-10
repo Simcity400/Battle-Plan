@@ -1,7 +1,7 @@
 //! Exact recorded civilian-factory output, shared with Construction log's scan.
-//! ConstructionLineOutput measures each native building/repair spend at
-//! 140F556F4 and each railway's first progress call at 1419EF440. Its factory
-//! channels exclude CIC-bank draws, instant progress and railway carries.
+//! ConstructionLineOutput measures each building/repair spend and each
+//! railway's first progress call. Its factory channels exclude CIC-bank
+//! draws, instant progress and railway carries.
 //! Deleted lines keep their final publication; census progress and current cost
 //! never price a completion. Amounts appear only at their supplying read.
 //! Linked-country output, inexact observations and missing final publications

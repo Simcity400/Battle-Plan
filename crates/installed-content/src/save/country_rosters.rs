@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, io};
 pub struct Pack {
     /// Every saved country, including an omitted (empty) owned-goal roster.
     pub owned_goals: BTreeMap<Vec<u8>, Vec<u64>>,
-    /// Diplomacy +0x80 owns serialized goal objects independently of +0x68.
+    /// Diplomacy owns serialized goal objects independently of its available-goal references.
     pub goals: BTreeMap<u64, Goal>,
 }
 
@@ -41,8 +41,8 @@ pub(super) fn parse_with_countries(
         let mut owned = Vec::new();
         if let Some(diplomacy) = field(fields, b"diplomacy")? {
             let diplomacy = block(diplomacy)?;
-            // 140D32BD0 emits +0x68/count+0x74 only when nonempty, in native
-            // order, as available_wargoals (0x337C), wargoal (0x2CE2) refs.
+            // The diplomacy writer emits a nonempty roster in native order
+            // as `available_wargoals`, with repeated `wargoal` references.
             if let Some(roster) = field(diplomacy, b"available_wargoals")? {
                 for entry in block(roster)? {
                     if entry.key.as_deref() != Some(b"wargoal") {
@@ -51,8 +51,8 @@ pub(super) fn parse_with_countries(
                     owned.push(null_permitted_handle(&entry.value)?);
                 }
             }
-            // 140D32BD0 emits +0x80/count+0x8C under wargoals (0x331D),
-            // with each object's +0x30 token as its dynamic child key.
+            // The diplomacy writer emits goal objects under `wargoals`,
+            // with each object's token as its dynamic child key.
             if let Some(goals) = field(diplomacy, b"wargoals")? {
                 for item in block(goals)? {
                     item.key
@@ -60,11 +60,11 @@ pub(super) fn parse_with_countries(
                         .filter(|key| !key.is_empty())
                         .ok_or_else(|| invalid("unkeyed or empty serialized wargoals child"))?;
                     let payload = block(&item.value)?;
-                    // 1415CE720 -> 1415CE460 writes actor/recipient/type
-                    // always; states (0x2E3B) only for a nonzero count.
-                    // type is [+0x40]+8, not the child key (+0x30):
-                    // 1415CBDD0 initializes both from the definition, but
-                    // 1415CD530 can replace +0x40 without changing +0x30.
+                    // The goal writer always saves actor/recipient/type; states only
+                    // for a nonzero count. Type is the current definition's
+                    // token, not the child key: both start from the same
+                    // definition, but replacing the definition leaves the
+                    // object's child-key token unchanged.
                     super::scalar(
                         field(payload, b"wargoaldata_actor")?
                             .ok_or_else(|| invalid("wargoal lacks actor"))?,

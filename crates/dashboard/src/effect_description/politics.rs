@@ -13,8 +13,8 @@ mod tests;
 pub(super) const NULL_IDEOLOGY: &str = Evaluator::NULL_IDEOLOGY;
 
 impl Renderer<'_, '_, '_> {
-    // ResolveIdeologySpecifier 1402EE8E0: cached named group, numeric database
-    // ID, then decoded country's ruling group (14138B640). IDs/tokens are
+    // cached named group, numeric database
+    // ID, then decoded country's ruling group. IDs/tokens are
     // recorded native identities; KeyNames verifies the content-stack group.
     pub(super) fn politics_ideology(
         &self,
@@ -29,7 +29,7 @@ impl Renderer<'_, '_, '_> {
             .ok_or_else(|| self.content_gap("effect key names"))?;
         if names.counts.is_ideology(operand)? {
             // Cached named pointers open no variable session or strict map
-            // world (1402EE8E0 returns +0 immediately).
+            // world; cached lookup returns immediately.
             let world = match self.context.expansion.and_then(|scopes| scopes.world) {
                 Some(world) => world,
                 None => self.context.text.trigger_world()?,
@@ -44,8 +44,8 @@ impl Renderer<'_, '_, '_> {
         Ok(token.to_vec())
     }
 
-    // 140376270; noun suffix 14117C8D0, IDEOLOGY and VALUE, explicit LF.
-    // POLITICS_IDEOLOGY_POPULARITY_CHANGE@142759618.
+    // noun suffix, IDEOLOGY and VALUE, explicit LF.
+
     pub(super) fn politics_popularity(
         &self,
         item: &Item,
@@ -56,7 +56,7 @@ impl Renderer<'_, '_, '_> {
             scopes,
         )?;
         let mut noun = ideology;
-        noun.extend_from_slice(b"_noun"); // 14117C8D0 native suffix.
+        noun.extend_from_slice(b"_noun"); // native suffix.
         let name = self.localised(&noun, &[], scopes, false)?;
         let value = field(children(item), "popularity")
             .map(|item| self.scoped_value(item.value.scalar().unwrap_or_default(), scopes))
@@ -73,10 +73,10 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 140392160: long_name (+0x88), written by 1403B5280 token 0x34EB;
-    // name (0x1B) writes +0x68. Expand +0x88 before NAME substitution;
-    // ideology +0x18 name 140616BC0 remains plain until the outer expansion.
-    // POLITICS_PARTY_NAME_CHANGE@142750EF8.
+    // Keep long_name and name in separate fields.
+    // Expand the selected name before NAME substitution;
+    // ideology name remains plain until the outer expansion.
+
     pub(super) fn politics_party_name(
         &self,
         item: &Item,
@@ -106,7 +106,7 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 1403900D0 -> 1406E0440: choose the authored base's definite key,
+    // choose the authored base's definite key,
     // expand it in the caller, then substitute current definite COUNTRY.
     pub(super) fn politics_cosmetic(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let base = item.value.c_str().map_err(|why| why.to_string())?;
@@ -124,7 +124,7 @@ impl Renderer<'_, '_, '_> {
             .text
             .country_names()
             .operands(country)
-            .ok_or("country naming operands are absent (1403900D0)")?
+            .ok_or("country naming operands are absent")?
             .as_ref()
             .map_err(Clone::clone)?;
         let current = self.country_name(country, true)?;
@@ -146,13 +146,12 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 14036FE00 / 14037E730 gate on client debug byte 143316899.
+    // gate on client debug byte.
     // Viewer policy: use debug off, like its selection/pause decisions.
     pub(super) fn politics_shine(&self) -> Result<String, String> {
         Ok(String::new())
     }
 
-    // 14036E4C0, 14037FD80, 140379FD0, 140382C20, 140386680, 140386960.
     pub(super) fn politics_country(
         &self,
         item: &Item,
@@ -167,7 +166,7 @@ impl Renderer<'_, '_, '_> {
         self.line(key, &[("COUNTRY", Argument::Text(&name))], scopes, true)
     }
 
-    // 140313AB0 / 140316D10: ordinary name, no ProcessString; COUNTRY@142728968.
+    // ordinary name, no scope expansion.
     pub(super) fn politics_core(
         &self,
         item: &Item,
@@ -182,7 +181,7 @@ impl Renderer<'_, '_, '_> {
         self.line(key, &[("COUNTRY", Argument::Text(&name))], scopes, false)
     }
 
-    // 140313620 / 140316A20: TAG@142738440 then COUNTRY@142728968, no expansion.
+    // Substitute the name without scope expansion.
     pub(super) fn politics_claim(
         &self,
         item: &Item,
@@ -209,10 +208,10 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // Own 1404A4F10/1404A4FC0: a positive carried state (+0xA8) selects
-    // the country operand; otherwise keep scope.country (+8) and select a state.
-    // 1404A4750 parses selectors first, then CScopedVariable; the core target
-    // helpers share vf15/vf16 and EvaluateCountryTag/StateId. No explicit LF.
+    // a positive carried state selects
+    // the country operand; otherwise keep scope.country and select a state.
+    // parses selectors first, then scoped variable; the core target
+    // helpers share country/state evaluation. No explicit LF.
     pub(super) fn politics_contested_owner(
         &self,
         item: &Item,
@@ -225,7 +224,7 @@ impl Renderer<'_, '_, '_> {
                     .borrow()
                     .scopes
                     .get(at)
-                    .ok_or("contested-owner caller scope is absent (1404A4F10/1404A4FC0)")?
+                    .ok_or("contested-owner caller scope is absent")?
                     .this
             }
             None => match scopes.this {
@@ -233,21 +232,14 @@ impl Renderer<'_, '_, '_> {
                     EventObject::Country(country)
                 }
                 Scope::State(state) => EventObject::State(state),
-                _ => return Err(
-                    "contested-owner scope lacks native country/state fields (1404A4F10/1404A4FC0)"
-                        .into(),
-                ),
+                _ => return Err("contested-owner scope lacks native country/state fields".into()),
             },
         };
-        let carried_state =
-            match current {
-                EventObject::State(state) | EventObject::CountryState { state, .. } => state,
-                EventObject::Country(_) | EventObject::CountryUnitLeader { .. } => 0,
-                _ => return Err(
-                    "contested-owner scope lacks native country/state fields (1404A4F10/1404A4FC0)"
-                        .into(),
-                ),
-            };
+        let carried_state = match current {
+            EventObject::State(state) | EventObject::CountryState { state, .. } => state,
+            EventObject::Country(_) | EventObject::CountryUnitLeader { .. } => 0,
+            _ => return Err("contested-owner scope lacks native country/state fields".into()),
+        };
         let (country, state) = if (carried_state as i32) > 0 {
             (
                 self.country_target(item, scopes)?.unwrap_or(0),
@@ -262,8 +254,8 @@ impl Renderer<'_, '_, '_> {
             };
             (country, self.state_target(item, scopes)?)
         };
-        // 1404A5070/1404A5160 set country, then state in a default scope;
-        // EFFECT_ADD_CONTESTED_OWNER@1427AF660 / REMOVE@1427AF6B8 have no arguments.
+        // set country, then state in a default scope;
+        // have no arguments.
         self.localised(
             key,
             &[],
@@ -272,8 +264,8 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 14037B2B0 gates on the operand but describes the CURRENT country.
-    // CHANGE_TAG_EFFECT@142759720, COUNTRY@142728968.
+    // gates on the operand but describes the CURRENT country.
+
     pub(super) fn politics_change_tag(
         &self,
         item: &Item,
@@ -291,7 +283,7 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 140384500 / 140391580 copy the raw operand into NAME@142727E7C; no LF.
+    // Copy the raw operand into the wrapper; no LF.
     pub(super) fn politics_oob(
         &self,
         item: &Item,
@@ -302,8 +294,8 @@ impl Renderer<'_, '_, '_> {
         self.localised(key, &[("NAME", Argument::Text(name))], scopes, true)
     }
 
-    // 1403909F0: tree string (+0x60), localise/expand before TREE_NAME substitution.
-    // TREE_NAME@14274FEA8, EFFECT_LOAD_FOCUS_TREE@14274FEB8.
+    // tree string, localise/expand before TREE_NAME substitution.
+
     pub(super) fn politics_focus_tree(
         &self,
         item: &Item,
@@ -323,8 +315,8 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 1403748C0: name is execution-only; zero selects REMOVE, negate wraps.
-    // EFFECT_ADD_THREAT@14275AAF8 / EFFECT_REMOVE_THREAT@14275AB10, THREAT@14275AAEC.
+    // name is execution-only; zero selects REMOVE, negate wraps.
+
     pub(super) fn politics_named_threat(
         &self,
         item: &Item,
@@ -342,8 +334,8 @@ impl Renderer<'_, '_, '_> {
         self.line(key, &[("THREAT", Argument::Fixed5(value))], scopes, true)
     }
 
-    // 140385DA0 -> 1402F8DA0; 14038D800 -> 1403276C0. Sound names are RAW strings.
-    // SOUND_NAME@14275B388, EFFECT_SOUND_DESC@14275B398 / EFFECT_SCOPED_SOUND_DESC@14275B488.
+    // Sound names are RAW strings.
+
     pub(super) fn politics_sound(
         &self,
         item: &Item,
@@ -372,8 +364,8 @@ impl Renderer<'_, '_, '_> {
         }
     }
 
-    // 140391AB0; bool read 1424B06E0, not a scoped country operand.
-    // EFFECT_SET_MAJOR_YES@14275C228 / EFFECT_SET_MAJOR_NO@14275C240.
+    // bool read, not a scoped country operand.
+
     pub(super) fn politics_major(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let enabled = item
             .value
@@ -389,7 +381,7 @@ impl Renderer<'_, '_, '_> {
         self.line(key, &[("COUNTRY", Argument::Text(&name))], scopes, true)
     }
 
-    // 1402FE660: localise/expand +0x58, then NAME in EFFECT_MIO_SET_NAME_KEY@1427313D8.
+    // Localise and expand the name, then substitute NAME into the wrapper.
     pub(super) fn politics_mio_name(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let name = self.localised(item.value.scalar().unwrap_or_default(), &[], scopes, true)?;
         self.line(
@@ -400,17 +392,15 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 14037CBE0: feature 0x19 (1401AE640 bit 5), then agency+0xC0 == 0.
-    // EFFECT_CREATE_INTELLIGENCE_AGENCY@142762F00; retain the recorded table cadence.
+    // feature 0x19 ( bit 5), then agency == 0.
+    // retain the recorded table cadence.
     pub(super) fn politics_create_agency(&self, scopes: Scopes) -> Result<String, String> {
         let frame = self.context.text.frame();
         let [features] = frame
             .complete::<tables::SimulationFeatures>()
             .map_err(|why| why.to_string())?
         else {
-            return Err(
-                "SimulationFeatures lacks the agency feature mask (1401AE640 case 0x19)".into(),
-            );
+            return Err("SimulationFeatures lacks the agency feature mask".into());
         };
         if features.dlc_mask & (1 << 5) == 0 {
             return Ok(String::new());
@@ -422,16 +412,15 @@ impl Renderer<'_, '_, '_> {
         let row = rows
             .iter()
             .find(|row| self.context.text.recorded().slot(row.country) == Some(country))
-            .ok_or("IntelligenceAgencies lacks agency+0xC0 (14037CBE0)")?;
+            .ok_or("IntelligenceAgencies lacks agency identity")?;
         if row.created != 0 {
             return Ok(String::new());
         }
         self.line(b"EFFECT_CREATE_INTELLIGENCE_AGENCY", &[], scopes, true)
     }
 
-    // 1402F8420: COUNTRY_NAME_DEF@14272BA20, EFFECT_RELEASE_GENERALS@14272BB70.
-    // Block reader 1402F8680 consumes target (+0x58), not captured_by.
-    // No ProcessString and no LF; captive counts do not enter the description.
+    // Block reader consumes target, not captured_by.
+    // No scope expansion and no LF; captive counts do not enter the description.
     pub(super) fn politics_release_generals(
         &self,
         item: &Item,
@@ -457,8 +446,8 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 140386F40; reader 1403B3E00 appends focus tokens and stores signed32 cost.
-    // Names alone expand; header/list localisations do not. DAYS@14275179C.
+    // reader appends focus tokens and stores signed32 cost.
+    // Names alone expand; header/list localisations do not.
     pub(super) fn politics_focus_cost(
         &self,
         item: &Item,
@@ -486,7 +475,7 @@ impl Renderer<'_, '_, '_> {
         let days = cost.wrapping_abs();
         let mut text = if focuses.len() == 1 {
             let name = self.localised(focuses[0], &[], scopes, true)?;
-            // 140386F40 literals REDUCE_FOCUS_DAYS_EFFECT[_NEGATIVE] and FOCUS@14275A6E0.
+            // REDUCE_FOCUS_DAYS_EFFECT and its negative variant select the header.
             self.localised(
                 if cost < 0 {
                     b"REDUCE_FOCUS_DAYS_EFFECT_NEGATIVE"
@@ -501,7 +490,7 @@ impl Renderer<'_, '_, '_> {
                 false,
             )?
         } else {
-            // Header literals at 140386F40; item key REDUCE_FOCUS_DAYS_MULTIPLE_FOCUS@1427657F0.
+            // Header and item keys are localised separately.
             let mut text = self.localised(
                 if cost < 0 {
                     b"REDUCE_FOCUS_DAYS_MULTIPLE_HEADER_NEGATIVE"

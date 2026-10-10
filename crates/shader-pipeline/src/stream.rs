@@ -91,23 +91,23 @@ impl Stream {
         self.textures = caller.textures.clone();
     }
 
-    /// Independent renderer blend handle (142400090), after program selection. In
-    /// particular 14228C8D0 disables background blending then uses alpha MAX for text.
+    /// Independent renderer blend handle, after program selection. Text backgrounds disable
+    /// blending before text uses alpha MAX.
     pub fn bind_blend(&mut self, blend: Option<wgpu::BlendState>, write_mask: wgpu::ColorWrites) {
         self.state.blend = blend;
         self.state.write_mask = write_mask;
     }
 
-    ///142400520 retains the program and its input layout on a null handle.
-    ///Blend, depth, rasterizer and resource handles are independent commands.
+    /// A null handle retains the program and its input layout.
+    /// Blend, depth, rasterizer and resource handles are independent commands.
     pub fn bind_program(&mut self, selection: Option<Selection>, vertices: Vec<gpu::VertexLayout>) {
         if let Some(selection) = selection {
             self.program = Some((selection, Layout::Native(vertices)));
         }
     }
 
-    /// IA buffer strides are independent of the program/input declaration. For
-    /// example1422805EB replaces trail slot0 even when142400520 retains a program.
+    /// IA buffer strides are independent of the program/input declaration. A trail draw can
+    /// replace slot 0 even when a null technique retains a program.
     /// Handles and offsets remain caller-owned; an omitted slot keeps its stride.
     pub fn bind_vertex_stride(&mut self, slot: u32, stride: u64) {
         self.vertex_strides.insert(slot, stride);
@@ -152,7 +152,7 @@ impl Stream {
         self.textures.clear();
     }
 
-    /// 142400520 retains program/layout on null; 142400090 selects the renderer default blend.
+    /// A null technique retains program/layout and selects the renderer default blend.
     /// The program is bound even when its blend state is refused: the game binds both.
     pub fn bind_effect(
         &mut self,
@@ -173,13 +173,13 @@ impl Stream {
         Ok(())
     }
 
-    /// A declared technique the owner could not compile: the game binds its program record
-    /// (142400520 with a non-null record), which the owner does not have.
+    /// A declared technique the owner could not compile: the game binds its non-null program
+    /// record, which the owner does not have.
     pub fn forget_program(&mut self) {
         self.program = None;
     }
 
-    /// 1424000F0 does nothing for a null constant-buffer handle; it does not clear the slot.
+    /// A null constant-buffer handle leaves the slot bound.
     pub fn bind_constants(&mut self, slot: u32, stage: Stage, bytes: Option<&[u8]>) {
         if let Some(bytes) = bytes {
             self.write_constants(binding(slot, stage), bytes);
@@ -222,7 +222,7 @@ impl Stream {
         Ok(())
     }
 
-    /// 1424005A0: a sampler overrides the caller's slot, for both texture and sampler.
+    /// A sampler overrides the caller's slot, for both texture and sampler.
     /// A null pixel sampler retains state, a null vertex sampler clears it; null texture unbinds.
     pub fn bind_texture(
         &mut self,
@@ -239,8 +239,8 @@ impl Stream {
                 self.state.samplers.insert(key, sampler.clone());
             }
         } else if stage == Stage::Vertex {
-            // 1424005A0 calls VSSetSamplers with null. D3D11's null sampler state is
-            // MIN_MAG_MIP_LINEAR, CLAMP, bias 0, no LOD restriction (D3D11_SAMPLER_DESC).
+            // A null vertex sampler uses D3D11's linear filtering, clamp addressing, zero bias
+            // and unrestricted LOD.
             self.state.samplers.insert(
                 key,
                 Sampler {
@@ -269,9 +269,8 @@ impl Stream {
         self.textures.remove(&binding(slot, stage));
     }
 
-    /// `count` records of `stride` bytes drawn as `topology` (the draw's own, as
-    /// `GfxSetPrimitiveTopology@1424002E0` sets it): a native four-record strip stays four
-    /// records, so `SV_VertexID` runs as it does natively.
+    /// `count` records of `stride` bytes drawn as the caller's `topology`: a native four-record
+    /// strip stays four records, so `SV_VertexID` runs as it does natively.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         &mut self,
@@ -609,6 +608,7 @@ mod tests {
 
     #[test]
     fn independent_handles_survive_program_misses_and_scoped_passes() {
+        crate::tests::initialize_runtime_tables();
         let program = installed_content::pdxshader::program::read_with(b"states.shader", &|path| {
             Some(if path == b"states.shader" {
                 b"Effect Draw { }".to_vec()
@@ -695,6 +695,7 @@ mod tests {
 
     #[test]
     fn packed_world_text_retains_raster_and_distinct_stage_allocations() {
+        crate::tests::initialize_runtime_tables();
         let source = installed_content::pdxshader::program::read_with(b"text.shader", &|path| {
             Some(if path == b"text.shader" {
                 b"Effect Text3D { }".to_vec()

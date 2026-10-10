@@ -1,5 +1,5 @@
-//! Stored operands of 140FA2AC0, 140F98DE0 and 140F99450, joined on the hour
-//! preparation path. Camera rebuilds reuse the finished decisions.
+//! Stored naval mission operands joined during hour preparation.
+//! Camera rebuilds reuse the finished decisions.
 use super::{naval_missions::MissionIcons, *};
 use engine::modifier_keys as keys;
 use replay::{naval_mission_derive as derive, rows::*};
@@ -24,7 +24,7 @@ pub(super) struct Content {
     underway_factor: i64,
     distance_factor: i64,
     edges: OnceLock<RegionTopology>,
-    /// Native sea-distance matrix is built at load (140A4E4B0), never per hour.
+    /// Native sea-distance matrix is built at load, never per hour.
     distances: OnceLock<Mutex<installed_content::naval_path::Distances>>,
 }
 
@@ -46,7 +46,7 @@ impl Content {
                 })
                 .collect(),
             efficiencies: derive::Defines::read(|section, name| defines.fixed5(section, name))?,
-            // Module globals read by 140C28410 / 140D52760 / 140D5A810.
+            // Module globals read by the game.
             fuel_factor: defines.fixed5("NNavy", "OUT_OF_FUEL_RANGE_FACTOR")?,
             underway_factor: defines.fixed5("NNavy", "UNDERWAY_REPLENISHMENT_RANGE_FACTOR")?,
             distance_factor: defines.fixed5("NNavy", "NAVAL_RANGE_TO_INGAME_DISTANCE")?,
@@ -56,7 +56,7 @@ impl Content {
     }
 
     fn terrain(&self, region: Option<u32>) -> Fact<&installed_content::terrain::TerrainCategory> {
-        // 141593150: invalid/absent region terrain uses the native literal "ocean".
+        // invalid/absent region terrain uses the native literal "ocean".
         let at = region
             .and_then(|id| self.naval_terrain.get(&id))
             .and_then(|name| self.terrain.category(name))
@@ -282,7 +282,7 @@ impl<'a> Hour<'a> {
                     String::from_utf8_lossy(&terrain.name)
                 ));
             }
-            // 14054AF00 merges only the accumulator entries, not added_modifier children.
+            // Merge only the accumulator entries, not added_modifier children.
             Ok(block
                 .values
                 .iter()
@@ -296,7 +296,7 @@ impl<'a> Hour<'a> {
         }
         let mut terms = Vec::with_capacity(classes.len());
         for (class, count) in classes {
-            // CShip+88 and CSubUnitDefinition+8 are lexer tokens (14142C780).
+            // Ship and sub-unit definition names are lexer tokens.
             let own = match names.name(class as u32) {
                 Ok(class_name) => {
                     let subunits = self.anchors.subunit_tokens.as_ref().map_err(Clone::clone)?;
@@ -312,14 +312,14 @@ impl<'a> Hour<'a> {
                             .flatten()
                     }
                 }
-                // 14142AF80: an id absent from the class map takes common values.
+                // an id absent from the class map takes common values.
                 Err(
                     crate::table_access::TokenError::Rejected
                     | crate::table_access::TokenError::Absent(_),
                 ) => None,
                 Err(error) => return Err(error.to_string()),
             };
-            // 14142C5C0 adds raw common terms before the getter's clamp/gate.
+            // Add raw common terms before the getter's clamp/gate.
             let value = match (common, own) {
                 (None, None) => None,
                 (a, b) => Some(a.unwrap_or(0).wrapping_add(b.unwrap_or(0))),
@@ -396,7 +396,7 @@ impl<'a> Hour<'a> {
     }
     fn raiding(&mut self, handle: u64) -> Fact<i64> {
         let force = self.force(handle)?;
-        // 140F99450 returns full before reading sibling/modifier operands.
+        // Return full before reading sibling/modifier operands.
         if force.fleet == 0 {
             return Ok(100_000);
         }
@@ -580,7 +580,7 @@ impl<'a> Hour<'a> {
         }
         let ports = self.ports.as_ref().map_err(Clone::clone)?;
         let bases = self.bases.as_ref().map_err(Clone::clone)?;
-        // 140D5A2A0 tests only the land bit: a lake remains the source.
+        // Test only the land bit: a lake remains the source.
         let source = match geometry.kind_flags(force.province) {
             None if force.province == 0 => return Ok(false),
             None => {
@@ -653,7 +653,7 @@ impl<'a> Hour<'a> {
             .map_err(Clone::clone)?
             .get(&force.fleet)
             .ok_or_else(|| format!("fleet {:#x} has no Fleets row", force.fleet))?;
-        // 140E93DA0 considers the navy's hubs only inside the nonnull home-base branch.
+        // Consider the navy's hubs only inside the nonnull home-base branch.
         if fleet.home_base == 0 {
             return Ok(false);
         }
@@ -661,11 +661,8 @@ impl<'a> Hour<'a> {
         let mut distances = self
             .content
             .distances
-            // port_sea is a load-time province-definition field: 1413F3100 zeroes it;
-            // LoadAuthoredMapBuildings@14165F630 writes map ports, before 140A4E4B0
-            // builds the sea-distance matrix (startup 140B46220). The other loader
-            // caller, 141B31D30, is the map-authoring nudger; for fixed recorded content
-            // it reloads the same ports. Runtime base levels do not rewrite port_sea.
+            // Port sea provinces come from the resolved map definition. Fixed recorded
+            // content retains those load-time values; no map-authoring update is replayed.
             .get_or_init(|| Mutex::new(installed_content::naval_path::Distances::new(geometry, ports)))
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());

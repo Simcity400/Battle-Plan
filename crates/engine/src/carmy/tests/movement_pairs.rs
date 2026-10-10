@@ -317,8 +317,8 @@ fn packet_pair_failures_keep_primary_arena_prefixes_and_admission() {
     let packet = capture(&success, 1, 4);
     assert_eq!(packet.outcome().outcome, Outcome::Rows { len: 1 });
     assert_eq!(packet.paths, [1, 1, 77, 88]);
-    // One record gather, as on main: main's movement capture no longer
-    // pairs route endpoints, which #75 had batched here.
+    // One record gather; movement capture acquires records without pairing
+    // route endpoints.
     assert_eq!(success.batches.get(), 1);
     let trace = success.reads.borrow().clone();
     for (address, width, expected_paths, reason) in [

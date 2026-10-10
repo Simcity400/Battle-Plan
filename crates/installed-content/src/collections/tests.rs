@@ -2,6 +2,8 @@ use super::*;
 
 #[test]
 fn named_collections_flatten_operators_keep_headers_and_guard_cycles() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut db = Database::default();
     db.read_file(
         b"base={input=game:all_states name=BASE operators={limit={always=yes}}} \
@@ -44,6 +46,8 @@ fn named_collections_flatten_operators_keep_headers_and_guard_cycles() {
 
 #[test]
 fn source_and_operator_headers_follow_native_collection_kind() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let parse = |text: &str| {
         crate::parser::parse(text.as_bytes())
             .unwrap()
@@ -97,6 +101,8 @@ fn source_and_operator_headers_follow_native_collection_kind() {
 
 #[test]
 fn collection_misreads_are_local_to_their_definition() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut db = Database::default();
     db.read_file(
         b"good={input=game:all_states} bad={input=game:scope operators={unknown_operator}}",
@@ -111,7 +117,7 @@ fn collection_misreads_are_local_to_their_definition() {
             .unwrap_err()
             .contains("unknown_operator")
     );
-    // EOF ends the reader (140A0FC90), preserving earlier complete definitions.
+    // EOF ends the reader, preserving earlier complete definitions.
     db.read_file(b"tail={input=", &KeyNames::default());
     let input = crate::parser::parse(b"input=collection:good")
         .unwrap()
@@ -122,6 +128,6 @@ fn collection_misreads_are_local_to_their_definition() {
         .unwrap()
         .items
         .remove(0);
-    // A missing name still resolves to native empty (140A0EB10).
+    // A missing name still resolves to an empty collection.
     assert_eq!(compile(&missing, Some(&db)).unwrap().input, Input::Empty);
 }

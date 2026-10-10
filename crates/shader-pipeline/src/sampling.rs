@@ -102,7 +102,7 @@ fn pdx_gather{n}(t: texture_2d<f32>, uv: vec2<f32>, offset: vec2<i32>, c: u32) -
 /// Shader filtering for an unfilterable view or a MIRROR_ONCE texel offset. D3D11 adds the
 /// offset in texels of each level before addressing (22.4.6). `textureLoad` reads each tap,
 /// each axis addressed as 7.18.9 does and a border read as
-/// the transparent black `1423FD550` sets. The LOD follows 7.18.10-11: isotropic
+/// transparent black. The LOD follows 7.18.10-11: isotropic
 /// `log2(max(|dX|, |dY|))` in level-0 texels from coarse derivatives, plus MipLODBias (and the
 /// instruction's bias), clamped to MinLOD/MaxLOD; a clamped LOD above zero minifies, else it
 /// magnifies; point mip reads level `floor(LOD + 0.5)`, linear mip blends the two levels by the

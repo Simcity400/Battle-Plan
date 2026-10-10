@@ -47,6 +47,8 @@ fn air_superiority_inherited_state_is_independent_between_revisions() {
 
 #[test]
 fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{ContentOptions, LoadContext};
     use replay::spool::Record;
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[

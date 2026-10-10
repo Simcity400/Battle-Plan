@@ -229,7 +229,7 @@ fn compare_parties(
     }
     report.compared("PoliticalParties", count);
     report.limitation("party numeric IDs are lexical identifiers; saves compare their exact tokens and ruling membership, not the numeric registry allocation", "PoliticalParties");
-    report.limitation("141191FA0 writes a party's name and long-name keys only when its default flag is clear; a default-named party's stored keys are not save-comparable", "PoliticalParties");
+    report.limitation("the game writes a party's name and long-name keys only when its default flag is clear; a default-named party's stored keys are not save-comparable", "PoliticalParties");
     Ok(())
 }
 
@@ -339,9 +339,9 @@ fn compare_ruling_party(
     Ok(())
 }
 
-/// 140BA12D0 writes CIdea+8 through GetTokenString@1424A7300, not its
-/// definition string at +0x18. The ctor@140FB7E30/140FB80F2 registers that
-/// string through AddDynamicToken; the recorded dictionary supplies its
+/// The game writes the idea name token through token text lookup, not its
+/// definition string. Initialization registers that
+/// string through token insertion; the recorded dictionary supplies its
 /// canonical writer spelling even when another file registered it first.
 fn compare_ideas(
     frame: &DecodedFrame,
@@ -400,7 +400,7 @@ fn check_ordinals(values: impl IntoIterator<Item = u32>) -> io::Result<()> {
     Ok(())
 }
 
-/// 140BA12D0 preserves timed-roster order; 140BA1580 saves stored days.
+/// The game preserves timed-roster order; the game saves stored days.
 fn compare_timed_ideas(
     frame: &DecodedFrame,
     pack: &saved::Pack,
@@ -444,7 +444,7 @@ fn compare_timed_ideas(
     Ok(())
 }
 
-/// 14072BE70/14072C2E0 save every random-item entry, including inactive ones.
+/// The game saves every random-item entry, including inactive ones.
 fn compare_decision_random_items(
     frame: &DecodedFrame,
     pack: &saved::Pack,
@@ -532,10 +532,9 @@ fn compare_focus(
             row.progress,
             saved.progress.as_ref().map_or(0, |v| v.raw),
         );
-        // 2DC4E0's `paused` write is the function's last statement and is
-        // guarded only by `*(char *)(progress + 0xb0) == 0`. It is not nested
-        // inside the `current` or `current_continuous` branches, which are
-        // separate `if (pointer != 0)` writes earlier in the same body. The
+        // The focus writer emits `paused` after the selected-focus fields,
+        // guarded only by a zero pause byte. The `current` and
+        // `current_continuous` fields have independent pointer-presence gates. The
         // comparison therefore applies to every country with a focus-progress
         // object, including the ones that have selected no focus at all.
         equal(
@@ -572,10 +571,10 @@ fn compare_focus(
         }
     }
     // The applicability of the paused comparison is a printed result, not an
-    // assumption: 2DC4E0 guards that write on the native byte alone, so the
+    // assumption: the focus writer guards that write on the native byte alone, so the
     // focus-less countries below are genuinely compared rather than skipped.
     report.limitation(
-        "2DC4E0 writes paused only while the native +0xb0 byte is zero, and that write is not nested inside the selected-focus branches; an omitted paused therefore proves a nonzero byte for every country with a focus-progress object, without proving its exact bits",
+        "the focus writer writes paused only while the native byte is zero, and that write is not nested inside the selected-focus branches; an omitted paused therefore proves a nonzero byte for every country with a focus-progress object, without proving its exact bits",
         format!(
             "{paused_checks} paused comparisons, of which {focusless_paused_checks} are countries with neither a current nor a continuous focus"
         ),
@@ -778,8 +777,8 @@ fn compare_decisions(
             if row.container < 3 {
                 return Err(invalid("untargeted decision has a description seed"));
             }
-            // 140720D40 passes the canonical country slot or signed numeric target
-            // to the first-match lookup 140721170. 14072C2E0 saves its raw count.
+            // The game passes the canonical country slot or signed numeric target
+            // to the first-match lookup. The game saves its raw count.
             let target = if (row.country_target as i32) > 0 {
                 links
                     .get(&row.country_target)
@@ -959,10 +958,10 @@ fn compare_tactics(
 }
 
 /// Each country's recorded doctrine unlocks against its saved doctrine
-/// status. CDoctrineSystem::vf2 (140D6C880) writes one status per slot of
-/// the doctrine array in slot order, and 140D6A7B0 indexes that array by
-/// canonical country slot, so saved status N is slot N's. 1413BA360 writes
-/// the +0x28 vector as `enable_tactic`, each tactic's +0x98 database ID in
+/// status. The doctrine save writer writes one status per slot of
+/// the doctrine array in slot order, and the game indexes that array by
+/// canonical country slot, so saved status N is slot N's. The game writes
+/// the tactic vector as `enable_tactic`, each tactic by its database ID in
 /// vector order, omitting an empty vector. The collector records every
 /// country of the canonical census (every non-null country slot, the
 /// Countries table) with an explicit row, empty included, so every census
@@ -1049,7 +1048,7 @@ fn compare_tactic_unlocks(
     report.compared("CountryTacticUnlocks", rows.len());
     if excluded > 0 {
         report.limitation(
-            "the doctrine array has a status for every country slot (140D6C880), and the census records every non-null canonical country slot; a status whose slot is outside that census holds no live country and is compared only when it holds unlocks",
+            "the doctrine array has a status for every country slot, and the census records every non-null canonical country slot; a status whose slot is outside that census holds no live country and is compared only when it holds unlocks",
             format!("CountryTacticUnlocks: {excluded} empty statuses of slots outside the census"),
         );
     }

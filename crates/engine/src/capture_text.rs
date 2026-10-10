@@ -163,8 +163,8 @@ impl Owned {
             return Err("string terminator unreadable or invalid");
         }
         let mut value = Self::default();
-        // 140129700/140129790 consume exact std::string lengths. Grow only
-        // after successful payload chunks, preserving the original terminator gate.
+        // String consumers use exact stored lengths. Grow only after successful
+        // payload chunks, preserving the original terminator gate.
         msvc_string::copy_growing_with_policy::<TERMINAL>(
             memory,
             source,

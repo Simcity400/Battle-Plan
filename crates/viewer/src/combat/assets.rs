@@ -45,27 +45,27 @@ pub struct Assets {
     /// The naval combat defines the window's positioning, screening and anti-air read;
     /// `None`, with a warning, when the content's defines do not load.
     pub naval_defines: Option<installed_content::naval_combat_defines::Defines>,
-    /// 14195C7D0's NNavy operands, loaded from the matching content stack.
+    /// NNavy operands, loaded from the matching content stack.
     pub(super) naval_escape_defines: Result<super::naval_escape::Defines, String>,
-    /// 141DED2F0's loss-equipment tint, read through 140857260/14073E680.
+    /// Loss-equipment tint from the resolved content.
     pub(super) naval_result_pride_color: Result<[f32; 4], String>,
     pub(super) naval_escape_screening: super::naval_escape::Screening,
     pub(super) naval_air_groups: super::naval_air_groups::Content,
-    /// 141D8A3B0's six weather-event static accumulators, in event order.
+    /// six weather-event static accumulators, in event order.
     pub(super) naval_weather_modifiers: Vec<Result<installed_content::modifiers::Modifiers, String>>,
-    /// 140600CF0's +0x100/+0x108 full screening bonus blocks, formatted by
-    /// 14160A7B0 through 14054E050 at the freshly computed screening scale.
+    /// Full screening bonus blocks, formatted at the freshly computed screening scale.
     pub(super) naval_screening_modifiers: [Result<installed_content::modifiers::Modifiers, String>; 2],
     /// Effective named static blocks of the strategic templates' custom sea grid.
     pub(super) naval_custom_sea_modifiers:
         BTreeMap<String, Result<installed_content::modifiers::Modifiers, String>>,
+    /// terrain category prefix for the naval background hover.
     pub(super) naval_terrain: Result<super::naval_terrain::Content, String>,
     pub(super) land_terrain: Result<Arc<installed_content::terrain::TerrainDefinitions>, String>,
     pub(crate) temperature: Result<installed_content::weather::TemperatureRanges, String>,
     pub(super) border_events: installed_content::events::LazyEvents,
     /// The land window's defines, or why the content lacks them.
     pub(crate) land_defines: Result<super::defines::LandDefines, String>,
-    /// `NNavy.BATTLE_NAME_VP_FACTOR` and `BATTLE_NAME_VP_CUTOFF` (1415B06C0),
+    /// `NNavy.BATTLE_NAME_VP_FACTOR` and `BATTLE_NAME_VP_CUTOFF`,
     /// fixed5, or why they are unavailable.
     pub(crate) naval_name_defines: Result<[i64; 2], String>,
     /// Authored division name groups, which render the recorded selection.
@@ -182,7 +182,7 @@ impl Assets {
     ) -> (native_gui::Assets, Vec<String>) {
         let mut assets = tooltip_assets(&self.native_windows, localisation);
         let mut warnings = Vec::new();
-        // 141006BC0 generates inline sub-unit sprite names from data, not localisation.
+        // the game generates inline sub-unit sprite names from data, not localisation.
         match self.commander_tooltips.sub_units() {
             Ok(subunits) => {
                 let (unit_assets, unit_warnings) =
@@ -318,7 +318,7 @@ impl Assets {
     }
 
     /// Hands the tactic triggers the building, ideology and resource names
-    /// LoadKey's count triggers find (1405434F0), from the databases the
+    /// count triggers find, from the databases the
     /// document already loaded, and gives back the scripted triggers and
     /// count names: the one read every trigger consumer shares.
     pub(crate) fn set_count_trigger_names(
@@ -422,7 +422,7 @@ fn sprite_warnings(
     warnings
 }
 
-// Initialize@1415C6AB0 / 1417D81B0; retained entry templates share their registry.
+// Retained entry templates share their registry.
 const WINDOW_TEMPLATES: &[&[u8]] = &[
     b"naval_region_modifier_entry",
     b"landcombatview",
@@ -477,7 +477,7 @@ fn tooltip_assets(
     windows: &NativeWindows,
     localisation: &installed_content::localisation::Localisation,
 ) -> native_gui::Assets {
-    // 14162E880 / 142223EB0: inline icons use the global sprite registry.
+    // inline icons use the global sprite registry.
     // Both combat drawing and the shared map tooltip painter load this inventory.
     let mut assets = native_gui::Assets::from_localisation(localisation);
     assets.extend(shortcut_assets(windows));
@@ -488,7 +488,7 @@ fn shortcut_assets(windows: &NativeWindows) -> native_gui::Assets {
     let mut assets = native_gui::Assets::default();
     for root in native_templates(windows) {
         for (_, element) in super::gui::elements(root) {
-            // 1422B4460 / 1402A2810: the first shortcut supplies inline keycap sprites.
+            // the first shortcut supplies inline keycap sprites.
             // The hover binder names and refuses non-UTF-8 shortcuts.
             if let Some(shortcut) = element
                 .button()
@@ -509,7 +509,7 @@ fn path(raw: &str) -> String {
         .join("/")
 }
 
-/// Plain texture type defaults from CSpriteType::constructor (142229DE0).
+/// Plain texture type defaults from plain sprite construction.
 fn texture_sprite(name: String, texture: String) -> SpriteFacts {
     SpriteFacts {
         name: name.into_bytes(),
@@ -554,7 +554,7 @@ pub(crate) struct CombatContent {
 
 impl CombatContent {
     pub(crate) fn read(layers: &ResolvedLayers, defines: &Defines) -> io::Result<Self> {
-        // The one trait-name inventory (append_trait 140AD7890) and the one
+        // The one trait-name inventory (trait registration) and the one
         // sub-unit database, for has_trait, has_artillery_ratio, the trait
         // sprites and the commander hovers.
         let traits = installed_content::unit_leader::Traits::registered(layers)?;
@@ -697,8 +697,8 @@ impl Assets {
         for (key, texture) in tactics.pictures() {
             direct.sprites.push(texture_sprite(key.to_owned(), texture));
         }
-        // 1406B3BD0/1406B0A70 leave the singleton picture empty. 141C5DD20
-        // keeps its authored drawable unless that empty picture's path exists.
+        // The singleton picture is empty; its authored drawable stays
+        // unless that empty picture's path exists.
         let null_picture = "gfx/interface/landcombat/tactics/.dds";
         if layers.has_file(null_picture)? {
             direct.sprites.push(texture_sprite(
@@ -709,7 +709,7 @@ impl Assets {
         files.push(("combat runtime textures".into(), direct));
         let registry = Registry::from_files(files);
         let mut wanted = BTreeSet::new();
-        // Construction finds scrollbar and listbox templates through all .gui files (142247660).
+        // Construction finds scrollbar and listbox templates through all `.gui` files.
         let native_assets = native_window_assets(native_windows, &Default::default());
         wanted.extend(
             native_assets
@@ -718,7 +718,7 @@ impl Assets {
                 .filter_map(|name| std::str::from_utf8(name).ok().map(str::to_owned)),
         );
         // Trait-tree connectors also start with GFX_trait_. Load only the
-        // sprites of the traits append_trait (140AD7890) registers, by their
+        // sprites of registered traits, by their
         // first spelling, instead of that editor UI. A name that is not UTF-8
         // is not registered (Traits::unsupported names it).
         for name in traits.spellings() {
@@ -741,10 +741,10 @@ impl Assets {
                 .is_some_and(|plain| plain.texture.starts_with(b"gfx/leaders/"));
             if name.starts_with(b"GFX_terrain_")
                 || name.starts_with(b"GFX_navalcombat_ship_icon_")
-                // 1417DAA40 resolves the air icon by country/archetype/sprite
-                // at runtime, outside the authored .gui resource names.
+                // the game resolves the air icon by country/archetype/sprite
+                // at runtime, outside the authored `.gui` resource names.
                 || name.starts_with(b"GFX_navalcombat_air_icon_")
-                // CNavalCombatResultsAirSurvivorItem, 141DF1660.
+                // Retained aircraft survivors use the same cascade.
                 || name.starts_with(b"GFX_navalcombat_air_small_icon_")
                 || (name.starts_with(b"GFX_unit_")
                     && (name.ends_with(b"_icon_medium") || name.ends_with(b"_icon_medium_black")))
@@ -795,7 +795,7 @@ impl Assets {
                 resident.sprites.insert(name.as_bytes().to_vec());
             }
         }
-        // SelectLanguageFamily@14228DCC0 compares the complete l_ language key.
+        // language-family selection compares the complete l_ language key.
         let mut gui = GuiResources::new(
             registry,
             format!("l_{language}").as_bytes(),
@@ -883,7 +883,7 @@ impl Assets {
         let naval_escape_screening = super::naval_escape::Screening::load(layers);
         let naval_air_groups =
             super::naval_air_groups::Content::load(layers, &mut warnings, equipment);
-        // 141D8A3B0's six modifiers share 140600CF0's registered names.
+        // six modifiers share registered names.
         let weather_modifiers = &super::naval_environment::WEATHER_MODIFIERS;
         let naval_weather_modifiers = match installed_content::static_modifiers::read_blocks(
             layers,
@@ -929,7 +929,7 @@ impl Assets {
                     .collect()
             }
         };
-        let screening_names = ["screening_bonus", "capital_screening_bonus"]; // 140600CF0
+        let screening_names = ["screening_bonus", "capital_screening_bonus"];
         let naval_screening_modifiers =
             match installed_content::static_modifiers::read_blocks(layers, &screening_names) {
                 Ok(blocks) => {
@@ -996,7 +996,7 @@ impl Assets {
                     .collect(),
             }
         };
-        // The one terrain database (14142D0A0), shared by both combat views.
+        // The one terrain database, shared by both combat views.
         let land_terrain = installed_content::terrain::read_definitions(layers)
             .map(Arc::new)
             .map_err(|error| error.to_string());

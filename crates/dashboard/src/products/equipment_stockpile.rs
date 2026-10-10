@@ -2,8 +2,8 @@
 //! widget: what it holds of each variant, what its production lines make of it
 //! per week, and each variant's equipment type (archetype) and domain from content.
 //!
-//! **In stock** is the recorded `Stockpiles` pool (`CProductionStatus` +0x200,
-//! fixed5, `engine::equipment_entry`), compared exactly with the save by the
+//! **In stock** is the recorded `Stockpiles` pool (fixed5,
+//! `engine::equipment_entry`), compared exactly with the save by the
 //! fresh-save oracle (`recorder::oracle::production::compare_stockpiles`). A
 //! variant listed twice holds their sum; one not listed holds none.
 //!
@@ -17,27 +17,23 @@
 //! ships and guns, not stockpiled equipment, and are left out.
 //!
 //! **The surplus or shortage** is the recorded `LogisticsEquipment` balance: series
-//! 16 of `CLogisticsStatus` (`CCountry+0xf98`), the value the Logistics screen's
-//! "Stored" column shows (`LOGISTICS_IN_STOCK`, "Total amount of Equipment
-//! surplus/deficit"), with series 15, the stock the same daily update counted
+//! 16 of the logistics record, the value the Logistics screen's stock balance
+//! column shows, with series 15, the stock the same daily update counted
 //! (`engine::clogistics_status`, table read in daily slot 0, just after the update).
-//! `CLogisticsStatus::PostDailyUpdate@14135ffa0` writes the balance per archetype as
+//! The daily update writes the balance per archetype as
 //! `Avail − clamp(Demand + PoolDifference)`:
 //!
-//! - `Avail` (`Logistics_GetAvailableEquipmentStockpile@14135dbc0`) is series 15
-//!   (for an archetype of category bit 0, convoys, the live pool instead), plus the
-//!   supply system's truck terms for a `supply_truck` archetype (`CEquipmentType
-//!   +0x3eb`, token 0x4d63) or its train term for a category-bit-31 archetype,
-//!   clamped at zero;
-//! - `Demand` (`ComputeArchetypeDemandAdjustment@14135de20`) sums training lines'
-//!   missing equipment, the army's reinforcement requests, garrisons, the cached air
-//!   requirement, operations and trucks and trains; `PoolDifference`
-//!   (`GetArchetypePoolDifference@14135c650`) is outgoing minus incoming lend-lease
-//!   pools; the sum saturates at ±`0x53e2d620fb40`.
+//! - `Avail` is series 15 (for an archetype of category bit 0, convoys, the live
+//!   pool instead), plus the supply system's truck terms for a `supply_truck`
+//!   archetype or its train term for a category-bit-31 archetype, clamped at zero;
+//! - `Demand` sums training lines' missing equipment, the army's reinforcement
+//!   requests, garrisons, the cached air requirement, operations and trucks and
+//!   trains; `PoolDifference` is outgoing
+//!   minus incoming lend-lease pools; the sum saturates at ±[`NEED_BOUND_RAW`].
 //!
-//! The game writes the balance only for countries `IsCountryAIControlled@1401e1fe0`
-//! calls not AI-controlled, so a complete table without rows for the country means
-//! it was AI-controlled at that read (`ai_hours`), not that it holds nothing.
+//! The game writes the balance only for countries that are not AI-controlled,
+//! so a complete table without rows for the country means it was AI-controlled
+//! at that read (`ai_hours`), not that it holds nothing.
 //!
 //! **What is needed** is `available - balance`, using the actual available
 //! operand observed at the same native series-16 write. This includes the
@@ -56,18 +52,17 @@
 //!
 //! **Equipment types** come from content (`installed_content::equipment`): a variant's type is
 //! its recorded equipment token, resolved to the authored key under the lexer's
-//! fold, and grouped by that type's archetype (`CEquipmentType+0x4d8`), as the
-//! Logistics screen groups rows (by archetype pointer, never substituting one
-//! archetype for another). Types are listed in the equipment database's order.
+//! fold, and grouped by that type's archetype, as the Logistics screen groups
+//! rows (by archetype pointer, never substituting one archetype for another).
+//! Types are listed in the equipment database's order.
 //! A variant's type never changes, so any read of the variant table names it.
 //!
-//! **Artwork** uses the transient [`artwork`] product. The Logistics screen draws an archetype's row with
-//! the country's best variant for it (`CProductionStatus::FindBestVariantForArchetype
-//! @140e54540`, which scans the best-variant candidates at `CProductionStatus+0xB8`),
-//! drawn with that variant's icon (`BindEquipmentVariantIcon@140b371f0`, starting
-//! from its icon entry at `CEquipmentVariant+0x450`). The recording holds both:
-//! the candidates are `AvailableEquipmentVariants` roster kind 2 and each
-//! variant's icon entry is in `VariantDefinitions`. Missing candidates or ranking
+//! **Artwork** uses the transient [`artwork`] product. The Logistics screen draws
+//! an archetype's row with the country's best variant for it, selected from its
+//! best-variant candidates and drawn with that variant's icon, starting from its
+//! icon entry. The recording holds both: the candidates are
+//! `AvailableEquipmentVariants` roster kind 2 and each variant's icon entry is in
+//! `VariantDefinitions`. Missing candidates or ranking
 //! operands refuse the picture instead of guessing a design. Variant rows use
 //! their own icon; domain aggregates have no single best archetype variant.
 
@@ -222,9 +217,9 @@ pub struct ScannedStockpile {
     pub logistics_tokens: BTreeMap<u32, String>,
 }
 
-/// `Demand + PoolDifference` saturates at this magnitude in
-/// `CLogisticsStatus::PostDailyUpdate@14135ffa0` (`engine::clogistics_status`; the
-/// same bound as `engine::country_stability`'s ring saturation).
+/// `Demand + PoolDifference` saturates at this magnitude during the daily
+/// logistics update (`engine::clogistics_status`; the same bound as
+/// `engine::country_stability`'s ring saturation).
 pub const NEED_BOUND_RAW: i64 = 0x53e2_d620_fb40;
 
 /// Scans one branch for one country's stockpile, production and variant names.
@@ -429,9 +424,8 @@ struct Cache {
 use super::equipment::{archetype_of, equipment_warnings};
 
 /// Why an archetype's need cannot be derived from its logistics record, when its
-/// available stock holds terms not established at the daily calculation
-/// (`Logistics_GetAvailableEquipmentStockpile@14135dbc0`); none when `Avail`
-/// is exactly `max(0, stock)`.
+/// available stock holds terms not established at the daily calculation; none
+/// when `Avail` is exactly `max(0, stock)`.
 fn need_note(types: &Database, archetype: &str) -> Result<Option<String>, String> {
     let kind = types
         .named(archetype)

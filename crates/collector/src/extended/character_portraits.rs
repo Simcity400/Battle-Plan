@@ -42,8 +42,8 @@ impl Capacities {
         base: usize,
         state: usize,
     ) -> Result<(), &'static str> {
-        // 1406AE170 serializes both character rosters; 141389960 retains
-        // every portrait entry. Empty outputs count their original headers.
+        // Both character rosters retain every portrait entry.
+        // Empty outputs count their original headers.
         let acquired =
             ccharacter::walk_portraits(memory, base, state, &mut [], &mut [], Default::default());
         let count = crate::country_scale::table_demand::rows(acquired.outcome)?;

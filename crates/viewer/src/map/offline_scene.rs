@@ -23,7 +23,7 @@ struct Input {
     hour: i32,
     language: String,
     camera_tilt: f32,
-    /// The client's `settings.txt` `force_pow2_textures`, which the map's texture files load under.
+    /// The client's `settings.txtforce_pow2_textures`, which the map's texture files load under.
     #[serde(default)]
     force_pow2_textures: bool,
     #[serde(default = "default_steps")]
@@ -39,6 +39,8 @@ fn default_steps() -> u32 {
 #[test]
 #[ignore = "offline installed-content integration; requires BATTLE_PLAN_CONTENT_SCENE_INPUT JSON"]
 fn content_stack_scene() -> io::Result<()> {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let path = std::env::var_os("BATTLE_PLAN_CONTENT_SCENE_INPUT").or_else(|| std::env::var_os("HOI4_CONTENT_SCENE_INPUT"))
         .ok_or_else(|| io::Error::other("BATTLE_PLAN_CONTENT_SCENE_INPUT is required"))?;
     let input: Input = serde_json::from_slice(&fs::read(path)?).map_err(io::Error::other)?;
@@ -102,7 +104,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
     eprintln!("Content scene: interface assets");
     let map_data = installed_content::map::load(layers)?;
     let regions = installed_content::regions::read(layers)?.regions;
-    // No settings.txt here: the constructor's 1280 x 720 frame (`142212BD0`), which decides
+    // No settings.txt here: the constructor's 1280 x 720 frame, which decides
     // only which resources the map-icon windows load.
     let icons = sprites::MapIcons::load(
         layers,

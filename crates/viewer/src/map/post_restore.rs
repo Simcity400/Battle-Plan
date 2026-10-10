@@ -1,4 +1,4 @@
-//! Native final scene restore at140FF3450, retaining the seed's b1.
+//! Final scene restore, retaining the seed's b1.
 use std::{io, sync::Arc};
 
 use eframe::wgpu;
@@ -20,7 +20,7 @@ pub(super) fn load(
     decode: Decode,
 ) -> io::Result<Arc<Effect>> {
     let (mut library, mut defines) = fullscreen::library(layers, map, decode);
-    // 140FF1410 caller variants; the viewer's HDR scene has a resolved LUT.
+    // Restore-pass variants; the viewer's HDR scene has a resolved LUT.
     defines.extend(["HDR".into(), "COLOR_LUT".into()]);
     library
         .load(b"gfx/FX/restorescene.shader", &defines)
@@ -40,7 +40,7 @@ impl Restore {
         let mut state =
             gpu::State::authored(&effect.source, &effect.source.techniques[selection.index])
                 .map_err(refuse)?;
-        // 140FF3450 binds program/blend and four physical PS textures/samplers.
+        // Bind program/blend and four physical PS textures/samplers.
         // b1 and raster retain; depth remains disabled. Extra reads refuse.
         state
             .samplers

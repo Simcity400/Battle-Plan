@@ -302,7 +302,7 @@ fn add(lines: &mut OutputMap<Line>, entry: &Entry, hour: i32) -> Result<(), &'st
         } else {
             &mut line.construction
         };
-        // Inverse of the native speed+bank qword ADD at 140F59453.
+        // Undo the wrapping addition of speed and bank.
         // Restore the original signed factory operand even if it wrapped.
         *total = sum(*total, entry.amount.wrapping_sub(entry.bank))?;
         line.bank = sum(line.bank, entry.bank)?;

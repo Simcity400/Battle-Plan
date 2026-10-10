@@ -31,7 +31,7 @@ impl Kind {
     }
 }
 
-/// `CUnitCounterItem::can_join@1418BEF20` checks selection before owner and
+/// The game checks selection before owner and
 /// coarse grouping. Splitting keeps each selected unit on its own plate.
 pub fn joins(selected: &BTreeSet<Unit>, first: Unit, candidate: Unit, split: bool) -> bool {
     let first = selected.contains(&first);

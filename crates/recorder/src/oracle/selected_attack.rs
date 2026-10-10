@@ -121,7 +121,7 @@ fn divisions(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::Res
                 );
             }
             if let Some(expected) = expected {
-                // CArmy C80E00 saves the standard wrapper identity only.
+                // The army writer saves the standard wrapper identity only.
                 // No fake-intel/alternate/daily name substitution is allowed.
                 eq(
                     report,
@@ -155,7 +155,7 @@ fn divisions(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::Res
             }
             terrain(report, &format!("{label}.terrain"), &packet.terrain);
         }
-        report.limitation("CArmy cached attack stat words and the fresh 140607FA0 factor are not independently compared with save text here; saved acclimatization type/value is a different operand, and numerical serializer-omission certification needs the pinned full native serializer audit", &label);
+        report.limitation("CArmy cached attack stat words and the fresh acclimatization factor are not independently compared with save text here; saved acclimatization type/value is a different operand, and numerical serializer-omission certification requires a matched numeric save comparison", &label);
     }
     eq(
         report,
@@ -203,12 +203,12 @@ fn group_packet(
         return;
     }
     required(report, &format!("{label}.commander"), &packet.commander);
-    // Some(None) is genuine null +88. Outer None is selector/read refusal.
+    // Some(None) is genuine null. Outer None is selector/read refusal.
     if let Some(commander) = &packet.commander {
         if let Some(saved_leader) = saved_leader {
             eq(
                 report,
-                &format!("{label}.commander saved direct +88"),
+                &format!("{label}.commander saved direct leader"),
                 commander.as_ref().map(|leader| leader.leader),
                 saved_leader,
             );
@@ -277,7 +277,7 @@ fn groups(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::Result
         "OrdersGroupCounterInputs.attack saved direct leaders / packet checks",
         rows.len(),
     );
-    report.limitation("the saved direct +88 leader reference certifies identity only; leader+FB8/+FE0/+1030/+270 and native terrain+10/fallback0 caches need an independent native witness, not a recalculation from saved leader traits", "OrdersGroupCounterInputs.attack numeric operands");
+    report.limitation("the saved direct leader reference certifies identity only; leader modifier and terrain caches need an independent native witness, not a recalculation from saved leader traits", "OrdersGroupCounterInputs.attack numeric operands");
     Ok(())
 }
 
@@ -336,7 +336,7 @@ fn regions(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::Resul
         "WeatherRegions.attack saved identities / packet checks",
         rows.len(),
     );
-    report.limitation("effective keyAD/key1DD from SWeatherPerRegion+58 cannot be certified by saved weather flags; no save numerical comparator is implemented, and the full F0DDC0 serializer audit must independently delimit its omission", "WeatherRegions.attack effective modifiers");
+    report.limitation("effective weather attack modifiers cannot be certified by saved weather flags; no save numerical comparator is implemented, and its omission needs an independent matched save check", "WeatherRegions.attack effective modifiers");
     Ok(())
 }
 
@@ -361,7 +361,7 @@ fn saved_fort_sum(
             ))
         })?;
         // PENDING producer/token/scan audit: proposed land_fort retains the
-        // signed i32 +308 exactly. No name-based fort classification occurs.
+        // signed i32 exactly. No name-based fort classification occurs.
         sum = sum.wrapping_add(i32::from(building.healthy_level).wrapping_mul(template.land_fort));
     }
     Ok(sum)
@@ -698,7 +698,7 @@ fn countries(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
             "reserved attack owner requires the existing naming singleton",
         ));
     };
-    // Historical suffix absence is reported by recorded() below. It cannot
+    // Historical suffix absence is reported by recorded below. It cannot
     // demand a newly introduced raw certificate to compare no current input.
     let current = rows
         .iter()
@@ -808,7 +808,7 @@ fn scalars(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
         "SimulationFeatures.runtime_scalars runtime packet checks",
         1,
     );
-    report.limitation("the six freshly held native qwords have no numeric save comparator in this proposal. Authenticated Load/GetName wrappers identify four NMilitary globals; the two C684A0 constants and any initialization/load writers need separate native evidence. Offline content numbers are not substitutes for current native memory, and a replay round-trip is not independent acceptance", "SimulationFeatures.runtime_scalars");
+    report.limitation("the six freshly held native qwords have no numeric save comparator in this proposal. Authenticated runtime reads identify four NMilitary globals; the two runtime constants and any initialization/load writers need separate native evidence. Offline content numbers are not substitutes for current native memory, and a replay round-trip is not independent acceptance", "SimulationFeatures.runtime_scalars");
     Ok(())
 }
 

@@ -1,4 +1,4 @@
-//! CArrowObject submission (`1422BEA20`), distinct from CMapArrowObject's b3 pass.
+//! Selected-unit arrow submission, separate from the battle-plan b3 pass.
 use std::{
     io,
     sync::{Arc, OnceLock},
@@ -81,8 +81,8 @@ impl Arrow {
         let source = &effect.source;
         let (state, depth_state, samplers) =
             if let Some(technique) = source.technique("ArrowEffect") {
-                //142345450 grows the sampler array to highest register+1 and leaves gaps null;
-                //1422BEA20 binds only the first min(count,4) PS slots. VS slots remain retained.
+                // The sampler array extends to the highest register plus one, leaving gaps null.
+                // Bind only the first min(count, 4) PS slots. VS slots remain retained.
                 let samplers = source
                     .common
                     .samplers
@@ -98,8 +98,8 @@ impl Arrow {
                     samplers,
                 )
             } else {
-                // Negative/missing effect lookup returns the empty native record. Its depth
-                // falls back to CGraphics+0xA0: default descriptor with comparison ALWAYS.
+                // Negative or missing effect lookup returns an empty record. Its depth
+                // state falls back to the scene default with comparison ALWAYS.
                 (
                     gpu::State {
                         samplers: Default::default(),
@@ -153,14 +153,14 @@ impl Arrow {
         })
     }
 
-    ///1422BEA20 binds a nonempty type bucket before testing any of its arrows' frusta.
+    /// Bind a nonempty type bucket before testing any of its arrows' frusta.
     /// Other buffers, VS resources and the rasterizer stay inherited from the scene.
     pub fn bind_style(&self, retained: &mut shader_scene::State, textures: &[Texture; 4]) {
         let compiled = self.compiled();
         let stream = &mut retained.stream;
         stream.bind_depth_stencil(self.depth.clone());
         stream.bind_blend(self.state.blend, self.state.write_mask);
-        //1422BEA20 does not bind a rasterizer;142400520 only changes shaders/input layout.
+        // Selection changes shaders/input layout and leaves the rasterizer retained.
         match compiled {
             Ok(Some(compiled)) => {
                 stream.bind_program(Some(compiled.selection.clone()), compiled.layouts.clone())
@@ -188,9 +188,9 @@ impl Arrow {
         constants: &[u8; 112],
         textures: &[Texture; 4],
     ) -> io::Result<NativeSubmission> {
-        //1422BE7A0 requests 0x70 unpooled bytes;1423FCC80 aligns that to112.
-        //1422BEA20 uploads matrix/callback/zero/wrap through byte100. Discard padding
-        //100..112 is inside the allocation; reads at112 and beyond are native zeros.
+        // The unpooled request is 0x70 bytes, aligned to 112.
+        // Upload matrix/callback/zero/wrap through byte 100. Discard padding
+        // 100..112 is inside the allocation; reads at 112 and beyond are zeros.
         for stage in [Stage::Vertex, Stage::Pixel] {
             retained.stream.bind_partial_constants(
                 1,
@@ -220,8 +220,8 @@ impl Arrow {
     }
 }
 
-///1422BEA20 restores CGraphics+0x90 after all arrow buckets, including an empty pass.
-///InitializeDevice142224600 creates that handle from the unchanged1423F7140 defaults.
+/// Restore the scene rasterizer after all arrow buckets, including an empty pass.
+/// Device initialization creates that handle from the default state.
 pub fn restore_depth(retained: &mut shader_scene::State) {
     retained
         .stream

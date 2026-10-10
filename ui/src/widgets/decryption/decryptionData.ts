@@ -30,9 +30,8 @@ export interface DecryptionValue {
   started: CipherObservation | null;
 }
 
-/** cipher_row_bind@141A0EC20, matching dashboard/cryptology.rs. Preserve the
- * fixed5 invalid sentinel, wrapping i64 arithmetic and signed division overflow.
- * fixed_round@1424D8760 rounds halves away from zero before the native i32 cast. */
+/** Preserve the fixed5 invalid sentinel, wrapping i64 arithmetic and signed
+ * division overflow. Round halves away from zero before the i32 cast. */
 export function progressPercent(amount: bigint, active: number, threshold: bigint): number | null {
   let ratio: bigint;
   if (threshold === 0n || BigInt.asUintN(64, BigInt.asUintN(64, amount) + 0x7fff_ffff_ffff_fffen) > 0xffff_ffff_ffff_fffcn) {
@@ -183,9 +182,8 @@ export function observationDate(observation: CipherObservation | null, hour: num
   return `${observation.upperBound ? 'by ' : ''}${date ? formatDate(date) : `hour ${observation.hour}`}`;
 }
 
-/** The shared native port in dashboard/cryptology.rs displays bonus days only while active.
- * 1413E1DE0 decrements it from CCountry::daily_update@1406DAAF0 via 140FC6AB0;
- * expiry stores -1 and clears active. Preserve the signed native duration. */
+/** Bonus days display only while active. The daily countdown ends by storing
+ * -1 and clearing active. Preserve the signed duration. */
 export const activeBonusDays = (run: DecryptionValue): number | null => run.broken === true && run.bonusActive !== 0 ? run.bonusDays : null;
 export const amountText = (run: DecryptionValue) => formatAmount(run.amountRaw, 5, 5);
 export const CIPHER_BROKEN = 'Cipher broken';

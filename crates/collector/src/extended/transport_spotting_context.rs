@@ -301,8 +301,7 @@ impl Captured {
                     let end = start
                         .checked_add(count)
                         .ok_or("transport spotting radar arena extent overflow")?;
-                    // Getter141091B70 reaches the original pool+10/+1C.
-                    // Grow from that acquired header without rereading it.
+                    // Grow from the original acquired radar header without rereading it.
                     grow_vec(&mut self.radar.first, end);
                     let output = self
                         .radar
@@ -349,7 +348,7 @@ impl Captured {
                             let end = start
                                 .checked_add(count)
                                 .ok_or("transport spotting intel arena extent overflow")?;
-                            // Getter140CEE3A0 reaches signed intel+1C lanes.
+                            // Retain every signed intel lane.
                             grow_vec(&mut self.intel.first, end);
                             let output = self
                                 .intel

@@ -231,7 +231,7 @@ impl NamingWork {
             "bytes_capacity": self.capacity,
             "cached_name": { "captured": self.cached_captured, "refused": self.cached_refused,
                 "bytes_required": self.cached_required, "bytes_capacity": self.cached_capacity },
-            "scope": "hourly generator operands and exact GetName cache for admitted DivisionStatus rows; each refused field is absent while the status prefix remains available",
+            "scope": "hourly generator operands and exact retained name cache for admitted DivisionStatus rows; each refused field is absent while the status prefix remains available",
         })
     }
 }
@@ -305,8 +305,8 @@ impl Capacities {
         }
     }
 
-    /// 140C72F00 supplies each army's +340 member; 1409B5640/1409B7290
-    /// select the +88 override or resolved template +1D0 group's key.
+    /// Each army's name member supplies the override or resolved template
+    /// name-group key.
     /// This off-hour hint supplies storage only, never recorded naming values.
     pub(crate) fn presize_names(
         &mut self,
@@ -723,12 +723,10 @@ impl Captured {
         work.attrition.observe(&self.attrition)
     }
 
-    /// CArmy+0x340 is the member pointer (140C72F00). RefreshCachedName
-    /// 1409B4C40 calls 1409B5640. Keep the language-neutral generator operands
-    /// and independently copy the exact +0x60 GetName cache after that pass.
-    /// Order/bind writers are 1409BC230/1409BBC40; rename 1413529F0 reaches
-    /// 140C7F800/860/9C0, and template/load/stat paths 140C7EE00/140C7D090/
-    /// 1401D8120 -> 140C7DEB0 also refresh it. Inputs therefore read hourly.
+    /// Keep each army's language-neutral generator operands and
+    /// independently copy its exact retained name cache after that pass.
+    /// Order, binding, rename, template, load and statistics changes can all
+    /// refresh the cache. Inputs therefore read hourly.
     fn capture_naming(&mut self, memory: &impl Memory, base: usize, seeds: &[DivisionSeed]) {
         self.naming.reset();
         self.names.reset();
@@ -764,8 +762,8 @@ impl Captured {
             match result {
                 Ok(cname_group_member::Naming::Row(inputs)) => {
                     self.names.len += inputs.custom.1;
-                    // The reader already applies 1409B5640: a programmatic
-                    // +0x88 override is shown when the resolved group is null.
+                    // The reader shows the programmatic name override when
+                    // the resolved group is null.
                     row.inputs = Some(inputs);
                 }
                 Ok(cname_group_member::Naming::DoesNotFit) => {
@@ -776,7 +774,7 @@ impl Captured {
             self.naming.len += 1;
         }
         // Every established generator input finishes before the optional
-        // GetName cache. Its separate bytes arena keeps refusals independent.
+        // retained name cache. Its separate bytes arena keeps refusals independent.
         self.cached_names.reset();
         for (seed, row) in seeds.iter().zip(&mut self.naming.first[..self.naming.len]) {
             let result = seed
@@ -1640,7 +1638,7 @@ mod tests {
         let mut registry = template_registry(&mut world);
         // An unresolved reference (including the invalid sentinel) is native
         // known absence. Refuse an actually malformed template registry while
-        // leaving the independent GetName member/cache readable.
+        // leaving the independent retained name member/cache readable.
         registry.0[engine::creference_registry::COUNT..engine::creference_registry::COUNT + 4]
             .copy_from_slice(&u32::MAX.to_le_bytes());
         let mut members = division_name_members(&mut world);
@@ -1944,8 +1942,8 @@ mod tests {
             .find(|&template| template != ordinary)
             .unwrap();
         let handle = word(fake - world.base + 8);
-        // SetTemplate@1409BBC40 binds the member's own +0x58 reference;
-        // ResolveNameGroup@1409B7290 does not consult DivisionRow.template.
+        // Naming follows the member's own template reference;
+        // it does not consult DivisionRow.template.
         members[0]
             [cname_group_member::TEMPLATE_REFERENCE..cname_group_member::TEMPLATE_REFERENCE + 8]
             .copy_from_slice(&handle.to_le_bytes());
@@ -2051,8 +2049,8 @@ mod tests {
             member[custom + 16..custom + 24].copy_from_slice(&8_u64.to_le_bytes());
             member[cname_group_member::FLAG_B] = 1;
         }
-        // ResolveNameGroup@1409B7290 follows the member's nonnull +0x58
-        // reference, then reads the template's +0x1D0 group pointer.
+        // Naming follows the member's nonnull template reference,
+        // then reads that template's name-group pointer.
         let template =
             engine::read::<u64>(&world.live(), world.armies[0] + carmy::STANDARD_TEMPLATE).unwrap()
                 as usize;

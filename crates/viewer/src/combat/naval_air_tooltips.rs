@@ -1,10 +1,9 @@
-//! Air-group icon hovers assembled from each CFEXAir's recorded operands.
+//! Air-group icon hovers assembled from each recorded plane's operands.
 use super::binding::{TextIcons, builtin, displayable};
 use installed_content::localisation::{Argument, Localisation};
 use replay::rows::{ModifierDefinitionRow, NavalCombatPlane, NavalCombatShipRow};
 
-// Executable keys in 1417D2430 and 1415B46D0. Category names are selected
-// by 140F734A0 and then localised by 140F742C0.
+// Hover keys and selected category names are resolved through content localisation.
 super::text::tooltip_keys! {
     NAVAL_COMBAT_AIRWING_TOOLTIP_HEADER = "NAVAL_COMBAT_AIRWING_TOOLTIP_HEADER",
     NAVAL_COMBAT_AIRWING_TOOLTIP_HEADER_EXTERNAL = "NAVAL_COMBAT_AIRWING_TOOLTIP_HEADER_EXTERNAL",
@@ -30,7 +29,8 @@ fn stored(loc: &Localisation, recorded: &str, value: &[u8], what: &str) -> Resul
     dashboard::scripted_text::stored_text(loc, recorded, value, what)
 }
 
-/// 14160C430 plane-stacking multiplier, but returns zero for an empty array.
+/// Round the active wing count times the perspective side's plane-stacking
+/// multiplier, returning zero for an empty array.
 fn wings_striking(total: usize, penalty: i64) -> i32 {
     if total == 0 {
         return 0;
@@ -44,7 +44,7 @@ fn wings_striking(total: usize, penalty: i64) -> i32 {
     rounded.max(1) as i32
 }
 
-/// 140F734A0's fixed executable key switch. A category bit set the switch
+/// fixed executable key switch. A category bit set the switch
 /// does not recognise uses its EQUIPMENT_UNKNOWN default.
 fn category_key(mask: u64) -> &'static str {
     match mask {
@@ -101,8 +101,8 @@ fn category_key(mask: u64) -> &'static str {
     }
 }
 
-/// LocalizeShortNameForCountry@140BBAA50 checks TAG_key_short, key_short,
-/// then LocalizeForCountry@140BBA780 for the ordinary key.
+/// country-specific short-name localisation checks TAG_key_short, key_short,
+/// then country-specific localisation for the ordinary key.
 pub(crate) fn wing_short_name(loc: &Localisation, tag: &str, key: &str) -> Result<String, String> {
     let short = format!("{key}_short");
     let qualified = format!("{tag}_{short}");
@@ -116,7 +116,7 @@ pub(crate) fn wing_short_name(loc: &Localisation, tag: &str, key: &str) -> Resul
     super::text::localise(loc, &selected, &[])
 }
 
-/// 141963700 -> 14195EEC0 -> 140C29020 appends each linked carrier source's
+/// the game appends each linked carrier source's
 /// cloned child tree in the Table 270 source order. The winning HQ influence
 /// and doctrine/critical display scales are the same as the ship hovers.
 pub(super) fn carrier_key_breakdown(
@@ -164,7 +164,7 @@ pub(super) fn carrier_key_breakdown(
     Ok(text)
 }
 
-/// 1417D2430 joins 141963460's distinct wing short names with comma-space,
+/// the game joins distinct wing short names with comma-space,
 /// then formats its two native header branches and the recorded hit vectors.
 #[allow(clippy::too_many_arguments)] // The plane's recorded row, its native texts and text resources.
 pub(super) fn plane_hover(
@@ -179,7 +179,7 @@ pub(super) fn plane_hover(
     icons: &dyn TextIcons,
 ) -> Result<String, String> {
     let total_wings = i32::try_from(plane.wings[0].len())
-        .map_err(|_| "CFEXAir+0x28 wing count exceeds i32".to_owned())?;
+        .map_err(|_| "plane wing count exceeds i32".to_owned())?;
     let striking = wings_striking(plane.wings[0].len(), stacking_penalty);
     let mut text = if plane.flags[1] == 0 {
         builtin(
@@ -218,7 +218,7 @@ pub(super) fn plane_hover(
             ],
         )?
     };
-    // 1417D2430 folds equal +9F8 wing categories in first occurrence order.
+    // Fold equal wing categories in first occurrence order.
     let mut kills: Vec<(u64, i32)> = Vec::new();
     for hit in &plane.kills {
         if let Some((_, total)) = kills
@@ -262,7 +262,7 @@ pub(super) fn plane_hover(
                 loc,
                 recorded_language,
                 &hit.target_name,
-                "CFEXAir+0x100 damaged ship name",
+                "plane damaged-ship name",
             )?;
             let ratio = if hit.denominator < 1 {
                 hit.damage
@@ -292,7 +292,7 @@ pub(super) fn plane_hover(
             }
         }
     }
-    // 1417D2430 appends 141965010's first eligible wing text after the
+    // the game appends first eligible wing text after the
     // damaged-ship block, inserting one newline only when one is needed.
     if !efficiency_suffix.is_empty() {
         if !text.is_empty() && !text.ends_with('\n') {
@@ -303,8 +303,8 @@ pub(super) fn plane_hover(
     displayable(icons, text)
 }
 
-/// 1417DAA40 starts with the first plane's carrier-efficiency text, then
-/// ensures two trailing newlines before every 1417D2430 member description.
+/// Start with the first plane's carrier-efficiency text, then ensure two
+/// trailing newlines before each member description.
 #[allow(clippy::too_many_arguments)] // The group's recorded rows, native texts and text resources.
 pub(super) fn group_hover(
     planes: &[&NavalCombatPlane],
@@ -342,8 +342,8 @@ pub(super) fn group_hover(
     Ok(text)
 }
 
-/// 141965010 appends the overall efficiency and an optional host-organisation
-/// parenthesis for the first wing whose air base has no state at +0x68.
+/// the game appends the overall efficiency and an optional host-organisation
+/// parenthesis for the first wing whose air base has no state.
 pub(super) fn carrier_org_suffix(
     final_efficiency: i64,
     organisation_ratio: i64,
@@ -384,7 +384,7 @@ pub(super) fn carrier_org_suffix(
     Ok(text)
 }
 
-/// 141963700 appends the efficiency explanation only for an active carrier
+/// the game appends the efficiency explanation only for an active carrier
 /// wing whose sortie efficiency differs from ONE. The factors are the already
 /// recorded sortie inputs; its fixed-base line deliberately uses the define
 /// even during the initial stance interval, as the native formatter does.
@@ -407,7 +407,7 @@ pub(super) fn efficiency_prefix(
             return Ok(0);
         }
         super::naval_air_groups::metadata_value(e, usize::from(index == 0), term.raw).ok_or_else(
-            || format!("CFEXAir carrier efficiency modifier {index} metadata is unavailable"),
+            || format!("plane carrier efficiency modifier {index} metadata is unavailable"),
         )
     };
     let crowd = if e.container_present != 0 {
@@ -433,7 +433,7 @@ pub(super) fn efficiency_prefix(
         &[("VAL", Argument::Fixed5(sortie_efficiency))],
     )?;
     text.push('\n');
-    // 141963700 formats this base percent at precision zero, green H.
+    // the game formats this base percent at precision zero, green H.
     let base = installed_content::fixed5::fixed5_percent(base, 0, true);
     text.push_str(&builtin(icons, loc, STAT_BASE_VALUE, &[])?);
     text.push_str(&format!("\u{11}H{base}\u{11}!\n"));
@@ -475,7 +475,7 @@ pub(super) fn efficiency_prefix(
                 text.push_str("    ");
                 text.push_str(&builtin(icons, loc, MODIFIER_CARRIER_NIGHT_TRAFFIC, &[])?);
                 text.push_str(": ");
-                // 141963700 hard-codes green here, including a negative
+                // the game hard-codes green here, including a negative
                 // country modifier; the subtotal above retains its own red.
                 let country = installed_content::fixed5::fixed5_percent(country_night, 0, true);
                 text.push_str(&format!("\u{11}G{country}\u{11}!"));
@@ -487,8 +487,8 @@ pub(super) fn efficiency_prefix(
     displayable(icons, text)
 }
 
-/// 14195EEC0 emits this line after a nonzero box-2/3 screening bonus; its
-/// caller in 141963700 supplies the two-space indentation string.
+/// the game emits this line after a nonzero box-2/3 screening bonus; its
+/// caller in the game supplies the two-space indentation string.
 pub(super) fn screening_line(
     value: i64,
     loc: &Localisation,

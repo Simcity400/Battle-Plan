@@ -1,15 +1,14 @@
 //! Land-model camouflage from recorded acclimatization and matching content.
 //!
-//! `140607DD0` selects the first strictly greatest positive category weight,
+//! The game selects the first strictly greatest positive category weight,
 //! compares it with maximum * `NGraphics.ACCLIMATIZATION_CAMO_SHOW_AT`, rejects
-//! the current province's `forbid_camo_when`, then `140607900` evaluates the
+//! the current province's `forbid_camo_when`, then the game evaluates the
 //! ordered `change_camo_when` conditions against the current province and its
-//! state's share (`ACCLIMATIZATION_CAMO_SHOW_WHEN_IN_STATE`). `141918710` tries
+//! state's share (`ACCLIMATIZATION_CAMO_SHOW_WHEN_IN_STATE`). The game tries
 //! the resulting `<entity>_<condition>` and keeps the base if it is absent.
 //!
-//! A condition is literal `snow` (`1406087E0`: effective snow positive, the
-//! executable's own keyword) or a terrain name (`140608930`, compared with the
-//! province's authored terrain). Effective snow is `140F05480`'s
+//! A condition is literal `snow` (effective snow positive) or a terrain name
+//! compared with the province's authored terrain. Effective snow is the game's
 //! `min(permanent + current, snow_gain_max)`, all three recorded.
 
 use std::{collections::BTreeMap, io};
@@ -180,7 +179,7 @@ impl Content {
     }
 }
 
-/// `141918710` does not replace a valid base with a nonexistent seasonal model.
+/// The game does not replace a valid base with a nonexistent seasonal model.
 pub fn entity(base: &str, suffix: Option<&str>, exists: impl Fn(&str) -> bool) -> String {
     if let Some(suffix) = suffix.filter(|suffix| !suffix.is_empty()) {
         let candidate = format!("{base}_{suffix}");
@@ -282,8 +281,8 @@ impl<'a> Context<'a> {
         }
         if condition == SNOW {
             let Some((current, permanent)) = self.weather_snow.get(&province).copied() else {
-                // `140F04D50` returns null before touching either snow word
-                // when this id lies beyond CWeatherManager+0x1C.
+                // An ID outside the weather province census returns no snow
+                // before either snow operand is read.
                 if self
                     .weather_count
                     .is_some_and(|count| province as usize >= count)

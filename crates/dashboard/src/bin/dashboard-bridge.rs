@@ -100,7 +100,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let service = Service::new(Arc::new(|event| emit(&event)))?;
-    service.configure_content(&config, false);
+    if let Err(error) = service.configure_content(&config, false) {
+        eprintln!("{error}");
+    }
     let mut input = io::stdin().lock();
     while let Some(command) = read_command(&mut input)? {
         let mut command = match command {
@@ -128,10 +130,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     user_dir: user,
                     ..config.clone()
                 };
-                match next.save() {
+                match next
+                    .save()
+                    .and_then(|()| service.configure_content(&next, false))
+                {
                     Ok(()) => {
                         config = next;
-                        service.configure_content(&config, false);
                         let payload = serde_json::json!({ "game": config.game_dir, "user": config.user_dir, "contentReady": true }).to_string();
                         for event in ReplyChunks::new(id, payload).map_err(invalid)? {
                             if !emit(&event) {

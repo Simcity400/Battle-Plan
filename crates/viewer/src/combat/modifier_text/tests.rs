@@ -164,7 +164,7 @@ fn weather_icon_requires_a_nonzero_effective_category_one_entry() {
     assert!(visible.has_category_one(&definitions).unwrap());
 }
 
-/// One CModifier entry `key = value` as the file's reader returns it.
+/// One modifier entry `key = value` as the file's reader returns it.
 fn entry(key: &str, value: &str) -> installed_content::parser::Item {
     installed_content::parser::Item {
         key: Some(key.as_bytes().to_vec()),
@@ -175,8 +175,8 @@ fn entry(key: &str, value: &str) -> installed_content::parser::Item {
     }
 }
 
-/// `custom_modifier_tooltip` keys read in order by the shared CModifier
-/// reader (1406031A0), in its table's slot order.
+/// `custom_modifier_tooltip` keys read in order by the shared modifier
+/// reader, in its table's slot order.
 fn keys(keys: &[&str]) -> TooltipTable {
     let mut modifiers = installed_content::modifiers::Modifiers::default();
     for key in keys {
@@ -224,7 +224,7 @@ fn sparse_definition_tables_are_admitted_and_format_by_index() {
         .unwrap()
         .unwrap();
     assert_eq!(definitions.index("key_3"), Ok(Some(3)));
-    // The lexer folds a bare token before looking it up (1424A7A90), so
+    // The lexer folds a bare token before looking it up, so
     // an authored `KEY_3` is the recorded `key_3`.
     assert_eq!(definitions.index("KEY_3"), Ok(Some(3)));
     let authored = installed_content::modifiers::values(&[entry("Key_3", "0.1")]);
@@ -279,7 +279,7 @@ fn custom_tooltip_keys_follow_the_robin_hood_slot_order() {
     );
 }
 
-/// The block keeps the reader's source order (1406042A0): a modifier
+/// The block keeps the reader's source order: a modifier
 /// stored visibly, then in `hidden_modifier`, then visibly again takes
 /// the last value and stays hidden; visible entries are not applied
 /// before hidden ones.
@@ -341,9 +341,8 @@ fn frame(definitions: usize, tokens: usize) -> DecodedFrame {
     }
 }
 
-/// Rows sharing a token keep the last registration, the highest index
-/// (14054A990 through 140548A80); tokens whose names differ only in case,
-/// which the game never holds, are refused by name.
+/// Rows sharing a token keep the last registration, the highest index.
+/// Tokens whose names differ only in case are inconsistent and refused by name.
 #[test]
 fn rows_sharing_a_token_keep_the_last_registration() {
     use replay::{

@@ -1,4 +1,4 @@
-//! Same-hour selected transport suffix checks. E14640's saved source and
+//! Same-hour selected transport suffix checks. The transfer writer's saved source and
 //! combat count compare exactly; cached weight/coastal predicates need native
 //! witnesses. No viewer-local selection or prospective result is recorded.
 use super::{Report, invalid, pass_inputs::eq};
@@ -103,7 +103,7 @@ fn navy_access(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::R
                 continue;
             }
         };
-        // E9D0C0 writes per_region_access only when its array is nonempty.
+        // The navy writer writes per_region_access only when its array is nonempty.
         // The independently parsed enclosing strategic_navy block proves
         // presence even when that child was omitted.
         eq(
@@ -137,7 +137,7 @@ fn navy_access(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::R
             .enumerate()
             .filter(|(_, mode)| (**mode as i8) <= 0)
         {
-            report.limitation("native navy access serializer E9D0C0 omission proves signed nonpositive; exact raw zero/high-bit byte is not saved",
+            report.limitation("navy access writer omission proves signed nonpositive; exact raw zero/high-bit byte is not saved",
                 format!("{label} region {region} raw {mode}"));
         }
     }
@@ -149,7 +149,7 @@ fn navy_access(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::R
     Ok(())
 }
 
-/// E9D0C0 secondary+A8 (=primary+B0) emits a pair only for CHAR > 0.
+/// The navy writer emits an access pair only for a signed-positive byte.
 /// A fresh native save cannot explicitly contain zero/high-bit modes. Keep
 /// duplicates and unsupported saved forms visible instead of normalizing them.
 pub(super) fn saved_access_modes(pairs: &[(u32, u8)]) -> io::Result<BTreeMap<u32, u8>> {
@@ -252,7 +252,7 @@ fn convoys(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::Resul
             );
             continue;
         };
-        // FFDB00 omits zero entries unless +38 permits them. Comparing the
+        // The pool writer omits zero entries unless its zero-entry policy permits them. Comparing the
         // nonzero projection never guesses that unsampled byte. Order and
         // repeated full handles survive; mask1 never selects this census.
         let actual: Vec<_> = pool.iter().filter(|entry| entry.quantity != 0).collect();
@@ -319,7 +319,7 @@ fn convoys(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::Resul
                 );
             }
         }
-        report.limitation("signed reservations, runtime transfer priority, +1288 alternate stock, held-cache invalidation, zero-entry inclusion, variant classifier/stat caches and original loan lifetime are not independently serialized here; saved nonzero pool agreement does not certify those operands", &label);
+        report.limitation("signed reservations, runtime transfer priority, alternate stock, held-cache invalidation, zero-entry inclusion, variant classifier/stat caches and original loan lifetime are not independently serialized here; saved nonzero pool agreement does not certify those operands", &label);
     }
     report.compared(
         "CountryAppearance.transport_convoys original pool and cache joins",
@@ -473,7 +473,7 @@ fn unit(
                     report.difference(
                         format!("{label}.transfer saved source"),
                         "missing province",
-                        "mandatory E14640 source",
+                        "mandatory transfer source",
                     );
                 } else {
                     eq(
@@ -493,7 +493,7 @@ fn unit(
             }
         }
     }
-    report.limitation("stat+2B8 weight and the real template B8EBD0 coastal predicate are runtime inputs: the save does not independently serialize these getter operands. Current-hour/identity checks do not certify pointer lifetime, cache writers or quiescence; use the matched native witness and smoke workflow", &label);
+    report.limitation("unit weight and the template coastal predicate are runtime inputs: the save does not independently serialize these getter operands. Current-hour/identity checks do not certify pointer lifetime, cache writers or quiescence; use the matched native witness and smoke workflow", &label);
 }
 
 fn divisions(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::Result<()> {

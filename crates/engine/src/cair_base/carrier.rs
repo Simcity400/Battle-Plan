@@ -1,12 +1,9 @@
-//! Additional CAirBase inventory inputs for 140C45850, pinned a729.
-//!
-//! These helpers run inside the existing registration observation. They do
-//! not walk another base, country, pool or wing roster. The registration
-//! owner supplies its exact indexed-container certificates and copied pool
-//! header; dense countries, retained host bytes and both fuel scalars fail
-//! independently of the existing capacity/membership row.
-//! All scratch and output storage is caller-owned. Fixed acquisition does not
-//! allocate; worker arenas grow from their original native headers.
+//! Additional air-base inventory inputs within the existing registration
+//! observation. No additional base, country, pool or wing roster is walked.
+//! The owner supplies indexed-container certificates and copied pool headers.
+//! Dense countries, retained host bytes and each fuel scalar fail independently
+//! of the capacity and membership row. Scratch and output are caller-owned;
+//! fixed acquisition does not allocate and workers grow from original headers.
 
 use crate::{
     Memory, cair_wing_pool, ccountry, ccountry_air_container, cname_group_member,
@@ -15,8 +12,7 @@ use crate::{
     walk::Buffer,
 };
 
-/// 140C427A0 compares this signed word when grouping pool pointers. It is
-/// distinct from the content database index at definition+58C.
+/// Signed grouping key for pool pointers, separate from the content database index.
 const TYPE_INDEX: usize = 0x60;
 
 /// One indexed slot authenticated by the existing registration reader before
@@ -46,16 +42,16 @@ pub(crate) struct DenseCountries<'a> {
     pub required: usize,
 }
 
-/// Copy 140C449F0's exact dense occurrence order and authenticate every
-/// occurrence against this base's indexed registration. The raw country is
-/// read at the dense occurrence; the existing resolver is reused for positive
-/// linked countries. This is O(indexed slots + dense occurrences), with no
-/// pointer sorting, deduplication, pool rewalk or reconstructed country list.
+/// Copy dense occurrences in their original order and authenticate each
+/// against this base's indexed registration. Read the raw country at that
+/// occurrence and reuse the resolver for positive linked countries. Work is
+/// linear in indexed slots and dense occurrences, without sorting, deduping,
+/// pool rewalks or reconstructed country lists.
 ///
-/// `indexed` must cover the base's complete +30 vector, with certificates
-/// installed only after its container vtable/raw country/slot check. It is
-/// cleared at each base and retained only until this helper returns. Caller
-/// passes the already authenticated base pointer and its full handle.
+/// `indexed` covers the complete indexed vector. Install certificates only
+/// after checking container vtable, raw country and slot. Clear it for each
+/// base and retain it only until this helper returns. The caller supplies
+/// the authenticated base pointer and full handle.
 pub(super) fn dense_countries<M: Memory>(
     memory: &M,
     air_base: usize,
@@ -69,7 +65,7 @@ pub(super) fn dense_countries<M: Memory>(
     output.required = 0;
     let dense = dense_header(memory, air_base)?;
     output.required = dense.count as usize;
-    // 140C449F0 copies every +48 dense occurrence, including repeats.
+    // Copy every dense occurrence, including repeats.
     output.rows.ensure(output.required)?;
     cpdx_array::pointers(
         memory,
@@ -132,9 +128,9 @@ fn country_slot<M: Memory>(
     }
 }
 
-/// 140C44DB0 consumes both scalars even when no pool or active wing exists.
-/// Each result retains its independent failure; the second is still read if
-/// the first fails. The caller supplies its authenticated container pointer.
+/// Both fuel scalars are consumed even without pools or active wings.
+/// Results fail independently; read the second even if the first fails.
+/// The caller supplies its authenticated container pointer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContainerFuel {
     pub demand: Result<i64, &'static str>,
@@ -238,10 +234,9 @@ pub(super) fn pool_metadata<M: Memory>(
     })
 }
 
-/// The real/null header law matches the existing transport pool reader.
-/// Copy constructor1403C5F70 copies NAME+18 and DB index+58C together into
-/// country-local clones; return that authenticated content index, never a
-/// first-match token lookup. Capture +60 separately as the native grouping key.
+/// The real/null header rules match the transport pool reader. Country-local
+/// clones copy the name and database index together. Return that authenticated
+/// index without a first-match token lookup. Capture the grouping key separately.
 fn pool_definition(
     memory: &impl Memory,
     image: usize,
@@ -261,10 +256,9 @@ fn pool_definition(
         }
         index as u32
     } else {
-        // RegisterNullSubUnitDefinitions140AB54B0 constructs DAT1433212A0
-        // then registers it in vector40's first entry. Pool constructor
-        // 140F45290 obtains that exact singleton through140B8F770. A matching
-        // vtable/token at another address does not prove the native null entry.
+        // The first content-vector entry registers the exact null-definition
+        // singleton used by pool construction. Matching vtable and token at another
+        // address cannot authenticate that null entry.
         let singleton = image
             .checked_add(definition::NULL_OBJECT_RVA)
             .and_then(|at| read::<u64>(memory, at))
@@ -313,14 +307,12 @@ fn definition_header(
     }
 }
 
-/// 140C44FC0 resolves this base's full host reference and calls CShip's retained
-/// getter. Null/known-stale references are known empty text. Resolution/cache
-/// acquisition failures stay errors, independently from other base inputs.
-/// Raw bytes are copied uncommitted, exactly as cship::cached_name; caller
-/// advances the byte cursor only when it admits the selected base's packet.
-/// `source` is this observation's authenticated base row. `resolver` must
-/// have been constructed with `image` for this same observation; neither its
-/// headers nor this row may be carried across callbacks or off-hour hints.
+/// Resolve this base's full host reference and read its retained ship name.
+/// Null and known-stale references are known empty text. Resolution or cache
+/// failures stay independent errors. Copy raw bytes uncommitted as in
+/// cship::cached_name; advance the cursor only when admitting the base packet.
+/// `source` is this observation's authenticated base row; `resolver` must use
+/// `image` from that observation. Neither can cross callbacks or off-hour hints.
 #[cfg(test)]
 pub(crate) fn host_name(
     memory: &impl Memory,

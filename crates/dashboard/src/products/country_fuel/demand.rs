@@ -1,6 +1,6 @@
-//! FuelPanel_BuildBreakdown@1410DE880 current required-use rates, independent
-//! of completed updates and receipts (+628 division / +500 task-force caches).
-//! Raw native arithmetic/topology belongs to the supplying FuelDemandRead.
+//! Current required-use rates for the fuel-panel breakdown, independent of
+//! completed updates and receipts cached by divisions and task forces.
+//! Raw arithmetic/topology belongs to the supplying FuelDemandRead.
 use super::*;
 use replay::rows::{FuelDemandRead, FuelDemandSite, FuelDemandUnit, FuelDemandWing};
 

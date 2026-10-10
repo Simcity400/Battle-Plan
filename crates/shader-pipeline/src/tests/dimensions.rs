@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn cube_sampling_of_2d_srv_is_zero_without_changing_later_2d_draws() {
+    crate::tests::initialize_runtime_tables();
     let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
     let (device, queue) = device();
     let arena = gpu::Arena::new(&device);
@@ -138,6 +139,7 @@ fn cube_sampling_of_2d_srv_is_zero_without_changing_later_2d_draws() {
 
 #[test]
 fn texture_binding_errors_name_the_effect_and_technique() {
+    crate::tests::initialize_runtime_tables();
     let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
     let (device, _queue) = device();
     let arena = gpu::Arena::new(&device);

@@ -1,10 +1,9 @@
 //! Exiled-division combat badges and entry flags from the exile operands the
 //! combat row records for its committed divisions.
 //!
-//! 1415CA660 draws frame 14 when an opposing committed unit's owner occupies
-//! the exile country (14129FAD0 attacking, 14129FB60 defending) and frame 15
-//! when the division stands in a state the exile country cores. No displayed
-//! frame is recorded.
+//! Frame 14 shows when an opposing committed owner occupies the exile
+//! country. Frame 15 shows when the division stands in a state the exile
+//! country cores. These frames are derived, not recorded.
 use crate::table_access::{Available, rows};
 use replay::{
     frame::DecodedFrame,
@@ -12,7 +11,7 @@ use replay::{
 };
 use std::{collections::BTreeMap, fmt, io};
 
-/// The template origin `CArmy::IsExiled` (140C79AC0) tests for.
+/// The template origin indicating an exiled division.
 const EXILE_ORIGIN: i32 = 2;
 
 /// Why a table this hour holds no row for a key.
@@ -32,7 +31,7 @@ pub(super) enum Gap<'a> {
 pub(super) enum Refused<'a> {
     /// A division's owner (its own, or an opposing committed unit's).
     Division { division: u64, gap: Gap<'a> },
-    /// A country's canonical slot, which 1401AFD40 compares.
+    /// A country's canonical slot, which the game compares.
     CountryLink { country: u32, gap: Gap<'a> },
 }
 
@@ -59,7 +58,7 @@ impl fmt::Display for Refused<'_> {
 
 /// Whether any candidate passes `test`. A pass decides even when another
 /// candidate is undecided; otherwise the first undecided candidate leaves the
-/// answer undecided. Used by `Inputs::contains` and by 1415CA660's opponent
+/// answer undecided. Used by `Inputs::contains` and by opponent
 /// loop, which shows frame 14 when any opponent qualifies.
 fn any<'a, T>(
     candidates: impl IntoIterator<Item = T>,
@@ -120,9 +119,8 @@ impl<'a> Inputs<'a> {
         })
     }
 
-    /// 140C79AC0 then 140C770A0: the exile country of an exiled template, the
-    /// primary operand when positive. 140C79AC0 is exactly `origin == 2`;
-    /// every other origin is not exiled and takes the ordinary-owner path.
+    /// Use the exile country for an exiled template when positive. Exactly origin
+    /// 2 is exiled; every other origin follows the ordinary-owner path.
     fn exile_country(row: &LandCombatDivisionRow) -> Option<u32> {
         let exile = row.exile.as_ref()?;
         (exile.origin_type == EXILE_ORIGIN).then_some(if exile.country >= 1 {
@@ -146,7 +144,7 @@ impl<'a> Inputs<'a> {
         })
     }
 
-    /// 1415BA240's inline flag country for a committed entry: an exiled
+    /// inline flag country for a committed entry: an exiled
     /// template's country, else the division's owner.
     pub(super) fn entry_owner(&self, row: &LandCombatDivisionRow) -> Result<u32, Refused<'a>> {
         match Self::exile_country(row) {
@@ -155,7 +153,7 @@ impl<'a> Inputs<'a> {
         }
     }
 
-    /// 1401AFD40: raw equality first; distinct nonzero references compare
+    /// raw equality first; distinct nonzero references compare
     /// canonical slots. Zero never goes through the alias lookup.
     fn equal(&self, first: u32, second: u32) -> Result<bool, Refused<'a>> {
         if first == second {
@@ -181,7 +179,7 @@ impl<'a> Inputs<'a> {
 
     /// Frame 14: an opposing committed unit whose owner occupies the exile
     /// country, gated on this side's positive occupier bonus (attack, defence).
-    /// 1415CA660 counts every qualifying opponent (14129FAD0/14129FB60) and
+    /// the game counts every qualifying opponent and
     /// shows the frame when the count is positive, so one qualifying opponent
     /// decides even when another's owner or link is unknown.
     fn against_occupier(
@@ -203,7 +201,7 @@ impl<'a> Inputs<'a> {
         })
     }
 
-    /// The native `+0x5C0` count behind frame 14, which the badge's hover
+    /// The opposing-unit count behind frame 14, which the badge's hover
     /// shows: opposing committed units only, zero without the bonus. Unlike
     /// the badge it needs every opponent's owner.
     pub(super) fn occupiers(

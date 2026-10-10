@@ -5,7 +5,7 @@ import { orderedRuns } from '../country-measure/measureData.ts';
 import { lineName, rawAt, termLabel } from './stabilityData.ts';
 import type { Measure } from './stabilityData';
 
-/** The drill-down of stability or war support (mock-up drill-1): the parts of the
+/** The drill-down of stability or war support: the parts of the
  * value at one day as bars, and the same parts over time as a stacked chart, from
  * the `stability-parts` product. A part is known only where it was recorded. */
 

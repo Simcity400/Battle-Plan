@@ -54,8 +54,7 @@ pub struct Capacities {
 }
 
 impl Capacities {
-    /// 140CD2A60/140CD6600 retain each side's ship and plane vectors;
-    /// 141962920/28E0/28A0 and 14196A2A0/260/220 transfer their hit lists.
+    /// Each side retains its ship and plane vectors, including their hit lists.
     pub(crate) fn presize(
         &mut self,
         memory: &impl Memory,
@@ -563,7 +562,7 @@ impl Pass<'_> {
         self.commander_keys.insert(handle, index);
         self.commanders_required = end;
         ensure(self.commanders, end)?;
-        // P: 1417C8060 hides a missing retained commander portrait. Preserve
+        // A missing retained commander portrait is hidden. Preserve
         // the side's full handle while the optional context is absent.
         self.commanders[index] =
             if engine::creference_registry::resolve(memory, base, handle)?.is_some() {

@@ -1,5 +1,5 @@
-//! Diagnostic-mode launch calls: 140A8D370 (offers), 140FD66E0 (assembling),
-//! 140FD6550 (prepared). Every diagnostic step runs even after a failure.
+//! Diagnostic launch text for offers, assembling and prepared raids.
+//! Run every diagnostic step even after a failure.
 use super::super::rules::Lines;
 use super::*;
 use engine::raid_tooltip_operands::{ADDITIONAL_ORDER, ESSENTIAL_ORDER, definition_key};
@@ -35,7 +35,7 @@ impl Context<'_, '_> {
                     })
                     .collect::<Vec<_>>();
                 active.sort_unstable_by_key(|r| r.ordinal);
-                // 140AB5EE0 uses the first token match, then slot-zero fallback.
+                // Use the first token match, then slot-zero fallback.
                 active
                     .iter()
                     .find(|r| r.key == token)
@@ -71,9 +71,8 @@ impl Context<'_, '_> {
                     .state,
             )?
         };
-        // 141581940 localises these executable literals by source kind and
-        // the source's own air base kind; a ship source may have no air base,
-        // leaving WHAT empty while LOCATION remains.
+        // Localize source descriptions by source kind and its own air-base kind.
+        // A ship source may have no air base, leaving WHAT empty while LOCATION remains.
         let what = if source.kind_present == 0 {
             String::new()
         } else {
@@ -138,7 +137,7 @@ impl Context<'_, '_> {
         }
         result
     }
-    /// 140A8C500 -> 140A8C360 -> 140A8D3F0, optionally 140A8D6D0 and 140A8D8D0.
+    /// Ordered diagnostic launch requirements and optional execution checks.
     pub(super) fn conditions(
         &self,
         kind: &RaidType,
@@ -158,7 +157,7 @@ impl Context<'_, '_> {
             Scopes::of(Scope::Country(owner)),
             "raid visible",
         );
-        // 140A8DDF0: category failure appends an empty string, no trigger text.
+        // Category failure appends empty text without a trigger description.
         combine(
             &mut result,
             offers::category_admits_unlock(self.assets, self.world, owner, kind),
@@ -249,7 +248,7 @@ impl Context<'_, '_> {
         let Some(token) = self.world.token_of(kind.name.as_bytes())? else {
             return Ok(None);
         };
-        // 1414D7630 takes the first matching occurrence, not minimum days.
+        // Use the first matching occurrence, rather than minimum days.
         Ok(rows
             .iter()
             .find(|row| {
@@ -714,6 +713,8 @@ mod tests {
 
     #[test]
     fn failed_condition_chain_keeps_order_first_cooldown_and_source_country_title() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let assets = assets();
         let mut frame = frame();
         let mut kind = assets.catalog.types[0].clone();
@@ -804,6 +805,8 @@ mod tests {
 
     #[test]
     fn passing_conditions_emit_nothing_and_category_denial_has_no_text() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut assets = assets();
         let frame = frame();
         let mut kind = assets.catalog.types[0].clone();

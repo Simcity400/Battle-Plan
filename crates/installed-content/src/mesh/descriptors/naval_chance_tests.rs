@@ -1,4 +1,4 @@
-//! Native state chance stays separate from legacy float weighting.
+//! Parsed state chance stays separate from legacy float weighting.
 use super::*;
 
 fn state(fields: &str) -> EntityState {
@@ -13,7 +13,7 @@ fn state(fields: &str) -> EntityState {
 }
 
 #[test]
-fn omitted_or_failed_chance_retains_native_zero_and_legacy_default() {
+fn omitted_or_failed_chance_retains_stored_zero_and_legacy_default() {
     let omitted = state("");
     assert_eq!(omitted.chance, 1.0);
     assert_eq!(omitted.chance_weight, Some(0));
