@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { fitTooltip, tooltipHeight, tooltipRoom, tooltipText } from './tooltip.ts';
+import { fitTooltip, tooltipHeight, tooltipRoom, tooltipRowHeight, tooltipText } from './tooltip.ts';
 import type { TooltipContent, TooltipRow } from './tooltip';
 
 const rows = (count: number, prefix = 'Row'): TooltipRow[] => Array.from({ length: count }, (_, index) => ({ label: `${prefix} ${index + 1}`, value: String(index) }));
@@ -33,12 +33,12 @@ test('when nothing fits, the last form is cut with its totals kept and the rest 
     assert.ok(tooltipHeight(tip) <= tooltipRoom(height) || tip.rows.length === 2, `${height}: ${tooltipHeight(tip)}`);
     assert.deepEqual(tip.rows.at(-1), total, `${height}`);
     const more = tip.rows.at(-2)!;
-    const hidden = Number(/^(\d+) more rows/.exec(more.label)?.[1]);
+    const hidden = Number(/^(\d+) more$/.exec(more.label)?.[1]);
     assert.equal(tip.rows.length - 2 + hidden, 60, `${height}`);
     assert.equal(tip.spoken, tooltipText(long));
   }
   // At a very short window the note gives way before the total does.
-  assert.equal(fitTooltip([long], 150, { keep: 1 }).note, undefined);
+  assert.equal(fitTooltip([long], 120, { keep: 1 }).note, undefined);
   assert.equal(fitTooltip([long], 700, { keep: 1 }).note, long.note);
   // The count row can be worded for what the rows are.
   assert.equal(fitTooltip([{ title: 'T', rows: rows(80) }], 400, { more: hidden => `${hidden} more resources` }).rows.at(-1)!.label.endsWith('more resources'), true);
@@ -71,17 +71,20 @@ test('a full form, when given, is what assistive technology reads whatever is sh
   assert.equal(fitTooltip([capped], 10000).spoken, undefined);
 });
 
-test('canonical absent-country status participates in tooltip fitting and the retained full description', () => {
+test('missing flags add no tooltip rows, spoken text or fitting height', () => {
   const content: TooltipContent = { title: 'Pending country', countryFlag: { flagPending: true },
     rows: [1, 2, 3].map(index => ({ label: `A long recorded country name ${index}`, value: '1', countryFlag: {} })) };
   const fitted = fitTooltip([content], 160);
-  assert.ok(fitted.rows.length < content.rows.length, 'visible unavailable text needs room even without a backend reason');
+  assert.equal(fitted.rows.length, content.rows.length, 'missing flags do not consume room for explanations');
   assert.ok(tooltipHeight(fitted) <= tooltipRoom(160));
-  assert.match(tooltipText(fitted), /Flag loading/);
-  assert.equal((tooltipText(fitted).match(/Flag not available/g) ?? []).length, 3);
+  assert.doesNotMatch(tooltipText(fitted), /Flag loading/);
+  assert.doesNotMatch(tooltipText(fitted), /Flag not available|Flag unavailable/);
+  assert.equal(tooltipHeight(content), tooltipHeight({ ...content, countryFlag: { flag: 'synthetic.png' } }));
+  const row = { label: 'Member', value: '5' };
+  assert.equal(tooltipRowHeight({ ...row, countryFlag: { flagReason: 'Synthetic native refusal that is long enough to wrap' } }), tooltipRowHeight(row));
 });
 
-test('refitting displayed decode failures preserves original omissions, newly hidden rows and the kept total', () => {
+test('refitting missing flags in a smaller window preserves original omissions and the kept total', () => {
   const countries: TooltipRow[] = rows(5000, 'Native country').map((row, index) => ({ ...row, countryFlag: { flag: `synthetic-flag-${index}` } }));
   countries[0] = { ...countries[0], omittedRows: -1 }; // invalid metadata remains an ordinary data row
   const raw: TooltipContent = { title: 'Native countries', countryFlag: { flag: 'synthetic-header' }, rows: [...countries, total] };
@@ -103,10 +106,12 @@ test('refitting displayed decode failures preserves original omissions, newly hi
     return { ...row, countryFlag: failure };
   }) };
   assert.equal(decoded, firstVisible, 'only the initially displayed country rows were decoded');
-  const final = fitTooltip([displayed], 360, { more });
+  const unchanged = fitTooltip([displayed], 360, { more });
+  assert.equal(unchanged.rows.filter(row => row.countryFlag).length, firstVisible, 'flag failures add no explanatory rows');
+  const final = fitTooltip([displayed], 260, { more });
   const summary = final.rows.find(row => row.tone === 'muted')!;
   const visible = final.rows.filter(row => row.countryFlag).length;
-  assert.ok(visible < firstVisible, 'the displayed failure text hides additional real rows');
+  assert.ok(visible < firstVisible, 'the smaller window hides additional real rows');
   assert.equal(summary.label, more(countries.length - visible), 'the displayed count includes old and newly hidden real rows');
   assert.equal(summary.omittedRows, originallyOmitted + firstVisible - visible);
   assert.equal(firstSummary.omittedRows, originallyOmitted);
@@ -115,5 +120,5 @@ test('refitting displayed decode failures preserves original omissions, newly hi
   assert.equal(final.rows.at(-1), total, 'a second fit inherits the previously kept suffix');
   assert.equal(final.spoken, first.spoken);
   assert.equal(tooltipText(final), tooltipText(raw));
-  assert.ok(tooltipHeight(final) <= tooltipRoom(360));
+  assert.ok(tooltipHeight(final) <= tooltipRoom(260));
 });

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import ArtFallback from '../../components/ArtFallback';
 import { ChipSet } from '../../components/ChipSet';
 import WidgetState from '../../components/WidgetState';
 import { CountryFlagUrl } from '../../components/CountryFlag';
@@ -28,8 +29,8 @@ import './espionageLog.css';
 
 const NO_WARNINGS: string[] = [];
 const NO_ROWS: readonly LogRow<OperationAt>[] = [];
-const COLUMNS = 'var(--space-6) minmax(0, 1fr) auto';
-const METER_COLUMNS = 'var(--space-6) minmax(0, 2fr) minmax(0, 1fr) auto';
+const COLUMNS = 'var(--space-6) minmax(0, 1fr)';
+const METER_COLUMNS = 'var(--space-6) minmax(0, 2fr) minmax(0, 1fr)';
 const drawsMeter = (at: OperationAt, live: boolean) => live && (at.state === 'preparing' || at.state === 'running');
 
 export default function EspionageLogWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
@@ -80,7 +81,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
       ? previous : { identity, at: playheadWindow, windows });
   }, [currentRows, identity, playheadWindow]);
   const [tooltipRow, setTooltipRow] = useState<LogRow<OperationAt> | null>(null);
-  const [description, setDescription] = useState<{ reference: OperationDescriptionRef; text: string } | null>(null);
+  const [description, setDescription] = useState<{ reference: OperationDescriptionRef; text: string; detail?: string } | null>(null);
   const descriptionRef = tooltipRow && shownHour != null && (tooltipRow.item.operation.end?.byHour ?? Infinity) <= shownHour
     && (tooltipRow.item.state === 'completed' || tooltipRow.item.state === 'disappeared')
     ? tooltipRow.item.operation.end?.outcome?.descriptionRef ?? null : null;
@@ -103,7 +104,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
         if (!controller.signal.aborted) setDescription({ reference: descriptionRef, text: result.text });
       })
       .catch(error => { if (!controller.signal.aborted) setDescription({ reference: descriptionRef,
-        text: `Stored operation description unavailable: ${error instanceof Error ? error.message : String(error)}` }); });
+        text: 'Couldn’t load description.', detail: error instanceof Error ? error.message : String(error) }); });
     return () => controller.abort();
   }, [active, runtime.client, descriptionRef, descriptionSource, branchId, descriptionLanguage]);
   // Names and flags belong to the endpoints' supplying read, including an ending's upper bound.
@@ -118,7 +119,8 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const labels = useCallback((row: LogRow<OperationAt>, tag: string | null): ReturnType<CountryLabel> => tag === null ? { name: 'Unknown country' } : labelAt(row.item.countryHour)(tag), [labelAt]);
   const chips = useMemo(() => operationChoices(data), [data]);
   const byType = useMemo(() => new Map(data?.types.map(type => [type.key, type])), [data]);
-  const warnings = useMemo(() => [...new Set([...(data?.warnings ?? NO_WARNINGS), ...[...history.data.values()].flatMap(reply => reply.warnings)])], [data, history.data]);
+  const warnings = useMemo(() => [...new Set([...(data?.warnings ?? NO_WARNINGS), ...[...history.data.values()].flatMap(reply => reply.warnings),
+    ...(description?.detail ? [description.detail] : [])])], [data, history.data, description?.detail]);
   useEffect(() => {
     onDiagnostics(warnings);
     return () => onDiagnostics(NO_WARNINGS);
@@ -126,13 +128,13 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
 
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its espionage operations." />;
   const windowError = history.errors.values().next().value;
-  if (windowError) return <WidgetState kind="error" message={windowError} onRetry={history.retry} />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (needsGroups && groups.error) return <WidgetState kind="error" message={`Country identities are unavailable: ${groups.error}`} onRetry={groups.retry} />;
+  if (windowError) return <WidgetState kind="error" detail={windowError} onRetry={history.retry} />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (needsGroups && groups.error) return <WidgetState kind="error" detail={`Country identities are unavailable: ${groups.error}`} onRetry={groups.retry} />;
   if (!data || (needsGroups && !groups.data)) return <WidgetState kind="loading" label="Loading espionage operations…" />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (data.unavailable && !data.completionsAvailable.length) return <WidgetState kind="unavailable" message={data.unavailable} />;
-  if (!inBranch || hour == null) return <WidgetState kind="unavailable" message="The chosen moment is outside this campaign branch." />;
+  if (data.unavailable && !data.completionsAvailable.length) return <WidgetState kind="unavailable" message="Operations unavailable." />;
+  if (!inBranch || hour == null) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (!data.available.length && !data.completionsAvailable.length) return <WidgetState kind="unavailable" message="Espionage operations are not in this recording." />;
   if (!history.data.has(browseIndex)) return <WidgetState kind="loading" label="Loading espionage window..." />;
 
@@ -155,24 +157,22 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
     const wording = operationWording(at);
     const outcome = operationOutcome(at);
     return <>
-      <span className={`log-art${type?.icon ? '' : ' is-missing'}`} aria-hidden="true">{type?.icon ? <img src={type.icon} alt="" /> : '?'}</span>
+      <span className="log-art" aria-hidden="true">{type?.icon ? <img src={type.icon} alt="" /> : <ArtFallback icon="target" />}</span>
       <span className="log-text">
         {at.ownerTag !== null && <CountryFlagUrl className="log-flag" url={owner.flag} reason={owner.flagReason} pending={owner.flagPending} />}<b>{owner.name}</b>
         <span className="espionage-muted">{wording.action}</span>{operationName(type)}<span className="espionage-muted"> against </span>
         {at.targetTag !== null && <CountryFlagUrl className="log-flag" url={target.flag} reason={target.flagReason} pending={target.flagPending} />}<b>{target.name}</b><span className="espionage-muted">{wording.afterTarget}</span>
         {at.startHour !== null && <span className="espionage-muted"> · started {formatDateTime(at.startHour)}</span>}
-        {!meter && <span className="espionage-muted"> · {operationState(at)}{outcome && <> · {outcome}</>}</span>}
+        {!meter && outcome && <span className="espionage-muted"> · {outcome}</span>}
       </span>
       {meter && <span className="espionage-progress">
-        <span>{operationState(at)}{outcome && <> · {outcome}</>}</span>
-        <ProgressMeter value={operationProgress(at)} state="live" label={at.state === 'running' ? 'Recorded execution progress: elapsed / duration' : 'Recorded overall civilian preparation'} />
+        <ProgressMeter value={operationProgress(at)} state="live" label={at.state === 'running' ? 'Execution progress: elapsed / duration' : 'Preparation'} />
       </span>}
-      <span className="log-tag espionage-type"><i />Espionage</span>
     </>;
   };
   return <div className="espionage-log">
     {navigation}
-    {shownHour !== hour && <p className="espionage-muted">Operation reads through {formatDateTime(shownHour!)}</p>}
+    {shownHour !== hour && <p className="espionage-muted">Showing operations through {formatDateTime(shownHour!)}</p>}
     {log.chips && chips.length > 1 && <div className="log-chips">
       <ChipSet label="Operation types" max={Number.MAX_SAFE_INTEGER} selected={chosen.length ? chosen : ['']}
         chips={[{ value: '', label: 'All types' }, ...chips]}
@@ -185,6 +185,6 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
       tooltip={row => operationTooltip(data, row, tag => labels(row, tag),
         description?.reference === row.item.operation.end?.outcome?.descriptionRef ? description?.text : undefined)}
       menu={row => operationJumpHours(row.item, shownHour ?? hour, row.hour).map(at => jumpItem(runtime, track.id, at))}
-      empty={unread ? "Operations were not recorded at this hour. Gaps stay gaps." : "No espionage operations match these countries and settings by this moment."} onVisible={onVisible} />
+      empty={unread ? "Operations unavailable at this time." : "No espionage operations match these countries and settings by this moment."} onVisible={onVisible} />
   </div>;
 }

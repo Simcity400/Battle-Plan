@@ -74,6 +74,7 @@ test('registered roster identifies multiple native owners selected by one reused
     assert.match(compared, /Operative Y/);
     assert.match(compared, /src="flag-X-at-20"/);
     assert.match(compared, /src="flag-Y-at-20"/);
+    assert.equal((compared.match(/class="art-fallback"/g) ?? []).length, 2);
 
     // Two aliases of one native owner must not manufacture a comparison.
     state.groups = { ...groups, countryIdentities: groups.countryIdentities.map(history => ({ ...history,

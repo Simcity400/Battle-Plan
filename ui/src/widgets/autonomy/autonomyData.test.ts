@@ -9,7 +9,7 @@ import type { TimelineLane } from '../../charts/timeline/Timeline';
 import type { AutonomyReply, AutonomyRun, CountryGroupReply } from '../../generated/dashboard';
 import { laneStops } from '../../charts/timeline/layout.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
-import { absentAt, autonomyViews, chosenViews, clipSubject, formatProgress, formatScore, laneLabels, levelName, membershipUnknownFor, noLanesMessage, overlordIdentityUnknownFor, partlyIdentified, partlyRecorded, progressOf, runOf,
+import { absentAt, autonomyViews, chosenViews, clipSubject, formatProgress, formatScore, laneLabels, levelName, membershipUnknownFor, noLanesMessage, overlordIdentityUnknownFor, partlyIdentified, progressOf, runOf,
   subjectLane, validateAutonomyReply } from './autonomyData.ts';
 
 const run = (firstHour: number, lastHour: number, level: number, scoreRaw: string, lowerRaw: string, upperRaw: string, extra: Partial<AutonomyRun> = {}): AutonomyRun => ({
@@ -107,7 +107,7 @@ test('native manual holders clip reused tags and gaps without taking unrelated a
   const clipped = clipSubject(chosen[0], true, membership, [], identities);
   assert.deepEqual(clipped.runs.map(run => [run.firstHour, run.lastHour]), [[12, 15]]);
   assert.deepEqual(laneLabels(reply, subjectLane(chosen[0], reply.levels), 20, [], false),
-    { label: 'Native country identity not recorded', pill: 'Not recorded', description: 'Native country identity not recorded' });
+    { label: 'Country unavailable at this time.', pill: 'Not recorded', description: 'Country unavailable at this time.' });
 });
 
 test('native overlord replacement splits selection even when the subject and tag stay the same', () => {
@@ -180,7 +180,7 @@ test('actual Autonomy refuses false overlord absence while keeping known subject
     const render = () => { fixture.state = undefined; fixture.lanes = undefined; return renderToStaticMarkup(createElement(Widget, props)); };
     const unresolved = render();
     assert.equal(fixture.state?.kind, 'unavailable');
-    assert.match(unresolved, /overlord native identities were not recorded/);
+    assert.match(unresolved, /Subject data is unavailable for these countries/);
     assert.doesNotMatch(unresolved, /had no subjects/);
     props.widget.countries = { kind: 'tags', tags: ['SUB'] }; props.widget.options = { countriesAre: 'subjects' };
     render();
@@ -193,7 +193,7 @@ test('actual Autonomy refuses false overlord absence while keeping known subject
     render();
     assert.equal(currentState()?.kind, 'empty', 'a known unrelated overlord proves the selected overlord has no matching subjects');
     fixture.data = { ...data, subjects: [{ tag: 'SUB', runs: [run(0, 9, 0, '100', '0', '1000', { overlord: 'X' }), ...data.subjects[0].runs] }] };
-    assert.match(render(), /matching subjects is incomplete in those hours/);
+    assert.doesNotMatch(render(), /matching subjects is incomplete in those hours/);
     assert.equal(fixture.lanes?.length, 1, 'a proved matching span preserves the subject history');
     assert.equal(fixture.lanes?.[0].spans.at(-1)?.lastHour, 19, 'known autonomy values survive an unknown overlord');
   } finally { delete host.__autonomyR2; await vite.close(); }
@@ -252,7 +252,7 @@ test('progress sits between the thresholds, may pass the top one at the top leve
   assert.equal(progressOf(top), 1.125);
   assert.equal(formatProgress(top), '112.5%');
   assert.equal(progressOf(flat), null);
-  assert.equal(formatProgress(flat), 'Not defined (both scores are equal)');
+  assert.equal(formatProgress(flat), 'Progress unavailable');
   assert.equal(formatScore(REPLY, top.scoreRaw), '512.5');
   // A lane without defined progress there draws no line (a gap), but keeps its band.
   const lane = subjectLane(REPLY.subjects[1], REPLY.levels);
@@ -295,9 +295,7 @@ test('a group counted at one moment keeps its countries’ whole history, howeve
   assert.deepEqual(clipSubject(bbb, false, memberRuns([['AAA', [{ firstHour: 100, lastHour: 110 }]]]), unobserved, fixedIdentities).runs, []);
 });
 
-test('a branch recorded only in part says so, so a missing lane is not called "no subjects"', () => {
-  assert.equal(partlyRecorded(REPLY, { firstHour: 100, lastHour: 160 }), true);
-  assert.equal(partlyRecorded({ ...REPLY, recorded: [{ firstHour: 90, lastHour: 170 }] }, { firstHour: 100, lastHour: 160 }), false);
+test('autonomy recording spans cannot end before they start', () => {
   assert.throws(() => validateAutonomyReply({ ...REPLY, recorded: [{ firstHour: 5, lastHour: 1 }] }));
 });
 
@@ -336,19 +334,15 @@ test('an hour with a subject or overlord the recording does not name is never ca
   assert.equal(partlyIdentified(partial, branch), true);
   assert.equal(partlyIdentified(partial, { firstHour: 100, lastHour: 134 }), false);
   // A lane without a run at such an hour is not known, where elsewhere it is not a subject.
-  assert.match(absentAt(partial, 135, []).text, /^Not known/);
+  assert.equal(absentAt(partial, 135, []).text, 'Subject status unknown');
   assert.equal(absentAt(partial, 137, []).text, 'Not a subject shown here');
   assert.equal(absentAt(REPLY, 135, []).text, 'Not recorded');
   assert.equal(absentAt(partial, 135, [{ firstHour: 130, lastHour: 140 }]).text, 'Group membership not recorded');
   // The empty state never claims absence then, by overlord or by subject.
-  const byOverlord = noLanesMessage(partial, branch, false, ['Germany']);
-  const bySubject = noLanesMessage(partial, branch, true, []);
-  assert.match(byOverlord, /^Germany had no subjects the recording names in this campaign branch; .* may have had one\.$/);
-  assert.match(bySubject, /may have been\.$/);
-  assert.doesNotMatch(bySubject, /^None of these countries was a subject/);
-  // Fully identified, it says so plainly, and a partly recorded branch still says which hours.
-  assert.equal(noLanesMessage({ ...partial, unidentified: [] }, branch, false, ['Germany']), 'Germany had no subjects in this campaign branch.');
-  assert.equal(noLanesMessage(REPLY, branch, true, []), 'None of these countries was a subject in the hours this campaign branch recorded.');
+  assert.equal(noLanesMessage(partial, branch), 'Subject data is incomplete for these countries.');
+  // Fully identified selections can establish that no subjects were found.
+  assert.equal(noLanesMessage({ ...partial, unidentified: [] }, branch), 'No subjects found for these countries.');
+  assert.equal(noLanesMessage(REPLY, branch), 'No subjects found for these countries.');
 });
 
 test('a lane cut away where the group’s membership was unknown is said, never called "no subjects"', () => {
@@ -360,16 +354,16 @@ test('a lane cut away where the group’s membership was unknown is said, never 
   assert.deepEqual(clipSubject(b, false, membership, unobserved, fixedIdentities).runs, []);
   assert.equal(membershipUnknownFor([b], false, unobserved), true);
   const branch = { firstHour: 100, lastHour: 160 };
-  const message = noLanesMessage(reply, branch, false, ['A'], membershipUnknownFor([b], false, unobserved));
-  assert.equal(message, 'No subjects of A are shown in this campaign branch: the group’s membership was not recorded at some hours they may have had subjects.');
+  const message = noLanesMessage(reply, branch, membershipUnknownFor([b], false, unobserved));
+  assert.equal(message, 'Subject data is incomplete for these countries.');
   assert.doesNotMatch(message, /had no subjects/);
-  assert.match(noLanesMessage(reply, branch, true, [], true), /^None of these countries is shown as a subject .*membership was not recorded/);
+  assert.equal(noLanesMessage(reply, branch, true), 'Subject data is incomplete for these countries.');
   // Membership unknown only where no lane had a run, or only for a run without an overlord, cuts nothing that could show.
   assert.equal(membershipUnknownFor([b], false, [{ firstHour: 111, lastHour: 120 }]), false);
   const released = { tag: 'B', runs: [run(106, 110, 0, '1', '0', '2', { overlord: null })] };
   assert.equal(membershipUnknownFor([released], false, unobserved), false);
   assert.equal(membershipUnknownFor([released], true, unobserved), true);
-  assert.equal(noLanesMessage(reply, branch, false, ['A'], false), 'A had no subjects in this campaign branch.');
+  assert.equal(noLanesMessage(reply, branch, false), 'No subjects found for these countries.');
 });
 
 test('subjects are those of the chosen overlords at any hour, or the chosen subjects, in the reply’s order', () => {

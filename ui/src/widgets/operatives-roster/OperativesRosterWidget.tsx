@@ -1,3 +1,4 @@
+import ArtFallback from '../../components/ArtFallback';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
@@ -85,7 +86,7 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
         const value = row.run.value;
         const owner = value.ownerTag === null ? null : labelAt(operativeLabelHour(row, hour))(value.ownerTag);
         const departure = departureText(row);
-        return <span className="operative-person">{value.portrait !== null && data && <img src={data.artwork[value.portrait]} alt="" />}
+        return <span className="operative-person">{value.portrait !== null && data ? <img src={data.artwork[value.portrait]} alt="" /> : <ArtFallback icon="helmet" />}
           <span className="operative-cell-detail"><span>{comparison && owner !== null
             ? <CountryCell name={operativeName(value)} flag={owner.flag} flagReason={owner.flagReason} flagPending={owner.flagPending} /> : operativeName(value)}</span>
             {departure && <small>{departure}</small>}
@@ -131,17 +132,17 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
 
   let body;
   if (!track) body = <WidgetState kind="empty" message="Load a campaign and choose a country to see its operatives." />;
-  else if (!window) body = <WidgetState kind="unavailable" message="The chosen moment is outside this campaign." />;
-  else if (error) body = <WidgetState kind="error" message={error} onRetry={retry} />;
-  else if (groups.error) body = <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
-  else if (!groups.data) body = <WidgetState kind="loading" label="Loading country identities…" />;
+  else if (!window) body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  else if (error) body = <WidgetState kind="error" detail={error} onRetry={retry} />;
+  else if (groups.error) body = <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+  else if (!groups.data) body = <WidgetState kind="loading" label="Loading operatives…" />;
   else if (resolved.reason) body = <WidgetState kind="unavailable" message={resolved.reason} />;
   else if (match.reason) body = <WidgetState kind="unavailable" message={match.reason} />;
   else if (membershipUnknown) body = <WidgetState kind="unavailable" message="This group's members were not recorded at this moment." />;
   else if (!data || !view) body = <WidgetState kind="loading" label="Loading operatives roster…" />;
-  else if (!rows.length && runAt(data.agencyAbsent, hour)) body = <WidgetState kind="unavailable" message="The intelligence agency feature is absent at this moment." />;
-  else if (!rows.length && view.unknown.length) body = <WidgetState kind="unavailable" message="Not in this recording. The operative roster is unknown at this moment." />;
-  else if (!rows.length) body = <WidgetState kind="empty" message="No operatives in the selected roster." detail="Recruitment pools are not recruited operatives." />;
+  else if (!rows.length && runAt(data.agencyAbsent, hour)) body = <WidgetState kind="unavailable" message="Intelligence agencies unavailable." />;
+  else if (!rows.length && view.unknown.length) body = <WidgetState kind="unavailable" message="Operatives weren’t recorded at this time." />;
+  else if (!rows.length) body = <WidgetState kind="empty" message="No operatives in the selected roster." />;
   else body = <Table label="Operatives roster" rows={rows} columns={columns} rowKey={rowKey}
       sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption}
       cellBars={options.cellBars === true} rank={options.showRank === true} rankMarkers={options.rankMarkers === true}
@@ -149,8 +150,7 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
       menu={row => operativeMoments(row).map(moment => ({ ...jumpItem(runtime, track.id, moment.hour), label: moment.label }))}
       tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />;
   return <div className="operatives-roster">
-    {resolved.dropped > 0 && <p className="operative-note">{resolved.dropped} countries exceed the {definition.countries.max}-country comparison limit.</p>}
-    {!!rows.length && view && view.unknown.length > 0 && <p className="operative-note">{view.unknown.length} country rosters unknown. Missing values stay unknown.</p>}
+    {!!rows.length && view && view.unknown.length > 0 && <p className="operative-note">{view.unknown.length} country rosters unavailable.</p>}
     {body}
   </div>;
 }

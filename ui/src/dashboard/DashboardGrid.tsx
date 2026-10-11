@@ -82,7 +82,7 @@ function mountWaiting() {
   mountFrame = waiting.size ? requestAnimationFrame(mountWaiting) : 0;
 }
 
-/** Frame-only changes (editing, diagnostics, layout moves) leave the body alone. */
+/** Frame-only changes (editing, layout moves) leave the body alone. */
 const Body = memo(WidgetBody);
 
 /** Common chrome for every widget: header, drag grip, settings and the scaled body. */
@@ -91,10 +91,6 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
   // Null until the body mounts in its turn, then whether the widget is near the viewport.
   // Server rendering has no observer and renders the body at once.
   const [active, setActive] = useState<boolean | null>(typeof IntersectionObserver === 'undefined' ? true : null);
-  const [diagnostics, keepDiagnostics] = useState<string[]>([]);
-  // Widgets report on every load; an unchanged list must not render the widget again.
-  const setDiagnostics = useCallback((next: string[]) => keepDiagnostics(previous =>
-    previous.length === next.length && previous.every((message, index) => message === next[index]) ? previous : next), []);
   const [headerSlot, setHeaderSlot] = useState<HTMLSpanElement | null>(null);
   const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(null);
   const [actionsSlot, setActionsSlot] = useState<HTMLSpanElement | null>(null);
@@ -127,22 +123,23 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
   const optionDraft = useRef(new OptionDraft(widget.options));
   optionDraft.current.sync(widget.options);
   // An option set from inside the widget saves at once, as the settings panel does.
-  const saveOption = useCallback((key: string, value: OptionValue) => {
-    const options = optionDraft.current.update(definition?.options, key, value);
+  const saveOptions = useCallback((values: Readonly<Record<string, OptionValue>>) => {
+    const options = optionDraft.current.updateAll(definition?.options, values);
     if (options) onApply({ ...widget, options }, true);
   }, [definition, widget, onApply]);
+  const saveOption = useCallback((key: string, value: OptionValue) => saveOptions({ [key]: value }), [saveOptions]);
   const reset = definition ? () => {
     onApply(createWidget(widget.kind, template.tracks[0].id, widget.id), true);
     setMapOptions({ country: null, fog: true });
   } : undefined;
-  const missing = widget.trackIds.filter((id) => !runtime.tracks.some((track) => track.id === id));
+  const effective = resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId);
+  const missing = effective.trackIds.filter((id) => !runtime.tracks.some((track) => track.id === id));
   const HeaderControls = definition?.headerControls;
   const CountryChip = definition?.countryChip ?? DefaultCountryChip;
   const canFollow = !!definition?.history && definition.timeModes.includes('follow') && definition.timeModes.includes('campaign');
   const live = widget.time.mode === 'follow';
-  // Name the campaign only when several are open; one campaign needs no label.
-  const source = runtime.tracks.length > 1 && definition?.data !== false
-    ? runtime.tracks.find(track => track.id === resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId).trackIds[0])?.source : undefined;
+  const campaignTrack = runtime.tracks.find(track => track.id === effective.trackIds[0]);
+  const source = campaignTrack && definition?.data !== false && campaignTrack.roleId !== runtime.defaultRoleId ? campaignTrack.source : undefined;
   return <article ref={element} className={`dash-widget kind-${widget.kind}`} aria-label={widget.title}>
     <header className="dash-widget-header">
       {editing && <span className="dash-drag-grip" data-tooltip="Drag to move" aria-hidden="true"><Icon name="grip" /></span>}
@@ -154,20 +151,20 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
       <div className="dash-widget-actions">
       <span className="dash-widget-actions-slot" ref={slots.actions} />
       {canFollow && <button type="button" role="switch" aria-checked={live} className="live-toggle" aria-label={`${widget.title}: follow playback`}
-        data-tooltip={live ? 'Following the timeline. Switch off to see the whole campaign.' : 'Showing the whole campaign. Switch on to follow the timeline.'}
+        data-tooltip={live ? 'Show whole campaign' : 'Follow playback'}
         onClick={() => onApply({ ...widget, time: { mode: live ? 'campaign' : 'follow' } }, true)}>
         <span className="live-toggle-track" aria-hidden="true"><span className="live-toggle-knob" /></span><span className="live-toggle-label">Live</span>
       </button>}
       {HeaderControls
         ? <HeaderControls widget={widget} runtime={runtime} template={template} editing={editing} onApply={onApply} onRemove={() => onRemove(widget.id)} onReset={reset}
-          mapOptions={mapOptions} onMapOptions={setMapOptions} diagnostics={editing ? diagnostics : []} />
-        : <WidgetSettingsMenu diagnostics={editing ? diagnostics : []} widget={widget} template={template} runtime={runtime} onApply={onApply} onRemove={editing ? () => onRemove(widget.id) : undefined} onReset={reset} />}
+          mapOptions={mapOptions} onMapOptions={setMapOptions} />
+        : <WidgetSettingsMenu widget={widget} template={template} runtime={runtime} onApply={onApply} onRemove={editing ? () => onRemove(widget.id) : undefined} onReset={reset} />}
       </div>
     </header>
-    {missing.length > 0 && runtime.tracks.some((track) => widget.trackIds.includes(track.id)) && <div className="dash-inline-warning"><Icon name="alert" />{missing.map((id) => template.tracks.find((track) => track.id === id)?.label ?? id).join(', ')} unavailable</div>}
+    {missing.length > 0 && runtime.tracks.some((track) => effective.trackIds.includes(track.id)) && <div className="dash-inline-warning"><Icon name="alert" />{missing.map((id) => template.tracks.find((track) => track.id === id)?.label || 'Campaign').join(', ')} unavailable</div>}
     <div className="dash-widget-content"><div className="dash-widget-scaled" style={{ zoom: (widget.contentScale ?? 100) / 100 }}>
       {active === null ? <WidgetState kind="loading" label={`Loading ${widget.title}…`} /> : <HeaderActionsSlot.Provider value={actionsSlot}>
-        <Body widget={widget} runtime={runtime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} onDiagnostics={setDiagnostics} setOption={saveOption} />
+        <Body widget={widget} runtime={runtime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} setOption={saveOption} setOptions={saveOptions} />
       </HeaderActionsSlot.Provider>}
     </div></div>
   </article>;

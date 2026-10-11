@@ -1,3 +1,4 @@
+import FollowControl from '../drill/FollowControl';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -13,7 +14,7 @@ import { NumericReply } from '../../dashboard/numericReply';
 import type { FactionTotalsParams, FactionTotalsReply } from '../../generated/dashboard';
 import { dayLabel } from '../draw';
 import { CHART_LAYOUT } from '../tokens';
-import { useViewportHeight } from '../useChartTokens';
+import { useChartTokens, useViewportHeight } from '../useChartTokens';
 import DrillHost from '../drill/DrillHost';
 import { reduceDrill } from '../drill/drillState';
 import WindowedRows from '../WindowedRows';
@@ -69,8 +70,8 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
   const scope = JSON.stringify([selectionScope, extent]);
   const requests = useMemo(() => ({ key: '', params: null as FactionTotalsParams | null }), [runtime.client]);
   if (requests.key !== scope) { requests.key = scope; requests.params = null; }
-  if (track && !looks.loading && !looks.error) {
-    const params = factionRaceRequest(track.branch.id, widget.countries, source, looks.factions.length, max);
+  if (track) {
+    const params = factionRaceRequest(track.branch.id, widget.countries, source, looks.loading || looks.error ? max : looks.factions.length, max);
     requests.params = pinned && params ? { ...params, inventory: true } : params;
   }
   const params = requests.params;
@@ -90,8 +91,9 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
   const names = useMemo(() => ({ factions: recordedFactions, names: looks.names }), [recordedFactions, looks.names]);
   const colourState = useMemo(() => ({ key: '', colours: new Map<string, string>() as ReadonlyMap<string, string> }), [runtime.client]);
   if (colourState.key !== selectionScope) { colourState.key = selectionScope; colourState.colours = new Map(); }
-  if (!looks.loading && !looks.error) colourState.colours = looks.colours;
-  const colours = colourState.colours;
+  if (!looks.loading) colourState.colours = looks.colours;
+  const tokens = useChartTokens();
+  const colours = useMemo(() => new Map(lines.map(line => [line.tag, colourState.colours.get(line.tag) ?? tokens.muted])), [lines, colourState.colours, tokens.muted]);
   const entityLooks = useMemo(() => ({
     name: (id: string, hour = moment) => factionLabelAt(namedModel, id, hour, names),
     color: (id: string) => colours.get(id)!,
@@ -120,6 +122,16 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
   const partNumbers = partsNumeric.update(JSON.stringify([scope, selectedParams]), partsProduct.data, factionNumbers);
   const partsModel = useMemo(() => partNumbers && selected ? factionParts(partNumbers, selected, range) : null, [partNumbers, selected, range]);
   const partsOwner = useMemo(() => ({ scope, selected, partNumbers }), [scope, selected, partNumbers]);
+  const controls = useRef({ active, selectionKey, partsOwner });
+  controls.current = { active, selectionKey, partsOwner };
+  useEffect(() => () => { controls.current.active = false; }, []);
+  const setFollowing = (following: boolean) => {
+    if (!controls.current.active || controls.current.selectionKey !== selectionKey || controls.current.partsOwner !== partsOwner) return;
+    setPick(before => {
+      const current = before?.key === selectionKey ? before : pinned && selected ? factionPick(selectionKey, origin, selected) : null;
+      return current ? { ...current, ...reduceDrill(current, following ? { type: 'follow' } : { type: 'pick', hour: drillHour }) } : before;
+    });
+  };
   const selectedSeries = partNumbers?.series.find(series => series.id === selected);
   const proven = selectedSeries?.membership.some(span => span.firstHour <= origin && origin <= span.lastHour) ?? false;
   const choices = useMemo(() => (current?.ids ?? (pinned ? [...(model?.series.keys() ?? [])] : [])).filter(id => {
@@ -141,17 +153,13 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
   }, [diagnostics, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="shield" message={`Load a campaign to see its ${label.toLowerCase()}.`} />;
-  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-  if (unavailableReason) return <WidgetState kind="unavailable" message={unavailableReason} />;
-  if (error && !numbers) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (looks.error && !numbers) return <WidgetState kind="unavailable" message={`Faction colours are unavailable: ${looks.error}`} />;
-  if (looks.loading && !numbers) return <WidgetState kind="loading" label="Loading faction colours…" />;
+  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (unavailableReason) return <WidgetState kind="unavailable" message="Faction totals unavailable." />;
+  if (error && !numbers) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!params) return <WidgetState kind="empty" icon="shield" message="Choose Factions, or a faction group shown as one total, in the widget settings." />;
   if (!numbers || !model) return <WidgetState kind="loading" label={`Loading ${label.toLowerCase()}…`} />;
-  if (numbers.unavailableReason && !pinned && !renderMain) return <WidgetState kind="unavailable" message={numbers.unavailableReason} />;
-  if (!lines.length && !pinned && !renderMain) return <WidgetState kind="unavailable" message={numbers.series.find(series => series.unavailableReason)?.unavailableReason
-    ?? `Not in this recording: no ${label.toLowerCase()} totals for these factions in this branch.`} />;
-  if (!lines.every(line => colours.has(line.tag))) return <WidgetState kind="unavailable" message="Faction colours could not be read." />;
+  if (numbers.unavailableReason && !pinned && !renderMain) return <WidgetState kind="unavailable" message="Faction totals unavailable." />;
+  if (!lines.length && !pinned && !renderMain) return <WidgetState kind="unavailable" message="Faction totals unavailable." />;
   const countName = measureLabel(numbers.unit);
   const nameOf = (id: string, hour: number) => factionNameAt(namedModel, id, hour, names);
   const colourOf = entityLooks.color;
@@ -170,7 +178,7 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
       return factionTooltipForms(model, ids, hour, labelAt(hour), colourOf, formatValue,
         dayLabel(hour), countName, note, factionMemberLabelLimit(viewport, ids.length, dayLabel(hour)), names);
     }} />;
-  const breakdown = !selectionValid ? <WidgetState kind="unavailable" message="This saved faction belongs to another campaign or branch." />
+  const breakdown = !selectionValid ? <WidgetState kind="unavailable" message="Saved faction unavailable." />
     : !selected ? <div className="faction-member-chooser"><p className="drill-empty">Choose the faction at {dayLabel(origin)}.</p>
       <input type="search" aria-label="Search factions" value={query} onChange={event => setQuery(event.currentTarget.value)} />
       <WindowedRows items={choices} rowHeight={36} label="Factions at the chosen hour" empty={<p className="drill-empty">No eligible faction was drawn at this hour.</p>}>
@@ -180,10 +188,10 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
             if (pinned) setOption?.(FACTION_SELECTION, factionSelection(track, row.item.id, origin));
           }}>{row.item.name} · {row.item.id}</button>}
       </WindowedRows></div>
-      : partsProduct.error && !partNumbers ? <WidgetState kind="error" message={partsProduct.error} onRetry={partsProduct.retry} />
+      : partsProduct.error && !partNumbers ? <WidgetState kind="error" what="faction members" detail={partsProduct.error} onRetry={partsProduct.retry} />
         : !partNumbers ? <WidgetState kind="loading" label="Loading faction members…" />
-          : !proven ? <WidgetState kind="unavailable" message="This faction was not recorded at the chosen origin hour in this branch." />
-            : !partsModel ? <WidgetState kind="unavailable" message="Full member values and native country identities are not in this reply." />
+          : !proven ? <WidgetState kind="unavailable" message="Faction unavailable at the selected time." />
+            : !partsModel ? <WidgetState kind="unavailable" message="Member details are unavailable." />
               : <FactionPartsView model={partsModel} runtime={runtime} track={track} hour={drillHour} following={follow}
                 extent={extent} active={active} pickOwner={partsOwner} label={`${nameOf(selected, drillHour)} · ${countName}`} formatValue={formatValue}
                 onPick={hour => setPick(before => {
@@ -191,15 +199,12 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
                   return { ...current, ...reduceDrill(current, { type: 'pick', hour }) };
                 })} />;
   if (pinned) return <div className="faction-race-drill"><div className="drill-header"><span className="drill-day">{dayLabel(drillHour)}</span>
-    {selected && proven && (follow ? <span className="pill">Following playback</span> : <button className="button small" type="button"
-      onClick={() => setPick(before => {
-        const current = before?.key === selectionKey ? before : factionPick(selectionKey, origin, selected);
-        return { ...current, ...reduceDrill(current, { type: 'follow' }) };
-      })}>Follow playback</button>)}</div>
+    {selected && proven && <FollowControl following={follow} onPause={() => setFollowing(false)} onFollow={() => setFollowing(true)} />}</div>
     {breakdown}</div>;
   return <div ref={anchor} className="faction-race-drill"><DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={current !== null}
     title={selected ? `${nameOf(selected, drillHour)}: members` : 'Faction members'} day={dayLabel(drillHour)} following={follow}
-    canFollow={selected !== null && proven} onClose={() => setPick(null)} onFollow={() => setPick(before => before ? { ...before, ...reduceDrill(before, { type: 'follow' }) } : before)}
+    canFollow={selected !== null && proven} onClose={() => setPick(null)} onFollow={() => setFollowing(true)}
+    onPause={() => setFollowing(false)}
     onPin={selected && proven ? () => runtime.addWidgetBelow(widget.id, pinFactionParts(widget, track, selected, origin, drillHour, follow, params.membership)) : undefined}
     anchor={anchor} main={main}>{breakdown}</DrillHost></div>;
 }

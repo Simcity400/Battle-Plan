@@ -36,7 +36,8 @@ test('spending names both railway endpoints at the shown hour while totals and i
     assert.equal(missing.path[2].label, 'State 5 to State 6');
     assert.equal(missing.path[2].id, known.path[2].id);
     assert.equal(missing.exact, known.exact);
-    assert.match(missing.note ?? '', new RegExp(reason));
+    assert.equal(missing.note, 'State name unavailable.');
+    assert.doesNotMatch(missing.note, new RegExp(reason));
     // Keep the real shared tree/tooltip path: a missing name is not missing IC.
     const text = { format: (value: number, exact: bigint | null) => formatSpent(value, exact, data.costScale), unit: 'IC', valueLabel: 'Spent' };
     for (const levels of [[true, true, true], [false, true, false], [false, false, false]]) {
@@ -47,7 +48,8 @@ test('spending names both railway endpoints at the shown hour while totals and i
       assert.equal(node.valueUnknown, false);
       for (const tip of sliceTooltip(node, root, text)) {
         assert.equal(tip.rows[0].value, '0.00099 IC');
-        assert.match(tooltipText(tip), new RegExp(reason));
+        assert.match(tooltipText(tip), /State name unavailable/);
+        assert.doesNotMatch(tooltipText(tip), new RegExp(reason));
       }
     }
   }
@@ -132,7 +134,7 @@ test('the output contract refuses malformed steps and dates', () => {
   wrong.leaves[0].unknown = [];
   wrong.leaves[0].spent[0].totalRaw = 'not a number';
   assert.throws(() => validateSpendingReply(wrong), /malformed/);
-  assert.match(footnote({ ...data, beforeFirstRead: 2 })!, /earlier output is not recorded/);
+  assert.match(footnote({ ...data, beforeFirstRead: 2 })!, /Earlier spending is missing for 2 projects/);
 });
 
 
@@ -152,7 +154,7 @@ test('folded state rows retain name failure reasons beside exact recorded output
   const text = { format: (value: number, exact: bigint | null) => formatSpent(value, exact, data.costScale), unit: 'IC', valueLabel: 'Spent' };
   for (const tip of sliceTooltip(other, root, text)) {
     assert.equal(tip.rows[0].value, '0.003 IC');
-    assert.match(tooltipText(tip), /State 5: Stored state name language differs/);
-    assert.match(tooltipText(tip), /State 6: Stored state name language differs/);
+    assert.match(tooltipText(tip), /State name unavailable/);
+    assert.doesNotMatch(tooltipText(tip), /Stored state name|language differs|State [56]:/);
   }
 });

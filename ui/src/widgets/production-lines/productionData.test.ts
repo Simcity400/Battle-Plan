@@ -5,7 +5,7 @@ import { fitTooltip, tooltipText } from '../../charts/tooltip.ts';
 import type { LineDetail, LineHistory, LineRun, LineStep, OutputRun, ProductionLineDetailReply, ProductionLinesReply, ProductionModifierRun, VariantName } from '../../generated/dashboard';
 import { bandScale, breakdownTooltip, detailOf, efficiencyFraction, efficiencyPercent, factoryScale, finalAt, finalTooltip, gapTooltip, historyLanes, iconImage, laneStatus, lineTooltip,
   linesAt, linesKnown, modifierTooltip, organisationAt, organisationText, outputAt, outputTotal, productionLineKey, productionLineToken, stepTooltip, totalNote, totalText, validateDetailReply,
-  unreadNote, validateProductionReply, validateBreakdownReply, variantAt, variantName, variantParts, weeklyOutput, weeklyText, windowOf, withNote } from './productionData.ts';
+  unreadNote, validateProductionReply, validateBreakdownReply, variantAt, variantName, variantParts, weeklyOutput, weeklyText, windowOf, withNote, productionLineLabel } from './productionData.ts';
 
 const run = (firstHour: number, lastHour: number, values: Partial<LineRun> = {}): LineRun => ({
   firstHour, lastHour, startsSegment: false, variant: '70', mio: '79', activeFactories: 8, requestedFactories: 10, maxFactories: 150,
@@ -44,6 +44,15 @@ const variant = (id: string, firstHour: number, name: string | null, values: Par
 });
 const day = (hour: number) => `day ${hour}`;
 const PNG = 'data:image/png;base64,AAAA';
+
+test('line choices use dated equipment names and stable ordinals without keys or empty fallback names', () => {
+  const source = { ...REPLY, lines: [line('123456789#42', [run(100, 147), run(148, 200, { variant: '71' })]).history] };
+  assert.equal(productionLineLabel(source, source.lines[0], 0, 130), 'Infantry Equipment I · line 1');
+  assert.equal(productionLineLabel(source, source.lines[0], 0, 150), 'Gewehr 98 · line 1');
+  assert.equal(productionLineLabel({ ...source, variants: [] }, source.lines[0], 4, 150), 'Equipment unavailable · line 5');
+  const empty = { ...source, variants: [variant('70', 100, '')] };
+  assert.equal(productionLineLabel(empty, source.lines[0], 0, 130), ' · line 1');
+});
 
 const LINES = [
   line('5#1', [run(100, 123, { startsSegment: true }), run(124, 147), run(148, 200, { variant: '71', costRaw: '80000', weeklyRaw: '2712500', priority: 1, efficiencyRaw: '1769472' })], {
@@ -156,10 +165,10 @@ test('an unresolved organisation owner is said, instead of a generic name', () =
   const at = linesAt(reply, DETAIL, 130, 'game')[0];
   for (const tip of lineTooltip(reply, at.line, at.detail, at.run, 130, {}, day)) {
     assert.equal(tip.rows.find(row => row.label === 'Military-industrial organisation')?.value, 'Unknown owner');
-    assert.ok(tip.note?.includes(unknown.nameUnknown), 'the History tooltip explains the unknown owner');
+    assert.ok(!tip.note?.includes(unknown.nameUnknown), 'the History tooltip omits the internal owner reason');
     const spoken = tooltipText(tip);
     assert.match(spoken, /Military-industrial organisation Unknown owner/);
-    assert.ok(spoken.includes(unknown.nameUnknown), 'the keyboard read-out keeps the reason');
+    assert.ok(!spoken.includes(unknown.nameUnknown), 'the keyboard read-out omits the internal reason');
     assert.ok(!spoken.includes('acme'), 'the script key is not presented as an organisation name');
   }
   assert.throws(() => validateProductionReply({ ...reply, organisations: [{ ...unknown, nameUnknown: 0 }] }));
@@ -178,7 +187,7 @@ test('a variant is unknown where the variant definitions were not recorded', () 
   const [tip] = lineTooltip(gap, at.line, at.detail, at.run, 130, {}, day);
   assert.equal(tip.title, 'Variant 70');
   assert.equal(tip.icon, undefined);
-  assert.match(tip.note ?? '', /name is not recorded at this time/);
+  assert.doesNotMatch(tip.note ?? '', /name is not recorded at this time/);
 });
 
 test('a line’s total is its recorded output: exact, not exact, or not recorded, never guessed', () => {
@@ -188,13 +197,13 @@ test('a line’s total is its recorded output: exact, not exact, or not recorded
   assert.equal(totalText(at(five, 90)), 'Not recorded');
   // A part not counted exactly makes the total no number at all.
   assert.equal(outputTotal(at(six, 150)!), null);
-  assert.equal(totalText(at(six, 150)), 'Not exact');
+  assert.equal(totalText(at(six, 150)), 'Unknown');
   // After it ended, the final count published then, with or without the window.
   assert.equal(totalText(at(six, 180)), '7');
   assert.equal(totalText(outputAt(six, null, 180)), '7');
-  assert.match(totalNote(at(five, 150), day)!, /since day 100, when recording began/);
-  assert.match(totalNote(at(six, 130), day)!, /since the line was created/);
-  assert.match(totalNote(at(six, 150), day)!, /not exact/);
+  assert.equal(totalNote(at(five, 150)), undefined);
+  assert.match(totalNote(at(six, 130))!, /Since the line was created/);
+  assert.match(totalNote(at(six, 150))!, /Total unknown; some production is missing/);
 });
 
 test('the line tooltip shows what the game shows, with each variant’s part of a switched line', () => {
@@ -205,7 +214,7 @@ test('the line tooltip shows what the game shows, with each variant’s part of 
   assert.deepEqual(rows, { Factories: '8 of 10 requested', Efficiency: '54%', Output: '27.1 per week', Cost: '0.8 IC per unit', Priority: '2',
     Ordered: 'No limit', 'Military-industrial organisation': 'Mauser', 'Produced so far': '10', 'Infantry Equipment I': '6', 'Gewehr 98': '4' });
   assert.equal(tip.rows.find(row => row.label === 'Military-industrial organisation')?.icon, PNG);
-  assert.match(tip.note ?? '', /since day 100/);
+  assert.doesNotMatch(tip.note ?? '', /since day 100/);
 });
 
 test('a tooltip with many parts fits the window, and the full breakdown is still read out', () => {
@@ -306,7 +315,7 @@ test('a line made and deleted between two reads gets a lane, its total, and a ke
   const [tip] = finalTooltip(reply, between, stops[1], {}, day);
   assert.deepEqual(tip.rows.map(row => [row.label, row.value]), [
     ['Made and deleted between day 101 and day 124', undefined], ['Made in all', '5'], ['Gewehr 98', '4'], ['Infantry Equipment I', '1']]);
-  assert.match(tip.note ?? '', /since the line was created/);
+  assert.match(tip.note ?? '', /Since the line was created/);
 });
 
 test('a final count shows only from the census that published it', () => {
@@ -317,7 +326,7 @@ test('a final count shows only from the census that published it', () => {
   const [early] = finalTooltip(REPLY, late, 130, {}, day);
   assert.ok(!early.rows.some(row => row.value === '9'));
   assert.equal(early.rows.find(row => row.label === 'Made in all')?.value, 'Not recorded');
-  assert.match(early.note ?? '', /recorded only from day 148/);
+  assert.match(early.note ?? '', /Final total unavailable at this time/);
   assert.equal(finalTooltip(REPLY, late, 150, {}, day)[0].rows.find(row => row.label === 'Made in all')?.value, '9');
 });
 
@@ -336,7 +345,7 @@ test('a line ended before the first complete census is not said to be made betwe
   assert.deepEqual(laneStatus(before, 120, day), { text: 'Ended by day 108', ended: true });
   const [tip] = finalTooltip(REPLY, before, 120, {}, day);
   assert.equal(tip.rows[0].label, 'Ran before recording began; ended by day 108');
-  assert.match(tip.note ?? '', /since day 100, when recording began/);
+  assert.doesNotMatch(tip.note ?? '', /when recording began/);
 });
 
 test('while a window of reads loads, a history tooltip shows the line’s variant and factories and says so', () => {
@@ -381,7 +390,7 @@ test('output parts of one variant under two organisations are one variant', () =
   assert.deepEqual(variantParts(mixed), [{ variant: '70', units: null }, { variant: '71', units: 4n }]);
   const split = line('6#1', [run(100, 200)], { output: [mixed] });
   const [rows, counted] = lineTooltip(REPLY, split.history, split.detail, run(100, 200), 150, {}, day);
-  assert.deepEqual(rows.rows.filter(row => row.indent).map(row => [row.label, row.value]), [['Infantry Equipment I', 'Not exact'], ['Gewehr 98', '4']]);
+  assert.deepEqual(rows.rows.filter(row => row.indent).map(row => [row.label, row.value]), [['Infantry Equipment I', 'Unknown'], ['Gewehr 98', '4']]);
   assert.ok(counted.rows.some(row => row.label === 'Of 2 variants'));
 });
 
@@ -397,7 +406,7 @@ test('hours whose output read was lost say lines made and ended there may be mis
   assert.equal(withNote(undefined, undefined), undefined);
   const at = linesAt(reply, DETAIL, 110, 'game')[0];
   const [tip] = lineTooltip(reply, at.line, at.detail, at.run, 110, { note: withNote(undefined, unreadNote(reply, 110)) }, day);
-  assert.match(tip.note ?? '', /Lines made and ended here may be missing/);
+  assert.match(tip.note ?? '', /Some production lines may be missing/);
   assert.match(gapTooltip(reply, reply.lines[0], 90, 'day 90', day, unreadNote(reply, 110)).note ?? '', /may be missing/);
   assert.throws(() => validateProductionReply({ ...REPLY, unreadOutput: [{ firstHour: 130, lastHour: 120 }] }));
 });
@@ -409,14 +418,14 @@ test('efficiency and output breakdowns keep recorded operands and name missing a
   assert.equal(efficiency.title, 'Gewehr 98');
   assert.equal(efficiency.subtitle, 'day 150');
   assert.equal(efficiency.rows.find(row => row.label === 'Factories included in average')?.value, '9');
-  assert.equal(efficiency.rows.find(row => row.label === 'Other / not identified')?.value, 'Not recorded');
-  assert.match(efficiency.note ?? '', /growth, cap, retention/);
+  assert.equal(efficiency.rows.find(row => row.label === 'Other')?.value, 'Not recorded');
+  assert.match(efficiency.note ?? '', /Breakdown not recorded/);
   assert.match(efficiency.note ?? '', /Read day 148/);
   const [output] = breakdownTooltip(REPLY, known, 150, 'output', {});
-  assert.equal(output.rows.find(row => row.label === 'Recorded output per tick')?.value, '90,071,992,547.41499 IC');
+  assert.equal(output.rows.find(row => row.label === 'Output rate')?.value, '90,071,992,547.41499 IC');
   assert.equal(output.rows.find(row => row.label === 'Cost per unit')?.value, '0.50001 IC');
-  assert.equal(output.rows.find(row => row.label === 'Other / not identified')?.value, 'Not recorded');
-  assert.match(output.note ?? '', /factory output modifiers/);
+  assert.equal(output.rows.find(row => row.label === 'Other')?.value, 'Not recorded');
+  assert.match(output.note ?? '', /Breakdown not recorded/);
   assert.equal(breakdownTooltip(REPLY, known, 170, 'output', {})[0].title, 'Gewehr 98k');
 });
 
@@ -425,9 +434,9 @@ test('output breakdown never turns a missing rate into zero or restores an unrea
   const [tip] = breakdownTooltip(unknown, run(124, 147, { weeklyRaw: null, costRaw: '0', speedRaw: '-1' }), 130, 'output', {});
   assert.equal(tip.title, 'Variant 70');
   assert.equal(tip.rows.find(row => row.label === 'Output')?.value, 'Not recorded');
-  assert.equal(tip.rows.find(row => row.label === 'Recorded output per tick')?.value, '\u22120.00001 IC');
+  assert.equal(tip.rows.find(row => row.label === 'Output rate')?.value, '\u22120.00001 IC');
   assert.equal(tip.rows.find(row => row.label === 'Cost per unit')?.value, '0.00000 IC');
-  assert.match(tip.note ?? '', /name is not recorded at this time/);
+  assert.doesNotMatch(tip.note ?? '', /name is not recorded at this time/);
 });
 
 test('native modifier hover retains exact signed parts and rejects a non-reconciling reply', () => {
@@ -442,16 +451,16 @@ test('native modifier hover retains exact signed parts and rejects a non-reconci
   for (const form of [tip, compact]) {
     assert.equal(form.rows.find(row => row.label === 'Factories')?.value, '8 of 10 requested');
     assert.equal(form.rows.find(row => row.label === 'Output')?.value, '43.4 per week');
-    assert.equal(form.rows.find(row => row.label === 'Recorded output per tick')?.value, '3.10000 IC');
+    assert.equal(form.rows.find(row => row.label === 'Output rate')?.value, '3.10000 IC');
     assert.equal(form.rows.find(row => row.label === 'Cost per unit')?.value, '0.50000 IC');
     assert.equal(form.rows.find(row => row.label === 'Recorded daily production IC')?.value, '1.00000 IC');
   }
   assert.equal(tip.rows.find(row => row.label === 'Synthetic technology')?.value, '1.20000 IC');
-  assert.equal(tip.rows.find(row => row.label === 'Other / not identified')?.value, '\u22120.20000 IC');
+  assert.equal(tip.rows.find(row => row.label === 'Other')?.value, '\u22120.20000 IC');
   const [full, counted] = modifierTooltip(modifiers.groups[0], 'day 150', () => undefined);
   for (const form of [full, counted]) assert.equal(form.rows[0].value, '1.00000 IC');
   assert.deepEqual(full.rows.slice(1).map(row => row.value), ['1.20000 IC', '\u22120.20000 IC']);
-  assert.match(tip.note ?? '', /Click for the full breakdown/);
+  assert.doesNotMatch(tip.note ?? '', /Click for the full breakdown/);
   assert.throws(() => validateBreakdownReply({ ...reply, runs: [{ ...modifiers, groups: [{ ...modifiers.groups[0], totalRaw: '120000' }] }] }));
 });
 
@@ -467,7 +476,7 @@ test('modifier reconciliation uses the exact wide signed sum rather than modulo 
     { id: 'other', label: null, raw: '-18446744073709551616', unknown: 'Wide signed correction' }] }] }] };
   assert.equal(validateBreakdownReply(exact), exact);
   const [tip] = breakdownTooltip(REPLY, run(148, 171, { speedRaw: '-9223372036854775808' }), 150, 'output', {}, exact.runs[0]);
-  assert.equal(tip.rows.find(row => row.label === 'Other / not identified')?.value, '\u2212184,467,440,737,095.51616 IC');
+  assert.equal(tip.rows.find(row => row.label === 'Other')?.value, '\u2212184,467,440,737,095.51616 IC');
 });
 
 test('saved production line choices retain campaign, branch and opaque producing country identity', () => {
@@ -489,8 +498,8 @@ test('long modifier chart hovers fit while retaining every spoken source and the
   assert.equal(fitted.rows.find(row => row.label === 'Daily output')?.value, 'Not recorded');
   assert.ok(fitted.rows.length < group.parts.length);
   assert.match(tooltipText(fitted), /Synthetic source 4999 −0\.00001 IC/);
-  assert.match(tooltipText(fitted), /Stored label could not be resolved/);
-  assert.match(fitted.note ?? '', /Click to show this day/);
+  assert.doesNotMatch(tooltipText(fitted), /Stored label could not be resolved/);
+  assert.doesNotMatch(fitted.note ?? '', /Click to show this day/);
   const known = modifierTooltip({ ...group, totalRaw: '4998' }, 'day 150', () => undefined);
   assert.equal(known[0].rows[0].value, '0.04998 IC');
   assert.equal(known[1].rows[0].value, '0.04998 IC');

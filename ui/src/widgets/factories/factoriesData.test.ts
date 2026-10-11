@@ -9,7 +9,7 @@ import { DATE_OVERLAY_OPTION, mixCountry } from '../../charts/race/options.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import '../definitions.ts';
 import { definition, OPTIONS } from './definition.ts';
-import { chosenGroups, countRuns, factoriesAt, factoriesRequest, factoryModel, factorySegmentAt, factoryTooltips, formatCount, groupCount, groupName, lineRuns, mixBands, raceEntries, rankFactories, typeChoices, validateFactoriesReply, withheld } from './factoriesData.ts';
+import { chosenGroups, countRuns, factoriesAt, factoriesRequest, factoryModel, factorySegmentAt, factoryTooltips, formatCount, groupCount, groupName, groupRows, lineRuns, mixBands, raceEntries, rankFactories, typeChoices, validateFactoriesReply, withheld } from './factoriesData.ts';
 import type { CountMode } from './factoriesData';
 
 const GROUP_PARTS: FactoryPart[] = ['total', 'controlled', 'owned', 'damaged', 'fromSubjects', 'toOverlord', 'fromOthers', 'toOthers'];
@@ -102,6 +102,19 @@ test('a country at an hour sums the chosen groups and knows its unbroken stretch
   assert.equal(factoriesAt(model, 'GER', 100, ['civilian'], 'built')!.total, 40);
 });
 
+test('Built shows each type total once and keeps its ownership and damage breakdown', () => {
+  const model = factoryModel(REPLY);
+  const group = REPLY.groups.find(group => group.key === 'civilian')!;
+  const built = groupRows(model, GERMANY, group, 'built', undefined, true);
+  assert.equal(built[0].value, '40');
+  assert.ok(!built.some(row => row.label === 'Total'));
+  for (const label of ['Owned', 'From occupation', 'From subjects', 'Damaged']) assert.ok(built.some(row => row.label === label));
+  for (const mode of ['free', 'topBar'] as const) {
+    const rows = groupRows(model, GERMANY, group, mode, undefined, true);
+    assert.equal(rows.find(row => row.label === 'Total')?.value, '40');
+  }
+});
+
 test('counts over time merge equal neighbours but keep gaps and new lines', () => {
   const model = factoryModel(REPLY);
   assert.deepEqual(countRuns(model, 'GER', ['civilian'], 'built'), [
@@ -152,7 +165,7 @@ test('the tooltip gives the game’s breakdown, then only what is not zero, then
   const at = factoriesAt(model, 'GER', 100, ['civilian'], 'free')!;
   const [full, compact, counts] = [...factoryTooltips(model, 'Germany', at, '1 Jan 1936', 'free', new Map())];
   assert.equal(full.title, 'Germany');
-  assert.equal(full.subtitle, '1 Jan 1936 · Free after withheld');
+  assert.equal(full.subtitle, '1 Jan 1936 · Available');
   const labels = (rows: typeof full.rows) => rows.map(row => `${row.label} ${row.value}`);
   assert.deepEqual(labels(compact.rows), [
     'Civilian Factory · Building name unavailable 22', 'Total 40', 'Owned 30', 'From occupation +8', 'Trade exports +3', 'Damaged −3',
@@ -182,7 +195,7 @@ test('top N ranks by the count shown, ties by tag, and leaves out a country not 
   assert.deepEqual(tags(100, 'built', 1), ['GER']);
   // Hour 104 is a gap in Germany's record: only Italy is ranked, never Germany at zero.
   assert.deepEqual(tags(104, 'built', 10), ['ITA']);
-  // Free after withheld: Germany 53 against Italy 21, still first; civilian only, Germany 41 against 12.
+  // Available: Germany 53 against Italy 21, still first; civilian only, Germany 41 against 12.
   assert.deepEqual(rankFactories(model, model.tags, 100, ['civilian'], 'free', 10).map(entry => [entry.tag, entry.at.total]), [['GER', 22], ['ITA', 12]]);
   const tie = structuredClone(REPLY);
   tie.series[1].tag = 'AAA';

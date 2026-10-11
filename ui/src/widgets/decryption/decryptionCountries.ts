@@ -15,7 +15,7 @@ export interface CipherCountries { owner: ReturnType<CountryLabel>; target: Retu
 type Shown = CipherCountries & { row: RaceRow; hour: number };
 const sameIdentity = (a: RaceRow, b: RaceRow) => a.key === b.key && a.pair.ownerId === b.pair.ownerId && a.pair.targetId === b.pair.targetId && a.tags.firstHour === b.tags.firstHour
   && a.tags.ownerTag === b.tags.ownerTag && a.tags.targetTag === b.tags.targetTag;
-const missing = (id: string, tag: string | null): ReturnType<CountryLabel> => ({ name: tag === null ? `Country ${id} (tag unavailable)` : 'Country name unavailable' });
+const missing = (): ReturnType<CountryLabel> => ({ name: 'Country name unavailable' });
 
 /** Exact sampled country reads, with one completed display pair held only inside
  * its native tag segment. The shared fact store owns requests and their cache. */
@@ -51,8 +51,8 @@ export function useDecryptionCountries(client: DashboardClient, track: Pick<Boun
   const pending = new Map<string, Shown>();
   for (const row of samples) {
     const label = countries.labelAt(row.hour);
-    const owner = row.tags.ownerTag === null ? missing(row.pair.ownerId, null) : label(row.tags.ownerTag);
-    const target = row.tags.targetTag === null ? missing(row.pair.targetId, null) : label(row.tags.targetTag);
+    const owner = row.tags.ownerTag === null ? missing() : label(row.tags.ownerTag);
+    const target = row.tags.targetTag === null ? missing() : label(row.tags.targetTag);
     const ready = (tag: string | null, value: ReturnType<CountryLabel>) => tag === null || (value.known !== undefined && !value.flagPending);
     const pair = { owner, target, hour: row.hour, row };
     if (ready(row.tags.ownerTag, owner) && ready(row.tags.targetTag, target)) {
@@ -65,8 +65,8 @@ export function useDecryptionCountries(client: DashboardClient, track: Pick<Boun
       const pair = held.get(row.key) ?? pending.get(row.key);
       if (pair && pair.hour <= row.hour && sameIdentity(pair.row, row)) return pair;
       const waiting = valid(row);
-      const fallback = (id: string, tag: string | null) => tag === null ? missing(id, tag) : { ...missing(id, tag), flagPending: waiting };
-      return { owner: fallback(row.pair.ownerId, row.tags.ownerTag), target: fallback(row.pair.targetId, row.tags.targetTag) };
+      const fallback = (tag: string | null) => tag === null ? missing() : { ...missing(), flagPending: waiting };
+      return { owner: fallback(row.tags.ownerTag), target: fallback(row.tags.targetTag) };
     },
     revision: countries.revision,
   };

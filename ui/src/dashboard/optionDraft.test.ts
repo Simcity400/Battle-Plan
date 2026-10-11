@@ -18,6 +18,13 @@ test('two saves from one header click retain both options before props arrive', 
   assert.deepEqual(draft.update(fields, 'sort', ''), { rank: 'territory', otherWidgetOption: true });
 });
 
+test('several options save as one change, or not at all when one is invalid', () => {
+  const draft = new OptionDraft({ otherWidgetOption: true });
+  assert.equal(draft.updateAll(fields, { rank: 'territory', sort: 1 }), null);
+  assert.deepEqual(draft.update(fields, 'sort', 'country'), { sort: 'country', otherWidgetOption: true }, 'the rejected change left nothing behind');
+  assert.deepEqual(draft.updateAll(fields, { rank: 'territory', sort: '' }), { rank: 'territory', otherWidgetOption: true });
+});
+
 test('a saved layout change or reset becomes the new option baseline', () => {
   const draft = new OptionDraft({ rank: 'factories' });
   draft.update(fields, 'sort', 'country');

@@ -286,7 +286,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
     clearTip();
     setPending({ pageKey: target.pageKey, offset: target.offset });
     const error = pagesByKey.get(target.pageKey)?.error;
-    setSpoken(error ? `Rows unavailable: ${error}` : 'Loading rows.');
+    setSpoken(error ? 'Couldn’t load rows.' : 'Loading rows.');
     if (!scroller) return;
     const top = offsets[target.index] + target.offset * ROW_HEIGHT[density];
     setLogicalTop(scrollToShow([top, top + ROW_HEIGHT[density]], 0, scrollPosition.current.logical, scroller.clientHeight, sticky));
@@ -298,7 +298,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
     else if (!pendingTarget) { setPending(null); setSpoken('No rows match in this window.'); }
     else {
       const error = pagesByKey.get(pending.pageKey)?.error;
-      setSpoken(error ? `Rows unavailable: ${error}` : 'Loading rows.');
+      setSpoken(error ? 'Couldn’t load rows.' : 'Loading rows.');
     }
   }, [pending, pendingTarget, pagesByKey, focusRow]);
 
@@ -383,7 +383,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
             const height = Math.max(0, bottom - top);
             const labelTop = Math.max(0, Math.min(Math.max(0, height - ROW_HEIGHT[density]), view.top - top));
             return <div key={moved.key} className="log-page" style={{ transform: `translateY(${scrollItemTop(geometry, top, view.top)}px)`, height }} aria-hidden="true">
-              <span style={{ transform: `translateY(${labelTop}px)` }}>{item.page.error ? `Rows unavailable: ${item.page.error}` : 'Loading rows…'}</span>
+              <span style={{ transform: `translateY(${labelTop}px)` }}>{item.page.error ? 'Couldn’t load rows.' : 'Loading rows…'}</span>
             </div>;
           }
           const motion = !animate ? 'moving-row' : explicitMotion && layout === 'row' && item.kind === 'row' && moved.phase !== 'leaving'

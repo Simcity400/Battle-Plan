@@ -16,24 +16,21 @@ const SIDES: BattleSideSummary = { label: 'Sides', countLabel: 'Divisions (incl.
 const MEASURES: readonly BattleMeasure<LandBattleRow>[] = [
   { label: 'Casualties', title: 'Casualties', value: row => row.casualties,
     format: (value, row) => landCasualtyText(value, row), tooltipFormat: (value, row) => landCasualtyText(value, row, true) },
-  { label: 'Peak size', title: 'Peak divisions', hint: 'Largest simultaneous recorded division count, incl. reserves. ≥ marks a recorded minimum.',
+  { label: 'Peak size', title: 'Peak divisions', hint: 'Most divisions at once, including reserves. ≥ means at least.',
     value: row => row.peakUnknown ? { label: 'Peak size', value: null, unknown: 'Roster not recorded' }
       : { label: 'Peak size', value: row.peak.value, atLeast: row.start?.bound === 'by' || row.end !== null && 'unknown' in row.end },
     format: value => battleValueText(value), tooltipFormat: (value, row) => value.value === null ? value.unknown : `${battleValueText(value)} at ${formatDateTime(row.peak.hour)}` },
   { label: 'Length', title: 'Length', value: row => row.length, format: value => `${battleValueText(value)} h` },
 ];
-const NOTE = 'Side counts include reserves. Peak is the largest simultaneous recorded roster. ≥ marks a recorded minimum. Length uses recorded reads/rounds; gaps split battles.';
-const battleNote = (row: LandBattleRow) => `Province ${row.provinceId}. ${NOTE} Side counts read at ${formatDateTime(row.readHour)}.${row.end !== null && row.lossRead && !row.lossRead.terminal ? ' Terminal losses not recorded; losses shown are so far.' : ''}`;
 
 const adapter: BattleViewAdapter<LandBattleRow, LandBattlesWindow, LandBattlesRanking> = {
   definition, product: 'land-battles', landPlaceNames: true, validateManifest: validateLandBattlesManifest, validateWindow: validateLandBattlesReply,
   validateRanking: validateLandBattlesRanking, rows: landBattleRows, rankedRows: rankedLandBattleRows,
-  labels: LABELS, measures: MEASURES, compactSides: SIDES, note: battleNote, formatLoss: landLossText,
-  rangeNote: 'Peak size and length include recorded reads before the selected range.',
+  labels: LABELS, measures: MEASURES, compactSides: SIDES, formatLoss: landLossText,
   summary: (rows, ranking, measure, view) => {
     const casualtyNote = view === 'biggest' && measure === 'Casualties' ? casualtyRankingNote(ranking)
       : landCasualtiesMissing(rows) ? 'Casualties: Not in this recording.' : null;
-    return `${casualtyNote ? `${casualtyNote} ` : ''}Divisions include reserves.`;
+    return casualtyNote ?? '';
   },
 };
 export default function LandBattlesWidget(props: WidgetProps) {

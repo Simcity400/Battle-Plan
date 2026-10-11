@@ -48,9 +48,9 @@ export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnos
   }, [data, onDiagnostics]);
 
   if (!track || !tag) return <WidgetState kind="empty" icon="history" message="Load a campaign and choose a country to see its national spirits." />;
-  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the country’s recorded branch." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
+  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading national spirits…" />;
   if (!lanes.length) return <WidgetState kind="empty" message="No national spirits recorded yet." />;
 
@@ -87,7 +87,7 @@ export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnos
         const value = open ? (unseen ? start : `since ${start}`)
           : end ? `${unseen ? start : `from ${start}`}, ${end}`
             : unseen ? `${start}, ended ${dayLabel(held.lastHour + 1)}` : `${start} – ${dayLabel(held.lastHour + 1)}`;
-        return tip(`National spirit · ${value}`, 'Ideas are recorded once a day, so a change is dated to the day it was first seen.');
+        return tip(`National spirit · ${value}`);
       }}
       onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
     {menu.menu}

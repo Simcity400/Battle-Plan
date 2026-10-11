@@ -94,3 +94,8 @@
 /* Shared project/content blueprint tile, also used by lane label identities. */
 .blueprint-tile { width:72px; height:48px; border-radius:6px; background:var(--blueprint); display:grid; place-items:center; box-shadow:inset 0 0 0 1px var(--blueprint-border); color:var(--blueprint-text); }
 .blueprint-tile img { width:64px; height:39px; object-fit:contain; }
+
+/* A picture slot the game has no picture for (components/ArtFallback). */
+.art-fallback { display: grid; place-items: center; width: 100%; height: 100%; border-radius: var(--r-xs);
+  background: var(--hover); color: var(--quiet); }
+.art-fallback svg { width: 55%; height: 55%; max-width: 18px; max-height: 18px; }

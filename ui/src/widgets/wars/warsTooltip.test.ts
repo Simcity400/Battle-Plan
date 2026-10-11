@@ -15,6 +15,16 @@ const war: WarTimeline = { id: 'opaque', firstHour: 10, lastHour: 20, startedBy:
   observations: [observation], casualties: [], participants: [], capitulations: [] };
 const input = { war, observation, losses: null, hour: 15, until: 40, branchLast: 40, unobserved: [], capitulationsUnobserved: [], country, day };
 
+test('participant hovers show the war once and omit an absent optional capitulation row', () => {
+  const content = warTooltip({ ...input, participant: { tag: 'other', run: {
+    tag: 'other', side: 'defender', firstHour: 12, lastHour: 19, joinedBy: true, leftBy: true }, capitulations: [] } });
+  assert.ok(!content.rows.some(row => row.label === 'War' || row.label === 'Capitulation'));
+  assert.equal(content.subtitle, 'Recorded title · date 15');
+  assert.equal(content.rows.find(row => row.label === 'Joined')?.value, 'by date 12');
+  assert.equal(content.rows.find(row => row.label === 'Left')?.value, 'by date 20');
+  assert.ok(!content.note?.includes('overview observations'));
+});
+
 test('wars follow the dashboard country; saved viewpoints migrate to it unless a country was picked', () => {
   assert.equal(definition.countries.max, 1);
   assert.equal('defaultCountries' in definition, false);
@@ -92,7 +102,7 @@ test('participant and side tooltips distinguish actual read status from authored
   }
   for (const known of [undefined, false]) {
     const content = warTooltip({ ...input, participant, country: () => ({ name: known === false ? 'Not recorded' : 'Loading…', known }) });
-    assert.equal(content.description, known === false ? 'The country name could not be read at this hour.' : undefined);
+    assert.equal(content.description, undefined);
   }
 });
 
@@ -143,7 +153,7 @@ test('participant tooltip has dated side, by bounds, capitulation and missing-ca
   assert.equal(content.rows.find(row => row.label === 'Left')?.value, 'by date 20');
   assert.equal(content.rows.find(row => row.label === 'Side')?.value, 'Defender');
   assert.equal(content.rows.find(row => row.label === 'Capitulated')?.value, 'date 18');
-  assert.match(content.note!, /Capitulation not recorded/);
+  assert.match(content.note!, /Some capitulations may be missing/);
 });
 
 test('native roster and participant flags retain pending and refused reads without marking war or side headings', () => {
@@ -159,7 +169,7 @@ test('native roster and participant flags retain pending and refused reads witho
 test('missing name and missing observation are explicit without backfilled participants or losses', () => {
   const unknown = warTooltip({ ...input, observation: { ...observation, name: { text: 'Not recorded', known: false, reason: 'Missing naming operand', key: null } } });
   assert.equal(unknown.title, 'Not recorded');
-  assert.equal(unknown.description, 'Missing naming operand');
+  assert.equal(unknown.description, undefined);
   const gap = warTooltip({ ...input, observation: null });
   assert.equal(gap.rows.find(row => row.label === 'Participants')?.value, 'Not recorded');
   assert.equal(gap.rows.filter(row => row.indent).length, 0);

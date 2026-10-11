@@ -131,7 +131,7 @@ test('area is hidden when refused by name; other measures stay available without
 test('Map area is labelled as map cells and names the projection distortion', () => {
   assert.equal(measureChoices(reply()).find(choice => choice.value === 'area')?.label, 'Map area');
   assert.equal(reply().areaUnit, 'map cells');
-  assert.match(territoryNote('area')!, /not equal-area; northern territory is enlarged/);
+  assert.match(territoryNote('area')!, /Map area exaggerates territory near the poles/);
   assert.equal(territoryNote('states'), undefined);
 });
 

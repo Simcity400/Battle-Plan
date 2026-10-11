@@ -207,38 +207,37 @@ export function careerCountryFacts(reply: UnitLeadersData, leader: LeaderCareer,
 }
 export const leaderName = (row: Pick<LeaderRow, 'person'>) => row.person.name ?? 'Character name unavailable';
 export const attributeNames = (role: Pick<LeaderRole, 'attributeNames'>) => role.attributeNames.map(name => name ?? 'Name not recorded');
-export const recordedSince = (leader: LeaderCareer, recordingStart: number) => `Recorded battles since ${formatDateTime(leader.runs[0]?.firstHour ?? recordingStart)}`;
+export const recordedSince = (leader: LeaderCareer, recordingStart: number) => `Battles since ${formatDateTime(leader.runs[0]?.firstHour ?? recordingStart)}`;
 
 export function careerEmptyEntry(reply: UnitLeadersData, leader: LeaderCareer, laneId: string, hour: number): string {
   const run = runAt(leader.runs, hour);
-  if (!run) return 'Unknown: leader not read at this hour';
+  if (!run) return 'Leader unavailable.';
   const kind = reply.roles[run.value.role].kind;
   const observed = runAt(reply.observed, hour);
   if (laneId === 'commands') return observed && (kind === 1 ? observed.landCommands : observed.navalCommands)
-    ? 'No command in the recorded observations at this hour' : 'Unknown: command observations incomplete at this hour';
+    ? 'No command.' : 'Command data unavailable.';
   if (laneId === 'battles') return battleHistoryComplete(reply, kind, hour)
-    ? 'No recorded participation at this hour' : 'Unknown: battle tables not fully read at this hour';
+    ? 'No recorded participation at this hour' : 'Battle data unavailable.';
   return 'No recorded entry at this hour';
 }
 
-export function leaderTooltip(reply: UnitLeadersData, row: LeaderRow, country: { name: string; flag?: string }): TooltipContent {
+export function leaderTooltip(row: LeaderRow, country: { name: string; flag?: string }): TooltipContent {
   const dates = new Map(row.career.traitGains.filter(g => g.hour <= row.hour).map(g => [g.token, g]));
   const names = attributeNames(row.value);
   return { title: leaderName(row), subtitle: `${country.name} · ${row.value.rank || `Rank ${row.value.category}`} · ${formatDateTime(row.hour)}`,
-    rows: [{ label: 'Skill', value: row.value.skill == null ? 'Not recorded' : `${row.value.skill}${row.value.maximumSkill == null ? ' · maximum unknown' : ` / ${row.value.maximumSkill}`}` },
+    rows: [{ label: 'Skill', value: row.value.skill == null ? 'Not recorded' : `${row.value.skill}${row.value.maximumSkill == null ? '' : ` / ${row.value.maximumSkill}`}` },
       { label: `${names[0]} · ${names[1]}`, value: `${row.value.components[0]} · ${row.value.components[1]}` },
       { label: `${names[2]} · ${names[3]}`, value: `${row.value.components[2]} · ${row.value.components[3]}` },
       { label: 'Battles won / fought', value: `${row.won ?? 'Result not recorded'} / ${row.fought}`, divider: true },
       { label: 'Battles lost', value: row.lost == null ? 'Result not recorded' : String(row.lost) },
       { label: 'Unresolved battles', value: String(row.unresolved) },
-      { label: 'Win rate among decided battles', value: row.winRate == null ? row.won == null ? 'Result not recorded' : 'No decided recorded battles' : `${Math.round(row.winRate)}%` },
+      { label: 'Win rate', value: row.winRate == null ? row.won == null ? 'Result not recorded' : 'No battles with known results.' : `${Math.round(row.winRate)}%` },
       ...(row.value.traits?.length === 0 ? [{ label: 'Traits', value: 'None recorded', divider: true }] : row.value.traits?.map((token, i) => {
         const gain = dates.get(token); const trait = row.traitCatalogue[token];
         return { label: contentTitle(trait.name, trait.token, 'Trait name unavailable'), icon: trait.icon ?? undefined, divider: i === 0,
-          value: gain ? `${gain.date === 'heldBefore' ? 'Held before' : gain.date === 'gained' ? 'Gained' : 'First observed'} ${formatDateTime(gain.hour)}` : 'Date not recorded' };
+          value: gain ? `${gain.date === 'heldBefore' ? 'Held before' : gain.date === 'gained' ? 'Gained' : 'Held by'} ${formatDateTime(gain.hour)}` : 'Date not recorded' };
       }) ?? [{ label: 'Traits not recorded', divider: true }])],
-    description: `${recordedSince(row.career, reply.firstHour)}${row.foughtPartial ? ' · Some battle observations are missing' : ''}${row.won == null ? ' · Result not recorded' : ''}`,
-    note: 'Click for his career' };
+  };
 }
 
 export function careerLanes(reply: UnitLeadersData, leader: LeaderCareer, firstHour: number, lastHour: number, readHour = lastHour): TimelineLane[] {
@@ -248,15 +247,15 @@ export function careerLanes(reply: UnitLeadersData, leader: LeaderCareer, firstH
     const previous = leader.runs[i - 1];
     const consecutive = previous && previous.lastHour + 1 === run.firstHour && previous.value.skill != null;
     const gain = consecutive && run.value.skill > previous.value.skill!;
-    const date = run.firstHour === reply.firstHour ? 'Held before' : gain ? 'Level up' : consecutive ? 'Read' : 'First observed';
+    const date = run.firstHour === reply.firstHour ? 'Held before' : gain ? 'Level up' : consecutive ? null : 'First seen';
     return [{ id: `skill:${run.firstHour}`, firstHour: Math.max(firstHour, run.firstHour), lastHour: Math.min(lastHour, run.lastHour), value: run.value.skill, dot: !!gain && run.firstHour >= firstHour,
-      label: `Skill ${run.value.skill} · ${date} ${formatDateTime(run.firstHour)}` }];
+      label: `Skill ${run.value.skill}${date ? ` · ${date} ${formatDateTime(run.firstHour)}` : ''}` }];
   });
   const held = runAt(leader.runs, firstHour)?.value.traits ?? [];
   const earlier = leader.traitGains.filter(g => g.hour < firstHour && held.includes(g.token)).filter((g, i, all) => !all.slice(i + 1).some(other => other.token === g.token));
   const dates = new Map<number, TimelineSpan>();
   for (const g of [...earlier.map(g => ({ ...g, hour: firstHour, date: 'heldBefore' as const })), ...leader.traitGains.filter(g => g.hour >= firstHour && g.hour <= lastHour)]) {
-    const label = `${contentTitle(traits.get(g.token)?.name, g.token, 'Trait name unavailable')} · ${g.date === 'heldBefore' ? 'Held before' : g.date === 'gained' ? 'Gained' : 'First observed'} ${formatDateTime(g.hour)}`;
+    const label = `${contentTitle(traits.get(g.token)?.name, g.token, 'Trait name unavailable')} · ${g.date === 'heldBefore' ? 'Held before' : g.date === 'gained' ? 'Gained' : 'First seen'} ${formatDateTime(g.hour)}`;
     const previous = dates.get(g.hour);
     dates.set(g.hour, { id: `trait:${g.hour}`, firstHour: g.hour, lastHour: g.hour, marker: true,
       label: previous ? `${previous.label}; ${label}` : label, icons: [...(previous?.icons ?? []), traits.get(g.token)?.icon ?? undefined] });

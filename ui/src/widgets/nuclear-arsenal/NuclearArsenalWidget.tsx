@@ -32,7 +32,7 @@ import { readAt } from '../../dashboard/reads';
 import type { CountryNukesReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
 import { nuclearCountrySelection } from './NuclearCountryChip';
-import { formatNukes, nuclearDrillAliasAt, nuclearDrillSelection, nuclearIdentityModel, nuclearNumbers, pinNuclearDrill, reduceNuclearDrill, validateNuclearDrillReply, nuclearDrillAt, nuclearDrillBands, nuclearModel, nuclearReadNote, nuclearRuns, nuclearSegmentAt, nuclearTooltip, nukesRequest, rankNukes, validateNukesReply } from './nuclearArsenalData';
+import { formatNukes, nuclearDrillAliasAt, nuclearDrillSelection, nuclearIdentityModel, nuclearNumbers, pinNuclearDrill, reduceNuclearDrill, validateNuclearDrillReply, nuclearDrillAt, nuclearDrillBands, nuclearModel, nuclearRuns, nuclearSegmentAt, nuclearTooltip, nukesRequest, rankNukes, validateNukesReply } from './nuclearArsenalData';
 
 const NO_WARNINGS: string[] = [];
 export default function NuclearArsenalWidget({ widget, runtime, active, countrySlot = null, onDiagnostics }: WidgetProps) {
@@ -112,14 +112,14 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
   const headerLabels = useCountryLabelsAt(runtime.client, track, headerWanted, active && !!countrySlot && pinned);
   const header = pinned && countrySlot && createPortal(<DatedCountryChip
     label={headerAlias ? headerLabels.labelAt(drillAt)(headerAlias) : null} hour={window ? drillAt : null}
-    reason={drillReply.error ?? (!headerSelection ? 'The saved native country selection is unavailable.'
-      : !headerAlias ? 'The selected native country identity is unknown or conflicting at this hour.' : null)} />, countrySlot);
+    reason={drillReply.error ? 'Couldn’t load the breakdown.' : (!headerSelection ? 'Saved country selection unavailable. Choose it again.'
+      : !headerAlias ? 'Country unavailable at this time.' : null)} />, countrySlot);
   const looks = useCountryLooks(runtime.client, track, currentAlias ? [currentAlias] : [], drillAt, active,
     (tag, hour) => drillData?.series.find(series => series.tag === tag)?.segments.find(span => span.firstHour <= hour && hour <= span.lastHour)?.firstHour ?? null);
   const pendingLabel = useCallback(() => ({ name: 'Loading name…' }), []);
   const hover = useHoverLabels(runtime.client, track, active, pendingLabel);
   const entityLooks = {
-    name: (_tag: string, hour = drillAt) => { const alias = aliasAt(hour); return alias ? looks.name(alias, hour) : 'Country identity not recorded'; },
+    name: (_tag: string, hour = drillAt) => { const alias = aliasAt(hour); return alias ? looks.name(alias, hour) : 'Country not recorded'; },
     flag: (_tag: string, hour = drillAt) => { const alias = aliasAt(hour); return alias ? looks.flag(alias, hour) : undefined; },
     color: () => tokens.muted,
   };
@@ -153,17 +153,17 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
     mix={drillTag && drillBands ? { tag: drillTag, bands: drillBands, parts: drillParts.map((part, index) => ({ ...part,
       value: part.id === '' ? drillValue?.remainder == null ? 'Not known' : formatNukes(drillValue.remainder)
         : drillValue?.values[index] == null ? 'Not known' : formatNukes(drillValue.values[index]!) })) } : null}
-    label="Nuclear stockpile (game counter)" empty="No nuclear stockpile was recorded at this time." formatValue={formatNukes}
+    label="Nuclear stockpile" empty="No nuclear stockpile was recorded at this time." formatValue={formatNukes}
     presentation={{ exact: false, held: false, countryLooks: false }} entityLooks={entityLooks} selectedHour={drillAt}
     pickOwner={drillPickOwner}
     segmentAt={(tag, hour) => nuclearSegmentAt(drillModel, tag, hour)}
-    state={drillReply.error ? <WidgetState kind="error" message={drillReply.error} onRetry={drillReply.retry} />
+    state={drillReply.error ? <WidgetState kind="error" detail={drillReply.error} onRetry={drillReply.retry} />
       : drillTag && !drillModel ? <WidgetState kind="loading" label="Loading nuke types…" /> : undefined}
     tooltip={() => null}
     timeTooltip={hour => {
       if (!drillModel || !drillTag) return null;
       const alias = aliasAt(hour);
-      if (!alias) return [{ title: formatDateTime(hour), rows: [{ label: 'Country identity', value: 'Not recorded' }] }];
+      if (!alias) return [{ title: formatDateTime(hour), rows: [{ label: 'Country', value: 'Not recorded' }] }];
       hover.ask(hour, [alias]);
       const forms = nuclearTooltip(drillModel, drillTag, hour, hover.labelAt(hour)(alias).name, colours, formatDateTime(hour));
       const at = nuclearDrillAt(drillModel, drillTag, hour);
@@ -177,20 +177,17 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
           const hour = followHour;
           if (hour != null && drillTag) dispatchDrill({ type: 'open', breakdown: drillTag, hour, playing: true, playhead: hour });
         }}>Follow playback</button>}</p>}
-      <DrillParts parts={(drillModel?.parts ?? []).flatMap((part, index) => drillValue?.values[index] == null ? [] : [{ ...part,
-        value: drillValue.values[index]!, raw: BigInt(drillValue.values[index]!), color: colours.get(part.id), muted: drillModel?.reply.types[index].name == null }])}
+      <DrillParts parts={(drillModel?.parts ?? []).map((part, index) => ({ ...part,
+        value: drillValue?.values[index] ?? null, text: drillValue?.values[index] == null ? 'Not recorded' : formatNukes(drillValue.values[index]!), color: colours.get(part.id), muted: drillValue?.values[index] == null || drillModel?.reply.types[index].name == null }))}
         format={formatNukes} total={drillValue?.total ?? null}
         unattributed={drillValue?.remainder == null ? undefined : { ...UNATTRIBUTED_PART, value: drillValue.remainder, raw: BigInt(drillValue.remainder), color: colours.get('') }}
-        totalRow={{ label: 'Nuclear stockpile (game counter)', value: drillValue?.total == null ? 'Not recorded' : formatNukes(drillValue.total) }} />
-      {(drillModel?.parts ?? []).some((_, index) => drillValue?.values[index] == null) && <p className="drill-empty">Not recorded: {drillModel?.parts
-        .filter((_, index) => drillValue?.values[index] == null).map(part => part.label).join(', ')}.</p>}
-      {drillModel && <p className="drill-empty">{nuclearReadNote(drillModel, drillAt)}</p>}
+        totalRow={{ label: 'Nuclear stockpile', value: drillValue?.total == null ? 'Not recorded' : formatNukes(drillValue.total) }} />
     </div>}
     onPick={drillTag ? hour => dispatchDrill(pinned ? { type: 'open', breakdown: drillTag, hour, playing: false, playhead: null }
       : { type: 'pick', hour }) : undefined} />;
   if (pinned) return <>{header}<div className="parts-race-drill">{breakdown}</div></>;
-  const overviewState = error ? <WidgetState kind="error" message={error} onRetry={retry} />
-    : groups.error ? <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />
+  const overviewState = error ? <WidgetState kind="error" detail={error} onRetry={retry} />
+    : groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
       : resolved.reason ? <WidgetState kind="empty" icon="target" message={resolved.reason} />
         : !model || !data || (needsGroups && !groups.data) ? <WidgetState kind="loading" label="Loading nuclear arsenal…" />
           : !model.tags.length && resolved.top == null ? <WidgetState kind="unavailable" message="No nuclear stockpiles were recorded for these countries." /> : undefined;
@@ -198,7 +195,7 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
     options={options} view={view} extent={extent} playhead={playhead} onPick={open} pickOwner={pickOwner}
     moment={moment} slots={slots} ranked={ranked} lines={lines} parts={model?.parts} mix={mix} segmentAt={segmentAt} state={overviewState}
     presentation={{ exact: false, held: false }}
-    label="Nuclear stockpile (game counter)" empty={resolved.top != null && readAt(data?.emptyReadHours ?? [], moment) === moment
+    label="Nuclear stockpile" empty={resolved.top != null && readAt(data?.emptyReadHours ?? [], moment) === moment
       ? 'No nuclear weapons yet.' : 'No nuclear stockpile was recorded at this time.'} formatValue={formatNukes}
     tooltip={(tag, hour, name, colours) => {
       if (!model) return null;
@@ -206,8 +203,7 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
       return isMember(membership ?? undefined, hour) && isMember(counted.membership?.get(tag), hour)
         ? nuclearTooltip(model, tag, hour, name, colours, formatDateTime(hour)) : null;
     }} lineTooltip={(hour, tags, labelAt, country) => [{
-      ...linesTooltip(hour, lines.filter(line => tags.includes(line.tag)), labelAt, country, formatDateTime(hour), 'Nuclear stockpile (game counter)', formatNukes),
-      note: tags.length && model ? nuclearReadNote(model, hour) : undefined,
+      ...linesTooltip(hour, lines.filter(line => tags.includes(line.tag)), labelAt, country, formatDateTime(hour), 'Nuclear stockpile', formatNukes),
     }]} beforeChart={choice && <div className="drill-empty" role="group" aria-label="Choose the nuclear arsenal to open">
       <p>{formatDateTime(choice.hour)} · Choose a country</p>
       <CountryPicker countries={track.source.metadata.countries} selectedTag={null} playerCountryId={null}
@@ -218,7 +214,7 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
       <button type="button" className="button small quiet" onClick={() => setChoice(null)}>Cancel</button>
     </div>} />;
   return <div className="parts-race" ref={anchor}><DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'}
-    open={drill.breakdown != null} anchor={anchor} title="Nuke types" day={formatDateTime(drillAt)} following={drill.follow}
+    open={drill.breakdown != null} anchor={anchor} title="Weapon types" day={formatDateTime(drillAt)} following={drill.follow}
     canFollow={followHour != null} onClose={() => dispatchDrill({ type: 'close' })} onFollow={() => dispatchDrill({ type: 'follow' })}
     onPin={drillTag ? () => runtime.addWidgetBelow(widget.id, pinNuclearDrill(widget, track, drillTag, drillAt, originHour, drill.follow)) : undefined}
     main={main}>{breakdown}</DrillHost></div>;

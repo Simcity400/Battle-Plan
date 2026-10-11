@@ -9,7 +9,6 @@ import { fitTooltip } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { fixedNumber, formatAmount } from '../../charts/valueAxis';
 import type { ProductionLineBreakdownReply } from '../../generated/dashboard';
-import { readAt } from '../../dashboard/reads';
 import { modifierTooltip } from './productionData';
 
 /** One part set serves the hover, bars and history. Negative corrections remain
@@ -54,21 +53,16 @@ export default function ProductionDrill({ data, selected, onFactor, hour, extent
     },
   }], [segments]);
   const run = hour == null ? null : runAt(data.runs, hour);
-  const read = hour == null ? null : readAt(data.reads, hour);
   const group = run?.groups.find(group => group.id === shown);
   const unit = group?.unit ?? data.runs.flatMap(run => run.groups).find(group => group.id === shown)?.unit ?? '';
-  const corrections = useMemo(() => data.runs.some(run => run.groups.find(group => group.id === shown)?.parts.some(part => BigInt(part.raw) < 0n)), [data, shown]);
   const valueText = (raw: string) => `${formatAmount(raw, 5, 5)} ${unit}`;
   return <div className="production-drill">
     <Segmented label="Production factor" value={shown} onChange={onFactor} options={groups} />
     {!group ? <p className="drill-empty">No breakdown was recorded for this day.</p>
-      : <DrillParts parts={group.parts.map(part => ({ id: part.id, label: part.label ?? 'Other / not identified',
+      : <DrillParts parts={group.parts.map(part => ({ id: part.id, label: part.label ?? 'Other',
         value: fixedNumber(part.raw, group.decimals), raw: BigInt(part.raw), text: valueText(part.raw), muted: part.unknown != null, color: colorOf.get(part.id) }))}
         total={group.totalRaw == null ? null : fixedNumber(group.totalRaw, group.decimals)} format={value => `${value.toFixed(5)} ${unit}`}
         totalRow={{ label: group.label, value: group.totalRaw == null ? 'Not recorded' : valueText(group.totalRaw) }} positiveBars showShares={false} virtual active={active} />}
-    {group && <p className="drill-empty">{group.note}</p>}
-    {run && hour != null && read != null && read < hour && <p className="drill-empty">As read on {dayLabel(read)}.</p>}
-    {corrections && <p className="drill-empty">Negative corrections remain in the exact rows. The stacked bands show positive amounts.</p>}
     <div className="production-drill-chart"><TimeChart label="Production modifier parts over time" extent={extent} playhead={playhead} playback="cursor"
       branchStart={extent[0]} hoursPerSecond={hoursPerSecond} active={active} layers={layers} revision={`${shown}:${hour}`} pickOwner={pickOwner} keyHours={data.reads}
       axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} formatValue={value => `${value.toFixed(1)} ${unit}`}

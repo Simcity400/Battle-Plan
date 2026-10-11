@@ -151,13 +151,12 @@ export const formatArmyPart = (at: CountryValueAt, index: number) =>
 export const typeName = (type: { key: string; name: string | null }) => contentTitle(type.name, type.key, 'Battalion group name unavailable');
 
 export function* armyTooltips(model: CountryValuesModel, name: string, at: CountryValueAt, hour: number, measure: ArmyMeasure,
-  countFor: ArmyAttribution, colours: ReadonlyMap<string, string>): Generator<TooltipContent> {
+  colours: ReadonlyMap<string, string>): Generator<TooltipContent> {
   const total: TooltipRow = { label: measureName(measure), value: at.total === null ? '—' : at.rawTotal !== undefined ? formatArmyRaw(at.rawTotal, measure) : formatArmyValue(at.total), strong: true, divider: true };
   const rows: TooltipRow[] = model.reply.types.map((type, index) => ({ label: typeName(type),
     value: at.values[index] === null ? '—' : formatArmyPart(at, index), swatch: colours.get(type.key),
     ...(at.values[index] === null ? { tone: 'muted' as const } : {}) }));
-  const base = { title: name, subtitle: `${dayLabel(hour)} · ${measureName(measure)}`,
-    note: `Expeditionary forces count for their ${countFor}.` };
+  const base = { title: name, subtitle: `${dayLabel(hour)} · ${measureName(measure)}` };
   yield { ...base, rows: [...rows, total] };
   yield { ...base, rows: [total] };
 }

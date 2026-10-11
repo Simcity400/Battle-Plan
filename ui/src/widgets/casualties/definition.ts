@@ -5,7 +5,7 @@ import type { OptionField } from '../../dashboard/options';
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'Views', kind: 'choice', default: 'butterfly',
     choices: [{ value: 'butterfly', label: 'Dealt vs taken' }, { value: 'race', label: 'Race of losses taken' }] },
-  { key: 'includeUnknown', section: 'options', label: 'Include losses with no recorded attacker', hint: 'Added only to taken, where the country total can be recovered exactly', kind: 'toggle', default: false },
+  { key: 'includeUnknown', section: 'options', label: 'Include losses from unknown attackers', kind: 'toggle', default: false },
   { key: 'values', section: 'options', label: 'Values at bar ends', kind: 'toggle', default: true, visibleWhen: options => options.view !== 'race' },
   { key: 'ratio', section: 'options', label: 'Ratio column', kind: 'toggle', default: true, visibleWhen: options => options.view !== 'race' },
 ];

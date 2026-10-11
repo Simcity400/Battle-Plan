@@ -52,7 +52,7 @@ export default function TerritoryWidget(props: WidgetProps) {
     renderMain={options.view === 'share' ? (onPick, pickOwner, onDiagnostics, active) => <TerritoryCountryView {...props} active={active}
       onFactionPick={onPick} pickOwner={pickOwner} onDiagnostics={onDiagnostics} /> : undefined}
     unavailableReason={options.measure && !MEASURES.some(item => item.value === options.measure)
-      ? `Not in this recording: territory measure ${options.measure}.` : undefined} />;
+      ? 'This territory measure is unavailable. Choose another in settings.' : undefined} />;
   return <TerritoryCountryView {...props} />;
 }
 
@@ -164,19 +164,18 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
   const labels = useCountryLabelsAt(runtime.client, track, tipWanted, active);
 
   if (!track) return <WidgetState kind="empty" icon="map" message="Load a campaign to see its territory." />;
-  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-  if (error && !(factions && factionData)) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (view === 'share' && countryProduct.error && !(factions && data)) return <WidgetState kind="error" message={countryProduct.error} onRetry={countryProduct.retry} />;
-  if ((grouped || factions) && groupReply.error && !(factions && groupData)) return <WidgetState kind="error" message={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
+  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (error && !(factions && factionData)) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (view === 'share' && countryProduct.error && !(factions && data)) return <WidgetState kind="error" detail={countryProduct.error} onRetry={countryProduct.retry} />;
+  if ((grouped || factions) && groupReply.error && !(factions && groupData)) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
   if (!factions && resolved.reason) return <WidgetState kind="empty" icon="map" message={resolved.reason} />;
-  if (options.measure && !MEASURES.some(item => item.value === options.measure)) return <WidgetState kind="unavailable" message={`Not in this recording: territory measure ${options.measure}.`} />;
+  if (options.measure && !MEASURES.some(item => item.value === options.measure)) return <WidgetState kind="unavailable" message={'This territory measure is unavailable. Choose another in settings.'} />;
   if (!sourceData || (factions ? !factionModel : !model) || ((grouped || factions) && !groupData) || (view === 'share' && !data)) return <WidgetState kind="loading" label="Loading territory…" />;
   const unavailable = factions ? factionData?.unavailableReason : measure === 'area' ? data?.areaReason : null;
-  if (unavailable) return <WidgetState kind="unavailable" message={unavailable} />;
-  if (!lines.length && view !== 'share') return <WidgetState kind="unavailable" message={factionProduct.data?.series.find(series => series.unavailableReason)?.unavailableReason
-    ?? `Not in this recording: no territory totals for these ${factions ? 'factions' : 'countries'} in this branch.`} />;
+  if (unavailable) return <WidgetState kind="unavailable" message={measure === 'area' ? 'Map area is unavailable.' : 'Territory is unavailable.'} />;
+  if (!lines.length && view !== 'share') return <WidgetState kind="unavailable" message="Territory totals are unavailable for this selection." />;
   if (factions && factionLooks.loading && !shareFactionColours.size) return <WidgetState kind="loading" label="Loading faction colours…" />;
-  if (factions && !lines.every(line => shareFactionColours.has(line.tag))) return <WidgetState kind="unavailable" message={factionColourError ?? 'Faction colours could not be read.'} />;
+  if (factions && !lines.every(line => shareFactionColours.has(line.tag))) return <WidgetState kind="unavailable" message={factionColourError ? 'Couldn’t load faction colours.' : 'Faction colours are unavailable.'} />;
   const measureName = MEASURES.find(item => item.value === measure)!.label;
   const unit = factions ? factionData?.unit : data?.areaUnit;
   const countName = territoryMeasureLabel(measure, rule, unit);
@@ -200,7 +199,7 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
           onPick={factions ? onFactionPick : undefined} pickOwner={shareOwner}
           expectedKeys={!factions && resolved.top == null ? territoryShareKeys(model!, resolved, moment) : undefined}
           membershipNote={factions ? id => factionMembershipNote(factionModel, id) : undefined}
-          nameReason={factions ? id => factionNameReasonAt(factionModel, id, moment, factionNames) : undefined}
+          nameReason={factions ? id => factionNameReasonAt(factionModel, id, moment, factionNames) ? 'Name unavailable' : null : undefined}
           hoverLabel={factions ? undefined : labels.labelAt(moment)} onHover={factions ? undefined : tag => showTip(moment, [tag])}
           active={active} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} onContextMenu={(x, y) => jump(moment, x, y)} />
       </div>{menu.menu}

@@ -4,7 +4,7 @@
 
 **Product(s) it reads:** Caller-selected manifest, window and ranking products from [`land_battles.rs`](../../../../crates/dashboard/src/products/land_battles.rs) or [`naval_battles.rs`](../../../../crates/dashboard/src/products/naval_battles.rs), plus [`place-names`](../../../../crates/dashboard/src/products/place_names.rs). Shared wire types live in [`battles.rs`](../../../../crates/dashboard/src/products/battles.rs).
 
-**Settings:** `battleOptions` supplies Battle log/Biggest battles, caller-defined measure choices, user-selected top N, log/table controls and sorting. The owning widget declares campaign/time/country settings; header sorting stays within the server-selected leaderboard.
+**Settings:** `battleOptions` supplies Battle log/Biggest battles, caller-defined measure choices, user-selected top N, log/table controls and sorting. The owning widget declares campaign/time/country settings; header sorting stays within the server-selected leaderboard. Selected measure follows the current ranking measure; explicit measure sorts stay fixed. Background loading shows one Updating status.
 
 **Notable behaviour:**
 

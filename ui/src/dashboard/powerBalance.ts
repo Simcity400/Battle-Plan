@@ -133,18 +133,16 @@ export function powerBalanceRows(index: PowerBalanceIndex, hour: number, visible
       rows.push({ label: 'Daily costs', value: signed(value.ppCostRaw), tone: 'muted' });
       rows.push({ label: 'Net daily income', value: signed(value.ppIncomeRaw), tone: 'muted' });
     }
-    rows.push({ label: 'Income applied / read', value: `${formatDateTime(value.dayHour)} / ${formatDateTime(powerDailyReadHour(value, index.currency)!)}`, tone: 'muted' });
   }
   const changes = (index.changes.get(day) ?? []).filter(value => value.hour <= through && value.readHour <= through);
   for (const change of changes) {
     rows.push({ label: `${change.action} · ${formatDateTime(change.hour)}`, value: signed(change.realizedDeltaRaw),
       tone: BigInt(change.realizedDeltaRaw) < 0n ? 'negative' : BigInt(change.realizedDeltaRaw) > 0n ? 'positive' : 'muted' });
     if (change.amountRaw !== null && BigInt(change.amountRaw) !== BigInt(change.realizedDeltaRaw)) {
-      rows.push({ label: 'Evaluated adjustment', value: signed(change.amountRaw), indent: true });
+      rows.push({ label: 'Adjustment', value: signed(change.amountRaw), indent: true });
     }
-    if (change.readHour !== change.hour) rows.push({ label: 'Change read', value: formatDateTime(change.readHour), tone: 'muted', indent: true });
-    if (!change.covered || change.reason) rows.push({ label: change.reason ?? 'Change coverage is incomplete', tone: 'muted', indent: true });
   }
+  if (changes.some(change => !change.covered || change.reason)) rows.push({ label: 'Some changes are missing.', tone: 'muted' });
   const spends = (index.spends.get(day) ?? []).flatMap(spend => {
     const item = index.items.get(spend.itemId)!;
     const category = index.categories.get(spend.category)!;
@@ -154,9 +152,8 @@ export function powerBalanceRows(index: PowerBalanceIndex, hour: number, visible
   if (spends.length) rows.push({ label: 'Spending that day', strong: true, divider: true });
   for (const at of spends) {
     rows.push({ label: at.item.action, value: spendText(at.charge), tone: at.covered ? undefined : 'muted' });
-    if (at.item.unknown) rows.push({ label: at.item.unknown, tone: 'muted', indent: true });
   }
-  if (!coveredAt(index, through)) rows.push({ label: powerCoverageAt(index, through)?.reason ?? 'Spending coverage was not recorded at this hour.', tone: 'muted' });
+  if (!coveredAt(index, through)) rows.push({ label: 'Spending unavailable at this time.', tone: 'muted' });
   if (index.currency === 'Command') rows.push(...commandHeldTooltip(commandHeldAt([index.reply], through)).rows);
   return rows;
 }

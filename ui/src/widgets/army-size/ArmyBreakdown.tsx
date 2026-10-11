@@ -21,7 +21,7 @@ import type { OptionValue } from '../../dashboard/options';
 import { NumericReply } from '../../dashboard/numericReply';
 import { useProductWindows } from '../../dashboard/productWindows';
 import type { ArmyAttribution, ArmyMeasure, ArmySizeReply } from '../../generated/dashboard';
-import { ARMY_REMAINDER, armyDrillBands, armyDrillNumbers, armyDrillIdentityReply, armyDrillNote, armyDrillValue } from './armyDrill';
+import { ARMY_REMAINDER, armyDrillBands, armyDrillNumbers, armyDrillIdentityReply, armyDrillValue } from './armyDrill';
 import { armySizeRequest, armyWindows, formatArmyValue, measureName, mergeArmyWindows, typeName, validateArmyWindow } from './armySizeData';
 import type { armyCountrySelection } from './ArmyCountryChip';
 
@@ -91,29 +91,28 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
   const headerWanted = useMemo(() => countrySlot && headerActor ? [{ tag: headerActor, hour }] : [], [countrySlot, headerActor, hour]);
   const headerLabels = useCountryLabelsAt(runtime.client, track, headerWanted, active && !!countrySlot);
   const header = countrySlot && createPortal(<DatedCountryChip label={headerActor ? headerLabels.labelAt(hour)(headerActor) : null} hour={hour}
-    reason={error ?? (!headerSelection ? 'The saved native country selection is unavailable.'
-      : !headerActor ? 'The selected native country identity is unknown or conflicting at this hour.' : null)} />, countrySlot);
+    reason={error ? 'Couldn’t load the breakdown.' : (!headerSelection ? 'Saved country unavailable.'
+      : !headerActor ? 'Country unavailable at this time.' : null)} />, countrySlot);
   return <>{header}<CountryRaceView runtime={runtime} track={track} active={active} options={options} view="mix"
     extent={extent} playhead={playhead} moment={hour} slots={1} ranked={[]} lines={[]}
     countryTags={actor ? [actor] : []} parts={parts} partsLabel="Army breakdown"
     segmentAt={(_, at) => tag ? countryValueSegmentAt(model, tag, at) : null} selectedHour={hour}
-    state={error ? <WidgetState kind="error" message={error} onRetry={history.retry} /> : undefined}
+    state={error ? <WidgetState kind="error" what={pinned ? undefined : 'the breakdown'} detail={error} onRetry={history.retry} /> : undefined}
     mix={tag ? { tag: actor ?? tag, compactStack: true, bands: bands ?? [], parts: parts.map((part, index) => ({ ...part,
       value: part.id === '' ? at?.residualText ?? 'Not known' : at?.parts[index]?.text ?? 'Not known' })) } : null}
     beforeChart={<div className="parts-race-details">
       {pinned && <p className="drill-day">{dayLabel(hour)} {track !== undefined && !following
         && <button type="button" className="button small" onClick={onFollow}>Follow playback</button>}</p>}
-      {pending && <WidgetState kind="loading" label="Loading army breakdown windows…" />}
+      {pending && <WidgetState kind="loading" label="Loading army data…" />}
       <DrillParts virtual active={active} parts={at?.parts.flatMap(part => part.value === null ? [] : [{ ...part,
         value: part.value, color: colours.get(part.id) }]) ?? []} format={formatArmyValue} total={at?.total ?? undefined}
         unattributed={at?.residual == null ? undefined : { label: ARMY_REMAINDER.label,
           value: at.residual, text: at.residualText, shareText: at.residualShare, raw: at.residualRaw, color: colours.get('') }}
         totalRow={{ label: measureName(measure), value: at?.totalText ?? 'Not known' }} />
-      {!actor && !pending && <p className="drill-empty">The selected native country identity is not recorded at this hour.</p>}
+      {!actor && !pending && <p className="drill-empty">Country unavailable at this time.</p>}
       {!!at?.missing.length && <p className="drill-empty">Not recorded: {at.missing.join(', ')}.</p>}
-      <p className="drill-empty">{armyDrillNote(measure)} Shares round once to two decimals.</p>
     </div>}
-    onPick={onPick} pickOwner={pickOwner} onViewChange={onViewChange} label="Army breakdown" empty="No complete army read at this hour."
+    onPick={onPick} pickOwner={pickOwner} onViewChange={onViewChange} label="Army breakdown" empty="Army data is unavailable at this time."
     resetKey={pickScope} formatValue={formatArmyValue} presentation={{ exact: true, held: true,
       strongMixName: true, windowedLegend: true, mixKeyHours: 'starts', raceEmptyState: false }}
     tooltipTags={atHour => [countryDrillTagAt(identitySpans, atHour)].filter((tag): tag is string => tag !== null)}
@@ -124,8 +123,8 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
         ...value.parts.map(part => ({ label: part.label, value: part.text, swatch: palette.get(part.id) })),
         { label: ARMY_REMAINDER.label, value: value.residualText, swatch: palette.get('') },
         { label: measureName(measure), value: value.totalText, strong: true, divider: true },
-      ], note: armyDrillNote(measure) }] : [{ title: `${dayLabel(atHour)} · Country identity not recorded`,
+      ] }] : [{ title: `${dayLabel(atHour)} · Country unavailable`,
         rows: [{ label: measureName(measure), value: 'Not known' }],
-        note: 'No complete native country/army observation at this hour.' }];
+        note: 'Army data is unavailable at this time.' }];
     }} /></>;
 }

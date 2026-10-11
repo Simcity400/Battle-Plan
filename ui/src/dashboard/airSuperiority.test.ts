@@ -179,17 +179,18 @@ test('complete absent owners, unknown pairs and selected-side inactivity stay di
   const order = sideOrder(sides);
   const excluded = cellView({ scores: [[0, '45']], noAirObject: [1], excluded: 4997 }, sides, looks, order, 0);
   assert.equal(excluded.state, 'known');
-  assert.ok(tooltipText(airTooltip({ name: 'Mod region' }, excluded, false, tag => ({ name: tag }), false)).includes('No strategic-air object (excluded)'));
-  assert.match(tooltipText(airTooltip({ name: 'Mod region' }, excluded, false, tag => ({ name: tag }), false)), /4997 sides have no strategic-air object and are excluded/);
+  assert.ok(tooltipText(airTooltip({ name: 'Mod region' }, excluded, false, tag => ({ name: tag }), false)).includes('No air data'));
+  assert.match(tooltipText(airTooltip({ name: 'Mod region' }, excluded, false, tag => ({ name: tag }), false)), /Excluded sides 4997/);
   const unknown = cellView({ scores: [[0, '45']], unknown: [1] }, sides, looks, order, 0);
   assert.equal(unknown.state, 'unknown');
   assert.match(tooltipText(airTooltip({ name: 'Mod region' }, unknown, false, tag => ({ name: tag }), false)), /Share unknown/);
   const unknownTip = airSummaryTooltip(airTooltip({ name: 'Mod region' }, unknown, false, tag => ({ name: tag }), false), unknown);
   assert.equal(unknownTip.rows.find(row => row.label === 'Unknown sides')?.value, '1');
+  assert.equal(unknownTip.rows.some(row => row.value === 'Score unknown'), false);
   const filtered = cellView({ scores: [], filtered: true }, sides, looks, order, 0);
   assert.equal(airState(filtered), 'No selected side has a score (others may)');
   assert.equal(airState(cellView(null, sides, looks, order, 0)), 'No air activity');
-  assert.equal(airState(cellView('no-air-object', sides, looks, order, 0)), 'No strategic-air object');
+  assert.equal(airState(cellView('no-air-object', sides, looks, order, 0)), 'No air data');
   const sideNoObject = cellView({ scores: [], noAirObject: [1] }, sides, { ...looks, mode: 'viewpoint' }, order, 0);
   assert.equal(sideNoObject.state, 'no-air-object');
   assert.equal(sideNoObject.viewpoint.tag, 'Other');
@@ -218,7 +219,7 @@ test('one side key preserves dated context and regional coalition viewpoints', (
   assert.equal(view.parts[0].tag, 'Later regional leader');
   assert.equal(view.parts[0].side?.key, variants[2].key);
   assert.equal(cellView({ view: ['75', '25'], side: 2, leader: 'Earlier leader' }, variants, looks, sideOrder(variants), 23).viewpoint.name, 'A coalition');
-  assert.match(tooltipText(airTooltip({ name: 'Mod region' }, view, true, tag => ({ name: tag }), false)), /Viewpoint: Later regional leader/);
+  assert.match(tooltipText(airTooltip({ name: 'Mod region' }, view, true, tag => ({ name: tag }), false)), /Viewpoint Later regional leader/);
   reply.rows[0].cells[0][1] = { view: ['1', '2'], side: 99, leader: null };
   assert.throws(() => validateAirReply(reply), /Invalid air/);
 });
@@ -226,17 +227,19 @@ test('one side key preserves dated context and regional coalition viewpoints', (
 test('tooltip ranks largest shares first and dates names, viewpoints and co-belligerents', () => {
   const view = cellView({ scores: [[1, '35'], [0, '45'], [2, '20']] }, sides, looks, sideOrder(sides), 72, 3);
   const tip = airTooltip({ name: 'Mod region' }, view, false, tag => ({ name: 'Name at read: ' + tag, flag: `read-${view.hour}:${tag}` }), true);
-  assert.deepEqual(tip.rows.slice(1, 4).map(row => row.label), ['Mod tenth faction', 'Mod ninth faction', 'Name at read: Coalition leader']);
-  assert.equal(tip.rows[3].countryFlag?.flag, 'read-72:Coalition leader');
+  assert.deepEqual(tip.rows.slice(0, 3).map(row => row.label), ['Mod tenth faction', 'Mod ninth faction', 'Name at read: Coalition leader']);
+  assert.equal(tip.rows[2].countryFlag?.flag, 'read-72:Coalition leader');
   assert.match(tooltipText(tip), /with 3 co-belligerents/);
   assert.match(tip.note ?? '', /only the selected sides/);
   const compact = airSummaryTooltip(tip, view);
   assert.deepEqual(compact.rows.filter(row => row.swatch).map(row => row.value), ['45%', '35%', '20%']);
   const viewpoint = cellView(['45', '55'], sides, looks, sideOrder(sides), 72);
   const exact = airTooltip({ name: 'Mod region' }, viewpoint, true, () => ({ name: 'Historical name' }), false);
-  assert.equal(exact.rows[1].label, 'Enemies of Historical name');
-  assert.equal(exact.rows[2].label, 'Historical name (friendly)');
+  assert.equal(exact.rows[0].label, 'Enemies of Historical name');
+  assert.equal(exact.rows[1].label, 'Historical name (friendly)');
   assert.match(exact.note ?? '', /Above 60%.*below 40%/);
+  assert.doesNotMatch(exact.note ?? '', /fixed5|64-bit|Exact viewpoint|friendly \//);
+  assert.equal(exact.rows.some(row => /Read|membership read/.test(row.label)), false);
   for (const [friendly, state] of [[39, 'Enemy superiority'], [40, 'Contested'], [60, 'Contested'], [61, 'Air superiority']] as const) {
     assert.equal(airState(cellView([String(friendly), String(100 - friendly)], sides, looks, sideOrder(sides), 0)), state);
   }
@@ -244,7 +247,7 @@ test('tooltip ranks largest shares first and dates names, viewpoints and co-bell
   assert.equal(airState(cellView(['3999999', '6000001'], sides, looks, sideOrder(sides), 0)), 'Enemy superiority');
   const wrapped = cellView(['9223372036854775805', '0'], sides, looks, sideOrder(sides), 0);
   assert.equal(airState(wrapped), 'Enemy superiority');
-  assert.match(airTooltip({ name: 'Mod region' }, wrapped, true, tag => ({ name: tag }), false).note ?? '', /overflows.*differ from these shares/);
+  assert.match(airTooltip({ name: 'Mod region' }, wrapped, true, tag => ({ name: tag }), false).note ?? '', /Game status differs from the displayed shares/);
   assert.match(airTooltip({ name: 'Mod region' }, wrapped, true, tag => ({ name: tag }), false).note ?? '', /Above 60%.*below 40%/);
   assert.equal(airState(cellView(['9223372036854775807', '9223372036854775807'], sides, looks, sideOrder(sides), 0)), 'Air superiority');
   assert.equal(airPercent(9223372036854775807n, 18446744073709551614n), '50%');
@@ -263,7 +266,7 @@ test('theatre filters date their daily membership separately from hourly scores'
   assert.ok(momentReadHours(reply).includes(96));
   assert.ok(momentReadHours(reply).includes(120));
   const tip = airTooltip({ name: 'Mod region' }, current, false, tag => ({ name: tag }), false);
-  assert.ok(tip.rows.some(row => row.label === 'Air theatre membership read'));
+  assert.ok(!tip.rows.some(row => row.label === 'Air theatre membership read'));
   assert.equal(airTooltip({ name: 'Mod region' }, momentViews(moment(), 96, looks)[0].view, false, tag => ({ name: tag }), false).rows.some(row => row.label === 'Air theatre membership read'), false);
 });
 
@@ -272,9 +275,9 @@ test('missing-data tooltips explain recorded omissions in plain words', () => {
     ['score-not-recorded', 'Scores were not recorded at this hour.'],
     ['scores-unavailable', 'Scores were not recorded at this hour.'],
     ['sides-not-recorded', 'Side membership was not recorded.'],
-    ['countries-not-recorded', 'Country identities were not recorded.'],
-    ['identity-not-recorded', 'Country identities were not recorded.'],
-    ['theatres-not-recorded', 'Air theatre membership was not recorded.'],
+    ['countries-not-recorded', 'Countries unavailable.'],
+    ['identity-not-recorded', 'Countries unavailable.'],
+    ['theatres-not-recorded', 'Air groups unavailable.'],
     ['future-missing-reason', 'The required data was not recorded.'],
   ]);
   for (const [reason, description] of reasons) {

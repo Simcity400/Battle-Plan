@@ -24,6 +24,6 @@ Markers/icons keep their actual dated hit target. Marks outside the view or at/a
 
 ## Labels and interaction
 
-Use `labelCatalogue` for stable widths and `labelHour` for the actual read when extent includes an exclusive final edge. Growing extents opt into `preserveZoomOnExtentChange`. Supply `onLanesInView` for artwork demand and explicit `countryFlag` on native-country spans/identities; missing flags retain grey placeholders and dated reasons. Generic portraits/blueprints use their artwork path.
+Use `labelCatalogue` for stable widths and `labelHour` for the actual read when extent includes an exclusive final edge. Growing extents opt into `preserveZoomOnExtentChange`. Supply `onLanesInView` for artwork demand and explicit `countryFlag` on native-country spans/identities; missing flags retain grey placeholders and dated reasons. Generic portraits/blueprints use their artwork path. Blueprint tiles without artwork use the shared flask fallback, and missing event-mark artwork uses a sparkle; empty lanes show a muted label.
 
 Pointer and keyboard use the same cached geometry. `onHover` reports the resolved hour or null outside the tooltip builder; menus use that dated target. Label-column menus require `labelMenu`. Escape dismisses keyboard tooltips; `dismissPointerTooltipOnEscape` also permits pointer dismissal. Full keyboard descriptions use raw metadata; only displayed tooltip rows decode flags.

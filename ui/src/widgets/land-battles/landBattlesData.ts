@@ -194,7 +194,7 @@ export function landCasualtyText(value: BattleValue, row: LandBattleRow, tooltip
 }
 function datedLossText(text: string, row: LandBattleRow, tooltip: boolean): string {
   if (!row.lossRead) return text;
-  const status = row.lossRead.terminal ? (tooltip ? ' terminal' : '') : ' so far';
+  const status = row.lossRead.terminal ? (tooltip ? ' final' : '') : ' so far';
   return `${text}${status}${tooltip ? `, as of ${formatDateTime(row.lossRead.hour)}` : ''}`;
 }
 export function landDivisionText(value: BattleValue, compact: boolean): string {
@@ -209,8 +209,7 @@ export function landLossText(value: BattleValue, row: LandBattleRow, side: numbe
   return raw === undefined ? landCasualtyText(value, row, tooltip) : datedLossText(formatFixed(raw, 5, 5), row, tooltip);
 }
 export function casualtyRankingNote(data: LandBattlesRanking | undefined): string | null {
-  if (data?.effectiveMeasure === 'Peak size') return 'Casualties: Not in this recording. Ranked by peak size.';
-  if (data?.effectiveMeasure === 'Casualties') return 'Ranked by manpower lost on both sides. Running battles use losses so far; unknown casualties follow recorded values.';
+  if (data?.effectiveMeasure === 'Peak size') return 'Casualties unavailable; ranked by peak size.';
   return null;
 }
 /** Ranking is computed before top N by the product, including country selection. */

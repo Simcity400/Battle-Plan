@@ -56,10 +56,10 @@ export default function ResearchExplanation({ history, slots, slot, entry, descr
     <div className="research-when">
       {entry.outcome === 'completed' && entry.endedByHour !== null
         ? <span data-tooltip={formatDateTime(entry.endedByHour)}><small>Completed</small>{date(entry.endedByHour)}</span>
-        : <span data-tooltip={journey.startedAfterHour === null ? 'Research began before the readable recording.' : formatDateTime(journey.firstHour)}>
+        : <span data-tooltip={journey.startedAfterHour === null ? 'Start date unknown.' : formatDateTime(journey.firstHour)}>
           <small>{journey.startedAfterHour === null ? 'Started by' : 'Started'}</small>{date(journey.firstHour)}</span>}
     </div>
-    {split ? <TimeBar split={split} active={active} /> : <p className="research-unavailable">The recording doesn’t hold enough of this research to break its time down.</p>}
+    {split ? <TimeBar split={split} active={active} /> : <p className="research-unavailable">Research time breakdown unavailable.</p>}
     {description && <details className="research-description-text"><summary>Description<Icon name="chevron-down" className="research-chevron" aria-hidden="true" /></summary><p>{description}</p></details>}
   </div>;
 }

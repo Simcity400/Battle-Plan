@@ -10,7 +10,7 @@ Recorded CP payments and daily deficits as a dated log, with current reservation
 
 ## Settings
 
-Countries and campaign/follow/pin/range; shared [spending options](../../dashboard/politicsSpendingOptions.ts) control categories, order, artwork, totals and log presentation. Follow is the default.
+Countries and campaign/follow/pin/range; shared [spending options](../../dashboard/politicsSpendingOptions.ts) control categories, order, artwork, totals and log presentation. Follow is the default. The overall total includes every category; each category total appears only for a shown category, and an empty category selection shows them all.
 
 ## Notable behaviour
 

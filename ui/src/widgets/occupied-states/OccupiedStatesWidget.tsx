@@ -96,34 +96,32 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
           return <CellBar value={cell.bar} maximum={100000n}><span className={cell.red ? 'occupation-garrison-alert' : undefined}>{cell.text}</span></CellBar>; } },
       { key: 'law', header: 'Occupation law', label: 'Occupation law', renderMissing: true, width: 'minmax(200px, 1.2fr)', value: row => row.value.law === null ? null : contentTitle(laws.get(row.value.law)?.name, row.value.law, 'Occupation law name unavailable'),
         render: row => { const token = row.value.law; const law = token === null ? undefined : laws.get(token);
-          return <span className="occupation-law" data-tooltip={contentTitleHint(token, law?.missing)}>{law?.icon ? <img src={law.icon} alt="" /> : <i aria-label="Occupation law icon unavailable" />}<span>{token === null ? 'Not in this recording' : contentTitle(law?.name, token, 'Occupation law name unavailable')}</span></span>; } },
+          return <span className="occupation-law" data-tooltip={contentTitleHint(token, law?.missing)}>{law?.icon ? <img src={law.icon} alt="" /> : null}<span>{token === null ? 'Not in this recording' : contentTitle(law?.name, token, 'Occupation law name unavailable')}</span></span>; } },
     ];
   }, [names, labelAt, laws, options.cellBars, shown]);
   const tooltip = useCallback((row: OccupiedRow) => {
     if (!manifest) return { title: '', rows: [] };
-    const content = occupationTooltip(manifest.strengthMissing, row, tag => labelAt(row.hour)(tag).name);
-    const law = row.value.law === null ? undefined : laws.get(row.value.law);
-    if (law?.missing) content.rows = [...content.rows, { label: law.missing, tone: 'muted' }];
+    const content = occupationTooltip(row, tag => labelAt(row.hour)(tag).name);
     return fitTooltip([content], viewportHeight);
-  }, [manifest, labelAt, laws, viewportHeight]);
+  }, [labelAt, viewportHeight]);
   const diagnostics = useMemo(() => manifest ? [...new Set([...manifest.warnings, ...(display?.data.warnings ?? EMPTY_WARNINGS)])] : EMPTY_WARNINGS,
     [manifest, display?.data]);
   useDiagnostics(onDiagnostics, diagnostics);
 
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see occupied states." />;
-  if (!window) return <WidgetState kind="unavailable" message="The chosen moment is outside this campaign." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (groupError) return <WidgetState kind="error" message={groupError} onRetry={groupRetry} />;
-  if (windows.errors.has(target)) return <WidgetState kind="error" message={windows.errors.get(target)!} onRetry={windows.retry} />;
+  if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (groupError) return <WidgetState kind="error" detail={groupError} onRetry={groupRetry} />;
+  if (windows.errors.has(target)) return <WidgetState kind="error" detail={windows.errors.get(target)!} onRetry={windows.retry} />;
   if (!manifest || (target >= 0 && !display) || (selection.kind !== 'all' && !groups)) return <WidgetState kind="loading" label="Loading occupied states…" />;
   if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
-  if (!view?.observation) return <WidgetState kind="unavailable" message="The recording cannot establish occupied states at this moment. Gaps stay gaps." />;
-  if (!rows.length && view.selectionUnknown) return <WidgetState kind="unavailable" message="Some occupied countries' native identities were not recorded at the supplying read; matching occupied states cannot be established." />;
-  if (!rows.length) return <WidgetState kind={view.observation.complete ? 'empty' : 'unavailable'} message={view.observation.complete ? 'No occupied states match these countries at this moment.' : 'The occupied-state inventory is incomplete at this moment.'} />;
+  if (!view?.observation) return <WidgetState kind="unavailable" message="Occupied states weren’t recorded at this time." />;
+  if (!rows.length && view.selectionUnknown) return <WidgetState kind="unavailable" message="Occupied states unavailable for these countries." />;
+  if (!rows.length) return <WidgetState kind={view.observation.complete ? 'empty' : 'unavailable'} message={view.observation.complete ? 'No occupied states match these countries at this moment.' : 'Some occupied states are missing.'} />;
   return <div className="occupied-states">
     {!current && <p className="occupation-note" role="status">Updating occupied states…</p>}
-    {!view.observation.complete && <p className="occupation-note">Some occupied states were not recorded.</p>}
-    {view.selectionUnknown && <p className="occupation-note">Some occupied states could not be matched because their countries' native identities were not recorded at the supplying read.</p>}
+    {!view.observation.complete && <p className="occupation-note">Some occupied states are missing.</p>}
+    {view.selectionUnknown && <p className="occupation-note">Some states couldn’t be matched to these countries.</p>}
     <Table label="Occupied states" rows={rows} rowKey={rowKey} columns={columns} sort={sort} setOption={setOption}
       cellBars={options.cellBars === true} rankMarkers={options.rankMarkers === true} density={options.density === 'compact' ? 'compact' : 'comfortable'}
       menu={row => [jumpItem(runtime, track.id, row.hour)]} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={hoursPerSecond} />

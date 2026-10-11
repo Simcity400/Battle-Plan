@@ -14,9 +14,9 @@ Country, campaign/follow/pin/range, playback style, Show after the playhead, gov
 
 ## Notable behaviour
 
-- Ideology groups/names/colours come from content. The legend uses ideology names; the header uses the game’s party-name rules. Unknown leader, absent leader and unknown name stay distinct.
+- Ideology groups/names/colours come from content. The legend uses ideology names or Ideology name unavailable; the header uses the game’s party-name rules. Unknown leader, absent leader and unknown name stay distinct.
 - Party names use a stored key, else the party's own country tag, its positive original-tag reference (own tag otherwise), then ideology name. Missing operands refuse only reached fallbacks. Names are plain text; scripted brackets remain glyphs.
-- Only proven recorded portraits draw; missing generated-portrait inputs keep the silhouette.
+- Only proven recorded portraits draw; missing generated-portrait inputs use a helmet artwork fallback.
 - Native government causes appear at their supplying read. Only an exact matching before/after pair/read replaces a census marker; election dates and unrelated actions do not prove a cause.
 - Missing cause endpoints/coverage remain explicit. A cause request failure leaves popularity usable with its own retry; older recordings retain unattributed census changes.
 

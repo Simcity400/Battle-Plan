@@ -6,7 +6,6 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { SunburstProps } from '../../charts/sunburst/Sunburst';
 import { groupTree, sliceTooltip } from '../../charts/sunburst/layout.ts';
-import { formatDateTime } from '../../dashboard/calendar.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { IdeaInfo, PoliticsLedgerReply } from '../../generated/dashboard';
 
@@ -55,7 +54,7 @@ test('registered spending breakdown uses supplying reads, exact charges and the 
       countries: {kind: 'tags', tags: ['synthetic actor']}, time: {mode: 'follow'}, options: {growth: 'fill'}}, runtime: {client: {}, tracks: [track],
       clock: {getHour: () => state.clock, getSnapshot: () => ({hoursPerSecond: 24})}}, active: true, onDiagnostics() {}} as unknown as WidgetProps;
     const render = () => {state.chart = undefined; return renderToStaticMarkup(createElement(Widget, props));};
-    assert.match(render(), /No political power spending recorded/);
+    assert.match(render(), /No spending recorded in this period/);
     assert.equal(state.chart, undefined, 'a native action is unavailable until its supplying read');
     state.clock = 12; render();
     assert.equal(state.subscribed, true);
@@ -71,7 +70,7 @@ test('registered spending breakdown uses supplying reads, exact charges and the 
     const tooltip = chart.tooltip!(leaf, tree, chart.text);
     assert.equal(tooltip[0].title, 'Recorded action');
     assert.ok(tooltip[0].rows.some(row => row.label === 'Spent' && row.value === '1.5 PP'));
-    assert.ok(tooltip[0].rows.some(row => row.label === 'Most recent read' && row.value === formatDateTime(12)));
+    assert.ok(!tooltip[0].rows.some(row => row.label === 'Most recent read'));
     assert.ok(tooltip[0].rows.some(row => row.label === 'Against Dated other actor at 10:'));
     assert.deepEqual(state.namedAt, [10, 10], 'each tooltip form names targets at the native action, apart from the read and playhead');
     assert.deepEqual(chart.tooltip!(category, tree, chart.text), sliceTooltip(category, tree, chart.text));
@@ -82,7 +81,7 @@ test('registered spending breakdown uses supplying reads, exact charges and the 
     const complete = groupTree(state.chart!.items, state.chart!.root);
     assert.equal(complete.exact, null); assert.equal(complete.valueUnknown, true);
     assert.equal(complete.children.find(node => node.key === 'mod category')!.exact, 250000n);
-    assert.match(state.chart!.footnote!, /Known recorded charges total 2.5 PP; the complete spending total is not known/);
+    assert.match(state.chart!.footnote!, /2.5 PP known; total unknown/);
     assert.equal(state.chart!.items.find(item => item.path[0].id === 'coverage-gap')!.unknownValue, true);
     props.widget.time = {mode: 'range', firstOffset: 15, lastOffset: 25}; render();
     assert.equal(groupTree(state.chart!.items, state.chart!.root).exact, 100000n);
@@ -90,6 +89,6 @@ test('registered spending breakdown uses supplying reads, exact charges and the 
     assert.equal(groupTree(state.chart!.items, state.chart!.root).exact, 150000n);
     props.active = false; render(); assert.equal(state.chart!.active, false); assert.equal(state.subscribed, false);
     state.data = [{...data, spendingCoverage: []}];
-    assert.match(render(), /Power spending coverage was not recorded/); assert.equal(state.chart, undefined);
+    assert.match(render(), /Political power spending wasn’t recorded/); assert.equal(state.chart, undefined);
   } finally {await vite.close(); delete host.__spendingBreakdown;}
 });

@@ -101,7 +101,7 @@ export function selectPlacements(placements: readonly PlacementAt[], selection: 
   }
   const fallback = selectedTag ? [selectedTag] : [];
   const match = countryMatch(selection, fallback, groups, end);
-  if (!match.ready) return { placements: [], reason: 'Loading native country identities…' };
+  if (!match.ready) return { placements: [], reason: 'Loading countries…' };
   const filter = worldFilter(selection, fallback, groups, hour, end);
   if (filter.reason) return { placements: [], reason: filter.reason };
   return { placements: placements.filter(n => match.matches(n.owner, hour) || match.matches(n.target, hour)), reason: null };
@@ -161,7 +161,7 @@ export function placementChordMemo() {
 
 export function placementTooltip(hit: ChordHit, chord: PlacementChord): TooltipContent | null {
   const title = (n: PlacementAt) => `${chord.labels(n.owner).name} has ${n.count} ${n.count === 1 ? 'operative' : 'operatives'} in ${chord.labels(n.target).name}`;
-  const names = (n: PlacementAt) => n.operatives.map(o => ({ label: o.unnamed ? 'Unnamed operative' : o.name ?? `Name not recorded (operative ${o.id})` }));
+  const names = (n: PlacementAt) => n.operatives.map(o => ({ label: o.unnamed ? 'Unnamed operative' : o.name ?? 'Unknown operative' }));
   if (hit.kind === 'flow') {
     const members = chord.flows.get(hit.id)?.map(id => chord.placements.get(id)!);
     if (!members?.length) return null;

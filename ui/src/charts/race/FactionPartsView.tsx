@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { useContentRevision } from '../../dashboard/contentRevision';
-import { nameKey, useCountryFactsRead } from '../../dashboard/countryNamesAt';
+import { useCountryFactsRead } from '../../dashboard/countryNamesAt';
 import { MAX_NAME_HOURS } from '../../dashboard/countryFacts';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { STYLES } from '../../dashboard/useCountriesAt';
@@ -58,12 +58,6 @@ export default function FactionPartsView({ model, runtime, track, hour, followin
     held.current.colours = colours; held.current.selection = plan.selection;
     return colours;
   }, [corrected, plan, styles, context, runtime.client]);
-  const missingColours = model.parts.filter(part => {
-    const sample = plan.selection.get(part.id);
-    if (!sample) return false;
-    const style = styles.get(nameKey(sample.hour, sample.tag));
-    return style !== undefined && (typeof style !== 'object' || style === null || style.color === null);
-  }).length;
   const bandColors = useMemo(() => [...model.parts.map(part => colors.get(part.id) ?? tokens.muted), tokens.muted], [model, colors, tokens.muted]);
   const stack = useMemo(() => compactStack([...model.parts.map(part => part.runs.filter(run => run.raw != null)), model.remainder]), [model]);
   const layers = useMemo<ChartLayer[]>(() => [{
@@ -86,24 +80,27 @@ export default function FactionPartsView({ model, runtime, track, hour, followin
     const witness = factionPartWitness(part, hour);
     const country = witness ? labelAt(witness.hour)(witness.tag) : undefined;
     const name = country?.name ?? 'Country name unavailable';
-    const tag = witness?.tag ?? part.witnesses[0]?.tag;
-    return { id: part.id, label: `${name}${tag && name !== tag ? ` (${tag})` : ''}`, countryFlag: country ?? {},
+    return { id: part.id, label: name, countryFlag: country ?? {},
       value: raw == null ? null : Number(raw), raw,
       text: raw == null ? 'Not recorded' : Number.isSafeInteger(Number(raw)) ? formatValue(Number(raw)) : raw.toLocaleString(),
       color: colors.get(part.id) ?? tokens.muted, shareText: factionPartShare(raw, total) };
   });
+  const nameCounts = new Map<string, number>();
+  for (const row of rows) nameCounts.set(row.label, (nameCounts.get(row.label) ?? 0) + 1);
+  for (const row of rows) if ((nameCounts.get(row.label) ?? 0) > 1) {
+    const part = byId.get(row.id)!;
+    const tag = factionPartWitness(part, hour)?.tag ?? part.witnesses[0]?.tag;
+    if (tag && row.label !== tag) row.label += ` (${tag})`;
+  }
   const remainder = runAt(model.remainder, hour)?.raw;
   return <div className="faction-parts">
-    {!whole && <p className="drill-empty">The faction total was not recorded on {dayLabel(hour)}. Known member values stay exact; shares are unavailable.</p>}
+    {!whole && <p className="drill-empty">Faction total unavailable on {dayLabel(hour)}.</p>}
     <DrillParts parts={rows} virtual active={active} onVisible={onVisible} signedShares total={whole?.value ?? null} showShares={whole !== null} format={formatValue}
         unattributed={remainder == null ? undefined : { label: 'Not identified', value: Number(remainder), raw: remainder,
           text: Number.isSafeInteger(Number(remainder)) ? formatValue(Number(remainder)) : remainder.toLocaleString(),
           color: tokens.muted, shareText: factionPartShare(remainder, total) }}
         totalRow={{ label: 'Total', value: whole ? formatValue(whole.value) : 'Not recorded' }} />
-    {(unknown > 0 || model.unidentified > 0) && <p className="drill-empty">{unknown > 0 ? `${unknown} member values are not recorded. ` : ''}
-      {model.unidentified > 0 ? `${model.unidentified} counted tags have no recorded native identity for part of this history. ` : ''}
-      Unassigned amounts stay separate; missing totals leave gaps.</p>}
-    {missingColours > 0 && <p className="drill-empty">{missingColours} country map colours were not recorded; shown in a neutral colour.</p>}
+    {(unknown > 0 || model.unidentified > 0) && <p className="drill-empty">Some member values are unavailable.</p>}
     <div className="faction-parts-history">
       <TimeChart label={`${label}: members over time`} extent={[extent[0], extent[1]]} branchStart={track.branch.firstHour}
         playhead={following ? hour : null} playback="cursor" afterPlayhead={false} windowHours={0} hoursPerSecond={hoursPerSecond}
@@ -111,7 +108,7 @@ export default function FactionPartsView({ model, runtime, track, hour, followin
         axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} onPick={onPick}
         overlay={(ctx, frame, chartTokens) => drawPlayhead(ctx, frame, chartTokens, hour)}
         tooltip={at => ({ title: dayLabel(at), rows: [{ label: 'Total', value: runAt(model.total, at)
-          ? formatValue(runAt(model.total, at)!.value) : 'Not recorded' }], note: 'Click to show the members on this day.' })} />
+          ? formatValue(runAt(model.total, at)!.value) : 'Not recorded' }] })} />
     </div>
   </div>;
 }

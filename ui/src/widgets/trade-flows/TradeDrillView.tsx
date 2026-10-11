@@ -50,7 +50,7 @@ export default function TradeDrill({ flows, trade, track, runtime, measure, from
   const named = useCallback((flow: Flow, at: number, exact = false) => {
     const name = (side: 'seller' | 'buyer') => {
       const fact = flowCountryAt(flow, side, at);
-      return fact ? labels.labelAt(factHour(fact, exact))(fact.tag).name : side === 'seller' ? flow.sellerIdentity : flow.buyerIdentity;
+      return fact ? labels.labelAt(factHour(fact, exact))(fact.tag).name : 'Unknown country';
     };
     return `${name('seller')} → ${name('buyer')} · ${resourceName(flow.resource)}`;
   }, [labels.labelAt, factHour]);
@@ -91,18 +91,18 @@ export default function TradeDrill({ flows, trade, track, runtime, measure, from
   }], [stack, measured, colors]);
   const missingGroupHours = hour == null ? 0 : knownHours(trade.reply.known, from, hour) - knownHours(known, from, hour);
   const note = hour == null ? undefined : [coverageNote(trade.reply, measure, from, hour),
-    measure !== 'current' && missingGroupHours > 0 ? `${formatDays(missingGroupHours)} of the group's membership were not recorded; they are not counted.` : null]
+    measure !== 'current' && missingGroupHours > 0 ? `Group membership is missing for ${formatDays(missingGroupHours)}.` : null]
     .filter(Boolean).join(' ') || undefined;
   return <div className="trade-drill">
-    <p className="drill-empty">{measureNote(measure)}{hour != null ? ` · ${dayLabel(hour)}` : ''}. {usNumber.format(flows.length)} exact trade contributors.</p>
+    <p className="drill-empty">{measureNote(measure)}{hour != null ? ` · ${dayLabel(hour)}` : ''}. {usNumber.format(flows.length)} trades.</p>
     {identityNote && <p className="drill-empty">{identityNote}</p>}
-    {!flows.length && <p className="drill-empty">No recorded contributors match this selection.</p>}
-    {hour == null ? <p className="drill-empty">Click the history to choose a day.</p>
+    {!flows.length && <p className="drill-empty">No trades match this selection.</p>}
+    {hour == null ? <p className="drill-empty">Choose a day.</p>
       : <DrillParts parts={parts} virtual active={active} onVisible={setVisible} positiveBars signedShares
         total={total == null ? null : Number(total) / scale} format={value => String(value)}
-        totalRow={{ label: 'Recorded total', value: total == null ? 'Not recorded' : formatAmount(total, trade.reply.decimals, trade.reply.decimals) }} />}
+        totalRow={{ label: 'Total', value: total == null ? 'Not recorded' : formatAmount(total, trade.reply.decimals, trade.reply.decimals) }} />}
     {note && <p className="drill-empty">{note}</p>}
-    <p className="drill-empty">{measure === 'current' ? 'Daily' : measure === 'total' ? 'Cumulative delivered' : 'Average daily'} trade contributions over time. Nonpositive amounts remain exact rows; only positive amounts draw bands.</p>
+    <p className="drill-empty">{measureNote(measure)} over time.</p>
     <div className="trade-drill-chart">
       <TimeChart label={`Selected trade contributors, ${measureNote(measure).toLowerCase()} over time`} extent={extent} branchStart={track.branch.firstHour}
         playhead={playhead} playback="cursor" afterPlayhead hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
@@ -120,9 +120,9 @@ export default function TradeDrill({ flows, trade, track, runtime, measure, from
           ask(at, listed.map(item => item.flow));
           return { title: dayLabel(at), rows: [...listed.map(({ flow, raw }) => ({ label: named(flow, at, true),
             icon: flow.resource.icon ?? undefined, swatch: colours.get(flow.resource.id), value: formatAmount(raw!, trade.reply.decimals, trade.reply.decimals), short: true })),
-          { label: measure === 'total' ? 'Delivered total' : measure === 'average' ? 'Average per day' : 'Total per day',
+          { label: measure === 'total' ? 'Delivered total' : measure === 'average' ? 'Average per trading day' : 'Total per day',
             value: formatAmount(measureAmount(flows, measure, from, at), trade.reply.decimals, trade.reply.decimals), strong: true }],
-          note: `${usNumber.format(Math.max(0, values.length - listed.length))} more contributors available in the full list. Click to show this day.` };
+          note: values.length > listed.length ? `${usNumber.format(values.length - listed.length)} more trades` : undefined };
         }} />
     </div>
   </div>;

@@ -167,12 +167,12 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
 
   const problem = (() => {
     if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see supply health." />;
-    if ((widget.time.mode === 'pin' || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-    if (invalidSavedSelection) return <WidgetState kind="unavailable" message="The saved native country selection is unavailable." />;
-    if (widget.countries.kind === 'group' && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
-    if (countries.top != null) return <WidgetState kind="empty" message="Choose countries or a recorded membership group in the widget settings." />;
+    if ((widget.time.mode === 'pin' || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+    if (invalidSavedSelection) return <WidgetState kind="unavailable" message="Selected country unavailable." />;
+    if (widget.countries.kind === 'group' && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+    if (countries.top != null) return <WidgetState kind="empty" message="Choose countries or a group in settings." />;
     if (countries.reason) return <WidgetState kind="empty" message={countries.reason} />;
-    if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
+    if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
     if (!data || (widget.countries.kind === 'group' && !groups.data)) return <WidgetState kind="loading" label="Loading supply health…" />;
     if (!data.available) return <WidgetState kind="unavailable" message="Not in this recording" />;
     return undefined;
@@ -188,8 +188,8 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
           return <section className="supply-health-country-chart" tabIndex={0}
             aria-label={labels.labelAt(labelHour)(country.tag).name} onKeyDown={event => { if (event.target !== event.currentTarget) event.stopPropagation(); }}>
             {series.length > 1 && <p className="supply-health-country">{labels.labelAt(labelHour)(country.tag).name}</p>}
-            {!country.runs.length ? <WidgetState kind="unavailable" message="No complete supply reads at these hours" />
-              : country.runs.every(run => totalDivisions(run) === 0) ? <WidgetState kind="empty" message="No divisions at the complete reads in this range." />
+            {!country.runs.length ? <WidgetState kind="unavailable" message="Supply was not recorded for this period." />
+              : country.runs.every(run => totalDivisions(run) === 0) ? <WidgetState kind="empty" message="No divisions in this period." />
               : <StackedShareChart label={`Supply health · ${labels.labelAt(labelHour)(country.tag).name}`}
                 runs={country.shares} bands={bands} extent={extent} playhead={playhead}
                 playback={options.playback as PlaybackMode} afterPlayhead={options.afterPlayhead === true}
@@ -203,7 +203,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
                   const membership = countries.membership?.get(country.tag);
                   if (membership && !runAt(membership, at)) return null;
                   const actor = hasSupplyActor(country, at);
-                  const label = actor ? labels.labelAt(at)(country.tag) : { name: 'Country identity not recorded' };
+                  const label = actor ? labels.labelAt(at)(country.tag) : { name: 'Unknown country' };
                   const tip = supplyTooltip(formatDateTime(at), label.name, actor ? label : undefined,
                     actor ? runAt(country.runs, at) : null, colors);
                   return fitTooltip([{ ...tip, rows: [...tip.rows, ...countryCapitulationRows(hovered, labels.labelAt)] }], viewport, { keep: hovered.length });
@@ -220,8 +220,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
     </> : null);
   const neutralHeader = pinned && countrySlot && (problem !== undefined || choices !== null)
     ? createPortal(<DatedCountryChip label={null} hour={window ? drillAt : null}
-      reason={!savedSelection ? 'The saved native country selection is unavailable.'
-        : 'The selected native country identity is unavailable at this hour.'} />, countrySlot) : null;
+      reason="Selected country unavailable." />, countrySlot) : null;
   const breakdown = <SupplyBreakdown runtime={runtime} track={track} active={active} options={options} extent={extent}
     countrySlot={pinned && problem === undefined && choices === null ? countrySlot : null} headerSelection={savedSelection}
     playhead={drillPlayhead} tag={drillTag} hour={drillAt} originHour={originHour} following={drill.follow} pinned={pinned}

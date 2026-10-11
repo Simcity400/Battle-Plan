@@ -115,19 +115,19 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const menu = useContextMenu('Timeline actions');
   useEffect(() => {
     const warnings = [...new Set([...(data?.warnings ?? []), ...(groups.data?.warnings ?? []), ...factions.warnings,
-      ...(factions.error ? [factions.error] : []), ...(groups.error ? [`Native country history could not be read: ${groups.error}`] : []),
-      ...(prepared?.unidentifiedHours ? [`Native identity is not recorded for ${prepared.unidentifiedHours} participant-hours; those lanes retain unknown country labels and colours.`] : [])])];
+      ...(factions.error ? [factions.error] : []), ...(groups.error ? [`Country history unavailable: ${groups.error}`] : []),
+      ...(prepared?.unidentifiedHours ? [`${prepared.unidentifiedHours} participant-hours have unknown countries; those lanes keep unknown labels and colours.`] : [])])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, groups.data, groups.error, factions.warnings, factions.error, prepared, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its wars." />;
-  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the campaign’s recorded branch." />;
+  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   const state = warsReplyState(data, product.error);
-  if (state === 'error') return <WidgetState kind="error" message={product.error!} onRetry={product.retry} />;
+  if (state === 'error') return <WidgetState kind="error" detail={product.error!} onRetry={product.retry} />;
   if (state === 'unavailable') return <WidgetState kind="unavailable" />;
-  if (groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!data || !prepared) return <WidgetState kind="loading" label="Loading wars…" />;
 
   const tooltip = (lane: TimelineLane, span: TimelineSpan | null, hour: number, full = false): TooltipContent | null => {
@@ -138,15 +138,14 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
     const datedLabels = recorded ? hover.labelAt(hour) : () => ({ name: NAME_WORDS.missing, known: false });
     const labels = (tag: string) => prepared.identities?.keyAt(tag, hour) === null
       ? { name: NAME_WORDS.missing, known: false } : datedLabels(tag);
-    const nameReason = !recorded ? gap?.reason ?? 'This hour is outside the recorded branch.' : undefined;
     const bar = span ? about.spansById.get(span.id) : undefined;
     const war = about.kind === 'country' ? bar?.war : about.war;
     if (!war) {
       if (about.kind !== 'country') return null;
       const tag = countryTagAt(about.country, hour);
       if (recorded && tag !== null) hover.ask(hour, [tag]);
-      return { title: tag === null ? NAME_WORDS.missing : labels(tag).name, subtitle: dayLabel(hour), description: nameReason, rows: [{ label: 'War', value: data.unobserved.some(gap => gap.firstHour <= hour && hour <= gap.lastHour)
-        ? 'Not recorded' : 'No war observed' }] };
+      return { title: tag === null ? NAME_WORDS.missing : labels(tag).name, subtitle: dayLabel(hour), rows: [{ label: 'War', value: data.unobserved.some(gap => gap.firstHour <= hour && hour <= gap.lastHour)
+        ? 'Not recorded' : 'No war' }] };
     }
     const observation = observationAt(war, hour);
     const labelled = labelObservationAt(war, hour);
@@ -162,7 +161,6 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
       ...(tag ? { participant: { tag, run: bar?.holding ?? (participant ? participantHoldingAt(participant, hour) : null),
         capitulations: participant?.capitulations } } : {}),
     });
-    if (nameReason) content.description = nameReason;
     return full ? content : fitTooltip([content], viewport, { more: hidden => `${hidden} more ${hidden === 1 ? 'participant' : 'participants'}` });
   };
   const seenAs = viewpoint ? countries(viewpoint) : null;
@@ -175,7 +173,7 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
         showIcons={false} showNames={false} active={active} unobserved={data.unobserved}
         onLaneActivate={activate} onLanesInView={onLanesInView}
         revision={`${revision}:${looks.revision}:${hover.revision}`} tooltip={tooltip}
-        description={`${summary}. ${options.view === 'gantt' ? 'Enter or Space expands or collapses a war. ' : ''}Arrow keys step through lanes and observed bars. Dates marked “by” are observation bounds. Gaps stay blank.`}
+        description={`${summary}. ${options.view === 'gantt' ? 'Enter or Space expands or collapses a war. ' : ''}Arrow keys step through lanes and bars.`}
         onContextMenu={(hour, x, y) => {
           const bounded = Math.max(track.branch.firstHour, Math.min(track.branch.lastHour, hour));
           menu.open(x, y, [jumpItem(runtime, track.id, bounded)]);

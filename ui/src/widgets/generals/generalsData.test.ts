@@ -170,7 +170,7 @@ test('leaderboard visible hours give the career records’ rows, counts and tool
     const [records, counts] = [career, board].map(data => validateUnitLeadersReply(wire(data)));
     for (let hour = 99; hour <= 131; hour++) {
       const [expected, actual] = [records, counts].map(reply => leadersAt(reply, hour, null, 'all')
-        .map(row => ({ ...row, career: null, tooltip: leaderTooltip(reply, row, { name: 'Country' }) })));
+        .map(row => ({ ...row, career: null, tooltip: leaderTooltip(row, { name: 'Country' }) })));
       assert.deepEqual(actual, expected, `hour ${hour}`);
     }
     assert.deepEqual(battleTotals(counts.leaders[0], 125), results ? { fought: 6, won: 3, lost: 2, unresolved: 1, winRate: 60 }
@@ -188,16 +188,30 @@ test('dated joined results exclude unresolved battles from the win rate', () => 
 
 test('tooltip follows the paired attributes, battles, traits and career hint of leaderTip', () => {
   const data = fixture(); const row = leaderAt(data, data.leaders[0], 101)!;
-  const tip = leaderTooltip(data, row, { name: 'Mod country' });
+  const tip = leaderTooltip(row, { name: 'Mod country' });
   assert.deepEqual(tip.rows.slice(1, 4).map(r => r.label), ['Attack · Defence', 'Planning · Logistics', 'Battles won / fought']);
-  assert.equal(tip.rows.at(-1)?.label, 'Mod trait'); assert.equal(tip.note, 'Click for his career');
-  assert.match(tip.description!, /Recorded battles since .*Result not recorded/);
+  assert.equal(tip.rows.at(-1)?.label, 'Mod trait'); assert.equal(tip.note, undefined);
+  assert.equal(tip.description, undefined);
   const emptyTraits = { ...row, value: { ...row.value, traits: [] } };
-  assert.deepEqual(leaderTooltip(data, emptyTraits, { name: 'Country' }).rows.at(-1), { label: 'Traits', value: 'None recorded', divider: true });
-  assert.equal(leaderTooltip(data, { ...row, value: { ...row.value, traits: null } }, { name: 'Country' }).rows.at(-1)?.label, 'Traits not recorded');
+  assert.deepEqual(leaderTooltip(emptyTraits, { name: 'Country' }).rows.at(-1), { label: 'Traits', value: 'None recorded', divider: true });
+  assert.equal(leaderTooltip({ ...row, value: { ...row.value, traits: null } }, { name: 'Country' }).rows.at(-1)?.label, 'Traits not recorded');
   data.roles[0].kind = 2;
   data.roles[0].attributeNames = ['Naval attack', 'Naval defence', 'Maneuvering', 'Coordination'];
-  assert.equal(leaderTooltip(data, leaderAt(data, data.leaders[0], 101)!, { name: 'Country' }).rows[2].label, 'Maneuvering · Coordination');
+  assert.equal(leaderTooltip(leaderAt(data, data.leaders[0], 101)!, { name: 'Country' }).rows[2].label, 'Maneuvering · Coordination');
+});
+
+test('trait dates retain honest held bounds and ordinary career spans omit supplying dates', () => {
+  const data = fixture(); const leader = data.leaders[0];
+  for (const [date, label] of [['heldBefore', 'Held before'], ['firstObserved', 'Held by'], ['gained', 'Gained']] as const) {
+    leader.traitGains[0].date = date;
+    const tip = leaderTooltip(leaderAt(data, leader, 101)!, { name: 'Country' });
+    assert.ok(tip.rows.at(-1)?.value?.startsWith(label));
+    assert.ok(!tip.rows.some(row => row.label === 'Read'));
+  }
+  leader.runs[0].lastHour = 102;
+  leader.runs.push({ ...leader.runs[0], firstHour: 103, lastHour: 106 });
+  const ordinary = careerLanes(data, leader, 101, 106)[0].spans[1];
+  assert.equal(ordinary.label, 'Skill 3');
 });
 
 test('owner read dates survive skill changes and follow transfers; picker uses last owner date and sorts names', () => {
@@ -218,7 +232,7 @@ test('owner read dates survive skill changes and follow transfers; picker uses l
 test('a departing row retains its trait identities when a new selection remaps the catalogue', () => {
   const before = fixture(); const row = leaderAt(before, before.leaders[0], 101)!;
   const after = fixture(); after.traits[0].name = 'Another country’s trait';
-  assert.equal(leaderTooltip(after, row, { name: 'Country' }).rows.at(-1)?.label, 'Mod trait');
+  assert.equal(leaderTooltip(row, { name: 'Country' }).rows.at(-1)?.label, 'Mod trait');
 });
 
 test('a continuing command never displays a later name before its first recorded read', () => {
@@ -270,7 +284,7 @@ test('skill dots, trait markers, defaults and pinning retain the shared kit beha
     { ...leader.runs[0], firstHour: 106, lastHour: 107, value: { ...leader.runs[0].value, skill: 5 } });
   const lanes = careerLanes(data, leader, 101, 107);
   assert.equal(lanes[0].spans[1].dot, true); assert.equal(lanes[0].spans[2].dot, false);
-  assert.match(lanes[0].spans[2].label, /First observed/);
+  assert.match(lanes[0].spans[2].label, /First seen/);
   assert.deepEqual(lanes[1].spans[0].icons, [undefined]);
   const source = createWidget('generals', 'main'); assert.deepEqual(source.countries, { kind: 'all' });
   const options = resolveOptions(OPTIONS, source.options); assert.deepEqual(tableSortOf(options.tableSort, DEFAULT_SORT), DEFAULT_SORT);
@@ -313,7 +327,7 @@ test('a known empty leader name survives leaderboard, career tooltip and picker 
   const data = fixture(); const person = data.people[0]; person.name = '';
   const row = leaderAt(data, data.leaders[0], 101)!;
   assert.equal(leaderName(row), '');
-  assert.equal(leaderTooltip(data, row, { name: 'Country' }).title, '');
+  assert.equal(leaderTooltip(row, { name: 'Country' }).title, '');
   assert.equal(leaderChoices(data, () => 'Country')[0].label, ' · Country');
   person.name = null; assert.equal(leaderName(row), 'Character name unavailable');
   person.token = ''; assert.equal(leaderName(row), 'Character name unavailable');
@@ -326,20 +340,20 @@ test('recorded battle totals remain visible for initial holdings and missing cov
   leader.partialFrom = data.firstHour;
   data.observed[0].landBattles = false;
   assert.equal(leaderAt(data, leader, 101)?.fought, 0);
-  const initialTip = leaderTooltip(data, leaderAt(data, leader, 101)!, { name: 'Country' });
+  const initialTip = leaderTooltip(leaderAt(data, leader, 101)!, { name: 'Country' });
   assert.equal(initialTip.rows[3].value, 'Result not recorded / 0');
-  assert.match(initialTip.description!, /since .*Some battle observations are missing/);
+  assert.equal(initialTip.description, undefined);
   leader.battleStarts = [101]; leader.battleStartReadHours = decodedStarts(leader.battleStarts); leader.battleWon = [true]; leader.battleResultHours = [102]; leader.battleResultReadHours = [...leader.battleResultHours!];
   assert.equal(leaderAt(data, leader, 102)?.won, 1);
   assert.equal(leaderAt(data, leader, 102)?.winRate, 100);
-  assert.match(recordedSince(leader, data.firstHour), /Recorded battles since/);
-  assert.equal(careerEmptyEntry(data, leader, 'battles', 102), 'Unknown: battle tables not fully read at this hour');
+  assert.match(recordedSince(leader, data.firstHour), /^Battles since/);
+  assert.equal(careerEmptyEntry(data, leader, 'battles', 102), 'Battle data unavailable.');
   data.observed[0].landBattles = true;
   assert.equal(careerEmptyEntry(data, leader, 'battles', 102), 'No recorded participation at this hour');
   data.observed[0].landCommands = false;
-  assert.equal(careerEmptyEntry(data, leader, 'commands', 102), 'Unknown: command observations incomplete at this hour');
+  assert.equal(careerEmptyEntry(data, leader, 'commands', 102), 'Command data unavailable.');
   data.observed[0].landCommands = true;
-  assert.match(careerEmptyEntry(data, leader, 'commands', 102), /No command in the recorded observations/);
+  assert.match(careerEmptyEntry(data, leader, 'commands', 102), /No command/);
   data.roles[0].attributeNames = ['Mod attack', 'Mod defence', 'Mod planning', null];
   assert.deepEqual(attributeNames(data.roles[0]), ['Mod attack', 'Mod defence', 'Mod planning', 'Name not recorded']);
 });

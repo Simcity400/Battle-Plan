@@ -9,7 +9,7 @@
 **Notable behaviour:**
 
 - Types are content-defined equipment archetypes resolved from the recorded variants. A multi-type wing counts once as **Mixed types** when measuring wings.
-- The recorded plane count is independent of equipment attribution. Missing or non-reconciling banks leave **Other / not identified** while a known total stays exact. A complete empty census proves zero; absent countries and missing reads stay unknown.
+- The recorded plane count is independent of equipment attribution. Missing or non-reconciling banks leave **Other** while a known total stays exact. A complete empty census proves zero; absent countries and missing reads stay unknown.
 - Clicking a country or mix opens its full type history independently of top-N membership. Overlapping line picks require a country choice. Pins save the native holder and origin hour; renames follow that holder and tag reuse cannot replace it. Missing or conflicting identity stays unavailable.
 - Local date picks and Follow update the pinned header at the body date. Follow uses the track-aligned playback clock independently of the parent time mode, with full-branch detail bounds. Part rows select their history; All parts restores the stack.
 - Shared PartsRaceView owns loading, country identity, dated looks and interactions. Drawn easing creates no additional measurements; gaps break histories.

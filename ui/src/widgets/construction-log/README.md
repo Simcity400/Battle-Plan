@@ -15,11 +15,12 @@ All countries by default, or manual countries/groups; building types, new/repair
 ## Notable behaviour
 
 - Rows appear at the read establishing them. A changed project re-enters at its latest change; Jump offers start/change/end dates.
+- Building art uses the campaign's content; a factory icon fills a missing picture slot. Building-type chips and the settings filter share the same selection.
 - Level counts retain ranges and earlier-work lower bounds. Repair/build phases can share one project; gaps leave status and factories unread. Sampled speed does not bound work between reads.
 - Finished requires a native completion outcome. Complete unlinked departures can be Removed; uncovered departures remain Left the queue. Building rises and factory output do not prove completion.
 - Signed factory IC excludes bank withdrawals, instant progress and railway carry. Between-read projects without owner/target remain unidentifiable.
 - Building and state titles preserve successfully localised empty text and titles equal to their keys. Missing titles stay unavailable; diagnostic details retain their keys.
-- Manual tags follow native holders/aliases; groups match at first read. Missing identity stays unknown. [useStateNamesAt](../../dashboard/useStateNamesAt.ts) resolves shown-hour states: older uncaptured fields use authored fallback; captured failures keep their reasons.
+- Manual tags follow native holders/aliases; groups match at first read. Missing identity stays unknown. [useStateNamesAt](../../dashboard/useStateNamesAt.ts) resolves shown-hour states: older uncaptured fields use authored fallback; failed names keep an unavailable label and a concise status.
 - One window per replay block lists every project with a row date in it. The widget holds the shown hour's window, the next during Live and, back from there, as many rows below the drawn ones as are drawn; short of them it reaches further back. Rows dated before the oldest window held unbroken wait for it, so the list is always the whole log's newest rows. A far jump keeps the last shown hour until its window arrives.
 
 ## Files

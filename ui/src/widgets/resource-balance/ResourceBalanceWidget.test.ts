@@ -108,7 +108,7 @@ test('the mounted resource pin dates its header and body to local picks and actu
     render();
     assert.equal(state.chip!.props.label!.name, 'Y at 112');
     props.widget.time = { mode: 'follow' };
-    assert.match(render(), /original country choice was not saved/);
+    assert.match(render(), /Saved country selection unavailable/);
     assert.equal(state.chip!.props.label, null);
 
     const signed = { ...data, series: [{ id: 7, runs: [{ ...pool, producedRaw: '-100000', importedRaw: '-200000',

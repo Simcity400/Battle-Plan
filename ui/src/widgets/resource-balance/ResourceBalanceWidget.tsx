@@ -1,8 +1,8 @@
 import { createContext, useContext, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Select } from '../../components/Select';
+import '../../components/ChipSet.css';
 import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { ChipSet } from '../../components/ChipSet';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import BreakdownChart from '../../charts/drill/BreakdownChart';
@@ -87,12 +87,11 @@ function ResourceBreakdown({ data, resource, hour, tokens, runtime, track, ...ch
     [data, resource.id, hour]);
   return <>
     {groups.map(group => <div key={group.title}>
-      <p className="drill-empty">{group.title}</p>
       <DrillParts parts={group.values.map(part => ({ id: part.id, label: part.label, color: parts.find(series => series.id === part.id)?.color,
         value: fixedNumber(part.raw, data.decimals), text: formatAmount(part.raw, data.decimals, data.decimals) }))}
         format={String} total={fixedNumber(group.total, data.decimals)} totalRow={{ label: group.title, value: formatAmount(group.total, data.decimals, data.decimals) }} />
     </div>)}
-    {values && balance && values.at(-1)!.raw !== 0n && <DrillParts parts={[{ id: 'unidentified', label: 'Other / not identified', muted: true,
+    {values && balance && values.at(-1)!.raw !== 0n && <DrillParts parts={[{ id: 'unidentified', label: 'Other', muted: true,
       value: fixedNumber(values.at(-1)!.raw, data.decimals), text: formatSigned(values.at(-1)!.raw, data.decimals, data.decimals), color: parts.at(-1)?.color }]}
       total={fixedNumber(balance.net, data.decimals)} format={String} />}
     {balance ? <p className="drill-empty">Net: {formatSigned(balance.net, data.decimals, data.decimals)} per day.</p>
@@ -102,7 +101,6 @@ function ResourceBreakdown({ data, resource, hour, tokens, runtime, track, ...ch
       return <ResourceDeals key={direction} deals={deals[direction]} pool={pool} decimals={data.decimals} hour={hour}
         direction={direction} runtime={runtime} track={track} active={chart.active} />;
     }) : <p className="drill-empty">Trade partners were not recorded at this hour.</p>}
-    <p className="drill-empty">Demand includes the trade-law export reserve; exports by deal show what buyers received.</p>
     <BreakdownChart {...chart} series={parts} selectedHour={hour} label={`${resourceName(resource)} parts over time`}
       axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} />
   </>;
@@ -143,10 +141,8 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
   const actor = useResourceCountry(selectedCountry, runtime, track, active, originalGroup);
   const detailData = selectedCountry ? actor.data : data;
   const headerTag = selectedCountry && actor.spans && drillAt !== null ? countryDrillTagAt(actor.spans, drillAt) : selectedCountry ? null : tag;
-  const headerReason = saved && !savedCountry ? options.resourceCountry
-    ? 'This country selection belongs to another country, campaign or branch, or is malformed.'
-    : 'The original country choice was not saved. Choose Resources in Show and select a breakdown again.'
-    : selectedCountry ? actor.reason ?? (headerTag ? null : 'The selected native country is not recorded at this moment.') : null;
+  const headerReason = saved && !savedCountry ? 'Saved country selection unavailable. Choose it again.'
+    : selectedCountry ? actor.reason ?? (headerTag ? null : 'Country unavailable at this time.') : null;
   const header = useCountryLabelsAt(runtime.client, track, saved && countrySlot && !headerReason && headerTag && drillAt !== null
     ? [{ tag: headerTag, hour: drillAt }] : [], active);
   const pinnedHeader = saved && countrySlot ? createPortal(<DatedCountryChip hour={drillAt} reason={headerReason}
@@ -186,11 +182,11 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
   }, [data, partners.labelAt, viewport]);
 
   if (!track || !tag) return <>{pinnedHeader}<WidgetState kind="empty" icon="layers" message="Load a campaign and choose a country to see its resources." /></>;
-  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This time is outside the country’s recorded branch." /></>;
-  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." /></>;
-  if (error) return <>{pinnedHeader}<WidgetState kind="error" message={error} onRetry={retry} /></>;
+  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
+  if (error) return <>{pinnedHeader}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
   if (!data) return <>{pinnedHeader}<WidgetState kind="loading" label="Loading resources…" /></>;
-  if (!data.series.some(series => series.runs.length) || !data.resources.length) return <>{pinnedHeader}<WidgetState kind="unavailable" message="No resources were recorded for this country in this branch." /></>;
+  if (!data.series.some(series => series.runs.length) || !data.resources.length) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Resources weren’t recorded for this country." /></>;
 
   const jump = (hour: number) => [jumpItem(runtime, track.id, hour)];
   const open = (resource: ResourceInfo, hour: number) => {
@@ -212,14 +208,14 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
         hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} onPick={open} />}
   </>;
   const detail = saved && !savedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
-    : selectedCountry && actor.error ? <WidgetState kind="error" message={actor.error} onRetry={actor.retry} />
-    : selectedCountry && actor.reason ? <WidgetState kind="unavailable" message={actor.reason} />
+    : selectedCountry && actor.error ? <WidgetState kind="error" detail={actor.error} onRetry={actor.retry} />
+    : selectedCountry && actor.reason ? <WidgetState kind="unavailable" message="Country unavailable at this time." />
     : picked && detailData ? <ResourceBreakdown data={detailData} resource={picked} hour={drillAt} tokens={tokens}
     extent={extent} playhead={drill.breakdown !== null && drill.follow ? actualHour : playhead} playback={options.playback as PlaybackMode} afterPlayhead={options.afterPlayhead === true}
     windowHours={Number(options.windowDays ?? 365) * 24} branchStart={track.branch.firstHour} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
     active={active} runtime={runtime} track={track} pickOwner={detailPickOwner} onPick={hour => dispatch(saved
       ? { type: 'open', breakdown: BREAKDOWN.id, hour, playing: false, playhead: null } : { type: 'pick', hour })}
-    onContextMenu={(hour, x, y) => menu.open(x, y, jump(hour))} /> : <p className="drill-empty">The chosen resource {savedKey} is not defined by this campaign.</p>;
+    onContextMenu={(hour, x, y) => menu.open(x, y, jump(hour))} /> : <p className="drill-empty">Resource unavailable. Choose another in settings.</p>;
   return <div ref={anchor} className="resource-balance">
     {saved ? <div className="drill-body">
       {pinnedHeader}
@@ -309,7 +305,7 @@ function BalanceBars({ data, tokens, hour, order, scale, hideEmpty, owner, break
         style={glides ? undefined : { '--resource-glide': '0ms' } as CSSProperties}>
         {/* The breakdown the focus tooltip shows, in full even where the window trims it (the tooltip layer is not read out). */}
         <span id={rowTips.descriptionId(resource.id)} className="sr-only">{described.get(resource.id)?.text}</span>
-        <span className="resource-name">{resource.icon ? <img src={resource.icon} alt="" /> : <span className="resource-icon-missing" aria-hidden="true" />}
+        <span className="resource-name">{resource.icon ? <img src={resource.icon} alt="" /> : null}
           <span>{resourceName(resource)}</span></span>
         {balance ? <>
           <span className="resource-track" aria-hidden="true">
@@ -353,7 +349,6 @@ function OverTime({ data, numbers, within, tokens, viewport, options, runtime, t
     const style = styles.get(resource.id)!;
     return series ? [{ resource, series, color: style.color, dashes: style, ...supplyDemandRuns(series, data.decimals) }] : [];
   }), [chosenInfo, data, styles, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  const overflow = lines.some(line => line.dashes.primary.length > 0);
   // The keyboard steps where a chosen resource's values or deals change; the kit adds
   // the start of a range or zoom that begins between two, so the value going on into
   // it is reachable too.
@@ -383,8 +378,9 @@ function OverTime({ data, numbers, within, tokens, viewport, options, runtime, t
   // Only the clicked resource changes: saved resources this campaign lacks are kept,
   // and one this campaign shows always stays chosen. A chip whose
   // click cannot act is disabled and says why, pressed or not.
-  // One chip per token: a repeated declaration is chosen with its token.
-  const chips = data.resources.filter(item => item.ordinal === 1);
+  // Each selected declaration keeps its name, value and two curve styles.
+  // Toggling any declaration still selects or clears its whole token.
+  const chips = data.resources.filter(item => item.ordinal === 1 || chosen.includes(item.token));
   const actions = new Map(chips.map(item => [item.token, toggleChosen(data, stored, chosen, item.token, Number.MAX_SAFE_INTEGER)]));
   const pick = (token: string) => {
     const action = actions.get(token);
@@ -392,17 +388,26 @@ function OverTime({ data, numbers, within, tokens, viewport, options, runtime, t
   };
   const head = Math.floor(playhead ?? extent[1]);
   return <>
-    {setOption && <ChipSet label="Resources" chips={chips.map(item => {
+    <div className="chip-set" role="group" aria-label="Resources">{chips.map(item => {
       const action = actions.get(item.token);
-      return { value: item.token, label: resourceName(item), icon: item.icon, unavailable: action && 'reason' in action ? action.reason : undefined };
-    })} selected={chosen} max={Number.MAX_SAFE_INTEGER} onToggle={pick} />}
-    <Legend label="Resources" items={lines.map(line => {
-      const run = runAt(line.series.runs, head);
-      return { id: String(line.resource.id), label: resourceName(line.resource), color: line.color,
-        value: run ? formatSigned(balanceOf(run).net, data.decimals) : 'Not recorded' };
-    })} />
-    <p className="chart-line-key"><i aria-hidden="true" />Solid: supply · <i className="is-dashed" aria-hidden="true" />dashed: demand, per day
-      {overflow && ` · every further ${tokens.categories.length} lines repeat the colours with their own dashes`}</p>
+      const reason = !setOption ? 'Resource selection unavailable.' : action && 'reason' in action ? action.reason : undefined;
+      const selected = chosen.includes(item.token);
+      const line = lines.find(line => line.resource.id === item.id);
+      const run = line && runAt(line.series.runs, head);
+      const value = run ? formatSigned(balanceOf(run).net, data.decimals) : 'Not recorded';
+      const style = styles.get(item.id);
+      return <button key={item.id} type="button" className="chip" aria-pressed={selected} aria-disabled={reason ? true : undefined}
+        aria-label={`${resourceName(item)}${selected ? `, net ${value} per day` : ''}`}
+        data-tooltip={reason} onClick={() => { if (!reason && setOption) pick(item.token); }}>
+        {selected && style && <svg className="resource-series-key" width="28" height="14" aria-hidden="true">
+          <line x1="0" y1="3" x2="28" y2="3" stroke={style.color} strokeWidth="2" strokeDasharray={style.primary.join(' ')} />
+          <line x1="0" y1="11" x2="28" y2="11" stroke={style.color} strokeWidth="2" strokeDasharray={style.secondary.join(' ')} />
+        </svg>}
+        {item.icon && <img src={item.icon} alt="" />}{resourceName(item)}
+        {selected && <span className="resource-chip-value">{value}</span>}
+      </button>;
+    })}</div>
+    <p className="chart-line-key">Supply above demand in each key · per day</p>
     {selection && <div className="select-row">Choose a drawn resource on {dayLabel(selection.hour)} <Select autoFocus label="Drawn resource" value="" onChange={id => {
       const resource = chosenInfo.find(resource => String(resource.id) === id);
       if (resource && selection.ids.includes(String(resource.id))) { onPick(resource, selection.hour); setSelection(null); }

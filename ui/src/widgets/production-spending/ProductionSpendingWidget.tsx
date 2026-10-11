@@ -11,7 +11,7 @@ import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import type { ProductionSpendingReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
-import { LEVELS, UNIT, formatAppliedIc, noProductionAt, productionSpendingItems, spendingEmptyLabel, spendingFinals, spendingFootnote, spendingTotal, unknownLabel, validateProductionSpendingReply } from './spendingData';
+import { LEVELS, UNIT, formatAppliedIc, noProductionAt, productionSpendingItems, spendingEmptyLabel, spendingFinals, spendingTotal, validateProductionSpendingReply } from './spendingData';
 
 const NO_WARNINGS: string[] = [];
 const ROOT = { id: 'all', label: 'All production' };
@@ -37,7 +37,7 @@ export default function ProductionSpendingWidget({ widget, runtime, active, onDi
   const decimals = data?.decimals ?? 5;
   const emptyLabel = data && hour != null ? spendingEmptyLabel(data, hour, from) : 'Loading production spending…';
   const text = useMemo<SunburstText>(() => ({
-    format: (value, exact) => formatAppliedIc(value, exact, decimals), unit: UNIT, valueLabel: 'IC spent', countLabel: 'Designs', unknownLabel,
+    format: (value, exact) => formatAppliedIc(value, exact, decimals), unit: UNIT, valueLabel: 'IC spent', countLabel: 'Designs',
     emptyLabel,
   }), [decimals, emptyLabel]);
   useEffect(() => {
@@ -46,12 +46,12 @@ export default function ProductionSpendingWidget({ widget, runtime, active, onDi
   }, [data, onDiagnostics]);
 
   if (!track || !tag) return <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its production spending." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading production spending…" />;
-  if (!data.reads.length) return <WidgetState kind="unavailable" message="Not known: production output was not recorded in this campaign branch." />;
-  if (hour == null || end == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the campaign’s recorded branch." />;
+  if (!data.reads.length) return <WidgetState kind="unavailable" message="Production spending wasn’t recorded." />;
+  if (hour == null || end == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (noProductionAt(data, hour) && spendingTotal(data, { from, hour, end }).exact === 0n) return <WidgetState kind="empty" icon="sunburst" message="No military production yet." />;
   return <Sunburst label="Production spending" items={items} root={ROOT} levels={levels} text={text} settings={settings}
     authoritativeTotal={spendingTotal(data, { from, hour, end })} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
-    active={active} footnote={spendingFootnote(data, { from, hour, end }, settings.growth)} />;
+    active={active} />;
 }

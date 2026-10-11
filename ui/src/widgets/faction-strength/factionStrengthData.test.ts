@@ -92,7 +92,7 @@ test('the all-factions default and every membership mode survive layout storage 
 });
 
 test('factory formulas and every Territory sub-measure/rule retain the shared labels and area availability', () => {
-  for (const [mode, label] of [['free', 'Free after withheld'], ['built', 'Built'], ['topBar', 'Top bar']] as const) {
+  for (const [mode, label] of [['free', 'Available'], ['built', 'Built'], ['topBar', 'Top bar']] as const) {
     const source = factionStrengthSource({ measure: 'factories', count: mode });
     assert.deepEqual(source, { kind: 'factories', mode, groups: [] });
     assert.equal(factionStrengthLabel(source, 'factories'), `${label} factories`);

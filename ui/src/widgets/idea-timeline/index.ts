@@ -1,6 +1,6 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
 import IdeaTimelineWidget from './IdeaTimelineWidget';
-import IdeaTimelinePickerItems from './IdeaTimelinePickerItems';
+import { useIdeaTimelinePresets } from './ideaTimelinePresets';
 import { useCategoryChoices } from './categoryChoices';
 
-export default { render: IdeaTimelineWidget, pickerItems: IdeaTimelinePickerItems, useOptionChoices: useCategoryChoices } satisfies WidgetRenderer;
+export default { render: IdeaTimelineWidget, usePresets: useIdeaTimelinePresets, useOptionChoices: useCategoryChoices } satisfies WidgetRenderer;

@@ -41,7 +41,8 @@ test('native chord flags and pair hovers retain the shown read status; Other has
   assert.equal(chord.data.nodes[0].flag, undefined, 'a native flag payload survives without artwork');
   const tip = pairTooltip(chordPairs({ kind: 'flow', id: chord.data.flows[0].id }, chord), chord.labels, chord.hour);
   assert.equal(tip.rows[0].countryFlag, refused);
-  assert.match(tip.rows[0].value!, /-9,007,199,254,740,993.*Read Hour 100/);
+  assert.equal(tip.rows[0].value, '-9,007,199,254,740,993');
+  assert.equal(tip.note, undefined);
   assert.equal(chord.data.flows[0].value, 0, 'the correction remains selectable without a positive ribbon');
   const later = casualtyChord(snapshot, 2, 200, tag => ({ name: `Later ${tag}`, flag: 'later flag', flagPending: false }), color, '#777777');
   assert.equal(later.data.nodes[0].countryFlag?.flag, 'later flag');

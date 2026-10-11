@@ -132,14 +132,14 @@ test('both construction renderers release dated-name demand outside their branch
       };
       widget.time = { mode: 'follow' };
       for (const hour of [99, 400]) {
-        assert.match(render(hour), /outside the campaign.*recorded branch/);
+        assert.match(render(hour), /This time is outside the recording\./);
         expectDemand(null);
       }
       for (const hour of [100, 200]) { render(hour); expectDemand(hour); }
       widget.time = { mode: 'pin', windows: { short: { firstOffset: 0, lastOffset: 50 } } };
       render(400); expectDemand(150);
       widget.time = { mode: 'pin', windows: { short: { firstOffset: 0, lastOffset: 300 } } };
-      assert.match(render(400), /outside the campaign.*recorded branch/); expectDemand(null);
+      assert.match(render(400), /This time is outside the recording\./); expectDemand(null);
       widget.time = { mode: 'campaign' };
       render(400); expectDemand(200);
       widget.time = { mode: 'range', firstOffset: -50, lastOffset: 30 };

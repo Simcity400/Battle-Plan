@@ -27,7 +27,7 @@ import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { NavalLossesReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
 import { navalPinOrigin } from './navalPinOrigin';
-import { NAVAL_PARTS, navalAsOf, navalChoiceReads, navalDrillActors, navalHolderBands, formatNavalCount, navalKindLabel, navalLines, navalLineTooltip, navalLookHour, navalModel, navalNumbers, navalPeriodLabel, navalReadHour, navalRequest, navalSegmentAt,
+import { NAVAL_PARTS, navalChoiceReads, navalDrillActors, navalHolderBands, formatNavalCount, navalKindLabel, navalLines, navalLineTooltip, navalLookHour, navalModel, navalNumbers, navalPeriodLabel, navalReadHour, navalRequest, navalSegmentAt,
   navalTooltip, rankNaval, validateNavalLossesReply } from './navalLossesData';
 
 const NO_WARNINGS: string[] = [];
@@ -73,11 +73,11 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
   const countryLookHour = useCallback((tag: string | null, hour: number) => navalLookHour(model, tag, hour, kind), [model, kind]);
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its naval losses." />;
-    if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-    if (grouped && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+    if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+    if (grouped && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
     if (resolved.reason) return <WidgetState kind="unavailable" message={resolved.reason} />;
-    if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="This time is outside the recorded branch." />;
-    if (moment < track.branch.firstHour || moment > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recorded branch." />;
+    if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    if (moment < track.branch.firstHour || moment > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
     if (!data || !model || (grouped && !groups.data)) return <WidgetState kind="loading" label="Loading naval losses…" />;
     if (!data.available) return <WidgetState kind="unavailable" message="Not in this recording" />;
     return undefined;
@@ -202,11 +202,11 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
     onPick={kind === 'both' ? open : undefined} pickOwner={pickOwner} resetKey={scopeKey}
     label={label} empty="Naval losses unknown at this time." formatValue={formatNavalCount}
     countryTags={view === 'race' ? ranked.map(entry => entry.tag) : lineTags} countryLookHour={countryLookHour}
-    beforeChart={data && <p className="chart-line-key">{navalPeriodLabel(data, period)} · {navalAsOf(data, moment, kind)} · {label}</p>}
+    beforeChart={data && <p className="chart-line-key">{navalPeriodLabel(data, period)}</p>}
     presentation={{ exact: false, held: false, lineColourHours: 'labels', linePadding: CHART_LAYOUT.countryEndLabels, raceEmptyState: false, resetTimeView: true }}
     lineEmpty={{ icon: 'shield', message: 'No known naval counts for these countries in this time range.' }}
-    tooltip={(tag, hour, name) => model ? [navalTooltip(model, tag, hour, name, kind, attribution, period)] : null}
-    lineTooltip={(hour, tags, labelAt, country) => model ? [navalLineTooltip(model, hour, tags, labelAt, country, kind, attribution, period)] : []} />;
+    tooltip={(tag, hour, name) => model ? [navalTooltip(model, tag, hour, name, kind, attribution)] : null}
+    lineTooltip={(hour, tags, labelAt, country) => model ? [navalLineTooltip(model, hour, tags, labelAt, country, kind, attribution)] : []} />;
 
   const run = drillOpen && drillModel && shownDrillTag ? runAt(drillModel.series.get(shownDrillTag)?.runs ?? [], selectedHour) : null;
   const bands = useMemo(() => drillOpen && drillModel && drillTag
@@ -217,15 +217,15 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
   const drillState = (() => {
     if (!track) return state;
     if (restoreOrigin && ((model && !restoreKnown) || (drillTag && drillModel && !drillModel.identities?.keyAt(drillTag, originHour)))) {
-      return <WidgetState kind="unavailable" message="The saved native country selection was not recorded at its origin." />;
+      return <WidgetState kind="unavailable" message="Saved country selection unavailable. Choose it again." />;
     }
     if (!drillTag) return state;
     if (((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window)
-      || selectedHour < track.branch.firstHour || selectedHour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recorded branch." />;
-    if (drillReply.error) return <WidgetState kind="error" message={drillReply.error} onRetry={drillReply.retry} />;
+      || selectedHour < track.branch.firstHour || selectedHour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    if (drillReply.error) return <WidgetState kind="error" detail={drillReply.error} onRetry={drillReply.retry} />;
     if (drillTag && (!drillReply.data || !drillModel)) return <WidgetState kind="loading" label="Loading naval losses…" />;
     if (drillReply.data && !drillReply.data.available) return <WidgetState kind="unavailable" message={`Naval losses not recorded for ${drillName}.`} />;
-    if (drillTag && drillModel && shownDrillTag === null) return <WidgetState kind="unavailable" message="The chosen native country was not recorded at this moment." />;
+    if (drillTag && drillModel && shownDrillTag === null) return <WidgetState kind="unavailable" message="Country unavailable at this time." />;
     return undefined;
   })();
   pickRef.current.detailAllowed &&= !drillState;
@@ -237,7 +237,7 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
   const { labelAt: headerLabelAt } = useCountryLabelsAt(runtime.client, track, headerWanted, headerWanted.length > 0);
   const headerLabel = headerWanted.length ? headerLabelAt(selectedHour)(headerWanted[0].tag) : null;
   const headerReason = drillState ? 'This breakdown is unavailable at this hour.'
-    : !headerKnown ? 'The displayed native country identity is unknown or conflicting at this hour.' : null;
+    : !headerKnown ? 'Country unavailable at this time.' : null;
   const header = countrySlot && pinned && kind === 'both' && createPortal(
     <DatedCountryChip label={headerLabel} hour={track ? selectedHour : null} reason={headerReason} />, countrySlot);
   const chooserRead = drill.choices && data ? navalReadHour(data, selectedHour, kind) : null;
@@ -280,7 +280,7 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
     } : undefined}
     tooltipTags={drillTooltipTags} tooltip={(_tag, hour, _name, _colours, labelAt) => {
       const tag = countryDrillTagAt(holderSpans, hour);
-      return drillModel && tag ? [navalTooltip(drillModel, tag, hour, labelAt(hour)(tag).name, 'both', attribution, period)] : null;
+      return drillModel && tag ? [navalTooltip(drillModel, tag, hour, labelAt(hour)(tag).name, 'both', attribution)] : null;
     }} />;
   if (pinned && kind === 'both') return <>{header}{chooser ?? breakdown}</>;
   return <div ref={anchor} style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>

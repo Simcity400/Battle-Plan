@@ -8,12 +8,9 @@ import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import type { ArmyMeasure, ArmySizeReply } from '../../generated/dashboard';
 import { formatFixed, rescale } from '../../charts/valueAxis.ts';
 import { formatArmyRaw, formatArmyValue, typeName } from './armySizeData.ts';
-
+import { normaliseArmyOptions } from './definition.ts';
 import { pinPartsRace, UNATTRIBUTED_PART } from '../../charts/race/partsRaceDrill.ts';
 export const ARMY_REMAINDER = UNATTRIBUTED_PART;
-export const armyDrillNote = (measure: ArmyMeasure) => measure === 'battalions'
-  ? 'Battalions use their authored unit groups. Unknown-group names retain counted battalions; missing composition remains Other / not identified.'
-  : `${measure === 'manpower' ? 'Manpower' : measure === 'strength' ? 'Hit points' : 'Divisions'} have no exact recorded allocation to battalion groups. The recorded total remains Other / not identified.`;
 
 function rawTotal(at: CountryValueAt, measure: ArmyMeasure): bigint | null {
   if (at.total === null) return null;
@@ -96,6 +93,7 @@ export function armyDrillNumbers(reply: ArmySizeReply): ArmySizeReply {
 /** Preserve the displayed mix measure and the native selection date when pinned. */
 export function pinArmyDrill(widget: WidgetSpec, track: Pick<BoundTrack, 'id' | 'branch'>, tag: string,
   hour: number, originHour: number, measure: ArmyMeasure, follow: boolean): WidgetSpec {
-  return pinPartsRace({ ...widget, time: follow ? { mode: 'follow' } : widget.time, options: { ...widget.options, measure, drillOriginHour: originHour } },
+  const pin = pinPartsRace({ ...widget, time: follow ? { mode: 'follow' } : widget.time, options: { ...widget.options, measure, drillOriginHour: originHour } },
     track, tag, hour, follow, 'Army breakdown');
+  return { ...pin, options: normaliseArmyOptions(pin.options) };
 }

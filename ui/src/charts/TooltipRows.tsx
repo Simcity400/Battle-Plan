@@ -1,6 +1,5 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CountryFlagUrl } from '../components/CountryFlag';
-import { countryFlagUnavailable } from '../components/countryFlagPresentation.ts';
 import { measureTooltipScroll, scrollTooltip } from './tooltip';
 import type { TooltipContent, TooltipRow } from './tooltip';
 import { tooltipRowOffsets, tooltipRowWindow, tooltipScrollTop } from './tooltipScroll';
@@ -9,8 +8,7 @@ export function TooltipRowView({ row, element }: { row: TooltipRow; element?: (n
   return <div ref={element} title={row.lookupKey ? `Key: ${row.lookupKey}` : undefined} className={`chart-tooltip-row${row.divider ? ' has-divider' : ''}${row.strong ? ' is-strong' : ''}${row.short ? ' is-short' : ''}${row.indent ? ' is-indented' : ''}`}>
     <span>{row.swatch && <i style={{ background: row.swatch }} aria-hidden="true" />}{row.countryFlag
       ? <CountryFlagUrl className="chart-tooltip-flag" url={row.countryFlag.flag} reason={row.countryFlag.flagReason} pending={row.countryFlag.flagPending} />
-      : row.icon && <img src={row.icon} alt="" />}{row.label}
-      {row.countryFlag && !row.countryFlag.flag && <small>{countryFlagUnavailable(row.countryFlag.flagReason, row.countryFlag.flagPending).text}</small>}</span>
+      : row.icon && <img src={row.icon} alt="" />}{row.label}</span>
     {row.value != null && <b className={row.tone ? `is-${row.tone}` : undefined}>{row.value}</b>}
   </div>;
 }

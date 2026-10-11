@@ -125,11 +125,22 @@ export function scoreboardTooltip(row: ScoreboardRow, columns: readonly Scoreboa
     rows: columns.flatMap(column => {
       const cell = row.cells.get(column.key);
       const value = formatCell(column, cell?.amount ?? null, cell?.atLeast);
-      const note = !column.available ? column.reason ?? 'Not available yet'
-        : cell?.amount === null || !cell ? cell?.readHour == null ? 'Not recorded at this hour' : 'Not known from this recording at this hour' : undefined;
+      const note = !column.available ? 'Unavailable'
+        : cell?.amount == null ? 'Not available at this time' : undefined;
+      const description = column.available ? scoreboardColumnNote(column) : undefined;
       return [{ label: column.label, value }, ...(note ? [{ label: note, tone: 'muted' as const }] : []),
-        ...(cell?.amount != null && cell.atLeast ? [{ label: 'Recorded subtotal (†): sorting uses this recorded amount. Missing history may omit positive losses or negative corrections.', tone: 'muted' as const }] : []),
-        ...(column.note ? [{ label: column.note, tone: 'muted' as const }] : [])];
+        ...(cell?.amount != null && cell.atLeast ? [{ label: '† Partial total; some losses or corrections may be missing.', tone: 'muted' as const }] : []),
+        ...(description ? [{ label: description, tone: 'muted' as const }] : [])];
     }),
   };
+}
+
+export function scoreboardColumnNote(column: ScoreboardColumn): string | undefined {
+  if (!column.available) return 'Unavailable';
+  switch (column.key) {
+    case 'armySize': return 'Manpower in deployed divisions, counted by owner.';
+    case 'casualtiesDealt': return 'Land, naval and air casualties dealt. † Partial total.';
+    case 'casualtiesTaken': return 'Casualties taken with a known attacker. † Partial total.';
+    default: return undefined;
+  }
 }

@@ -61,14 +61,14 @@ test('supply shares and tooltip retain exact counts, gaps, zero denominators, an
   assert.deepEqual(tip.rows.map(row => [row.label, row.value, row.swatch]), [
     ['In supply', '33.33% · 1 division', 'good'], ['Strained', '33.33% · 1 division', 'warn'], ['No supply', '33.33% · 1 division', 'bad'],
   ]);
-  assert.match(tip.note!, /low received supply still covered by grace/);
-  assert.match(tip.note!, /very-low frame 3/);
+  assert.equal(tip.note, undefined);
   const plural = supplyTooltip('date', 'name', undefined, { ...run, strained: 2 }, ['bad', 'warn', 'good']);
   assert.equal(plural.rows[1].value, '50.00% · 2 divisions');
   assert.equal(supplyTooltip('date', 'name', undefined, null, []).rows[0].value, 'Not known');
+  assert.equal(supplyTooltip('date', 'name', undefined, null, []).note, 'Supply was not recorded at this time.');
   const zero = { ...run, noSupply: 0, strained: 0, inSupply: 0 };
   assert.equal(supplyTooltip('date', 'name', undefined, zero, []).rows[0].value, '0');
-  assert.match(supplyTooltip('date', 'name', undefined, zero, []).note!, /shares are undefined/);
+  assert.match(supplyTooltip('date', 'name', undefined, zero, []).note!, /No divisions/);
   const missing = { flagReason: 'Supplying read refused the native flag', flagPending: false };
   assert.deepEqual(supplyTooltip('date', 'name', missing, zero, []).countryFlag, missing);
   assert.deepEqual(supplyTooltip('date', 'name', missing, null, []).countryFlag, missing);

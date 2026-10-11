@@ -179,7 +179,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
     return {
       id: lane.id, label: labels.label, spans: lane.spans,
       identity: { label: tag === null ? lane.tag : looks.name(tag), countryFlag: tag === null
-        ? { flagReason: 'Native country identity not recorded at this hour.' } : { flag: looks.flag(tag),
+        ? { flagReason: 'Country unavailable at this time.' } : { flag: looks.flag(tag),
           flagPending: looks.flagPending?.(tag), flagReason: looks.flagReason?.(tag) } },
       pill: { text: labels.pill, color: run ? levelColour(run.level) : mix(tokens.surface, tokens.text, 0.25) },
       // Not a subject at the moment shown (released, not yet a subject, or not recorded): faded.
@@ -189,21 +189,21 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   }), [data, lanesData, laneTags, head, looks, palette, tokens.surface, tokens.text, unobserved]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!track) return <WidgetState kind="empty" icon="link" message="Load a campaign to see its subjects’ autonomy." />;
-  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the campaign's recorded branch." />;
-  if (groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   const reason = hourlyGroup ? selection.reason : filter.reason;
   if (reason) return <WidgetState kind="empty" message={reason} />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data || !identities) return <WidgetState kind="loading" label="Loading autonomy…" />;
   // Tables missing at every hour: not recorded, never "no subjects".
-  if (!data.recorded.length) return <WidgetState kind="unavailable" message="Subjects’ autonomy was not recorded in this campaign branch." />;
+  if (!data.recorded.length) return <WidgetState kind="unavailable" message="Subjects’ autonomy was not recorded." />;
   if (!lanesData.length) {
-    if (missingNativeSubjects) return <WidgetState kind="unavailable" message="Native country identities were not recorded for some autonomy histories; their absence cannot establish that the chosen countries had no subjects." />;
-    if (missingNativeOverlords) return <WidgetState kind="unavailable" message="Some overlord native identities were not recorded; the recording cannot establish whether the chosen countries had subjects in those hours." />;
+    if (missingNativeSubjects) return <WidgetState kind="unavailable" message="Subject data is unavailable for these countries." />;
+    if (missingNativeOverlords) return <WidgetState kind="unavailable" message="Subject data is unavailable for these countries." />;
     // Unknown membership that cut a lane away is said, never read as "no subjects".
-    return <WidgetState kind="empty" message={noLanesMessage(data, { firstHour: track.branch.firstHour, lastHour: track.branch.lastHour }, bySubject,
-      [...selection.tags ?? []].map(metadataName), membershipUnknownFor(chosen, bySubject, unobserved))} />;
+    return <WidgetState kind="empty" message={noLanesMessage(data, { firstHour: track.branch.firstHour, lastHour: track.branch.lastHour },
+      membershipUnknownFor(chosen, bySubject, unobserved))} />;
   }
 
   const byId = new Map(lanesData.map(lane => [lane.id, lane]));
@@ -212,7 +212,6 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
     return `${tag === null ? lane.tag : looks.name(tag)}: ${laneLabels(data, lane, head, unobserved, tag !== null).description}`;
   }).join('; ')}.`;
   return <div className="autonomy">
-    {missingNativeOverlords > 0 && <p>Some overlord native identities were not recorded; matching subjects is incomplete in those hours.</p>}
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label={`Autonomy of ${laneTags.map((tag, index) => tag === null ? lanesData[index].tag : looks.name(tag)).join(', ')}`} extent={extent} playhead={playhead} labelHour={head} preserveZoomOnExtentChange={options.grow === true} lanes={lanes}
       rowHeight={LANE_HEIGHT} showIcons={false} showNames={false} description={description} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
       active={active} revision={`${head}:${data.branchId}:${looks.revision}:${hover.revision}`}
@@ -224,17 +223,17 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
         const overlordTag = run?.overlord == null || identities.keyAt(run.overlord, hour) === null ? null : run.overlord;
         hover.ask(hour, [...(tag === null ? [] : [tag]), ...(overlordTag === null ? [] : [overlordTag])]);
         const named = hover.labelAt(hour);
-        const label = tag === null ? { name: 'Country name unavailable', flagReason: 'Native country identity not recorded at this hour.' } : named(tag);
+        const label = tag === null ? { name: 'Country name unavailable', flagReason: 'Country unavailable at this time.' } : named(tag);
         const name = label.name;
         if (!subject || !run) {
-          return { title: `${name} · ${dayLabel(hour)}`, countryFlag: label, rows: [{ label: 'Autonomy', value: tag === null ? 'Native country identity not recorded' : absentAt(data, hour, unobserved).text, tone: 'muted' }] };
+          return { title: `${name} · ${dayLabel(hour)}`, countryFlag: label, rows: [{ label: 'Autonomy', value: tag === null ? 'Country unavailable at this time.' : absentAt(data, hour, unobserved).text, tone: 'muted' }] };
         }
         const overlord = overlordTag == null ? null : named(overlordTag);
         const level = levelName(data.levels[run.level]);
         const rows: TooltipRow[] = [
           { label: 'Subject level', value: level, swatch: levelColour(run.level) },
           // An hour with an overlord the recording does not name may have hidden this one.
-          { label: 'Overlord', value: overlord?.name ?? (run.overlord !== null ? 'Native country identity not recorded' : inSpans(data.unidentified, hour) ? 'Not known at this hour' : 'None recorded'), countryFlag: overlord ?? undefined, tone: overlord ? undefined : 'muted' },
+          { label: 'Overlord', value: overlord?.name ?? (run.overlord !== null ? 'Country unavailable at this time.' : inSpans(data.unidentified, hour) ? 'Not known at this hour' : 'None recorded'), countryFlag: overlord ?? undefined, tone: overlord ? undefined : 'muted' },
           { label: run.highest ? 'Progress within the level' : 'Progress to the next level', value: formatProgress(run) },
           { label: 'Autonomy score', value: formatScore(data, run.scoreRaw), divider: true },
           { label: 'Moves down below', value: `${formatScore(data, run.lowerRaw)}${run.lowest ? ' · no lower level' : ''}` },

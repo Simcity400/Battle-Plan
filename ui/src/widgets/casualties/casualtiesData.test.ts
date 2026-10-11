@@ -1,3 +1,4 @@
+import { dayLabel } from '../../charts/draw.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CasualtyReply, CasualtySeries } from '../../generated/dashboard';
@@ -9,7 +10,7 @@ import { countryRaceItems } from '../../charts/race/countryRace.ts';
 import { barLength, raceMin, stepRace } from '../../charts/race/race.ts';
 import { butterflyScale } from '../../charts/butterfly/layout.ts';
 import { approachAcrossGap } from '../../charts/easing.ts';
-import { HOUR_EPOCH, formatDateTime } from '../../dashboard/calendar.ts';
+import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
 import '../../widgets/definitions.ts';
 import type { BoundTrack } from '../../dashboard/model';
 
@@ -48,9 +49,9 @@ test('unknown adds once, only to taken; unavailable aggregate never becomes zero
   const missing = casualtiesAt(casualtyIndex(reply), 125, true)[0];
   assert.equal(missing.taken, null); assert.equal(missing.dealt, 60n);
   assert.equal(casualtiesAt(casualtyIndex(reply), 125, false)[0].taken, 20n);
-  const tip = casualtyTooltip(missing, 'mod name', true, reply.unknownLabel);
-  assert(tip.note?.includes('across land, sea and air'));
-  assert(tip.note?.includes('cannot be recovered'));
+  const tip = casualtyTooltip(missing, 'mod name', reply.unknownLabel);
+  assert.doesNotMatch(tip.note ?? '', /across land, sea and air|hourly reading|As of/);
+  assert.equal(tip.note, 'Losses from unknown attackers are unavailable.');
 });
 
 test('a lost war marks an exact recorded subtotal without claiming a lower bound', () => {
@@ -58,7 +59,7 @@ test('a lost war marks an exact recorded subtotal without claiming a lower bound
   const row = casualtiesAt(casualtyIndex(validateCasualtyReply(reply)), 125, false)[0];
   assert.equal(formatCasualties(1234567n, row.atLeast), '† 1,234,567');
   assert.equal(casualtyRatio(row), '—');
-  const tooltip = casualtyTooltip(row, 'Full country name', false, reply.unknownLabel);
+  const tooltip = casualtyTooltip(row, 'Full country name', reply.unknownLabel);
   assert.equal(tooltip.rows[0].value, '† 60');
   assert.equal(tooltip.rows[2].label, 'Mod unknown losses');
   assert(tooltip.note?.includes(SUBTOTAL_NOTE));
@@ -88,9 +89,9 @@ test('taken race uses the same reply, ranks known taken, and keeps exact subtota
   assert.deepEqual(inclusive.map(entry => entry.tag), ['mod a|', 'mod b|']);
   assert.equal(inclusive[1].label, '1,010');
   assert.equal(snapshot.find(row => row.tag === 'mod c|')?.taken, null);
-  const tip = casualtyTooltip(snapshot[1], 'sampled country name', true, reply.unknownLabel, true);
+  const tip = casualtyTooltip(snapshot[1], 'sampled country name', reply.unknownLabel, true);
   assert.equal(tip.rows[1].value, '10'); assert.equal(tip.rows[2].value, '1,000');
-  assert(tip.note?.includes('Wars fought entirely while the recording was not running are not counted.'));
+  assert(tip.note?.includes('Some losses may be missing.'));
 });
 
 test('a wide native correction keeps its signed row, ranking and read while bars stay positive-only', () => {
@@ -125,11 +126,12 @@ test('a wide native correction keeps its signed row, ranking and read while bars
   assert.equal(butterflyScale(butterfly), 63);
   assert.equal(casualtyBarValue(null), null); assert.equal(casualtyBarValue(0n), 0);
   assert.equal(formatCasualties(0n), '0');
-  const tooltip = casualtyTooltip(corrected, 'name at supplying read', false, reply.unknownLabel);
+  const tooltip = casualtyTooltip(corrected, 'name at supplying read', reply.unknownLabel);
   assert.equal(tooltip.rows[0].value, '† −2');
   assert.equal(tooltip.rows[1].value, '† −18,446,744,073,709,551,614');
-  assert(tooltip.note?.includes('only positive amounts draw bars'));
-  assert(tooltip.note?.includes(formatDateTime(143)));
+  assert.doesNotMatch(tooltip.note ?? '', /positive amounts draw bars/);
+  assert.match(tooltip.note ?? '', /Ratio unavailable for corrections/);
+  assert.doesNotMatch(tooltip.note ?? '', /Read|reading|Hour 143/);
 });
 
 test('loss ratios require complete nonnegative totals while signed amounts remain exact', () => {
@@ -140,10 +142,10 @@ test('loss ratios require complete nonnegative totals while signed amounts remai
   assert.equal(casualtyRatio({ ...row, atLeast: true }), '—');
   for (const corrected of [{ ...row, dealt: -60n }, { ...row, taken: -20n }, { ...row, dealt: -60n, taken: -20n }]) {
     assert.equal(casualtyRatio(corrected), '—');
-    const tooltip = casualtyTooltip(corrected, 'country', false, 'Native unknown label');
+    const tooltip = casualtyTooltip(corrected, 'country', 'Native unknown label');
     assert.equal(tooltip.rows[0].value, formatCasualties(corrected.dealt));
-    assert.equal(tooltip.rows[4].value, formatCasualties(corrected.taken));
-    assert(tooltip.note?.includes('A loss ratio is not shown for signed corrections.'));
+    assert.equal(tooltip.rows[3].value, formatCasualties(corrected.taken));
+    assert(tooltip.note?.includes('Ratio unavailable for corrections.'));
   }
 });
 
@@ -159,10 +161,9 @@ test('hourly tooltip dates both a held value and the exact reading with kit read
   for (const hour of [119, 125]) {
     const base = HOUR_EPOCH + 1943 * 365 * 24;
     const row = { ...casualtiesAt(index, hour, false)[0], hour: base + hour, readHour: base + 119 };
-    const tip = casualtyTooltip(row, 'name', false, fixture().unknownLabel);
-    assert.match(tip.note!, /^As of /);
-    assert(tip.note?.includes('casualties update at each hourly reading.'));
-    assert(tip.note?.includes(formatDateTime(base + 119)));
+    const tip = casualtyTooltip(row, 'name', fixture().unknownLabel);
+    assert.doesNotMatch(tip.note ?? '', /As of|reading|Read/);
+    assert.equal(tip.subtitle, dayLabel(base + hour));
   }
 });
 test('gaps never carry points; identity changes break motion without inheriting totals', () => {
@@ -450,7 +451,7 @@ test('columnar payload refuses unsafe number deltas and missing final endpoints'
 });
 test('a branch gap is explained even for a country without an incomplete-history flag', () => {
   const row = casualtiesAt(casualtyIndex(fixture()), 125, false)[0];
-  assert(casualtyTooltip(row, 'name', false, 'Unknown', true).note?.includes('Wars fought entirely while the recording was not running are not counted.'));
+  assert(casualtyTooltip(row, 'name', 'Unknown', true).note?.includes('Some losses may be missing.'));
 });
 
 test('separate holders of a tag are chronological and cannot overlap', () => {

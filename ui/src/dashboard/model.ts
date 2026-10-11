@@ -146,6 +146,21 @@ export function resolveWindow(widget: WidgetSpec, track: BoundTrack, tracks: Bou
   return { firstHour: widgetDefinition(widget.kind)?.scope === 'history' ? lastHour - TRAILING_HOURS + 1 : lastHour, lastHour };
 }
 
+/** A time that shows each campaign's end, where widgets have their data: the whole campaign when
+ * the widget offers it (a moment widget then shows the last hour), else a pin on each campaign's
+ * last hour (its whole branch for a history widget). Opening hours are often still empty. */
+export function recordingEndTime(meta: { timeModes: readonly WidgetTime['mode'][]; scope: 'moment' | 'history' },
+  tracks: readonly { id: string; branch: HourWindow }[]): WidgetTime | null {
+  if (meta.timeModes.includes('campaign')) return { mode: 'campaign' };
+  if (!meta.timeModes.includes('pin')) return null;
+  const windows: Record<string, OffsetWindow> = {};
+  for (const track of tracks) {
+    const end = track.branch.lastHour - track.branch.firstHour;
+    windows[track.id] = { firstOffset: meta.scope === 'history' ? 0 : end, lastOffset: end };
+  }
+  return { mode: 'pin', windows };
+}
+
 export function pinTime(widget: WidgetSpec, tracks: BoundTrack[], position: number): WidgetTime {
   const windows: Record<string, OffsetWindow> = {};
   for (const track of widgetTracks(widget, tracks)) {

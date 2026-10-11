@@ -7,12 +7,12 @@ import type { OptionField, OptionValue } from '../../dashboard/options';
 import type { Growth } from './layout';
 
 export const SUNBURST_OPTIONS: readonly OptionField[] = [
-  { key: 'growth', section: 'options', label: 'Growth', hint: 'Share keeps the circle full as the parts grow; Fill sweeps round toward the whole amount of what is shown',
+  { key: 'growth', section: 'options', label: 'Growth', hint: 'Share shows proportions; Fill shows progress.',
     kind: 'choice', default: 'share', choices: [{ value: 'share', label: 'Share' }, { value: 'fill', label: 'Fill' }] },
-  { key: 'sliceLabels', section: 'options', label: 'Slice labels', hint: 'Names inside the slices where they fit', kind: 'toggle', default: true },
-  { key: 'legend', section: 'options', label: 'Side legend', hint: 'The innermost ring’s slices with their amounts and shares; a row zooms in', kind: 'toggle', default: true },
-  { key: 'breadcrumb', section: 'options', label: 'Breadcrumb', hint: 'The path to the slice zoomed into; a step zooms back to it', kind: 'toggle', default: true },
-  { key: 'dimming', section: 'options', label: 'Hover dimming', hint: 'Fades the slices unrelated to the one under the pointer', kind: 'toggle', default: true },
+  { key: 'sliceLabels', section: 'options', label: 'Slice labels', kind: 'toggle', default: true },
+  { key: 'legend', section: 'options', label: 'Side legend', kind: 'toggle', default: true },
+  { key: 'breadcrumb', section: 'options', label: 'Path', kind: 'toggle', default: true },
+  { key: 'dimming', section: 'options', label: 'Hover dimming', kind: 'toggle', default: true },
 ];
 
 /** A toggle for one level of a widget's hierarchy (every level can be switched off). */

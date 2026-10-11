@@ -8,11 +8,11 @@
 
 **Notable behaviour:**
 
-- Actual outcome dates and supplying observations stay separate. Exact actions use captured finalizer dates; derived cards say **by** and **Derived from what changed**. Failed captures retain their reason, withheld until its own supplying read. Earlier fallback cards can remain before that read.
+- Actual outcome dates and supplying observations stay separate. Exact actions use captured finalizer dates; estimated cards say **by** and show one **Estimated between** status. Missing outcomes say **Outcomes not recorded**. Earlier fallback cards can remain before that read.
 - Derived outcomes require the same native holders at both bounding reads and exclude cancelled subject relations.
 - Unknown war/action/taker/target facts stay explicit; giver never substitutes for target. Captured ordered actions, automatic/reduced outcomes and subject relationships remain distinct. Grouped war-end outcomes do not invent a conference identity.
-- Filters keep whole matching conferences, including all their actions/reasons. Dated gaps stay visible and never prove no conference. Range clips outcomes and gaps; backward seeks remove future cards immediately.
-- Width-fitted participants/targets retain every remainder on hover/focus and in complete accessible tooltips. Only drawn cards request dated country/state facts; missing names/flags preserve reasons.
+- Filters keep whole matching conferences, including all their actions. Dated gaps stay visible and never prove no conference. Range clips outcomes and gaps; backward seeks remove future cards immediately.
+- Width-fitted participants/targets retain every remainder on hover/focus and in complete accessible tooltips. Only drawn cards request dated country/state facts; missing state names use **State N**, while flags retain a quiet unavailable state.
 - LogList owns variable-height windowing, keyboard, motion and Jump. Live entry animation does not replay merely from scrolling. Jump targets the card's displayed exact/bounded date.
 
 **Files:** [PeaceDealsWidget.tsx](PeaceDealsWidget.tsx) renders shared LogList/FittedList cards; [peaceData.ts](peaceData.ts) groups, filters and projects rows/tooltips, with adjacent tests. Shared [usePeaceDeals.ts](../../dashboard/usePeaceDeals.ts) loads/validates. `peaceDeals.css`, `definition.ts` and `index.ts` own styling, settings and registration.

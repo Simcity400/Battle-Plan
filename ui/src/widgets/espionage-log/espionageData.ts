@@ -208,7 +208,7 @@ export function operationWording(at: OperationAt): { action: string; afterTarget
     case 'running': return { action: ' is running ', afterTarget: '' };
     case 'completed': return { action: ' completed ', afterTarget: '' };
     case 'disappeared': return { action: '’s ', afterTarget: ' ended' };
-    case 'unread': return { action: '’s ', afterTarget: ' has no recorded read at this hour' };
+    case 'unread': return { action: '’s ', afterTarget: ' is unavailable at this time' };
   }
 }
 export const preparationRatio = (at: OperationAt) => at.run?.preparationRatio == null ? null : at.run.preparationRatio / 100_000;
@@ -219,7 +219,7 @@ export const operationProgress = (at: OperationAt) => at.state === 'preparing' ?
 export function operationOutcome(at: OperationAt): string | null {
   if (at.state !== 'completed' && at.state !== 'disappeared') return null;
   const end = at.operation.end;
-  return end?.outcome?.descriptionUnrecorded ?? (end?.outcome?.descriptionRef ? 'Recorded outcome' : end?.outcomeUnrecorded ?? 'Unknown outcome');
+  return end?.outcome?.descriptionUnrecorded ? 'Description unavailable.' : end?.outcome?.descriptionRef ? 'Outcome' : 'Outcome not recorded.';
 }
 export function operationJumpHours(at: OperationAt, shownHour: number, rowHour?: number): number[] {
   const end = at.operation.end && at.operation.end.byHour <= shownHour ? (at.operation.end.completionHour ?? at.operation.end.byHour) : null;
@@ -238,44 +238,33 @@ export function operationTooltip(reply: EspionageLogReply, row: LogRow<Operation
   };
   const rows: TooltipRow[] = [
     countryRow('Owner', at.ownerTag), countryRow('Target', at.targetTag),
-    { label: 'Operation first observed', value: `by ${formatDateTime(at.operation.firstRead)}` },
+    { label: 'First seen', value: `by ${formatDateTime(at.operation.firstRead)}` },
     { label: 'Execution started', value: at.startHour === null ? 'Not recorded' : formatDateTime(at.startHour) },
     { label: 'Status', value: operationState(at) },
   ];
   const ended = at.state === 'completed' || at.state === 'disappeared';
-  const outcome = ended && at.operation.end?.outcome?.descriptionRef ? description ?? 'Loading recorded description...' : operationOutcome(at);
+  const outcome = ended && at.operation.end?.outcome?.descriptionRef ? description ?? 'Loading description…' : operationOutcome(at);
   if (outcome !== null) rows.push({ label: 'Outcome', value: outcome });
   const end = at.operation.end;
   if (end && (at.state === 'completed' || at.state === 'disappeared')) {
     rows.push({ label: at.state === 'completed' ? 'Completed' : 'Ended', value: end.completionHour === null ? `by ${formatDateTime(end.byHour)}` : formatDateTime(end.completionHour) });
-    if (end.outcome) rows.push({ label: 'Recorded description language', value: end.outcome.recordedLanguage },
-      { label: 'Bonus result', value: end.outcome.bonus ? 'Yes' : 'No' },
+    if (end.outcome) rows.push({ label: 'Bonus result', value: end.outcome.bonus ? 'Yes' : 'No' },
       { label: 'Detected', value: end.outcome.detected ? 'Yes' : 'No' });
   }
   if (current) {
     // Preparation percentages truncate to whole percent.
-    if (at.state === 'running') rows.push({ label: 'Execution progress', value: current.elapsedDays === null ? 'Not recorded (native elapsed-day sentinel)' : `${current.elapsedDays} / ${current.durationDays} days` });
-    rows.push({ label: 'Phases', value: current.currentPhase === null ? `${current.phaseCount} selected phases; current phase not recorded`
-      : `Phase ${current.currentPhase + 1} of ${current.phaseCount}; phase names not recorded` },
-      { label: 'Overall civilian preparation', value: current.preparationRatio === null ? 'Not recorded' : `${Math.trunc(current.preparationRatio / 1000)}%` },
-      { label: 'Equipment readiness', value: 'Not recorded' },
-      { label: 'Automatic commencement', value: current.autoCommence ? 'Enabled' : 'Disabled' },
-      { label: 'Automatic repeat', value: current.autoRepeat ? 'Enabled' : 'Disabled' },
+    if (at.state === 'running') rows.push({ label: 'Execution progress', value: current.elapsedDays === null ? 'Not recorded' : `${current.elapsedDays} / ${current.durationDays} days` });
+    rows.push({ label: 'Phases', value: current.currentPhase === null ? `${current.phaseCount} phases; current phase unknown`
+      : `Phase ${current.currentPhase + 1} of ${current.phaseCount}` },
+      { label: 'Preparation', value: current.preparationRatio === null ? 'Not recorded' : `${Math.trunc(current.preparationRatio / 1000)}%` },
+      { label: 'Auto-start', value: current.autoCommence ? 'Enabled' : 'Disabled' },
+      { label: 'Auto-repeat', value: current.autoRepeat ? 'Enabled' : 'Disabled' },
       // The slot count includes unassigned slots.
-      { label: 'Operative slots (including unassigned)', value: String(current.assignedSlots) });
-    if (current.operatives === null) rows.push({ label: 'Assigned operatives', value: 'Not recorded' });
-    else {
-      rows.push({ label: 'Assigned operatives', value: String(current.operatives.length) });
-      for (const [index, id] of current.operatives.entries()) {
-        const name = current.operativeNames?.[index];
-        rows.push({ label: `Operative ${id}`, value: name?.name === '' ? 'Unnamed operative' : name?.name ?? name?.unavailable ?? 'Name not recorded' });
-      }
+      { label: 'Operatives', value: `${current.operatives?.length ?? 'Unknown'} / ${current.assignedSlots}` });
+    for (const [index] of (current.operatives ?? []).entries()) {
+      const name = current.operativeNames?.[index];
+      rows.push({ label: 'Operative', value: name?.name === '' ? 'Unnamed operative' : name?.name ?? 'Name unavailable' });
     }
   } else rows.push({ label: 'Preparation, phases and assignments at this hour', value: 'Not recorded', tone: 'muted' });
-  if (type?.iconMissing) rows.push({ label: type.iconMissing, tone: 'muted' });
-  return [{ title: operationName(type), icon: type?.icon ?? undefined, rows,
-    note: end && (at.state === 'completed' || at.state === 'disappeared')
-      ? `Ending read ${formatDateTime(end.byHour)}. ${at.readHour === null ? 'Earlier operation values not recorded.' : `Operation values read ${formatDateTime(at.readHour)}.`}`
-      : at.readHour === null ? `The current operation read is missing. Gaps stay gaps. Country identities last read ${formatDateTime(at.countryHour)}.`
-        : `Values and country identities read ${formatDateTime(at.readHour)}. Names belong to the supplying read.` }];
+  return [{ title: operationName(type), icon: type?.icon ?? undefined, rows }];
 }

@@ -2,15 +2,17 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode, RefObject } from 'react';
 import { Icon } from '../../components/Icons';
 import { Popover, usePopover } from '../../components/Popover';
+import FollowControl from './FollowControl';
+export { default as FollowControl } from './FollowControl';
 import './drill.css';
 
 /** Hosts a widget's main view and one open breakdown. In the widget (the default)
  * the view slides across to the breakdown and ← Back returns; beside it, the
  * breakdown opens in a panel next to the widget that closes with ×, Esc or a click
  * elsewhere. Both share the header: the day shown, Follow playback and Pin as widget. */
-export default function DrillHost({ mode, open, title, day, following, canFollow, onClose, onFollow, onPin, anchor, returnFocus, main, children }: {
+export default function DrillHost({ mode, open, title, day, following, canFollow, onClose, onFollow, onPause, onPin, anchor, returnFocus, main, children }: {
   mode: 'inline' | 'popout'; open: boolean; title: string; day: string; following: boolean; canFollow: boolean;
-  onClose: () => void; onFollow: () => void; onPin?: () => void;
+  onClose: () => void; onFollow: () => void; onPause?: () => void; onPin?: () => void;
   /** The widget body the pop-out panel sits beside. */
   anchor: RefObject<HTMLElement | null>;
   /** Return to this chart after close only while focus still belongs to this drill. */
@@ -88,9 +90,7 @@ export default function DrillHost({ mode, open, title, day, following, canFollow
     {popout ? null : <button ref={back} type="button" className="button small quiet" onClick={requestClose}><Icon name="chevron-left" />Back</button>}
     <strong>{title}</strong>
     <span className="drill-day">{day}</span>
-    {canFollow && (following
-      ? <span className="pill drill-following" data-tooltip="The breakdown moves with playback">Following playback</span>
-      : <button type="button" className="button small" onClick={onFollow}>Follow playback</button>)}
+    {canFollow && <FollowControl following={following} onFollow={onFollow} onPause={onPause} />}
     {onPin && <button type="button" className="icon-button small" aria-label="Pin as widget" data-tooltip="Pin as widget" onClick={onPin}><Icon name="pin" /></button>}
     {popout && <button type="button" className="icon-button small" aria-label="Close breakdown" onClick={requestClose}><Icon name="close" /></button>}
   </div>;

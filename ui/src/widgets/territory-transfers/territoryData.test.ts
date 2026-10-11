@@ -8,10 +8,11 @@ import { countryIdentityKey } from '../../dashboard/countryIdentity.ts';
 import { Lineage } from '../../dashboard/identity.ts';
 import { validatePeaceDealsReply } from '../../dashboard/peaceDealsData.ts';
 import type { PeaceDeal, PeaceDealsReply, PeaceItem, PeaceTransferGraph } from '../../generated/dashboard';
-import { buildTransferDiagram, chosenConference, conferenceChoiceId, conferenceToken, decodeTransfers, transferAmount, transferColourPlan, transferCutoff, transferDiagramDescription, transferProvenance,
-  transfersThrough, transferNodeCountries, transferLookPlan, transferGapCount, transferGapWindow, victoryPointNote, visibleConferences } from './territoryData.ts';
+import { buildTransferDiagram, chosenConference, conferenceChoiceId, conferenceToken, decodeTransfers, transferAmount, transferColourPlan, transferCutoff, transferDiagramDescription, transferConferenceLabel,
+  transfersThrough, transferNodeCountries, transferLookPlan, transferGapCount, transferGapWindow, visibleConferences } from './territoryData.ts';
 import { transferSelected, transferSelection, transferSelectionToken } from './transferDrillData.ts';
 import { definition, OPTIONS } from './definition.ts';
+import { formatDateTime } from '../../dashboard/calendar.ts';
 
 test('Territory transfers metadata keeps the whole recorded country roster', () => {
   assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
@@ -57,6 +58,14 @@ const capturedDeal = (id: string, hour: number, publicationHour: number, items: 
 const reply = (deals: PeaceDeal[]): PeaceDealsReply => ({ branchId: 'branch', derived: true, deals, transfers: graph(deals.flatMap(deal => deal.items)),
   unobserved: { settlements: [], conferences: [], ownership: [], wars: [], subjects: [], governments: [], existence: [], victoryPoints: [] }, warnings: [] });
 
+test('conference choices preserve event bounds and war names without acquisition reasons', () => {
+  const bounded = deal('bounded', 20, []);
+  bounded.warName = 'Modded war';
+  bounded.captureUnavailable = 'Finalizer capture was truncated';
+  assert.equal(transferConferenceLabel(bounded), `by ${formatDateTime(20)} · Modded war`);
+  assert.equal(transferConferenceLabel(capturedDeal('exact', 15, 20, [])), `${formatDateTime(15)} · Unknown war`);
+});
+
 test('full colour witnesses wait for publication independently of actual transfer dates', () => {
   const conference = capturedDeal('delayed', 112, 136, [item(1, 112, '3', false, 'A', 'B')]);
   const data = decodeTransfers(reply([conference]));
@@ -93,8 +102,9 @@ test('actual Transfer caller plans hidden actors identically across campaign, co
       export const flagReadSpec = () => ({}); export const flagReadMetadata = () => ({ flagPending: false });`,
     '/dashboard/useStateNamesAt.ts': 'export const useStateNamesAt = () => () => ({ name: null, missing: null });',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ surface: '#111111', text: '#dddddd', countryColours: 'fixed' });`,
-    '/charts/flow/FlowDiagram.tsx': 'export default () => null;',
+    '/charts/flow/FlowDiagram.tsx': 'export default props => props.message ?? null;',
     '/charts/drill/DrillHost.tsx': 'export default props => props.main;',
+    '/widgets/territory-transfers/TransferDrill.tsx': 'export default () => "Transfer details";',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
@@ -103,6 +113,8 @@ test('actual Transfer caller plans hidden actors identically across campaign, co
         const path = id.replaceAll('\\', '/');
         // Preserve the real shared planner used by the widget; only its artwork hook is synthetic.
         if (path.endsWith('/dashboard/countryLooks.ts')) return source.slice(0, source.indexOf('export function useCountryLooks(')) + replacements['/dashboard/countryLooks.ts'];
+        // SSR supplies a measured diagram width without mounting a canvas.
+        if (path.endsWith('/territory-transfers/TerritoryTransfersWidget.tsx')) return source.replace('useState<number | null>(null)', 'useState<number | null>(8)');
         return Object.entries(replacements).find(([suffix]) => path.endsWith(suffix))?.[1];
       } }] });
   try {
@@ -121,6 +133,28 @@ test('actual Transfer caller plans hidden actors identically across campaign, co
         runtime: { client: {}, tracks: [track], clock: { getHour: () => 200, getSnapshot: () => ({ hoursPerSecond: 1, playing: false }) } }, active: true, onDiagnostics() {} } as unknown as WidgetProps));
       assert.deepEqual(host.__transferStyleReads[0], wanted, `${conference ?? 'campaign'}, range=${range}, publicationGap=${publicationGap}: hidden A retains its event-date input`);
     }
+    track.branch.gaps = [];
+    host.__transferFixture = { track, data }; host.__transferStyleReads = [];
+    const pinned = renderToStaticMarkup(createElement(TerritoryTransfersWidget, { widget: { kind: 'territory-transfers', trackIds: ['track'],
+      time: { mode: 'pin', windows: { track: { firstOffset: 100, lastOffset: 100 } } }, options: { show: 'parts' } },
+      runtime: { client: {}, tracks: [track], clock: { getHour: () => 200, getSnapshot: () => ({ hoursPerSecond: 1, playing: false }) } },
+      active: true, onDiagnostics() {} } as unknown as WidgetProps));
+    assert.doesNotMatch(pinned, /Transfer breakdown|Pin as widget/);
+    assert.match(pinned, /Transfer details/);
+    assert.match(pinned, /Follow playback/);
+    assert.ok(pinned.includes(formatDateTime(200)));
+    const emptyConference = deal('empty', 150, []);
+    const emptyProps = { widget: { kind: 'territory-transfers', trackIds: ['track'], time: { mode: 'campaign' },
+      options: { scope: 'conference', conference: conferenceToken('campaign', 'branch', 'empty') } },
+      runtime: { client: {}, tracks: [track], clock: { getHour: () => 200, getSnapshot: () => ({ hoursPerSecond: 1, playing: false }) } },
+      active: true, onDiagnostics() {} } as unknown as WidgetProps;
+    host.__transferFixture = { track, data: reply([emptyConference]) }; host.__transferStyleReads = [];
+    assert.match(renderToStaticMarkup(createElement(TerritoryTransfersWidget, emptyProps)), /No peace territory transfers recorded yet/);
+    const unavailableConference = { ...emptyConference, captureUnavailable: 'Synthetic finalizer diagnostics', captureUnavailableHour: 150 };
+    host.__transferFixture = { track, data: reply([unavailableConference]) };
+    const unavailable = renderToStaticMarkup(createElement(TerritoryTransfersWidget, emptyProps));
+    assert.match(unavailable, /No transfers could be identified/);
+    assert.doesNotMatch(unavailable, /No peace territory transfers recorded yet|Synthetic finalizer diagnostics/);
   } finally { await vite.close(); delete host.__transferFixture; delete host.__transferStyleReads; }
 });
 
@@ -137,7 +171,7 @@ test('Live counts transfer occurrences at their after read and never shows a fut
   assert.equal(whole[0].stateCount, 3, 'a state transferred twice counts twice');
   assert.equal(whole[0].victoryPoints, null);
   assert.equal(transferAmount(whole, 'victoryPoints'), 'Not recorded');
-  assert.match(transferProvenance(whole[0].states), /1 exact transfer.*2 transfers derived/);
+  assert.deepEqual(whole[0].states.map(state => state.derived), [false, true, true]);
   assert.equal(whole[0].states[0].victoryPointsReadHour, 11);
 });
 
@@ -152,9 +186,6 @@ test('VP mode withholds the entire unknown link before summed-other grouping', (
   assert.equal(vps.total, 0);
   assert.equal(vps.missingVictoryPoints, 1);
   assert.equal(vps.nonpositiveVictoryPoints, 2);
-  assert.match(victoryPointNote(vps)!, /1 link lacks recorded victory points/);
-  assert.match(victoryPointNote(vps)!, /2 links have zero or negative recorded victory points/);
-  assert.equal(victoryPointNote(states), null);
 });
 
 test('Live withholds VPs until their supplying read and refreshes on that read without a new transfer', () => {
@@ -260,7 +291,7 @@ test('an occurrence whose provenance was not recorded cannot become exact by def
   const record = reply([deal('conference', 10, [item(1, 10, '10')])]);
   record.deals[0].items = [];
   const data = decodeTransfers(record);
-  assert.match(transferProvenance(data.campaign[0].states), /provenance not recorded/);
+  assert.equal(data.campaign[0].states[0].derived, null);
 });
 
 test('missing settlement, conference, ownership and war input spans remain gaps without duplicate counting', () => {

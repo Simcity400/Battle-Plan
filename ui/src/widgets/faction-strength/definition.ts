@@ -23,10 +23,11 @@ export const OPTIONS: readonly OptionField[] = [
 
 export const definition = {
   kind: 'faction-strength', version: 1, title: 'Faction strength', category: 'Diplomacy', icon: 'shield',
-  description: 'Every recorded faction’s combined factories or territory, as a race or lines over time.',
+  description: 'Faction factories and territory over time.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 },
   countries: { max: Number.MAX_SAFE_INTEGER, aggregate: true, factions: true },
+  factionColours: true,
   defaultCountries: { kind: 'factions', count: Number.MAX_SAFE_INTEGER, membership: 'hour' },
   options: OPTIONS,
 } as const satisfies WidgetMeta;

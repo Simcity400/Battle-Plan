@@ -59,7 +59,6 @@ export function warTooltip(input: WarTooltipInput): TooltipContent {
   const labelled = inGap ? null : hour > war.lastHour ? labelObservationAt(war, hour) : observation;
   const sides: [string, string] = [sideLabel('viewpoint', labelled, country), sideLabel('opponent', labelled, country)];
   const title = absent === 'Not started' ? absent : labelled?.name.known ? labelled.name.text : 'Not recorded';
-  const reason = labelled?.name.reason ?? (inGap ? 'No war name was observed at this hour.' : undefined);
   const rows: TooltipRow[] = [
     { label: 'Started', value: `${war.startedBy ? 'by ' : ''}${day(war.firstHour)}` },
     { label: 'Ended', value: endLabel(war, war.endedBy, until, branchLast, unobserved, day) },
@@ -69,13 +68,13 @@ export function warTooltip(input: WarTooltipInput): TooltipContent {
     const run = !inGap && participant.run && participant.run.firstHour <= hour && hour <= participant.run.lastHour ? participant.run : null;
     const outside = inGap ? 'Not recorded' : 'Not in this war at this hour';
     const side = !run ? outside : singularSide(sideLabel(run.side, labelled, country));
-    rows.unshift({ label: 'War', value: title }, { label: 'Side', value: side });
+    rows.unshift({ label: 'Side', value: side });
     rows.push({ label: 'Joined', value: run ? `${run.joinedBy ? 'by ' : ''}${day(run.firstHour)}` : outside },
       { label: 'Left', value: run ? endLabel(run, run.leftBy, until, branchLast, unobserved, day, true) : outside });
     const events = participant.capitulations ?? war.capitulations.filter(cap => cap.tag === participant.tag).map(cap => cap.hour);
     const caps = run ? events.filter(at => at <= until && run.firstHour <= at && at <= run.lastHour) : [];
     for (const cap of caps) rows.push({ label: 'Capitulated', value: day(cap) });
-    if (!caps.length) rows.push({ label: 'Capitulation', value: !run ? outside : missingCaps ? 'Not recorded during gaps' : 'None recorded' });
+    if (!caps.length && (!run || missingCaps)) rows.push({ label: 'Capitulation', value: !run ? outside : 'Not recorded during gaps' });
   } else {
     const count = !absent && observation ? new Set([...observation.viewpointSide, ...observation.opposingSide]).size : null;
     rows.push({ label: 'Participants', value: count == null ? absent ?? 'Not recorded' : String(count), tone: count == null ? 'muted' : undefined });
@@ -87,10 +86,9 @@ export function warTooltip(input: WarTooltipInput): TooltipContent {
   }
   const notes = [
     losses && !participant && !absent ? `Casualties as recorded ${day(losses[0])} – ${day(losses[1])}.` : null,
-    missingCaps ? 'Capitulation not recorded during the unavailable hours.' : null,
-    'Start and end dates describe overview observations; join and leave dates describe participant side runs.',
+    missingCaps ? 'Some capitulations may be missing.' : null,
   ].filter(Boolean).join(' ');
   const participantName = participant ? country(participant.tag) : null;
   return { title: participantName ? participantName.name : title, countryFlag: participantName ?? undefined, subtitle: `${participant ? title : 'War overview'} · ${day(hour)}`,
-    rows, description: participantName?.known === false ? 'The country name could not be read at this hour.' : reason ?? undefined, note: notes };
+    rows, note: notes };
 }

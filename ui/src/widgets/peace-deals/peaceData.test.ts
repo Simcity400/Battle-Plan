@@ -49,7 +49,7 @@ test('one card per conference newest first, Live cutoff, whole campaign and hone
   assert.deepEqual(peaceRowsAt(log, 20).map(row => row.hour), [10]);
   assert.equal(peaceRowsAt(log, null).length, 2);
   assert.match(peaceDealLabel(data.deals[0]), /^by .*War name not recorded$/);
-  assert.match(peaceDescription(log.rows[0]), /Derived from what changed/);
+  assert.match(peaceDescription(log.rows[0]), /Estimated between/);
   assert.equal(peaceDealHour(data.deals[1]), 30);
 });
 
@@ -83,7 +83,7 @@ test('unrecorded category includes unnamed actions and empty failed captures wit
   const choices = peaceActionChoices(log);
   const unknown = choices.find(choice => choice.label === 'Action not recorded')!;
   const known = choices.find(choice => choice.label === 'A content-defined action')!;
-  const zero = choices.find(choice => choice.label === 'No captured actions')!;
+  const zero = choices.find(choice => choice.label === 'No actions recorded')!;
   assert.notEqual(unknown.value, known.value);
   assert.deepEqual(filterPeaceLog(log, [contentKey(unknown.value)]).rows.map(row => row.item.kind === 'card' && row.item.card.deal.id), ['empty', 'unnamed']);
   assert.deepEqual(filterPeaceLog(log, [contentKey(known.value)]).rows.map(row => row.item.kind === 'card' && row.item.card.deal.id), ['named']);
@@ -145,10 +145,10 @@ test('captured subject results use exact country chips without inventing a named
   assert.equal(rows.length, 3);
   assert.equal(peaceActionName(rows[0]), 'A game action');
   assert.equal(rows[0].chips[0].tag, 'original-operand');
-  assert.equal(peaceActionName(rows[1]), 'Captured outcomes; action not recorded');
+  assert.equal(peaceActionName(rows[1]), 'Outcome; action unknown');
   assert.equal(rows[1].winner, 'winner/opaque');
   assert.deepEqual(rows[1].chips.map(chip => [chip.tag, chip.hour, chip.derived, chip.note]),
-    [['newly-allocated', 19, false, 'Captured subject relationship']]);
+    [['newly-allocated', 19, false, 'Subject']]);
   assert.equal(rows[2].winner, null);
   assert.equal(rows[2].chips[0].tag, undefined);
   assert.equal(rows[2].chips[0].missing, 'Subject country not recorded');
@@ -156,15 +156,15 @@ test('captured subject results use exact country chips without inventing a named
 
 test('failed capture is visible even without fallback items', () => {
   const card = deal(); card.items = []; card.captureUnavailable = 'Unread finalizer operands';
-  assert.equal(captureLabel(card), 'Not recorded: Unread finalizer operands');
-  assert.match(peaceDescription(preparePeaceLog(reply([card])).rows[0]), /Not recorded: Unread finalizer operands/);
+  assert.equal(captureLabel(card), 'Outcomes not recorded');
+  assert.doesNotMatch(peaceDescription(preparePeaceLog(reply([card])).rows[0]), /Unread finalizer operands/);
 });
 test('spoken card descriptions identify grouped and unattributed outcomes', () => {
   const grouped = deal('grouped'); grouped.observation = 'conferenceNotRecorded';
   const unattributed = deal('unattributed'); unattributed.observation = 'conferenceUnknown';
   const descriptions = preparePeaceLog(reply([grouped, unattributed])).rows.map(peaceDescription);
-  assert.match(descriptions[0], /Conference not recorded; grouped war-end outcomes/);
-  assert.match(descriptions[1], /Conference attribution not recorded/);
+  assert.match(descriptions[0], /War-end outcomes/);
+  assert.match(descriptions[1], /Conference unknown/);
   assert.doesNotMatch(peaceDescription(preparePeaceLog(reply()).rows[0]), /Conference (?:not recorded|attribution not recorded)/);
 });
 test('unresolved country operands never borrow giver tags, and captured automatic outcomes precede later fallback', () => {
@@ -312,12 +312,12 @@ test('full peace rows retain dated flag status and refused state names beyond fi
   const card = { deal: conference, actions: peaceActions(conference), hour: 20, knownAt: 20, by: true };
   card.actions[0].chips.push({ key: 'country-target', hour: 19, tag: 'target', derived: false });
   const rows = peaceTooltipRows(card, hour => tag => ({ name: `${tag}@${hour}`, flagReason: `native flag refusal@${hour}`, flagPending: tag === 'target' }),
-    chip => chip.state == null ? `target@${chip.hour}` : `State ${chip.state}`, chip => chip.state == null ? null : 'Unsupported native mod state-name form');
+    chip => chip.state == null ? `target@${chip.hour}` : `State ${chip.state}`);
   for (const tag of [...conference.winners, ...conference.losers]) assert.equal(rows.find(row => row.label === `${tag}@20`)?.countryFlag?.flagReason, 'native flag refusal@20');
   assert.equal(rows.find(row => row.value === 'Modded action')?.countryFlag?.flagReason, 'native flag refusal@20');
   assert.deepEqual(rows.find(row => row.label === 'target@19')?.countryFlag,
     { name: 'target@19', flagReason: 'native flag refusal@19', flagPending: true });
-  assert.match(rows.find(row => row.label === 'State 1')!.value!, /Unsupported native mod state-name form/);
+  assert.equal(rows.find(row => row.label === 'State 1')!.value, undefined);
 });
 
 
@@ -342,11 +342,11 @@ test('actual Peace HTML and fitted remainders retain canonical flag and state re
     host.__peaceFixture = { track, data: reply() };
     const html = renderToStaticMarkup(createElement(PeaceDealsWidget, { widget: { trackIds: ['track'], time: { mode: 'campaign' }, options: { chips: false } },
       runtime: { client: {}, tracks: [track], clock: { getHour: () => 20 } }, active: true, onDiagnostics() {} } as unknown as WidgetProps));
-    assert.match(html, /role="img" aria-label="Flag loading: Native flag refusal at 20"/, 'mounted taker uses the canonical accessible flag');
-    assert.match(html, /data-tooltip="[^"]*Unsupported native mod state-name form/, 'a fitted-away state retains its named refusal');
-    assert.match(html, /Flag not available: Native flag refusal at 20/, 'fitted-away participants retain flag refusal text');
+    assert.match(html, /role="img" aria-label="Flag loading"/, 'mounted taker uses the canonical accessible flag');
+    assert.doesNotMatch(html, /data-tooltip="[^"]*Unsupported native mod state-name form/, 'a fitted-away state hides its internal refusal');
+    assert.match(html, /Flag unavailable/, 'fitted-away participants retain flag refusal text');
     const spoken = host.__peaceTips!.map(tooltipText).join('; ');
-    assert.match(spoken, /Flag loading: Native flag refusal at 20/);
-    assert.match(spoken, /Unsupported native mod state-name form/);
+    assert.doesNotMatch(spoken, /Native flag refusal/);
+    assert.doesNotMatch(spoken, /Unsupported native mod state-name form/);
   } finally { await vite.close(); delete host.__peaceFixture; delete host.__peaceTips; }
 });

@@ -57,6 +57,7 @@ test('produced full drill keeps corrections, independent residual, unknown total
   assert.deepEqual(drill.at('MOD', 40)?.values, [12, -2, null]);
   assert.equal(countryPartsRemainder(drill.at('MOD', 40)), 7n);
   assert.equal(drill.readHour('MOD', 40), 32);
+  assert.doesNotMatch(drill.at('MOD', 40)?.note ?? '', /Read /);
   assert.equal(drill.readHour('MOD', 90), null);
   const bands = drill.bands('MOD', { firstHour: 8, lastHour: 127 });
   assert.deepEqual(bands.map(runs => runAt(runs, 40)?.value), [12, -2, 0, 7]);
@@ -67,7 +68,7 @@ test('produced full drill keeps corrections, independent residual, unknown total
   const tooltip = [...drill.tooltip('MOD', 40, 'Name at supplying read', new Map())!][0];
   assert.equal(tooltip.rows.find(row => row.label === 'correction type')?.value, '-2');
   assert.equal(tooltip.rows.find(row => row.label === 'unresolved type')?.value, 'Not known');
-  assert.equal(tooltip.rows.find(row => row.label === 'Other / not identified')?.value, '7');
+  assert.equal(tooltip.rows.find(row => row.label === 'Other')?.value, '7');
   assert.deepEqual(producedRequest('branch', { tags: ['MOD'] }, 'week', 'variant', ['mod type'], true),
     { branchId: 'branch', tags: ['MOD'], top: null, measure: 'week', grouping: 'variant', included: ['mod type'], refits: true });
 });

@@ -93,19 +93,19 @@ test('tooltips date the original read after range and membership clipping, and n
   const tip = experienceTooltip(REPLY, countries(130, 140), BRANCHES, 'change', 135, label, 2000);
   assert.match(tooltipText(tip), /Recorded country: Army −1/);
   assert.doesNotMatch(tip.note ?? '', /Read |read once a day/);
-  assert.match(tip.note ?? '', /24 hours earlier/);
-  assert.match(tip.note ?? '', /spent.*cap/);
+  assert.match(tip.note ?? '', /Net change includes spending/);
+  assert.equal(tip.subtitle, undefined);
   assert.equal(tip.rows[0].countryFlag?.flag, 'flag-at-hover');
   assert.equal(tip.rows[1].value, '+0.5');
   assert.equal(tip.rows[2].value, '0');
   assert.equal(tip.rows[3].value, 'Not in this recording');
-  assert.equal(tip.title, experienceTooltip(REPLY, countries(), BRANCHES, 'change', 124, label, 2000).title);
+  assert.notEqual(tip.title, experienceTooltip(REPLY, countries(), BRANCHES, 'change', 124, label, 2000).title);
 });
 
 test('unknown changes and absent hours say why without inventing zero; short tooltips retain spoken content', () => {
   const unknown = experienceTooltip(REPLY, countries().slice(0, 1), ['army'], 'change', 100, label, 2000);
   assert.equal(unknown.rows[0].value, 'Not known');
-  assert.match(unknown.note ?? '', /No read exactly a day earlier/);
+  assert.match(unknown.note ?? '', /A full day of data is unavailable/);
   const gap = experienceTooltip(REPLY, countries(), BRANCHES, 'banked', 160, label, 2000);
   assert.equal(gap.rows[0].value, 'Not recorded at this time');
   const short = experienceTooltip(REPLY, countries(), BRANCHES, 'change', 135, label, 100);
@@ -146,10 +146,10 @@ test('daily gain preserves capped awards and exact wider sums separately from ne
   const plotted = [{ ...countries()[0], reads: reply.series[0].reads }];
   const tip = experienceTooltip(reply, plotted, ['army'], 'gain', 124, label, 2000);
   assert.equal(tip.rows[0].value, '16');
-  assert.match(tip.note ?? '', /Positive experience awards.*before spending and the bank cap/);
+  assert.match(tip.note ?? '', /Gain before spending/);
   const missing = experienceTooltip(reply, plotted, ['army'], 'gain', 100, label, 2000);
   assert.equal(missing.rows[0].value, 'Not recorded');
-  assert.match(missing.note ?? '', /not fully observed/);
+  assert.match(missing.note ?? '', /A full day of data is unavailable/);
   awarded.gain.airRaw = '-1';
   assert.throws(() => validateExperienceReply(reply), /malformed/);
 });
@@ -166,20 +166,22 @@ test('experience end names belong to the last drawn holder and never a later nam
   const replaced = experienceLineEnd('opaque!tag', reads, runs, 'army', 'banked', 100, 219, named)!;
   assert.equal(replaced.name, 'Later holder');
   assert.equal(experienceLineEnd('opaque!tag', reads, runs, 'army', 'banked', 150, 160, named), null);
-  for (const [value, status] of [[undefined, 'name loading'], [null, 'name not recorded'], [FAILED_FACT, 'name request failed']] as const) {
+  for (const value of [undefined, null, FAILED_FACT] as const) {
     const unavailable = experienceLineEnd('opaque!tag', reads, runs, 'army', 'banked', 100, 160, () => value)!;
-    assert.equal(unavailable.name, `Country (${status})`);
+    assert.equal(unavailable.name, value === undefined ? 'Loading name…' : 'Country name unavailable');
     assert.equal(experienceName('opaque!tag', value), unavailable.name);
     assert.equal(unavailable.raw, '0');
   }
+  assert.equal(experienceName('opaque!tag', ''), '');
+  assert.equal(experienceName('opaque!tag', 'opaque!tag'), 'opaque!tag');
 });
 
-test('experience tooltip keeps dated name failures distinct from missing and pending names', () => {
-  for (const [nameRead, status] of [[undefined, /name is loading/], [null, /name was not recorded/], [FAILED_FACT, /name request failed/]] as const) {
+test('experience tooltip keeps dated flag state without name-status notes', () => {
+  for (const nameRead of [undefined, null, FAILED_FACT]) {
     const named = (tag: string) => ({ name: tag, known: nameRead === undefined ? undefined : false,
       nameFailed: nameRead === FAILED_FACT, flagPending: false, flagReason: 'No recorded flag' });
     const tip = experienceTooltip(REPLY, countries(), ['army'], 'banked', 124, named, 2000);
-    assert.match(tip.note!, status);
+    assert.equal(tip.note, '');
     assert.deepEqual(tip.rows[0].countryFlag, named('opaque!tag'));
     assert.equal(tip.rows[0].value, '0');
   }
@@ -273,17 +275,18 @@ test('experience holder projection keeps all 5000 synthetic identities', () => {
 });
 
 
-test('staggered comparison reads retain each supplying date beside exact values', () => {
+test('staggered comparison reads keep exact values without read-date notes', () => {
   const plotted = [100, 104].map((hour, index) => ({ tag: ['A', 'B'][index],
     reads: [read(hour, 120, [index === 0 ? '32768' : '65536', '0', '0'], null, true)],
     readHours: [hour], colours, recorded: true }));
   const tip = experienceTooltip(REPLY, plotted, ['army'], 'banked', 110, tag => ({ name: `Country ${tag}`, known: true }), 2000);
   assert.equal(tip.title, formatDateTime(110));
+  assert.deepEqual(tip.rows.map(row => row.label), ['Country A: Army', 'Country B: Army']);
   assert.deepEqual(tip.rows.map(row => row.value), ['1', '2']);
-  assert.ok(tip.note?.includes(`Country A: Read ${formatDateTime(100)}.`));
-  assert.ok(tip.note?.includes(`Country B: Read ${formatDateTime(104)}.`));
+  assert.doesNotMatch(tip.note ?? '', /Read/);
   const gap = experienceTooltip(REPLY, [{ ...plotted[0], reads: [] }, plotted[1]], ['army'], 'banked', 110,
     tag => ({ name: `Country ${tag}`, known: true }), 2000);
   assert.equal(gap.rows[0].value, 'Not recorded at this time');
-  assert.doesNotMatch(gap.note ?? '', /Country A: Read/);
+  assert.equal(gap.rows[1].value, '2');
+  assert.doesNotMatch(gap.note ?? '', /Read/);
 });

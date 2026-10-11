@@ -10,7 +10,7 @@ import type { Measure } from './stabilityData';
  * the `stability-parts` product. A part is known only where it was recorded. */
 
 /** The part no recorded source explains, as the tooltip names it. */
-export const REMAINDER_LABEL = 'Other / not identified';
+export const REMAINDER_LABEL = 'Other';
 /** Parts past the palette are shown together under this name. */
 export const SMALLER_LABEL = 'Smaller parts';
 

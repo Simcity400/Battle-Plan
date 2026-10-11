@@ -59,9 +59,9 @@ export default function AirSuperiorityRegionWidget(props: WidgetProps) {
   const legend = air.legend;
   if (air.needsViewpoint) return <WidgetState kind="empty" icon="plane" message="Choose a dashboard country or a viewpoint in the widget settings." />;
   if (!air.track) return <WidgetState kind="empty" icon="plane" message="Load a campaign to see its air superiority." />;
-  if (!air.window) return <WidgetState kind="unavailable" message="This time is outside the recorded branch." />;
+  if (!air.window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (air.data?.available === false) return <WidgetState kind="unavailable" />;
-  if (air.error) return <WidgetState kind="error" message={air.error} onRetry={air.retry} />;
+  if (air.error) return <WidgetState kind="error" detail={air.error} onRetry={air.retry} />;
   if (!air.data) return <WidgetState kind="loading" label="Loading air superiority…" />;
   if (order === 'name' && !air.choices) return <WidgetState kind="loading" label="Loading air regions…" />;
   if (air.readHour == null) return <WidgetState kind="unavailable" message="Not recorded at this time." />;
@@ -69,7 +69,7 @@ export default function AirSuperiorityRegionWidget(props: WidgetProps) {
   return <div className="air-regions" data-glide={air.glides} style={air.glideStyle}>
     <Legend label="Air superiority sides" items={legend} always windowed />
     <WindowedRows items={rows} rowHeight={38} fit minRowHeight={16} className="air-region-scroll" label="Air superiority by region"
-      empty={<WidgetState kind="empty" message={knownEmpty ? 'No regions have a score or assigned wings at this time.' : 'No active regions could be established at this time.'} />}>
+      empty={<WidgetState kind="empty" message={knownEmpty ? 'No regions have a score or assigned wings at this time.' : 'Air activity is unknown at this time.'} />}>
       {({ item: { region, view } }) => {
         const width = widths.get(region.id);
         return <div className="air-region-row" {...tips.rowProps(region.id)}>

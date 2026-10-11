@@ -11,8 +11,14 @@ import type ProductionDrill from './ProductionDrill';
 
 function followButton(node: ReactNode): (() => void) | undefined {
   if (Array.isArray(node)) return node.map(followButton).find(Boolean);
-  if (!isValidElement<{ children?: ReactNode; onClick?: () => void }>(node)) return undefined;
-  return node.type === 'button' && node.props.children === 'Follow playback' ? node.props.onClick : followButton(node.props.children);
+  if (!isValidElement<{ children?: ReactNode; onClick?: () => void; onFollow?: () => void }>(node)) return undefined;
+  return node.type === 'button' && node.props.children === 'Follow playback' ? node.props.onClick : typeof node.props.onFollow === 'function' ? node.props.onFollow : followButton(node.props.children);
+}
+
+function pauseButton(node: ReactNode): (() => void) | undefined {
+  if (Array.isArray(node)) return node.map(pauseButton).find(Boolean);
+  if (!isValidElement<{ children?: ReactNode; onPause?: () => void }>(node)) return undefined;
+  return node.props.onPause ?? pauseButton(node.props.children);
 }
 
 test('registered production pins publish local body dates and native aliases, retaining the original request basis', async () => {
@@ -80,7 +86,7 @@ test('registered production pins publish local body dates and native aliases, re
     assert.equal(state.chip!.props.label!.name, 'X at 105');
     const savedTime = props.widget.time;
     props.widget.time = { mode: 'pin', windows: {} }; state.drill = undefined;
-    assert.match(render(), /chosen moment is not in this campaign/);
+    assert.match(render(), /Choose another time in widget settings/);
     assert.equal(state.chip!.props.label, null);
     assert.equal(state.chip!.props.hour, null);
     assert.equal(state.drill, undefined, 'a missing saved date cannot display the branch end');
@@ -91,21 +97,27 @@ test('registered production pins publish local body dates and native aliases, re
     state.hour = 113; followButton(node)!(); render();
     assert.equal(state.drill!.hour, 113);
     assert.equal(state.chip!.props.label!.name, 'Y at 113');
+    pauseButton(node)!(); state.hour = 114; render();
+    assert.equal(state.drill!.hour, 113, 'pausing shared Follow holds the displayed date');
+    followButton(node)!(); state.hour = 113; render();
     state.overview = false; render();
     assert.equal(state.drill!.hour, 113, 'the saved native breakdown does not depend on the original tag overview');
     state.overview = true;
     state.hour = 116; render(); assert.equal(state.chip!.props.label, null);
     state.hour = 119; render(); assert.equal(state.chip!.props.label, null);
     const oldPick = state.drill!.onPick;
+    const oldPause = pauseButton(node)!;
     props.runtime = { ...props.runtime, client: { ...props.runtime.client } }; render();
     assert.equal(state.drill!.hour, 105, 'a client handoff masks local state before cleanup');
+    oldPause(); render(); assert.equal(state.drill!.hour, 105, 'a stale Follow callback cannot pick a date from the previous source');
     oldPick(112); render(); assert.equal(state.drill!.hour, 105);
     const hiddenPick = state.drill!.onPick;
-    props.active = false; render(); hiddenPick(112); render();
+    const hiddenPause = pauseButton(node)!;
+    props.active = false; render(); hiddenPick(112); hiddenPause(); render();
     assert.equal(state.drill!.hour, 105, 'an inactive widget rejects callbacks from its visible render');
     props.active = true; render();
     props.widget = { ...props.widget, options: { ...props.widget.options, productionCountry: datedCountryToken({ campaign: 'other', branch: 'b', tag: 'X', originOffset: 5 }) } };
-    assert.match(render(), /another country, campaign or branch/);
+    assert.match(render(), /Saved country selection unavailable. Open the breakdown again/);
     assert.equal(state.chip!.props.label, null);
     assert.equal(state.requests.length, 0);
   } finally { delete globals.__productionPin; delete globals.__productionHooks; await vite.close(); }

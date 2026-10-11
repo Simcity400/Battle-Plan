@@ -5,17 +5,16 @@ import { formatDateTime } from '../../dashboard/calendar.ts';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { nameKey } from '../../dashboard/countryFacts.ts';
 import type { NameAt } from '../../dashboard/countryFacts';
-import { transferAmount, transferProvenance } from './territoryData.ts';
-import type { TransferLink, TransferMeasure, TransferOccurrence } from './territoryData';
+import { transferAmount } from './territoryData.ts';
+import type { TransferLink, TransferOccurrence } from './territoryData';
 
 export interface TransferStateAt { hour: number; state: number }
 export interface TransferTipRequest { countries: NameAt[]; states: TransferStateAt[] }
 interface TooltipOptions {
-  measure: TransferMeasure; note?: string;
+  note?: string;
   nodeName: (node: SummedNode) => string;
   labelAt: (hour: number) => CountryLabel;
   stateNameAt: (hour: number, state: number) => string;
-  stateMissingAt?: (hour: number, state: number) => string | null;
   ask: (request: TransferTipRequest) => void;
 }
 
@@ -36,17 +35,15 @@ function occurrenceRows(state: TransferOccurrence, options: TooltipOptions): Too
   const hour = state.dates.afterHour;
   const giver = options.labelAt(state.fromCountry.hour)(state.fromCountry.tag);
   const taker = options.labelAt(state.toCountry.hour)(state.toCountry.tag);
-  const date = state.derived === false ? `Captured ${formatDateTime(hour)}`
-    : state.derived ? `By ${formatDateTime(hour)}; compared with ${formatDateTime(state.dates.beforeHour)}`
-      : `Read dates ${formatDateTime(state.dates.beforeHour)} to ${formatDateTime(hour)}; provenance not recorded`;
+  const date = state.derived === false ? formatDateTime(hour)
+    : state.derived ? `By ${formatDateTime(hour)}`
+      : `${formatDateTime(state.dates.beforeHour)} – ${formatDateTime(hour)}`;
   return [
     { label: options.stateNameAt(hour, state.state), value: date, divider: true, strong: true },
-    ...(options.stateMissingAt?.(hour, state.state) ? [{ label: `Not recorded: ${options.stateMissingAt(hour, state.state)}`, tone: 'muted' as const, indent: true }] : []),
     { label: 'Giver', value: giver.name, countryFlag: giver, indent: true },
     { label: 'Taker', value: taker.name, countryFlag: taker, indent: true },
-    { label: 'Victory points', value: state.victoryPointsPending ? state.victoryPointsReadHour == null ? 'Read hour not recorded'
-      : `Not recorded at the playhead; read ${formatDateTime(state.victoryPointsReadHour)}` : state.victoryPoints == null ? 'Not recorded'
-      : `${usNumber.format(BigInt(state.victoryPoints))}${state.victoryPointsReadHour == null ? '; read hour not recorded' : `; read ${formatDateTime(state.victoryPointsReadHour)}`}`, indent: true },
+    { label: 'Victory points', value: state.victoryPointsPending || state.victoryPoints == null ? 'Not available at this time'
+      : usNumber.format(BigInt(state.victoryPoints)), indent: true },
   ];
 }
 
@@ -63,11 +60,10 @@ function transfersTooltip(title: string, links: readonly TransferLink[], options
   const states = links.flatMap(link => [...link.states].reverse());
   options.ask(transferTipRequest(states));
   const total: TooltipRow[] = [
-    { label: 'Transferred state occurrences', value: transferAmount(links, 'states'), strong: true },
+    { label: 'Transfers', value: transferAmount(links, 'states'), strong: true },
     { label: 'Victory points', value: transferAmount(links, 'victoryPoints') },
   ];
-  const head = { title, countryFlag, subtitle: `Ribbon size: ${options.measure === 'states' ? 'state count' : 'victory points'}`,
-    note: [transferProvenance(states), options.note].filter(Boolean).join('. ') || undefined };
+  const head = { title, countryFlag, note: options.note };
   return { ...head, scrollable: true, scrollId, rows: [...total, ...states.flatMap(state => occurrenceRows(state, options))] };
 }
 

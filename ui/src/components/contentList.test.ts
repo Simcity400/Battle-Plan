@@ -32,6 +32,7 @@ test('catalogue search keeps saved absent choices removable and refuses unstorab
   const absent = filterContent(choices, 'absent')[0];
   assert.equal(absent.label, 'Saved choice unavailable');
   assert.equal(absent.hint, 'Key: absent\nNot in this campaign.');
+  assert.equal(contentChoices([{ value: 'absent', label: 'Saved readable name' }], ['absent'])[0].label, 'Saved readable name');
   assert.equal(absent.unavailable, undefined);
   assert.equal(toggleContentSet('absent', absent.value, Number.MAX_SAFE_INTEGER), '');
   assert.ok(choices.find(row => row.value === 'bad token')?.unavailable);

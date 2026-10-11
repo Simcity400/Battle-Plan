@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { EspionageLogReply, EspionageOperationRun, EspionageOperationEnd } from '../../generated/dashboard';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { createServer } from 'vite';
+import type { WidgetProps } from '../../dashboard/definitions';
+import type { LogListProps } from '../../charts/log/LogList';
+import type { EspionageLogReply, EspionageOperationRun, EspionageOperationEnd, OperationDescriptionRef } from '../../generated/dashboard';
 import { operationAt, operationName, operationChoices, operationJumpHours, operationRows, operationTooltip as flaggedOperationTooltip, preparationRatio, executionRatio, operationProgress, operationOutcome, operationWindowIndex, operationWindowIdentity, operationWindows, windowedOperationRows, validateEspionageLogReply } from './espionageData.ts';
 import { entryAt } from '../../dashboard/reads.ts';
 import { contentKey } from '../../dashboard/options.ts';
@@ -18,6 +23,110 @@ const fixture = (): EspionageLogReply => ({ branchId: '1', window: 0, windows: [
   types: [{ key: 'mod operation/été', name: 'Opération des étoiles', icon, iconMissing: null }], operations: [{ definitionToken: 42, id: 'handle:10', firstRead: 10, startHour: 12, startKnownAt: 12,
     runs: [{ ...run(10, 11), durationDays: 0, startHour: null, elapsedDays: null }, run(12, 20), run(25, 30)], end: null }] });
 const filter = { types: [], country: () => true, role: 'owner', from: null, live: true, runningOrder: 'start' } as const;
+
+test('operation rows retain a fallback picture and progress while stating status once', async () => {
+  const data = fixture();
+  data.types[0].icon = null;
+  data.types[0].iconMissing = 'Raw missing asset reason';
+  data.windows = [{ firstHour: 10, lastHour: 30 }];
+  const host = globalThis as typeof globalThis & { __operationLog?: LogListProps<ReturnType<typeof operationAt> & {}> };
+  const replacements: Record<string, string> = {
+    '/widgets/espionage-log/useEspionageLog.ts': `export const useEspionageLog = (_widget, runtime) => ({ track: runtime.tracks[0], data: ${JSON.stringify(data)}, retry() {} });
+      export const useEspionageWindows = () => ({ data: new Map([[0, ${JSON.stringify(data)}]]), errors: new Map(), retry() {} });`,
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
+    '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
+    '/charts/log/LogList.tsx': `import { createElement } from 'react'; export default props => {
+      globalThis.__operationLog = props; return createElement('div', null, props.rows.map(row => createElement('div', { key: row.key }, props.renderRow(row)))); };`,
+  };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'operation-row-fixture', enforce: 'pre',
+      transform: (_source, id) => { const key = Object.keys(replacements).find(key => id.endsWith(key)); return key ? replacements[key] : undefined; },
+    }] });
+  try {
+    const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/espionage-log/EspionageLogWidget.tsx');
+    const props = { widget: { id: 'operations', kind: 'espionage-log', trackIds: ['main'], countries: { kind: 'all' },
+      time: { mode: 'follow' }, options: { chips: false } }, runtime: { client: {}, clock: { getHour: () => 18 }, tracks: [{
+        id: 'main', axisOffset: 0, branch: { id: '1', firstHour: 10, lastHour: 30 }, source: { id: 'synthetic', revision: '1' },
+      }] }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
+    const html = renderToStaticMarkup(createElement(Widget, props));
+    assert.match(html, /class="art-fallback"/);
+    assert.match(html, /class="progress-meter/);
+    assert.equal((html.match(/running/gi) ?? []).length, 1);
+    assert.doesNotMatch(html, /is-missing|>\?</);
+    assert.doesNotMatch(html, /espionage-type|Raw missing asset reason/);
+    const log = host.__operationLog!;
+    const columns = typeof log.columns === 'function' ? log.columns(log.rows![0]) : log.columns;
+    assert.equal(columns, 'var(--space-6) minmax(0, 2fr) minmax(0, 1fr)');
+  } finally {
+    delete host.__operationLog;
+    await vite.close();
+  }
+});
+
+test('a rejected operation description shows a short error and retains its detail in diagnostics', async () => {
+  const data = fixture();
+  data.windows = [{ firstHour: 10, lastHour: 30 }];
+  data.operations[0].end = { ...ending(25, 20, 'completed'), outcomeUnrecorded: null,
+    outcome: { bonus: false, detected: false, recordedLanguage: 'synthetic_language',
+      descriptionRef: { hour: 25, id: '1', owner: 1, sequence: null }, descriptionUnrecorded: null, descriptionRequiredBytes: '26' } };
+  const row = operationRows(data, 25, filter)[0];
+  const host = globalThis as typeof globalThis & {
+    __operationTooltipRow?: typeof row;
+    __operationDescription?: { reference: OperationDescriptionRef; text: string; detail?: string };
+    __operationDescriptionReady?: () => void;
+    __operationEffects?: (() => void | (() => void))[];
+    __operationLog?: LogListProps<typeof row.item>;
+  };
+  host.__operationTooltipRow = row;
+  const replacements: Record<string, string> = {
+    '/widgets/espionage-log/useEspionageLog.ts': `export const useEspionageLog = (_widget, runtime) => ({ track: runtime.tracks[0], data: ${JSON.stringify(data)}, retry() {} });
+      export const useEspionageWindows = () => ({ data: new Map([[0, ${JSON.stringify(data)}]]), errors: new Map(), retry() {} });`,
+    '/dashboard/operationDescription.ts': 'export const loadOperationDescription = async () => { throw new Error("Private backend failure"); };',
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
+    '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
+    '/charts/log/LogList.tsx': 'export default props => { globalThis.__operationLog = props; return null; };',
+  };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'operation-description-fixture', enforce: 'pre',
+      transform(source, id) {
+        const key = Object.keys(replacements).find(key => id.endsWith(key));
+        if (key) return replacements[key];
+        if (id.endsWith('/espionage-log/EspionageLogWidget.tsx')) return 'const recordEffect = effect => { globalThis.__operationEffects.push(effect); };\n' + source
+          .replace('useState<LogRow<OperationAt> | null>(null)', 'useState(globalThis.__operationTooltipRow)')
+          .replace(/  const \[description, setDescription\] = useState[^\n]+;/,
+            `  const description = globalThis.__operationDescription;
+              const setDescription = value => { globalThis.__operationDescription = value; globalThis.__operationDescriptionReady?.(); };`)
+          .replaceAll('useEffect(() =>', 'recordEffect(() =>');
+      },
+    }] });
+  let dispose: void | (() => void) = undefined;
+  try {
+    const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/espionage-log/EspionageLogWidget.tsx');
+    let diagnostics: readonly string[] = [];
+    const props = { widget: { id: 'descriptions', kind: 'espionage-log', trackIds: ['main'], countries: { kind: 'all' },
+      time: { mode: 'follow' }, options: { chips: false } }, runtime: { client: {}, clock: { getHour: () => 25 }, tracks: [{
+        id: 'main', axisOffset: 0, branch: { id: '1', firstHour: 10, lastHour: 30 }, source: { id: 'synthetic', revision: '1' },
+      }] }, active: true, onDiagnostics: (warnings: readonly string[]) => { diagnostics = warnings; } } as unknown as WidgetProps;
+    const render = () => { host.__operationEffects = []; return renderToStaticMarkup(createElement(Widget, props)); };
+    render();
+    const loaded = new Promise<void>(resolve => { host.__operationDescriptionReady = resolve; });
+    dispose = host.__operationEffects![0]();
+    await loaded;
+    render();
+    const tooltip = host.__operationLog!.tooltip!(row)[0];
+    assert.equal(tooltip.rows.find(item => item.label === 'Outcome')?.value, 'Couldn’t load description.');
+    assert.doesNotMatch(JSON.stringify(tooltip), /Private backend failure/);
+    host.__operationEffects!.at(-1)!();
+    assert.ok(diagnostics.includes('Private backend failure'));
+  } finally {
+    dispose?.();
+    for (const key of ['__operationTooltipRow', '__operationDescription', '__operationDescriptionReady', '__operationEffects', '__operationLog'] as const) delete host[key];
+    await vite.close();
+  }
+});
+
 const operationTooltip = (reply: EspionageLogReply, row: Parameters<typeof flaggedOperationTooltip>[1], name: (tag: string | null) => string, description?: string) =>
   flaggedOperationTooltip(reply, row, tag => ({ name: name(tag) }), description);
 
@@ -50,8 +159,8 @@ test('mod operation names and art survive content choices and tooltips without a
   const tip = operationTooltip(reply, row, tag => tag ?? 'Unknown')[0];
   assert.equal(tip.title, 'Opération des étoiles');
   assert.equal(tip.icon, icon);
-  assert.equal(tip.rows.find(row => row.label === 'Overall civilian preparation')?.value, '35%');
-  assert.ok(tip.rows.some(row => row.value === 'Name not recorded'));
+  assert.equal(tip.rows.find(row => row.label === 'Preparation')?.value, '35%');
+  assert.ok(tip.rows.some(row => row.value === 'Name unavailable'));
   assert.equal(tip.rows.find(row => row.label === 'Outcome'), undefined);
   assert.equal(tip.rows.find(row => row.label === 'Execution progress')?.value, '2 / 8 days');
   assert.equal(executionRatio(row.item), .25);
@@ -107,9 +216,9 @@ test('repeat, phases, duration and slot changes are dated values in one operatio
   assert.equal(before[0].id, after[0].id);
   assert.equal(before[0].hour, 12); assert.equal(after[0].hour, 16);
   const values = (row: typeof before[0]) => operationTooltip(reply, row, tag => tag ?? 'Unknown')[0].rows;
-  const labels = ['Automatic repeat', 'Phases', 'Execution progress', 'Operative slots (including unassigned)'];
-  assert.deepEqual(labels.map(label => values(before[0]).find(row => row.label === label)?.value), ['Disabled', 'Phase 1 of 4; phase names not recorded', '2 / 8 days', '3']);
-  assert.deepEqual(labels.map(label => values(after[0]).find(row => row.label === label)?.value), ['Enabled', 'Phase 2 of 6; phase names not recorded', '2 / 9 days', '5']);
+  const labels = ['Auto-repeat', 'Phases', 'Execution progress', 'Operatives'];
+  assert.deepEqual(labels.map(label => values(before[0]).find(row => row.label === label)?.value), ['Disabled', 'Phase 1 of 4', '2 / 8 days', '2 / 3']);
+  assert.deepEqual(labels.map(label => values(after[0]).find(row => row.label === label)?.value), ['Enabled', 'Phase 2 of 6', '2 / 9 days', '2 / 5']);
   assert.equal(after[0].item.operation.end, null);
 });
 
@@ -164,16 +273,14 @@ test('a missing definition name is a recording gap and later lexical data is nev
 test('operative slots include unassigned slots while missing assigned IDs never become zero', () => {
   const reply = fixture();
   const values = () => operationTooltip(reply, operationRows(reply, 18, filter)[0], tag => tag ?? 'Unknown')[0].rows;
-  assert.equal(values().find(row => row.label === 'Operative slots (including unassigned)')?.value, '3');
-  assert.equal(values().find(row => row.label === 'Assigned operatives')?.value, '2');
-  assert.deepEqual(values().filter(row => row.label?.startsWith('Operative ')).map(row => [row.label, row.value]), [
-    ['Operative slots (including unassigned)', '3'], ['Operative 123', 'Name not recorded'], ['Operative 456', 'Name not recorded'],
-  ]);
+  assert.equal(values().find(row => row.label === 'Operatives')?.value, '2 / 3');
+  assert.equal(values().find(row => row.label === 'Assigned operatives'), undefined);
+  assert.deepEqual(values().filter(row => row.label === 'Operative').map(row => row.value), ['Name unavailable', 'Name unavailable']);
+  assert.ok(!values().some(row => /^Operative [0-9]/.test(row.label)));
   reply.operations[0].runs[1].operatives = [];
-  assert.equal(values().find(row => row.label === 'Operative slots (including unassigned)')?.value, '3');
-  assert.equal(values().find(row => row.label === 'Assigned operatives')?.value, '0');
+  assert.equal(values().find(row => row.label === 'Operatives')?.value, '0 / 3');
   reply.operations[0].runs[1].operatives = null;
-  assert.equal(values().find(row => row.label === 'Assigned operatives')?.value, 'Not recorded');
+  assert.equal(values().find(row => row.label === 'Operatives')?.value, 'Unknown / 3');
   assert.equal(values().filter(row => /^Operative \d/.test(row.label ?? '')).length, 0);
 });
 
@@ -207,7 +314,7 @@ test('Live prioritises current operations; disappearance is dated by its confirm
   assert.equal(done.hour, 16); assert.equal(done.by, true);
   assert.equal(done.item.state, 'disappeared');
   assert.deepEqual(operationJumpHours(done.item, 18), [10, 16]);
-  assert.equal(operationTooltip(reply, done, tag => tag ?? 'Unknown')[0].rows.find(row => row.label === 'Outcome')?.value, 'Outcome not recorded');
+  assert.equal(operationTooltip(reply, done, tag => tag ?? 'Unknown')[0].rows.find(row => row.label === 'Outcome')?.value, 'Outcome not recorded.');
 });
 
 test('row dates resolve changing country tags and names within the same operation', () => {
@@ -246,21 +353,21 @@ test('execution uses the supplying read and native sentinels stay unknown', () =
   assert.equal(operationProgress(operationAt(reply, reply.operations[0], 20)!), .25);
   assert.equal(operationProgress(operationAt(reply, reply.operations[0], 24)!), null);
   assert.equal(operationProgress(operationAt(reply, reply.operations[0], 25)!), null);
-  assert.equal(operationTooltip(reply, operationRows(reply, 25, filter)[0], tag => tag ?? 'Unknown')[0].rows.find(row => row.label === 'Execution progress')?.value, 'Not recorded (native elapsed-day sentinel)');
+  assert.equal(operationTooltip(reply, operationRows(reply, 25, filter)[0], tag => tag ?? 'Unknown')[0].rows.find(row => row.label === 'Execution progress')?.value, 'Not recorded');
 });
 
-test('one end-outcome adapter shows captured text or its reason only after the end', () => {
+test('one end-outcome adapter shows stored text or an availability status only after the end', () => {
   const reply = fixture();
   reply.operations[0].end = ending(25, 20, 'completed');
   assert.equal(operationOutcome(operationAt(reply, reply.operations[0], 20)!), null);
-  assert.equal(operationOutcome(operationAt(reply, reply.operations[0], 25)!), 'Outcome not recorded');
+  assert.equal(operationOutcome(operationAt(reply, reply.operations[0], 25)!), 'Outcome not recorded.');
   reply.operations[0].id = '1:10';
   reply.operations[0].end.outcome = { bonus: false, detected: true, recordedLanguage: 'synthetic_language', descriptionRef: { hour: 25, id: '1', owner: 1, sequence: null }, descriptionUnrecorded: null, descriptionRequiredBytes: '26' };
   reply.operations[0].end.outcomeUnrecorded = null;
-  assert.equal(operationOutcome(operationAt(validateEspionageLogReply(reply), reply.operations[0], 25)!), 'Recorded outcome');
+  assert.equal(operationOutcome(operationAt(validateEspionageLogReply(reply), reply.operations[0], 25)!), 'Outcome');
   const row = operationRows(reply, 25, filter)[0];
   assert.equal(operationTooltip(reply, row, tag => tag ?? 'Unknown', 'Synthetic captured outcome')[0].rows.find(row => row.label === 'Outcome')?.value, 'Synthetic captured outcome');
-  assert.equal(operationTooltip(reply, row, tag => tag ?? 'Unknown')[0].rows.find(row => row.label === 'Recorded description language')?.value, 'synthetic_language');
+  assert.equal(operationTooltip(reply, row, tag => tag ?? 'Unknown')[0].rows.find(row => row.label === 'Recorded description language')?.value, undefined);
   const malformed = fixture(); malformed.operations[0].runs[0].preparationRatio = 100001;
   assert.throws(() => validateEspionageLogReply(malformed), /malformed/);
 });
@@ -284,11 +391,11 @@ test('completion-only operations retain the exact date, sequence and stored flag
   assert.deepEqual(operationJumpHours(row.item, 25), [22]);
   const tooltip = operationTooltip(recorded, row, tag => tag ?? 'Unknown')[0];
   assert.equal(tooltip.rows.find(row => row.label === 'Completed')?.value, 'Hour 22');
-  assert.equal(tooltip.rows.find(row => row.label === 'Outcome')?.value, 'Stored effect description refused: acquisition budget exceeded');
-  assert.equal(tooltip.rows.find(row => row.label === 'Recorded description language')?.value, 'synthetic_language');
+  assert.equal(tooltip.rows.find(row => row.label === 'Outcome')?.value, 'Description unavailable.');
+  assert.equal(tooltip.rows.find(row => row.label === 'Recorded description language')?.value, undefined);
   assert.equal(tooltip.rows.find(row => row.label === 'Bonus result')?.value, 'Yes');
   assert.equal(tooltip.rows.find(row => row.label === 'Detected')?.value, 'No');
-  assert.equal(tooltip.note, 'Ending read Hour 25. Earlier operation values not recorded.');
+  assert.equal(tooltip.note, undefined);
   assert.equal(operationRows(recorded, 25, { ...filter, from: 23 }).length, 0);
   reply.operations[0].end!.typeKey = null;
   assert.equal(operationTooltip(validateEspionageLogReply(reply), operationRows(reply, 25, filter)[0], tag => tag ?? 'Unknown')[0].title, 'Operation name unavailable');
@@ -346,7 +453,7 @@ test('paged recorded descriptions stay on their ending read and cannot leak into
   const before = operationRows(checked, 18, filter)[0];
   assert.equal(operationTooltip(checked, before, () => 'Synthetic', 'Future text')[0].rows.find(row => row.label === 'Outcome'), undefined);
   const ended = operationRows(checked, 30, filter)[0];
-  assert.equal(operationOutcome(ended.item), 'Recorded outcome');
+  assert.equal(operationOutcome(ended.item), 'Outcome');
   assert.equal(operationTooltip(checked, ended, () => 'Synthetic', 'Exact client text')[0].rows.find(row => row.label === 'Outcome')?.value, 'Exact client text');
   operation.end.outcome!.descriptionRef!.hour = 26;
   assert.throws(() => validateEspionageLogReply(reply), /ending read/);
@@ -358,10 +465,10 @@ test('assigned names and empty native names retain their exact slot order', () =
   ];
   const checked = validateEspionageLogReply(reply); const row = operationRows(checked, 18, filter)[0];
   const tooltip = operationTooltip(checked, row, () => 'Synthetic')[0];
-  assert.equal(tooltip.rows.find(row => row.label === 'Operative slots (including unassigned)')?.value, '3');
-  assert.equal(tooltip.rows.find(row => row.label === 'Assigned operatives')?.value, '2');
-  const names = tooltip.rows.filter(row => /^Operative [0-9]+$/.test(row.label));
-  assert.deepEqual(names.map(row => row.label), ['Operative 123', 'Operative 456']);
+  assert.equal(tooltip.rows.find(row => row.label === 'Operatives')?.value, '2 / 3');
+  assert.equal(tooltip.rows.find(row => row.label === 'Assigned operatives'), undefined);
+  const names = tooltip.rows.filter(row => row.label === 'Operative');
+  assert.deepEqual(names.map(row => row.label), ['Operative', 'Operative']);
   assert.deepEqual(names.map(row => row.value), ['Authored operative', 'Unnamed operative']);
   reply.operations[0].runs[1].operativeNames![0].id = '456';
   assert.throws(() => validateEspionageLogReply(reply), /malformed/);
@@ -429,17 +536,17 @@ test('ending values use the actual supplying read before a clipped daily window'
   assert.equal(rows.length, 1); assert.equal(rows[0].item.readHour, 112);
   assert.equal(rows[0].item.run?.preparationRatio, 25000);
   const tooltip = operationTooltip(checked, rows[0], () => 'Synthetic')[0];
-  assert.equal(tooltip.rows.find(row => row.label === 'Overall civilian preparation')?.value, '25%');
-  assert.equal(tooltip.rows.find(row => row.label === 'Phases')?.value, '3 selected phases; current phase not recorded');
-  assert.equal(tooltip.rows.find(row => row.label === 'Operative slots (including unassigned)')?.value, '1');
-  assert.equal(tooltip.rows.find(row => row.label === 'Assigned operatives')?.value, '1');
-  assert.deepEqual(tooltip.rows.filter(row => /^Operative [0-9]+$/.test(row.label)).map(row => [row.label, row.value]), [['Operative 77', 'Recorded operative']]);
-  assert.equal(tooltip.note, 'Ending read Hour 136. Operation values read Hour 112.');
+  assert.equal(tooltip.rows.find(row => row.label === 'Preparation')?.value, '25%');
+  assert.equal(tooltip.rows.find(row => row.label === 'Phases')?.value, '3 phases; current phase unknown');
+  assert.equal(tooltip.rows.find(row => row.label === 'Operatives')?.value, '1 / 1');
+  assert.equal(tooltip.rows.find(row => row.label === 'Assigned operatives'), undefined);
+  assert.deepEqual(tooltip.rows.filter(row => row.label === 'Operative').map(row => [row.label, row.value]), [['Operative', 'Recorded operative']]);
+  assert.equal(tooltip.note, undefined);
   // Missing original evidence remains missing; nearby clipped values are not a substitute.
   reply.operations[0].runs.shift();
   const unknown = operationRows(validateEspionageLogReply(reply), 147, filter)[0];
   assert.equal(unknown.item.run, null); assert.equal(unknown.item.readHour, null);
-  assert.equal(operationTooltip(reply, unknown, () => 'Synthetic')[0].rows.find(row => row.label === 'Overall civilian preparation'), undefined);
+  assert.equal(operationTooltip(reply, unknown, () => 'Synthetic')[0].rows.find(row => row.label === 'Preparation'), undefined);
 });
 
 test('a content revision releases held names for the same requested metadata window', () => {

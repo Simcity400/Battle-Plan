@@ -142,11 +142,11 @@ export function operativeLabelHour(row: OperativeRow, shownHour: number): number
 }
 export function departureText(row: OperativeRow): string | null {
   return row.departed && row.entry.departedHour !== null
-    ? `${row.entry.departedReason ?? 'Left (reason not recorded)'} by ${formatDateTime(row.entry.departedHour)}` : null;
+    ? `${row.entry.departedReason === 'Left (reason not recorded)' ? 'Left' : row.entry.departedReason ?? 'Left'} by ${formatDateTime(row.entry.departedHour)}` : null;
 }
 export interface OperativeMoment { kind: 'joined' | 'captured' | 'departed'; hour: number; label: string }
 export function operativeMoments(row: OperativeRow): OperativeMoment[] {
-  const moments: OperativeMoment[] = [{ kind: 'joined', hour: row.entry.joinedHour, label: `Jump to presence by ${formatDateTime(row.entry.joinedHour)}` }];
+  const moments: OperativeMoment[] = [{ kind: 'joined', hour: row.entry.joinedHour, label: `Jump to first seen ${formatDateTime(row.entry.joinedHour)}` }];
   const captured = new Set<number>();
   for (const run of row.entry.runs) {
     if (run.firstHour > row.run.firstHour) break;
@@ -168,12 +168,11 @@ export function operativeTooltip(reply: OperativeRosterReply, row: OperativeRow,
     } };
   };
   const rows: TooltipRow[] = [
-    countryRow('Roster country', row.country), countryRow('Owner', value.ownerTag),
+    ...(row.country === value.ownerTag ? [countryRow('Country', row.country)] : [countryRow('Roster country', row.country), countryRow('Owner', value.ownerTag)]),
     { label: 'Skill', value: value.skill === null ? 'Unknown' : String(value.skill) },
     { label: 'Experience', value: value.experienceText ?? 'Unknown' },
     { label: 'Assignment', value: value.assignmentName ?? 'Unknown' },
     ...(value.assignmentDuration === null ? [] : [{ label: 'Assignment duration', value: value.assignmentDuration }]),
-    ...(row.assignmentReadHour === null || row.assignmentReadHour === row.readHour ? [] : [{ label: 'Assignment read', value: formatDateTime(row.assignmentReadHour) }]),
     ...(value.targetTag === null ? [] : [countryRow('Target', value.targetTag)]),
     { label: 'Captured', value: value.captured === null ? 'Unknown' : value.captured ? 'Yes' : 'No' },
     ...(value.captured === true ? [
@@ -181,10 +180,7 @@ export function operativeTooltip(reply: OperativeRosterReply, row: OperativeRow,
       { label: 'Captured on', value: value.capturedHour === null ? 'Unknown' : formatDateTime(value.capturedHour) },
     ] : []),
     { label: 'Present', value: `by ${formatDateTime(row.entry.joinedHour)}` },
-    ...(row.departed && row.entry.departedHour !== null ? [{ label: row.entry.departedReason ?? 'Left (reason not recorded)', value: `by ${formatDateTime(row.entry.departedHour)}` }] : []),
+    ...(row.departed && row.entry.departedHour !== null ? [{ label: row.entry.departedReason === 'Left (reason not recorded)' ? 'Left' : row.entry.departedReason ?? 'Left', value: `by ${formatDateTime(row.entry.departedHour)}` }] : []),
   ];
-  const notes = [...[value.nameMissing, value.portraitMissing, value.experienceMissing, value.assignmentMissing, value.assignmentIconMissing]
-      .map(index => index === null ? null : reply.reasons[index])];
-  if (row.departed) notes.push(`Last operative details read ${formatDateTime(row.readHour)}; country identities last observed ${formatDateTime(labelHour)}. Departure cause is only shown when recorded.`);
-  return { title: operativeName(value), icon: value.portrait === null ? undefined : reply.artwork[value.portrait], rows, note: notes.filter(Boolean).join(' ') || undefined };
+  return { title: operativeName(value), icon: value.portrait === null ? undefined : reply.artwork[value.portrait], rows };
 }

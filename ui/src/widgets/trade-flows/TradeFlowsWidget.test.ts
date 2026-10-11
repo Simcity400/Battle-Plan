@@ -71,14 +71,14 @@ test('actual Trade flows selection reasons use its native census without fetchin
       clock: { getHour: () => state.hour, getSnapshot: () => ({ position: state.hour, playing: false, hoursPerSecond: 0 }) } },
       active: true, onDiagnostics() {} } as unknown as WidgetProps;
     const render = () => { state.flow = undefined; return renderToStaticMarkup(createElement(Widget, props)); };
-    assert.doesNotMatch(render(), /no recorded native identity/);
+    assert.doesNotMatch(render(), /Selected countries are unavailable in this campaign/);
     assert.ok(state.flow, 'known renamed holder retains the complete numeric trade view');
     props.widget.countries = { kind: 'tags', tags: ['unknown'] };
-    assert.match(render(), /no recorded native identity/);
-    assert.match(state.flow!.message!, /no recorded native identity/);
+    assert.match(render(), /Selected countries are unavailable in this campaign/);
+    assert.match(state.flow!.message!, /Selected countries are unavailable in this campaign/);
     props.widget.countries = { kind: 'tags', tags: ['X'] };
     state.data = { ...data, countryIdentities: [] };
-    assert.match(render(), /no recorded native identity/, 'missing native evidence cannot become a literal known-empty choice');
+    assert.match(render(), /Selected countries are unavailable in this campaign/, 'missing native evidence cannot become a literal known-empty choice');
 
     state.data = { ...data, countryIdentities: [{ ...data.countryIdentities[0], runs: [...data.countryIdentities[0].runs,
       { firstHour: 110, lastHour: 160, slot: 3, countryId: 30 }] }, data.countryIdentities[1]] };

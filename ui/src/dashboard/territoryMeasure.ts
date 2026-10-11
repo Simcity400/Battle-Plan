@@ -26,7 +26,7 @@ export function formatTerritory(value: number): string {
 
 /** Map cells describe the authored raster, whose projection enlarges the north. */
 export function territoryNote(measure: TerritoryMeasure): string | undefined {
-  return measure === 'area' ? 'Map cells are not equal-area; northern territory is enlarged.' : undefined;
+  return measure === 'area' ? 'Map area exaggerates territory near the poles.' : undefined;
 }
 
 export function territoryMeasureLabel(measure: TerritoryMeasure, rule: TerritoryRule, unit: string | null = null): string {

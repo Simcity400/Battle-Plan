@@ -38,7 +38,7 @@ export function lossRows(reply: LossesReply, window: LossWindow, selected: Reado
     if (cause.unknown !== null || causeItem?.unknownValue || causeItem?.incomplete && !cause.leaves.length) {
       const id = JSON.stringify([sourceKey(cause.source), 'unknown']);
       if (!selected || selected.has(id)) rows.push({ id, causeKey: sourceKey(cause.source), cause: causeName(cause), type: 'Not known', design: 'Not known',
-        exact: null, readHour: null, incomplete: true, note: cause.unknown ?? causeItem?.note });
+        exact: null, readHour: null, incomplete: true, note: 'Unavailable' });
     }
     for (const leaf of cause.leaves) {
       const design = leaf.design === null ? undefined : reply.designs[leaf.design];

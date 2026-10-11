@@ -2,12 +2,8 @@ import { contentTitle } from './contentTitles.ts';
 import type { BuildingInfo, SpendingGap, StateName } from '../generated/dashboard';
 import type { StateAt, StateLabel } from './stateNamesData';
 
-/** What the construction widgets share about the recorded construction queue: how
- * a building type and a dated place are named (from recorded content and native
- * name reads, else the recording's own token or number) and the reply checks every construction
- * product needs. */
-
-/** How often the queue is read, for a carried value's note. */
+/** What the construction widgets share about the recorded construction queue:
+ * localized building titles, dated place names and reply validation. */
 
 const int = (value: unknown) => Number.isSafeInteger(value);
 
@@ -19,7 +15,7 @@ export const isBuildingInfo = (type: BuildingInfo) => typeof type === 'object' &
 export const isStateName = (state: StateName) => typeof state === 'object' && state != null && int(state.id)
   && (state.name == null || typeof state.name === 'string');
 
-/** A type's name as the game gives it, else its script name, else its recorded id. */
+/** A localized building title, preserving empty text and marking missing names. */
 export function typeName(type: BuildingInfo | undefined): string {
   return contentTitle(type?.name, type?.token, 'Building name unavailable');
 }
@@ -49,18 +45,16 @@ export function placeName(place: { state: number | null; toState?: number | null
   let label: string;
   if (place.railway) {
     const to = place.toState === place.state ? from : stateName(place.toState);
-    label = from != null && to != null && place.state !== place.toState ? `${from} to ${to}` : from ?? to ?? 'an unrecorded route';
-  } else label = from ?? (place.province != null ? `province ${place.province}` : 'an unrecorded place');
+    label = from != null && to != null && place.state !== place.toState ? `${from} to ${to}` : from ?? to ?? 'an unknown route';
+  } else label = from ?? (place.province != null ? `province ${place.province}` : 'an unknown place');
   return { label, missing: [...missing].join(' ') || undefined };
 }
 
-/** Why a stretch of a project's progress is not counted, as the tooltip names it. */
-export const GAP_LABELS: Readonly<Record<SpendingGap, string>> = {
-  notRecorded: 'Factory output not recorded',
-  readFailed: 'An output read failed',
-  linkedOutput: 'Factory output shared with another country',
-  inexactOutput: 'Instant progress or an unknown factory share',
-  observationRestart: 'Output observation changed',
-  finalOutputMissing: 'A line’s final output was not recorded',
-  ownerUnknown: 'Output without a recorded country or target',
+/** Every reason a stretch of a project's progress is not counted. */
+const SPENDING_GAPS: Readonly<Record<SpendingGap, true>> = {
+  notRecorded: true, readFailed: true, linkedOutput: true, inexactOutput: true,
+  observationRestart: true, finalOutputMissing: true, ownerUnknown: true,
 };
+
+/** A reason a reply may give for an uncounted stretch. */
+export const isSpendingGap = (value: unknown): value is SpendingGap => typeof value === 'string' && Object.hasOwn(SPENDING_GAPS, value);

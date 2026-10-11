@@ -15,6 +15,7 @@ import type { SettingsSection } from '../settingsSections';
 import { CountriesSection } from './CountriesSection';
 import { OptionFields } from './OptionFields';
 import { TimeSection } from './TimeSection';
+import { FactionColoursEditor } from '../FactionColours';
 import './settings.css';
 
 /** Every widget's settings, in the same sections and order for all widgets. Each
@@ -55,7 +56,7 @@ function SettingsBody({ widget, template, runtime, onChange, choices }: {
     const title = named ? label(value) ?? definition?.title ?? widget.title : widget.title;
     save({ ...widget, options, title });
   };
-  const fields = (section: OptionSection) => <OptionFields fields={sectionFields(definition?.options, section, values, widget.countries)} values={values}
+  const fields = (section: OptionSection) => <OptionFields fields={sectionFields(definition?.options, section, values, widget.countries, widget.time.mode)} values={values}
     choices={choices} onChange={setValue} />;
   const body = (section: SettingsSection) => {
     switch (section) {
@@ -65,12 +66,14 @@ function SettingsBody({ widget, template, runtime, onChange, choices }: {
       case 'time': return <>{definition?.data && <TimeSection widget={widget} effective={effective} reference={reference} runtime={runtime}
         modes={definition.timeModes} onChange={time => save({ ...widget, time })} />}{fields('time')}</>;
       case 'size': return <SizeStepper widget={widget} onChange={save} />;
+      case 'factionColours': return reference ? <FactionColoursEditor key={`${reference.source.id}:${reference.source.revision}`} client={runtime.client} source={reference.source} />
+        : <p className="field-hint">Load a campaign to edit its faction colours.</p>;
       case 'options': case 'axes': case 'interaction': return fields(section);
     }
   };
   return <div className="widget-settings-content">
     <TitleField widget={widget} onChange={save} />
-    {settingsSections(definition, values).map(section => <section key={section} className="settings-section" aria-label={SECTION_TITLES[section]}>
+    {settingsSections(definition, values, widget.countries, widget.time.mode).map(section => <section key={section} className="settings-section" aria-label={SECTION_TITLES[section]}>
       <h3>{SECTION_TITLES[section]}</h3>{body(section)}
     </section>)}
   </div>;

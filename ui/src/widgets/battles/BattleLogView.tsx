@@ -8,7 +8,6 @@ import type { TooltipRow } from '../../charts/tooltip';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { MAX_NAME_HOURS } from '../../dashboard/countryFacts';
 import { selectedTags } from '../../dashboard/countrySelection';
-import { formatDateTime } from '../../dashboard/calendar';
 import type { WidgetMeta, WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, countryMatchFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
@@ -45,7 +44,6 @@ export interface BattleViewAdapter<Row extends ViewRow, Window extends WindowRep
   compactSides?: BattleSideSummary;
   note?: string | ((row: Row) => string);
   formatLoss?: BattleLossFormatter<Row>;
-  rangeNote?: string;
   summary?: (rows: readonly Row[], ranking: Ranking | undefined, measure: string, view: 'log' | 'biggest') => string | null;
   description?: (row: Row) => string | null;
   tooltipRows?: (row: Row) => readonly TooltipRow[];
@@ -129,15 +127,15 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
   useDiagnostics(onDiagnostics, diagnostics);
 
   if (!track) return <WidgetState kind="empty" icon={adapter.definition.icon} message={`Load a campaign to see its ${adapter.definition.title.toLowerCase()}.`} />;
-  if (!window || !inBranch) return <WidgetState kind="unavailable" message="The chosen moment is outside this campaign branch." />;
-  if (manifest.error) return <WidgetState kind="error" message={manifest.error} onRetry={manifest.retry} />;
-  if (widget.countries.kind !== 'all' && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if (!window || !inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (manifest.error) return <WidgetState kind="error" detail={manifest.error} onRetry={manifest.retry} />;
+  if (widget.countries.kind !== 'all' && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
   if (!manifest.data || !match.ready) return <WidgetState kind="loading" label={`Loading ${adapter.definition.title.toLowerCase()}…`} />;
-  if (!manifest.data.available) return <WidgetState kind="unavailable" message={manifest.data.unavailable ?? 'Not in this recording'} />;
+  if (!manifest.data.available) return <WidgetState kind="unavailable" message="Battles were not recorded." />;
   const required = view === 'log' && browseIndex >= 0 ? [browseIndex] : [];
   const failed = view === 'biggest' ? ranking.error : required.map(index => history.errors.get(index)).find(Boolean);
-  if (failed) return <WidgetState kind="error" message={failed} onRetry={view === 'biggest' ? ranking.retry : history.retry} />;
+  if (failed) return <WidgetState kind="error" detail={failed} onRetry={view === 'biggest' ? ranking.retry : history.retry} />;
   const pending = view === 'biggest' ? !ranking.data : required.some(index => !history.data.has(index));
   if (pending) return <WidgetState kind="loading" label="Loading battles…" />;
   const censusHour = view === 'biggest' ? ranking.data?.censusHour ?? null : shownBattleCensusHour(history.data, shownHour!);
@@ -154,10 +152,10 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
   const summary = adapter.summary?.(shown, ranking.data, measure, view);
   return <div className="battle-widget">
     {summary && <p className="battle-note">{summary}</p>}
-    {widget.time.mode === 'range' && <p className="battle-note">{adapter.rangeNote ?? 'Peak and length include recorded reads before the selected range.'}</p>}
+    {/* A range cuts battles short; their peak and duration are still the whole battle's. */}
+    {widget.time.mode === 'range' && <p className="battle-note">Peak and duration cover the whole battle.</p>}
     {navigation}
-    {shownHour !== hour && <p className="battle-note">Battle reads through {formatDateTime(shownHour!)}.</p>}
-    {censusHour !== null && censusHour < shownHour! && <p className="battle-note">Shown census reads through {formatDateTime(censusHour)}.</p>}
+    {view === 'log' && wantedWindows.some(index => !history.data.has(index) && !history.errors.has(index)) && <p className="battle-note" role="status">Updating…</p>}
     <BattleLog rows={named} label={adapter.definition.title} labels={adapter.labels} country={country} live={live && shownHour === hour} view={view}
       log={logSettings(options)} measures={adapter.measures} sort={sort.column === 'measure' ? { ...sort, column: ranking.data?.effectiveMeasure ?? measure } : sort}
       setOption={setOption} cellBars={options.cellBars === true} rankMarkers={options.rankMarkers === true} hoursPerSecond={hoursPerSecond}

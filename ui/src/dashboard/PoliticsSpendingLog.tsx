@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChipSet } from '../components/ChipSet';
 import { CountryFlagUrl } from '../components/CountryFlag';
+import ArtFallback from '../components/ArtFallback';
 import WidgetState from '../components/WidgetState';
 import LogList from '../charts/log/LogList';
 import type { LogRow } from '../charts/log/logData';
@@ -19,7 +20,7 @@ import { contentSet, resolveOptions, setToken, toggleContentSet } from './option
 import { usePlaybackHour } from './playback';
 import { categoryChoices, commandHeldAt, spendText, spendingAt, spendingGaps, spendingRows, spendingTotals } from './politicsSpending';
 import type { PowerCurrency, SpendingRow } from './politicsSpending';
-import { POLITICS_SPENDING_OPTIONS } from './politicsSpendingOptions';
+import { NO_SPENDING_CATEGORIES, normalizePoliticsSpendingOptions, POLITICS_SPENDING_OPTIONS } from './politicsSpendingOptions';
 import { usePoliticsSpending, useSpendingIdeaTooltips } from './usePoliticsSpending';
 import PoliticsCommandHeld from './PoliticsCommandHeld';
 import './politicsSpending.css';
@@ -28,7 +29,7 @@ const NO_WARNINGS: string[] = [];
 const NO_ROWS: readonly LogRow<SpendingRow>[] = [];
 
 /** Both logs are the same style-5 view of the shared recorded spending ledger. */
-export default function PoliticsSpendingLog({ currency, widget, runtime, active, onDiagnostics, setOption }: WidgetProps & { currency: PowerCurrency }) {
+export default function PoliticsSpendingLog({ currency, widget, runtime, active, onDiagnostics, setOptions }: WidgetProps & { currency: PowerCurrency }) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(POLITICS_SPENDING_OPTIONS, widget.options);
   const log = logSettings(options);
@@ -38,13 +39,22 @@ export default function PoliticsSpendingLog({ currency, widget, runtime, active,
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
   const spends = useMemo(() => data && hour != null ? spendingAt(data, currency, hour, from, countrySelection) : [], [data, currency, hour, from, countrySelection]);
   const gaps = useMemo(() => data && hour != null ? spendingGaps(data, currency, { from, hour }, countrySelection) : [], [data, currency, hour, from, countrySelection]);
-  const categories = typeof options.categories === 'string' ? options.categories : '';
+  const chips = useMemo(() => categoryChoices(data, currency), [data, currency]);
+  const normalized = normalizePoliticsSpendingOptions(widget.options, data ? chips : undefined);
+  const categories = normalized.categories;
+  const repairSelection = widget.options?.filterMode === 'shown' && categories !== widget.options.categories;
+  const migration = useRef('');
+  useEffect(() => {
+    const key = JSON.stringify([widget.id, widget.options?.filterMode, widget.options?.categories, categories]);
+    if ((normalized.migrated || repairSelection) && setOptions && migration.current !== key) {
+      migration.current = key;
+      setOptions({ categories, filterMode: 'shown' });
+    }
+  }, [widget.id, widget.options?.filterMode, widget.options?.categories, categories, normalized.migrated, repairSelection, setOptions]);
   const order = options.order === 'oldest' || options.order === 'cost' ? options.order : 'newest';
-  const selection = options.filterMode === 'show' ? 'include' : 'exclude';
-  const rows = useMemo(() => spendingRows(spends, gaps, categories, order, selection), [spends, gaps, categories, order, selection]);
+  const rows = useMemo(() => spendingRows(spends, gaps, categories, order), [spends, gaps, categories, order]);
   const totals = useMemo(() => spendingTotals(spends, gaps), [spends, gaps]);
   const held = useMemo(() => currency === 'Command' && data && hour != null ? commandHeldAt(data, hour, countrySelection) : null, [currency, data, hour, countrySelection]);
-  const chips = useMemo(() => categoryChoices(data, currency), [data, currency]);
   const tokens = useChartTokens();
   const colours = useMemo(() => {
     let index = 0;
@@ -75,46 +85,43 @@ export default function PoliticsSpendingLog({ currency, widget, runtime, active,
   useEffect(() => { onDiagnostics(warnings); return () => onDiagnostics(NO_WARNINGS); }, [warnings, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon={currency === 'Political' ? 'sparkle' : 'target'} message="Load a campaign and choose a country to see its spending." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!ready) return <WidgetState kind="loading" label="Loading group membership…" />;
-  if (reason) return <WidgetState kind="empty" message={reason} />;
+  if (reason) return <WidgetState kind="empty" message="Selected country unavailable at this time." />;
   if (!tags.length) return <WidgetState kind="empty" message="Choose a country to see its spending." />;
   if (!data) return <WidgetState kind="loading" label={`Loading ${title.toLowerCase()}…`} />;
-  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the campaign’s recorded branch." />;
-  if (data.every(reply => !reply.spendingCoverage.length)) return <WidgetState kind="unavailable" message="Power spending coverage was not recorded in this campaign branch." />;
+  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (data.every(reply => !reply.spendingCoverage.length)) return <WidgetState kind="unavailable" message="Spending was not recorded." />;
 
   const chosen = contentSet(categories);
+  const shown = new Set(chosen);
   const artwork = options.artwork !== false;
   const compare = tags.length > 1;
   const describe = (row: LogRow<SpendingRow>) => row.item.kind === 'gap'
-    ? `${dayLabel(row.item.gap.from)} to ${dayLabel(row.item.gap.through)}: ${compare ? `${country(row).name}: ` : ''}${row.item.gap.reason}. Spending not known.`
+    ? `${dayLabel(row.item.gap.from)} to ${dayLabel(row.item.gap.through)}: ${compare ? `${country(row).name}: ` : ''}Spending not recorded.`
     : `${dayLabel(row.hour)}: ${compare ? `${row.item.at.spend.countryName ?? country(row)?.name ?? 'Not identified'}: ` : ''}${row.item.at.item.action}. ${row.item.at.category}. Cost ${spendText(row.item.at.charge)}.`;
   const tooltip = (row: LogRow<SpendingRow>): readonly TooltipContent[] => {
-    if (row.item.kind === 'gap') return [{ title: 'Spending not known', rows: [
+    if (row.item.kind === 'gap') return [{ title: 'Spending not recorded', rows: [
       { label: 'Country', value: country(row).name, ...(row.item.gap.tag ? { countryFlag: country(row) } : {}) },
       { label: 'From', value: formatDateTime(row.item.gap.from) }, { label: 'Through', value: formatDateTime(row.item.gap.through) },
-      { label: 'Read', value: formatDateTime(row.item.gap.readHour) }, { label: row.item.gap.reason, tone: 'muted' },
     ] }];
     const at = row.item.at;
     const details: TooltipRow[] = [
       { label: 'Country', value: at.spend.countryName ?? country(row).name, countryFlag: country(row) },
-      { label: 'Evaluated charge', value: spendText(at.charge) },
+      { label: 'Cost', value: spendText(at.charge) },
       { label: 'Action', value: formatDateTime(at.spend.hour) },
-      { label: 'Read', value: formatDateTime(at.readHour) },
     ];
-    if (at.realized !== null && (at.charge == null || at.realized !== -at.charge)) details.push({ label: 'Realized balance change', value: spendText(at.realized) });
+    if (at.realized !== null && (at.charge == null || at.realized !== -at.charge)) details.push({ label: 'Balance change', value: spendText(at.realized) });
     if (at.missingCharges) {
-      if (at.knownCharges) details.push({ label: 'Known recorded charges', value: spendText(at.recordedCharge) });
-      details.push({ label: 'Charge operands not recorded', value: String(at.missingCharges), tone: 'muted' });
+      if (at.knownCharges) details.push({ label: 'Known costs', value: spendText(at.recordedCharge) });
+      details.push({ label: 'Unknown costs', value: String(at.missingCharges), tone: 'muted' });
     }
-    if (at.occurrences > 1) details.push({ label: 'Recorded payments', value: String(at.occurrences) });
+    if (at.occurrences > 1) details.push({ label: 'Payments', value: String(at.occurrences) });
     if (at.item.targetTag != null) {
       const target = labelAt(at.spend.hour)(at.item.targetTag);
       details.push({ label: 'Target', value: at.item.targetName ?? target.name, countryFlag: target });
     }
-    const notes = [!at.covered ? 'Spending coverage is incomplete.' : '', at.item.unknown ?? '',
-      at.readHour !== at.spend.hour ? 'Dated to the native action hour; this amount became known at the shown read.' : '',
-    ].filter(Boolean).join(' ');
+    const notes = !at.covered ? 'Some spending is missing.' : '';
     const head = { title: at.item.name ?? at.item.action, subtitle: `${at.category} · ${at.spend.countryName ?? country(row)?.name ?? 'Not identified'}`, icon: at.item.icon };
     if (at.item.tooltipToken && ideas) {
       const info = ideas.infos.get(at.item.tooltipToken);
@@ -126,17 +133,17 @@ export default function PoliticsSpendingLog({ currency, widget, runtime, active,
   };
   const renderRow = (row: LogRow<SpendingRow>) => {
     if (row.item.kind === 'gap') { const label = country(row); return <>
-      {artwork && <span className="log-art is-missing" aria-hidden="true">?</span>}
+      {artwork && <ArtFallback icon="parliament" className="log-art" />}
       <span className="log-text politics-spending-gap">
         {compare && <>{row.item.gap.tag && <CountryFlagUrl className="log-flag" url={label.flag} pending={label.flagPending} reason={label.flagReason} />}<b>{label.name}</b><span className="politics-spending-muted"> · </span></>}
-        Spending not known <span className="log-tag">{row.item.gap.reason}</span></span>
+        Spending not recorded</span>
       <span className="log-value is-muted">—</span>
     </>; }
     const at = row.item.at;
     const label = country(row);
     return <>
-      {artwork && <span className={`log-art${at.item.icon ? '' : ' is-missing'}`} aria-hidden="true">
-        {at.item.icon ? <img src={at.item.icon} alt="" /> : '?'}</span>}
+      {artwork && (at.item.icon ? <span className="log-art" aria-hidden="true"><img src={at.item.icon} alt="" /></span>
+        : <ArtFallback icon="parliament" className="log-art" />)}
       <span className="log-text">
         {compare && <><span className="politics-spending-country"><CountryFlagUrl className="log-flag" url={label.flag} pending={label.flagPending} reason={label.flagReason} />
           <b>{at.spend.countryName ?? label?.name ?? 'Not identified'}</b></span><span className="politics-spending-muted"> · </span></>}
@@ -146,24 +153,21 @@ export default function PoliticsSpendingLog({ currency, widget, runtime, active,
     </>;
   };
   return <div className="politics-spending-log">
-    {log.chips && chips.length > 0 && <div className="log-chips"><ChipSet label={selection === 'include' ? 'Shown spending categories' : 'Hidden spending categories'} max={Number.MAX_SAFE_INTEGER}
+    {log.chips && chips.length > 0 && <div className="log-chips"><ChipSet label="Shown spending categories" max={Number.MAX_SAFE_INTEGER}
       selected={chosen} chips={chips.map(chip => ({ ...chip, colour: colours.get(chip.value) }))}
       onToggle={value => {
-        const next = toggleContentSet(categories, value, Number.MAX_SAFE_INTEGER); if (next != null) setOption?.('categories', next);
+        const next = value === NO_SPENDING_CATEGORIES ? categories === NO_SPENDING_CATEGORIES ? '' : NO_SPENDING_CATEGORIES : toggleContentSet(categories === NO_SPENDING_CATEGORIES ? '' : categories, value, Number.MAX_SAFE_INTEGER);
+        if (next != null) setOptions?.({ categories: next, filterMode: 'shown' });
       }} /></div>}
     {(options.totals !== false || held) && <div className="politics-spending-totals" aria-label={options.totals === false ? 'Current holdings' : held ? 'Running totals and current holdings' : 'Running totals'}>
-      {options.totals !== false && <span>Total <b>{spendText(totals.total)}</b></span>}
+      {options.totals !== false && (totals.total !== null ? <span>Total <b>{spendText(totals.total)}</b></span>
+        : <span>{spends.some(at => at.knownCharges) ? `${spendText(spends.reduce((sum, at) => sum + at.recordedCharge, 0n))} ${currency === 'Political' ? 'PP' : 'CP'} known; total unknown.` : 'Total spending unavailable'}</span>)}
       {held && <PoliticsCommandHeld held={held} active={active} />}
-      {options.totals !== false && chips.map(chip => <span key={chip.value}>{chip.label} <b>{spendText(totals.categoryTotal(chip.value))}</b></span>)}
+      {options.totals !== false && chips.filter(chip => chip.value !== NO_SPENDING_CATEGORIES && (!shown.size || shown.has(chip.value))).map(chip => <span key={chip.value}>{chip.label} <b>{spendText(totals.categoryTotal(chip.value))}</b></span>)}
     </div>}
-    {totals.total === null && <p className="politics-spending-note">
-      {spends.some(at => at.knownCharges) ? `Known recorded charges ${spendText(spends.reduce((sum, at) => sum + at.recordedCharge, 0n))}. ` : ''}
-      The complete spending total is not known.
-    </p>}
-    {log.months && order === 'cost' && <p className="politics-spending-note">Month headers are hidden while sorting by cost.</p>}
     <LogList rows={rows} label={title} density={log.density} months={log.months && order !== 'cost'}
       animate={log.animate && widget.time.mode === 'follow'} columns={`${artwork ? 'var(--log-art-size) ' : ''}minmax(0, 1fr) auto`}
       renderRow={renderRow} describe={describe} tooltip={tooltip} menu={row => [jumpItem(runtime, track.id, row.hour)]}
-      empty={selection === 'include' || chosen.length ? 'No recorded spending matches these categories.' : 'No spending recorded in the covered hours.'} onVisible={setVisible} />
+      empty={chosen.length ? 'No recorded spending matches these categories.' : 'No spending recorded in this period.'} onVisible={setVisible} />
   </div>;
 }

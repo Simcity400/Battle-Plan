@@ -201,7 +201,8 @@ test('registered focus renderer owns dated art, pending/refused hover text, Pin 
     assert.doesNotMatch(render(), /src="data:image/); // Text does not wait for the unresolved image request.
     hour = 101; const pending = render(); state.flush();
     assert.doesNotMatch(pending, /Early choice/);
-    assert.match(pending, /Loading game artwork/);
+    assert.doesNotMatch(pending, /Loading game artwork/);
+    assert.match(pending, /Loading name…/);
     assert.match(pending, /Completed at 100/);
     const next = reads.find(read => read.params.hour === 101)!;
     assert.deepEqual(next.params.tokens, ['switch']);
@@ -215,8 +216,10 @@ test('registered focus renderer owns dated art, pending/refused hover text, Pin 
     hour = 102; render(); state.flush();
     complete(reads.find(read => read.params.hour === 102)!, null, 'focus-window mode is not recorded', ['Named content warning']); await settle();
     const refused = render(); state.flush();
+    assert.doesNotMatch(refused, /data-tooltip="focus-window mode is not recorded"/);
+    assert.doesNotMatch(refused, /Artwork unavailable \(1\)/);
+    assert.match(refused, /art-fallback/);
     assert.match(refused, /data-tooltip="[^"]*focus-window mode is not recorded/);
-    assert.match(refused, /Artwork unavailable \(1\)/);
     assert.ok(diagnostics.includes('Named content warning'));
     const reportCount = reports.length;
     render(); state.flush(); render(); state.flush();
@@ -240,10 +243,14 @@ test('registered focus renderer owns dated art, pending/refused hover text, Pin 
     assert.notEqual(newA, oldA);
     complete(oldA, 'Expired A choice'); await settle();
     assert.doesNotMatch(render(), /Expired A choice/);
-    assert.match(render(), /Loading game artwork/);
+    assert.doesNotMatch(render(), /Loading game artwork/);
+    assert.match(render(), /data-tooltip="Key: switch[^"]*Loading focus name/);
     newA.reject(new Error('Synthetic native refusal'));
     reads.filter(read => read.owner === 'A' && read.params.hour === 120 && !read.params.textOnly).at(-1)!.reject(new Error('Synthetic image refusal')); await settle();
-    assert.match(render(), /Game artwork request failed/);
+    assert.doesNotMatch(render(), /Game artwork request failed/);
+    assert.match(render(), /data-tooltip="Key: switch[^"]*Focus name request failed/);
+    assert.doesNotMatch(render(), /Artwork unavailable \(/);
+    assert.match(render(), /art-fallback/);
   } finally { state.dispose(); delete host.__focusHooks; await vite.close(); }
 });
 

@@ -176,12 +176,12 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
   const moving = useRowMotion(stableItems);
 
   if (!track) return <WidgetState kind="empty" icon="alert" message="Load a campaign to see world tension." />;
-  if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (groups.error && widget.countries.kind !== 'all') return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (groups.error && widget.countries.kind !== 'all') return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!model || (widget.countries.kind !== 'all' && !identities)) return <WidgetState kind="loading" label="Loading world tension…" />;
   if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
-  if (!model.reply.reads.length) return <WidgetState kind="unavailable" message="No world tension was recorded in this branch." />;
+  if (!model.reply.reads.length) return <WidgetState kind="unavailable" message="World tension was not recorded." />;
 
   const otherCount = (hour: number) => Math.max(0, rankedAt(model, hour).length - keys.length);
   // The moment the chart shows: the playhead, else the end of the hours shown.
@@ -190,7 +190,7 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
   // tension it generated as first read, and, when the game changed it since, what it
   // adds by the moment shown.
   const eventRows = (list: readonly TensionEvent[], hour: number, divider: boolean): TooltipRow[] => list.flatMap((event, index) => {
-    const label = event.tag == null ? { name: 'A country the recording does not name', flag: undefined } : hover.labelAt(hour)(event.tag);
+    const label = event.tag == null ? { name: 'Unknown country', flag: undefined } : hover.labelAt(hour)(event.tag);
     const first = event.added[0].addedRaw;
     const now = addedAt(event, momentShown);
     return [
@@ -223,7 +223,7 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
           ...(marked.length > COMPACT_EVENTS ? [{ label: `${marked.length - COMPACT_EVENTS} more events`, tone: 'muted' as const }] : []),
         ],
       };
-      return fitTooltip([full, compact], viewport, { full, more: hidden => `${hidden} more ${hidden === 1 ? 'row' : 'rows'}: a taller window shows them` });
+      return fitTooltip([full, compact], viewport, { full, more: hidden => `${hidden} more` });
     }
     const read = readAt(model, hour);
     if (!read) return { title: dayLabel(hour), rows: [{ label: 'World tension', value: 'Not recorded', tone: 'muted' }] };
@@ -237,16 +237,16 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
       rows.push({ label: 'Its sources add up to', value: formatContribution(model, read.sumRaw), tone: 'muted' });
     }
     ranked.forEach((item, index) => {
-      const label = item.tag === null ? { name: 'Native country identity not recorded', flagReason: 'Native country identity not recorded at this hour.' } : named(item.tag);
+      const label = item.tag === null ? { name: 'Unknown country', flagReason: 'Unknown country at this hour.' } : named(item.tag);
       rows.push({ label: label.name, countryFlag: label, swatch: keys.includes(item.key) ? colourOf(item.tag) : undefined,
         value: formatContribution(model, item.raw, true), short: true, divider: index === 0 });
     });
-    if (read.unnamedRaw !== '0') rows.push({ label: 'Countries the recording does not name', value: formatContribution(model, read.unnamedRaw, true), short: true });
+    if (read.unnamedRaw !== '0') rows.push({ label: 'Unknown countries', value: formatContribution(model, read.unnamedRaw, true), short: true });
     rows.push(...eventRows(here, hour, true));
     const notes = [
       ...(hoveredFilter?.reason ? [hoveredFilter.reason] : []),
     ];
-    return fitTooltip([{ title: dayLabel(hour), rows, note: notes.join(' ') || undefined }], viewport, { more: hidden => `${hidden} more ${hidden === 1 ? 'row' : 'rows'}: a taller window shows them` });
+    return fitTooltip([{ title: dayLabel(hour), rows, note: notes.join(' ') || undefined }], viewport, { more: hidden => `${hidden} more` });
   };
 
   const open = (hour: number) => {
@@ -265,9 +265,9 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
         if (hour != null) dispatchDrill({ type: 'open', breakdown: TENSION_BREAKDOWN.id, hour, playing: true, playhead: hour });
       }}>Follow playback</button>}</p>{breakdown}</div>;
   const total = shownRead ? formatTension(model, shownRead.tensionRaw) : 'Not recorded';
-  const layerName = (tag: string | null) => tag === OTHER ? 'Other' : tag === null ? 'Native country identity not recorded' : looks.name(tag);
+  const layerName = (tag: string | null) => tag === OTHER ? 'Other' : tag === null ? 'Unknown country' : looks.name(tag);
   const overviewState = widget.countries.kind === 'group' && groups.error
-    ? <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />
+    ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
     : filter.reason ? <WidgetState kind="empty" message={filter.reason} />
       : widget.countries.kind === 'group' && !groups.data ? <WidgetState kind="loading" label="Loading country group…" /> : null;
   const main = overviewState ?? <div className={`world-tension${options.list !== false ? ' has-list' : ''}`}>
@@ -302,8 +302,6 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
           </li>;
         })}
       </ol>
-      {share && shownRead && BigInt(shownRead.sumRaw) !== 0n && contributionPercent(model, shownRead.sumRaw) !== tensionPercent(model, shownRead.tensionRaw)
-        && <p className="world-tension-note">Shares of world tension. Its sources add up to {formatContribution(model, shownRead.sumRaw)}.</p>}
     </aside>}
     {menu.menu}
   </div>;

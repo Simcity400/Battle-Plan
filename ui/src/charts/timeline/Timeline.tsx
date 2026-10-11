@@ -1,3 +1,4 @@
+import ArtFallback from '../../components/ArtFallback';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { ZoomReset } from '../ZoomReset';
@@ -142,6 +143,7 @@ export default function Timeline(props: TimelineProps) {
     queueMicrotask(() => latest.current.onHover?.(hour));
   };
   const [zoomed, setZoomed] = useState(false);
+  const [artFallbacks, setArtFallbacks] = useState<readonly { id: string; left: number; top: number; width: number; height: number; opacity: number; icon: 'flask' | 'sparkle'; clipPath: string }[]>([]);
   const rowHeight = props.rowHeight ?? ROW_HEIGHT;
   const height = timelineHeight(props.lanes.length, rowHeight, rows);
   const [viewportHeight, setViewportHeight] = useState(window.innerHeight);
@@ -278,6 +280,7 @@ export default function Timeline(props: TimelineProps) {
       const size = sizeLaneWindow(element, viewport, scrolled, window.devicePixelRatio || 1);
       if (!size) return false;
       const shown = p.lanes.slice(viewport.first, viewport.end);
+      const fallbacks: typeof artFallbacks[number][] = [];
       const { layoutWidth, layoutHeight } = size;
       context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
       context.clearRect(0, 0, layoutWidth, layoutHeight);
@@ -333,6 +336,13 @@ export default function Timeline(props: TimelineProps) {
       eased = x;
       const bottom = AXIS_HEIGHT + geometry.current.height;
       const right = left + plotWidth();
+      const fallback = (id: string, px: number, top: number, width: number, height: number, opacity: number, icon: 'flask' | 'sparkle', plot = false) => {
+        // DOM tiles use the sticky view's offset and the same clipping as the canvas.
+        const clipTop = Math.max(viewport.top, axisTop + AXIS_HEIGHT);
+        const clipBottom = Math.min(bottom, viewport.top + viewport.height);
+        fallbacks.push({ id, left: px, top: top - scrolled, width, height, opacity, icon,
+          clipPath: `inset(${Math.max(0, clipTop - top)}px ${Math.max(0, px + width - (plot ? right : layoutWidth))}px ${Math.max(0, top + height - clipBottom)}px ${Math.max(0, (plot ? left : 0) - px)}px)` });
+      };
 
       // Dates along the top, from the recording's own calendar.
       context.font = font(tokens, tokens.fontSize.small);
@@ -395,15 +405,13 @@ export default function Timeline(props: TimelineProps) {
                 const w = loaded.naturalWidth * scale, h = loaded.naturalHeight * scale;
                 context.drawImage(loaded, 31 - w / 2, centre - h / 2, w, h);
               } else {
-                context.fillStyle = tokens.blueprintText; context.fillText('?', 27, centre);
+                fallback(`${lane.id}:${span.id}`, 8, centre - 14, 46, 28, alpha * fade, 'flask');
               }
             } else drawIcon(span.icon, 10 + indent + disclosure, centre, iconSize, p.holderIconAlign ? p.holderIconAlign === 'top' : !!lane.pill, span.countryFlag);
             context.fillStyle = tokens.text; context.font = font(tokens, tokens.fontSize.body, lane.heading ? 600 : 500);
             if (lane.labelStyle === 'side') { context.font = font(tokens, 10, 600); context.fillStyle = tokens.muted; }
             context.fillText(lane.pill ? span.label : labelText(lane.labelStyle === 'side' ? span.label.toUpperCase() : span.label), textAt, centre - (lane.singleLine ? 0 : 7), textWidth);
           } else {
-            context.setLineDash([3, 3]); context.strokeStyle = mix(tokens.surface, tokens.text, 0.3);
-            context.beginPath(); context.roundRect(11.5 + indent + disclosure, centre - iconSize / 2 + 0.5, Math.max(1, iconSize - 2), Math.max(1, iconSize - 2), Math.min(5, iconSize / 4)); context.stroke(); context.setLineDash([]);
             context.fillStyle = tokens.muted; context.font = font(tokens, tokens.fontSize.body);
             context.fillText(labelText(unknown ? 'Not recorded' : p.emptyLabel ?? 'Empty'), textAt, centre - (lane.singleLine ? 0 : 7), textWidth);
           }
@@ -474,8 +482,8 @@ export default function Timeline(props: TimelineProps) {
             if (px + width / 2 < left || px - width / 2 > right) continue;
             icons.forEach((source, i) => {
               const iconX = px - width / 2 + i * (BAR_ICON + 2);
-              if (source) drawIcon(source, iconX, centre, BAR_ICON);
-              else { context.strokeStyle = tokens.muted; context.setLineDash([2, 2]); context.strokeRect(iconX + 2, centre - 10, 16, 20); context.setLineDash([]); context.fillStyle = tokens.muted; context.fillText('?', iconX + 7, centre); }
+              if (image(source)) drawIcon(source, iconX, centre, BAR_ICON);
+              else fallback(`${lane.id}:${span.id}:${i}`, iconX, centre - 10, BAR_ICON, BAR_ICON, fade, 'sparkle', true);
             });
             continue;
           }
@@ -584,6 +592,10 @@ export default function Timeline(props: TimelineProps) {
       if (element.style.cursor !== cursor) element.style.cursor = cursor;
 
       const settled = Math.abs(x[0] - target[0]) + Math.abs(x[1] - target[1]) < 1e-3;
+      setArtFallbacks(before => before.length === fallbacks.length && before.every((item, index) =>
+        item.id === fallbacks[index].id && item.left === fallbacks[index].left && item.top === fallbacks[index].top
+        && item.width === fallbacks[index].width && item.height === fallbacks[index].height && item.icon === fallbacks[index].icon
+        && item.clipPath === fallbacks[index].clipPath && item.opacity === fallbacks[index].opacity) ? before : fallbacks);
       return !settled || animating || drag != null;
     };
 
@@ -868,6 +880,8 @@ export default function Timeline(props: TimelineProps) {
       <canvas ref={canvas} tabIndex={0} role="img" aria-label={props.label} aria-describedby={props.description ? `${owner}-description` : undefined}
         aria-keyshortcuts={props.onLaneActivate ? 'ArrowUp ArrowDown ArrowLeft ArrowRight Enter Space' : 'ArrowUp ArrowDown ArrowLeft ArrowRight'} onKeyDown={keyDown} onBlur={() => { keyed.current = null; notifyHover(null); hideTooltip(owner); setSpoken(''); }}
         style={{ position: 'absolute', top: 0, height: region.current.height }} />
+      {artFallbacks.map(tile => <span key={tile.id} style={{ position: 'absolute', left: tile.left, top: tile.top,
+        width: tile.width, height: tile.height, opacity: tile.opacity, clipPath: tile.clipPath, pointerEvents: 'none' }}><ArtFallback icon={tile.icon} /></span>)}
       {zoomed && <ZoomReset onReset={() => controls.current?.dispatch({ type: 'reset' })} />}
     </div>
     <p className="sr-only" aria-live="polite">{spoken}</p>

@@ -55,21 +55,21 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
   }, [data, groups.data, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its raid tally." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (grouped && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (grouped && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!data || (grouped && !groups.data)) return <WidgetState kind="loading" label="Loading the raid tally…" />;
-  if (data.available !== true) return <WidgetState kind="unavailable" message={data.unavailable ?? (data.available === false ? 'Not in this recording' : 'Raid availability not known')} />;
+  if (data.available !== true) return <WidgetState kind="unavailable" message={data.available === false ? 'No raid types available.' : 'Raid totals unavailable.'} />;
   if (resolved.reason) return <WidgetState kind="unavailable" message={resolved.reason} />;
-  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="This time is outside the recorded branch." />;
+  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (resolved.top == null && !data.series.some(item => item.runs.length)) return <WidgetState kind="unavailable" message="No raid counts were recorded for these countries." />;
   return <CountryRaceView runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead} moment={moment}
     slots={resolved.top ?? Math.max(1, counted.tags.length)} ranked={ranked} lines={lines} segmentAt={segmentAt} label={tallyLabel(metric)}
     presentation={{ exact: false, held: false }}
     beforeChart={metric === 'both' ? view === 'lines'
       ? <p className="chart-line-key"><i aria-hidden="true" />Solid: launched · <i className="is-dashed" aria-hidden="true" />dashed: succeeded</p>
-      : <p className="chart-line-key">Outer: launched · inner: succeeded. Successes can exceed proven launches.</p> : null}
-    empty={resolved.top != null && readAt(data.readHours, moment) === moment ? `No raids ${metric === 'both' ? 'observed' : metric} yet.` : 'No raid counts recorded at this time.'}
-    formatValue={value => `${tallyValue(value)} observed`}
+      : <p className="chart-line-key">Outer: launched · inner: succeeded.</p> : null}
+    empty={resolved.top != null && readAt(data.readHours, moment) === moment ? `No raids ${metric === 'both' ? 'launched or succeeded' : metric} yet.` : 'No raid counts recorded at this time.'}
+    formatValue={tallyValue}
     tooltip={(tag, hour, name) => [tallyTooltip(data, tag, hour, name)]}
     lineTooltip={(hour, tags, labelAt, country) => [tallyLineTooltip(series, hour, tags, labelAt, country, metric)]} />;
 }

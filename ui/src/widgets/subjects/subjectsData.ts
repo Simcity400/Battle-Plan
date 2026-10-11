@@ -168,7 +168,7 @@ export function levelColours(levels: readonly SubjectLevel[], palette: readonly 
   return new Map(levels.map((level, index) => [level.token, palette[index] ?? other]));
 }
 
-/** A level's name as shown: the game's, else its id, so a missing name is never blank. */
+/** Content names stay literal; missing names use a readable fallback. */
 export const levelName = (levels: ReadonlyMap<string, SubjectLevel>, token: string | null) =>
   token == null ? 'Level not recorded' : contentTitle(levels.get(token)?.name, token, 'Autonomy level name unavailable');
 
@@ -224,7 +224,7 @@ export function subjectLanes(views: readonly OverlordView[], levels: ReadonlyMap
   // Each overlord's tag and subjects at the hour, found once rather than in every comparison.
   const tags = new Map(overlords.map(view => [view, overlordTagAt(view, hour)]));
   const counts = new Map(overlords.map(view => [view, heldCount(view)]));
-  const countryAt = (tag: string | null) => tag === null ? { name: 'Native country identity not recorded', flagReason: 'Native country identity not recorded at this hour.' } : text.country(tag);
+  const countryAt = (tag: string | null) => tag === null ? { name: 'Unknown country', flagReason: 'Unknown country at this hour.' } : text.country(tag);
   const name = (tag: string | null) => countryAt(tag).name;
   const overlordName = (view: OverlordView) => name(tags.get(view) ?? null);
   overlords.sort(options.order === 'name' ? (a, b) => overlordName(a).localeCompare(overlordName(b)) || compareTags(a.key, b.key)

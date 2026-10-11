@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
-import { drawBands } from '../../charts/draw';
+import { dayLabel, drawBands } from '../../charts/draw';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
 import { jumpItem } from '../../charts/jump';
@@ -15,7 +15,6 @@ import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
 import { fitTooltip } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
-import { formatDateTime } from '../../dashboard/calendar';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { flagReadSpec } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryFactsRead, useCountryNamesAt } from '../../dashboard/countryNamesAt';
@@ -39,8 +38,7 @@ const SORT = { column: 'losses', direction: 'descending' } as const;
 const rowKey = (row: LossRow) => row.id;
 // Columns that name no country keep their accessors: arriving names and flags never re-sort by them.
 const WAR: TableColumn<LossRow> = { key: 'war', header: 'War', label: 'War', value: row => row.war };
-const LOSSES: TableColumn<LossRow> = { key: 'losses', header: 'Known taken', label: 'Known taken', numeric: true, width: 'max-content', value: row => row.value, render: lossText };
-const READ: TableColumn<LossRow> = { key: 'read', header: 'Read', label: 'Read', width: 'max-content', value: row => row.readHour, render: row => formatDateTime(row.readHour) };
+const LOSSES: TableColumn<LossRow> = { key: 'losses', header: 'Losses taken', label: 'Losses taken', numeric: true, width: 'max-content', value: row => row.value, render: lossText };
 
 export default function CasualtiesBreakdownWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const speed = usePlaybackSpeed(runtime.clock), tokens = useChartTokens(), height = useViewportHeight();
@@ -109,7 +107,7 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   const columns = useMemo<TableColumn<LossRow>[]>(() => [WAR,
     { key: 'enemy', header: 'Enemy', label: 'Enemy', value: row => casualtyEnemyName(row, names),
       render: row => <CountryCell {...casualtyCountryCell(row, names, flags)} /> },
-    LOSSES, READ,
+    LOSSES,
   ], [names, flags]);
   useEffect(() => { setDrill(CLOSED); setVisible([]); setChartRange(null); }, [runtime.client, identity, widget.time, options.show]);
   const diagnostics = useMemo(() => [...new Set([...(manifest.data?.warnings ?? []), ...[...histories.data.values()].flatMap(reply => reply.warnings)])],
@@ -117,33 +115,30 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   useDiagnostics(onDiagnostics, diagnostics);
 
   if (!track || !tag) return <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its casualties." />;
-  if (!window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign." />;
-  if (manifest.error) return <WidgetState kind="error" message={manifest.error} onRetry={manifest.retry} />;
+  if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (manifest.error) return <WidgetState kind="error" detail={manifest.error} onRetry={manifest.retry} />;
   if (!manifest.data) return <WidgetState kind="loading" label="Loading casualty breakdown…" />;
-  if (!manifest.data.available) return <WidgetState kind="unavailable" message="The native war grouping needed for this breakdown was not recorded." />;
+  if (!manifest.data.available) return <WidgetState kind="unavailable" message="Losses by war were not recorded." />;
   const currentError = currentWindows[0] === undefined ? undefined : histories.errors.get(currentWindows[0]);
   const error = detailWindows[0] === undefined ? undefined : histories.errors.get(detailWindows[0]);
   const summary = (value: typeof snapshot) => value
-    ? <p className="casualty-breakdown-total">{value.incomplete ? 'Recorded subtotal' : 'Known taken'}: <b>{exactLosses(value.total)}</b></p> : null;
+    ? <p className="casualty-breakdown-total">{value.incomplete ? 'Recorded subtotal' : 'Losses taken'}: <b>{exactLosses(value.total)}</b></p> : null;
   const detailBody = <div className="casualty-breakdown-details">
-    {pinned && <p className="casualty-breakdown-total">{formatDateTime(detailHour)} {!effectiveDrill.follow
+    {pinned && <p className="casualty-breakdown-total">{dayLabel(detailHour)} {!effectiveDrill.follow
       && <button type="button" className="button small" onClick={follow}>Follow playback</button>}</p>}
-    {detailOutside ? <WidgetState kind="unavailable" message={`The chosen moment ${formatDateTime(detailHour)} is outside this campaign branch.`} />
-      : error ? <WidgetState kind="error" message={error} onRetry={histories.retry} />
+    {detailOutside ? <WidgetState kind="unavailable" message="This time is outside the recording." />
+      : error ? <WidgetState kind="error" detail={error} onRetry={histories.retry} />
       : !detail ? <WidgetState kind="loading" label="Loading this moment…" />
         : !details ? <p className="drill-empty">{detail.observed.some(span => span.firstHour <= detailHour && detailHour <= span.lastHour)
-          ? 'No casualty relations were recorded for this country' : 'Casualty counters were not recorded'} at {formatDateTime(detailHour)}.</p>
+          ? 'No casualty relations were recorded for this country' : 'Casualty counters were not recorded'} at {dayLabel(detailHour)}.</p>
           : <>{summary(details)}<div className="casualty-breakdown-table"><Table label="Recorded casualty lifetimes" rows={details.rows}
             columns={columns} rowKey={rowKey} sort={SORT}
             cellBars={false} rankMarkers={false} hoursPerSecond={speed} onVisibleRows={setVisible}
             menu={row => [jumpItem(runtime, track.id, row.readHour)]}
             tooltip={row => fitTooltip([{ title: `${row.war} › ${enemyName(row)}`, rows: [
-              { label: 'Known taken', value: lossText(row), strong: true },
-              { label: 'Read', value: formatDateTime(row.readHour) },
-              { label: 'Native grouping supplied', value: formatDateTime(row.groupingHour) },
+              { label: 'Losses taken', value: lossText(row), strong: true },
               { label: 'Enemy key', value: row.enemyTag },
-              ...(row.enemyHour < detailHour ? [{ label: 'Enemy facts read', value: formatDateTime(row.enemyHour) }] : []),
-            ], note: [row.reason, row.nameReason, row.incomplete ? 'Missing hours may hide additional losses or whole wars.' : null].filter(Boolean).join(' ') }], height)} /></div></>}
+            ] }], height)} /></div></>}
     <div className="casualty-breakdown-history"><TimeChart label="Positive recorded casualties by war over time"
       extent={[track.branch.firstHour, track.branch.lastHour]} branchStart={track.branch.firstHour}
       playhead={effectiveDrill.follow ? clockHour : null} playback="cursor" hoursPerSecond={speed}
@@ -155,16 +150,14 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
         const index = breakdownWindows(manifest.data, at, false)[0];
         const reply = index === undefined ? undefined : histories.data.get(index);
         const value = reply ? lossesAt(reply, at) : null;
-        return { title: formatDateTime(Math.floor(at)), rows: [{ label: value?.incomplete ? 'Recorded subtotal' : 'Known taken',
-          value: value ? exactLosses(value.total) : reply ? 'Not recorded' : 'Loading…', strong: true }],
-          note: 'Bands show positive amounts; click to select this moment’s exact signed rows.' };
+        return { title: dayLabel(Math.floor(at)), rows: [{ label: value?.incomplete ? 'Recorded subtotal' : 'Losses taken',
+          value: value ? exactLosses(value.total) : reply ? 'Not recorded' : 'Loading…', strong: true }] };
       }} /></div>
     {chartWindows.some(index => !histories.data.has(index) && !histories.errors.has(index)) && <p className="drill-empty">Loading history in the visible time range…</p>}
     {chartWindows.some(index => histories.errors.has(index)) && <button type="button" className="button small" onClick={histories.retry}>Retry history</button>}
-    <p className="chart-line-key">Only positive amounts have geometry. Exact signed corrections and zero values remain in the table.</p>
   </div>;
-  const main = outside ? <WidgetState kind="unavailable" message={`The chosen moment ${formatDateTime(hour)} is outside this campaign branch.`} />
-    : currentError ? <WidgetState kind="error" message={currentError} onRetry={histories.retry} />
+  const main = outside ? <WidgetState kind="unavailable" message="This time is outside the recording." />
+    : currentError ? <WidgetState kind="error" detail={currentError} onRetry={histories.retry} />
       : !current ? <WidgetState kind="loading" label="Loading casualty history…" />
         : <div className="casualty-breakdown-main" onContextMenu={event => { event.preventDefault(); menu.open(event.clientX, event.clientY, [jumpItem(runtime, track.id, hour)]); }}
     onKeyDown={event => { if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) {
@@ -176,17 +169,15 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
         ? 'No casualty relations were recorded for this country at this moment.' : 'Casualty counters were not recorded at this moment.'} />
       : <Sunburst key={JSON.stringify([identity, snapshot.identity, manifest.data.observed.find(span => span.firstHour <= hour && hour <= span.lastHour)?.firstHour,
         widget.time.mode === 'follow' ? runtime.clock.getSnapshot().seekSequence : 0])}
-        label="Positive known casualties by native war and enemy" root={ROOT} items={items} levels={levels} text={TEXT}
-        settings={sunburstSettings(options)} hoursPerSecond={speed} active={active && (!open || options.drill === 'popout')}
-        footnote="Shares show positive amounts only. Known losses from land, naval and air are combined; losses with no recorded attacker are excluded." />}
+        label="Positive casualties by war and enemy" root={ROOT} items={items} levels={levels} text={TEXT}
+        settings={sunburstSettings(options)} hoursPerSecond={speed} active={active && (!open || options.drill === 'popout')} />}
     <button type="button" className="button small" onClick={() => setDrill(state => reduceDrill(state,
       { type: 'open', breakdown: DETAIL.id, hour, playing: widget.time.mode === 'follow' && runtime.clock.getSnapshot().playing,
-        playhead: widget.time.mode === 'follow' ? hour : null }))}>All recorded losses{snapshot?.rows.some(row => row.value < 0n) ? ' and signed corrections' : ''}</button>
-    {manifest.data.hasGap && <p className="chart-line-key">Missing hours may hide losses or whole wars. Affected values are recorded subtotals.</p>}
+        playhead: widget.time.mode === 'follow' ? hour : null }))}>All losses</button>
   </div>;
   return <div ref={anchor} className="casualty-breakdown">
     {pinned ? detailBody : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={open} title="Recorded losses"
-      day={formatDateTime(detailHour)} following={effectiveDrill.follow} canFollow
+      day={dayLabel(detailHour)} following={effectiveDrill.follow} canFollow
       onClose={() => setDrill(CLOSED)} onFollow={follow}
       onPin={runtime.addWidgetBelow ? () => {
         const pin = pinnedBreakdown(widget, DETAIL, track.id);

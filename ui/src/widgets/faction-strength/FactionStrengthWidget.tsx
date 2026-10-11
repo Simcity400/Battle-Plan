@@ -12,5 +12,5 @@ export default function FactionStrengthWidget(props: WidgetProps) {
     && !TERRITORY_MEASURES.some(item => item.value === options.territoryMeasure);
   return <FactionRaceView {...props} options={options} source={source} max={definition.countries.max} label="Faction strength"
     measureLabel={unit => factionStrengthLabel(source, unit)} formatValue={formatTerritory} note={factionStrengthNote(source)}
-    unavailableReason={unavailable ? `Not in this recording: territory measure ${options.territoryMeasure}.` : undefined} />;
+    unavailableReason={unavailable ? 'This territory measure is unavailable.' : undefined} />;
 }

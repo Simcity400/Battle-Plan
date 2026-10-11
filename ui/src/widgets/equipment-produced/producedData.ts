@@ -372,7 +372,7 @@ export function* producedTooltips(model: ProducedModel, tag: string, name: strin
     const subtotal = equipmentGroupValue(series, part.key, at.index);
     return Number.isNaN(subtotal) ? [] : [row(`${keyLabel(model, part.key, hour)} — Equipment lines`, subtotal, colorOf.get(part.key))];
   });
-  const detailNote = equipment.length ? `${base.note ?? ''} Equipment-line subtotals are independent; combined amounts are not known.`.trim() : base.note;
+  const detailNote = equipment.length ? `${base.note ?? ''} Total unavailable; equipment subtotal shown.`.trim() : base.note;
   yield { ...base, note: detailNote, rows: [...empty, ...parts.map(part => row(keyLabel(model, part.key, hour), part.value, colorOf.get(part.key))), ...equipment, total] };
   const shown = bands.map(band => ({ band, value: known(bandValue(series, band, at.index)) })).filter(item => item.value !== 0);
   yield { ...base, note: detailNote, rows: [...empty, ...shown.map(item => row(bandLabel(model, item.band, hour), item.value, item.band.color)), total] };

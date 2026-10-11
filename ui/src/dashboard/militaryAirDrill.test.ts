@@ -14,10 +14,11 @@ import { plotFrame } from '../charts/frame.ts';
 import { pickLines } from '../charts/linePick.ts';
 import { tokensFromValues } from '../charts/tokens.ts';
 import type { WidgetProps } from './definitions';
-import type { WidgetSpec } from './model';
+import type { BoundTrack, WidgetSpec } from './model';
 import type BombingDrill from './BombingDrill.tsx';
 import type AirLossDrill from './AirLossDrill.tsx';
 import type { MilitaryAirReply } from '../generated/dashboard';
+import type { SunburstProps } from '../charts/sunburst/Sunburst';
 import { militaryAirIndex, validateMilitaryAirReply } from './militaryAirLedger.ts';
 import { OPTIONS } from '../widgets/air-kills-losses/definition.ts';
 
@@ -78,6 +79,34 @@ const common = {
   '/charts/useChartTokens.ts': `const tokens = ${JSON.stringify(tokensFromValues(() => '#777', 'sans-serif'))}; export const useChartTokens = () => tokens;`,
 };
 
+test('bombing breakdown keeps damage amounts and uses readable missing-content labels', async () => {
+  const state = fixture();
+  const host = globalThis as typeof globalThis & { __airDrill?: ReturnType<typeof fixture>; __bombingBreakdown?: SunburstProps };
+  host.__airDrill = state;
+  const reply = data(); reply.family = 'bombing';
+  reply.buildings = [{id: 'synthetic-private-token', name: null, missing: 'Synthetic raw building lookup refusal'}];
+  reply.leaves = reply.leaves.map(leaf => ({...leaf, buildingToken: 'synthetic-private-token', state: 0}));
+  const vite = await server({...common,
+    '/dashboard/products.ts': 'export const useProduct = () => ({error: "Synthetic raw place-name failure"});',
+    '/charts/sunburst/Sunburst.tsx': 'export default props => {globalThis.__bombingBreakdown = props; return null;};',
+  });
+  try {
+    const {default: Breakdown} = await vite.ssrLoadModule('/ui/src/dashboard/BombingBreakdown.tsx') as typeof import('./BombingBreakdown.tsx');
+    renderToStaticMarkup(createElement(Breakdown, {data: reply, runtime: {client: {}, clock: {}} as never, track: state.track as unknown as BoundTrack,
+      tag: 'B', identity: '1:9', from: 10, hour: 19, end: 20, dealt: false, options: {}, active: true}));
+    const chart = host.__bombingBreakdown!;
+    assert.equal(chart.text.valueLabel, 'Damage'); assert.equal(chart.text.countLabel, 'Locations');
+    assert.equal(chart.text.unit, 'building levels'); assert.match(chart.footnote as string, /Some damage may be missing/);
+    assert.ok(chart.items.length > 0);
+    for (const item of chart.items) {
+      assert.equal(item.path[0].label, 'Building name unavailable'); assert.equal(item.path[1].label, 'State unknown');
+      assert.doesNotMatch(item.note ?? '', /refus|absent|request/i, 'no backend reason in the hover'); assert.equal(typeof item.exact, 'bigint');
+      assert.equal(item.unknownValue, true, 'incomplete intervals remain unknown');
+    }
+    assert.equal(chart.authoritativeTotal!.unknownValue, true);
+  } finally {await vite.close(); delete host.__airDrill; delete host.__bombingBreakdown;}
+});
+
 test('actual Air view opens the witnessed chooser, holds days, follows the clock, pins and rejects replaced owners', async () => {
   const state = fixture(), globals = globalThis as typeof globalThis & { __airDrill?: ReturnType<typeof fixture> };
   globals.__airDrill = state;
@@ -129,6 +158,11 @@ test('actual Air view opens the witnessed chooser, holds days, follows the clock
     assert.equal(state.added[0].options!.holder, JSON.stringify(['campaign', 'branch', 'B', '1:9']));
     state.host!.onFollow(); render(); assert.equal(state.detail!.hour, 18);
     state.hour = -981; render(); assert.equal(state.detail!.hour, 19, 'native history survives leaving top N');
+    state.host!.onPause!(); render(); assert.equal(state.detail!.hour, 19);
+    state.hour = -982; render(); assert.equal(state.detail!.hour, 19, 'pause holds the shown hour when playback seeks');
+    state.host!.onPin!(); assert.deepEqual(state.added.at(-1)!.time, { mode: 'pin', windows: { track: { firstOffset: 9, lastOffset: 9 } } });
+    state.added.pop();
+    state.host!.onFollow(); render(); assert.equal(state.detail!.hour, 18); state.hour = -981; render();
     const stableOwner = state.chart!.pickOwner, oldPick = state.chart!.onPick!, oldPin = state.host!.onPin!, oldFollow = state.host!.onFollow;
     state.track.source.revision++; state.data = { ...state.data, regions: [{ id: '40001', name: 'Reloaded content', missing: null }], warnings: ['content reload'] };
     render(); assert.equal(state.chart!.pickOwner, stableOwner); assert.equal(state.detail!.identity, '1:9');
@@ -160,10 +194,10 @@ test('actual Air view opens the witnessed chooser, holds days, follows the clock
     assert.deepEqual(state.added.at(-1)!.time, { mode: 'range', firstOffset: 1, lastOffset: 5 });
     props.widget = state.added.at(-1)!; render(); assert.equal(state.host, undefined);
     assert.equal(state.detail!.hour, 15); assert.equal(state.detail!.from, 11); assert.equal(state.detail!.identity, '1:9');
-    assert.match(render(), /Follow playback/, 'a restored range breakdown can follow the clock independently of its held upper bound');
+    assert.match(render(), /Follow/, 'a restored range breakdown can follow the clock independently of its held upper bound');
     state.hour = -977;
     props.widget.time = { mode: 'follow' };
-    assert.match(render(), /outside this campaign/); assert.equal(state.detail, undefined);
+    assert.match(render(), /This time is outside the recording/); assert.equal(state.detail, undefined);
   } finally { await vite.close(); delete globals.__airDrill; }
 });
 
@@ -203,28 +237,28 @@ test('actual cause producer keeps exact negative rows, positive geometry and nat
     const extent = state.history!.layers[0].extent!([10, 20]); assert.equal(extent![0], 0, 'negative corrections have no positive area');
     assert.equal(state.history!.afterPlayhead, false); assert.ok(state.history!.overlay);
     const tip = (hour: number) => state.history!.tooltip!(hour, {} as never, []);
-    assert.equal(tip(15)!.rows.find(row => row.label === 'Own losses booked')!.value, '0.00000');
-    assert.equal(tip(16)!.rows.find(row => row.label === 'Last supplied native event')!.value, 'Hour 11');
-    assert.equal(tip(16)!.rows.find(row => row.label === 'Event supplied')!.value, 'Hour 16');
+    assert.equal(tip(15)!.rows.find(row => row.label === 'Own losses')!.value, '0.00000');
+    assert.equal(tip(16)!.rows.find(row => row.label === 'Last supplied native event'), undefined);
+    assert.equal(tip(16)!.rows.find(row => row.label === 'Event supplied'), undefined);
     assert.equal(tip(18), null, 'unreached future reads are hidden');
     state.parts!.onPick!('3'); assert.match(render(), /History: Air accidents/);
     assert.deepEqual(state.history!.layers[0].extent!([10, 20]), [0, 0]);
     const oldCause = state.parts!.onPick!, oldReset = state.reset!, oldDay = state.history!.onPick!;
     props.tag = 'A'; props.identity = '0:9';
-    assert.match(render(), /All causes stacked/);
+    assert.match(render(), /All causes/);
     assert.deepEqual(state.parts!.parts.map(part => part.id), ['1'], 'the same popout gets the new native holder inventory');
     state.parts!.onPick!('1'); assert.match(render(), /History: Aircraft combat/);
     oldCause('1'); oldReset(); oldDay(14);
     assert.match(render(), /History: Aircraft combat/, 'old holder callbacks cannot overwrite or clear the current cause');
     assert.deepEqual(picked, []);
     props.tag = 'B'; props.identity = '1:9';
-    assert.match(render(), /All causes stacked/);
-    oldCause('3'); assert.match(render(), /All causes stacked/, 'A → B → A cannot revive the first holder owner');
+    assert.match(render(), /All causes/);
+    oldCause('3'); assert.match(render(), /All causes/, 'A → B → A cannot revive the first holder owner');
     state.parts!.onPick!('3'); render();
     const clientCause = state.parts!.onPick!, clientReset = state.reset!, originalClient = props.runtime.client;
     props.runtime.client = {} as typeof props.runtime.client; render();
     props.runtime.client = originalClient; render(); clientCause('3'); clientReset();
-    assert.match(render(), /All causes stacked/, 'a client A → B → A requires a fresh cause owner');
+    assert.match(render(), /All causes/, 'a client A → B → A requires a fresh cause owner');
     state.parts!.onPick!('3'); render();
     const inactiveCause = state.parts!.onPick!, inactiveReset = state.reset!;
     props.active = false; render(); inactiveCause('1'); inactiveReset(); props.active = true;
@@ -289,8 +323,8 @@ test('bombing parts retain exact corrections, selectable positive history and co
     assert.equal(state.history!.tooltip!(18, {} as never, []), null);
     const oldPart = state.parts!.onPick!, oldDay = state.history!.onPick!;
     props.tag = 'A'; props.identity = '0:9'; render();
-    oldPart('correction'); oldDay(14); assert.match(render(), /All building types stacked/); assert.deepEqual(picked, []);
-    props.tag = 'B'; props.identity = '1:9'; render(); oldPart('correction'); assert.match(render(), /All building types stacked/);
+    oldPart('correction'); oldDay(14); assert.match(render(), /All building types/); assert.deepEqual(picked, []);
+    props.tag = 'B'; props.identity = '1:9'; render(); oldPart('correction'); assert.match(render(), /All building types/);
     props.hour = 17; assert.match(render(), /not recorded at this moment/);
     assert.ok(state.parts!.parts.every(part => part.raw === null)); assert.equal(state.parts!.showShares, false);
     assert.deepEqual(state.history!.extent, [10, 20]);
@@ -334,6 +368,10 @@ test('bombing Drill follows the shared clock from a campaign view and rejects re
     assert.equal(state.bombing!.hour, 20); assert.equal(state.host!.canFollow, true); assert.equal(state.butterfly!.active, false);
     state.hour = -981; state.host!.onFollow(); render(); assert.equal(state.bombing!.hour, 19);
     state.host!.onPin!(); assert.deepEqual(state.added[0].time, { mode: 'follow' });
+    state.host!.onPause!(); render(); const pausedHour = state.bombing!.hour;
+    state.hour++; render(); assert.equal(state.bombing!.hour, pausedHour, 'bombing pause keeps its displayed moment');
+    state.host!.onFollow(); render(); assert.equal(state.bombing!.hour, pausedHour + 1);
+    state.hour--; render();
     state.bombing!.onPick(16); render(); assert.equal(state.bombing!.hour, 16); assert.equal(state.host!.following, false);
     const oldPick = state.bombing!.onPick, oldPin = state.host!.onPin!, oldFollow = state.host!.onFollow;
     const oldClient = props.runtime.client; props.runtime.client = {}; render(); assert.equal(state.host!.open, false);
@@ -373,7 +411,7 @@ test('bombing sunburst uses content titles and hover keys while exact recorded d
     assert.equal(factory().path[0].label, 'Building name unavailable');
     assert.equal(factory().exact, exact, 'missing content text does not change recorded damage');
     assert.match(factory().note!, /Key: factory/);
-    assert.match(factory().note!, /Synthetic absent localization/);
+    assert.doesNotMatch(factory().note!, /Synthetic absent localization/, 'the lookup key, not the localization diagnostic');
     assert.equal(parts().find(item => item.path[0].id === 'building:correction')!.path[0].label, '');
     props.data = { ...data, buildings: [{ id: 'factory', name: 'factory', missing: null }] };
     render();
@@ -383,8 +421,7 @@ test('bombing sunburst uses content titles and hover keys while exact recorded d
     assert.equal(factory().path[1].label, '');
     state.data = undefined;
     render();
-    assert.equal(factory().path[1].label, 'State name not recorded');
+    assert.equal(factory().path[1].label, 'Loading name…', 'a state name still loading is not called unrecorded');
     assert.equal(factory().exact, exact);
-    assert.match(factory().note!, /Loading the dated state name/);
   } finally { await vite.close(); delete globals.__bombingTitles; }
 });

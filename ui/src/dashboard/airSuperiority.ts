@@ -2,7 +2,6 @@ import type { AirCell, AirReply as WireAirReply, AirSide, AirSpan } from '../gen
 import type { HeatPeriod, HeatRow } from '../charts/heat/layout';
 import type { TooltipContent } from '../charts/tooltip';
 import type { CountryLabel } from './countryFlagsAt';
-import { formatDateTime } from './calendar.ts';
 import { formatAmount } from '../charts/valueAxis.ts';
 import { int, object } from './validation.ts';
 import { runAt } from '../charts/series.ts';
@@ -18,7 +17,6 @@ export interface AirView { state: AirState; parts: readonly AirPart[]; total: bi
  * value look alike, so a projection need not ask again for each. */
 export interface AirLooks { name(side: AirSide): string; color(side: AirSide, hour?: number): string; viewpointAt?(hour: number): AirLooks['viewpoint']; lookAt?(hour: number): unknown; viewpoint: { name: string; tag?: string; color: string }; enemy: string; scale: number; badBelow: number; goodAbove: number; mode?: 'sides' | 'viewpoint' }
 export interface AirTimelineViews { rows: HeatRow[]; periods: HeatPeriod[]; viewAt(region: number, day: number): AirView | undefined }
-export const MODE_NOTE = 'Each side uses its leader’s friendly score. The game keeps “my side vs my enemies”; these shares compare those independent views. Allied factions merge. Co-belligerents join the side with the most distinct shared enemies; ties count enemies also fought by its leader, then use the numeric faction anchor. A factionless coalition uses the region’s highest-scoring member as its viewpoint.';
 export const FILTERED_NOTE = 'No selected side has a score (others may)';
 
 export const airSegmentAt = (segments: Readonly<Partial<Record<string, readonly AirSpan[]>>>, tag: string, hour: number): number | null =>
@@ -267,7 +265,7 @@ export function orderedRegions(rows: readonly AirRegionView[], order: 'name' | '
 
 export function airState(view: AirView): string {
   if (view.state === 'filtered') return view.reason === 'outside-theatres' ? 'Outside selected air theatres' : FILTERED_NOTE;
-  if (view.state === 'no-air-object') return 'No strategic-air object';
+  if (view.state === 'no-air-object') return 'No air data';
   if (view.state === 'gap') return 'Not recorded';
   if (view.state === 'unknown') return view.reason === 'side-not-present' ? 'Side not present at this hour' : 'Unknown';
   if (view.state === 'inactive') return 'No air activity';
@@ -288,9 +286,9 @@ const AIR_MISSING_REASONS: Readonly<Record<string, string>> = {
   'score-not-recorded': 'Scores were not recorded at this hour.',
   'scores-unavailable': 'Scores were not recorded at this hour.',
   'sides-not-recorded': 'Side membership was not recorded.',
-  'countries-not-recorded': 'Country identities were not recorded.',
-  'identity-not-recorded': 'Country identities were not recorded.',
-  'theatres-not-recorded': 'Air theatre membership was not recorded.',
+  'countries-not-recorded': 'Countries unavailable.',
+  'identity-not-recorded': 'Countries unavailable.',
+  'theatres-not-recorded': 'Air groups unavailable.',
 };
 export function airTooltip(region: { name: string }, view: AirView, viewpoint: boolean, country: CountryLabel, filtered: boolean, factionNames?: ReadonlyMap<string, string | null>): TooltipContent {
   const parts = [...view.parts].sort((a, b) => a.score === b.score ? 0 : a.score > b.score ? -1 : 1);
@@ -301,31 +299,27 @@ export function airTooltip(region: { name: string }, view: AirView, viewpoint: b
   // Air-map thresholds are supplied by the product.
   const overflows = friendly && (BigInt.asIntN(64, view.total) !== view.total || BigInt.asIntN(64, friendly.score * BigInt(view.scale)) !== friendly.score * BigInt(view.scale));
   const thresholds = `Above ${airPercent(BigInt(view.goodAbove), BigInt(view.scale))}: air superiority; below ${airPercent(BigInt(view.badBelow), BigInt(view.scale))}: enemy superiority; otherwise contested.`;
-  const viewpointNote = overflows
-    ? `Exact viewpoint: shares divide the recorded friendly and enemy scores by their exact sum. The state uses the game’s signed 64-bit fixed5 arithmetic, which overflows for these scores, so it can differ from these shares. ${thresholds}`
-    : `Exact viewpoint: friendly / (friendly + enemy), as the game’s air map. ${thresholds}`;
+  const viewpointNote = `${overflows ? 'Game status differs from the displayed shares. ' : ''}${thresholds}`;
   return { title: region.name, rows: [
-    { label: 'Read', value: view.hour == null ? 'Not recorded' : formatDateTime(view.hour) },
-    ...(view.theatreRead === undefined ? [] : [{ label: 'Air theatre membership read', value: formatDateTime(view.theatreRead) }]),
     ...parts.map(part => ({ label: part.id === 'enemy' ? `Enemies of ${viewpointName}` : part.side ? `${sideLabel(part.side)}${part.id === 'friendly' ? ' (friendly)' : ''}` : part.tag ? `${country(part.tag).name}${part.id === 'friendly' ? ' (friendly)' : ''}` : part.label,
       countryFlag: part.tag ? country(part.tag) : undefined, swatch: part.color, value: `${view.state === 'unknown' ? 'Share unknown' : airPercent(part.score, view.total)} · ${formatAmount(part.score, view.scale)} score` })),
-    ...parts.flatMap(part => part.side ? [{ label: `${sideLabel(part.side)}${part.side.coBelligerents ? ` with ${part.side.coBelligerents} co-belligerents` : ''}`, value: part.tag ? `Viewpoint: ${country(part.tag).name}` : 'Leader not recorded', indent: true }] : []),
+    ...parts.flatMap(part => part.side && part.side.coBelligerents ? [{ label: `${sideLabel(part.side)} with ${part.side.coBelligerents} co-belligerents`, value: part.tag ? `Viewpoint: ${country(part.tag).name}` : 'Leader not recorded', indent: true }] : []),
     ...(view.unknown.length ? [{ label: 'Unknown sides', value: String(view.unknown.length) }] : []),
     ...view.unknown.map(side => ({ label: sideLabel(side), value: 'Score unknown' })),
-    ...view.noAirObject.map(side => ({ label: sideLabel(side), value: 'No strategic-air object (excluded)' })),
-    ...(view.excluded ? [{ label: 'Excluded sides', value: `${view.excluded} ${view.excluded === 1 ? 'side has' : 'sides have'} no strategic-air object and ${view.excluded === 1 ? 'is' : 'are'} excluded` }] : []),
+    ...view.noAirObject.map(side => ({ label: sideLabel(side), value: 'No air data' })),
+    ...(view.excluded ? [{ label: 'Excluded sides', value: String(view.excluded) }] : []),
     ...(viewpoint ? [{ label: 'Viewpoint', value: viewpointName }] : []),
     { label: 'State', value: airState(view) },
     ...(view.wings == null ? [] : [{ label: 'Air wings assigned to the region', value: `${view.wings}` }]),
-  ], note: `${viewpoint ? viewpointNote : MODE_NOTE}${filtered ? ' Shares use only the selected sides.' : ''}${view.reason && view.state === 'unknown' ? ` ${AIR_MISSING_REASONS[view.reason] ?? 'The required data was not recorded.'}` : ''}` };
+  ], note: [viewpoint ? viewpointNote : '', filtered ? 'Shares use only the selected sides.' : '',
+    view.reason && view.state === 'unknown' ? AIR_MISSING_REASONS[view.reason] ?? 'The required data was not recorded.' : ''].filter(Boolean).join(' ') || undefined };
 }
 
-/** The approved compact hover keeps shares, missing sides, wings and their date. */
+/** The compact hover keeps shares, missing-side counts and assigned wings. */
 export function airSummaryTooltip(full: TooltipContent, view: AirView): TooltipContent {
   const labels = new Set(view.parts.map(part => part.label));
-  return { ...full, rows: full.rows.filter(row => row.label === 'Read' || row.label === 'Air theatre membership read'
-    || row.label === 'Air wings assigned to the region' || labels.has(String(row.label)) || row.swatch != null
-    || row.value === 'Score unknown' || row.value === 'No strategic-air object (excluded)' || row.label === 'Excluded sides' || row.label === 'Unknown sides')
+  return { ...full, rows: full.rows.filter(row => row.label === 'Air wings assigned to the region' || labels.has(String(row.label)) || row.swatch != null
+    || row.label === 'Excluded sides' || row.label === 'Unknown sides')
       .map(row => row.swatch ? { ...row, value: String(row.value).split(' \u00b7 ')[0] } : row)
       .concat(view.state === 'known' ? [] : [{ label: 'State', value: airState(view) }]) };
 }

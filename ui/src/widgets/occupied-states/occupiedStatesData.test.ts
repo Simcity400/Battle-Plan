@@ -248,14 +248,14 @@ test('actual occupation columns date hourly Owner looks and retain unknown nativ
     props.widget.countries = { kind: 'tags', tags: ['X'] };
     render();
     assert.equal(fixture.state?.kind, 'unavailable');
-    assert.match('message' in fixture.state! ? fixture.state.message ?? '' : '', /native identities.*supplying read/);
+    assert.match('message' in fixture.state! ? fixture.state.message ?? '' : '', /Occupied states unavailable for these countries/);
     assert.equal(fixture.table, undefined);
     fixture.groups = { ...groups, countryIdentities: [...groups.countryIdentities,
       { tag: 'Alias', identities: [{ firstHour: 10, lastHour: 19, slot: 1, countryId: 10 }] }] };
     fixture.data = windowOf([{ state: 2000, runs: [{ firstHour: 10, lastHour: 24, value: { ...value, owner: 'X' } },
       { firstHour: 25, lastHour: 33, value: { ...value, owner: 'Y', occupier: 'X' } }] }, { state: 3000,
       runs: [{ firstHour: 10, lastHour: 33, value: { ...value, occupier: 'Alias' } }] }], observed);
-    assert.match(render(), /Some occupied states could not be matched/);
+    assert.match(render(), /Some states couldn’t be matched to these countries/);
     assert.equal(currentTable()?.rows.length, 1, 'known matching rows stay visible beside an unknown endpoint');
     assert.equal(fixture.state, undefined);
     fixture.data = windowOf([{ state: 2000, runs: [{ firstHour: 10, lastHour: 33, value: { ...value, occupier: 'Other' } }] }], observed);
@@ -274,16 +274,19 @@ test('exact labels distinguish missing from zero and date equal consecutive read
   assert.equal(percent('10000000'), '100%'); assert.equal(percent('9999999'), '99.99999%');
   const row = occupiedAt(reply, 25, null, 'occupier').rows[0];
   const label = (tag: string) => `Recorded name of ${tag}`;
-  const tip = occupationTooltip(manifest.strengthMissing, row, label);
+  const tip = occupationTooltip(row, label);
   assert.equal(tip.rows.find(item => item.label === 'Occupied country')?.value, 'Recorded name of Original tag');
   assert.equal(tip.rows.find(item => item.label === 'Resistance speed')?.value, '−0.00001 pp/day');
   assert.equal(tip.rows.find(item => item.label === 'Compliance speed')?.value, '+0.1 pp/day');
   assert.equal(tip.rows.find(item => item.label === 'Required manpower')?.value, '0');
   assert.equal(tip.rows.find(item => item.label === 'Required garrison amount')?.value, '—');
   assert.equal(tip.note, undefined);
-  const known = occupationTooltip(manifest.strengthMissing, { ...row, value: { ...row.value, garrisonStrengthRaw: '0' } }, label);
+  const known = occupationTooltip({ ...row, value: { ...row.value, garrisonStrengthRaw: '0' } }, label);
   assert.equal(known.rows.find(item => item.label === 'Garrison strength')?.value, '0%');
   assert.equal(known.description, undefined);
+  const failed = occupationTooltip({ ...row, value: { ...row.value, garrisonAlert: true, garrisonMissing: 'private garrison reason', lawMissing: 'private law reason' } }, label);
+  assert.ok(failed.rows.some(item => item.label === 'Garrison requirement not met.'));
+  assert.doesNotMatch(JSON.stringify(failed), /private|Read/);
 });
 
 test('empty state names remain authoritative while null keeps the fallback and reason', () => {
@@ -291,9 +294,9 @@ test('empty state names remain authoritative while null keeps the fallback and r
   for (const [name, expected] of [['', ''], [null, 'State 2000']] as const) {
     const shown = { ...row, value: { ...row.value, name, nameMissing: name === null ? 'State name unavailable' : null } };
     assert.equal(stateName(shown), expected);
-    const tip = occupationTooltip(manifest.strengthMissing, shown, tag => tag);
+    const tip = occupationTooltip(shown, tag => tag);
     assert.equal(tip.title, expected);
-    assert.equal(tip.rows.some(item => item.label === 'State name unavailable'), name === null);
+    assert.equal(tip.rows.some(item => item.label === 'State name unavailable'), false);
   }
 });
 
@@ -320,7 +323,7 @@ test('compact native cells retain exact resistance, compliance, speeds and garri
   assert.equal(percentCell(shown.resistanceRaw), '41%');
   assert.equal(percentCell(shown.complianceRaw), '9%');
   assert.equal(garrisonCell(shown, true).text, '1.23');
-  const tip = occupationTooltip(manifest.strengthMissing, { key: '2000', state: 2000, hour: 21, value: shown }, tag => tag);
+  const tip = occupationTooltip({ key: '2000', state: 2000, hour: 21, value: shown }, tag => tag);
   const text = (label: string) => tip.rows.find(row => row.label === label)?.value;
   assert.equal(text('Resistance'), '41.3354%');
   assert.equal(text('Compliance'), '9.40099%');
@@ -335,7 +338,7 @@ test('garrison fraction uses full and half bar geometry and exact tooltip percen
     assert.equal(strengthPercent(raw), percentage);
     const shown = { ...value, garrisonRequiredRaw: '123999', garrisonStrengthRaw: raw };
     assert.equal(garrisonCell(shown, true).bar, strengthBar(raw));
-    const tooltip = occupationTooltip(manifest.strengthMissing, { key: '7', state: 7, hour: 10, value: shown }, tag => tag);
+    const tooltip = occupationTooltip({ key: '7', state: 7, hour: 10, value: shown }, tag => tag);
     assert.equal(tooltip.rows.find(item => item.label === 'Garrison strength')?.value, percentage);
   }
 });

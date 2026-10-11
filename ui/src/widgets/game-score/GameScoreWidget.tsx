@@ -96,21 +96,21 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
   }, [data, groups.data, onDiagnostics]);
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="grid" message="Load a campaign to see its game scores." />;
-    if (!window) return <WidgetState kind="unavailable" message="The chosen moment is outside this campaign branch." />;
-    if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-    if (grouped && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+    if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+    if (grouped && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
     if (!data || (grouped && !groups.data)) return <WidgetState kind="loading" label="Loading game scores…" />;
     if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
-    if (!rows.length) return <WidgetState kind="unavailable" message="No countries were recorded for this selection at this hour. Gaps stay gaps." />;
+    if (!rows.length) return <WidgetState kind="unavailable" message="No country data at this time." />;
     return undefined;
   })();
   if (view === 'race') return <CountryRaceView runtime={runtime} track={track} active={active} state={state} options={options} view="race"
     extent={[track?.branch.firstHour ?? 0, track?.branch.lastHour ?? 1]} playhead={hour} moment={hour} slots={entries.length}
     ranked={entries} lines={[]} parts={parts} raceLegendParts={split ? parts : []} partsLabel="Score parts" entityLooks={entityLooks}
     presentation={{ exact: false, held: false, countryLooks: false, tooltipKeep: SCORE_PARTS.length }}
-    label="Game score" empty="No known Total scores at this hour. Choose the table to see unavailable parts and their reasons."
+    label="Game score" empty="Total scores unavailable at this time."
     formatValue={formatAxisValue}
-    tooltip={(tag, atHour) => { const row = model && gameScoreRow(model, tag, Math.floor(atHour)); return row && data ? gameScoreTooltips(data, row, split) : null; }} />;
+    tooltip={(tag, atHour) => { const row = model && gameScoreRow(model, tag, Math.floor(atHour)); return row && data ? gameScoreTooltips(data, row) : null; }} />;
   if (state) return state;
   return <Table key={JSON.stringify([track!.source.id, track!.source.revision, track!.branch.id])} label="Game score" rows={rows} columns={columns}
     rowKey={rowKey} tieKey={tieKey} sort={sort} setOption={setOption} sortOptionValue={tableSortToken} groupBy={options.factions === true ? gameScoreFaction : undefined}

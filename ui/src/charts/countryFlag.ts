@@ -34,22 +34,15 @@ export function drawCountryFlag(context: CanvasRenderingContext2D, flag: Country
   context.restore();
 }
 
-/** Decode displayed/fitted country rows only; full spoken metadata stays decode-free. */
+/** Decode displayed/fitted country rows only; full spoken metadata stays decode-free.
+ * A missing flag is decorative, so it adds nothing to what is read out. */
 export function countryFlagContent(content: TooltipContent | null, flag: CountryFlagLook | undefined, wake: () => void): TooltipContent | null {
   if (!content) return null;
   if (!flag && !content.countryFlag && !content.rows.some(row => row.countryFlag)) return content;
-  const extra: string[] = [];
-  const read = (value: CountryFlagLook) => {
-    const next = canvasCountryFlag(value, wake);
-    if (next !== value && !next.flag) extra.push(countryFlagUnavailable(next.flagReason, next.flagPending).text);
-    return next;
-  };
   const header = flag ?? content.countryFlag;
-  const countryFlag = header ? read(header) : undefined;
-  if (flag && !content.countryFlag && !countryFlag?.flag) extra.push(countryFlagUnavailable(countryFlag?.flagReason, countryFlag?.flagPending).text);
-  const rows = content.rows.map(row => row.countryFlag ? { ...row, countryFlag: read(row.countryFlag) } : row);
-  return { ...content, countryFlag, rows, spoken: content.spoken && extra.length
-    ? [content.spoken, ...new Set(extra)].join('; ') : content.spoken };
+  const countryFlag = header ? canvasCountryFlag(header, wake) : undefined;
+  const rows = content.rows.map(row => row.countryFlag ? { ...row, countryFlag: canvasCountryFlag(row.countryFlag, wake) } : row);
+  return { ...content, countryFlag, rows };
 }
 
 /** Dated tooltip metadata wins over a node's look. Scrolling rows are decoded

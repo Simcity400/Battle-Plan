@@ -7,7 +7,7 @@ import type { CountrySelection } from '../../dashboard/model';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import type { ResourceInfo, TradeFlow, TradeFlowsReply } from '../../generated/dashboard';
 import { buildDiagram, campaignScale, coverageNote, decodeTrade, emptyMessage, flowValue, knownSpanAt, leftOutAt, measureAmount, measureRows, OTHER, resourceColours, selectFlows, selectionMessage,
-  sideRanks, tradeScope, flowCountryAt, identityCountryAt, unknownNote, unrecordedMessage, validateTradeFlowsReply } from './tradeData.ts';
+  sideRanks, tradeScope, flowCountryAt, identityCountryAt, unknownNote, unrecordedMessage, validateTradeFlowsReply, resourceName, measureNote } from './tradeData.ts';
 
 const resource = (id: number, token: string): ResourceInfo => ({ id, token, ordinal: 1, name: null, icon: null });
 /** A flow from runs of [first, last, delivered raw, factories, convoys assigned, required]. */
@@ -36,6 +36,15 @@ test('trade selection accepts every recorded country', () => {
   const tags = Array.from({ length: 5000 }, (_, index) => `MOD${index}`);
   const resolved = resolveCountries({ kind: 'tags', tags }, [], undefined, 119, definition.countries.max);
   assert.deepEqual([resolved.tags, resolved.dropped], [tags, 0]);
+});
+
+test('trade labels keep content names and ordinals without exposing unresolved tokens', () => {
+  assert.equal(resourceName(resource(1, 'private_mod_resource')), 'Resource name unavailable');
+  assert.equal(resourceName({ ...resource(1, 'private_mod_resource'), ordinal: 2 }), 'Resource name unavailable (2)');
+  assert.equal(resourceName({ ...resource(1, 'private_mod_resource'), name: 'Modded resource' }), 'Modded resource');
+  assert.equal(measureNote('current'), 'Per day');
+  assert.equal(measureNote('total'), 'Total delivered');
+  assert.equal(measureNote('average'), 'Average per trading day');
 });
 
 test('countries per side accepts counts above forty and one, keeping the default twelve', () => {
@@ -175,7 +184,7 @@ test('unknown hours are found and said, never counted as no trade', () => {
   assert.equal(knownSpanAt(known, 80), -1);
   assert.equal(knownSpanAt(known, 100), 1);
   assert.equal(unknownNote(known, 0, 71), undefined);
-  assert.equal(unknownNote(known, 0, 119), '1 day in this time had no recorded deals; they are not counted.');
+  assert.equal(unknownNote(known, 0, 119), 'Trade data is missing for 1 day.');
   // Every measure says a time with nothing recorded is not recorded, never no trade.
   const gappy = [{ firstHour: 0, lastHour: 23 }, { firstHour: 48, lastHour: 71 }];
   for (const measure of ['total', 'average'] as const) assert.equal(unrecordedMessage(gappy, measure, 24, 47), 'Trade deals were not recorded in this time.');
@@ -216,9 +225,9 @@ test('an unrecorded human roster is unknown before an empty selection stops the 
   const resolved = resolveCountries(selection, [], groups, 575, 256);
   assert.deepEqual(resolved.tags, []);
   const atMoment = worldFilter(selection, [], groups, 300, 575);
-  assert.equal(selectionMessage(resolved, atMoment, 'current', 0, 300), 'This group’s members were not recorded at this moment.');
+  assert.equal(selectionMessage(resolved, atMoment, 'current', 0, 300), 'Group membership is unavailable at this time.');
   const ever: CountrySelection = { ...selection, membership: 'ever' };
-  const everReason = 'No member of this group was recorded, and its membership was not recorded for part of this campaign branch.';
+  const everReason = 'Group membership is incomplete for this campaign.';
   const everResolved = resolveCountries(ever, [], groups, 575, 256);
   const everMoment = worldFilter(ever, [], groups, 300, 575);
   assert.equal(everResolved.reason, everReason);
@@ -249,10 +258,10 @@ test('an empty each-hour group says how much membership was unrecorded in totals
   const atMoment = worldFilter(selection, [], groups, 575, 575);
   for (const measure of ['total', 'average'] as const) {
     assert.equal(selectionMessage(resolved, atMoment, measure, 0, 575, resolved.unobserved),
-      '12.5 days of the group’s membership in this time were not recorded; they are not counted.');
+      'Group membership is missing for 12.5 days.');
     assert.equal(selectionMessage(resolved, atMoment, measure, 300, 575, resolved.unobserved), 'This group has no members at this moment.');
     assert.equal(selectionMessage(resolved, atMoment, measure, 250, 575, resolved.unobserved),
-      '2.1 days of the group’s membership in this time were not recorded; they are not counted.');
+      'Group membership is missing for 2.1 days.');
     // A roster counted at the end does not depend on earlier missing hours.
     assert.equal(selectionMessage(resolved, atMoment, measure, 0, 575), 'This group has no members at this moment.');
   }
@@ -279,11 +288,11 @@ test('hours whose reads left deals out are said, never shown as the whole trade'
   assert.equal(leftOutAt(item.partial, 30), 2);
   assert.equal(leftOutAt(item.partial, 50), 0);
   assert.equal(coverageNote(item, 'current', 0, 30),
-    '2 deals at this read could not be attributed (a seller, buyer or resource the recording does not name) and are not shown.');
+    '2 trades could not be identified.');
   assert.equal(coverageNote(item, 'current', 0, 50), undefined);
-  assert.equal(coverageNote(item, 'total', 0, 71), '1 day in this time had deals that could not be attributed; those deals are not counted.');
+  assert.equal(coverageNote(item, 'total', 0, 71), 'Some trades are missing for 1 day.');
   assert.equal(coverageNote(item, 'average', 0, 119),
-    '1 day in this time had no recorded deals; they are not counted. 1 day in this time had deals that could not be attributed; those deals are not counted.');
+    'Trade data is missing for 1 day. Some trades are missing for 1 day.');
   assert.throws(() => validateTradeFlowsReply({ ...reply(), partial: [{ firstHour: 5, lastHour: 4, deals: 1 }] }));
 });
 
@@ -358,7 +367,7 @@ test('a missing end-group holder is unknown rather than selecting a previous or 
     unobserved: { humans: [], factions: [], wars: [] }, warnings: [] };
   const scope = tradeScope(data, selection, resolveCountries(selection, [], groups, 71, Infinity), groups, 71, false);
   assert.ok(scope.kind === 'countries');
-  assert.match(scope.identityNote ?? '', /identities were not recorded/);
+  assert.match(scope.identityNote ?? '', /Some trade could not be identified/);
   assert.equal(scope.countryIds?.size, 0);
   assert.equal(selectFlows(data, scope, null).length, 0);
 });

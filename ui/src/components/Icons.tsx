@@ -72,6 +72,16 @@ const paths = {
   flows: <><path d="M4 5.5v5M20 5.5v4M20 13.5v5M4 14.5v4" /><path d="M4 8c8 0 8 8 16 8M4 16.5c7 0 9-5 16-5.5" /></>,
   shield: <><path d="M12 3.5 19 6v5.5c0 4.3-2.9 7.6-7 9-4.1-1.4-7-4.7-7-9V6l7-2.5Z" /><path d="M12 3.5v17" /></>,
   hierarchy: <><rect x="9" y="3.5" width="6" height="4.5" rx="1.25" /><rect x="3.5" y="16" width="6" height="4.5" rx="1.25" /><rect x="14.5" y="16" width="6" height="4.5" rx="1.25" /><path d="M12 8v4M6.5 16v-4h11v4" /></>,
+  // Event feed kinds without game artwork.
+  swords: <><path d="M14.5 17.5 3 6V3h3l11.5 11.5" /><path d="m13 19 6-6M16 16l4 4M19 21l2-2" /><path d="M9.5 17.5 21 6V3h-3L6.5 14.5" /><path d="m11 19-6-6M8 16l-4 4M5 21l-2-2" /></>,
+  'flag-torn': <><path d="M5 21V3.5c2.2-1.3 4.3-.9 6.3.2L10 7l2.5 3-1.3 3.3c-2-1.1-4-1.4-6.2-.3" /><path d="M14.6 4.5c1.4.4 2.9.2 4.4-1v10c-1.9 1.1-3.7 1.2-5.5.7l1.3-3.4-2.4-3 2.2-3.3Z" /></>,
+  'flag-plus': <><path d="M5 21V3.5c5-3 9 3 14 0v10c-5 3-9-3-14 0" /><path d="M12 6.5v5M9.5 9h5" /></>,
+  'flag-x': <><path d="M5 21V3.5c5-3 9 3 14 0v10c-5 3-9-3-14 0" /><path d="m10 6.5 4 4M14 6.5l-4 4" /></>,
+  'olive-branch': <><path d="M5 19C9 15 13 11 19 5" /><path d="M9 15c-2.2-.3-3.6-1.6-4-4 2.3.2 3.7 1.4 4 4ZM12.2 11.8c-.4-2.2.3-3.9 2.3-5.3.6 2.2-.1 4-2.3 5.3ZM14 13.5c2.2-.6 4-.1 5.4 1.8-2.2.7-4 .1-5.4-1.8ZM16.5 7.5c.2-2 1.3-3.1 3.3-3.3-.1 2-1.2 3.1-3.3 3.3Z" /></>,
+  'users-plus': <><circle cx="9" cy="8" r="3.25" /><path d="M3 19.5c.6-3.3 3-5.3 6-5.3s5.4 2 6 5.3" /><path d="M18.5 8v5M16 10.5h5" /></>,
+  'users-minus': <><circle cx="9" cy="8" r="3.25" /><path d="M3 19.5c.6-3.3 3-5.3 6-5.3s5.4 2 6 5.3" /><path d="M16 10.5h5" /></>,
+  'shield-check': <><path d="M12 3.5 19 6v5.5c0 4.3-2.9 7.6-7 9-4.1-1.4-7-4.7-7-9V6l7-2.5Z" /><path d="m8.75 12 2.25 2.25 4.25-4.5" /></>,
+  ballot: <><path d="M4 11h16v9.5H4z" /><path d="M8.5 11 9 3.5h6l.5 7.5" /><path d="m10 7.5 1.5 1.5 3-3" /><path d="M8.5 14.5h7" /></>,
 } satisfies Record<string, ReactNode>;
 
 export type IconName = keyof typeof paths;

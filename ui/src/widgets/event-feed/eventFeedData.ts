@@ -2,7 +2,7 @@ import type { LogRow } from '../../charts/log/logData';
 import { newestFirst } from '../../charts/log/logData.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { drawableIcon } from '../../dashboard/artwork.ts';
-import { formatDateTime } from '../../dashboard/calendar.ts';
+import { formatDate, formatDateTime, gameDate } from '../../dashboard/calendar.ts';
 import { ideaInfo, localisedText, modifierFormat } from '../../dashboard/ideaContent.ts';
 import { ideaTooltip, ideaTooltipSources } from '../../dashboard/ideaTooltip.ts';
 import { int, object, opaqueTag } from '../../dashboard/validation.ts';
@@ -83,7 +83,8 @@ export function filteredEventRows(reply: EventFeedReply, filter: FeedFilter): Lo
   return newestFirst(reply.rows.filter(event => (filter.firstHour === null || event.hour >= filter.firstHour)
     && filter.categories.has(event.category)
     && (filter.allCountries === true || event.tags.some(tag => filter.country(tag, eventCountryHour(event)))))
-    .map(event => ({ key: event.id, id: event.id, hour: event.hour, by: !event.exact,
+    // Every listed event is dated to its day: by the game, or by consecutive reads either side of it.
+    .map(event => ({ key: event.id, id: event.id, hour: event.hour, by: false,
       revealedHour: event.readHour,
       item: { event, item: event.item === null ? null : reply.items[event.item], reply } })));
 }
@@ -141,19 +142,18 @@ export function notRecorded(reply: EventFeedReply): string[] {
   return reply.unavailable.map(item => `${item.label}: Not recorded — ${item.reason}${item.count === null ? '' : ` (${item.count.toLocaleString()} counted)`}`);
 }
 
+/** An event's day; the feed does not show its hour. */
+const dayOf = (hour: number) => { const date = gameDate(hour); return date ? formatDate(date) : formatDateTime(hour); };
+
 export function eventTooltip(at: FeedEvent, name: (tag: string) => string): TooltipContent[] {
   const { event, item, reply } = at;
   const title = eventDescription(at, name);
   const rows: TooltipRow[] = [
-    { label: event.exact ? 'Native date' : 'First observed by', value: formatDateTime(event.hour) },
-    { label: 'Read supplying this event', value: formatDateTime(event.readHour) },
+    { label: 'Date', value: dayOf(event.hour) },
   ];
-  if (event.nameHour !== event.hour) rows.push({ label: 'Country last observed', value: formatDateTime(event.nameHour) });
-  if (!item?.icon) rows.push({ label: 'Artwork', value: 'Not available from the recorded content', tone: 'muted' });
-  const note = [!event.exact ? 'The event happened by this observation; its exact hour is not recorded.' : '',
-    event.kind === 'warStarted' ? 'The recording does not distinguish a declaration from joining an existing war.' : '',
-    event.kind === 'ceasedToExist' ? 'The recorded owned-state count fell to zero. The recording cannot tell whether this was an annexation or another loss of all owned states.' : '',
-    event.kind === 'nukesIncreased' ? 'This is a stockpile increase. Nuclear drops are not recorded.' : ''].filter(Boolean).join(' ');
+  const note = [event.kind === 'warStarted' ? 'War entry; declaration or joining unknown.' : '',
+    event.kind === 'ceasedToExist' ? 'Lost all owned states.' : '',
+    event.kind === 'nukesIncreased' ? 'Stockpile increase.' : ''].filter(Boolean).join(' ');
   if (item?.idea) return [ideaTooltip({ title, icon: item.icon }, item.idea, ideaTooltipSources(reply, name),
     item.description, rows, note, event.nameHour)];
   if (item?.description) rows.push({ label: item.description });

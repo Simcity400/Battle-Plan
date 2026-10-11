@@ -11,7 +11,6 @@
 .world-tension-list li > img { width: 18px; height: 12px; flex: none; object-fit: contain; }
 .world-tension-list li > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .world-tension-list li > b { color: var(--text); }
-.world-tension-note { margin: 0; color: var(--muted); font-size: var(--type-xs, var(--type-sm)); line-height: 1.35; }
 .world-tension-total { border: 0; padding: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
 .world-tension-drill, .world-tension-pinned { display: flex; flex-direction: column; gap: var(--space-3); height: 100%; min-height: 0; }
 .world-tension-pinned { overflow: auto; padding: var(--space-3); }

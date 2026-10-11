@@ -16,7 +16,7 @@ Shared Political power/Command power balances and income/spending drills; this f
 
 - Exact signed daily operands, evaluated adjustments and realized balance changes keep independent supplying dates. Later reads never backfill a tooltip; detail failure leaves balances usable.
 - Captured payments can be hidden by income or clamping. Incomplete capture falls back to explicitly net drops. CP reservations and daily deficits are outside payment ticks.
-- Income sources not captured remain Other / not identified; native wrapping is an explicit reconciliation part. Missing totals have no percentages. Gaps and holder changes break accounting/history.
+- Income sources not captured remain Other; native wrapping appears as Adjustment. Missing totals have no percentages. Each drill shows one total with a concise status and missing values in their part rows; adjustment action details and CP reservations remain below it. Gaps and holder changes break accounting/history.
 - Drawn curves, including visible maximum, supply picks. Overlap/keyboard choices hold the date. Scope/numeric changes invalidate gestures; label refresh retains ownership.
 - Picking holds; Follow uses the aligned clock from any time mode. Pins save native slot/ID and branch-relative origin, following only that holder's aliases. Headers use the body date; invalid holders refuse the body and older missing-holder pins stay neutral.
 - Names and flags are dated; only mounted legend rows and the displayed drill country request artwork.

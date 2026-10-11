@@ -77,7 +77,7 @@ test('country rows retain missing and pending flag frames while generic part art
     { id: 'residual', label: 'Not identified', value: null },
   ], format: String }));
   assert.equal((html.match(/country-flag-unavailable/g) ?? []).length, 2);
-  assert.match(html, /Flag not available: Flag read failed at this hour/);
+  assert.match(html, /Flag unavailable/);
   assert.match(html, /Flag loading/);
   assert.match(html, /class="country-flag-art drill-part-flag" src="dated.png"/);
   assert.match(html, /<img src="equipment.png" alt=""/);

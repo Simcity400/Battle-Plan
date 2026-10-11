@@ -16,7 +16,7 @@ Countries, campaign/follow/pin/range and shared [balance options](../country-mea
 
 - Uses [country-measure](../country-measure/README.md); common chart, comparison picks and Pin/Follow behaviour belong there.
 - Runs break at gaps, missing values and replacement holders. A fallback drop needs consecutive reads of the same country and remains explicitly net.
-- Captured evaluated charges stay separate from realized balance changes. Missing income sources remain Other / not identified; later reads never fill earlier unknowns.
+- Captured evaluated charges stay separate from realized balance changes. Missing income sources remain Other; later reads never fill earlier unknowns.
 - Names, flags, end labels and membership markers use their own recorded hours.
 
 ## Files

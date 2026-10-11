@@ -172,10 +172,10 @@ test('an incomplete full total keeps exact known geometry without percentage cla
     assert.equal(arcs.get(known.id)?.a1, Math.PI * 1.5);
   }
   assert.deepEqual(sliceTooltip(known, root, partial)[0].rows.map(row => [row.label, row.value]),
-    [['Amount', '30 units'], ['Not counted', '2'], ['unread', '2']]);
+    [['Amount', '30 units · partial']]);
   assert.equal(sliceTooltip(known, root, partial)[0].note, 'Two native amounts were not recorded.');
-  assert.equal(spokenAmount(known, root, partial), '30 units, 2 not counted');
-  assert.equal(sunburstSummary(root, partial), 'All: 40 units, 2 not counted; KNOWN: 30 units, 2 not counted; OTHER: 10 units');
+  assert.equal(spokenAmount(known, root, partial), '30 units, partial');
+  assert.equal(sunburstSummary(root, partial), 'All: 40 units, partial; KNOWN: 30 units, partial; OTHER: 10 units');
   assert.ok(sliceTooltip(known, root, text)[0].rows.some(row => row.label === 'Of All' && row.value === '75%'));
   assert.match(spokenAmount(known, root, text), /75%/);
   assert.match(sunburstSummary(root, text), /75%/);
@@ -224,9 +224,9 @@ test('exact signed rows and unavailable country flags keep their legend presenta
       settings: { growth: 'fill', labels: true, legend: true, breadcrumb: true, dimming: true },
     }));
     const subtotal = partial(false);
-    assert.match(subtotal, /<b>30<sup aria-hidden="true">\+\?<\/sup><\/b><small><\/small>/);
-    assert.match(subtotal, /aria-label="KNOWN. 30 units"/);
-    assert.match(subtotal, /All: 40 units, 2 not counted; KNOWN: 30 units, 2 not counted; OTHER: 10 units/);
+    assert.match(subtotal, /<b>30<small class="sunburst-partial"> partial<\/small><\/b><small><\/small>/);
+    assert.match(subtotal, /aria-label="KNOWN. 30 units, partial"/);
+    assert.match(subtotal, /All: 40 units, partial; KNOWN: 30 units, partial; OTHER: 10 units/);
     assert.doesNotMatch(subtotal, /%|Of All|Not known|Not measured/);
     assert.match(partial(), /<small>75%<\/small>/);
     assert.match(partial(true), /<small>75%<\/small>/);
@@ -244,9 +244,10 @@ test('exact signed rows and unavailable country flags keep their legend presenta
       assert.match(html, /class="windowed-rows sunburst-legend-rows has-icons"/);
       assert.equal((html.match(/country-flag-unavailable/g) ?? []).length, loaded ? 2 : 3);
       assert.match(html, /Flag loading/);
-      assert.match(html, /Flag not available: Dated read failed/);
+      assert.match(html, /Flag unavailable/);
       assert.doesNotMatch(html, /No artwork|is-missing/);
-      assert.match(html, /<span class="sunburst-icon" aria-hidden="true"><\/span><span class="sunburst-name"[^>]*>Rest of world/);
+      assert.match(html, /<span class="sunburst-name"[^>]*>Rest of world/);
+      assert.doesNotMatch(html, /<span class="sunburst-icon" aria-hidden="true"><\/span>/);
       if (loaded) assert.match(html, /src="dated-flag.png"/);
     }
     for (const [positive, correction] of [[10n, -10n], [9007199254740993n, -9007199254740992n]]) {
@@ -824,19 +825,19 @@ test('a slice tooltip gives its exact amount, shares, count and what is not coun
     item(['a', 'y'], 10, { counted: ['p3'] }),
     item(['r', 'z'], null, { note: 'Not measured here.', counted: ['p4', 'p5', 'p6', 'p7'] }),
   ], ROOT);
-  const text = { format: (value: number) => value.toFixed(0), unit: 'IC', valueLabel: 'Spent', countLabel: 'Projects', unknownLabel: (reason: string) => `Reason ${reason}` };
+  const text = { format: (value: number) => value.toFixed(0), unit: 'IC', valueLabel: 'Spent', countLabel: 'Projects' };
   const [a, r] = root.children;
   const x = a.children[0];
   const [full, compact] = sliceTooltip(x, root, text);
   assert.equal(full.title, 'A › X');
   assert.deepEqual(full.rows.map(row => [row.label, row.value]), [
-    ['Spent', '30 IC'], ['Of A', '75%'], ['Of All', '75%'], ['Projects', '2'], ['Not counted', '3'], ['Reason gap', '2'], ['Reason late', '1'],
+    ['Spent', '30 IC · partial'], ['Of A', '75%'], ['Of All', '75%'], ['Projects', '2'],
   ]);
-  assert.deepEqual(compact.rows.map(row => row.label), ['Spent', 'Of A', 'Of All', 'Projects', 'Not counted']);
+  assert.deepEqual(compact.rows.map(row => row.label), ['Spent', 'Of A', 'Of All', 'Projects']);
   const [unmeasured] = sliceTooltip(r, root, text);
   assert.deepEqual(unmeasured.rows.map(row => [row.label, row.value]), [['Spent', 'Not measured'], ['Projects', '4']]);
   assert.equal(unmeasured.note, 'Not measured here.');
-  assert.equal(sunburstSummary(root, text), 'All: 40 IC, 3 not counted; A: 40 IC, 100%, 3 not counted; R: not measured');
+  assert.equal(sunburstSummary(root, text), 'All: 40 IC, partial; A: 40 IC, 100%, partial; R: not measured');
   // Zoomed into a slice that is not measured, the read-out says so, as the centre does.
   assert.equal(sunburstSummary(r, text), 'R: not measured; Z: not measured');
 });
@@ -854,7 +855,7 @@ test('a part with nothing counted yet but parts not counted stays listed, with i
   assert.equal(gap.unmeasured, false);
   assert.equal(listed(gap), true);
   const text = { format: (value: number) => String(value), unit: 'IC', valueLabel: 'Spent' };
-  assert.equal(sunburstSummary(root, text), 'All: 50 IC, 1 not counted; A: 50 IC, 100%; GAP: nothing counted, 1 not counted');
+  assert.equal(sunburstSummary(root, text), 'All: 50 IC, partial; A: 50 IC, 100%; GAP: 0 IC, partial');
   // A part with nothing at all is not listed.
   assert.equal(listed(groupTree([item(['a'], 0, { final: 0 })], ROOT).children[0]), false);
 });

@@ -69,9 +69,9 @@ export default function CasualtiesWidget({ widget, runtime, active, onDiagnostic
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, groups.data, onDiagnostics]);
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see casualties." />;
-  if (!window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (chosen?.reason) return <WidgetState kind="unavailable" message={chosen.reason} />;
   if (!request && !(widget.countries.kind === 'group' && widget.countries.group.type !== 'top' && !groups.data)) return <WidgetState kind="empty" message="No casualties yet." />;
   if (!data || widget.countries.kind === 'group' && widget.countries.group.type !== 'top' && !groups.data) return <WidgetState kind="loading" label="Loading casualties…" />;
@@ -83,7 +83,7 @@ export default function CasualtiesWidget({ widget, runtime, active, onDiagnostic
     && groupUnobserved(groups.data, widget.countries.group).some(span => span.firstHour <= groupAt && groupAt <= span.lastHour)) return withGap(<WidgetState kind="unavailable" message="This group’s members were not recorded at this moment." />);
   if (!data.observed.length || !items.length && !runAt(data.observed, hour)) return withGap(<WidgetState kind="unavailable" message="Casualties were not recorded at this moment." />);
   if (race && !runAt(data.observed, hour)) return withGap(<WidgetState kind="unavailable" message="Casualties were not recorded at this moment." />);
-  if (!snapshot.length && data.series.length) return withGap(<WidgetState kind="unavailable" message="No casualty reading is available at this moment." />);
+  if (!snapshot.length && data.series.length) return withGap(<WidgetState kind="unavailable" message="Casualties were not recorded at this time." />);
   if (!items.length) return withGap(<WidgetState kind="empty" message="No casualties yet." />);
   if (race) return <div className="casualties">
     <CountryRaceView key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])}
@@ -94,9 +94,9 @@ export default function CasualtiesWidget({ widget, runtime, active, onDiagnostic
       label="Losses taken" empty="No taken total is available at this moment." formatValue={formatAxisValue}
       labels={{ race: 'Race of losses taken', actions: 'Casualty actions' }}
       presentation={{ exact: false }}
-      tooltip={(tag, _hour, name) => { const row = rowsByTag.get(tag); return row ? [casualtyTooltip(row, name, includeUnknown, data.unknownLabel, data.hasGap)] : null; }} />
-    {selected.some(row => row.taken === null) && <p className="chart-line-key casualties-unknown themed-scrollbar">Taken is unknown for {selected.filter(row => row.taken === null)
-      .map(row => looks.name(row.tag, row.readHour ?? row.hour)).join(', ')}; losses with no recorded attacker cannot be recovered exactly.</p>}
+      tooltip={(tag, _hour, name) => { const row = rowsByTag.get(tag); return row ? [casualtyTooltip(row, name, data.unknownLabel, data.hasGap)] : null; }} />
+    {selected.some(row => row.taken === null) && <p className="chart-line-key casualties-unknown themed-scrollbar">Losses taken are unknown for {selected.filter(row => row.taken === null)
+      .map(row => looks.name(row.tag, row.readHour ?? row.hour)).join(', ')}.</p>}
     {notes}
   </div>;
   return <div className="casualties">
@@ -104,7 +104,7 @@ export default function CasualtiesWidget({ widget, runtime, active, onDiagnostic
       leftLabel="◀ Taken" rightLabel="Dealt ▶" ratioLabel="Ratio" active={active} hoursPerSecond={hoursPerSecond}
       showValues={options.values !== false} showRatio={options.ratio !== false}
       labelCandidates={campaignLabels}
-      tooltip={item => casualtyTooltip(item.data, item.label, includeUnknown, data.unknownLabel, data.hasGap)}
+      tooltip={item => casualtyTooltip(item.data, item.label, data.unknownLabel, data.hasGap)}
       contextItems={item => item.data.readHour == null ? [] : [jumpItem(runtime, track.id, item.data.readHour)]} />
     {notes}
   </div>;

@@ -10,11 +10,11 @@ Recruited agency operatives with recorded name, skill/experience, assignment and
 
 ## Settings
 
-Countries/groups and campaign/follow/pin; include departed, rank and shared table sort/presentation. Follow and name-ascending sort are defaults.
+Countries/groups and campaign/follow/pin; include departed in campaign mode, rank and shared table sort/presentation. Follow and name-ascending sort are defaults.
 
 ## Notable behaviour
 
-- Recruitment pools are excluded. Portraits need a proven character link; unnamed differs from unknown name. Native progress ratios/sentinels govern skill and capture meters, without an assumed skill maximum.
+- Recruitment pools are excluded. Portraits need a proven character link; missing portraits use a helmet icon. Unnamed differs from unknown name. Native progress ratios/sentinels govern skill and capture meters, without an assumed skill maximum.
 - First presence/departure say By the observing read; causes are named only when recorded. Capture uses its native date. Jump offers first presence, recorded changes and departure.
 - Roster continuity and native slot/id aliases both bound data; identity alone cannot bridge a missing roster or replacement. Failed reads are not empty rosters. Proven feature absence remains distinct from unknown capture.
 - Departed rows retain last details and projected country hour, explicitly dated. Missing owner never becomes roster country. Operation definitions keep separate supplying dates.

@@ -3,9 +3,9 @@ import { AIR_OPTIONS } from '../../dashboard/airOptions.ts';
 import type { OptionField } from '../../dashboard/options';
 export const OPTIONS: readonly OptionField[] = [...AIR_OPTIONS,
   { key: 'look', section: 'options', label: 'Cells', kind: 'choice', default: 'margin', choices: [
-    { value: 'margin', label: 'Leader’s colour faded by margin' }, { value: 'split', label: 'Split per side' }] },
+    { value: 'margin', label: 'Lead strength' }, { value: 'split', label: 'Split per side' }] },
   { key: 'regions', section: 'options', label: 'Regions', kind: 'content-set', automatic: 'Most active regions', default: '' },
-  { key: 'regionCount', section: 'options', label: 'Most active regions shown', kind: 'number', min: 1, max: Number.MAX_SAFE_INTEGER, step: 1, default: 10,
+  { key: 'regionCount', section: 'options', label: 'Number of regions', kind: 'number', min: 1, max: Number.MAX_SAFE_INTEGER, step: 1, default: 10,
     visibleWhen: o => !o.regions },
 ];
 export const definition = {

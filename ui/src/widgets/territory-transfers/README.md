@@ -10,7 +10,7 @@
 
 - Endpoints/pins use native slot/ID pairs through renames, separating replacements. Occurrences retain dated endpoint tags/reads for looks; missing event-hour identities remain counted.
 - Native event dates, supplying observations and VP reads independently gate visibility. Range includes both endpoints; Pin is cumulative through its moment. Repeated transfers of a state are distinct occurrences. Backward seeks remove future ribbons immediately.
-- Conference choices/pins bind campaign/branch. Automatic picks the newest reached conference; missing/future choices stay explicit. Captured, derived, grouped war-end and unknown attribution stay distinct; gaps/failures cannot prove absence.
+- Conference choices/pins bind campaign/branch. Automatic picks the newest reached conference; missing/future choices stay explicit. Transfer dates keep exact, bounded and interval qualifications; acquisition reasons remain diagnostics. Gaps/failures cannot prove absence.
 - Excess Canvas nodes fold into Other, retaining raw links and signed/zero/unknown details. Names/flags use occurrence dates; colours use all graphs before filtering/fitting.
 - VP width requires every occurrence's dated VP value. Missing inputs or native ordered checked-sum overflow make the whole link unknown; zero/negative totals have no positive width. No partial sum becomes a known amount.
 - Picks retain raw contributors; a new cohort resets state detail. Sparse history keeps read gating. Picking holds; Follow uses playback; Pin saves scope/contributors/day and range start. Other branches cannot restore it.

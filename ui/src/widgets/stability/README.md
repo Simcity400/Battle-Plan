@@ -14,7 +14,7 @@ Countries, campaign/follow/pin/range; line/marker toggles, end labels, fixed 0â€
 
 ## Notable behaviour
 
-- Values/formulas use native arithmetic and supplying reads; carried values say when read. Gaps and identity changes stop values and retained looks.
+- Values/formulas use native arithmetic and supplying reads; carried values show an As of date or the range of dates across countries. Gaps and identity changes stop values and retained looks.
 - Initial snapshots, gap boundaries and replacements are not events. Preserve observed bounds without inferred war declarers, founders or exact focus completions.
 - Picks use drawn country/measure curves; overlap/key choices hold the date and disable Follow/Pin until selection. Scope/numeric changes invalidate picks; label refresh retains them.
 - Drills keep signed parts, exact residuals and unknown totals within coverage/range/membership. Picking holds; Follow uses the aligned clock independently of parent time. Pin keeps country/measure and branch-relative day or Follow.

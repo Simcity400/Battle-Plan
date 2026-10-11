@@ -61,8 +61,7 @@ export default function AirLossDrill({ index, runtime, track, tag, identity, cou
   const wanted = useMemo(() => countrySlot && headerRow ? [{ tag: headerRow.tag, hour }] : [], [countrySlot, headerRow?.tag, hour]);
   const labels = useCountryLabelsAt(runtime.client, track, wanted, active && !!countrySlot);
   const header = countrySlot && createPortal(<DatedCountryChip label={headerRow ? labels.labelAt(hour)(headerRow.tag) : null} hour={hour}
-    reason={!headerSelection ? 'The saved native holder selection is unavailable.'
-      : !headerRow ? 'The selected native country identity is unknown or conflicting at this hour.' : null} />, countrySlot);
+    reason={!headerSelection || !headerRow ? 'Selected country unavailable.' : null} />, countrySlot);
   const historyOwner = useMemo(() => ({ selectionOwner, selectedId }), [selectionOwner, selectedId]);
   const values = row ? airLossParts(row, from, hour) : null, total = row ? dealt ? row.dealt : row.taken : null;
   const parts = model.map(part => {
@@ -77,7 +76,7 @@ export default function AirLossDrill({ index, runtime, track, tag, identity, cou
   };
   return <div className="military-air-ledger air-loss-drill">
     {header}
-    <p className="chart-line-key">{row ? looks.name(row.tag, hour) : formatDateTime(hour)} · {dealt ? 'Enemy losses credited' : 'Own losses booked'}</p>
+    <p className="chart-line-key">{row ? looks.name(row.tag, hour) : formatDateTime(hour)} · {dealt ? 'Enemy losses' : 'Own losses'}</p>
     {!row && <>
       <WidgetState kind="unavailable" message="This country or aircraft-loss interval was not recorded at this moment." />
       <DateTimePicker label="Choose breakdown day" value={hour} min={from} max={end} otherValue={null} disabled={!active} describedBy="" onChange={pickDay} />
@@ -85,8 +84,8 @@ export default function AirLossDrill({ index, runtime, track, tag, identity, cou
     <DrillParts parts={parts} virtual active={active} positiveBars signedShares showShares={row?.complete ?? false} format={String}
       onPick={id => { if (ownerRef.current.active && ownerRef.current.owner === selectionOwner && model.some(part => part.id === id))
         setSelected(before => before?.owner === selectionOwner && before.id === id ? null : { owner: selectionOwner, id }); }}
-      totalRow={{ label: dealt ? 'Enemy losses credited' : 'Own losses booked', value: ledgerFormat(total, 'airLosses') }} />
-    <p className="chart-line-key">{selectedId == null ? 'All causes stacked. Select a cause to view its history.' : <>
+      totalRow={{ label: dealt ? 'Enemy losses' : 'Own losses', value: ledgerFormat(total, 'airLosses') }} />
+    <p className="chart-line-key">{selectedId == null ? 'All causes' : <>
       History: {model.find(part => part.id === selectedId)?.label}. <button type="button" className="button small"
         onClick={() => { if (ownerRef.current.active && ownerRef.current.owner === selectionOwner) setSelected(null); }}>Show all causes</button>
     </>}</p>
@@ -100,8 +99,7 @@ export default function AirLossDrill({ index, runtime, track, tag, identity, cou
         if (at < from || at > until) return null;
         const current = ledgerCountryAt(index, tag, from, at, identity);
         if (!current) return null;
-        const detail = militaryAirTooltip(current, from, 'airLosses', formatDateTime(at));
-        return { ...detail, note: 'Click to pick this moment. ' + detail.note };
+        return militaryAirTooltip(current, from, 'airLosses', formatDateTime(at));
       }} />
     <p className="chart-line-key">Areas show positive amounts; correction rows and totals retain their signs. {AIR_LEDGER_NOTE} {row?.complete ? '' : LEDGER_GAP_NOTE}</p>
     {menu.menu}

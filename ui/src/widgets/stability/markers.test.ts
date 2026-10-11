@@ -174,7 +174,7 @@ test('faction events use dated names and display overrides without backfilling g
   const events = (data: CountryGroupReply) => stabilityMarkers({ ...base, groups: data }, new Set<MarkerKind>(['factions']));
   assert.deepEqual(events(data).map(badge => badge.label), ['Joined Opening pact', 'Left Later pact']);
   const gap = { ...data, factions: [{ ...faction, names: [faction.names[0], { ...faction.names[1], firstHour: 301 }] }] };
-  assert.deepEqual(events(gap).map(badge => badge.label), ['Joined Opening pact', 'Left Unnamed faction (Not recorded)']);
+  assert.deepEqual(events(gap).map(badge => badge.label), ['Joined Opening pact', 'Left Unnamed faction']);
   // A dissolved faction has no read at the leaving hour; identify it from its final membership read.
   const dissolved = { ...data, factions: [{ ...faction, lastHour: 299, names: [faction.names[0]] }] };
   assert.deepEqual(events(dissolved).map(badge => badge.label), ['Joined Opening pact', 'Left Opening pact']);

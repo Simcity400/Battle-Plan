@@ -15,7 +15,7 @@ All/manual/group/Top N countries; campaign/follow/pin, table/race, faction sorti
 ## Notable behaviour
 
 - Scores may rise or fall and never accumulate; branch end is simply the score at that hour. Industry and Land are separate from Total.
-- Sort exact raw integers with missing values last. The displayed Score multiplier is Total’s; tooltips retain every multiplier and its supplying date. Content-evaluated values have no recorded date.
+- Sort exact raw integers with missing values last. The displayed Score multiplier is Total’s; tooltips show every multiplier once, without raw integers or supplying dates.
 - Exact-hour native identities/names/colours own row/race looks. Known empty names remain empty; missing identity or source changes cannot retain an earlier holder’s flag.
 - Table/race keys follow native holders through renames. Name, colour and faction changes preserve score easing; identity changes/gaps end it. Tag reuse gets a new bar; dated looks and Jump retain separate tags/hours.
 - Plain column labels use recorded end-screen localisation for hints. Jump uses the row hour; fitted tooltips retain full accessible detail.

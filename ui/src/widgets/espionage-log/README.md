@@ -17,7 +17,8 @@ All/manual/group countries, campaign/follow/pin/range; content operation types, 
 - Live puts ongoing operations first; Campaign uses branch-end history. Observed endings say By unless a native completion supplies an exact date. Endpoints use the read supplying their tags, independently of event date.
 - Native handle/owner/target/type retain one operation through preparation and launch. Reopening after finish starts a new episode; mutable duration, slots, phases or tags do not.
 - Preparation is recorded civilian preparation, not equipment readiness. Execution elapsed/duration uses native sentinels; held reads retain their dates, never recomputed progress.
-- Completion hooks can supply census-unseen outcomes. Bonus, detection, description/refusal, byte length and language remain independent; non-UTF-8 text is refused by name. Do not request future outcomes.
+- Completion hooks can supply census-unseen outcomes. Bonus, detection and outcome text remain independent; unavailable descriptions have a short status. Slot counts show assigned / available with names listed in slot order, without handles. Non-UTF-8 text is refused by name. Do not request future outcomes.
+- Each row states operation status once and retains its progress meter. Missing row artwork uses a target fallback.
 - Load wanted windows, retaining preceding identity/ending witnesses. Gaps, missing lexical names and unknown endpoint tags never borrow later data. All countries keeps unknown actors visible.
 
 ## Files

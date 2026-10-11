@@ -283,7 +283,7 @@ test('terminal values are shown only at their supplying hour, and absence cannot
   assert.equal(running.casualties.value, 8);
   assert.equal(ended.casualties.value, 16);
   assert.equal(landCasualtyText(ended.casualties, ended), '16');
-  assert.equal(landCasualtyText(ended.casualties, ended, true), `16 terminal, as of ${formatDateTime(21)}`);
+  assert.equal(landCasualtyText(ended.casualties, ended, true), `16 final, as of ${formatDateTime(21)}`);
   h.losses.pop();
   const missingTerminal = read(h, 21)[0];
   assert.equal(landCasualtyText(missingTerminal.casualties, missingTerminal), '8 so far');
@@ -331,8 +331,8 @@ test('missing casualties stay unknown, exact zero is retained, and ranking expla
   const ranking = validateLandBattlesRanking({ labels: [], rows: [{ ...h, losses: [{ hour: 10, terminal: false, sides: [zero, zero] }] }],
     censusHour: 20, effectiveMeasure: 'Casualties', warnings: [], contentWarnings: [] });
   assert.equal(rankedLandBattleRows(ranking, 20)[0].casualties.value, 0);
-  assert.match(casualtyRankingNote(ranking)!, /Running battles use losses so far/);
-  assert.equal(casualtyRankingNote({ ...ranking, effectiveMeasure: 'Peak size' }), 'Casualties: Not in this recording. Ranked by peak size.');
+  assert.equal(casualtyRankingNote(ranking), null);
+  assert.equal(casualtyRankingNote({ ...ranking, effectiveMeasure: 'Peak size' }), 'Casualties unavailable; ranked by peak size.');
 });
 
 test('loss read validation refuses malformed sides, ambiguous labels, orphan changes and changes after terminal', () => {

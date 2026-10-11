@@ -58,8 +58,8 @@ export function shipBattleRequests(rows: readonly LogRow<ShipsSunkRow>[], reply:
 
 /** The native title is already formatted by content; keep its supplying date explicit. */
 export function shipBattleLabel(row: ShipsSunkRow, battle: ShipBattleTitle | undefined): string | undefined {
-  if (!battle || (battle.name === null && battle.missing === null)) return undefined;
-  return battle.name === null ? 'Battle title not recorded' : `${battle.name}${battle.hour === row.sinkHour ? '' : ` (as of ${formatDateTime(battle.hour)})`}`;
+  if (!battle || battle.name === null) return undefined;
+  return `${battle.name}${battle.hour === row.sinkHour ? '' : ` (as of ${formatDateTime(battle.hour)})`}`;
 }
 
 /** Content keys survive other recordings; unresolved lexical tokens stay branch-specific. */
@@ -70,7 +70,7 @@ export function shipClassKey(reply: ShipsSunkReply, type: ShipClassInfo, campaig
 export function shipClassName(reply: ShipsSunkReply, row: ShipsSunkRow): string {
   const type = reply.classes[row.classIndex];
   const recorded = row.recordedNameIndex === null ? null : reply.recordedNames[row.recordedNameIndex];
-  return type.name ?? (recorded !== null ? recorded === '' ? '' : `${recorded} (recorded class)` : 'Class name unavailable');
+  return type.name ?? recorded ?? 'Class name unavailable';
 }
 
 export function shipClassChoices(reply: ShipsSunkReply | undefined, campaignKey: string): { value: string; label: string; icon: string | null; hint?: string }[] {
@@ -162,19 +162,10 @@ export function shipTooltip(reply: ShipsSunkReply, row: ShipsSunkRow, victim: st
     { label: 'Class', value: shipClassName(reply, row) },
     { label: 'Class key', value: reply.classes[row.classIndex].key ?? String(reply.classes[row.classIndex].token) },
     { label: 'Victim', value: row.victimAsOf === null ? victim : `${victim} (as of ${formatDateTime(row.victimAsOf)})` },
-    { label: 'Attribution country', value: row.attackerAsOf === null ? attacker : `${attacker} (as of ${formatDateTime(row.attackerAsOf)})` },
+    { label: 'Credited country', value: row.attackerAsOf === null ? attacker : `${attacker} (as of ${formatDateTime(row.attackerAsOf)})` },
     { label: 'Cause', value: row.cause === 'cause' ? row.attributionName ?? 'Not recorded' : shipCauseLabel(row) },
-    { label: 'Assisted kill', value: row.assistedKill ? 'Yes' : 'No' },
+    ...(row.cause === 'cause' && row.assistedKill ? [{ label: 'Assisted kill', value: 'Yes' }] : []),
     { label: 'Sea zone / region', value: shipPlace(reply, row) },
-    ...(title ? [{ label: 'Battle', value: title }] : !battle && row.cause !== 'cause'
-      ? [{ label: 'Battle', value: titleError ? 'Battle title unavailable' : 'Loading battle title' }] : []),
-    ...(battle?.missing || (!battle && row.cause !== 'cause' && titleError) ? [{ label: 'Battle title unavailable', value: battle?.missing ?? titleError! }] : []),
-    { label: 'First observed', value: formatDateTime(row.knownAt), divider: true },
-  ], note: 'Dated by the engine’s recorded sinking hour. Battle names use the supplying read, shown as of that date when different; they do not reconstruct an unrecorded event-time name. Non-hostile causes are not enemy kills; assisted-kill records are marked separately.' };
-}
-
-export function shipCoverage(reply: ShipsSunkReply): string {
-  return `Recording: ${formatDateTime(reply.firstHour)}–${formatDateTime(reply.lastHour)}. ${reply.firstRead === null
-    ? 'No complete ships read.' : `First complete ships read: ${formatDateTime(reply.firstRead)}.`}${reply.unread.length
-    ? ` ${reply.unread.length} unread span${reply.unread.length === 1 ? '' : 's'}; sinkings pruned before the next read may be missing.` : ''}`;
+    ...(title ? [{ label: 'Battle', value: title }] : !battle && row.cause !== 'cause' && titleError ? [{ label: 'Couldn’t load the battle title.' }] : []),
+  ] };
 }

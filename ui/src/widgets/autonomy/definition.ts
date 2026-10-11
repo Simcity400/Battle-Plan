@@ -8,8 +8,7 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'countriesAre', section: 'options', label: 'The countries chosen are', kind: 'choice', default: 'overlords',
     hint: 'Overlords show every subject they had in this campaign',
     choices: [{ value: 'overlords', label: 'Overlords' }, { value: 'subjects', label: 'Subjects' }] },
-  { key: 'grow', section: 'axes', label: 'Grow with playback', kind: 'toggle', default: false,
-    hint: 'With Live on, grow the time axis as the campaign plays.' },
+  { key: 'grow', section: 'axes', label: 'Grow with playback', kind: 'toggle', default: false },
 ];
 
 export const definition = {

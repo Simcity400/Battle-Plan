@@ -135,6 +135,33 @@ async function fuelFixture() {
   return vite;
 }
 
+test('consumption keeps both disclosures and distinguishes unavailable demand from a known zero', async () => {
+  const vite = await fuelFixture();
+  try {
+    const { default: Breakdown } = await vite.ssrLoadModule('/ui/src/widgets/fuel/FuelConsumptionBreakdown.tsx');
+    const track = { id: 'track', axisOffset: 0, branch, source: { id: 'synthetic', revision: '1', metadata: { campaignKey: 'c1' } } };
+    const props = { reply, runtime: { client: {}, tracks: [track] }, track, hour: 100, selection: null,
+      onSelection() {}, level: null, onLevel() {}, extent: [100, 123], branchStart: 0, active: true, pickOwner: {} };
+    const render = () => renderToStaticMarkup(createElement(Breakdown, props));
+    const unavailable = { ...consumption.reads[0], nativeDailyRaw: [null, null, null],
+      reasons: ['Raw land failure', 'Raw air failure', 'Raw sea failure'] } as FuelConsumptionReply['reads'][number];
+    host.__fuelFixture = { consumption: { ...consumption, reads: [unavailable] }, demand: { ...demand, parts: [], read: unavailable } };
+    const missing = render();
+    assert.match(missing, /<summary>Armies, fleets and air bases<\/summary>/);
+    assert.match(missing, /<summary>By military branch<\/summary>/);
+    assert.match(missing, /Daily demand subtotal[\s\S]*?Unavailable/);
+    assert.doesNotMatch(missing, /Raw (land|air|sea) failure/);
+    const known = { ...consumption.reads[0], nativeDailyRaw: ['0', '0', '0'], knownDailyRaw: ['0', '0', '0'], reasons: [null, null, null] } as FuelConsumptionReply['reads'][number];
+    host.__fuelFixture = { consumption: { ...consumption, reads: [known] }, demand: { ...demand, parts: [], read: known } };
+    const zero = render();
+    assert.match(zero, /Daily demand[\s\S]*?>0</);
+    assert.doesNotMatch(zero, /Daily demand subtotal/);
+  } finally {
+    delete host.__fuelFixture;
+    await vite.close();
+  }
+});
+
 test('Pin/settings burn-to-gain renders the actual gain view and stops recipient requests while retaining the hidden token', async () => {
   const vite = await fuelFixture();
   try {
@@ -167,7 +194,7 @@ test('Pin/settings burn-to-gain renders the actual gain view and stops recipient
     assert.match(render(changed), /Fuel gained \(own production\)/);
     assert.deepEqual(host.__fuelPinRequests!.map(request => request.product), ['country-fuel']);
     delete host.__fuelRetainedRecipient;
-    assert.match(render({ ...pinned, options: { ...pinned.options, fuelRecipient: 'not-json' } }), /malformed/);
+    assert.match(render({ ...pinned, options: { ...pinned.options, fuelRecipient: 'not-json' } }), /Choose a country again/);
     assert.deepEqual(host.__fuelPinRequests!.map(request => request.product), ['country-fuel']);
     assert.match(render({ ...changed, options: { ...changed.options, fuelRecipient: 'not-json' } }), /Fuel gained \(own production\)/);
     assert.deepEqual(host.__fuelPinRequests!.map(request => request.product), ['country-fuel']);
@@ -212,8 +239,8 @@ test('content pending and label-only recovery keep the actual Fuel plot, held re
     const pending = render();
     assert.match(pending, /Fuel lines: 2/);
     assert.match(pending, /data-open="true"/);
-    assert.match(pending, /Recipient names are updating/);
-    assert.match(pending, /native reference 9007199254741000/);
+    assert.doesNotMatch(pending, /Recipient names are updating/);
+    assert.doesNotMatch(pending, /native reference 9007199254741000/);
     assert.doesNotMatch(pending, /Loading fuel|Recorded recipient A|Old native name finding|Synthetic land/);
     assert.equal(host.__fuelPlot!.pickOwner.numbers, original.numbers);
     assert.equal(host.__fuelPlot!.pickOwner.scope, original.scope);
@@ -327,7 +354,6 @@ test('the default drill routes to current individual demand and its actual selec
     host.__fuelDrillState = reduceDrill(CLOSED, host.__fuelAction!);
     assert.equal(host.__fuelDrillState.breakdown, 'consumption', 'ordinary drill must default to the original individual consumption scope');
     const inventory = render();
-    assert.match(inventory, /Individual current consumption required per day/);
     assert.match(inventory, /Current recorded division/);
     assert.match(inventory, /2\.4 per day/);
     assert.doesNotMatch(inventory, /Recorded recipient A/);
@@ -353,28 +379,29 @@ test('the default drill routes to current individual demand and its actual selec
     const partial: FuelConsumptionReply = { ...consumption, reads: [{ ...consumption.reads[0], nativeDailyRaw: ['240000', null, '0'],
       reasons: [null, 'Synthetic unrelated air capture failure', null] }] };
     host.__fuelFixture = { reply, consumption: partial, demand: { ...demand, read: partial.reads[0], topologyReason: 'Synthetic unrelated command failure' } };
-    assert.match(render(), /Displayed individual required per day \(signed sum\)/);
+    assert.match(render(), /Daily demand/);
     assert.equal(host.__fuelParts!.find(view => view.parts.some(part => part.id === demand.parts[0].key))!.total, 2.4,
       'an unrelated air or command failure cannot remove a complete army-family denominator');
     delete host.__fuelFixture;
     for (const stale of [{ ...selectedLevel, campaign: 'other-campaign' }, { ...selectedLevel, branch: 'other-branch' }]) {
       host.__fuelLevel = stale;
-      assert.match(render(), /This drill level belongs to another or unrecorded/);
+      assert.match(render(), /Not recorded at this moment/);
       assert.ok(!host.__fuelPinRequests!.some(request => request.product === 'country-fuel-demand-stack'), 'retained live scope must refuse before effects reset it');
     }
     host.__fuelLevel = selectedLevel;
     render();
     host.__fuelParts!.find(view => view.parts.some(part => part.id === demand.parts[0].key))!.onPick!(demand.parts[0].key);
     assert.equal(host.__fuelConsumption!.key, demand.parts[0].key);
-    assert.match(render(), /native reference|Native reference/);
+    assert.doesNotMatch(render(), /native reference|Native reference/);
     const request = host.__fuelPinRequests!.find(request => request.product === 'country-fuel-demand-history')!;
     assert.deepEqual(request.params, { branchId: '1', tag: 'AAA', hour: 100, country: '7', countryInstance: 9, window: 0, key: demand.parts[0].key });
     assert.deepEqual(host.__fuelCharts!.at(-1)!.layers[0].extent!([100, 123]), [0, 2.4]);
     host.__fuelFixture = { reply, consumption, demand: { ...demand, warnings: ['Synthetic current site/topology finding'] } };
-    assert.match(render(), /Synthetic current site\/topology finding/);
+    assert.doesNotMatch(render(), /Synthetic current site\/topology finding/, 'data notes are not shown in the drill');
     host.__fuelFixture = { reply, consumption, demandError: 'Synthetic current inventory failure' };
     const failed = render();
-    assert.match(failed, /Synthetic current inventory failure/);
+    assert.doesNotMatch(failed, />Synthetic current inventory failure</);
+    assert.match(failed, /Couldn’t load consumers/);
     assert.doesNotMatch(failed, /selected native occurrence detail is loading/);
     delete host.__fuelFixture;
     host.__fuelDrillHost!.onFollow();

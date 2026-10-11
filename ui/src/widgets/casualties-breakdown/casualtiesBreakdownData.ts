@@ -53,7 +53,7 @@ export function validateBreakdown(value: unknown): CasualtyBreakdownReply {
 
 export interface LossRow {
   id: string; enemyTag: string; enemyIdentity: string; enemyHour: number;
-  warId: string | null; war: string; reason: string | null; nameReason: string | null;
+  warId: string | null; war: string; reason: string | null;
   value: bigint; readHour: number; groupingHour: number; incomplete: boolean;
 }
 export interface LossSnapshot { identity: string; rows: LossRow[]; total: bigint; incomplete: boolean }
@@ -73,8 +73,8 @@ export function lossesAt(reply: CasualtyBreakdownReply, hour: number): LossSnaps
     const name = war ? runAt(war.names, groupingHour)?.name : null;
     rows.push({ id: series.id, enemyTag: series.enemyTag, enemyIdentity: series.enemyIdentity,
       enemyHour: run.enemyHourly ? at : run.enemyHour,
-      warId: run.warId, war: run.warId === null ? 'Other / not identified' : name?.text ?? 'Not recorded',
-      reason: run.reason, nameReason: name?.reason ?? (run.warId !== null && !name ? 'The native war name was not recorded at the supplying hour.' : null),
+      warId: run.warId, war: run.warId === null ? 'Other' : name?.text ?? 'Not recorded',
+      reason: run.reason,
       value: BigInt(run.value), readHour: run.hourly ? at : run.readHour, groupingHour, incomplete: country.incomplete || run.incomplete });
   }
   return { identity: country.identity, rows, total: rows.reduce((sum, row) => sum + row.value, 0n),

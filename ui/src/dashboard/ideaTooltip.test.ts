@@ -73,15 +73,15 @@ test('an idea lists its effects in key order, hides what the game hides, and mar
     ['Small Airframe:', null, null],
     ['Equipment modifier name unavailable:', '-0.05', 'muted'],
   ]);
-  assert.ok(note);
+  assert.equal(note, undefined);
 });
 
-test('traits come first, and a trait content does not define says so', () => {
+test('traits come first, and a trait content does not define shows only its name', () => {
   const { rows } = ideaEffectRows(idea({ traits: [
     { token: 'captain_of_industry', known: true, unknown: null, name: 'Captain of Industry', lines: [line('political_power_gain', 0.1)], targeted: [], equipment: [], tooltips: [] },
     { token: 'mystery', known: false, unknown: null, name: null, lines: [], targeted: [], equipment: [], tooltips: [] },
   ], effects: [line('stability_factor', 0.02)] }), sources);
-  assert.deepEqual(rows.map(row => row.label), ['Captain of Industry', 'Political Power Gain:', 'Trait name unavailable', 'Effects', 'Stability:']);
+  assert.deepEqual(rows.map(row => row.label), ['Captain of Industry', 'Political Power Gain:', 'Trait name unavailable', 'Stability:']);
   assert.ok(rows[0].strong && rows[0].divider);
 });
 
@@ -99,7 +99,8 @@ test('a line the game shows at zero stays, with an unavailable label and its key
   const unnamed = ideaTooltipSources({ modifiers: [{ ...EXPORT, label: null }], texts: [] }, tag => tag);
   const { rows, note } = ideaEffectRows(idea({ effects: [line('min_export', 0)] }), unnamed);
   assert.deepEqual(rows.map(row => [row.label, row.value]), [['Modifier name unavailable:', '0%']]);
-  assert.ok(note);
+  assert.equal(rows[0].lookupKey, 'min_export');
+  assert.equal(note, undefined);
 });
 
 test('an authored zero without a format stays, and targets are named as they were when taken on', () => {
@@ -154,7 +155,7 @@ test('a unit whose text is missing is marked unavailable while the value remains
   const noUnitText = ideaTooltipSources({ modifiers: [{ ...EXPERIENCE, postfix: null, postfixKey: 'MOD_DAILY' }], texts: [] }, tag => tag);
   const { rows, note } = ideaEffectRows(idea({ effects: [line('experience_gain_army', 0.1)] }), noUnitText);
   assert.deepEqual(rows.map(row => [row.value, row.tone]), [['+0.10 [unit unavailable]', 'muted']]);
-  assert.ok(note);
+  assert.equal(note, undefined);
 });
 
 test('a long title leaves fewer rows for effects', () => {
@@ -173,16 +174,14 @@ test('the engine clamps, hides every hidden key, and marks modifiers that need a
     line('stability_factor', 0.2, true)] }), engine);
   // Clamped to 100% (bad without the good flag); stability left out entirely (a hidden key); the gated one marked.
   assert.deepEqual(rows.map(row => [row.label, row.value, row.tone]), [['Clamped:', '+100.00%', 'negative'], ['Agency upgrade time:', '-10.00% *', 'muted']]);
-  assert.match(note!, /game feature/);
+  assert.equal(note, '* Depends on an enabled game feature.');
   assert.equal(ideaEffectRows(idea({ effects: [line('clamped', -0.5)] }), engine).rows.length, 0);
 });
 
-test('unknown effects are said to be unknown, with why when content cannot say', () => {
-  const { rows } = ideaEffectRows(idea({ effectsKnown: false }), sources);
-  assert.deepEqual(rows.map(row => [row.label, row.value]), [['Effects', 'not in the content files']]);
+test('effects the content does not define are left out of the tooltip, with no note', () => {
+  assert.deepEqual(ideaEffectRows(idea({ effectsKnown: false }), sources).rows, []);
   const gap = 'common/ideas/b.txt is unknown from line 3: x, so what it defines there is unknown';
-  const refused = ideaEffectRows(idea({ effectsKnown: false, unknown: gap }), sources);
-  assert.deepEqual(refused.rows.map(row => [row.label, row.value]), [['Effects', gap]]);
+  assert.deepEqual(ideaEffectRows(idea({ effectsKnown: false, unknown: gap }), sources).rows, [], 'the reason is not shown either');
 });
 
 test('dated idea targets include distinct country and trait targets without equipment type names', () => {

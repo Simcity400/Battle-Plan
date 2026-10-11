@@ -1,3 +1,4 @@
+import ArtFallback from '../../components/ArtFallback';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
@@ -84,17 +85,17 @@ export default function NationalSpiritsWidget({ widget, runtime, active, onDiagn
   }, [data, onDiagnostics, owner]);
 
   if (!track || !tag) return <WidgetState kind="empty" icon="star" message="Load a campaign and choose a country to see its national spirits." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading national spirits…" />;
-  if (widget.time.mode === 'pin' && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the country’s recorded branch." />;
+  if (widget.time.mode === 'pin' && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   // Unrecorded is not the same as holding no spirits.
   if (inSpans(data.unobserved, hour)) return <WidgetState kind="unavailable" message="National spirits were not recorded at this moment." />;
   // Held ideas content cannot classify might be spirits: then the set is unknown, not empty.
   const unplaced = new Set(data.ideas.filter(info => !info.category).map(info => info.token));
   const unclassified = data.spans.some(span => unplaced.has(span.token) && span.firstHour <= hour && hour <= span.lastHour);
   if (!shown.length && !leaving.length) return unclassified
-    ? <WidgetState kind="unavailable" message="Some ideas held at this moment could not be classified from the content, so the national spirits are not known." />
+    ? <WidgetState kind="unavailable" message="National spirits unavailable at this time." />
     : <WidgetState kind="empty" message="No national spirits at this moment." />;
 
   const since = (spirit: Spirit) => { const state = spiritState(spirit, hour); return state.kind === 'held' ? state.since : null; };
@@ -108,7 +109,7 @@ export default function NationalSpiritsWidget({ widget, runtime, active, onDiagn
   const takenOn = (spirit: Spirit) => spirit.spans.find(span => span.firstHour <= hour && hour <= span.lastHour)?.firstHour;
   const content = (spirit: Spirit, maxRows?: number) => {
     const held = describe(spirit);
-    return tooltips ? ideaTooltip({ title: spirit.name, icon: spirit.icon, subtitle: held ? `National spirit · ${held}` : 'National spirit' },
+    return tooltips ? ideaTooltip({ title: spirit.name, icon: spirit.icon, subtitle: held ?? undefined },
       tooltips.infos.get(spirit.token), tooltips.sources, tooltips.art.get(spirit.token)?.description, [], undefined, takenOn(spirit), maxRows) : null;
   };
   // The tooltip's effects and description as text, every row, for screen readers.
@@ -140,7 +141,7 @@ export default function NationalSpiritsWidget({ widget, runtime, active, onDiagn
         const start = takenOn(spirit);
         if (start != null) menu.open(event.clientX, event.clientY, [jumpItem(runtime, track.id, start)]);
       }}>
-      {spirit.icon ? <img src={spirit.icon} alt={spirit.name} /> : <span className="spirit-missing" aria-hidden="true">✦</span>}
+      {spirit.icon ? <img src={spirit.icon} alt={spirit.name} /> : <ArtFallback className="spirit-missing" icon="sparkle" />}
       <span className="spirit-name">{spirit.name}</span>
       {!out && <span id={`${widgetOwner}-${spirit.token}`} className="sr-only">{spoken(spirit)}</span>}
     </li>)}

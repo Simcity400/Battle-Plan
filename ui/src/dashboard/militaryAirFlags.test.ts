@@ -72,7 +72,7 @@ test('actual bombing adapter forwards dated native flag status without labelling
       const html = renderToStaticMarkup(createElement(View, props));
       const chart = capturedChart();
       assert.equal(chart.items.length, 1, 'unknown raw actors do not become country items');
-      assert.match(html, /Their countries are not known/);
+      assert.match(html, /Unattributed: /, 'unknown attackers are summed on one plain line');
       return chart;
     };
     const before = render(10), first = before.items[0];
@@ -83,8 +83,7 @@ test('actual bombing adapter forwards dated native flag status without labelling
     assert.equal(native.row.identity, '3:9'); assert.equal(native.label, 'NEW at 11');
     assert.deepEqual(native.countryFlag, { flag: undefined, flagReason: 'Flag refused at read 11', flagPending: false });
     assert.equal(tip.countryFlag, native.countryFlag);
-    assert.equal(tip.rows.find(row => row.label === 'Last supplied native event')?.value, 'Hour 10');
-    assert.equal(tip.rows.find(row => row.label === 'Event supplied')?.value, 'Hour 11');
+    assert.equal(tip.rows.some(row => /supplied|Read/.test(row.label)), false, 'no recording-time rows in the hover');
     const correction = render(12).items[0];
     assert.equal(correction.row.taken, -10000000n); assert.equal(correction.leftText, '−1.0000000');
     assert.deepEqual(correction.countryFlag, { flag: undefined, flagReason: undefined, flagPending: true });

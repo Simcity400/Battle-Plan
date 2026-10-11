@@ -4,10 +4,17 @@ import { battleJumpHour, battleCountryRequests, battleDate, battleDateMoment, ba
   battlePlaceRequests, namedBattles } from './battleRows.ts';
 import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
 import type { BattleLabels, BattleRow, BattleValue } from './battleRows';
-import { formatDateTime } from '../../dashboard/calendar.ts';
+import { HOUR_EPOCH, gameDate, formatDate } from '../../dashboard/calendar.ts';
 
 const labels: BattleLabels = { place: 'Location', date: 'Date', start: 'Start', end: 'End', winner: 'Winner',
   ongoing: 'Ongoing', unknownPlace: 'Location unknown', unknownStart: 'Start not recorded' };
+
+test('battle dates show one day while retaining honest by bounds', () => {
+  const hour = HOUR_EPOCH + 1936 * 365 * 24 + 8;
+  const day = formatDate(gameDate(hour)!);
+  assert.equal(battleDate({ hour, bound: 'exact' }, 'Unknown'), day);
+  assert.equal(battleDate({ hour, bound: 'by' }, 'Unknown'), `by ${day}`);
+});
 const row = (id = 'episode', end: BattleRow['end'] = { hour: 30, bound: 'by' }): BattleRow => ({ id,
   place: { name: 'Modded location', hour: 29 }, start: { hour: 10, bound: 'by' }, end,
   sides: [
@@ -26,7 +33,7 @@ test('later naming reads preserve battle dates, request stable hours and date th
   const named = namedBattles([battle, ordinary], places);
   assert.equal(named[0].place.name, 'Mod sea zone'); assert.equal(named[0].place.hour, 29);
   assert.equal(named[1], ordinary);
-  assert(battleTooltip(named[0], labels, tag => ({ name: tag })).rows.some(row => row.label.startsWith('named as of ')));
+  assert.equal(battleTooltip(named[0], labels, tag => ({ name: tag })).rows.some(row => row.label.startsWith('named as of ')), false);
   assert.throws(() => validatePlaceNamesReply({ ...places, places: [places.places[0], places.places[0]] }));
 });
 
@@ -125,7 +132,7 @@ test('unknown side participants remain visibly distinct from no participants', (
   assert.equal(isBattleRow({ ...battle, sides: [{ ...battle.sides[0], units: [] }] }), false);
   assert.equal(isBattleRow({ ...battle, sides: [{ ...battle.sides[0], countriesUnknown: 1 }] }), false);
   const tooltip = battleTooltip(battle, labels, tag => ({ name: tag }));
-  assert.ok(tooltip.rows.some(row => row.label === 'Countries not recorded'));
+  assert.ok(tooltip.rows.some(row => row.label === 'Countries unknown'));
 });
 
 test('caller loss and measure tooltip formatters preserve the shared row shape', () => {
@@ -151,8 +158,8 @@ test('dated known-country flag failures stay distinct from pending flags and an 
     return hour === 10 ? pending : completed;
   });
   assert.deepEqual(reads, [['opaque tag/a', 29], ['opaque tag/a', 10], ['opaque tag/b', 29]]);
-  assert.equal(tip.rows.find(part => part.value === formatDateTime(29) && part.countryFlag)?.countryFlag, completed);
+  assert.equal(tip.rows.find(part => part.countryFlag === completed)?.countryFlag, completed);
   assert.equal(tip.rows.find(part => part.label === pending.name)?.countryFlag, pending);
-  assert.equal(tip.rows.find(part => part.label === battle.sides[0].countriesUnknown)?.countryFlag, undefined);
+  assert.equal(tip.rows.find(part => part.label === 'Countries unknown')?.countryFlag, undefined);
   assert.equal(tip.rows.find(part => part.countryFlag === completed)?.label, '', 'an authoritative empty name stays empty');
 });

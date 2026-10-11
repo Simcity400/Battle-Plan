@@ -10,7 +10,7 @@ Country factory counts as a race, lines or one-country type mix, with the gameâ€
 
 ## Settings
 
-Top 10 by default, manual countries/groups; Free after withheld, Built or Top bar counts, content types, split bars and shared race/playback/axis/drill options.
+Top 10 by default, manual countries/groups; Available, Built or Top bar counts, content types, split bars and shared race/playback/axis/drill options.
 
 ## Notable behaviour
 

@@ -4,7 +4,6 @@ import { isOrderedSpans, runAt, spansCovered } from '../../charts/series.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { formatFixed } from '../../charts/valueAxis.ts';
 import { drawableIcon } from '../../dashboard/artwork.ts';
-import { formatDateTime } from '../../dashboard/calendar.ts';
 import { worldRequestTags } from '../../dashboard/groups.ts';
 import { readAt } from '../../dashboard/reads.ts';
 import type { CountrySelection } from '../../dashboard/model';
@@ -87,23 +86,15 @@ export const upgradesCell = (value: AgencyValue): string => value.upgrades.nonne
   ? value.upgrades.readHour === null && value.upgrades.unavailable === null ? 'Not recorded' : 'Unknown'
   : formatFixed(BigInt(value.upgrades.nonnegativeLevelSum), 0, 0);
 export const operativesCell = (value: AgencyValue): string => `${formatFixed(BigInt(value.activeCount), 0, 0)} / ${formatFixed(BigInt(value.maximum), 0, 0)}`;
-export function agencyTooltip(row: AgencyRow, name: string, upgradesUnrecorded: string | null): TooltipContent {
+export function agencyTooltip(row: AgencyRow, name: string): TooltipContent {
   const value = row.value;
   return { title: name, subtitle: value.name === null ? 'Agency name unknown' : value.name, rows: [
     { label: 'Agency', value: value.created ? 'Created' : 'Not created' },
     { label: 'Defence', value: value.defenseText ?? 'Unknown' },
     { label: 'Operatives active / maximum', value: operativesCell(value) },
     { label: 'Agency upgrades', value: upgradesCell(value) },
-    ...(value.upgrades.unavailable ? [{ label: value.upgrades.unavailable, tone: 'muted' as const }]
-      : value.upgrades.readHour === null && upgradesUnrecorded ? [{ label: upgradesUnrecorded, tone: 'muted' as const }] : []),
-    ...value.upgrades.items.flatMap(item => [
-      { label: contentTitle(item.name, item.token, 'Upgrade name unavailable'),
-        value: `Level ${item.level}`, icon: item.icon ?? undefined },
-      ...(item.identityRefusal ? [{ label: item.identityRefusal, tone: 'muted' as const }] : []),
-      ...(item.contentReason ? [{ label: item.contentReason, tone: 'muted' as const }] : []),
-    ]),
-    ...(value.upgrades.readHour === null ? [] : [{ label: 'Agency-upgrade read', value: formatDateTime(value.upgrades.readHour) }]),
-    { label: 'Recorded active-list entries', value: row.operativeRosterCount === null ? 'Not recorded' : String(row.operativeRosterCount) },
-    { label: 'Active-list read', value: row.operativeReadHour === null ? 'Not recorded' : formatDateTime(row.operativeReadHour) },
-  ], note: `Agency-screen values read ${formatDateTime(row.hour)}. The daily active list is separately dated and does not replace the screen’s active count.${value.upgrades.readHour === null ? '' : ' Agency upgrades sum acquired levels with negative values counted as zero; this inventory total is not the operative maximum.'}` };
+    ...value.upgrades.items.map(item => ({
+      label: contentTitle(item.name, item.token, 'Upgrade name unavailable'), value: `Level ${item.level}`, icon: item.icon ?? undefined,
+    })),
+  ] };
 }

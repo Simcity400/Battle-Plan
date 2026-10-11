@@ -108,7 +108,7 @@ export function peaceDealKnownAt(deal: PeaceDeal & PeaceObservationTiming): numb
     : deal.endHour != null ? Math.max(hour, deal.firstAbsentHour ?? hour) : hour;
 }
 export const peaceWarName = (deal: PeaceDeal) => deal.warName ?? 'War name not recorded';
-export const peaceCaptureLabel = (deal: Pick<PeaceDeal, 'captureUnavailable'> & PeaceObservationTiming, hour = Infinity) => deal.captureUnavailable == null || (deal.captureUnavailableHour ?? -Infinity) > hour ? null : `Not recorded: ${deal.captureUnavailable}`;
+export const peaceCaptureLabel = (deal: Pick<PeaceDeal, 'captureUnavailable'> & PeaceObservationTiming, hour = Infinity) => deal.captureUnavailable == null || (deal.captureUnavailableHour ?? -Infinity) > hour ? null : 'Outcomes not recorded';
 /** Earlier sampled fallback evidence remains usable before a later failed hook. */
 export function peaceDealAt(deal: PeaceDeal & PeaceObservationTiming, hour: number): PeaceDeal {
   return deal.captureUnavailable != null && (deal.captureUnavailableHour ?? -Infinity) > hour

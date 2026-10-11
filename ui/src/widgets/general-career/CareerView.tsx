@@ -54,39 +54,39 @@ export default function CareerView({ reference, hour, onPick, widget, runtime, a
     const country = owner ? labelAt(h)(owner) : { name: 'Owner not recorded' };
     const command = lane.id === 'commands' && span ? leader.commands.find(c => `command:${c.formation}:${c.firstHour}` === span.id) : undefined;
     const unknownName = command && (command.nameReadHour == null || h < command.nameReadHour || command.nameUnknown.some(r => r.firstHour <= h && h <= r.lastHour));
-    const entry = unknownName ? `${command.kind === 'fleet' ? 'Fleet' : 'Formation'} ${command.formation} · Name not recorded at this hour` : span?.label;
+    const entry = unknownName ? `Unnamed ${command.kind === 'fleet' ? 'fleet' : 'formation'}` : span?.label;
     const content = { title: hovered ? leaderName(hovered) : 'Leader not recorded', subtitle: `${country.name} · ${formatDateTime(h)}`,
       rows: [{ label: lane.label, value: entry ?? careerEmptyEntry(data, leader, lane.id, h) }],
       note: lane.id === 'battles' && !leader.battleWon && !span ? 'Battle results are not in this recording'
-        : lane.id === 'commands' && hovered?.value.kind === 2 ? data.navyCommandsMissing || undefined : undefined };
+        : lane.id === 'commands' && hovered?.value.kind === 2 ? data.navyCommandsMissing ? 'Fleet command history is incomplete.' : undefined : undefined };
     return fitTooltip([content], viewportHeight);
   }, [data, leader, labelAt, viewportHeight]);
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see a leader career." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading leader career…" />;
-  if (!leader) return <WidgetState kind="unavailable" message="This leader has no recorded visible career in this branch." />;
+  if (!leader) return <WidgetState kind="unavailable" message="Career unavailable for this leader." />;
   const country = row?.value.owner ? labelAt(hour)(row.value.owner) : { name: 'Owner not recorded' };
   return <div className="general-career">
     {row ? <div className="career-top"><LeaderIdentity art={portraits.at(row)} row={row} country={country} showCountry />
       <div className="career-stats">
         <span><strong>{row.fought}</strong>fought</span>
         {row.won == null ? null
-          : <><span><strong>{row.won}</strong>won</span><span><strong>{row.lost}</strong>lost</span><span><strong>{row.winRate == null ? '—' : `${Math.round(row.winRate)}%`}</strong>win rate among decided battles</span></>}
+          : <><span><strong>{row.won}</strong>won</span><span><strong>{row.lost}</strong>lost</span><span><strong>{row.winRate == null ? '—' : `${Math.round(row.winRate)}%`}</strong>win rate</span></>}
         <span><strong>{row.unresolved}</strong>unresolved</span>
         <span>{recordedSince(row.career, data.firstHour)}</span>
-      </div></div> : <p className="career-note">Leader identity and skill were not recorded at this hour.</p>}
+      </div></div> : <p className="career-note">Leader details unavailable at this time.</p>}
     <Timeline label="General career" extent={playbackDomain(grow ? 'draw-in' : 'cursor',
       [first, Math.max(first + 1, track.branch.lastHour + 1)], last + 1, 0, 1)} playhead={last + 1} labelHour={last}
       preserveZoomOnExtentChange={grow}
       lanes={lanes} showIcons showNames emptyLabel="Not recorded" active={active} revision={[data, labelAt]} tooltip={tooltip}
-      description={`${row ? leaderName(row) : 'Leader'}: skill, traits, commands and recorded battles.`}
+      description={`${row ? leaderName(row) : 'Leader'}: skill, traits, commands and battles.`}
       hoursPerSecond={hoursPerSecond}
       dismissPointerTooltipOnEscape
       onHover={setHoveredHour}
       onContextMenu={(h, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, h), ...(onPick ? [{ label: 'Show this hour', run: () => onPick(h) }] : [])])} />
     {row?.won == null && <p className="career-note">Result not recorded</p>}
-    {row?.foughtPartial && <p className="career-note">Some battle observations are missing; counts include only recorded participation.</p>}
-    {row?.value.kind === 2 && data.navyCommandsMissing && <p className="career-note">{data.navyCommandsMissing}</p>}
+    {row?.foughtPartial && <p className="career-note">Battle counts are incomplete.</p>}
+    {row?.value.kind === 2 && data.navyCommandsMissing && <p className="career-note">Fleet command history is incomplete.</p>}
     {menu.menu}
   </div>;
 }

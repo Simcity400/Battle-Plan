@@ -64,8 +64,7 @@ export default function SupplyBreakdown({ runtime, track, active, options, count
   const headerActor = !error && incoming.data && headerSelection?.tag === tag && headerSelection?.hour === originHour
     && runAt(incoming.data.series.find(series => series.tag === tag)?.identities ?? [], originHour) ? actor : null;
   const header = countrySlot && createPortal(<DatedCountryChip label={headerActor ? labels.labelAt(hour)(headerActor) : null} hour={hour}
-    reason={error ?? (!headerSelection ? 'The saved native country selection is unavailable.'
-      : !headerActor ? 'The selected native country identity is unknown or conflicting at this hour.' : null)} />, countrySlot);
+    reason={error ? 'Couldn’t load the country.' : !headerActor ? 'Selected country unavailable.' : null} />, countrySlot);
   useEffect(() => { if (!active) setTipHour(null); }, [active]);
   const at = actor ? runAt(runs, hour) : null;
   const total = at ? totalDivisions(at) : null;
@@ -74,21 +73,19 @@ export default function SupplyBreakdown({ runtime, track, active, options, count
     alpha: state === 'inSupply' ? 0.85 : 1 })), [colors]);
   const keyHours = useMemo(() => runs.map(run => run.firstHour), [runs]);
   if (!track || !tag) return <>{header}<WidgetState kind="empty" message="Choose a country for the supply classification." /></>;
-  if (error) return <>{header}<WidgetState kind="error" message={error} onRetry={retry} /></>;
+  if (error) return <>{header}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
   if (!data) return <>{header}<WidgetState kind="loading" label="Loading supply classification…" /></>;
-  if (!data.available) return <>{header}<WidgetState kind="unavailable" message={data.reason ?? 'Not in this recording'} /></>;
+  if (!data.available) return <>{header}<WidgetState kind="unavailable" message="Supply data is not in this recording." /></>;
   return <>{header}<div className="supply-health-breakdown">
     {!incoming.data && <WidgetState kind="loading" label="Refreshing supply classification…" />}
-    <p className="supply-health-country">{actor ? labels.labelAt(hour)(actor).name : 'Country identity not recorded at this hour'}</p>
+    {!(pinned && countrySlot && headerActor) && <p className="supply-health-country">{actor ? labels.labelAt(hour)(actor).name : 'Unknown country'}</p>}
     {pinned && <p className="drill-day">{formatDateTime(hour)} {track !== undefined && !following
       && <button type="button" className="button small" onClick={onFollow}>Follow playback</button>}</p>}
     <DrillParts parts={at ? STATES.map((state, index) => ({ id: state, label: STATE_LABELS[state], value: at[state],
       color: colors[index], text: usNumber.format(at[state]), shareText: formatShare(at[state], total!) })) : []}
       format={value => usNumber.format(value)} total={total ?? undefined}
       totalRow={{ label: 'Divisions', value: total === null ? 'Not known' : usNumber.format(total) }} />
-    <p className="drill-empty">{at ? total === 0 ? 'No divisions: shares are undefined.'
-      : 'Counts exact; shares round once to two decimals. Low received supply can still be covered by grace. No supply is native very-low frame 3, not necessarily zero received supply.'
-      : 'No complete supply observation for this country at this hour. Classification and its denominator are not known.'}</p>
+    {(!at || total === 0) && <p className="drill-empty">{at ? 'No divisions.' : 'Supply was not recorded at this time.'}</p>}
     <StackedShareChart label="Supply classification history" runs={shares} bands={bands} extent={extent} playhead={playhead}
       playback={options.playback as PlaybackMode} afterPlayhead={options.afterPlayhead === true}
       windowHours={Number(options.windowDays) * 24} hoursPerSecond={hoursPerSecond} branchStart={track.branch.firstHour}
@@ -99,7 +96,7 @@ export default function SupplyBreakdown({ runtime, track, active, options, count
       tooltip={atHour => {
         const at = Math.floor(atHour);
         const actor = countryDrillTagAt(identitySpans, at);
-        const label = actor ? labels.labelAt(at)(actor) : { name: 'Country identity not recorded', flag: undefined };
+        const label = actor ? labels.labelAt(at)(actor) : { name: 'Unknown country', flag: undefined };
         return fitTooltip([supplyTooltip(formatDateTime(at), label.name, actor ? label : undefined,
           actor ? runAt(runs, at) : null, colors)], viewport);
       }} />

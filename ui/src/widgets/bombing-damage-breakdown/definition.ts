@@ -5,8 +5,8 @@ import { SUNBURST_OPTIONS, levelOption } from '../../charts/sunburst/sunburstOpt
 export const OPTIONS: readonly OptionField[] = [
   { key: 'direction', section: 'options', label: 'Damage', kind: 'choice', default: 'taken',
     choices: [{ value: 'taken', label: 'Suffered' }, { value: 'dealt', label: 'Inflicted' }] },
-  levelOption('buildingLevel', 'Building type', 'The recorded building spelling, resolved through this campaign’s content stack'),
-  levelOption('stateLevel', 'State', 'The recorded target state, named at the shown read'),
+  levelOption('buildingLevel', 'Building type'),
+  levelOption('stateLevel', 'State'),
   ...SUNBURST_OPTIONS,
 ];
 

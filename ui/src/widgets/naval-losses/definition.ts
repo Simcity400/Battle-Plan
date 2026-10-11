@@ -8,7 +8,7 @@ export const OPTIONS: readonly OptionField[] = [
     choices: [{ value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines over time' }] },
   { key: 'kind', section: 'options', label: 'Count', kind: 'choice', default: 'both',
     choices: [{ value: 'ships', label: 'Ships' }, { value: 'convoys', label: 'Convoys' }, { value: 'both', label: 'Ships and convoys' }] },
-  { key: 'attribution', section: 'options', label: 'Attribution', kind: 'choice', default: 'lost',
+  { key: 'attribution', section: 'options', label: 'Count for', kind: 'choice', default: 'lost',
     choices: [{ value: 'lost', label: 'Lost' }, { value: 'sunkBy', label: 'Sunk by' }] },
   { key: 'period', section: 'options', label: 'Period', kind: 'choice', default: 'running',
     choices: [{ value: 'running', label: 'Running total' }, { value: 'month', label: 'Per month' }] },

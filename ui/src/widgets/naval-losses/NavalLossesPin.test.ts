@@ -76,6 +76,7 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
     '/dashboard/settings/CountriesSection.tsx': 'export const CountriesSection = props => { globalThis.__navalPinLifecycle.settingsCountries = props; return null; };',
     '/dashboard/settings/OptionFields.tsx': 'export const OptionFields = () => null;',
     '/dashboard/settings/TimeSection.tsx': 'export const TimeSection = () => null;',
+    '/dashboard/FactionColours.tsx': 'export const FactionColoursEditor = () => null;',
     '/dashboard/CampaignPicker.tsx': 'export default () => null;',
     '/dashboard/WidgetSettingsMenu.tsx': 'export default () => null;',
   };
@@ -108,7 +109,7 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
     const original: WidgetSpec = { id: 'naval', kind: 'naval-losses', configVersion: 1, title: 'Naval losses', trackIds: ['track'],
       countries: { kind: 'tags', tags: ['mod A', 'old B'] }, time: { mode: 'campaign' }, options: { view: 'lines' } };
     const props = { widget: original, runtime: { tracks: [{ id: 'track', axisOffset: 100,
-      source: { id: 'synthetic', revision: '1', metadata: { countries: [{ id: 33, tag: 'reused alias', name: 'Replacement C',
+      source: { id: 'synthetic', path: 'C:/captures/synthetic.battleplan', revision: '1', metadata: { countries: [{ id: 33, tag: 'reused alias', name: 'Replacement C',
         observedBranchId: '1', observedHour: 112 }], branches: [{ id: '1', firstHour: 100, lastHour: 112 }] } }, branch: { id: '1', firstHour: 100, lastHour: 112 } }],
       client: {}, clock: { getHour: () => state.hour - 100, getSnapshot: () => ({ playing: false }) },
       maps: { schedule() {} }, campaignTracks: [], defaultRoleId: null,
@@ -167,14 +168,14 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
       for (const offset of [-1, 0.5, 8 + 1e-10, 99, 'invalid']) {
         unmount(); props.widget = { ...following, options: { ...following.options, drillOriginOffset: offset } }; commit();
         assert.equal(state.detail!.mix, null);
-        assert.match(renderToStaticMarkup(state.detail!.state), /saved native country selection was not recorded at its origin/);
+        assert.match(renderToStaticMarkup(state.detail!.state), /Saved country selection unavailable/);
         state.picker!.onChange('reused alias'); commit(); assert.equal(state.detail!.mix, null, 'invalid origins do not fall back to a current tag holder');
       }
       for (const identities of [undefined, [], [identity(100, 103, 1, 11), identity(109, 110, 2, 22), identity(111, 112, 3, 33)]]) {
         unmount(); props.widget = following;
         state.reply = { ...reply, series: reply.series.map(series => series.tag === 'reused alias' ? { ...series, identities } : series) }; commit();
         assert.equal(state.detail!.mix, null);
-        assert.match(renderToStaticMarkup(state.detail!.state), /saved native country selection was not recorded at its origin/,
+        assert.match(renderToStaticMarkup(state.detail!.state), /Saved country selection unavailable/,
           'absent, empty and origin-gap identity metadata cannot be replaced by counts or later holders');
       }
     });
@@ -262,7 +263,7 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
       const assertHeader = (tag: string, hour: number, name: string, flag: string) => {
         const html = header();
         assert.ok(html.includes(name)); assert.ok(html.includes('src="' + flag + '"'));
-        assert.ok(html.includes('Country shown at ' + formatDateTime(hour)), 'header date is the actual displayed drill date');
+        assert.ok(html.includes('As of ' + formatDateTime(hour)), 'header date is the actual displayed drill date');
         assert.doesNotMatch(html, /Replacement C/);
         assert.deepEqual(state.labelRequests.at(-1), { wanted: [{ tag, hour }], active: true });
       };
@@ -299,15 +300,15 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
       state.labels[labelKey] = { name: '', known: true, flagPending: true }; frame();
       assert.match(header(), /Flag loading/); assert.doesNotMatch(header(), /Selected country unavailable|Replacement C/);
       state.labels[labelKey] = { name: '', known: true, flagPending: false, flagReason: 'Displayed flag was not recorded' }; frame();
-      assert.match(header(), /Displayed flag was not recorded/);
+      assert.match(header(), /Flag unavailable/);
       state.labels[labelKey] = { name: 'Unproved name', known: false, nameFailed: true, flag: '/B112.svg', flagPending: false }; frame();
-      assert.match(header(), /Selected country unavailable/); assert.doesNotMatch(header(), /Unproved name/);
+      assert.match(header(), /Unavailable/); assert.doesNotMatch(header(), /Unproved name/);
       assert.ok(header().includes('src="/B112.svg"'), 'the authenticated current flag remains independent of a failed name');
-      assert.match(header(), /The country name request failed/);
+      assert.match(header(), /Name unavailable/);
       state.labels[labelKey] = { name: 'Unproved name', known: false, nameFailed: true, flagPending: false,
         flagReason: 'Exact displayed flag refusal' }; frame();
-      assert.match(header(), /Flag not available: Exact displayed flag refusal/);
-      assert.match(header(), /The country name request failed/);
+      assert.match(header(), /Flag unavailable/);
+      assert.match(header(), /Name unavailable/);
       state.labels[labelKey] = { name: 'Unproved name', known: false, nameFailed: true, flagPending: true }; frame();
       assert.match(header(), /Flag loading/); assert.doesNotMatch(header(), /Flag not available: The country name request failed/);
       state.labels[labelKey] = { name: 'Native B at 112', known: true, flag: '/B112.svg', flagPending: false };
@@ -316,7 +317,7 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
       assert.deepEqual(state.labelRequests.at(-1), { wanted: [], active: false }, 'a displayed identity gap never requests another holder’s looks');
       state.reply = { ...reply, series: [...reply.series, history('conflicting B', [identity(111, 112, 2, 22)], 40, -3)] }; frame();
       assert.match(header(), /unavailable/); assert.deepEqual(state.labelRequests.at(-1), { wanted: [], active: false });
-      assert.ok(header().includes('Country shown at ' + formatDateTime(112)), 'a known displayed date remains explicit when identity is refused');
+      assert.ok(header().includes('As of ' + formatDateTime(112)), 'a known displayed date remains explicit when identity is refused');
       state.reply = reply; state.labels = {}; unmount(); template.widgets = [original]; state.hour = 112;
       assert.match(frame(), /Country name unavailable/); assert.equal(state.portals.length, 0);
       state.main!.onPick!(108, 'reused alias', ['reused alias']); assert.match(frame(), /Country name unavailable/);

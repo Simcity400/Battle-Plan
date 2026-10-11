@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import Table from '../../charts/table/Table';
@@ -86,32 +87,32 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   const columns = useMemo<readonly TableColumn<AceRow>[]>(() => [
     { key: 'portrait', header: null, label: 'Portrait', sortable: false, width: 'var(--military-portrait-column)', value: () => null, renderMissing: true,
       render: row => { const art = portraits.get(nameKey(row.hour, row.key)); return art?.image ? <img className="aces-portrait" src={art.image} alt="" />
-        : <svg className="aces-portrait aces-portrait-missing" viewBox="0 0 34 38" role="img" aria-label={art?.missing ?? 'Portrait not recorded'}><circle cx="17" cy="12" r="6" /><path d="M5 36v-6c0-7 5-11 12-11s12 4 12 11v6" /></svg>; } },
+        : <ArtFallback icon="helmet" className="aces-portrait" />; } },
     { ...SORT_CHOICES[1], label: 'Ace', header: 'Ace', width: 'minmax(var(--military-name-min), 1.6fr)', value: aceNameValue, renderMissing: true,
       render: row => { const label = row.run.tag ? labelAt(row.hour)(row.run.tag) : null; return <div className="aces-who"><b title={aceName(row)}>{aceName(row)}</b><small>
         {label ? <CountryFlagUrl className="aces-flag" url={label.flag} reason={label.flagReason} pending={label.flagPending} />
           : <span className="aces-flag aces-country-missing" role="img" aria-label="Country not recorded" data-tooltip="Country not recorded" />}
-        {aceCallsign(row) === null ? 'Callsign not recorded' : aceCallsign(row) ? `“${aceCallsign(row)}”` : ''}
+        {aceCallsign(row) ? `“${aceCallsign(row)}”` : ''}
       </small></div>; } },
     { key: 'wing', header: 'Wing · aircraft', label: 'Wing and aircraft', sortable: false, width: 'minmax(0, 1fr)', value: () => null, renderMissing: true,
       render: row => <div className="aces-wing"><span title={wingName(row)}>{wingName(row)}</span><small title={aircraftName(row)}>{aircraftName(row)}</small></div> },
     { ...SORT_CHOICES[0], label: 'Status', header: 'Status', width: 'var(--military-status-column)', value: row => row.ace.firstSeen,
       render: row => <small className="aces-status">{aceStatus(row)}</small> },
   ], [portraits, labelAt]);
-  const tooltip = useCallback((row: AceRow) => fitTooltip([aceTooltip(row, tag => labelAt(row.hour)(tag).name, portraits.get(nameKey(row.hour, row.key))?.missing ?? undefined)], viewport), [labelAt, portraits, viewport]);
+  const tooltip = useCallback((row: AceRow) => fitTooltip([aceTooltip(row, tag => labelAt(row.hour)(tag).name)], viewport), [labelAt, viewport]);
   const diagnostics = useMemo(() => data ? [...data.warnings, ...(detail?.warnings ?? WARNINGS)] : WARNINGS, [data, detail]);
   useDiagnostics(onDiagnostics, diagnostics);
   if (!track) return <WidgetState kind="empty" icon="star" message="Load a campaign to see its aces." />;
-  if (!window) return <WidgetState kind="unavailable" message="The chosen moment is outside this campaign branch." />;
-  if (loaded.error) return <WidgetState kind="error" message={loaded.error} onRetry={loaded.retry} />;
-  if (filtered && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (loaded.error) return <WidgetState kind="error" detail={loaded.error} onRetry={loaded.retry} />;
+  if (filtered && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!data || !match.ready) return <WidgetState kind="loading" label="Loading aces…" />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
   if (!data.available) return <WidgetState kind="unavailable" message="Aces: Not in this recording." />;
-  if (!recorded) return <WidgetState kind="unavailable" message="Aces were not recorded at this hour. Gaps stay gaps." />;
-  if (!display) return windows.errors.has(target) ? <WidgetState kind="error" message={windows.errors.get(target)!} onRetry={windows.retry} /> : <WidgetState kind="loading" label="Loading aces..." />;
-  if (!rows.length) return <WidgetState kind="empty" icon="star" message="No recorded aces match these settings at this hour." />;
-  return <div className="aces-widget"><div className="aces-subtitle">{widget.countries.kind === 'all' ? 'All countries · hall of fame' : 'Hall of fame'}</div>{pending && <div className="aces-loading" role="status">{windows.errors.get(target) ?? 'Updating ace roster...'}{windows.errors.has(target) && <button onClick={windows.retry}>Retry</button>}</div>}<Table key={identity} label="Aces" rows={rows} columns={columns} rowKey={keyOf} sort={sort} setOption={setOption}
+  if (!recorded) return <WidgetState kind="unavailable" message="Aces were not recorded at this time." />;
+  if (!display) return windows.errors.has(target) ? <WidgetState kind="error" detail={windows.errors.get(target)!} onRetry={windows.retry} /> : <WidgetState kind="loading" label="Loading aces..." />;
+  if (!rows.length) return <WidgetState kind="empty" icon="star" message="No aces match these settings." />;
+  return <div className="aces-widget">{pending && <div className="aces-loading" role="status">{windows.errors.has(target) ? 'Couldn’t load aces.' : 'Updating…'}{windows.errors.has(target) && <button onClick={windows.retry}>Retry</button>}</div>}<Table key={identity} label="Aces" rows={rows} columns={columns} rowKey={keyOf} sort={sort} setOption={setOption}
     rowHeight={50} cellBars={false} rankMarkers={false} density="comfortable"
     muted={row => !row.run.alive} menu={row => [jumpItem(runtime, track.id, aceJump(row))]} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={speed} /></div>;
 }

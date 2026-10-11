@@ -27,7 +27,7 @@ export function territoryShareReading(series: ReturnType<typeof raceSeriesIndex>
   const recorded = !factions || runAt(factions.recorded, at) != null;
   const disjoint = !factions || runAt(factions.disjoint, at) != null;
   const reason = unavailableReason ?? (!recorded ? 'The whole faction share was not recorded at this hour.'
-    : !disjoint ? 'These faction rosters overlap, so they cannot form a share of the world. Choose At each hour or another view.' : null);
+    : !disjoint ? 'Faction memberships overlap. Choose ‘At each hour’ or another view.' : null);
   const reading = shareReading(values, total, count, key => {
     const line = series.series.get(key)!;
     return { ...look(key), stretch: stretchAt(line.runs, line.starts, at) };

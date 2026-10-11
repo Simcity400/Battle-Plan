@@ -6,7 +6,6 @@ import DrillParts from '../../charts/drill/DrillParts';
 import { runAt } from '../../charts/series';
 import type { Span } from '../../charts/series';
 import { useChartTokens } from '../../charts/useChartTokens';
-import { formatDateTime } from '../../dashboard/calendar';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { isMember } from '../../dashboard/groups';
 import type { BoundTrack } from '../../dashboard/model';
@@ -50,7 +49,7 @@ export default function FuelBreakdown({ reply, history, actorSpans, identitySpan
     color: tokens.categories[i % tokens.categories.length], runs: part.runs,
     labelAt: at => {
       const source = fuelCountryRead(sources, actorSpans, at), value = source && fuelParts(source.reply, source.read, measure);
-      return fuelHistoryRow(value ?? null, part.id, part.transfer)?.label ?? 'Other / not identified';
+      return fuelHistoryRow(value ?? null, part.id, part.transfer)?.label ?? 'Other';
     },
     amount: at => {
       const source = fuelCountryRead(sources, actorSpans, at), value = source && fuelParts(source.reply, source.read, measure);
@@ -66,7 +65,6 @@ export default function FuelBreakdown({ reply, history, actorSpans, identitySpan
   const retained = useMemo(() => new NumericReply<FuelAwardsReply>(), [runtime.client]);
   const numbers = retained.update(JSON.stringify(request), recipients.data, fuelAwardNumbers);
   const data = recipients.data ?? numbers;
-  const contentPending = !!numbers && !recipients.data && !recipients.error;
   const awards = data && basis && data.hour === basis.hour && data.branchId === basis.branchId
     && data.tag === basis.tag ? data.awards : null;
   const selected = selection && awards?.recipients.find(part => part.key === selection.key);
@@ -76,28 +74,27 @@ export default function FuelBreakdown({ reply, history, actorSpans, identitySpan
   const assigned = useMemo(() => recipientRows.reduce((sum, part) => sum + BigInt(part.amountRaw), 0n), [recipientRows]);
   const recipientParts = useMemo(() => recipientRows.map(part => {
     const raw = BigInt(part.amountRaw);
-    return { id: part.key, label: part.recordedName ?? `Other / not identified (${part.reference})`, raw,
+    return { id: part.key, label: part.recordedName ?? 'Name unavailable', raw,
       value: Number(raw) / reply.gainScale, text: formatFuelPart(raw, BigInt(reply.gainScale)),
       shareText: fuelPartShare(raw, recipientTotal!), muted: part.recordedName === null };
   }), [recipientRows, reply.gainScale, recipientTotal]);
-  const unattributed = useMemo(() => recipientTotal !== null && assigned !== recipientTotal ? { label: 'Other / not identified',
+  const unattributed = useMemo(() => recipientTotal !== null && assigned !== recipientTotal ? { label: 'Other',
     raw: recipientTotal - assigned, value: Number(recipientTotal - assigned) / reply.gainScale,
     text: formatFuelPart(recipientTotal - assigned, BigInt(reply.gainScale)), shareText: fuelPartShare(recipientTotal - assigned, recipientTotal) }
     : undefined, [recipientTotal, assigned, reply.gainScale]);
   return <>
-    {contentPending && <p className="drill-empty">Recipient names are updating from the recorded content.</p>}
-    {retainedSelection && !selection && <p className="drill-empty">The saved recipient belongs to another country, campaign or branch.</p>}
+    {retainedSelection && !selection && <p className="drill-empty">Choose a recipient again.</p>}
     {selection ? <>
       <button type="button" className="button small quiet" onClick={() => { setConsumer(selection.consumer); onSelection(null); }}>All consumer recipients</button>
       {selected && <RecipientFacts part={selected} reply={reply} />}
-      {!matching && <p className="drill-empty">This moment belongs to another or unrecorded native country identity.</p>}
+      {!matching && <p className="drill-empty">Country unavailable at this time.</p>}
       {selected && <FuelRecipientHistory key={JSON.stringify(selection)} runtime={runtime} track={track} reply={reply} selection={selection} part={selected}
         hour={hour} within={within} {...chart} />}
     </> : consumer !== null && measure === 'burn' ? <>
       <button type="button" className="button small quiet" onClick={() => setConsumer(null)}>All fuel sources and consumers</button>
-      <strong>{reply.consumerNames[consumer] ?? 'Other / not identified'}</strong>
-      {!basis ? <p className="drill-empty">{read?.awardsReason ?? 'Applied recipient accounting was not recorded for this moment.'}</p>
-        : recipients.error ? <WidgetState kind="error" message={recipients.error} onRetry={recipients.retry} />
+      <strong>{reply.consumerNames[consumer] ?? 'Consumer'}</strong>
+      {!basis ? <p className="drill-empty">Breakdown unavailable.</p>
+        : recipients.error ? <WidgetState kind="error" what="recipients" detail={recipients.error} onRetry={recipients.retry} />
           : !awards ? <WidgetState kind="loading" label="Loading actual fuel recipients..." /> : <>
             <DrillParts virtual active={chart.active} positiveBars signedShares parts={recipientParts}
               total={Number(recipientTotal) / reply.gainScale} format={String} unattributed={unattributed}
@@ -106,7 +103,6 @@ export default function FuelBreakdown({ reply, history, actorSpans, identitySpan
                 const part = recipientRows.find(row => row.key === key);
                 if (read && part) onSelection(selectFuelRecipient(reply, read, part, track.source.metadata.campaignKey));
               }} />
-            <p className="drill-empty">Select any exact signed row for its recorded identity, name refusal and history. Receipts are country fuel awarded to native recipients; air containers do not identify wing receipts.</p>
           </>}
     </> : <>
       {values && hour !== null ? <DrillParts positiveBars signedShares active={chart.active} parts={values.parts.map(part => ({ id: part.id,
@@ -117,16 +113,14 @@ export default function FuelBreakdown({ reply, history, actorSpans, identitySpan
         totalRow={{ label: measure === 'gain' ? 'Fuel gained (own production)' : 'Fuel burned', value: formatFuelPart(values.total, values.scale) }}
         onPick={id => { const part = values.parts.find(row => row.id === id); if (part?.consumer !== undefined) setConsumer(part.consumer); }} />
         : <p className="drill-empty">No daily accounting was recorded for this moment.</p>}
-      {values?.reason && <p className="drill-empty">Applied source accounting unavailable: {values.reason}. The recorded ring totals remain available.</p>}
-      {values?.parts.filter(part => part.reason).map(part => <p key={part.id} className="drill-empty">{part.reason}</p>)}
+      {values?.reason && <p className="drill-empty">Source breakdown unavailable.</p>}
+      {values?.parts.filter(part => part.reason).map(part => <p key={part.id} className="drill-empty">{part.label}: Unavailable.</p>)}
       {values?.transfer && <>
-        <p className="drill-empty">Incoming lend-lease is separate from own production and its shares.</p>
         <DrillParts positiveBars showShares={false} parts={[{ id: values.transfer.id, label: values.transfer.label,
           raw: values.transfer.raw, value: Number(values.transfer.raw) / reply.quantityScale,
           text: formatFuelPart(values.transfer.raw, BigInt(reply.quantityScale)), color: color(values.transfer.id), muted: values.transfer.muted }]} format={String} />
-        {values.transfer.reason && <p className="drill-empty">{values.transfer.reason}</p>}
+        {values.transfer.reason && <p className="drill-empty">Incoming lend-lease unavailable.</p>}
       </>}
-      {read && <p className="drill-empty">Read {formatDateTime(read.firstHour)}; accounting covers the {reply.dayHours} hours before that read. Signed corrections retain their exact rows; positive amounts draw the stack.</p>}
       <BreakdownChart {...chart} within={within} series={series.filter(part => part.id !== 'incoming')} selectedHour={hour}
         label={`${reply.tag}: ${measure === 'gain' ? 'own fuel production' : 'fuel burned'} over time`}
         axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} />
@@ -134,18 +128,15 @@ export default function FuelBreakdown({ reply, history, actorSpans, identitySpan
         selectedHour={hour} label={`${reply.tag}: incoming lend-lease fuel over time`}
         axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} />}
     </>}
-    {selection && recipients.error && <WidgetState kind="error" message={recipients.error} onRetry={recipients.retry} />}
-    {selection && !selected && !recipients.error && <p className="drill-empty">{awards ? 'The selected native recipient is unavailable at its supplying read.' : 'Loading the selected native recipient...'}</p>}
-    {recipients.data?.warnings.map((note, i) => <p key={i} className="drill-empty">{note}</p>)}
+    {selection && recipients.error && <WidgetState kind="error" what="recipients" detail={recipients.error} onRetry={recipients.retry} />}
+    {selection && !selected && !recipients.error && <p className="drill-empty">{awards ? 'Recipient unavailable.' : 'Loading recipient…'}</p>}
   </>;
 }
 
 function RecipientFacts({ part, reply }: { part: FuelAwardPart; reply: FuelReply }) {
   return <>
-    <strong>{part.recordedName ?? `Other / not identified (${part.reference})`}</strong>
-    <p className="drill-empty">{reply.consumerNames[part.kind] ?? 'Other / not identified'} · native reference {part.reference} · owner {part.owner} · host {part.host}.
-      Observed receipts {formatDateTime(part.firstHour)}–{formatDateTime(part.lastHour)}.</p>
-    {part.nameReason && <p className="drill-empty">{part.nameReason}</p>}
+    <strong>{part.recordedName ?? 'Name unavailable'}</strong>
+    <p className="drill-empty">{reply.consumerNames[part.kind] ?? 'Consumer'}</p>
   </>;
 }
 
@@ -183,18 +174,17 @@ function FuelRecipientHistory({ runtime, track, reply, selection, part, hour, wi
   }, [windows.data]);
   const current = fuelRecipientAmount(runs, hour, within, reply.gainScale);
   const amount = (at: number) => fuelRecipientAmount(runs, at, within, reply.gainScale).text;
-  const series: BreakdownSeries[] = [{ id: selection.key, label: part.recordedName ?? 'Other / not identified', color: useChartTokens().accent,
+  const series: BreakdownSeries[] = [{ id: selection.key, label: part.recordedName ?? 'Other', color: useChartTokens().accent,
     runs: runs.flatMap((row, i) => row.amountRaw === null ? [] : [{ firstHour: row.firstHour, lastHour: row.lastHour,
       value: Math.max(0, Number(row.amountRaw) / reply.gainScale),
       breakBefore: row.startsSegment || i === 0 || runs[i - 1].amountRaw === null || runs[i - 1].lastHour + 1 !== row.firstHour }]), amount, missingAt: amount }];
   return <>
-    <DrillParts positiveBars showShares={false} parts={[{ id: selection.key, label: part.recordedName ?? 'Other / not identified',
+    <DrillParts positiveBars showShares={false} parts={[{ id: selection.key, label: part.recordedName ?? 'Name unavailable',
       ...current }]} format={String} />
-    {[...windows.errors.values()].map((reason, i) => <WidgetState key={i} kind="error" message={reason} onRetry={windows.retry} />)}
-    {[...windows.data.values()].flatMap(detail => detail.warnings).map((note, i) => <p key={i} className="drill-empty">{note}</p>)}
+    {[...windows.errors.values()].map((reason, i) => <WidgetState key={i} kind="error" what="recipient history" detail={reason} onRetry={windows.retry} />)}
     <BreakdownChart {...chart} within={within} series={series} keyHours={runs.map(row => row.firstHour)} selectedHour={hour}
       onViewChange={onViewChange}
-      label={`${part.recordedName ?? 'Native recipient'}: actual fuel receipts over time`}
+      label={`${part.recordedName ?? 'Recipient'}: fuel receipts over time`}
       axes={{ xFrom: start - chart.branchStart, xTo: end - chart.branchStart, yMin: null, yMax: null, log: false }} />
   </>;
 }

@@ -36,20 +36,20 @@ test('raid tally keeps recorded zero apart from missing, gaps, and uncertain lau
   assert.equal(tallyEntries(series, ['MOD A'], 103, 'launched', 10)[0].label, '0+');
   const tip = tallyTooltip(data, 'MOD A', 104, 'Renamed country at the hovered hour');
   assert.equal(tip.title, 'Renamed country at the hovered hour');
-  assert.match(tip.note!, /nonzero recorded flight distance proves launch/);
-  assert.match(tip.note!, /terminal outcomes alone do not/);
+  assert.match(tip.note!, /\+ means at least this many/);
+  assert.match(tip.note!, /Success includes critical success and excludes limited success/);
   assert.equal(tallyLines(data.series, 'succeeded', { firstHour: 100, lastHour: 105 }, null)[0].runs.length, 2);
 });
 
 test('partial country reads never date a new tally to an earlier complete world read', () => {
   const data = syntheticRaids();
   data.readHours = [100];
-  assert.equal(tallyTooltip(data, 'MOD A', 104, 'Country').rows.find(row => row.label === 'Read')?.value, formatDateTime(104));
-  assert.equal(tallyTooltip(data, 'MOD A', 104.5, 'Country').rows.find(row => row.label === 'Read')?.value, formatDateTime(104));
+  assert.equal(tallyTooltip(data, 'MOD A', 104, 'Country').rows.find(row => row.label === 'Read')?.value, undefined);
+  assert.equal(tallyTooltip(data, 'MOD A', 104.5, 'Country').rows.find(row => row.label === 'Read')?.value, undefined);
   data.series.push({ ...data.series[0], tag: 'other', runs: [{ ...data.series[0].runs[1], readHour: 104, firstHour: 104 }] });
   const series = tallyModel(data.series);
   const tip = tallyLineTooltip(series, 104, ['MOD A', 'other'], hour => tag => ({ name: tag, flagReason: `Unavailable ${tag} at ${hour}`, flagPending: tag === 'other' }), () => 'country-colour', 'succeeded');
-  assert.match(tip.note!, new RegExp(`Read ${formatDateTime(104)}`));
+  assert.doesNotMatch(tip.note!, /Read/);
   assert.deepEqual(tip.rows.map(row => row.countryFlag), [
     { name: 'MOD A', flagReason: 'Unavailable MOD A at 104', flagPending: false },
     { name: 'other', flagReason: 'Unavailable other at 104', flagPending: true },
@@ -65,8 +65,8 @@ test('unchanged per-country tallies date every successful read even during a par
   data.series[0].segments = [{ firstHour: 100, lastHour: 105 }];
   const series = tallyModel(data.series);
   for (const hour of [100, 101, 105]) {
-    assert.equal(tallyTooltip(data, 'MOD A', hour, 'Country').rows.find(row => row.label === 'Read')?.value, formatDateTime(hour));
-    assert.match(tallyLineTooltip(series, hour, ['MOD A'], () => () => ({ name: 'Country' }), () => 'country-colour', 'launched').note!,
+    assert.equal(tallyTooltip(data, 'MOD A', hour, 'Country').rows.find(row => row.label === 'Read')?.value, undefined);
+    assert.doesNotMatch(tallyLineTooltip(series, hour, ['MOD A'], () => () => ({ name: 'Country' }), () => 'country-colour', 'launched').note!,
       new RegExp(`Read ${formatDateTime(hour)}`));
   }
   assert.equal(tallyTooltip(data, 'MOD A', 106, 'Country').rows.some(row => row.label === 'Read'), false);

@@ -123,7 +123,7 @@ export function breakdownRows(breakdown: StabilityBreakdown, measure: Measure, d
         }
         const more = modifier.lines.length - largest.size;
         if (more > 0) rows.push({ label: `${more} more ${more === 1 ? 'line' : 'lines'}`, value: formatPercent(hidden.toString(), decimals, true), tone: 'muted' });
-        if (modifier.remainderRaw != null) rows.push({ label: 'Other / not identified', value: formatPercent(modifier.remainderRaw, decimals, true), tone: 'muted' });
+        if (modifier.remainderRaw != null) rows.push({ label: 'Other', value: formatPercent(modifier.remainderRaw, decimals, true), tone: 'muted' });
         continue;
       }
       if (term.valueRaw !== '0') {

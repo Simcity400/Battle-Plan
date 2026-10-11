@@ -1,5 +1,6 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
-import type { OptionField } from '../../dashboard/options';
+import type { OptionField, OptionValue } from '../../dashboard/options';
+import type { CountrySelection, WidgetTime } from '../../dashboard/model';
 import { TABLE_OPTIONS, tableSortOptions } from '../../charts/table/options.ts';
 
 export const COLUMNS = [
@@ -8,9 +9,9 @@ export const COLUMNS = [
   { key: 'captured', label: 'Captured' },
 ] as const;
 export const DEFAULT_SORT = { column: 'name', direction: 'ascending' } as const;
+const departedVisible = (_options: Readonly<Record<string, OptionValue>>, _countries?: CountrySelection, mode?: WidgetTime['mode']) => mode === 'campaign';
 export const OPTIONS: readonly OptionField[] = [
-  { key: 'departed', section: 'options', label: 'Include departed operatives', kind: 'toggle', default: true,
-    hint: 'With Live off, keep former operatives muted and date their departure by the read that showed it.' },
+  { key: 'departed', section: 'options', label: 'Include departed operatives', kind: 'toggle', default: true, visibleWhen: departedVisible },
   { key: 'showRank', section: 'options', label: 'Show rank', kind: 'toggle', default: true },
   ...TABLE_OPTIONS, ...tableSortOptions(COLUMNS, DEFAULT_SORT),
 ];

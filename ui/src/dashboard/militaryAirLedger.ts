@@ -193,7 +193,7 @@ export function ledgerCountries(rows: readonly LedgerRow[], selection: CountrySe
     const roots = new Set(chosen);
     const identities = new Set(countries.filter(country => roots.has(country.tag)).map(country => country.identity));
     return { rows: ranked.filter(row => identities.has(row.identity)),
-      reason: identities.size ? null : 'The chosen countries have no recorded native identity in this campaign branch.' };
+      reason: identities.size ? null : 'Selected countries are unavailable in this campaign.' };
   }
   const filter = worldFilter(selection, fallback, groups, hour, lastHour);
   return { rows: ranked.filter(row => filter.tags === null || filter.tags.has(row.tag)), reason: filter.reason };
@@ -202,9 +202,10 @@ export function ledgerCountries(rows: readonly LedgerRow[], selection: CountrySe
 export const ledgerShare = (raw: bigint, total: bigint) => total === 0n ? '—' : `${formatFixed(raw * 1000n / total, 1, 1)}%`;
 export const ledgerScale = (family: MilitaryAirReply['family']) => family === 'airLosses' ? 100_000 : 10_000_000;
 export const ledgerFormat = (raw: bigint | null, family: MilitaryAirReply['family']) => raw === null ? 'Not recorded' : formatFixed(raw, family === 'airLosses' ? 5 : 7, family === 'airLosses' ? 5 : 7);
-export const AIR_LEDGER_NOTE = 'Native loss bookkeeping can exceed actual wing removals. Negative amounts remain signed corrections.';
-export const LEDGER_GAP_NOTE = 'Recorded totals only. Unrecorded intervals are unknown and are not filled in.';
-export const airCauseName = (cause: number) => ({ 1: 'Aircraft combat', 2: 'Anti-air / raid effect', 3: 'Air accidents', 4: 'Airbase bombing', 5: 'Train anti-air', 6: 'Kamikaze anti-air' } as Record<number, string>)[cause] ?? `Native cause ${cause} (meaning not known)`;
+export const AIR_LEDGER_NOTE = 'Loss totals include corrections.';
+export const LEDGER_GAP_NOTE = 'Some losses may be missing.';
+export const BOMBING_GAP_NOTE = 'Some damage may be missing.';
+export const airCauseName = (cause: number) => ({ 1: 'Aircraft combat', 2: 'Anti-air / raid effect', 3: 'Air accidents', 4: 'Airbase bombing', 5: 'Train anti-air', 6: 'Kamikaze anti-air' } as Record<number, string>)[cause] ?? 'Other';
 
 /** Draw only complete, present intervals; prefix totals never create a bridge. */
 export function ledgerRuns(series: LedgerSeries, from: number, to: number, dealt: boolean, scale: number, membership: readonly Span[] | null = null): Run[] {
@@ -248,25 +249,23 @@ export function airLossParts(row: LedgerRow, from: number, hour: number) {
 /** Exact text is shared by race, butterfly and line hovers; plotting numbers never supply it. */
 export function militaryAirTooltip(row: LedgerRow, from: number, family: MilitaryAirReply['family'], name: string): TooltipContent {
   const air = family === 'airLosses', parts = air ? airLossParts(row, from, row.readHour) : null;
-  const latest = at(row.series.points, row.readHour, point => point.readHour);
-  return { title: name, subtitle: 'Read ' + formatDateTime(row.readHour),
-    rows: [{ label: air ? 'Own losses booked' : 'Damage suffered', value: ledgerFormat(row.taken, family) },
-      { label: air ? 'Enemy losses credited' : 'Damage inflicted', value: ledgerFormat(row.dealt, family) },
-      { label: 'Ratio', value: !row.complete ? 'Not known: incomplete recorded coverage' : row.taken === 0n ? '— (zero losses)' : formatRatio(row.dealt, row.taken) },
+  return { title: name,
+    rows: [{ label: air ? 'Own losses' : 'Damage suffered', value: ledgerFormat(row.taken, family) },
+      { label: air ? 'Enemy losses' : 'Damage inflicted', value: ledgerFormat(row.dealt, family) },
+      { label: 'Ratio', value: !row.complete ? 'Not available' : row.taken === 0n ? '— (zero losses)' : formatRatio(row.dealt, row.taken) },
       ...(parts ? [{ label: 'Operational losses (accidents)', value: ledgerFormat(parts.operational, family) },
         { label: 'Other losses with unknown opponent', value: ledgerFormat(parts.unknownOpponent, family) },
         ...[...parts.causes].sort(([a], [b]) => a - b).map(([cause, value]) => ({ label: airCauseName(cause),
           value: ledgerFormat(value.taken, family) + ' lost · ' + ledgerFormat(value.dealt, family) + ' credited' }))] : []),
-      ...(latest?.nativeHour != null ? [{ label: 'Last supplied native event', value: formatDateTime(latest.nativeHour) },
-        { label: 'Event supplied', value: formatDateTime(latest.readHour) }] : [])],
-    note: [!row.complete ? LEDGER_GAP_NOTE : '', air ? AIR_LEDGER_NOTE : 'Applied health loss; one full building level is the unit.'].filter(Boolean).join(' ') };
+    ],
+    note: [!row.complete ? air ? LEDGER_GAP_NOTE : BOMBING_GAP_NOTE : '', air ? AIR_LEDGER_NOTE : 'Building levels.'].filter(Boolean).join(' ') };
 }
 
 export function militaryAirLineTooltip(index: LedgerIndex, from: number, hour: number, tags: readonly string[], labelAt: LabelAt,
   colour: (tag: string) => string): TooltipContent {
   const chosen = new Set(tags), label = labelAt(hour);
   const rows = militaryAirAt(index, from, hour).filter(row => chosen.has(row.tag));
-  return { title: formatDateTime(hour), subtitle: 'Recorded aircraft loss bookkeeping', rows: rows.length ? rows.flatMap((row, i) => {
+  return { title: formatDateTime(hour), subtitle: 'Aircraft losses', rows: rows.length ? rows.flatMap((row, i) => {
     const named = label(row.tag), detail = militaryAirTooltip(row, from, index.reply.family, named.name);
     return [{ label: named.name, icon: named.flag, countryFlag: named, swatch: colour(row.tag), strong: true, divider: i > 0 },
       ...detail.rows.map(part => ({ ...part, indent: true }))];

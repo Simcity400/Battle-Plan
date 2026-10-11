@@ -54,7 +54,7 @@ test('independent equipment subtotals are readable without plotting or ranking a
   assert.deepEqual(tooltip.rows.map(row => [row.label, row.value]), [
     ['Infantry Equipment', 'Not known'], ['Infantry Equipment — Equipment lines', '−4'], ['Total', 'Not known'],
   ]);
-  assert.match(tooltip.note!, /combined amounts are not known/);
+  assert.match(tooltip.note!, /Total unavailable; equipment subtotal shown/);
   assert.throws(() => validateProducedReply({ ...reply, series: [{ ...reply.series[0],
     values: [{ ...reply.series[0].values[0], equipmentValues: c(0, [Number.MAX_SAFE_INTEGER + 1]) }] }] }));
 });

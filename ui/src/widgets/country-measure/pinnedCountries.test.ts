@@ -156,21 +156,21 @@ test('registered politics and losses pins date their native country headers to l
       state.clock = 12; renderBody();
       assert.equal(state.header!.hour, 15);
       assert.equal(state.header!.label, null, 'an identity gap keeps a neutral header');
-      assert.match(state.header!.reason!, /not recorded/);
+      assert.match(state.header!.reason!, kind === 'political-power' || kind === 'command-power' ? /Country unavailable at this time/ : kind === 'stability' ? /Selected country unavailable/ : /Country unavailable at this time/);
       state.clock = 9; state.cells = []; renderBody(); renderBody();
       assert.equal(state.header!.label!.name, 'Y@12', 'remount restores the native origin');
       pick(5); renderBody();
       props.runtime.client = {} as WidgetProps['runtime']['client']; renderBody();
       assert.equal(state.header!.hour, 12, 'a client change masks the previous local pick before effects');
       props.widget.options = {...props.widget.options, [option]: JSON.stringify({...holder, countryId: 20})};
-      assert.match(renderBody(), /native country identity is unavailable/);
+      assert.match(renderBody(), kind === 'political-power' || kind === 'command-power' ? /Country unavailable at this time/ : kind === 'stability' ? /Selected country unavailable/ : /Country unavailable at this time/);
       assert.equal(state.header!.label, null);
       props.widget.options = {...props.widget.options, [option]: 'malformed'};
-      assert.match(renderBody(), /saved native country selection is invalid/);
+      assert.match(renderBody(), kind === 'political-power' || kind === 'command-power' ? /Saved country selection unavailable/ : kind === 'stability' ? /Selected country unavailable/ : /Choose a country again/);
       props.widget.options = {...props.widget.options, [option]: null};
-      assert.match(renderBody(), /saved native country selection is invalid/);
+      assert.match(renderBody(), kind === 'political-power' || kind === 'command-power' ? /Saved country selection unavailable/ : kind === 'stability' ? /Selected country unavailable/ : /Choose a country again/);
       assert.equal(state.header!.label, null, 'a present null holder must not bind the reused tag');
-      assert.match(state.header!.reason!, /invalid/);
+      assert.match(state.header!.reason!, kind === 'political-power' || kind === 'command-power' ? /Saved country selection unavailable/ : kind === 'stability' ? /Selected country unavailable/ : /Choose a country again/);
       props.widget.options = {show}; state.cells = []; renderBody(); renderBody();
       assert.equal(state.header!.label, null, 'old pins without holder data retain a neutral header');
     }

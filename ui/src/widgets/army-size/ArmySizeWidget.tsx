@@ -34,7 +34,7 @@ import type { ArmyAttribution, ArmySizeReply, CountryGroupReply } from '../../ge
 import { armyMeasure, armyMetadataRequest, armySizeRequest, armyTooltips, armyWindows,
   formatArmyValue, formatArmyRaw, formatArmyPart, measureName, mergeArmyWindows, typeName, validateArmySizeReply,
   validateArmyWindow } from './armySizeData';
-import { OPTIONS } from './definition';
+import { normaliseArmyOptions, OPTIONS } from './definition';
 import { armyCountrySelection } from './ArmyCountryChip';
 import './armySize.css';
 
@@ -42,9 +42,9 @@ const NO_WARNINGS: string[] = [];
 
 /** The shared country race owns presentation; Army size supplies land values. */
 export default function ArmySizeWidget({ widget, runtime, active, countrySlot = null, onDiagnostics }: WidgetProps) {
-  const options = resolveOptions(OPTIONS, widget.options);
-  const view = options.view as RaceView;
-  const pinned = options.show === 'breakdown';
+  const options = resolveOptions(OPTIONS, normaliseArmyOptions(widget.options));
+  const view = (options.view === 'breakdown' ? 'mix' : options.view) as RaceView;
+  const pinned = options.view === 'breakdown';
   const [drill, dispatchDrill] = useReducer(reducePartsRaceDrill, CLOSED_PARTS_RACE);
   usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
   const [drillOrigin, setDrillOrigin] = useState<{ tag: string; hour: number } | null>(null);
@@ -126,7 +126,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const chosenMix = mixCountry(widget.countries, fallback, ranked);
   const mixTag = chosenMix && model?.series.has(chosenMix) ? chosenMix : ranked[0]?.tag ?? chosenMix;
   const resetKey = JSON.stringify([track?.source.id, track?.branch.id,
-    measure, countFor, widget.countries, widget.time, options.show, widget.options?.drillOriginHour]);
+    measure, countFor, widget.countries, widget.time, options.view, widget.options?.drillOriginHour]);
   const pickScope = JSON.stringify([resetKey, membershipKey, byType, view, extent]);
   const pickOwner = useMemo(() => ({ client: runtime.client, scope: pickScope, model: numbers }),
     [runtime.client, pickScope, numbers]);
@@ -204,11 +204,11 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
 
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its army sizes." />;
-    if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-    if (invalidSavedSelection) return <WidgetState kind="unavailable" message="The saved native country selection is unavailable." />;
-    if (metadata.error) return <WidgetState kind="error" message={metadata.error} onRetry={metadata.retry} />;
-    if (error) return <WidgetState kind="error" message={error} onRetry={history.retry} />;
-    if (grouped && groupReply.error) return <WidgetState kind="error" message={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
+    if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+    if (invalidSavedSelection) return <WidgetState kind="unavailable" message="Saved country unavailable." />;
+    if (metadata.error) return <WidgetState kind="error" detail={metadata.error} onRetry={metadata.retry} />;
+    if (error) return <WidgetState kind="error" detail={error} onRetry={history.retry} />;
+    if (grouped && groupReply.error) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon="shield" message={resolved.reason} />;
     if (metadata.data && !metadata.data.measures.length) return <WidgetState kind="unavailable" message="Not in this recording" />;
     if (metadata.data && !metadata.data.measures.includes(measure)) {
@@ -216,18 +216,18 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     }
     if (!data || !model || (grouped && !groupReply.data)) return <WidgetState kind="loading" label="Loading army sizes…" />;
     if (pending && view === 'race' && !numbers?.available) {
-      return <WidgetState kind="loading" label="Loading army size windows…" />;
+      return <WidgetState kind="loading" label="Loading army data…" />;
     }
     if (!metadata.data?.available) return <WidgetState kind="unavailable" message="Not in this recording" />;
-    if (!model.tags.length && view === 'race') return <WidgetState kind="unavailable" message="No known army sizes for these countries in this branch." />;
+    if (!model.tags.length && view === 'race') return <WidgetState kind="unavailable" message="No known army sizes for these countries." />;
     return undefined;
   })();
 
   const title = measureName(measure);
   const neutralHeader = pinned && countrySlot && (state !== undefined || choices !== null)
     ? createPortal(<DatedCountryChip label={null} hour={window ? drillAt : null}
-      reason={!savedSelection ? 'The saved native country selection is unavailable.'
-        : 'The selected native country identity is unavailable at this hour.'} />, countrySlot) : null;
+      reason={!savedSelection ? 'Saved country unavailable.'
+        : 'Country unavailable at this time.'} />, countrySlot) : null;
   const breakdown = <ArmyBreakdown runtime={runtime} track={track} active={active} options={options} extent={extent}
     countrySlot={pinned && state === undefined && choices === null ? countrySlot : null} headerSelection={savedSelection}
     playhead={drillPlayhead} tag={drillTag} hour={drillAt} measure={measure} countFor={countFor} manifest={metadata.data}
@@ -249,7 +249,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     label="Army size" empty={`No known army sizes on ${dayLabel(moment)}.`} formatValue={formatArmyValue}
     onViewChange={view === 'race' ? undefined : onViewChange}
     beforeChart={pending || !incomingMetadata.data || grouped && !incomingGroups.data
-      ? <WidgetState kind="loading" label="Loading chart windows…" />
+      ? <WidgetState kind="loading" label="Loading army data…" />
       : view === 'race' ? undefined : view === 'mix' && model && !parts.length && mixTag && countryValueAt(model, mixTag, moment)?.total === 0
         ? <WidgetState kind="empty" icon="shield" message={`0 battalions recorded on ${dayLabel(moment)}.`} />
         : !lines.length && view === 'lines'
@@ -266,7 +266,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     tooltip={(tag, hour, name, colours) => {
       if (!model) return null;
       const at = isMember(membershipOf(tag) ?? undefined, hour) ? countryValueAt(model, tag, hour) : null;
-      return at ? armyTooltips(model, name, at, hour, measure, countFor, colours) : null;
+      return at ? armyTooltips(model, name, at, hour, measure, colours) : null;
     }} lineTooltip={(hour, tags, labelAt, country) => [{ title: dayLabel(hour), subtitle: title,
       rows: model ? rankCountryValues(model, tags, hour, tags.length).map(({ tag, at }) => {
         const label = labelAt(hour)(tag);

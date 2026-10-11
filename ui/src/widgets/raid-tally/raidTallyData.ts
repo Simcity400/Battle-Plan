@@ -12,8 +12,8 @@ import { compareTags } from '../../dashboard/tagOrder.ts';
 import { SECONDARY_DASH } from '../../charts/palette.ts';
 
 export type TallyMetric = RaidMetric;
-export const tallyLabel = (metric: TallyMetric) => metric === 'both' ? 'Observed raids launched and succeeded'
-  : metric === 'launched' ? 'Observed raid launches' : 'Observed raid successes';
+export const tallyLabel = (metric: TallyMetric) => metric === 'both' ? 'Raid launches and successes'
+  : metric === 'launched' ? 'Raid launches' : 'Raid successes';
 export const tallyValue = (value: number) => usNumber.format(value);
 export const tallyCount = (value: number) => `${tallyValue(value)}+`;
 /** Scan::observe extends a tally run only after that country's successful read,
@@ -64,11 +64,10 @@ const tallyBoth = (run: RaidTallyRun) => `${tallyCount(run.launched)} launched Â
 export function tallyTooltip(data: RaidsReply, tag: string, hour: number, name: string): TooltipContent {
   const run = runAt(data.series.find(item => item.tag === tag)?.runs ?? [], Math.floor(hour));
   return { title: name, subtitle: formatDateTime(hour), rows: run ? [
-    { label: 'Observed launches', value: tallyCount(run.launched) },
-    { label: 'Observed successes', value: tallyCount(run.succeeded) },
-    { label: 'Read', value: formatDateTime(tallyReadHour(run, hour)) },
+    { label: 'Launches', value: tallyCount(run.launched) },
+    { label: 'Successes', value: tallyCount(run.succeeded) },
   ] : [{ label: 'Not recorded at this time', tone: 'muted' }],
-  note: 'Counts enter at the read that proves them, so their dates are upper bounds. An observed in-progress phase or nonzero recorded flight distance proves launch; terminal outcomes alone do not. Success means the gameâ€™s success or critical-success outcome. A + means earlier or between-read events may be absent; gaps stay unknown.' };
+  note: '+ means at least this many. Success includes critical success and excludes limited success.' };
 }
 
 export function tallyLineTooltip(series: ReadonlyMap<string, RaidTallySeries>, hour: number, tags: readonly string[],
@@ -78,5 +77,5 @@ export function tallyLineTooltip(series: ReadonlyMap<string, RaidTallySeries>, h
     const label = labelAt(hour)(tag);
     return { label: label.name, countryFlag: label, swatch: country(tag), value: metric === 'both' ? tallyBoth(run) : tallyCount(run[metric]) };
   }) : [{ label: 'Not recorded at this time', tone: 'muted' }],
-  note: entries.length ? `Read ${formatDateTime(tallyReadHour(entries[0].run, hour))}. A + is an observed lower bound. Events enter by the read proving them; between-read launches may be unknown. Success excludes limited success.` : undefined };
+  note: entries.length ? '+ means at least this many. Success includes critical success and excludes limited success.' : undefined };
 }

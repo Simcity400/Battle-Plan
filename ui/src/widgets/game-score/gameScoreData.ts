@@ -228,46 +228,19 @@ export function gameScoreRace(rows: readonly ScoreRow[], split: boolean): Countr
     };
   });
 }
-function cellDate(value: ScoreCell): string | null {
-  return value.contentEvaluated ? 'Content-evaluated; no recorded read date.' : value.readHour === null ? null : `Read ${formatDateTime(value.readHour)}`;
-}
 function cellRows(label: string, value: ScoreCell, digits = 0, strong = false): TooltipRow[] {
-  const date = cellDate(value);
-  const note = value.reason;
-  return [{ label, value: formatScore(value.raw, digits), strong },
-    ...(value.raw === null ? [] : [{ label: `Raw fixed5: ${value.raw}`, tone: 'muted' as const }]),
-    ...(date ? [{ label: date, tone: 'muted' as const }] : []), ...(note ? [{ label: note, tone: 'muted' as const }] : [])];
+  return [{ label, value: value.raw === null ? 'Unavailable' : formatScore(value.raw, digits), strong }];
 }
-export function gameScoreTooltip(reply: GameScoreReply, row: ScoreRow, split = false): TooltipContent {
+export function gameScoreTooltip(reply: GameScoreReply, row: ScoreRow): TooltipContent {
   const labels = reply.labels;
-  const faction = row.identity.faction;
-  const factionName = gameScoreFaction(row).label;
-  const inset = split ? scoreInsetReason(row) ?? 'Army, Navy and Air shares are scaled to fit Total; amounts below remain exact.' : null;
-  return { title: row.identity.name ?? 'Country name unavailable', subtitle: `${formatDateTime(row.hour)} · score at this hour`,
-    rows: [{ label: gameScoreLabel(labels, 'faction'), value: factionName },
+  return { title: row.identity.name ?? 'Country name unavailable', subtitle: formatDateTime(row.hour),
+    rows: [{ label: gameScoreLabel(labels, 'faction'), value: gameScoreFaction(row).label },
       ...SCORE_PARTS.flatMap(part => cellRows(gameScoreLabel(labels, part), row.cells[part], 0, part === 'total')),
-      { label: gameScoreLabel(labels, 'multiplier'), value: formatScore(row.multipliers.total.raw, 5), divider: true },
-      ...SCORE_PARTS.flatMap(part => cellRows(`${gameScoreLabel(labels, part)} multiplier`, row.multipliers[part], 5, part === 'total')),
-      ...[row.identity.nameMissing, row.identity.colorMissing, row.identity.factionMissing, faction?.nameMissing]
-        .flatMap(reason => reason ? [{ label: reason.reason, tone: 'muted' as const }] : []),
-      ...(inset ? [{ label: inset, tone: 'muted' as const }] : [])] };
+      { label: gameScoreLabel(labels, 'multiplier'), value: row.multipliers.total.raw === null ? 'Unavailable' : formatScore(row.multipliers.total.raw, 5), divider: true },
+      ...SCORE_PARTS.filter(part => part !== 'total').flatMap(part => cellRows(`${gameScoreLabel(labels, part)} multiplier`, row.multipliers[part], 5))] };
 }
 
-/** The compact form keeps every exact amount; a shared read date is stated once. */
-export function* gameScoreTooltips(reply: GameScoreReply, row: ScoreRow, split = false): Generator<TooltipContent> {
-  const full = gameScoreTooltip(reply, row, split);
-  yield full;
-  const group = (values: Record<ScorePart, ScoreCell>, multipliers: boolean): TooltipRow[] => {
-    const dates = SCORE_PARTS.map(part => cellDate(values[part]) ?? 'No recorded read date');
-    const sharedDate = dates.every(date => date === dates[0]) ? dates[0] : null;
-    return [...(sharedDate ? [{ label: `${multipliers ? gameScoreLabel(reply.labels, 'multiplier') : 'Scores'} · ${sharedDate}`, tone: 'muted' as const, divider: multipliers }] : []),
-      ...SCORE_PARTS.map((part, index) => ({ label: `${gameScoreLabel(reply.labels, part)}${multipliers ? ' multiplier' : ''}${sharedDate ? '' : ` · ${dates[index]}`}`,
-        value: values[part].raw === null ? `— · ${values[part].reason ?? 'Unknown'}`
-          : `${formatScore(values[part].raw, multipliers ? 5 : 0)} · raw ${values[part].raw}`, strong: part === 'total' }))];
-  };
-  const multiplierDates = SCORE_PARTS.map(part => cellDate(row.multipliers[part]) ?? 'No recorded read date');
-  const multiplierDate = multiplierDates.every(date => date === multiplierDates[0]) ? ` · Multipliers: ${multiplierDates[0]}` : '';
-  yield { title: full.title, subtitle: `${full.subtitle}${multiplierDate}`, rows: [...group(row.cells, false), ...group(row.multipliers, true)],
-    note: full.rows.filter(item => item.tone === 'muted' && !item.label.startsWith('Raw fixed5:') && !item.label.startsWith('Read '))
-      .map(item => item.label).filter((item, index, all) => all.indexOf(item) === index).join(' · ') || undefined };
+/** Every score and multiplier appears once, without acquisition metadata. */
+export function* gameScoreTooltips(reply: GameScoreReply, row: ScoreRow): Generator<TooltipContent> {
+  yield gameScoreTooltip(reply, row);
 }

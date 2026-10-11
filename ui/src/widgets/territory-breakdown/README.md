@@ -8,7 +8,7 @@
 
 **Notable behaviour:**
 
-- A state splits proportionally by its native province roster's strategic-region membership, retaining repeated entries and exact fractions. Hidden levels/folding cannot round a fraction into a whole state. Missing/conflicting membership remains **Region not attributable** with counted reasons; no centroid or vanilla region list is used.
+- A state splits proportionally by its native province roster's strategic-region membership, retaining repeated entries and exact fractions. Hidden levels/folding cannot round a fraction into a whole state. Missing/conflicting membership shows **Unknown region** with counted diagnostics; no centroid or vanilla region list is used.
 - Unheld, non-aligned and unresolved holders are distinct. Missing faction rosters cannot prove nonalignment. Native holder spans follow manual roots/aliases and keep reused tags and gaps separate; groups preserve counted dates.
 - Independent world/selected totals stay authoritative. Missing active attribution makes selected totals unknown; a complete measure read can prove an absent country's zero. A missing reading cannot prove zero or an empty selection.
 - Signed victory points remain exact selectable values; positive amounts supply slice geometry. Gaps/incomplete tables break runs. Names/affiliations use their own shown dates and recorded content; only native country nodes carry flags/refusal states.

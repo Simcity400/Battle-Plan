@@ -81,8 +81,7 @@ const LINE = 1.35;
 interface CentreLine { text: string; size: number; weight: number; colour: string; rank: number }
 
 /** The centre's lines that fit its height, most important first (`rank` 0), kept in
- * their order: a small disc drops the way back, then the unit, then the count of what
- * is not counted, but always keeps the amount. */
+ * their order; the amount always stays. */
 function centreLines(lines: readonly CentreLine[], height: number): CentreLine[] {
   const kept = new Set<CentreLine>();
   let used = 0;
@@ -101,7 +100,6 @@ function fitText(text: string, width: number, measure: (text: string) => number)
   while (cut > 1 && measure(`${text.slice(0, cut)}…`) > width) cut--;
   return `${text.slice(0, cut).trimEnd()}…`;
 }
-
 
 /** A zoomable sunburst: rings of slices where the inner
  * ring is the level zoomed into and the outer ring breaks it down. Click a slice to
@@ -286,7 +284,7 @@ export default function Sunburst(props: SunburstProps) {
         { text: p.text.shares !== false && p.settings.growth === 'fill' && !zoomed.valueUnknown && !zoomed.finalUnknown && !hasCorrections(zoomed) && zoomed.final > 0 ? `${p.text.unit} · ${shareText(zoomed.value, zoomed.final)} of the whole` : p.text.unit,
           size: tokens.fontSize.small, weight: 400, colour: tokens.muted, rank: 3 },
         ...(p.settings.growth === 'fill' && zoomed.finalUnknown && !zoomed.valueUnknown ? [{ text: 'Whole total not known', size: tokens.fontSize.small, weight: 400, colour: tokens.muted, rank: 4 }] : []),
-        ...(unknownTotal(zoomed) ? [{ text: `${unknownTotal(zoomed)} not counted`, size: tokens.fontSize.small, weight: 400, colour: tokens.muted, rank: 4 }] : []),
+        ...(unknownTotal(zoomed) && !zoomed.valueUnknown && !notMeasured(zoomed) ? [{ text: 'partial', size: tokens.fontSize.small, weight: 400, colour: tokens.muted, rank: 4 }] : []),
         ...(zoomedIn ? [{ text: '↑ back', size: tokens.fontSize.small, weight: 500, colour: pointed === 'centre' ? tokens.text : tokens.muted, rank: 2 }] : []),
       ], Math.max(0, g.hole - 8) * 1.7);
       let y = g.cy - lines.reduce((sum, line) => sum + line.size * LINE, 0) / 2;
@@ -519,14 +517,13 @@ export default function Sunburst(props: SunburstProps) {
           {icons && (part.countryFlag !== undefined
             ? <CountryFlagUrl className="sunburst-icon" url={part.countryFlag.flag} reason={part.countryFlag.flagReason} pending={part.countryFlag.flagPending} />
             : part.icon ? <img className="sunburst-icon" src={part.icon} alt="" />
-            : artwork ? <span className="sunburst-icon is-missing" aria-hidden="true" data-tooltip="No artwork in the recorded content">?</span>
-            : <span className="sunburst-icon" aria-hidden="true" />)}
+            : null)}
           <span className="sunburst-name" data-tooltip={part.label.length > 18 ? part.label : undefined}>{part.label}</span>
-          <b>{part.valueUnknown ? 'Not known' : notMeasured(part) ? text.missingLabel ?? 'Not measured' : amountText(part, text)}{unknownTotal(part) ? <sup aria-hidden="true">+?</sup> : null}</b>
+          <b>{part.valueUnknown ? 'Not known' : notMeasured(part) ? text.missingLabel ?? 'Not measured' : amountText(part, text)}{unknownTotal(part) ? <small className="sunburst-partial"> partial</small> : null}</b>
           <small>{text.shares === false || part.valueUnknown || focus.valueUnknown || part.unmeasured || !(part.value > 0 || part.value === 0 && part.keepZero) || hasCorrections(focus) ? '' : shareText(part.value, focus.value)}</small>
         </>;
         // Pointer and keyboard both show the slice's own tooltip, and the row reads
-        // it out in full: amount, shares, count, what is not counted and why.
+        // it out in full: amount, shares, count and uncertainty.
         const events = {
           onPointerEnter: (event: ReactPointerEvent) => { setLegendHover(part.id); setLegendTip({ id: part.id, x: event.clientX, y: event.clientY }); },
           onPointerLeave: () => { setLegendHover(null); setLegendTip(null); },
@@ -545,7 +542,7 @@ export default function Sunburst(props: SunburstProps) {
             const box = event.currentTarget.getBoundingClientRect(); props.onContextMenu(part, box.left, box.bottom);
           },
         };
-        const said = `${part.label}. ${part.valueUnknown ? 'Not known' : notMeasured(part) ? text.missingLabel ?? 'Not measured' : `${amountText(part, text)} ${text.unit}`}`;
+        const said = `${part.label}. ${part.valueUnknown ? 'Not known' : notMeasured(part) ? text.missingLabel ?? 'Not measured' : `${amountText(part, text)} ${text.unit}${unknownTotal(part) ? ', partial' : ''}`}`;
         return <div className={part.valueUnknown || notMeasured(part) ? 'is-unmeasured' : undefined}>
           {zoom || pick ? <button type="button" tabIndex={0} {...events} onClick={() => {
             if (pick && props.active && props.onPick?.(part)) return;

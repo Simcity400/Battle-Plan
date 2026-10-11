@@ -27,13 +27,13 @@ export function governmentCause(cause: string): string {
     case 'ElectionOnAction': return 'Election';
     case 'CoupCompletion': return 'Coup';
     case 'CivilWar': return 'Civil war';
-    case 'SetPoliticsEffect': return 'Scripted politics change';
+    case 'SetPoliticsEffect': return 'Government change';
     case 'PeaceForceGovernment': return 'Peace settlement';
     case 'SubjectGovernment': return 'Subject government';
     case 'Console': return 'Console';
-    case 'ResetSetup': return 'Setup/reset';
-    case 'NotIdentified': return 'Not identified';
-    default: return `Not identified (${cause})`;
+    case 'ResetSetup': return 'Setup';
+    case 'NotIdentified': return 'Unknown cause';
+    default: return 'Unknown cause';
   }
 }
 
@@ -45,8 +45,7 @@ export function governmentBadges(rows: readonly LedgerGovernment[], name: (token
   return visibleGovernmentChanges(rows, through).map(row => {
     const change = row.beforeToken && row.afterToken && row.beforeToken !== row.afterToken
       ? `${name(row.afterToken)} took power from ${name(row.beforeToken)}` : 'Government updated';
-    const read = row.readHour > row.hour ? ` / read ${formatDateTime(row.readHour)}` : '';
-    return { hour: row.hour, glyph: '\u21c6', label: `${change} / ${governmentCause(row.cause)}${read}${row.covered ? '' : ' / interval incomplete'}` };
+    return { hour: row.hour, glyph: '\u21c6', label: `${change} / ${governmentCause(row.cause)}${row.covered ? '' : ' / Some changes may be missing'}` };
   });
 }
 
@@ -55,7 +54,6 @@ export function governmentRows(rows: readonly LedgerGovernment[], hour: number, 
   return visibleGovernmentChanges(rows, Math.min(hour, through)).filter(row => Math.floor(row.hour / 24) === day).flatMap(row => [
     { label: `Government / ${formatDateTime(row.hour)}`, value: governmentCause(row.cause), strong: true, divider: true },
     { label: 'Before / after', value: `${row.beforeToken ? name(row.beforeToken) : 'Not identified'} / ${row.afterToken ? name(row.afterToken) : 'Not identified'}` },
-    { label: 'Read', value: formatDateTime(row.readHour), tone: 'muted' as const },
-    ...(row.covered ? [] : [{ label: 'Government interval coverage is incomplete.', tone: 'muted' as const }]),
+    ...(row.covered ? [] : [{ label: 'Some changes may be missing.', tone: 'muted' as const }]),
   ]);
 }

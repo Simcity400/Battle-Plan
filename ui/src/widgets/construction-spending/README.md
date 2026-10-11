@@ -17,7 +17,7 @@ Campaign/follow/pin/range; each hierarchy level and the shared [sunburst options
 - Measures recorded factory IC, including final deleted-line publications. Never derive it from finished levels or sampled cost. Bank withdrawals, instant progress and railway carry are excluded.
 - Exact signed fractions remain in totals and selectable correction rows; only positive amounts draw slices. Natural repairs can count as projects with zero factory IC.
 - Amounts enter at supplying reads. Missing final publications, resets or unidentifiable between-read output leave the country whole unknown while retaining its known prefix. Older recordings can open without output.
-- A project contributing to both new and repair counts once when that level is hidden. [useStateNamesAt](../../dashboard/useStateNamesAt.ts) changes dated labels, never paths/amounts. Older uncaptured name fields use authored fallback; captured failures keep ID/reason.
+- A project contributing to both new and repair counts once when that level is hidden. [useStateNamesAt](../../dashboard/useStateNamesAt.ts) changes dated labels, never paths/amounts. Older uncaptured name fields use authored fallback; captured failures keep a fallback label and a concise unavailable status.
 
 ## Files
 

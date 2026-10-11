@@ -42,7 +42,7 @@ test('overlapping native groups have one exact unidentified path with the reason
   data.series[0].runs[0].reason = 'Multiple native episodes';
   const at = lossesAt(validateBreakdown(data), 100)!;
   assert.equal(at.total, 9n);
-  assert.equal(at.rows[0].war, 'Other / not identified');
+  assert.equal(at.rows[0].war, 'Other');
   assert.equal(at.rows[0].reason, 'Multiple native episodes');
 });
 

@@ -56,13 +56,13 @@ test('unknown need, AI, variants and native wrapping retain known amounts withou
   const group = stockGroups(missing, 'type', Infinity)[0];
   assert.deepEqual(stockpilePartsAt(missing, group, 110, 'balance').parts.map(part => part.raw), [null, null, null]);
   assert.equal(stockpilePartsAt(missing, group, 110, 'balance').total, 500000n);
-  assert.match(stockpilePartsAt(missing, group, 110, 'balance').note!, /availability/);
+  assert.match(stockpilePartsAt(missing, group, 110, 'balance').note!, /Need unavailable/);
   assert.ok(stockpilePartHistory(missing, group, 'balance').series.every(part => part.runs.length === 0));
   const bounded = { ...reply, needBoundRaw: '1500000' };
   const boundedParts = stockpilePartsAt(bounded, group, 110, 'balance');
   assert.deepEqual(boundedParts.parts.map(part => part.raw), [2000000n, null, null]);
   assert.equal(boundedParts.total, 500000n);
-  assert.match(boundedParts.note!, /saturation bound/);
+  assert.match(boundedParts.note!, /Need unavailable/);
   const boundedHistory = stockpilePartHistory(bounded, group, 'balance');
   assert.equal(runAt(boundedHistory.series[0].runs, 110)!.value, 20);
   assert.equal(stackExtent(buildStack(boundedHistory.series.map(part => part.runs)), 110, 110), null);

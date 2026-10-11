@@ -1,9 +1,10 @@
+import { dayLabel } from '../../charts/draw.ts';
 import type { FixedRun, HourSpan } from '../../generated/dashboard';
 import type { StackRun } from '../../charts/stack';
 import { clipToSpans, runAt } from '../../charts/series.ts';
 import { powerCoverageAt, powerDailyReadHour } from '../../dashboard/powerBalance.ts';
 import type { PowerBalanceIndex } from '../../dashboard/powerBalance';
-import { spendAt } from '../../dashboard/politicsSpending.ts';
+import { commandHeldAt, commandHeldTooltip, spendAt, spendText } from '../../dashboard/politicsSpending.ts';
 
 export type PowerBreakdown = 'income' | 'spending';
 export interface PowerPart { id: string; category: string; label: string; raw: bigint | null; reason?: string }
@@ -26,25 +27,25 @@ export function powerCountrySegments(runs: readonly FixedRun[]): HourSpan[] {
 }
 
 /** Native daily operands stay apart from realized/clamped applications. The
- * unrecorded source modifiers remain Other / not identified, never guessed. */
+ * unrecorded source modifiers remain Other, never guessed. */
 export function powerPartsAt(index: PowerBalanceIndex, mode: PowerBreakdown, hour: number, visibleThrough: number, countries?: readonly HourSpan[]): PowerParts {
   const through = Math.min(hour, visibleThrough);
   const day = dayAt(hour);
   const country = countries ? runAt(countries, through) : null;
-  if (countries && !country) return { parts: [], total: null, reason: 'Country balance/identity was not recorded at this hour.' };
+  if (countries && !country) return { parts: [], total: null, reason: 'Country unavailable at this time.' };
   if (mode === 'income') {
     const observations = (index.days.get(day) ?? []).filter(row => {
       const read = powerDailyReadHour(row, index.currency);
       return read !== null && row.dayHour <= through && read <= through && (!country || row.dayHour >= country.firstHour);
     });
     if (new Set(observations.map(row => `${row.country}:${row.instance}:${row.epoch}`)).size > 1) {
-      return { parts: [], total: null, reason: 'More than one native country identity supplied income on this date.' };
+      return { parts: [], total: null, reason: 'Income unavailable for this date.' };
     }
-    if (!observations.length) return { parts: [], total: null, reason: 'Daily income was not recorded at this hour.' };
+    if (!observations.length) return { parts: [], total: null, reason: 'Income not recorded.' };
     if (index.currency === 'Command') {
       const income = sum(observations.map(row => row.cpIncomeRaw));
-      return { parts: [{ id: 'income', category: 'income', label: 'Other / not identified', raw: income }], total: income,
-        reason: income === null ? 'The native daily command power operand was not recorded.' : undefined };
+      return { parts: [{ id: 'income', category: 'income', label: 'Other', raw: income }], total: income,
+        reason: income === null ? 'Income not recorded.' : undefined };
     }
     const gross = sum(observations.map(row => row.ppGrossRaw));
     const costs = sum(observations.map(row => row.ppCostRaw));
@@ -53,10 +54,10 @@ export function powerPartsAt(index: PowerBalanceIndex, mode: PowerBreakdown, hou
     // The captured native net includes its i64 wrapping; BigInt never replaces it.
     const wrapping = gross === null || costs === null || net === null ? null : net - (gross - costs);
     return { parts: [
-      { id: 'income', category: 'income', label: 'Other / not identified', raw: gross },
+      { id: 'income', category: 'income', label: 'Other', raw: gross },
       { id: 'costs', category: 'costs', label: 'Daily costs', raw: costs === null ? null : -costs },
-      { id: 'wrapping', category: 'wrapping', label: 'Native fixed-point wrapping', raw: wrapping },
-    ], total: net, reason: net === null || gross === null || costs === null ? 'A native daily income operand was not recorded.' : undefined };
+      { id: 'wrapping', category: 'wrapping', label: 'Adjustment', raw: wrapping },
+    ], total: net, reason: net === null ? 'Income not recorded.' : gross === null || costs === null ? 'Income breakdown incomplete.' : undefined };
   }
   const parts: PowerPart[] = [];
   for (const spend of index.spends.get(day) ?? []) {
@@ -64,7 +65,7 @@ export function powerPartsAt(index: PowerBalanceIndex, mode: PowerBreakdown, hou
     const category = index.categories.get(spend.category)!;
     const at = spendAt(spend, item, category.name, through, category.identified, day * 24);
     if (at) parts.push({ id: spend.id, category: spend.category, label: item.action, raw: at.charge,
-      reason: item.unknown ?? (at.covered ? undefined : 'Payment interval coverage is incomplete.') });
+      reason: item.unknown || !at.covered ? 'Spending total is incomplete.' : undefined });
   }
   const cover = powerCoverageAt(index, through);
   const covered = (index.currency === 'Political' ? cover?.political : cover?.command) === true
@@ -72,9 +73,7 @@ export function powerPartsAt(index: PowerBalanceIndex, mode: PowerBreakdown, hou
   const sameCountry = !country || country.firstHour <= day * 24;
   const known = covered && sameCountry && parts.every(part => part.raw !== null);
   return { parts, total: known ? parts.reduce((result, part) => result + part.raw!, 0n) : null,
-    reason: !sameCountry ? 'Country identity or balance coverage changed during this day; recorded costs remain separate.'
-      : !covered ? cover?.reason ?? 'Spending coverage does not establish the whole day through this hour.'
-      : !known ? 'An evaluated payment was not recorded.' : undefined };
+    reason: !known || parts.some(part => part.reason) ? 'Spending total is incomplete.' : undefined };
 }
 
 /** The stack is prepared once from read boundaries. A date with missing income
@@ -82,9 +81,9 @@ export function powerPartsAt(index: PowerBalanceIndex, mode: PowerBreakdown, hou
 export function powerPartHistory(index: PowerBalanceIndex, mode: PowerBreakdown, within: readonly HourSpan[] | null, countries?: readonly HourSpan[]): PowerLayer[] {
   const categories = new Set([...index.spends.values()].flatMap(spends => spends.map(spend => spend.category)));
   const layers: PowerLayer[] = mode === 'income' ? [
-    { id: 'income', label: 'Other / not identified', runs: [] },
+    { id: 'income', label: 'Other', runs: [] },
     ...(index.currency === 'Political' ? [{ id: 'costs', label: 'Daily costs', runs: [] },
-      { id: 'wrapping', label: 'Native fixed-point wrapping', runs: [] }] : []),
+      { id: 'wrapping', label: 'Adjustment', runs: [] }] : []),
   ] : [...index.categories].filter(([id]) => id !== 'dailyDeficit' && categories.has(id))
     .map(([id, category]) => ({ id, label: category.name, runs: [] }));
   const days = new Map<number, Set<number>>();
@@ -129,4 +128,17 @@ export function powerPartHistory(index: PowerBalanceIndex, mode: PowerBreakdown,
     }
   }
   return within ? layers.map(layer => ({ ...layer, runs: clipToSpans(layer.runs, within) })) : layers;
+}
+
+/** Adjustment actions add details the income/payment part rows do not show. */
+export function powerActionDetails(index: PowerBalanceIndex, hour: number, visibleThrough: number) {
+  const through = Math.min(hour, visibleThrough);
+  const signed = (value: string) => `${BigInt(value) > 0n ? '+' : ''}${spendText(BigInt(value))}`;
+  const actions = (index.changes.get(dayAt(hour)) ?? []).filter(change => change.hour <= through && change.readHour <= through)
+    .flatMap(change => [
+      { label: `${change.action} · ${dayLabel(change.hour)}${!change.covered || change.reason ? ' · Incomplete' : ''}`, value: signed(change.realizedDeltaRaw) },
+      ...(change.amountRaw !== null && BigInt(change.amountRaw) !== BigInt(change.realizedDeltaRaw)
+        ? [{ label: 'Adjustment', value: signed(change.amountRaw) }] : []),
+    ]);
+  return [...actions, ...(index.currency === 'Command' ? commandHeldTooltip(commandHeldAt([index.reply], through)).rows.filter(row => row.value !== undefined) : [])];
 }

@@ -44,13 +44,14 @@ test('factory read text, appearance/Jump date and key dates distinguish carried 
   const drill = factoryDrillData(factoryModel(validateFactoriesReply(reply)), ['civilian'], 'built');
   assert.equal(drill.readHour('country,with,separators', 101), 100);
   assert.equal(drill.readHour('country,with,separators', 102), 102);
-  assert.notEqual(drill.at('country,with,separators', 101)?.note, drill.at('country,with,separators', 102)?.note);
+  assert.equal(drill.at('country,with,separators', 101)?.note, undefined);
+  assert.equal(drill.at('country,with,separators', 102)?.note, undefined);
   assert.deepEqual(drill.keyHours, [100, 101, 102, 104]);
   const carried = [...drill.tooltip('country,with,separators', 101, 'Recorded holder', new Map())!][0];
   assert.equal(carried.note, drill.at('country,with,separators', 101)?.note);
   const missing = factoryDrillData(factoryModel({ ...reply, series: reply.series.map(series => ({ ...series, reads: undefined })) }), ['civilian'], 'built');
   assert.equal(missing.readHour('country,with,separators', 101), null);
-  assert.match(missing.at('country,with,separators', 101)!.note!, /not recorded/);
+  assert.equal(missing.at('country,with,separators', 101)!.note, undefined);
 });
 
 test('factory history remains bound to the peaceful origin holder after rename and original-tag reuse', () => {

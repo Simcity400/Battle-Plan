@@ -3,8 +3,8 @@ import type { TooltipContent, TooltipRow } from '../charts/tooltip';
 import type { EffectGroup, EffectLine, IdeaHistoryReply, IdeaInfo, ModifierFormat, TraitEffects } from '../generated/dashboard';
 
 /** An idea's effects as the game's own tooltip shows them, formatted from the
- * recorded modifier definitions. A key without a definition is shown as
- * authored and marked, never guessed. */
+ * recorded modifier definitions. Missing names retain exact values with
+ * unavailable labels and lookup keys in hover hints. */
 
 /** The precision the idea tooltip asks for. */
 export const IDEA_PRECISION = 2;
@@ -90,9 +90,8 @@ export function sourcesAt(sources: IdeaTooltipSources, hour: number | undefined)
   return hour == null || !nameAt ? sources : { ...sources, countryName: tag => nameAt(tag, hour) };
 }
 
-/** The rows of the effects, and whether any is shown as authored. */
-/** Rows, whether any is shown as authored, and whether any needs a game feature. */
-interface Section { rows: TooltipRow[]; authored: boolean; featured?: boolean }
+/** Rows and whether any needs a game feature. */
+interface Section { rows: TooltipRow[]; featured?: boolean }
 
 /** Modifier lines as the game lists them: in
  * ascending key index (a scripted modifier after every built-in one), one line
@@ -102,7 +101,6 @@ interface Section { rows: TooltipRow[]; authored: boolean; featured?: boolean }
 function modifierRows(lines: readonly EffectLine[], sources: IdeaTooltipSources): Section {
   const words = { yes: sources.text('YES') ?? 'Yes', no: sources.text('NO') ?? 'No' };
   const order = (key: string) => sources.formats.get(key)?.index ?? Number.MAX_SAFE_INTEGER;
-  let authored = false;
   let featured = false;
   const rows: TooltipRow[] = [];
   const listed = lines.filter(line => !line.hidden);
@@ -114,7 +112,6 @@ function modifierRows(lines: readonly EffectLine[], sources: IdeaTooltipSources)
     // Without a format the game's zero rule is not known: the authored value stays.
     // No format: the engine's exact value, unformatted.
     if (!format) {
-      authored = true;
       rows.push({ label: 'Modifier name unavailable:', lookupKey: line.key, value: fixed5Text(raw, -1), tone: 'muted' });
       continue;
     }
@@ -124,14 +121,13 @@ function modifierRows(lines: readonly EffectLine[], sources: IdeaTooltipSources)
     // Missing labels and units retain the value with an explicit unavailable label.
     // The script identity remains available on the row's hover hint.
     const unitMissing = format.postfix == null && format.postfixKey != null;
-    authored ||= format.label == null || unitMissing;
     // A modifier that needs a game feature applies only while it is on, which the
     // recording does not say: it is marked, not shown as certainly in effect.
     if (format.feature !== 0) featured = true;
     rows.push({ label: `${contentTitle(format.label, line.key, 'Modifier name unavailable')}:`, lookupKey: line.key, value: `${unitMissing ? `${shown.text} [unit unavailable]` : shown.text}${format.feature !== 0 ? ' *' : ''}`,
       tone: unitMissing || format.feature !== 0 ? 'muted' : shown.tone });
   }
-  return { rows, authored, featured };
+  return { rows, featured };
 }
 
 /** A section: its heading (if any) above its rows, set apart from what came before. */
@@ -145,18 +141,19 @@ function section(heading: string | null, rows: readonly TooltipRow[]): TooltipRo
  * modifiers and equipment bonuses, each in its own group as the idea's are. */
 function traitSection(found: TraitEffects, sources: IdeaTooltipSources): Section {
   const name = contentTitle(found.name, found.token, 'Trait name unavailable');
-  if (!found.known) return { rows: section(name, [{ label: 'Effects', value: found.unknown ?? 'not in the content files', tone: 'muted' }]), authored: false };
+  // Effects the content does not define are left out, not described; the reason stays in the reply.
+  if (!found.known) return { rows: section(name, []) };
   const own = modifierRows(found.lines, sources);
   const groups = [...found.targeted.map(group => targetedSection(group, sources)), ...found.equipment.map(group => equipmentSection(group, sources))];
   return { rows: [...section(name, [...own.rows, ...found.tooltips.map(key => ({ label: contentTitle(sources.text(key), key, 'Tooltip text unavailable'), lookupKey: key }))]), ...groups.flatMap(group => group.rows)],
-    authored: own.authored || groups.some(group => group.authored), featured: own.featured || groups.some(group => group.featured) };
+    featured: own.featured || groups.some(group => group.featured) };
 }
 
 /** A targeted modifier: its modifier lines, then its custom tooltips. */
 function targetedSection(group: EffectGroup, sources: IdeaTooltipSources): Section {
   const lines = modifierRows(group.lines, sources);
   const rows = [...lines.rows, ...group.tooltips.map(key => ({ label: contentTitle(sources.text(key), key, 'Tooltip text unavailable'), lookupKey: key }))];
-  return { rows: section(group.target ? `Against ${sources.countryName(group.target)}:` : 'Against a country:', rows), authored: lines.authored, featured: lines.featured };
+  return { rows: section(group.target ? `Against ${sources.countryName(group.target)}:` : 'Against a country:', rows), featured: lines.featured };
 }
 
 /** An equipment bonus: its stats are named and formatted by an engine table the
@@ -165,7 +162,7 @@ function equipmentSection(group: EffectGroup, sources: IdeaTooltipSources): Sect
   const name = group.target ? contentTitle(sources.text(group.target), group.target, 'Equipment name unavailable') : 'Equipment';
   const rows = group.lines.filter(line => !line.hidden).map(line => ({ label: 'Equipment modifier name unavailable:', lookupKey: line.key, tone: 'muted' as const,
     value: fixed5Text(BigInt(line.fixed5), -1) }));
-  return { rows: section(`${name}${group.instant ? ' (at once)' : ''}:`, rows), authored: rows.length > 0 };
+  return { rows: section(`${name}${group.instant ? ' (at once)' : ''}:`, rows) };
 }
 
 /** A research bonus: category, then the factor as a signed whole percentage. */
@@ -179,24 +176,20 @@ function researchRows(lines: readonly EffectLine[], sources: IdeaTooltipSources)
 
 /** Every effect of an idea, in the game's order: its traits, its modifiers and
  * custom tooltips, its targeted modifiers, research bonuses, then equipment
- * bonuses. `note` says when some are shown as authored. */
+ * bonuses. `note` marks effects that need an enabled game feature. */
 export function ideaEffectRows(info: IdeaInfo, sources: IdeaTooltipSources): { rows: TooltipRow[]; note?: string } {
-  // Unknown effects are said to be unknown, never shown as none.
-  if (!info.effectsKnown) return { rows: section(null, [{ label: 'Effects', value: info.unknown ?? 'not in the content files', tone: 'muted' }]) };
+  // Effects the content does not define are left out rather than described; the reason stays in the reply.
+  if (!info.effectsKnown) return { rows: [] };
   const sections: Section[] = [
     ...info.traits.map(found => traitSection(found, sources)),
   ];
   const own = modifierRows(info.effects, sources);
-  sections.push({ rows: section(null, [...own.rows, ...info.tooltips.map(key => ({ label: contentTitle(sources.text(key), key, 'Tooltip text unavailable'), lookupKey: key }))]), authored: own.authored, featured: own.featured });
+  sections.push({ rows: section(null, [...own.rows, ...info.tooltips.map(key => ({ label: contentTitle(sources.text(key), key, 'Tooltip text unavailable'), lookupKey: key }))]), featured: own.featured });
   sections.push(...info.targeted.map(group => targetedSection(group, sources)));
-  sections.push({ rows: section(null, researchRows(info.research, sources)), authored: false });
+  sections.push({ rows: section(null, researchRows(info.research, sources)) });
   sections.push(...info.equipment.map(group => equipmentSection(group, sources)));
   const rows = sections.flatMap(item => item.rows);
-  const notes = [
-    sections.some(item => item.authored) ? "Grey effects are shown unformatted, as the game reads the content files: the game's format for them is not recorded." : '',
-    sections.some(item => item.featured) ? '* Applies only while the game feature it needs is on; the recording does not say whether it is.' : '',
-  ].filter(Boolean);
-  return { rows, note: notes.length ? notes.join(' ') : undefined };
+  return { rows, note: sections.some(item => item.featured) ? '* Depends on an enabled game feature.' : undefined };
 }
 
 /** Most effect rows a tooltip shows; the rest are counted, so it stays on screen. */

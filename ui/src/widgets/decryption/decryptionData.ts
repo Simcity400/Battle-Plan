@@ -1,7 +1,7 @@
 import type { CipherObservation, DecryptionCoverage, DecryptionPair, DecryptionReply, DecryptionRun, DecryptionTagRun } from '../../generated/dashboard';
 import { runAt } from '../../charts/series.ts';
 import { formatAmount } from '../../charts/valueAxis.ts';
-import { formatDate, formatDateTime, gameDate } from '../../dashboard/calendar.ts';
+import { formatDate, gameDate } from '../../dashboard/calendar.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import { fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipContent } from '../../charts/tooltip';
@@ -16,7 +16,6 @@ const raw = (value: unknown): value is string => typeof value === 'string' && /^
 const id = (value: unknown): value is string => typeof value === 'string' && /^(0|[1-9]\d{0,9})$/.test(value) && BigInt(value) <= 0xffff_ffffn;
 const ordered = <T extends { firstHour: number; lastHour: number }>(runs: readonly T[]) => runs.every((run, i) => hour(run.firstHour) && hour(run.lastHour)
   && run.firstHour <= run.lastHour && (i === 0 || runs[i - 1].lastHour < run.firstHour));
-export const NATIVE_PROGRESS_UNKNOWN = 'Native progress arithmetic could not be evaluated.';
 
 export interface DecryptionValue {
   amountRaw: string;
@@ -196,9 +195,9 @@ export const workingStatus = (run: DecryptionValue, capitalized = false) => {
 export const cipherStatus = (row: RaceRow) => row.run.broken === true ? `${CIPHER_BROKEN} ${observationDate(row.broken, row.hour)}`
   : row.run.broken === null ? `${workingStatus(row.run, true)}; cipher status unknown` : workingStatus(row.run, true);
 
-export function decryptionTooltip(row: RaceRow, owner: ReturnType<CountryLabel>, target: ReturnType<CountryLabel>, height: number, countryHour?: number): TooltipContent {
+export function decryptionTooltip(row: RaceRow, owner: ReturnType<CountryLabel>, target: ReturnType<CountryLabel>, height: number): TooltipContent {
   const bonus = activeBonusDays(row.run);
-  const content: TooltipContent = { title: `${owner.name} → ${target.name}`, rows: [
+  const content: TooltipContent = { title: 'Decryption', rows: [
     { label: 'Decryptor', value: owner.name, countryFlag: row.tags.ownerTag === null ? undefined : {
       flag: owner.flag, flagReason: owner.flagReason, flagPending: owner.flagPending,
     } },
@@ -207,10 +206,8 @@ export function decryptionTooltip(row: RaceRow, owner: ReturnType<CountryLabel>,
     } },
     { label: 'Progress', value: progressText(row.run) },
     { label: 'Started', value: observationDate(row.run.started, row.hour) },
-    { label: 'Bonus days', value: bonus == null ? 'none' : String(bonus) },
+    ...(bonus == null ? [] : [{ label: 'Bonus days', value: String(bonus) }]),
     { label: 'Status', value: cipherStatus(row), divider: true },
-  ], note: [row.run.thresholdUnknown ?? (row.run.progressPercent == null ? NATIVE_PROGRESS_UNKNOWN : undefined),
-    countryHour !== undefined && countryHour < row.hour ? `Country names and flags at ${formatDateTime(countryHour)}.` : undefined,
-  ].filter(Boolean).join(' ') || undefined };
+  ] };
   return fitTooltip([content], height, { keep: 1 });
 }

@@ -57,7 +57,7 @@ export default function DecryptionWidget({ widget, runtime, active, onDiagnostic
     const row = byKey.get(key);
     if (!row) return null;
     const labels = countries.pair(row);
-    return decryptionTooltip(row, labels.owner, labels.target, height, labels.hour);
+    return decryptionTooltip(row, labels.owner, labels.target, height);
   }, [byKey, countries, height]);
   const jump = (key: string, x: number, y: number) => {
     const row = byKey.get(key);
@@ -73,16 +73,15 @@ export default function DecryptionWidget({ widget, runtime, active, onDiagnostic
     revision: `${hour}:${track?.source.revision}:${track?.branch.id}:${countries.revision}`, onMenu: jump });
   useEffect(() => { onDiagnostics(data?.warnings ?? NO_WARNINGS); return () => onDiagnostics(NO_WARNINGS); }, [data, onDiagnostics]);
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its decryption races." />;
-  if (!window || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recorded branch." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (widget.countries.kind !== 'all' && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if (!window || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (widget.countries.kind !== 'all' && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!data || !selection.ready) return <WidgetState kind="loading" label="Loading decryption…" />;
   const coverage = runAt(data.coverage, hour);
   if (!coverage || (!coverage.complete && !rows.length)) return <WidgetState kind="unavailable"
-    message={`Not in this recording${coverage?.reason ? `: ${coverage.reason}` : ' at this time.'}`} />;
+    message="Decryption data is unavailable at this time." />;
   if (selection.reason) return <WidgetState kind="unavailable" message={selection.reason} />;
   return <div className="decryption" key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])}>
-    {coverage.reason && <p className="dash-inline-warning" role="status">{coverage.reason}</p>}
     <WindowedRows items={items} rowHeight={52} padding={8} label="Decryption races" className="decryption-race"
       onVisibleRows={setVisibleRows} empty={<WidgetState kind="empty" message={widget.countries.kind === 'all' ? 'No ciphers being decrypted yet.' : 'No matching decryption pairs at this time.'} />}>
       {row => <RaceCell row={row.item} labels={countries.pair(row.item)} active={active && row.phase !== 'leaving'} leaving={row.phase === 'leaving'}

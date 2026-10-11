@@ -8,10 +8,9 @@ export const OPTIONS: readonly OptionField[] = [
     choices: [{ value: 'since', label: 'Date became subject' }, { value: 'name', label: 'Name' }] },
   { key: 'ended', section: 'options', label: 'Former subjects', kind: 'choice', default: 'shown',
     choices: [{ value: 'shown', label: 'Shown' }, { value: 'hidden', label: 'Hidden' }] },
-  { key: 'names', section: 'options', label: 'Level names in bars', hint: 'Where they fit', kind: 'toggle', default: true },
+  { key: 'names', section: 'options', label: 'Level names in bars', kind: 'toggle', default: true },
   { key: 'legend', section: 'options', label: 'Level colours above the timeline', kind: 'toggle', default: true },
-  { key: 'grow', section: 'axes', label: 'Grow with playback', kind: 'toggle', default: false,
-    hint: 'With Live on, grow the time axis as the campaign plays.' },
+  { key: 'grow', section: 'axes', label: 'Grow with playback', kind: 'toggle', default: false },
 ];
 
 export const definition = {

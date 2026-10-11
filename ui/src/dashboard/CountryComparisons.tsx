@@ -56,7 +56,7 @@ export default function CountryComparisons({ component: Component, ...props }: W
   useDiagnostics(onDiagnostics, diagnostics);
   // Each mounted panel keeps its widget while this one re-renders, so its own hooks do not re-run.
   const panels = useMemo(() => new Map(shown.map(tag => [tag, { ...widget, countries: { kind: 'tags' as const, tags: [tag] } }])), [widget, shown]);
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (pending) return <WidgetState kind="loading" label="Loading countries…" />;
   if (countries.reason) return <WidgetState kind="empty" message={countries.reason} />;
   return <div ref={body} className="country-comparisons" data-multiple={multiple || undefined}

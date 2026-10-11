@@ -122,9 +122,9 @@ export function clipRuns(runs: readonly Run[], membership: readonly MembershipRu
 /** Why a group's members are unknown under a membership rule (`groupMembers` null). */
 function unrecorded(membership: GroupMembership): string {
   switch (membership) {
-    case 'hour': return 'This group’s members were not recorded at this moment.';
-    case 'end': return 'This group’s members were not recorded at the end of this campaign branch.';
-    case 'ever': return 'No member of this group was recorded, and its membership was not recorded for part of this campaign branch.';
+    case 'hour': return 'Group membership is unavailable at this time.';
+    case 'end': return 'Group membership is unavailable at this time.';
+    case 'ever': return 'Group membership is incomplete for this campaign.';
   }
 }
 
@@ -157,20 +157,20 @@ export function worldFilter(selection: CountrySelection, fallback: readonly stri
     if (!identities) return empty(null);
     const countryIds = identities.selected(tags);
     return { tags: new Set(identities.aliasesAt(countryIds, hour)), countryIds,
-      reason: countryIds.size ? null : 'The chosen countries have no recorded native identity in this campaign branch.' };
+      reason: countryIds.size ? null : 'Selected countries are unavailable in this campaign.' };
   }
   if (!groups || !identities) return empty(null);
   const runs = groupRuns(groups, selection.group);
-  if (!runs) return empty('This group is not in this campaign branch.');
+  if (!runs) return empty('This group is unavailable in this campaign.');
   const members = groupMembers(runs, selection.membership, hour, lastHour, Infinity, groupUnobserved(groups, selection.group));
   if (!members) return empty(unrecorded(selection.membership));
   const at = selection.membership === 'hour' ? hour : lastHour;
   const countryIds = selection.membership === 'ever' ? identities.keysDuring(runs)
     : identities.keysDuring(members.map(tag => ({ tag, firstHour: at, lastHour: at })));
   return { tags: new Set(identities.aliasesAt(countryIds, hour)), countryIds, reason: members.length
-    ? countryIds.size ? null : 'The group members have no recorded native identity at the membership dates counted.'
-    : selection.membership === 'ever' ? 'This group has no members in this campaign branch.'
-      : selection.membership === 'end' ? 'This group has no members at the end of this campaign branch.' : 'This group has no members at this moment.' };
+    ? countryIds.size ? null : 'Group members are unavailable at this time.'
+    : selection.membership === 'ever' ? 'This group has no members in this campaign.'
+      : selection.membership === 'end' ? 'This group has no members at the end of this campaign.' : 'This group has no members at this moment.' };
 }
 
 /** Whether a dated row of a country passes a widget's country choice, for logs, whose
@@ -190,7 +190,7 @@ export function countryMatch(selection: CountrySelection, fallback: readonly str
   if (selection.kind === 'group' && !groups) return { ready: false, matches: () => false, reason: null };
   if (selection.kind === 'group' && selection.membership === 'hour') {
     const runs = groupRuns(groups!, selection.group);
-    if (!runs) return { ready: true, matches: () => false, reason: 'This group is not in this campaign branch.' };
+    if (!runs) return { ready: true, matches: () => false, reason: 'This group is unavailable in this campaign.' };
     const unobserved = groupUnobserved(groups!, selection.group);
     const byTag = new Map<string, MembershipRun[]>();
     for (const run of runs) {
@@ -228,7 +228,7 @@ export interface ResolvedCountries {
 /** A complete world total cannot prove a smart group's missing membership. */
 export function groupShareReason(resolved: ResolvedCountries, membership: GroupMembership, hour: number): string | null {
   if (resolved.reason) return resolved.reason;
-  if (membership === 'ever' && resolved.unobserved.length) return 'This group’s full member set was not recorded for this campaign branch.';
+  if (membership === 'ever' && resolved.unobserved.length) return 'Group membership is incomplete for this campaign.';
   if (membership === 'hour' && resolved.unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour)) return unrecorded(membership);
   return null;
 }
@@ -257,7 +257,7 @@ export function resolveCountries(selection: CountrySelection, fallback: string[]
   if (selection.group.type === 'top') return { tags: [], membership: null, unobserved: [], dropped: 0, reason: null, top: Math.max(1, Math.min(max, selection.group.count)) };
   if (!groups) return { tags: [], membership: null, unobserved: [], dropped: 0, reason: null };
   const runs = groupRuns(groups, selection.group);
-  if (!runs) return { tags: [], membership: null, unobserved: [], dropped: 0, reason: 'This group is not in this campaign branch.' };
+  if (!runs) return { tags: [], membership: null, unobserved: [], dropped: 0, reason: 'This group is unavailable in this campaign.' };
   const unobserved = groupUnobserved(groups, selection.group);
   const members = groupMembers(runs, selection.membership === 'end' ? 'end' : 'ever', lastHour, lastHour, Infinity, unobserved);
   // Unknown is not empty: the membership counted was not recorded.
@@ -265,7 +265,7 @@ export function resolveCountries(selection: CountrySelection, fallback: string[]
   const tags = members.slice(0, max);
   const membership = selection.membership === 'hour' ? new Map(tags.map(tag => [tag, [] as MembershipRun[]])) : null;
   if (membership) for (const run of runs) membership.get(run.tag)?.push(run);
-  return { tags, membership, unobserved, dropped: Math.max(0, members.length - max), reason: members.length ? null : 'This group has no members in this campaign branch.' };
+  return { tags, membership, unobserved, dropped: Math.max(0, members.length - max), reason: members.length ? null : 'This group has no members in this campaign.' };
 }
 
 /** Drawing projection only: keep the original resolved tags as backend roots. */

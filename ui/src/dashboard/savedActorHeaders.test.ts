@@ -37,13 +37,6 @@ const ledger: MilitaryAirReply = { family: 'airLosses', firstHour: 0, lastHour: 
     { tag: 'Y', identity: 'B', present: [span(15, 20)], membership: null }],
   leaves: [], regions: [], buildings: [], warnings: [] };
 
-function findButton(node: ReactNode, label: string): ReactElement<{ onClick: () => void }> | null {
-  if (Array.isArray(node)) return node.map(child => findButton(child, label)).find(Boolean) ?? null;
-  if (!isValidElement<{ children?: ReactNode; onClick?: () => void }>(node)) return null;
-  if (node.type === 'button' && node.props.children === label) return node as ReactElement<{ onClick: () => void }>;
-  return findButton(node.props.children, label);
-}
-
 test('registered saved native-actor bodies supply country headers at their displayed date', async () => {
   const state = { hour: 12, pending: false, error: undefined as string | undefined, content: 0,
     army, supply, nuclear, nuclearOrigin, ledger, armyWindows: new Map([[0, army]]), windowErrors: new Map<number, string>(),
@@ -179,6 +172,14 @@ test('registered saved native-actor bodies supply country headers at their displ
     const nukes = await vite.ssrLoadModule('/ui/src/widgets/nuclear-arsenal/nuclearArsenalData.ts') as typeof import('../widgets/nuclear-arsenal/nuclearArsenalData.ts');
     const air = await vite.ssrLoadModule('/ui/src/dashboard/airLossDrill.ts') as typeof import('./airLossDrill.ts');
     const view = (await vite.ssrLoadModule('/ui/src/dashboard/MilitaryAirView.tsx')).default;
+    const { default: FollowControl } = await vite.ssrLoadModule('/ui/src/charts/drill/FollowControl.tsx') as typeof import('../charts/drill/FollowControl');
+    function findButton(node: ReactNode, label: string): ReactElement<{ onClick: () => void }> | null {
+      if (Array.isArray(node)) return node.map(child => findButton(child, label)).find(Boolean) ?? null;
+      if (!isValidElement<{ children?: ReactNode; onClick?: () => void; 'aria-label'?: string }>(node)) return null;
+      if (node.type === FollowControl) return findButton(FollowControl(node.props as unknown as Parameters<typeof FollowControl>[0]), label);
+      if (node.type === 'button' && (node.props.children === label || node.props['aria-label'] === label)) return node as ReactElement<{ onClick: () => void }>;
+      return findButton(node.props.children, label);
+    }
     const unmount = () => { for (const cells of state.hooks.values()) for (const cell of cells as { cleanup?: () => void }[]) cell.cleanup?.();
       state.hooks.clear(); state.elements.clear(); state.effects = []; };
     const settle = (draw: () => string) => { for (let round = 0; round < 16; round++) {
@@ -206,7 +207,7 @@ test('registered saved native-actor bodies supply country headers at their displ
       assert.doesNotMatch(html, />Alpha<|data:flag-A/); assert.deepEqual(state.defaults, []);
       const portal = countryPortal(); if (portal) {
         assert.equal(portal.chip.props.label, null);
-        const chip = renderToStaticMarkup(portal.chip); assert.match(chip, /Selected country unavailable/); assert.doesNotMatch(chip, /data:flag-B/);
+        const chip = renderToStaticMarkup(portal.chip); assert.match(chip, />Unavailable<\/span>/); assert.doesNotMatch(chip, /data:flag-B/);
       } return html; };
     for (const kind of kinds) {
       state.hour = 12; unmount();
@@ -246,26 +247,26 @@ test('registered saved native-actor bodies supply country headers at their displ
         expectDate({ ...pinned, time: { mode: 'follow' } }, 17, 'Y');
       }
       state.hour = 12; unmount(); expectDate(pinned, 12, 'X');
-      state.nameKnown = undefined; assert.match(render(pinned), /country name is loading/);
+      state.nameKnown = undefined; assert.match(render(pinned), />Loading…<\/span>/);
       assert.match(render(pinned), /data:flag-B/, 'an authenticated flag remains independent of a pending name');
-      state.nameKnown = false; assert.match(render(pinned), /Selected country unavailable/);
+      state.nameKnown = false; assert.match(render(pinned), />Unavailable<\/span>/);
       assert.match(render(pinned), /data:flag-B/, 'an authenticated flag remains independent of the unavailable name');
-      state.nameKnown = true; state.nameFailed = true; assert.match(render(pinned), /country name request failed/);
+      state.nameKnown = true; state.nameFailed = true; assert.match(render(pinned), /Name unavailable/);
       assert.match(render(pinned), /data:flag-B/, 'an authenticated flag remains independent of a failed name read');
       state.flag = undefined; state.flagReason = 'Concurrent native flag refusal'; state.nameFailed = false; state.nameKnown = false;
-      const refused = render(pinned); assert.match(refused, /Selected country unavailable/);
-      assert.match(refused, /aria-label="Flag not available: Concurrent native flag refusal"/);
+      const refused = render(pinned); assert.match(refused, />Unavailable<\/span>/);
+      assert.match(refused, /aria-label="Flag unavailable"/);
       state.nameKnown = true; state.nameFailed = true; state.flagReason = 'Distinct native flag request failed';
-      const failed = render(pinned); assert.match(failed, /country name request failed/);
-      assert.match(failed, /aria-label="Flag not available: Distinct native flag request failed"/);
+      const failed = render(pinned); assert.match(failed, /Name unavailable/);
+      assert.match(failed, /aria-label="Flag unavailable"/);
       state.flagReason = undefined; state.flagPending = true;
       assert.match(render(pinned), /Flag loading/, 'pending artwork remains independent of a failed name');
       state.flag = 'data:flag-B'; state.flagPending = false;
-      state.nameFailed = false; state.headerName = ''; assert.doesNotMatch(render(pinned), /Selected country unavailable/);
+      state.nameFailed = false; state.headerName = ''; assert.doesNotMatch(render(pinned), /Unavailable/);
       assert.equal(countryPortal()!.chip.props.label!.name, '', 'a known empty native name stays empty'); state.headerName = undefined;
       state.flag = undefined; state.flagPending = true; assert.match(render(pinned), /Flag loading/);
-      state.flagPending = false; state.flagReason = 'Synthetic content refusal'; assert.match(render(pinned), /Synthetic content refusal/);
-      state.flagReason = 'The flag request failed.'; assert.match(render(pinned), /flag request failed/);
+      state.flagPending = false; state.flagReason = 'Synthetic content refusal'; assert.doesNotMatch(render(pinned), /Synthetic content refusal/);
+      state.flagReason = 'The flag request failed.'; assert.doesNotMatch(render(pinned), /flag request failed/);
       state.flag = 'data:flag-B'; state.flagReason = undefined;
       state.pending = true; neutral(pinned);
       const client = runtime.client, source = track.source;

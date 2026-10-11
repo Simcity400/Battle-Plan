@@ -140,22 +140,22 @@ test('the tooltip lists the tank, then the day before its read, and dates a carr
   assert.deepEqual(day.rows.map(row => [row.label, row.value]), [
     ['Fuel', '10'], ['Capacity', '20'], ['Full', '50%'], ['Gained (own production)', '+3.5'], ['Burned', '−1.25'], ['Net', '+2.25']]);
   assert.equal(day.rows[5].tone, 'positive');
-  assert.match(day.note!, /^Gained and burned in the 24 hours before the read; lend-lease fuel received is not included\.$/);
+  assert.match(day.note!, /^Previous 24 hours; excludes incoming lend-lease\.$/);
   // Without lend-lease at the read nothing more is said; with it, its last hour is named, never a day's total.
   assert.doesNotMatch(day.note!, /arriving/);
-  assert.match(tip(1065).note!, /Lend-lease fuel was arriving at the read \(\+1\.5 in its last hour\); its daily total was not recorded\./);
-  assert.match(tip(1017).note!, /^Gained and burned/);
+  assert.match(tip(1065).note!, /Daily lend-lease total unavailable/);
+  assert.match(tip(1017).note!, /^Previous 24 hours/);
   // A full tank says why the level did not rise by the net.
   assert.match(tip(1065).note!, /discards fuel beyond its capacity/);
   const overlapping = tip(1019);
   assert.deepEqual(overlapping.rows.at(-1), { label: 'Gained and burned', value: 'Counted in another day', tone: 'muted', divider: true });
-  assert.match(overlapping.note!, /counted in that read’s bar/);
-  assert.match(tip(1089).note!, /held no state/);
+  assert.match(overlapping.note!, /Included in another day/);
+  assert.match(tip(1089).note!, /no states were owned/);
   // A day the game did not update makes no claim from its frozen lend-lease value.
   assert.doesNotMatch(tip(1089).note!, /lend-lease/i);
   // Unknown ownership is its own reason, never a bar.
   assert.equal(tip(1113).rows.at(-1)!.value, 'Not known');
-  assert.match(tip(1113).note!, /Part of the day was not recorded/);
+  assert.match(tip(1113).note!, /Daily data incomplete/);
   assert.deepEqual(tip(1050).rows, [{ label: 'Not recorded at this time', tone: 'muted' }]);
 });
 
@@ -267,4 +267,9 @@ test('an absent non-transfer source does not inherit incoming lend-lease in the 
   assert.equal(fuelHistoryRow(values, 'unidentified', false), null);
   assert.equal(fuelHistoryRow(values, 'incoming', true), values.transfer);
   assert.equal(fuelHistoryRow(values, 'gain-0', false), values.parts[0]);
+});
+
+test('recipient history shows a short status instead of backend refusal text', () => {
+  const runs = [{ firstHour: 100, lastHour: 123, startsSegment: true, amountRaw: null, reason: 'Native recipient census refused' }];
+  assert.deepEqual(fuelRecipientAmount(runs, 100, null, 100000), { raw: null, value: null, text: 'History unavailable' });
 });

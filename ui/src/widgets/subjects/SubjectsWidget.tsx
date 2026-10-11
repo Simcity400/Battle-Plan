@@ -32,7 +32,6 @@ import type { OverlordOrder, SubjectOrder } from './subjectsData';
 import './subjects.css';
 
 const NO_WARNINGS: string[] = [];
-const NOTE = 'Subject relations are recorded every hour; the date a country became a subject is the game’s own.';
 
 /** Every overlord and its subjects over time: each
  * overlord heads a band as thick as its number of subjects, and each subject has a
@@ -92,21 +91,21 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
 
   useEffect(() => {
     const warnings = [...(data?.warnings ?? []), ...(groups.data?.warnings ?? []),
-      ...(views[0]?.identityGaps.length || data?.runs.length && identities && !views.length ? ['Some subject relations lack native endpoint identities; their hours remain unknown.'] : []),
-      ...(groups.error ? [`Native country identities could not be read: ${groups.error}`] : [])];
+      ...(views[0]?.identityGaps.length || data?.runs.length && identities && !views.length ? ['Some subject relations have unknown countries; those hours stay unknown.'] : []),
+      ...(groups.error ? [`Country history unavailable: ${groups.error}`] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, groups.data, groups.error, identities, views, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="hierarchy" message="Load a campaign to see its overlords and subjects." />;
-  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the campaign’s recorded branch." />;
-  if (product.error) return <WidgetState kind="error" message={product.error} onRetry={product.retry} />;
-  if (groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (product.error) return <WidgetState kind="error" detail={product.error} onRetry={product.retry} />;
+  if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!data || !identities) return <WidgetState kind="loading" label="Loading subjects…" />;
   if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
-  if (!data.runs.length) return <WidgetState kind="empty" message={data.warnings.length ? 'No subject relations could be read from this campaign branch.' : 'No subjects were recorded in this campaign branch.'} />;
-  if (!views.length || !lanes.length && views[0].identityGaps.some(span => span.firstHour <= at)) return <WidgetState kind="unavailable" message="Recorded subject relations lack native endpoint identities for this view." />;
+  if (!data.runs.length) return <WidgetState kind="empty" message={data.warnings.length ? 'Subject relations are unavailable.' : 'No subjects recorded.'} />;
+  if (!views.length || !lanes.length && views[0].identityGaps.some(span => span.firstHour <= at)) return <WidgetState kind="unavailable" message="Countries in these relations could not be identified." />;
   if (!lanes.length) return <WidgetState kind="empty" message={filter.tags ? 'None of the chosen countries has been an overlord or a subject yet.' : 'No subjects yet.'} />;
 
   // The levels shown, in the content's order, each named once; past the palette they share "Other".
@@ -115,7 +114,7 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   const own = legendLevels.filter(level => colours.get(level.token) !== other);
   const folded = legendLevels.filter(level => colours.get(level.token) === other);
   const legend = [...own.map(level => ({ id: level.token, label: contentTitle(level.name, level.token, 'Autonomy level name unavailable'), color: colours.get(level.token)! })),
-    ...(folded.length ? [{ id: '\u0000other', label: `Other levels (${folded.map(level => contentTitle(level.name, level.token, 'Autonomy level name unavailable')).join(', ')})`, color: other }] : [])];
+    ...(folded.length ? [{ id: '\u0000other', label: 'Other levels', color: other, tooltip: folded.map(level => contentTitle(level.name, level.token, 'Autonomy level name unavailable')).join(', ') }] : [])];
   const day = dayLabel;
   const tooltip = (laneId: string, hour: number, full: boolean): TooltipContent | null => {
     const about = info.get(laneId);
@@ -135,8 +134,8 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
       const rows: TooltipRow[] = [{ label: 'Subjects', value: unknown ? 'Not recorded' : String(held.length) },
         ...held.map((item, index) => ({ label: named(item.tag).name, countryFlag: named(item.tag), value: levelName(levels, item.level),
           swatch: item.level != null ? colours.get(item.level) : undefined, indent: true, short: true, divider: index === 0 }))];
-      const label = overlordTag === null ? { name: 'Native country identity not recorded', flagReason: 'Native country identity not recorded at this hour.' } : named(overlordTag);
-      const content: TooltipContent = { title: label.name, countryFlag: label, subtitle: `Overlord · ${day(hour)}`, rows, note: NOTE };
+      const label = overlordTag === null ? { name: 'Unknown country', flagReason: 'Unknown country at this hour.' } : named(overlordTag);
+      const content: TooltipContent = { title: label.name, countryFlag: label, subtitle: `Overlord · ${day(hour)}`, rows };
       return full ? content : fitTooltip([content], viewport, { more: hidden => `${hidden} more ${hidden === 1 ? 'subject' : 'subjects'}` });
     }
     const view = about.subject;
@@ -145,8 +144,8 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
     const subjectTag = subjectTagAt(about.overlord, view, hour);
     const overlordTag = overlordTagAt(about.overlord, hour);
     hover.ask(hour, [subjectTag, overlordTag].filter((tag): tag is string => tag !== null));
-    const subjectLabel = subjectTag === null ? { name: 'Native country identity not recorded', flagReason: 'Native country identity not recorded at this hour.' } : named(subjectTag);
-    const overlordLabel = overlordTag === null ? { name: 'Native country identity not recorded', flagReason: 'Native country identity not recorded at this hour.' } : named(overlordTag);
+    const subjectLabel = subjectTag === null ? { name: 'Unknown country', flagReason: 'Unknown country at this hour.' } : named(subjectTag);
+    const overlordLabel = overlordTag === null ? { name: 'Unknown country', flagReason: 'Unknown country at this hour.' } : named(overlordTag);
     const holding = run.firstHour <= hour && hour <= run.lastHour;
     const level = holding ? levelAt(run, hour) ?? null : null;
     // Ended as its relation says: runs of one relation joined across unrecorded hours.
@@ -161,7 +160,7 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
       { label: 'Ended', value: state.kind === 'ended' ? (state.lastSeen == null ? day(state.at) : `by ${day(state.at)}`)
         : state.kind === 'unknown' ? `not recorded after ${day(state.lastSeen)}` : 'Still a subject' },
     ];
-    return { title: subjectLabel.name, countryFlag: subjectLabel, subtitle: `Subject · ${day(hour)}`, rows, note: NOTE };
+    return { title: subjectLabel.name, countryFlag: subjectLabel, subtitle: `Subject · ${day(hour)}`, rows };
   };
   // What the timeline shows at the moment shown, for keyboard and screen-reader users:
   // each overlord and the subjects listed after it, in one pass.

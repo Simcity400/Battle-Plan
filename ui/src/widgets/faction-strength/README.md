@@ -4,7 +4,7 @@
 
 **Product(s) it reads:** [`faction-totals`](../../../../crates/dashboard/src/products/faction_totals.rs), using [`country-factories`](../../../../crates/dashboard/src/products/country_factories.rs) or [`territory`](../../../../crates/dashboard/src/products/territory.rs) measure tracks and [`country-groups`](../../../../crates/dashboard/src/products/country_groups.rs) rosters.
 
-**Settings:** Factories/Free after withheld and all factions by default; factory count or Territory measure/rule, ranked factions or summed faction group, members at hour/end/ever, Show Members and inline/pop-out drill; Campaign, Follow, Pin and Range plus shared race/line controls. Army is not offered.
+**Settings:** Factories/Available and all factions by default; factory count or Territory measure/rule, ranked factions or summed faction group, members at hour/end/ever, Show Members and inline/pop-out drill; Campaign, Follow, Pin and Range plus shared race/line controls. Army is not offered.
 
 **Notable behaviour:**
 

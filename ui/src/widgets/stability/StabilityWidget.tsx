@@ -295,13 +295,13 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     const carried = (aliasData ?? data)?.series.find(item => item.tag === tag)?.carried;
     return carried ? readHourAt(carried, hour) : null;
   };
-  const actorReason = hasSavedCountry && !savedCountry ? 'The saved native country selection is invalid.'
-    : !groupData ? 'The selected native country identity is loading.'
-      : !selectedCountry || !actorSpans ? 'The selected native country identity is unavailable at its origin.'
-        : !shownTag ? 'The selected native country identity is not recorded at this moment.' : null;
+  const actorReason = hasSavedCountry && !savedCountry ? 'Selected country unavailable.'
+    : !groupData ? 'Loading country…'
+      : !selectedCountry || !actorSpans ? 'Selected country unavailable.'
+        : !shownTag ? 'Selected country unavailable.' : null;
   const countryHeader = pinnedMeasure && countrySlot ? createPortal(<DatedCountryChip hour={drillAt === null ? null : Math.floor(drillAt)}
     label={savedCountry && shownTag && drillAt !== null ? drillLabels.labelAt(Math.floor(drillAt))(shownTag) : null}
-    reason={hasSavedCountry ? actorReason : 'This breakdown has no saved native country selection.'} />, countrySlot) : null;
+    reason={hasSavedCountry ? actorReason : 'Choose a country.'} />, countrySlot) : null;
   // Every diagnostic in one place, so no source's warning replaces another's.
   useEffect(() => {
     const uncoloured = series.filter(item => !item.recordedColour).map(item => item.name);
@@ -350,17 +350,17 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   }))), [series, shown, until]);
 
   if (!track) return <WidgetState kind="empty" icon="sliders" message="Load a campaign to see stability and war support." />;
-  if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-  if (widget.countries.kind === 'group' && groups.error && !groupData) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (widget.countries.kind === 'group' && groups.error && !groupData) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
   // A pinned breakdown is the widget itself: the main chart's settings do not apply.
   if (pinnedMeasure) {
     const body = !singleTag ? <WidgetState kind="empty" message="Choose one country to see what makes up its values." />
       : (hasSavedCountry && !savedCountry) || (groupData && (!selectedCountry || !actorSpans))
         ? <WidgetState kind="unavailable" message={actorReason!} />
-        : groups.error && !groupData ? <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />
-          : parts.error && !partsData ? <WidgetState kind="error" message={parts.error} onRetry={parts.retry} />
-            : error && !data ? <WidgetState kind="error" message={error} onRetry={retry} />
+        : groups.error && !groupData ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
+          : parts.error && !partsData ? <WidgetState kind="error" detail={parts.error} onRetry={parts.retry} />
+            : error && !data ? <WidgetState kind="error" detail={error} onRetry={retry} />
               : !partsData || !data ? <WidgetState kind="loading" label="Loading what makes up the values…" />
                 : <StabilityDrill reply={partsData} numbers={partNumbers!} pickOwner={detailPickOwner} presentationReady={parts.data !== undefined} measure={pinnedMeasure}
                   playback={{ playhead: drillPlayhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }} hour={drillAt} extent={extent}
@@ -372,15 +372,15 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
       {drillAt !== null && <p className="chart-line-key">{formatDateTime(Math.floor(drillAt))} {!pinnedFollowing && <button type="button" className="button small"
         onClick={() => setLocalHour(null)}>Follow playback</button>}</p>}
       {body}
-      {parts.error && <button type="button" onClick={parts.retry}>Retry parts</button>}
-      {error && <button type="button" onClick={retry}>Retry values</button>}
+      {parts.error && <WidgetState kind="error" what="the breakdown" detail={parts.error} onRetry={parts.retry} />}
+      {error && <WidgetState kind="error" what="values" detail={error} onRetry={retry} />}
       {menu.menu}
     </div>;
   }
-  if (error && !data) return <WidgetState kind="error" message={error} onRetry={retry} />;
+  if (error && !data) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data || (widget.countries.kind === 'group' && !groupData)) return <WidgetState kind="loading" label="Loading stability and war support…" />;
   if (!shown.length) return <WidgetState kind="empty" message="Both lines are switched off in the settings." />;
-  if (series.every(item => shown.every(measure => !item.lines[measure.key].length))) return <WidgetState kind="unavailable" message="No stability or war support was recorded for these countries in this branch." />;
+  if (series.every(item => shown.every(measure => !item.lines[measure.key].length))) return <WidgetState kind="unavailable" message="Stability and war support are unavailable for these countries." />;
 
   const decimals = data.decimals;
   // Zoom fits the values drawn in view (both bounds, as the view moves); the fixed scale is 0-100%.
@@ -390,8 +390,8 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     breakdownRows(spokenFor, measure.key, decimals, measure.label, Number.MAX_SAFE_INTEGER).rows
       .map(row => row.value ? `${row.label} ${row.value}` : row.label).join(', ')).join('; ') : '';
   const spokenNote = !focused || headRead == null ? ''
-    : spokenBreakdown ? `Breakdown on ${dayLabel(Math.floor(head))}${headRead < Math.floor(head) ? `, as read at ${formatDateTime(headRead)}` : ''}: ${spokenBreakdown}.`
-      : spoken.error && spokenAt?.read === headRead ? 'The breakdown could not be loaded.'
+    : spokenBreakdown ? `Breakdown on ${dayLabel(Math.floor(head))}${headRead < Math.floor(head) ? `, as of ${formatDateTime(headRead)}` : ''}: ${spokenBreakdown}.`
+      : spoken.error && spokenAt?.read === headRead ? 'Couldn’t load the breakdown.'
         : spokenEmpty && spokenAt?.read === headRead && spokenAt.hour === Math.floor(head) ? `No breakdown was recorded for ${dayLabel(Math.floor(head))}.` : '';
   const main = <div className="stability-main">
     <Legend label="Countries" items={legendItems} windowed onVisibleItems={onVisibleItems} />
@@ -406,7 +406,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
         return `${measure.label} ${raw == null ? 'not recorded' : formatPercent(raw, decimals)}`;
       });
       const carried = read < Math.floor(head) && shown.some(measure => item.valueAt(measure.key, Math.floor(head)) != null);
-      return `${item.name}: ${values.join(', ')}${carried ? ` (as read at ${formatDateTime(read)})` : ''}`;
+      return `${item.name}: ${values.join(', ')}${carried ? ` (as of ${formatDateTime(read)})` : ''}`;
     }).join('; ')}</p>
     {/* Announced when it loads for a keyboard user, as focus stays on the chart. */}
     <p className="sr-only" aria-live="polite">{spokenNote}</p>
@@ -447,7 +447,6 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
             // The reply for this read: loaded (with or without a breakdown), failed, or on its way.
             const current = breakdown.data && hoverRead === read;
             const ready = current && breakdownFor ? breakdownFor : null;
-            let recorded = false;
             for (const [index, measure] of shown.entries()) {
               const raw = item.valueAt(measure.key, hour);
               if (raw == null) { rows.push({ label: measure.label, value: 'Not recorded', tone: 'muted', strong: true, divider: index > 0 || rows.length > 0 }); continue; }
@@ -456,17 +455,14 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
                 continue;
               }
               const built = breakdownRows(ready, measure.key, decimals, measure.label, linesPerMeasure(shown.length));
-              recorded ||= built.recorded;
               rows.push(...built.rows.map((row, position) => position === 0 ? { ...row, divider: index > 0 || rows.length > 0 } : row));
             }
             const notes = [
-              ...(breakdown.error && hoverRead === read ? ['The breakdown could not be loaded.']
+              ...(breakdown.error && hoverRead === read ? ['Couldn’t load the breakdown.']
                 : current && !breakdownFor ? ['No breakdown was recorded for this hour.']
                   : !ready ? ['Loading the breakdown…'] : []),
               // Values carried from an earlier read say when they were read.
-              ...(read < hour ? [`As read at ${formatDateTime(read)}.`] : []),
-              ...(recorded && ready ? [`Grey lines are the game's own text (${ready.language}); their source is not identified.`] : []),
-              'Click for the full breakdown.',
+              ...(read < hour ? [`As of ${formatDateTime(read)}.`] : []),
             ];
             return fitTooltip([{ title: dayLabel(hour), rows, note: notes.length ? notes.join(' ') : undefined }], viewport);
           }
@@ -487,8 +483,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
           const first = carried.reduce((minimum, read) => Math.min(minimum, read), Infinity);
           const last = carried.reduce((maximum, read) => Math.max(maximum, read), -Infinity);
           const note = [`${shown.map(measure => `${measure.dash ? 'WS' : 'S'}: ${measure.label.toLowerCase()}`).join(', ')}.`,
-            ...(carried.length ? [first === last ? `† As read at ${formatDateTime(first)}.` : `† As read earlier, between ${formatDateTime(first)} and ${formatDateTime(last)}.`] : []),
-            'Click a line for its country and measure; overlapping lines offer a country chooser.'];
+            ...(carried.length ? [`† As of ${formatDateTime(first)}${first === last ? '' : ` – ${formatDateTime(last)}`}.`] : [])];
           return fitTooltip([{ title: dayLabel(hour), rows, note: note.join(' ') }], viewport);
         }}
         overlay={(ctx, frame, chartTokens) => {
@@ -523,7 +518,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
         }}
         onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
     </div>
-    {error && <button type="button" onClick={retry}>Retry values</button>}
+    {error && <WidgetState kind="error" what="values" detail={error} onRetry={retry} />}
   </div>;
   const breakdownOf = STABILITY_BREAKDOWNS.find(item => item.id === drillMeasure) ?? STABILITY_BREAKDOWNS[0];
   return <div className="stability" ref={drillAnchor} onFocus={() => setFocused(true)}
@@ -549,14 +544,14 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
       {choosingActor ? <p className="drill-empty">Choose a country from the drawn lines for this moment.</p>
         : hasSavedCountry && !savedCountry ? <WidgetState kind="unavailable" message={actorReason!} />
         : groupData && (!selectedCountry || !actorSpans) ? <WidgetState kind="unavailable" message={actorReason!} />
-        : groups.error && !groupData ? <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />
-        : parts.error && !partsData ? <WidgetState kind="error" message={parts.error} onRetry={parts.retry} />
+        : groups.error && !groupData ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
+        : parts.error && !partsData ? <WidgetState kind="error" detail={parts.error} onRetry={parts.retry} />
         : !partsData ? <WidgetState kind="loading" label="Loading what makes up the values…" />
           : <StabilityDrill reply={partsData} numbers={partNumbers!} pickOwner={detailPickOwner} presentationReady={parts.data !== undefined} measure={drillMeasure} onMeasure={setDrillMeasure} playback={{ playhead: drillPlayhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }} hour={drillAt} onPick={hour => dispatchDrill({ type: 'pick', hour })}
             within={null} readAt={drillReadAt}
             onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])}
             extent={extent} branchStart={track.branch.firstHour} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} tokens={tokens} />}
-      {parts.error && partsData && <button type="button" onClick={parts.retry}>Retry parts</button>}
+      {parts.error && partsData && <WidgetState kind="error" what="the breakdown" detail={parts.error} onRetry={parts.retry} />}
     </DrillHost>
     {menu.menu}
   </div>;

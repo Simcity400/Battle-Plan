@@ -15,13 +15,15 @@ test('actual nuclear widget aligns drill playback and projects manual roots thro
         { firstHour: 1030, lastHour: 1100, slot: 2, countryId: 22 }] },
     ] };
   const reply: CountryNukesReply = { branchId: '1', readHours: [1000, 1010, 1030], emptyReadHours: [], warnings: [],
-    types: [{ ordinal: 0, token: 'synthetic_type', name: 'Synthetic type', supported: true }], series: groups.countryIdentities.map(history => ({
+    types: [{ ordinal: 0, token: 'synthetic_type', name: 'Synthetic type', supported: true },
+      { ordinal: 1, token: 'unrecorded_type', name: 'Unrecorded weapon', supported: true }], series: groups.countryIdentities.map(history => ({
       tag: history.tag, segments: history.identities.map(({ firstHour, lastHour }) => ({ firstHour, lastHour })), membership: null,
       runs: history.identities.map(({ firstHour, lastHour, slot }) => ({ firstHour, lastHour, startsSegment: true,
         counts: [{ ordinal: 0, value: slot === 1 ? 3 : 99 }], total: slot === 1 ? 3 : 99 })),
     })) };
   const host = globalThis as typeof globalThis & { __nuclearCharts?: CountryRaceViewProps[];
-    __nuclearRequests?: { params: NukesParams }[]; __nuclearGroupsActive?: boolean };
+    __nuclearRequests?: { params: NukesParams }[]; __nuclearGroupsActive?: boolean;
+    __nuclearParts?: { parts: { label: string; value: number | null; text?: string }[] } };
   const replacements: Record<string, string> = {
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = (_runtime, _track, active) => {
       globalThis.__nuclearGroupsActive = active; return { data: ${JSON.stringify(groups)}, retry() {} }; };`,
@@ -33,7 +35,8 @@ test('actual nuclear widget aligns drill playback and projects manual roots thro
     '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask() {}, labelAt: () => tag => ({ name: tag }) });',
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ muted: '#888888', categories: ['#ffffff'] });",
     '/charts/race/CountryRaceView.tsx': 'export default props => { globalThis.__nuclearCharts.push(props); return null; };',
-    '/charts/drill/DrillHost.tsx': 'export default props => [props.main, props.children];',
+    '/charts/drill/DrillHost.tsx': 'import { createElement, Fragment } from "react"; export default props => createElement(Fragment, null, props.main, props.children);',
+    '/charts/drill/DrillParts.tsx': 'export default props => { globalThis.__nuclearParts = props; return null; };',
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'nuclear-widget-selection', enforce: 'pre',
@@ -66,8 +69,14 @@ test('actual nuclear widget aligns drill playback and projects manual roots thro
     assert.equal(later.tooltip('NEW', 1040, 'Unrelated holder', new Map(), () => () => ({ name: '' })), null);
     props.widget.options = { view: 'mix' }; hour = 20;
     assert.equal(render()[0].mix?.tag, 'NEW', 'the first manual country mix follows its current alias');
+    props.widget.options = { show: 'breakdown', drillOriginHour: 1000 };
+    const [pinned] = render();
+    renderToStaticMarkup(pinned.beforeChart);
+    const missing = host.__nuclearParts!.parts.find(part => part.label === 'Unrecorded weapon');
+    assert.equal(missing?.value, null);
+    assert.equal(missing?.text, 'Not recorded', 'missing weapon types stay in the same part rows');
   } finally {
-    delete host.__nuclearCharts; delete host.__nuclearRequests; delete host.__nuclearGroupsActive;
+    delete host.__nuclearCharts; delete host.__nuclearRequests; delete host.__nuclearGroupsActive; delete host.__nuclearParts;
     await vite.close();
   }
 });

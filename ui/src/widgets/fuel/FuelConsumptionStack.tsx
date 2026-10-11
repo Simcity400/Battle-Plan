@@ -61,17 +61,15 @@ export default function FuelConsumptionStack({ runtime, track, basis, segmentSta
   const series = useMemo<BreakdownSeries[]>(() => parts.map(part => {
     const runs = numeric.get(part.key) ?? [];
     const amount = (at: number) => { const read = allowed(at) ? runAt(runs, at) : null;
-      return read?.amountRaw != null ? `${formatFuelPart(BigInt(read.amountRaw), BigInt(scale))} per day` : read?.reason ?? 'Not recorded'; };
+      return read?.amountRaw != null ? `${formatFuelPart(BigInt(read.amountRaw), BigInt(scale))} per day` : 'History unavailable'; };
     return { id: part.key, label: part.recordedName ?? 'Name not recorded', color: tokens.categories[part.kind % tokens.categories.length],
       runs: consumptionGeometry(runs, scale), amount, missingAt: amount,
       labelAt: at => allowed(at) ? runAt(names.get(part.key) ?? [], at)?.recordedName ?? 'Name not recorded' : 'Name not recorded' };
   }), [parts, numeric, names, scale, tokens, within]); // eslint-disable-line react-hooks/exhaustive-deps
   const owner = useMemo(() => ({ parent: chart.pickOwner, identity, numbers, within }), [chart.pickOwner, identity, numbers, within]);
   return <>
-    <p className="drill-empty">The same displayed native occurrences over time. Absent or changed occurrences stay unknown; positive rates draw the stack and hover retains signed amounts and supplying-read names.</p>
-    {chart.active && [...wanted].some(window => !windows.data.has(window) && !windows.errors.has(window)) && <p className="drill-empty">Individual stacked history is loading.</p>}
-    {[...windows.errors.values()].map((reason, i) => <WidgetState key={i} kind="error" message={reason} onRetry={windows.retry} />)}
-    {values.flatMap(value => value.warnings).map((reason, i) => <p key={i} className="drill-empty">{reason}</p>)}
+    {chart.active && [...wanted].some(window => !windows.data.has(window) && !windows.errors.has(window)) && <p className="drill-empty">Loading consumption history…</p>}
+    {[...windows.errors.values()].map((reason, i) => <WidgetState key={i} kind="error" what="consumption history" detail={reason} onRetry={windows.retry} />)}
     <BreakdownChart {...chart} within={within} pickOwner={owner} series={series} selectedHour={hour} tooltipHeight={height} keyHours={keyHours}
       onViewChange={onViewChange}
       label="Displayed individual current consumption required per day" axes={{ xFrom: start - chart.branchStart, xTo: end - chart.branchStart, yMin: 0, yMax: null, log: false }} />

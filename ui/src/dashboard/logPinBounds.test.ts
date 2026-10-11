@@ -72,7 +72,7 @@ test('actual Raid and windowed Espionage logs refuse aligned Follow and Pin hour
           props.widget = { ...props.widget, time };
           assert.equal(resolveWindow(props.widget, track, [track], position)?.lastHour, hour);
           host.__pinLogCalls = []; host.__pinLogWindowRequests = [];
-          assert.match(renderToStaticMarkup(createElement(Widget, props)), /outside.*branch/);
+          assert.match(renderToStaticMarkup(createElement(Widget, props)), /This time is outside the recording\./);
           assert.deepEqual(host.__pinLogCalls, []);
         }
       }
@@ -81,7 +81,7 @@ test('actual Raid and windowed Espionage logs refuse aligned Follow and Pin hour
       for (const [hour, dates] of [[100, firstDates], [200, lastDates]] as const) {
         props.widget = { ...props.widget, time: { mode: 'pin', windows: { short: { firstOffset: hour - 100, lastOffset: hour - 100 } } } };
         host.__pinLogCalls = []; host.__pinLogWindowRequests = [];
-        assert.doesNotMatch(renderToStaticMarkup(createElement(Widget, props)), /outside.*branch/);
+        assert.doesNotMatch(renderToStaticMarkup(createElement(Widget, props)), /This time is outside the recording\./);
         assert.deepEqual(host.__pinLogCalls, [dates]);
         assert.deepEqual(host.__pinLogWindowRequests, kind === 'raid-log' ? [] : (hour === 100 ? [0] : [0, 1]).map(window => ({
           sourceId: 'synthetic', revision: '1', product: 'espionage-log', params: { branchId: '1', window },

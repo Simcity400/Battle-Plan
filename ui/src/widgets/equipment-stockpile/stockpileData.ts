@@ -239,13 +239,11 @@ export function balanceMode(reply: EquipmentStockpileReply, hour: number): Balan
 }
 
 /** Why an arm's surplus is not known while a type of unknown arm holds values. */
-export const UNATTRIBUTED_NOTE = 'An equipment type content does not resolve holds a surplus or stock now, and which arm it belongs to cannot be told, so this arm’s totals are not known.';
+export const UNATTRIBUTED_NOTE = 'Total unavailable.';
 
 /** The note for an AI-controlled country (user decision). */
 export const AI_NOTE = 'The game doesn’t compute surplus or shortage for AI-controlled countries.';
-const UNRESOLVED_NEED = 'Its equipment type is not resolved from content, so what is needed cannot be derived.';
-const UNRESOLVED_ARM_NEED = 'An equipment type content does not resolve is listed, and whether its stock holds unrecorded supply terms cannot be told, so this arm’s need is not derived.';
-const BOUND_NEED = 'The game’s sum reached its saturation bound here, so what is needed is not a real sum.';
+const NEED_UNAVAILABLE = 'Need unavailable.';
 
 /** A group's logistics at an hour: surplus or shortage, stock, and signed need
  * from the same native available operand; older ordinary types derive it from
@@ -302,14 +300,14 @@ export function balanceOperandsAt(reply: EquipmentStockpileReply, group: Pick<St
     const type = index.types.get(key);
     const observed = item && runAt(item.available, hour);
     const available = observed?.amountRaw != null ? BigInt(observed.amountRaw) : null;
-    const note = available != null ? null : type ? type.needNote : UNRESOLVED_NEED;
+    const note = available != null ? null : type ? type.needNote : NEED_UNAVAILABLE;
     // Availability subtraction wraps at signed i64 width. Recover the
     // same signed clamped need from the observed operand and stored result.
     const nativeAvailable = available ?? (typeStock > 0n ? typeStock : 0n);
     if (note) availableTotal = null;
     else if (availableTotal != null) availableTotal += nativeAvailable;
     const typeNeed = BigInt.asIntN(64, nativeAvailable - typeBalance);
-    const reason = note ?? ((typeNeed < 0n ? -typeNeed : typeNeed) >= bound ? BOUND_NEED : null);
+    const reason = note ?? ((typeNeed < 0n ? -typeNeed : typeNeed) >= bound ? NEED_UNAVAILABLE : null);
     if (reason) { need = null; needNote ??= reason; } else if (need != null) need += typeNeed;
   }
   // A resolved arm's need: an unresolved type listed now, even at zero, may hold
@@ -318,7 +316,7 @@ export function balanceOperandsAt(reply: EquipmentStockpileReply, group: Pick<St
     && unresolvedIn(reply, group).some(item => runAt(item.balance, hour) != null || runAt(item.stock, hour) != null)) {
     need = null;
     availableTotal = null;
-    needNote ??= UNRESOLVED_ARM_NEED;
+    needNote ??= NEED_UNAVAILABLE;
   }
   return { balance, stock, need, needNote, available: availableTotal };
 }
@@ -594,8 +592,7 @@ export function stockChoices(groups: readonly StockGroup[], noun: string, drawab
 /** The row a stored choice names, whatever design it was stored with. */
 export const choiceRow = rowOf;
 
-export const OTHER_DESIGN = 'This design isn’t in this branch: its handle holds another design here, so it is not drawn';
-export const NO_DESIGN = 'Its design is not recorded, so a choice of it could not be told from another design under the same handle';
+export const SAVED_DESIGN_UNAVAILABLE = 'Saved design unavailable. Choose another.';
 
 /** Stored variant choices whose handle holds another design here (or one never
  * recorded): each with its row and why it is not drawn. They are shown as unavailable,
@@ -605,8 +602,7 @@ export function otherDesigns(groups: readonly StockGroup[], stored: readonly str
   return stored.flatMap(key => {
     const group = byRow.get(rowOf(key));
     if (!group || !key.includes(DESIGN_MARK) || chosenGroup(byRow, key)) return [];
-    const recorded = group.variants[0]?.names.some(entry => entry.design != null);
-    return [{ key, group, reason: recorded ? OTHER_DESIGN : NO_DESIGN }];
+    return [{ key, group, reason: SAVED_DESIGN_UNAVAILABLE }];
   });
 }
 
@@ -629,12 +625,9 @@ export function chartChoices(reply: EquipmentStockpileReply, grouping: Grouping)
   });
 }
 
-/** Why a group has no line to draw: its type's own reason what is needed cannot be
- * derived (supply trucks, trains, the live convoy pool), else the general one. */
-export function undrawableReason(reply: EquipmentStockpileReply, group: StockGroup, grouping: Grouping): string {
-  if (!shareModeOf(reply, grouping)) return 'Nothing of it was recorded in stock, so it has no line to draw';
-  const notes = group.types.map(key => indexOf(reply).types.get(key)?.needNote).filter((note): note is string => !!note);
-  return notes.length === 1 ? `${notes[0].replace(/\.$/, '')}, so it has no share to draw` : 'What is needed cannot be derived for it, so it has no share to draw';
+/** Missing stock and missing need remain distinct chart states. */
+export function undrawableReason(reply: EquipmentStockpileReply, grouping: Grouping): string {
+  return shareModeOf(reply, grouping) ? 'Need data unavailable.' : 'No stock history.';
 }
 
 export const GROUP_NOUNS: Record<Grouping, string> = { type: 'equipment type', variant: 'variant', domain: 'arm' };
@@ -655,7 +648,7 @@ function headRows(stock: bigint | null, weekly: bigint | null, logistics: GroupB
     const share = shareOf(logistics);
     return [
       { label: 'In stock', value: amount(logistics.stock, decimals), strong: true, tone: logistics.stock < 0n ? 'negative' : undefined },
-      { label: 'Needed', value: logistics.need == null ? 'Not derived' : amount(logistics.need, decimals), tone: logistics.need == null ? 'muted' : undefined },
+      { label: 'Needed', value: logistics.need == null ? 'Unavailable' : amount(logistics.need, decimals), tone: logistics.need == null ? 'muted' : undefined },
       { label: logistics.balance < 0n ? 'Shortage' : 'Surplus', value: formatSigned(logistics.balance, decimals), strong: true,
         tone: logistics.balance < 0n ? 'negative' : logistics.balance > 0n ? 'positive' : undefined },
       ...(share != null ? [{ label: 'Share of need', value: `${formatPercent(share)}` }] : []),
@@ -700,14 +693,9 @@ export function groupTooltip(reply: EquipmentStockpileReply, group: StockGroup, 
   const rows = headRows(stockAt(reply, group, hour), weeklyAt(reply, group, hour), logistics,
     grouping === 'variant' ? 'variant' : unattributed ? 'unattributed' : mode, reply.decimals);
   const note = [head.note,
-    grouping === 'variant' ? 'The game counts surplus and need by equipment type, not by variant.' : undefined,
-    grouping === 'domain' && logistics ? 'The sum of its types’ values; the game’s own category rows also add incoming lend-lease, which is not recorded.' : undefined,
-    logistics?.needNote ?? undefined,
-    logistics ? 'Needed is what divisions, training, garrisons, air wings and operations need, plus net outgoing lend-lease.' : undefined,
-    unattributed ? UNATTRIBUTED_NOTE : undefined,
-    mode === 'ai' && grouping !== 'variant' ? AI_NOTE : undefined,
-    mode === 'unknown' && grouping !== 'variant' ? 'The surplus or shortage was not recorded at this time.' : undefined]
-    .filter(Boolean).join(' ');
+    grouping === 'variant' ? 'Need is available by equipment type.' : undefined,
+    logistics?.needNote ? 'Need unavailable.' : undefined,
+    unattributed ? UNATTRIBUTED_NOTE : undefined].filter(Boolean).join(' ');
   const listed = grouping === 'variant' ? [] : variantsInStock(reply, group, hour);
   const typeLine: TooltipRow[] = grouping === 'variant' && group.variants[0]
     ? [{ label: typeName(reply, typeKey(group.variants[0])), tone: 'muted' }] : [];
@@ -756,10 +744,10 @@ export function overTimeTooltip(title: string, lines: readonly LineAt[], decimal
   function* forms(): Generator<TooltipContent> {
     yield { title, note, rows: lines.flatMap((line, index) => [
       { label: line.group.label, swatch: line.color, strong: true, divider: index > 0, ...value(line) },
-      ...(line.logistics ? [{ label: 'Needed', indent: true, ...(line.logistics.need == null ? { value: 'Not derived', tone: 'muted' as const } : { value: amount(line.logistics.need, decimals) }) }] : []),
+      ...(line.logistics ? [{ label: 'Needed', indent: true, ...(line.logistics.need == null ? { value: 'Unavailable', tone: 'muted' as const } : { value: amount(line.logistics.need, decimals) }) }] : []),
       { label: 'Produced per week', indent: true, ...(line.weekly == null ? { value: NOT_RECORDED, tone: 'muted' as const } : { value: amount(line.weekly, decimals, 1) }) },
     ]) };
     yield { title, note, rows: lines.map(line => ({ label: line.group.label, swatch: line.color, short: true, ...value(line) })) };
   }
-  return fitTooltip(forms(), height, { more: hidden => `${hidden} more: a taller window shows them` });
+  return fitTooltip(forms(), height, { more: hidden => `${hidden} more` });
 }

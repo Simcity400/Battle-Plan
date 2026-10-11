@@ -1,3 +1,4 @@
+import FollowControl from '../drill/FollowControl';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
@@ -183,8 +184,8 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
   const remainder = drillValue?.total == null ? null : drillValue.total - drillValue.values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
   const headerReason = !active ? 'The breakdown is inactive.' : missingPinnedDate ? 'The chosen moment is unavailable.' : pinned && restored === undefined
     && (Object.hasOwn(widget.options ?? {}, 'drillOriginHour') || widget.time.mode !== 'campaign')
-    ? 'This older pin has no saved native holder.' : !selection ? 'The saved native holder selection is unavailable.'
-      : !drillTag ? 'The selected native country identity is unknown or conflicting at this hour.' : null;
+    ? 'Saved country unavailable.' : !selection ? 'Saved country unavailable.'
+      : !drillTag ? 'Country unavailable at this time.' : null;
   const headerWanted = useMemo(() => pinned && countrySlot && headerReason === null && drillTag ? [{ tag: drillTag, hour: drillAt }] : [],
     [pinned, countrySlot, headerReason, drillTag, drillAt]);
   const headerLabels = useCountryLabelsAt(runtime.client, track, headerWanted, active && pinned && !!countrySlot);
@@ -199,12 +200,12 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon={config.icon} message={`Load a campaign to see its ${config.subject}.`} />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable"
-      message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-    if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-    if (grouped && groupReply.error) return <WidgetState kind="error" message={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
+      message="Choose another time in widget settings." />;
+    if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+    if (grouped && groupReply.error) return <WidgetState kind="error" what="country groups" detail={groupReply.error} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon={config.icon} message={resolved.reason} />;
     if (!data || !model || (grouped && !groupReply.data)) return <WidgetState kind="loading" label={`Loading ${config.subject}…`} />;
-    if (!available) return <WidgetState kind="unavailable" message={`Not in this recording: no ${config.subject} counts were recorded for these countries in this branch.`} />;
+    if (!available) return <WidgetState kind="unavailable" message={`${config.subject} were not recorded for these countries.`} />;
     if (!pinned && view === 'mix' && mixTag && !parts.length && model.series.get(mixTag)?.series.runs.some(run =>
       run.total === 0 && run.lastHour >= extent[0] && run.firstHour <= extent[1])) {
       return <WidgetState kind="empty" icon={config.icon} message={config.zeroMix(options)} />;
@@ -252,7 +253,7 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
     lineEmpty: { icon: config.icon, message: 'No countries to draw. Choose countries in the widget settings.' },
     mixEmpty: { icon: config.icon, message: widget.countries.kind === 'group'
       ? `No country of this group was recorded on ${dayLabel(moment)}.` : 'Choose a country in the widget settings.',
-      unavailable: name => `No ${config.subject} mix was recorded for ${name} in this branch.` },
+      unavailable: name => `Breakdown unavailable for ${name}.` },
     tooltip: (tag, hour, name, colours) => {
       if (!model) return null;
       const at = isMember(membershipOf(tag) ?? undefined, hour) ? partsRaceAt(model, tag, hour) : null;
@@ -280,7 +281,7 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
   };
   const breakdown = <CountryRaceView {...common} pickOwner={detailPickOwner} view="mix" moment={drillAt} extent={detailExtent}
     playhead={drillAt} countryTags={drillTag ? [drillTag] : []}
-    state={!track || missingPinnedDate ? state : drillReply.error ? <WidgetState kind="error" message={drillReply.error} onRetry={drillReply.retry} />
+    state={!track || missingPinnedDate ? state : drillReply.error ? <WidgetState kind="error" what="the breakdown" detail={drillReply.error} onRetry={drillReply.retry} />
       : originTag && !drillModel ? <WidgetState kind="loading" label={`Loading ${partsLabel.toLowerCase()}…`} /> : undefined}
     parts={historyParts} selectedHour={drillAt} segmentAt={(_, hour) => binding?.data.segmentAt(originTag ?? '', hour) ?? null}
     countryLookHour={(tag, hour) => tag && binding?.tagAt(hour) === tag ? binding.data.readHour(tag, hour) : null}
@@ -300,8 +301,9 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
     beforeChart={<div className="parts-race-details">
       {drillPending && <WidgetState kind="loading" label={`Updating ${partsLabel.toLowerCase()}…`} />}
       {!drillTag && <p className="drill-empty">Selected country unavailable at this date.</p>}
-      {pinned && <p className="drill-empty">{dayLabel(drillAt)} {!drillFollowing && liveHour != null
-        && <button type="button" className="button small" onClick={follow}>Follow playback</button>}</p>}
+      {pinned && <p className="drill-empty">{dayLabel(drillAt)} {liveHour != null && <FollowControl following={drillFollowing} onFollow={follow}
+        onPause={() => { if (currentDetail() && originTag) dispatchDrill({ type: 'open', breakdown: originTag, hour: drillAt,
+          playing: false, playhead: null, selection: selection ?? undefined, owner: contextOwner }); }} />}</p>}
       {!pinned && track && model && model.tags.length > 1 && <div className="parts-race-country">Country
         <CountryPicker countries={track.source.metadata.countries} allowedTags={model.tags} selectedTag={drillTag} playerCountryId={track.source.metadata.playerCountryId}
           source={track.source} client={runtime.client} field flagAt={{ branchId: track.branch.id, hour: drillAt }} onChange={tag => {
@@ -318,8 +320,6 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
         totalRow={{ label: measure, value: drillValue?.total == null ? 'Not recorded' : formatValue(drillValue.total) }} />
       {selectedPart && <p className="drill-empty">History: {selectedPart.label} <button type="button" className="button small"
         onClick={() => { if (currentDetail()) setPickedPart(null); }}>All parts</button></p>}
-      {drillParts.slice(0, -1).some((_, index) => drillValue?.values[index] == null) && <p className="drill-empty">Not recorded: {drillParts.slice(0, -1)
-        .filter((_, index) => drillValue?.values[index] == null).map(part => part.label).join(', ')}.</p>}
       {referenceLabel && <p className="drill-empty">{referenceLabel}: {drillValue?.run.referenceTotal == null
         ? 'Not known' : formatValue(drillValue.run.referenceTotal)}.</p>}
     </div>}
@@ -332,6 +332,8 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
       title={partsLabel} day={dayLabel(drillAt)} following={drillFollowing} canFollow={choices == null && liveHour != null}
       returnFocus=".country-race-chart canvas" onClose={() => { if (currentDetail()) dispatchDrill({ type: 'close' }); }}
       onFollow={follow}
+      onPause={() => { if (currentDetail() && originTag) dispatchDrill({ type: 'open', breakdown: originTag, hour: drillAt,
+        playing: false, playhead: null, selection: selection ?? undefined, owner: contextOwner }); }}
       onPin={track && selection ? () => { if (currentDetail()) runtime.addWidgetBelow(widget.id,
         pinNativeCountryParts(widget, track, selection, drillAt, drillFollowing, partsLabel)); } : undefined}
       main={<CountryRaceView {...common} state={state} active={active && (!drillOpen || options.drill === 'popout')} onPick={open} />}>

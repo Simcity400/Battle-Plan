@@ -3,6 +3,8 @@ import { useEffect, useId, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
 import { Segmented } from '../../components/Segmented';
+import ArtFallback from '../../components/ArtFallback';
+import CountryComparisons from '../../dashboard/CountryComparisons';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
 import ProgressMeter from '../../charts/meter/ProgressMeter';
@@ -25,7 +27,7 @@ import { historyCard, historyTooltip, liveCards, observedAt, projectCountries, p
 import type { ProjectCard } from './specialProjectsData';
 import './specialProjects.css';
 
-export default function SpecialProjectsWidget({ widget, runtime, active, headerSlot, setOption, onDiagnostics }: WidgetProps) {
+function ProjectPanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const owner = useId();
   const viewport = useViewportHeight();
@@ -45,7 +47,8 @@ export default function SpecialProjectsWidget({ widget, runtime, active, headerS
   const tags = resolved.tags;
   const membershipUnknown = resolved.unobserved.some(span => span.firstHour <= at && at <= span.lastHour);
   const historyMembershipUnknown = resolved.unobserved.some(span => span.firstHour <= at && first <= span.lastHour);
-  const requests = track && resolved.ready ? tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision, product: 'special-projects', params: { branchId: track.branch.id, tag, selectionTags: resolved.rootsFor.get(tag) ?? [] } })) : [];
+  const requestedTags = view === 'live' ? tags.filter(tag => resolved.match.matches(tag, at)) : tags;
+  const requests = track && resolved.ready ? requestedTags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision, product: 'special-projects', params: { branchId: track.branch.id, tag, selectionTags: resolved.rootsFor.get(tag) ?? [] } })) : [];
   const { data, error, retry } = useProducts<SpecialProjectsReply>(runtime.client, requests, active, validateSpecialProjectsReply);
   const wanted = data?.flatMap(reply => {
     const hour = projectCountryHour(reply, at, resolved.memberships.get(reply.tag));
@@ -62,32 +65,32 @@ export default function SpecialProjectsWidget({ widget, runtime, active, headerS
     const hour = projectCountryHour(reply, at, membership);
     if (hour === null) return [];
     if (data.length === 1) return projects;
-    return [projectHeading(JSON.stringify([country, null]), labelAt(hour)(reply.tag), reply.unavailable ?? (projects.length ? '' : 'No special projects yet.')), ...projects];
+    return [projectHeading(JSON.stringify([country, null]), labelAt(hour)(reply.tag), reply.unavailable ? PROJECTS_UNRECORDED : (projects.length ? '' : 'No special projects yet.')), ...projects];
   }) ?? [], [data, at, labelAt, resolved.memberships, view]);
-  const header = headerSlot && createPortal(<><Segmented value={view} options={VIEWS} onChange={value => setOption?.('view', value)} label="Special projects view" />{view === 'live' && tags.length > 1 && <small className="special-project-country-note">First country shown</small>}</>, headerSlot);
   const openMenu = (card: ProjectCard, x: number, y: number) => {
     if (!track) return;
     const start = jumpItem(runtime, track.id, card.project.start.hour);
     const completion = card.run.completion;
-    menu.open(x, y, [{ ...start, label: `Jump to start observation · ${projectDate(card.project.start)}` },
+    menu.open(x, y, [{ ...start, label: `Jump to start · ${projectDate(card.project.start)}` },
       ...(completion ? [{ ...jumpItem(runtime, track.id, completion.hour), label: `Jump to completion · ${projectDate(completion)}` }] : [])]);
   };
   let body;
   if (!track) body = <WidgetState kind="empty" message="Load a campaign and choose a country to see its special projects." />;
-  else if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window || at < track.branch.firstHour || at > track.branch.lastHour) body = <WidgetState kind="unavailable" message="The chosen moment is not in this campaign." />;
-  else if (error || groups.error) body = <WidgetState kind="error" message={error ?? groups.error!} onRetry={error ? retry : groups.retry} />;
-  else if (!groups.data) body = <WidgetState kind="loading" label="Loading recorded countries…" />;
+  else if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  else if (at < track.branch.firstHour || at > track.branch.lastHour) body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  else if (error || groups.error) body = <WidgetState kind="error" detail={error ?? groups.error!} onRetry={error ? retry : groups.retry} />;
+  else if (!groups.data) body = <WidgetState kind="loading" label="Loading countries…" />;
   else if (resolved.reason) body = <WidgetState kind="unavailable" message={resolved.reason} />;
   else if (view === 'live' && membershipUnknown) body = <WidgetState kind="unavailable" message="This group’s members were not recorded at this moment." />;
   else if (view === 'history' && !tags.length && historyMembershipUnknown) body = <WidgetState kind="unavailable" message="This group’s members were not recorded for part of this history." />;
   else if (!resolved.ready || !tags.length) body = <WidgetState kind="empty" message="No selected countries were recorded." />;
   else if (!data) body = <WidgetState kind="loading" label="Loading special projects…" />;
-  else if (data.every(reply => reply.unavailable)) body = <WidgetState kind="unavailable" message={`Not in this recording. ${data[0].unavailable}`} />;
+  else if (data.every(reply => reply.unavailable)) body = <WidgetState kind="unavailable" message={PROJECTS_UNRECORDED} />;
   else if (view === 'live') {
     const reply = data.find(reply => resolved.match.matches(reply.tag, at));
     const cards = reply ? liveCards(reply, at, Number(options.completedRetentionDays)) : [];
     if (!reply) body = <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
-    else if (!observedAt(reply, at)) body = <WidgetState kind="unavailable" message="Not in this recording. Projects were not recorded at this hour." />;
+    else if (!observedAt(reply, at)) body = <WidgetState kind="unavailable" message="Projects were not recorded at this time." />;
     else if (!cards.length) body = <WidgetState kind="empty" message="No projects running." />;
     else body = <div className="special-project-grid">{cards.map(card => {
       const { project, run, info } = card;
@@ -99,12 +102,12 @@ export default function SpecialProjectsWidget({ widget, runtime, active, headerS
         onFocus={event => { const box = event.currentTarget.getBoundingClientRect(); show(box.right, box.top); }} onBlur={() => hideTooltip(owner)}
         onContextMenu={event => { event.preventDefault(); openMenu(card, event.clientX, event.clientY); }}
         onKeyDown={event => { if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey || event.key === 'Enter') { event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); openMenu(card, box.left, box.bottom); } }}>
-        <div className="blueprint-tile">{info.icon ? <img src={info.icon} alt="" /> : <span aria-label={info.iconMissing ?? 'Project icon not recorded'}>?</span>}</div>
+        <div className="blueprint-tile">{info.icon ? <img src={info.icon} alt="" /> : <ArtFallback icon="flask" />}</div>
         <div className="special-project-detail"><b>{info.name}</b>
-          <small>{`${contentTitle(info.specializationName, info.specialization, 'Type name unavailable')} project · `}{run.completion ? `completed ${projectDate(run.completion)}` : `${run.state === 'paused' ? 'paused · ' : run.state === 'unknown' ? 'state not recorded · ' : ''}${run.progress}%`}</small>
+          <small>{`${contentTitle(info.specializationName, info.specialization, 'Type name unavailable')} · `}{run.completion ? `completed ${projectDate(run.completion)}` : `${run.state === 'paused' ? 'paused · ' : run.state === 'unknown' ? 'state not recorded · ' : ''}${run.progress}%`}</small>
           <ProgressMeter value={run.progress / 100} state={run.state === 'completed' ? 'done' : run.state === 'running' ? 'live' : 'idle'} label="Project progress" />
           <IterationRow text={run.iterations === null ? null : reply.iterationTexts[run.iterations] ?? null} recorded={run.iterations !== null} />
-          <div className="special-project-scientist">{scientist.portrait ? <img src={scientist.portrait} alt="" /> : <span className="special-project-portrait" aria-label={scientist.missing ?? 'Portrait not recorded'}>?</span>}<span>{scientistName(reply, info)}</span></div>
+          <div className="special-project-scientist">{scientist.portrait ? <img src={scientist.portrait} alt="" /> : <ArtFallback icon="helmet" className="special-project-portrait" />}<span>{scientistName(reply, info)}</span></div>
         </div>
       </div>;
     })}</div>;
@@ -126,5 +129,31 @@ export default function SpecialProjectsWidget({ widget, runtime, active, headerS
       const card = id === null ? null : historyCard(reply, id, at, resolved.memberships.get(reply.tag));
       if (card) openMenu(card, x, y);
     }} />;
-  return <div className="special-projects">{header}{body}{menu.menu}</div>;
+  return <div className="special-projects">{body}{menu.menu}</div>;
+}
+
+/** A country's projects can be missing for several reasons; the card only says they are. */
+const PROJECTS_UNRECORDED = 'Projects were not recorded.';
+
+export default function SpecialProjectsWidget(props: WidgetProps) {
+  const view = props.widget.options?.view === 'history' ? 'history' : 'live';
+  usePlaybackHour(props.runtime.clock, props.active && props.widget.time.mode === 'follow');
+  const track = props.runtime.tracks.find(item => item.id === props.widget.trackIds[0]);
+  const groups = useCountryGroups(props.runtime, track, props.active);
+  const fallback = defaultCountryTag(track);
+  const selected = useMemo(() => projectCountries(props.widget.countries, fallback ? [fallback] : [], groups.data,
+    track?.branch.firstHour ?? 0, track?.branch.lastHour ?? 0), [props.widget.countries, fallback, groups.data, track]);
+  const window = track && resolveWindow(props.widget, track, props.runtime.tracks, props.runtime.clock.getHour());
+  const at = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
+  const tags = selected.tags.filter(tag => selected.match.matches(tag, at));
+  const unknown = selected.unobserved.some(span => span.firstHour <= at && at <= span.lastHour);
+  const tagsKey = JSON.stringify(tags);
+  // Stable panels keep their scroll position while playback advances.
+  const comparisonWidget = useMemo(() => ({ ...props.widget, countries: { kind: 'tags' as const, tags: JSON.parse(tagsKey) as string[] } }), [props.widget, tagsKey]);
+  const header = props.headerSlot && createPortal(<Segmented value={view} options={VIEWS}
+    onChange={value => props.setOption?.('view', value)} label="Special projects view" />, props.headerSlot);
+  const compare = view === 'live' && selected.ready && !unknown && tags.length > 1 && !groups.error;
+  return <>{header}{compare
+    ? <CountryComparisons {...props} widget={comparisonWidget} headerSlot={null} component={ProjectPanel} />
+    : <ProjectPanel {...props} />}</>;
 }

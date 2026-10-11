@@ -5,6 +5,7 @@ import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { historyCard, historyTooltip, liveCards, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistoryExtent, projectLanes, projectTooltip, validateSpecialProjectsReply } from './specialProjectsData.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
+import { dayLabel } from '../../charts/draw.ts';
 
 const fixture = (): SpecialProjectsReply => ({ branchId: '1', tag: 'tag with spaces', unavailable: null, warnings: [],
   identities: [{firstHour:100,lastHour:199,slot:5,countryId:10},{firstHour:220,lastHour:300,slot:5,countryId:10}],
@@ -45,13 +46,13 @@ test('history caps at the completion event and leaves unrecorded intervals empty
   data.projects[0].runs.push({...data.projects[0].runs[0],firstHour:220,lastHour:230});
   assert.deepEqual(projectLanes(data,300)[0].spans.map(span=>[span.firstHour,span.lastHour]),[[100,199],[220,230]]);
 });
-test('tooltips date reads and expose unknown art instead of assuming zero', () => {
+test('tooltips keep bounded starts and progress without artwork or table diagnostics', () => {
   const data=fixture(); data.projects[0].runs[0].iterations=null; data.iterationTexts['2']=null;
   const tip=projectTooltip(data,liveCards(data,120,240)[0]);
   assert.match(tip.rows.find(row=>row.label==='Started')!.value!,/^by /);
   assert.doesNotMatch(tip.note ?? '',/read once a day/);
-  assert.match(tip.note!,/iterations unknown/);
-  assert.match(tip.note!,/Missing mod icon/);
+  assert.equal(tip.note, undefined);
+  assert.equal(tip.rows.find(row=>row.label==='Progress')?.value, '17%');
 });
 test('validator rejects bad references, overlaps, missing and invented percentages', () => {
   assert.equal(validateSpecialProjectsReply(fixture()).tag,'tag with spaces');
@@ -65,15 +66,14 @@ test('validator rejects bad references, overlaps, missing and invented percentag
     (data:SpecialProjectsReply)=>{data.identities[1].firstHour=190;},
   ]) {const data=fixture();mutate(data);assert.throws(()=>validateSpecialProjectsReply(data));}
 });
-test('last assignment is dated and known iterations with missing text are localisation unavailability', () => {
+test('last assignment keeps its date without adding a diagnostic paragraph', () => {
   const data=fixture(); data.presentations[0].scientistAsOf=99;
   data.iterationTexts['2']=null;
   const card=liveCards(data,120,240)[0];
   const tip=projectTooltip(data,card);
-  assert.match(tip.rows.find(row=>row.label==='Scientist')!.value!,/^Last assigned/);
-  assert.match(tip.note!,/Last assignment recorded/);
-  assert.match(tip.note!,/Iteration localisation unavailable/);
-  assert.doesNotMatch(tip.note!,/iterations unknown/);
+  assert.equal(tip.rows.find(row=>row.label==='Scientist')!.value, `Last assigned · Mod scientist (as of ${dayLabel(99)})`);
+  assert.equal(tip.note, undefined);
+  assert.doesNotMatch(tip.note ?? '',/iterations unknown/);
 });
 test('presentation has no content count cap at 5000 projects and defaults are saved options', () => {
   const data=fixture(); data.projects=Array.from({length:5000},(_,id)=>({...data.projects[0],id:`mod-${id}`}));
@@ -227,4 +227,17 @@ test('5000 project choices reuse the native catalogue without repeating every ro
   assert.equal(scope.tags.length, 5000);
   assert.equal([...scope.rootsFor.values()].reduce((count, roots) => count + roots.length, 0), 5000);
   assert.equal(scope.match.matches('mod-country-4999', 300), true);
+});
+
+test('the header-only view retains saved History and Current preferences', () => {
+  const view = OPTIONS.find(field => field.key === 'view')!;
+  for (const saved of ['live', 'history']) {
+    const options = resolveOptions(OPTIONS, { view: saved, completedRetentionDays: 12, grow: true });
+    assert.equal(options.view, saved);
+    assert.equal(view.visibleWhen?.(options), false);
+    assert.equal(options.completedRetentionDays, 12);
+    assert.equal(options.grow, true);
+    assert.equal(OPTIONS.find(field => field.key === 'grow')?.visibleWhen?.(options), saved === 'history');
+    assert.equal(OPTIONS.find(field => field.key === 'completedRetentionDays')?.visibleWhen?.(options), saved === 'live');
+  }
 });

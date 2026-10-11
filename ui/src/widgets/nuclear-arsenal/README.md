@@ -19,6 +19,7 @@ Top 10 by default, manual/groups; campaign/follow/pin/range, race/lines/mix, dat
 - Picks bind the native holder at the opening date through its aliases, excluding replacement holders. Overlap/keyboard choices hold the clicked hour until selection.
 - Manual tags select every recorded native holder under those tags and its dated aliases; backend requests keep literal picks. Smart groups use dated membership. Follow converts the clock through track alignment.
 - Drills retain signed type counts, unknown ordinals and exact whole-counter residual separately. Picking holds; Follow uses the real clock even from a held main view. Pin saves original actor/date; its country chip follows the displayed drill date.
+- Stockpile tooltips show the selected time; missing type counts remain rows labelled Not recorded.
 - Same-request NumericReply survives content-only refresh; source/selection/numeric changes mask stale picks immediately.
 
 ## Files

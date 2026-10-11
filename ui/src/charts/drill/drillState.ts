@@ -37,7 +37,7 @@ export function drillHour(state: DrillState, playhead: number | null): number | 
 
 /** The interaction setting: where a breakdown opens. */
 export const DRILL_OPTION: OptionField = {
-  key: 'drill', section: 'interaction', label: 'Breakdown opens', hint: 'Clicking a value shows what it is made of',
+  key: 'drill', section: 'interaction', label: 'Breakdown opens',
   kind: 'choice', default: 'inline', choices: [{ value: 'inline', label: 'In the widget' }, { value: 'popout', label: 'Beside it' }],
 };
 

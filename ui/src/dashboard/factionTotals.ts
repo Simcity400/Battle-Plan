@@ -1,4 +1,3 @@
-import { countryFlagUnavailable } from '../components/countryFlagPresentation.ts';
 import { IntervalIndex } from '../charts/intervalIndex.ts';
 import { clipToSpans, runAt } from '../charts/series.ts';
 import type { Run, Span } from '../charts/series';
@@ -145,12 +144,10 @@ export function factionTooltipForms(model: FactionTotalsModel, ids: readonly str
     const series = model.series.get(id);
     const run = runAt(series?.runs ?? [], Math.floor(hour));
     const name = factionNameAt(model, id, hour, names);
-    const reason = factionNameReasonAt(model, id, hour, names);
-    const nameRows: TooltipRow[] = reason ? [{ label: 'Name', value: reason, tone: 'muted' }] : [];
     if (!run) {
       if (series?.unavailableReason) {
-        const unavailable: TooltipRow[] = [{ label: name, value: 'Not recorded', strong: true, short: true },
-          ...nameRows, { label: series.unavailableReason, tone: 'muted' }];
+        const unavailable: TooltipRow[] = [{ label: name, value: 'Total unavailable', strong: true, short: true },
+          { label: model.membershipMode === 'end' ? 'Members at the end' : model.membershipMode === 'ever' ? 'Anyone ever a member' : 'Members at this hour', tone: 'muted' }];
         const membershipNote = factionMembershipNote(model, id);
         if (membershipNote) unavailable.push({ label: membershipNote, indent: true, tone: 'muted' });
         compact.push(...unavailable); rows.push(...unavailable);
@@ -164,8 +161,7 @@ export function factionTooltipForms(model: FactionTotalsModel, ids: readonly str
       : model.membershipMode === 'ever' ? 'Counted: anyone ever a member' : 'Members at this hour';
     const count: TooltipRow = { label: memberLabel, value: String(members.length), indent: true, tone: 'muted', short: true };
     const membershipNote = factionMembershipNote(model, id);
-    compact.push(total, ...nameRows); rows.push(total, ...nameRows);
-    spoken.push(...nameRows.map(row => `${row.label} ${row.value}`));
+    compact.push(total); rows.push(total);
     if (membershipNote) {
       const row: TooltipRow = { label: membershipNote, indent: true, tone: 'muted' };
       compact.push(row); rows.push(row); spoken.push(membershipNote);
@@ -175,10 +171,7 @@ export function factionTooltipForms(model: FactionTotalsModel, ids: readonly str
     remaining -= shown.length;
     for (const tag of shown) { const country = label(tag); rows.push({ label: country.name, countryFlag: country, indent: true, short: true }); }
     if (shown.length < members.length) rows.push({ label: `${members.length - shown.length} more members`, indent: true, tone: 'muted', short: true });
-    const memberNames = members.map(tag => {
-      const country = label(tag);
-      return [country.name, !country.flag && countryFlagUnavailable(country.flagReason, country.flagPending).text].filter(Boolean).join(': ');
-    });
+    const memberNames = members.map(tag => label(tag).name);
     spoken.push(`${total.label} ${total.value}`, `${memberLabel} (${members.length}): ${memberNames.join(', ')}`);
   }
   const empty: TooltipRow = { label: 'Not recorded', tone: 'muted' };

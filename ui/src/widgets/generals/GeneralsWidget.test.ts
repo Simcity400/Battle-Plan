@@ -11,8 +11,8 @@ test('leaderboard keeps the dated country selection when an alias is reused', as
     selectionTags: ['original', 'alias', 'current'],
     people: [5, 6].map(characterId => ({ characterId, token: null, name: String(characterId), portraitHour: 100, portraitReference: String(characterId) })),
     roles: ['current', 'alias'].map(owner => ({ owner, category: 1, rank: null, kind: 1, maximumSkill: 10, attributeNames: [null, null, null, null] })),
-    traits: [], leaders: [5, 6].map((id, index) => ({ reference: String(id),
-      runs: [{ firstHour: 100, lastHour: 102, value: { person: index, role: index, skill: 3, components: [1, 2, 3, 4], traits: [] } }],
+    traits: [{ token: 'synthetic_trait', name: 'Synthetic trait', icon: null, missing: null }], leaders: [5, 6].map((id, index) => ({ reference: String(id),
+      runs: [{ firstHour: 100, lastHour: 102, value: { person: index, role: index, skill: 3, components: [1, 2, 3, 4], traits: [0] } }],
       traitGains: [], commands: [], battleStarts: [], battleStartReadHours: [], unknownBattleStarts: [], partialFrom: null })),
     observed: [{ firstHour: 100, lastHour: 102, leaders: true, landBattles: true, navalBattles: false, landCommands: true, navalCommands: false }],
     resultsMissing: 'Result not recorded', navyCommandsMissing: 'Navy commands not recorded', warnings: [] };
@@ -26,7 +26,10 @@ test('leaderboard keeps the dated country selection when an alias is reused', as
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 102;',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
     '/charts/drill/DrillHost.tsx': 'export default props => props.main;',
-    '/charts/table/Table.tsx': 'export default props => { globalThis.__selectedLeaders = props.rows; return null; };',
+    '/charts/table/Table.tsx': `import { createElement } from 'react';
+      export const CountryCell = () => null;
+      export default props => { globalThis.__selectedLeaders = props.rows;
+        return createElement('div', null, props.rows.map(row => createElement('div', { key: row.key }, props.columns.find(column => column.key === 'traits').render(row)))); };`,
   };
   const host = globalThis as typeof globalThis & { __selectedLeaders?: readonly LeaderRow[] };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
@@ -39,8 +42,17 @@ test('leaderboard keeps the dated country selection when an alias is reused', as
       time: { mode: 'campaign' }, options: {} }, runtime: { tracks: [{ id: 'main', axisOffset: 0,
         source: { id: 'synthetic', revision: '1' }, branch: { id: '1', firstHour: 100, lastHour: 102 } }],
         clock: { getHour: () => 102 }, client: {} }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
-    renderToStaticMarkup(createElement(Widget, props));
+    const html = renderToStaticMarkup(createElement(Widget, props));
     assert.deepEqual(host.__selectedLeaders?.map(row => row.key), ['5']);
+    assert.match(html, /class="leader-trait-chip">Synthetic trait/);
+    assert.doesNotMatch(html, /icon unavailable|>\?</);
+    const { LeaderPortrait, SkillStars } = await vite.ssrLoadModule('/ui/src/widgets/generals/LeaderIdentity.tsx');
+    const portrait = renderToStaticMarkup(createElement(LeaderPortrait, { art: { image: null, missing: 'Internal portrait reason' } }));
+    assert.match(portrait, /art-fallback/);
+    assert.doesNotMatch(portrait, /Internal portrait reason|>\?</);
+    const skill = renderToStaticMarkup(createElement(SkillStars, { level: 5, maximum: null }));
+    assert.match(skill, />5</);
+    assert.doesNotMatch(skill, /maximum unknown/);
   } finally {
     delete host.__selectedLeaders;
     await vite.close();

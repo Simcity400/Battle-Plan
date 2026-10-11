@@ -11,6 +11,7 @@ import type { TimeChartProps } from '../../charts/TimeChart';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import type { CountryStabilityReply, StabilityPartsReply } from '../../generated/dashboard';
+import { formatDateTime } from '../../dashboard/calendar.ts';
 
 const native: CountryStabilityReply = { branchId: 'branch', decimals: 5, warnings: [],
   series: ['actor A', 'actor B'].map((tag, index) => ({ tag, recorded: true, carried: [], breakdown: null, maxCommandPower: [],
@@ -117,7 +118,7 @@ test('the registered Stability renderer opens a drawn comparison chooser and pin
     assert.deepEqual(state.requestedFlags, ['actor B']);
     state.flagPending = false; state.flagReason = 'Synthetic recorded-stack flag refusal';
     render();
-    assert.match(renderToStaticMarkup(state.legend!.items[1].flag as ReactElement), /Synthetic recorded-stack flag refusal/);
+    assert.doesNotMatch(renderToStaticMarkup(state.legend!.items[1].flag as ReactElement), /Synthetic recorded-stack flag refusal/);
     state.legend!.onVisibleItems([]);
     render();
     assert.deepEqual(state.requestedFlags, [], 'legend unmount or scroll release removes its flag reads');
@@ -170,5 +171,13 @@ test('the registered Stability renderer opens a drawn comparison chooser and pin
     track.branch.lastHour = 101;
     render();
     assert.equal(state.host!.open, false, 'native extent changes invalidate the held drill before effects');
+    props.widget.countries = { kind: 'tags', tags: ['actor A', 'actor B'] };
+    state.data = { ...native, series: native.series.map((row, index) => ({ ...row,
+      carried: [{ firstHour: 20, lastHour: 100, readHour: index ? 15 : 10 }] })) };
+    const carried = render().tooltip!(20, undefined as never, []);
+    assert.match(carried!.note!, /As of/);
+    assert.ok(carried!.note!.includes(formatDateTime(10)));
+    assert.ok(carried!.note!.includes(formatDateTime(15)), 'different countries keep both supplying-date bounds');
+    assert.doesNotMatch(carried!.note!, /As read|Click a line|overlapping lines/);
   } finally { await vite.close(); delete host.__stabilityRenderer; delete host.__stabilityHook; }
 });

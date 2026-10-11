@@ -9,7 +9,7 @@
 **Notable behaviour:**
 
 - Relation start is the game's recorded start, including before recording. Same endpoints/start across a gap remain one relation with a gap; a different start is another relation. A country may be both subject and overlord.
-- Current level is the subject's Autonomy state, not the relation's initial Subjects state. Content orders/names levels; missing definitions keep IDs, and palette overflow shares colour without hiding levels.
+- Current level is the subject's Autonomy state, not the relation's initial Subjects state. Content orders/names levels; missing names show Autonomy level name unavailable, and palette overflow shares colour without hiding levels. Other levels lists the folded names on hover.
 - Both endpoints and lanes key on native holders. Manual roots follow their holders/aliases; replacements using a tag get separate lanes. Smart groups retain hour/end/ever dates. Missing identity/coverage makes counts unknown, never proof of no subjects.
 - Names/flags use proved aliases at shown/hovered dates, bounded by holder and readable spans. Pending/refused flags retain reasons. An unrecorded hour says **Not recorded**, not an ended relation.
 - Live reveals reached lanes and grows bars; the shared timeline owns zoom, keyboard changes, complete tooltips and Jump. A changed overlord appears in the corresponding separate tree.

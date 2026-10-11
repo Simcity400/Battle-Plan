@@ -11,7 +11,7 @@ export const OPTIONS: readonly OptionField[] = [
 
 export const definition = {
   kind: 'decryption', version: 1, title: 'Decryption', icon: 'target',
-  description: 'Who is breaking whose ciphers: progress, observed breaks and active bonus days.',
+  description: 'Cipher-breaking progress and active bonuses.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 6, h: 9 },
   countries: { max: Number.MAX_SAFE_INTEGER, all: true }, options: OPTIONS,

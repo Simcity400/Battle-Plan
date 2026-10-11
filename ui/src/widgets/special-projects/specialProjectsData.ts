@@ -124,8 +124,8 @@ export function projectHeading(id: string, label: ReturnType<CountryLabel>, mess
 }
 export const scientistName = (data: SpecialProjectsReply, info: ProjectPresentation) => {
   const scientist = data.people[info.scientist];
-  const name = scientist.name ?? (scientist.id != null ? `Scientist ${scientist.id} · name not recorded` : scientist.assigned === false ? 'Unassigned' : 'Scientist not recorded');
-  return info.scientistAsOf === null ? name : `Last assigned · ${name}`;
+  const name = scientist.name ?? (scientist.assigned === false ? 'Unassigned' : 'Unknown scientist');
+  return info.scientistAsOf === null ? name : `Last assigned · ${name} (as of ${dayLabel(info.scientistAsOf)})`;
 };
 export interface ProjectCard { project: ProjectEpisode; run: SpecialProjectRun; info: ProjectPresentation }
 
@@ -191,9 +191,7 @@ export function projectTooltip(data: SpecialProjectsReply, card: ProjectCard, hi
   ];
   if (run.state !== 'running' && run.state !== 'completed') rows.push({ label: 'State', value: run.state === 'paused' ? 'Paused' : run.state === 'cancelled' ? 'Cancelled' : 'Not recorded' });
   if (run.cancellation) rows.push({ label: 'Cancelled', value: projectDate(run.cancellation) });
-  const missing = [info.iconMissing, data.people[info.scientist].missing, run.iterations === null ? 'ProjectHistory not recorded; iterations unknown.' : data.iterationTexts[run.iterations] == null ? 'Iteration localisation unavailable.' : null, info.scientistAsOf === null ? null : `Last assignment recorded ${dayLabel(info.scientistAsOf)}.`].filter(Boolean);
-  return { title: info.name, icon: info.icon ?? undefined, rows,
-    note: missing.filter(Boolean).join(' ') || undefined };
+  return { title: info.name, icon: info.icon ?? undefined, rows };
 }
 
 /** The hovered observation, bounded by both the playhead and the drawn span. */

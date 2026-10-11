@@ -20,7 +20,7 @@ export const OPTIONS: readonly OptionField[] = [
 
 export const definition = {
   kind: 'territory-transfers', version: 1, title: 'Territory transfers', category: 'Diplomacy', icon: 'flows',
-  description: 'States flowing from losers to winners in captured or derived peace outcomes.',
+  description: 'States transferred in peace settlements.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   countrySelection: false,
   countries: { max: Number.MAX_SAFE_INTEGER },

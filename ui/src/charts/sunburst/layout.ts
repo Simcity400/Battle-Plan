@@ -523,7 +523,7 @@ export function shareText(part: number, whole: number): string {
 }
 
 /** How a widget words its sunburst: exact amounts, their unit, what the amount is,
- * its reasons for parts not counted, and any rows of its own for a slice. */
+ * any rows of its own for a slice. */
 export interface SunburstText {
   /** An amount as written: `exact` when the tree has it (never rounded through a
    * number), else `value`. */
@@ -537,8 +537,6 @@ export interface SunburstText {
   missingLabel?: string;
   /** Text for an empty legend; the shared default is "Nothing yet.". */
   emptyLabel?: string;
-  /** A reason for parts not counted, as a row label. */
-  unknownLabel?: (reason: string) => string;
   /** The name of the items' `count` (such as "Projects"); none leaves it out. */
   countLabel?: string;
   /** Rows of the widget's own for a slice. */
@@ -548,9 +546,7 @@ export interface SunburstText {
 /** How many parts of a slice are not counted, whatever the reason. */
 export const unknownTotal = (node: SunburstNode) => Object.values(node.unknown).reduce((sum, count) => sum + count, 0);
 
-/** A slice's tooltip, fullest first: its path, exact amount, its share of its parent
- * and of the slice zoomed into, the widget's rows, then what is not counted by
- * reason (the compact form counts them in one row) and why parts are not measured. */
+/** A slice's path, exact qualified amount, shares and widget-specific rows. */
 export function sliceTooltip(node: SunburstNode, focus: SunburstNode, text: SunburstText): TooltipContent[] {
   const path = pathTo(node).slice(1).map(step => step.label).join(' › ') || node.label;
   const unmeasured = notMeasured(node);
@@ -558,35 +554,28 @@ export function sliceTooltip(node: SunburstNode, focus: SunburstNode, text: Sunb
     ? { label: text.valueLabel, value: 'Not known', tone: 'muted' }
     : unmeasured
     ? { label: text.valueLabel, value: text.missingLabel ?? 'Not measured', tone: 'muted' }
-    : { label: text.valueLabel, value: `${amountText(node, text)} ${text.unit}`, strong: true }];
+    : { label: text.valueLabel, value: `${amountText(node, text)} ${text.unit}${unknownTotal(node) ? ' · partial' : ''}`, strong: true }];
   const shareable = text.shares !== false && (node.value > 0 || node.value === 0 && node.keepZero);
   if (!node.valueUnknown && !unmeasured && shareable && node.parent && !node.parent.valueUnknown && !hasCorrections(node.parent)) rows.push({ label: `Of ${node.parent.label}`, value: shareText(node.value, node.parent.value) });
   if (!node.valueUnknown && !unmeasured && shareable && node.parent && node.parent !== focus && node !== focus && !focus.valueUnknown && !hasCorrections(focus)) rows.push({ label: `Of ${focus.label}`, value: shareText(node.value, focus.value) });
   if (text.countLabel && node.count > 0) rows.push({ label: text.countLabel, value: String(node.count) });
   rows.push(...(text.describe?.(node) ?? []));
-  const total = unknownTotal(node);
-  const reasons = Object.entries(node.unknown).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  const counted: TooltipRow = { label: 'Not counted', value: String(total), divider: true, tone: 'muted' };
-  const full: TooltipRow[] = total ? [counted, ...reasons.map(([reason, count]): TooltipRow =>
-    ({ label: text.unknownLabel?.(reason) ?? reason, value: String(count), indent: true, tone: 'muted' }))] : [];
   const note = node.notes.length ? node.notes.join(' ') : undefined;
   const base = { title: path, icon: node.icon, countryFlag: node.countryFlag, note };
-  return [{ ...base, rows: [...rows, ...full] }, { ...base, rows: total ? [...rows, counted] : rows }];
+  return [{ ...base, rows }, { ...base, rows }];
 }
 
 /** A node's amount as written, exactly when the tree has it. */
 export const amountText = (node: SunburstNode, text: SunburstText) => node.valueUnknown ? 'Not known' : text.format(node.value, node.exact, node.exactDenominator);
 
-/** How a node is read out: "not measured", else its amount (and share of `whole`),
- * and what is not counted. */
+/** How a node is read out: its amount, share of `whole` and uncertainty. */
 export function spokenAmount(node: SunburstNode, whole: SunburstNode | null, text: SunburstText): string {
   if (node.valueUnknown) return `not known${node.notes.length ? `: ${node.notes.join(' ')}` : ''}`;
   if (notMeasured(node)) return (text.missingLabel ?? 'Not measured').toLowerCase();
   const unknown = unknownTotal(node);
-  if (node.value === 0 && unknown) return `nothing counted, ${unknown} not counted`;
   const shareable = text.shares !== false && (node.value > 0 || node.value === 0 && node.keepZero);
   const amount = `${amountText(node, text)} ${text.unit}${shareable && whole && !whole.valueUnknown && !hasCorrections(whole) ? `, ${shareText(node.value, whole.value)}` : ''}`;
-  return unknown ? `${amount}, ${unknown} not counted` : amount;
+  return unknown ? `${amount}, partial` : amount;
 }
 
 /** The zoomed slice read out: its amount and each listed part's, for assistive

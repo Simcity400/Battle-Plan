@@ -160,10 +160,10 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const colors = { fuel: tokens.accent, capacity: tokens.muted, gained: tokens.categories[0], burned: tokens.categories[1] };
   const state = !track ? <WidgetState kind="empty" icon="droplet" message="Load a campaign and choose countries to see their fuel." />
     : playhead !== null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)
-      ? <WidgetState kind="unavailable" message="This time is outside the countries' recorded branch." />
-    : groupError || error ? <WidgetState kind="error" message={groupError ?? error!} onRetry={groupError ? retryGroups : retry} />
+      ? <WidgetState kind="unavailable" message="This time is outside the recording." />
+    : groupError || error ? <WidgetState kind="error" detail={groupError ?? error!} onRetry={groupError ? retryGroups : retry} />
       : countries.reason ? <WidgetState kind="empty" message={countries.reason} />
-        : (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window ? <WidgetState kind="unavailable" message="The chosen time is not in this campaign." />
+        : (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window ? <WidgetState kind="unavailable" message="Choose another time in widget settings." />
           : pending || !data ? <WidgetState kind="loading" label="Loading fuel…" />
             : !data.some(reply => reply.reads.length) ? <WidgetState kind="unavailable" message="No fuel was recorded for the chosen countries." /> : undefined;
   const open = (hour: number, tag?: string, choices?: readonly string[]) => {
@@ -193,12 +193,12 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     }}
     label="Fuel" labels={{ lines: 'Fuel level and capacity', actions: 'Fuel actions' }} empty="" formatValue={String}
     presentation={{ countryLooks: !single, held: false, linePadding: CHART_LAYOUT.measureEndLabels }}
-    beforeChart={<><p className="chart-line-key">Solid: fuel · dashed: capacity{!single && ' · gain and burn bars hidden while comparing countries'}</p>
+    beforeChart={<><p className="chart-line-key">Solid: fuel · dashed: capacity</p>
       <button type="button" className="button small quiet" onClick={() => {
         const hour = Math.floor(playhead ?? extent[1]);
         const tags = [...new Set(lines.filter(line => runAt(line.runs, hour)).map(line => line.tag))];
         if (tags.length) open(hour, tags.length === 1 ? tags[0] : chosenTag, tags);
-      }}>Individual consumption and daily accounting</button></>}
+      }}>View fuel breakdown</button></>}
     onPick={open} pickOwner={pickOwner} tooltip={() => null}
     timeTooltip={single ? hour => isMember(countries.membership?.get(views[0].reply.tag), hour)
       ? fuelTooltips(views[0].reply, views[0].view.reads, hour, dayLabel(hour), colors) : null : undefined}
@@ -216,17 +216,17 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     || (saved.id === 'consumption' && options.fuelConsumption && (!savedConsumption || wrongSavedConsumption))
     || (saved.id === 'consumption' && options.fuelConsumptionLevel && (!savedLevel || !selectedConsumption && chosen && savedLevel.tag !== chosen.tag))
     || (options.fuelCountry && !savedCountry) || (options.fuelExtent && !heldExtent));
-  const actorState = selectedCountry ? catalogue.error ? <WidgetState kind="error" message={catalogue.error} onRetry={catalogue.retry} />
-    : !identityNumbers ? <WidgetState kind="loading" label="Loading the selected country's native identity…" />
-      : !actorSpans ? <WidgetState kind="unavailable" message="The selected native country identity is unknown or conflicting at its original choice." />
-        : actorProduct.error ? <WidgetState kind="error" message={actorProduct.error} onRetry={actorProduct.retry} />
+  const actorState = selectedCountry ? catalogue.error ? <WidgetState kind="error" detail={catalogue.error} onRetry={catalogue.retry} />
+    : !identityNumbers ? <WidgetState kind="loading" label="Loading country…" />
+      : !actorSpans ? <WidgetState kind="unavailable" message="Choose a country again." />
+        : actorProduct.error ? <WidgetState kind="error" detail={actorProduct.error} onRetry={actorProduct.retry} />
           : !actorData ? <WidgetState kind="loading" label="Loading the selected country's fuel…" /> : undefined : undefined;
-  const headerReason = invalidSaved ? 'The saved native selection belongs to another country, campaign or branch, or is malformed.'
-    : catalogue.error ?? (!selectedCountry ? 'The selected native country identity is unavailable.'
-      : !identityNumbers ? 'The selected native country identity is loading.'
-        : !actorSpans ? 'The selected native country identity is unknown or conflicting at its original choice.'
-          : !shownTag ? 'The selected native country identity is not recorded at this moment.'
-            : actorProduct.error ?? (!actorData?.some(reply => reply.tag === shownTag && at !== null && runAt(reply.reads, at))
+  const headerReason = invalidSaved ? 'Choose a country again.'
+    : (catalogue.error ? 'Couldn’t load country.' : null) ?? (!selectedCountry ? 'Country unavailable at this time.'
+      : !identityNumbers ? 'Loading country…'
+        : !actorSpans ? 'Choose a country again.'
+          : !shownTag ? 'Country unavailable at this time.'
+            : (actorProduct.error ? 'Couldn’t load fuel data.' : null) ?? (!actorData?.some(reply => reply.tag === shownTag && at !== null && runAt(reply.reads, at))
               ? 'The selected country’s fuel is not recorded at this moment.' : null));
   const headerReady = !!saved && !!options.fuelCountry && !!countrySlot && active && headerReason === null && at !== null && !!shownTag;
   const headerWanted = useMemo(() => headerReady && shownTag && at !== null ? [{ tag: shownTag, hour: at }] : [], [headerReady, shownTag, at]);
@@ -244,8 +244,8 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     },
     onContextMenu: (hour: number, x: number, y: number) => menu.open(x, y, [jumpItem(runtime, track.id, hour)]),
   } : null;
-  const breakdown = invalidSaved ? <WidgetState kind="unavailable" message="This native selection belongs to another country, campaign or branch, or is malformed." /> : actorState ?? state ?? (chosen && track && chart
-    ? <>{selectedCountry && !shownTag && <p className="drill-empty">The selected native country identity is not recorded at this moment.</p>}
+  const breakdown = invalidSaved ? <WidgetState kind="unavailable" message="Choose a country again." /> : actorState ?? state ?? (chosen && track && chart
+    ? <>{selectedCountry && !shownTag && <p className="drill-empty">Country unavailable at this time.</p>}
       {drillMeasure === 'consumption' ? <FuelConsumptionBreakdown reply={chosen} actorSpans={actorSpans ?? undefined} identitySpans={identitySpans ?? undefined} runtime={runtime} track={track} hour={detailHour} selection={selectedConsumption} onSelection={setConsumption}
       level={selectedLevel} onLevel={setLevel} {...chart} />
       : <FuelBreakdown reply={chosen} history={selectedCountry ? actorData : undefined} actorSpans={actorSpans ?? undefined} identitySpans={identitySpans ?? undefined}

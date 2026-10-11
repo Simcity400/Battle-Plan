@@ -47,7 +47,7 @@ export function researchTimeRows(split: ResearchTimeSplit, active: boolean): Res
     { key: 'paused', value: split.paused, tone: 'paused' as const, name: 'Not in a research slot', effect: `+${days(split.paused)}` },
     ...saved.map((m, i) => ({ key: m.key, value: m.days, tone: 'saved' as const, name: m.label, kind: kindOf(m), effect: `−${days(m.days)}`, index: i })),
     { key: 'other-saved', value: split.other, tone: 'saved' as const, name: split.floored ? 'Minimum research speed' : 'Other effects', effect: `−${days(split.other)}`, index: saved.length },
-    { key: 'juggle', value: split.juggle, tone: 'juggle' as const, name: 'Saved days from juggling', effect: `−${days(split.juggle)}` },
+    { key: 'juggle', value: split.juggle, tone: 'juggle' as const, name: 'Saved research days', effect: `−${days(split.juggle)}` },
     { key: 'earlier', value: split.earlier, tone: 'earlier' as const, name: 'Progress made earlier', effect: `−${days(split.earlier)}` },
     { key: 'remaining', value: split.remaining, tone: 'remaining' as const, name: 'Still to research', effect: days(split.remaining) },
   ].filter(s => s.value > 0n);

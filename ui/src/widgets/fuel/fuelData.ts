@@ -35,12 +35,12 @@ export function isRaw(value: unknown): value is string {
 }
 /** Why a day is left out, as the tooltip says it: its row's value and its note. */
 const LEFT_OUT: Readonly<Record<DayLeftOut, (dayHours: number) => { value: string; note: string }>> = {
-  overlaps: dayHours => ({ value: 'Counted in another day',
-    note: `This read is less than ${dayHours} hours from another, so its hours are counted in that read’s bar.` }),
+  overlaps: () => ({ value: 'Counted in another day',
+    note: 'Included in another day.' }),
   notUpdated: () => ({ value: 'Not updated',
-    note: 'The country held no state for part of the day, and the game updates a country’s fuel only while it holds one.' }),
+    note: 'Fuel was not updated while no states were owned.' }),
   ownershipNotRecorded: () => ({ value: 'Not known',
-    note: 'Part of the day was not recorded, or recorded without the states each country owned, so whether the game updated this fuel is not known.' }),
+    note: 'Daily data incomplete.' }),
 };
 /** Decimal places amounts are written with, at most. */
 const DECIMALS = 2;
@@ -190,10 +190,10 @@ export function fuelParts(reply: FuelReply, read: FuelRead, measure: 'gain' | 'b
   if (!read.day) return null;
   const gain = BigInt(reply.gainScale), quantity = BigInt(reply.quantityScale), awards = read.day.awards;
   const named = (id: string, raw: bigint, label: string | null | undefined, reason?: string | null): FuelPart => ({ id, raw,
-    label: label ?? 'Other / not identified', muted: label == null, reason });
+    label: label ?? 'Other', muted: label == null, reason });
   if (measure === 'gain') return { scale: gain, total: BigInt(read.day.gainedRaw),
     parts: awards ? awards.gainsRaw.map((raw, i) => named(`gain-${i}`, BigInt(raw), fuelLabel(labels.gainLabels[i], BigInt(raw), gain), labels.gainLabels[i].reason))
-      : [{ id: 'unidentified', label: 'Other / not identified', raw: BigInt(read.day.gainedRaw), muted: true }],
+      : [{ id: 'unidentified', label: 'Other', raw: BigInt(read.day.gainedRaw), muted: true }],
     transfer: awards ? named('incoming', BigInt(awards.transfersRaw[0]), fuelLabel(labels.transferLabels[0], BigInt(awards.transfersRaw[0]), quantity), labels.transferLabels[0].reason) : null,
     reason: awards ? null : read.awardsReason };
   const total = BigInt(read.day.burnedRaw) * gain;
@@ -202,8 +202,8 @@ export function fuelParts(reply: FuelReply, read: FuelRead, measure: 'gain' | 'b
   const residual = total - other - received.reduce((sum, part) => sum + part.raw, 0n);
   const transfers: FuelPart[] = awards ? [named('outgoing', BigInt(awards.transfersRaw[1]) * gain, fuelLabel(labels.transferLabels[1], BigInt(awards.transfersRaw[1]), quantity), labels.transferLabels[1].reason),
     named('flat', BigInt(awards.transfersRaw[2]) * gain, fuelLabel(labels.transferLabels[2], BigInt(awards.transfersRaw[2]), quantity), labels.transferLabels[2].reason),
-    { id: 'other', label: 'Other / not identified', raw: other - (BigInt(awards.transfersRaw[1]) + BigInt(awards.transfersRaw[2])) * gain, muted: true }]
-    : [{ id: 'other', label: 'Other / not identified', raw: other, muted: true }];
+    { id: 'other', label: 'Other', raw: other - (BigInt(awards.transfersRaw[1]) + BigInt(awards.transfersRaw[2])) * gain, muted: true }]
+    : [{ id: 'other', label: 'Other', raw: other, muted: true }];
   return { scale: gain * quantity, total, parts: [...received, ...transfers,
     { id: 'conversion', label: 'Hourly conversion difference', raw: residual }], transfer: null, reason: awards ? null : read.awardsReason };
 }
@@ -218,7 +218,7 @@ export function fuelRecipientAmount(runs: readonly FuelAwardRun[], hour: number 
   if (hour === null) return missing('No selected moment');
   if (!isMember(within ?? undefined, hour)) return missing('Outside the selected group membership');
   const run = runAt(runs, hour);
-  if (run?.amountRaw == null) return missing(run?.reason ?? 'Recipient history not loaded for this window');
+  if (run?.amountRaw == null) return missing('History unavailable');
   const raw = BigInt(run.amountRaw);
   return { raw, value: Number(raw) / gainScale, text: formatFuelPart(raw, BigInt(gainScale)) };
 }
@@ -268,7 +268,7 @@ export function fuelTooltips(reply: FuelReply, reads: readonly FuelRead[], hour:
       tone: day.net < 0n ? 'negative' : day.net > 0n ? 'positive' : undefined };
     rows = [...tank, { label: 'Gained (own production)', value: formatSigned(day.gained, DECIMALS, DECIMALS), swatch: colors.gained, divider: true },
       { label: 'Burned', value: formatSigned(-day.burned, DECIMALS, DECIMALS), swatch: colors.burned }, net];
-    notes.push(`Gained and burned in the ${reply.dayHours} hours before the read; lend-lease fuel received is not included.`);
+    notes.push(`Previous ${reply.dayHours} hours; excludes incoming lend-lease.`);
     if (read.fuelRaw === read.capacityRaw && day.net > 0n) notes.push('The tank was full: the game discards fuel beyond its capacity.');
   } else {
     const why = LEFT_OUT[read.leftOut ?? 'notUpdated'](reply.dayHours);
@@ -278,10 +278,9 @@ export function fuelTooltips(reply: FuelReply, reads: readonly FuelRead[], hour:
   const incoming = read.day?.awards?.transfersRaw[0];
   if (day && incoming !== undefined) {
     rows.push({ label: 'Lend-lease received (separate)', value: formatSigned(rescale(incoming, reply.quantityScale, DECIMALS), DECIMALS, DECIMALS) });
-    notes.push('The recorded daily lend-lease receipt is separate from own production and its net.');
   } else {
     const lendLease = BigInt(read.lendLeaseRaw);
-    if (day && lendLease !== 0n) notes.push(`Lend-lease fuel was arriving at the read (${formatSigned(rescale(lendLease, reply.quantityScale, DECIMALS), DECIMALS, DECIMALS)} in its last hour); its daily total was not recorded.`);
+    if (day && lendLease !== 0n) notes.push('Daily lend-lease total unavailable.');
   }
   const note = notes.filter(Boolean).join(' ');
   // In a short window the day's total stays, with the tank's level above it.

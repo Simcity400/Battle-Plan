@@ -6,7 +6,6 @@ import type { SourceBinding } from './sources';
 import type { ReplayLibraryState } from './replayLibrary';
 import { Icon } from '../components/Icons';
 import { SourceFlag } from '../components/CountryFlag';
-import FactionColoursButton from './FactionColours';
 import { PartialRecordingBadge, partialRecordingText } from '../shell/recordingNotice';
 
 const replayFilename = (path: string) => path.replaceAll('\\', '/').split('/').pop()!;
@@ -92,7 +91,6 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
             <span>{displayName(campaign.path)}</span>
             <PartialRecordingBadge partial={partial} />
           </button>
-          {source && <FactionColoursButton client={client} source={source} label={displayName(campaign.path)} />}
           {source && <button type="button" className="icon-button small campaign-unload" aria-label={`Unload ${displayName(campaign.path)}`} data-tooltip="Unload"
             onClick={() => onUnload(campaign.id)}><Icon name="close" /></button>}
         </div>;

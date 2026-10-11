@@ -3,14 +3,14 @@ import type { OptionField } from '../../dashboard/options';
 import { LOG_OPTIONS } from '../../charts/log/logOptions.ts';
 
 export const OPTIONS: readonly OptionField[] = [
-  { key: 'actions', section: 'options', label: 'Peace actions', hint: 'Conferences containing any chosen action; every action on a matching card stays visible',
+  { key: 'actions', section: 'options', label: 'Peace actions', hint: 'Show conferences with these actions.',
     kind: 'content-set', automatic: 'Every action', default: '' },
   ...LOG_OPTIONS,
 ];
 
 export const definition = {
   kind: 'peace-deals', version: 1, title: 'Peace deals', icon: 'history', category: 'Diplomacy',
-  description: 'Peace conferences, newest first, with their recorded winners and actions or dated derived outcomes.',
+  description: 'Peace conferences, winners and outcomes.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   countrySelection: false,
   countries: { max: Number.MAX_SAFE_INTEGER },

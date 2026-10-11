@@ -165,7 +165,7 @@ test('the mounted Fuel country chooser pins its original actor and restores Foll
     const widget = { id: 'fuel-country', kind: 'fuel', configVersion: 1, title: 'Fuel', trackIds: ['track'],
       countries: { kind: 'tags', tags: ['X', 'Z'] }, time: { mode: 'campaign' }, options: {} } as WidgetSpec;
     const props = { widget, active: true, onDiagnostics() {}, runtime: { client: {}, tracks: [{ id: 'track', axisOffset: 0,
-      branch: { id: '1', firstHour: 100, lastHour: 120 }, source: { id: 'synthetic', revision: '1', metadata: { campaignKey: 'c1', countries: [] } } }],
+      branch: { id: '1', firstHour: 100, lastHour: 120 }, source: { id: 'synthetic', revision: '1', path: 'synthetic.battleplan', metadata: { campaignKey: 'c1', countries: [] } } }],
       clock: { getHour: () => state.hour, getSnapshot: () => ({ playing: false, hoursPerSecond: 24 }) },
       addWidgetBelow: (_id: string, pinned: WidgetSpec) => state.added.push(pinned) } } as unknown as WidgetProps;
     let element: ReactElement;
@@ -216,7 +216,7 @@ test('the mounted Fuel country chooser pins its original actor and restores Foll
     chart.onPick!(104); assert.match(render(), /Synthetic source: 11/);
     assert.deepEqual(state.charts[0].extent, [100, 120], 'history date picks keep the saved extent');
     findButton(element!, 'Follow playback')!.props.onClick(); state.hour = 116;
-    assert.match(render(), /selected native country identity is not recorded/);
+    assert.match(render(), /Country unavailable at this time/);
     state.hour = 119; assert.doesNotMatch(render(), /Synthetic source: 99|Synthetic source: 88/);
     const Grid = (await vite.ssrLoadModule('/ui/src/dashboard/DashboardGrid.tsx')).default;
     registry.registerWidgets([{ ...(await vite.ssrLoadModule('/ui/src/widgets/fuel/definition.ts')).definition,
@@ -230,7 +230,7 @@ test('the mounted Fuel country chooser pins its original actor and restores Foll
     const header = () => renderToStaticMarkup(createElement(Grid, { template, runtime: headerRuntime, editing: false, onLayouts() {}, onApply() {}, onRemove() {} }));
     const pinnedFrame = header();
     assert.doesNotMatch(pinnedFrame, /DEFAULT_COUNTRY_CHIP/);
-    assert.match(pinnedFrame, /<\/h2><\/div><button[^>]*class="dash-widget-country-button"[^>]*><span class="dash-widget-country-slot"><\/span><svg[^>]*class="dash-widget-country-chevron"/,
+    assert.match(pinnedFrame, /<\/h2>(?:<span class="dash-widget-subtitle">[^<]*<\/span>)?<\/div><button[^>]*class="dash-widget-country-button"[^>]*><span class="dash-widget-country-slot"><\/span><svg[^>]*class="dash-widget-country-chevron"/,
       'the chip target follows the long title and is outside its clipped h2');
     assert.equal(state.bodyCountrySlot, state.slot, 'actual Grid and WidgetBody hand the separate country slot to the registered body');
     assert.equal(state.bodyHeaderSlot, state.summarySlot, 'the existing title-summary slot remains independent');
@@ -263,8 +263,8 @@ test('the mounted Fuel country chooser pins its original actor and restores Foll
     assert.doesNotMatch(header(), /DEFAULT_COUNTRY_CHIP/);
     props.countrySlot = state.bodyCountrySlot;
     const refused = render();
-    assert.match(refused, /Selected country unavailable/);
-    assert.match(refused, /native selection belongs to another country, campaign or branch, or is malformed/);
+    assert.match(refused, /Unavailable/);
+    assert.match(refused, /Choose a country again/);
     assert.equal(state.portals.length, 1, 'a malformed nonempty string keeps the explicit neutral refusal chip');
     assert.deepEqual(state.headerReads, []);
     template.widgets = [{ ...pinned, campaign: 'tracks' }];
@@ -276,7 +276,7 @@ test('the mounted Fuel country chooser pins its original actor and restores Foll
     assert.equal(state.portals[0].chip.props.hour, 112);
     assert.match(render(), /data:flag-Y@112/);
     state.charts[0].onPick!(115);
-    assert.match(render(), /Selected country unavailable/);
+    assert.match(render(), /Unavailable/);
     assert.equal(state.portals[0].chip.props.hour, 115, 'a local history pick changes the header date even while the saved spec is Pin 12');
     assert.deepEqual(state.headerReads, [], 'a native identity gap never requests the tag replacement');
     assert.deepEqual(props.widget.time, { mode: 'pin', windows: { track: { firstOffset: 12, lastOffset: 12 } } });
@@ -284,36 +284,36 @@ test('the mounted Fuel country chooser pins its original actor and restores Foll
     state.hour = 114; findButton(element!, 'Follow playback')!.props.onClick(); assert.match(render(), /Y shown at 114/);
     assert.equal(state.portals[0].chip.props.hour, 114);
     assert.deepEqual(props.widget.time, { mode: 'pin', windows: { track: { firstOffset: 12, lastOffset: 12 } } });
-    state.hour = 119; assert.match(render(), /Selected country unavailable/); assert.deepEqual(state.headerReads, []);
+    state.hour = 119; assert.match(render(), /Unavailable/); assert.deepEqual(state.headerReads, []);
     state.hour = 112; render();
     state.slot = { id: 'country-b' } as unknown as HTMLElement; header(); props.countrySlot = state.bodyCountrySlot;
     assert.match(render(), /data-header-target="country-b"/);
     assert.equal(state.portals[0].slot, state.slot, 'country slot replacement moves the local chip without replacing the native actor');
-    state.nameKnown = false; assert.match(render(), /Selected country unavailable/);
+    state.nameKnown = false; assert.match(render(), /Unavailable/);
     assert.match(render(), /data:flag-Y@112/, 'the authenticated current flag stays available when its name is missing');
     state.flagReason = 'Synthetic dated flag refusal';
-    assert.match(render(), /country name is unavailable at this date/);
-    assert.match(render(), /aria-label="Flag not available: Synthetic dated flag refusal"/);
+    assert.match(render(), /Name unavailable/);
+    assert.match(render(), /aria-label="Flag unavailable"/);
     assert.doesNotMatch(render(), /data:flag-Y@112/);
     state.flagReason = undefined;
-    state.nameKnown = undefined; assert.match(render(), /country name is loading/);
+    state.nameKnown = undefined; assert.match(render(), /Loading/);
     assert.match(render(), /data:flag-Y@112/, 'pending names do not hide an independently authenticated flag');
-    state.nameKnown = true; state.nameFailed = true; assert.match(render(), /country name request failed/);
+    state.nameKnown = true; state.nameFailed = true; assert.match(render(), /Name unavailable/);
     assert.match(render(), /data:flag-Y@112/, 'failed names do not hide an independently authenticated flag');
     state.flagPending = true; assert.match(render(), /aria-label="Flag loading"/);
     state.flagPending = false;
     state.flagReason = 'The flag request failed.';
-    assert.match(render(), /country name request failed/);
-    assert.match(render(), /aria-label="Flag not available: The flag request failed\."/);
+    assert.match(render(), /Name unavailable/);
+    assert.match(render(), /aria-label="Flag unavailable"/);
     assert.doesNotMatch(render(), /data:flag-Y@112/);
     state.flagReason = undefined;
-    state.nameFailed = false; state.headerName = ''; assert.doesNotMatch(render(), /Selected country unavailable/);
+    state.nameFailed = false; state.headerName = ''; assert.doesNotMatch(render(), /Unavailable/);
     state.headerName = undefined; props.countrySlot = null; render(); assert.deepEqual(state.portals, []); assert.deepEqual(state.headerReads, []);
     props.countrySlot = state.slot;
     state.hour = 112; props.widget = { ...pinned, time: { mode: 'follow' }, options: { ...pinnedOptions, show: 'burn' } }; unmount();
     assert.match(render(), /Fuel burned.*?−2/s);
     props.widget = { ...pinned, time: { mode: 'follow' }, options: { ...pinnedOptions, show: 'consumption' } }; unmount();
-    assert.match(render(), /native country required per day.*?13/s);
+    assert.match(render(), /demand per day.*?13/s);
     const families = state.charts.find(chart => chart.label === 'Y: current consumption families')!.revision as BreakdownSeries[];
     assert.deepEqual(families[0].runs.map(run => [run.firstHour, run.lastHour, run.value]), [[100, 109, 11], [110, 114, 13]]);
     const consumptionRequest = state.requests.find(request => request.product === 'country-fuel-demand')!;
@@ -332,20 +332,20 @@ test('the mounted Fuel country chooser pins its original actor and restores Foll
     const occurrence = render();
     assert.match(occurrence, /Original occurrence/);
     assert.match(occurrence, /Y shown at 112/);
-    assert.doesNotMatch(occurrence, /native selection belongs to another country, campaign or branch/);
+    assert.doesNotMatch(occurrence, /Choose a country again/);
     assert.deepEqual(state.requests.find(request => request.product === 'country-fuel-demand-history')!.params,
       { ...originalBasis, window: 0, key: 'original-occurrence' });
     props.widget = { ...props.widget, options: { ...props.widget.options, fuelConsumption: '' } }; unmount();
-    assert.match(render(), /native selection belongs to another country, campaign or branch/, 'a held level still retains its own segment restriction');
+    assert.match(render(), /Choose a country again/, 'a held level still retains its own segment restriction');
     props.widget = pinned; unmount(); state.groups = undefined;
     assert.doesNotMatch(header(), /DEFAULT_COUNTRY_CHIP/);
-    assert.match(render(), /Loading the selected country&#x27;s native identity/);
-    assert.match(render(), /Selected country unavailable/); assert.deepEqual(state.headerReads, []);
+    assert.match(render(), /Loading country/);
+    assert.match(render(), /Unavailable/); assert.deepEqual(state.headerReads, []);
     assert.deepEqual(state.requests.map(request => request.params), [{ branchId: '1', tag: 'X' }], 'an unauthenticated origin never asks for alias values');
     state.groups = { ...catalogue, countryIdentities: [] }; unmount();
-    assert.match(render(), /unknown or conflicting at its original choice/);
+    assert.match(render(), /Choose a country again/);
     state.groups = { ...catalogue, branchId: 'other' }; unmount();
-    assert.match(render(), /unknown or conflicting at its original choice/);
+    assert.match(render(), /Choose a country again/);
     assert.doesNotMatch(header(), /DEFAULT_COUNTRY_CHIP/); assert.deepEqual(state.headerReads, []);
     state.groups = catalogue; state.groupError = 'Synthetic native catalogue refusal'; unmount();
     assert.match(render(), /Synthetic native catalogue refusal/);

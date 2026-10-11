@@ -4,7 +4,7 @@
 
 **Product(s) it reads:** [`wars`](../../../../crates/dashboard/src/products/wars.rs) supplies viewpoint-dependent groups; its [product guide](../../../../crates/dashboard/src/products/wars/README.md) explains native grouping/app continuity. [`country-groups`](../../../../crates/dashboard/src/products/country_groups.rs) supplies faction and country history.
 
-**Settings:** The widget's country is the viewpoint: the dashboard's country unless one is picked; Gantt/Country by country, country-view colours by war/side and Grow with playback; Campaign, Follow, Pin and Range.
+**Settings:** The widget's country is the viewpoint: the dashboard's country unless one is picked; Timeline/Country by country, country-view colours by war/side and Grow with playback; Campaign, Follow, Pin and Range.
 
 **Notable behaviour:**
 

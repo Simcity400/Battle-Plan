@@ -2,6 +2,3 @@
 .equipment-losses-main > .sunburst-host { flex: 1; min-height: 0; }
 .equipment-losses-main > .button { align-self: flex-start; margin: var(--space-2) var(--space-3); }
 .equipment-losses-table { display: flex; flex: 1; min-height: 0; }
-.equipment-losses-coverage .chart-legend { flex-direction: column; padding: 0; }
-.equipment-losses-coverage .chart-legend > li { align-items: flex-start; }
-.equipment-losses-coverage .chart-legend i { margin-top: var(--space-1); }

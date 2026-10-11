@@ -5,7 +5,6 @@ import { categoryChoices, commandHeldAt, commandHeldTooltip, spendingAt, spendin
 import { setToken } from './options.ts';
 import { groupTree } from '../charts/sunburst/layout.ts';
 import { fitTooltip, tooltipText } from '../charts/tooltip.ts';
-import { formatDateTime } from './calendar.ts';
 import type { SpendingSelection } from './politicsSpending';
 import { definition as politicalSpending } from '../widgets/political-power-spending/definition.ts';
 import { definition as commandSpending } from '../widgets/command-power-spending/definition.ts';
@@ -65,7 +64,7 @@ test('an older aggregate without native contribution dates refuses an uncertain 
   assert.equal(at.charge, null);
   assert.equal(at.recordedCharge, 0n);
   assert.equal(at.covered, false);
-  assert.match(at.item.unknown!, /Native payment hours/);
+  assert.match(at.item.unknown!, /Some payment dates are unavailable/);
   assert.equal(spendingTotals([at], []).total, null);
 });
 
@@ -76,7 +75,7 @@ test('manual native-holder gaps keep current command holdings unknown while know
   assert.equal(commandHeldAt([data], 14, selection).total, 0n, 'a complete selected native holder can certify zero');
   const gap = commandHeldAt([data], 15, selection);
   assert.equal(gap.total, null); assert.deepEqual(gap.countries, []);
-  assert.match(gap.reason!, /No selected native country holder was recorded/);
+  assert.match(gap.reason!, /Selected country unavailable at this time/);
   assert.equal(commandHeldAt([data], 15, { ...selection, requireRecordedHolder: false }).total, 0n,
     'a known empty group has no expected holder and may sum to zero');
   const missing = commandHeldAt([reply({ commandHolds: [] })], 14, selection);
@@ -87,7 +86,7 @@ test('manual native-holder gaps keep current command holdings unknown while know
   ] })] });
   const [unknown] = spendingAt([aggregate], 'Political', 20, null, selection);
   assert.equal(unknown.occurrences, 2); assert.equal(unknown.charge, null); assert.equal(unknown.covered, false);
-  assert.match(unknown.item.unknown!, /Native payment hours/);
+  assert.match(unknown.item.unknown!, /Some payment dates are unavailable/);
   assert.equal(spendingTotals([unknown], []).total, null, 'undated contributions remain explicit unknown rows');
 });
 
@@ -100,7 +99,7 @@ test('group coverage clips to membership and an unread membership hour keeps spe
   assert.equal(spendingTotals([], gaps).total, null);
   const held = commandHeldAt([data], 16, selection);
   assert.equal(held.total, null);
-  assert.match(commandHeldTooltip(held).rows[0].label, /Group membership/);
+  assert.match(commandHeldTooltip(held).rows[0].label, /Group members/);
   const complete = reply({ spending: [], spendingCoverage: [{ readHour: 0, sinceHour: 0, throughHour: 30, political: true, command: true, reason: null }] });
   assert.equal(spendingGaps([complete], 'Political', { from: null, hour: 30 }, selection).length, 1);
 });
@@ -180,8 +179,8 @@ test('missing operands and coverage gaps are never zero and never Fill’s denom
   const tree = groupTree(items, { id: 'all', label: 'Spending' });
   assert.equal(tree.valueUnknown, true);
   assert.equal(tree.finalUnknown, true);
-  assert.equal(tree.children.find(child => child.key === 'coverage-gap')?.label, 'Hours not recorded');
-  assert.equal(spendingRows(at, gaps, setToken('law/mod'), 'newest').length, 1, 'A category filter never hides gaps');
+  assert.equal(tree.children.find(child => child.key === 'coverage-gap')?.label, 'Not recorded');
+  assert.equal(spendingRows(at, gaps, setToken('law/mod'), 'newest', 'exclude').length, 1, 'A category filter never hides gaps');
   const empty = reply({ spending: [], spendingCoverage: [] });
   assert.equal(spendingTotals([], spendingGaps([empty], 'Political', { from: null, hour: 12 })).total, null);
 });
@@ -191,8 +190,8 @@ test('coverage gaps and unidentified spending have separate top-level sunburst p
     spending: [spend({ category: 'unidentified' })], spendingCoverage: [{ readHour: 12, sinceHour: 12, throughHour: 12,
       political: false, command: true, reason: 'Hours missing' }] });
   const tree = groupTree(spendingItems([data], 'Political', { from: null, hour: 12, end: 12 }), { id: 'all', label: 'Spending' });
-  assert.deepEqual(new Set(tree.children.map(child => child.label)), new Set(['Not identified', 'Hours not recorded']));
-  assert.equal(tree.children.find(child => child.label === 'Hours not recorded')?.children.length, 0);
+  assert.deepEqual(new Set(tree.children.map(child => child.label)), new Set(['Not identified', 'Not recorded']));
+  assert.equal(tree.children.find(child => child.label === 'Not recorded')?.children.length, 0);
 });
 
 test('command power allocations are current holdings, separate from spending at every read', () => {
@@ -208,12 +207,12 @@ test('command power allocations are current holdings, separate from spending at 
     assert.equal(spendingTotals(spendingAt([data], 'Command', hour), []).total, 0n, `allocations add no spending at ${hour}`);
   }
   const tooltip = commandHeldTooltip(commandHeldAt([data], 12));
-  assert.ok(tooltip.rows.some(row => row.label === 'Recorded through' && row.value === formatDateTime(12)), 'A later witness never leaks past the current moment');
+  assert.ok(!tooltip.rows.some(row => row.label === 'Recorded through'), 'Acquisition dates are hidden');
   assert.ok(tooltip.rows.some(row => row.label === 'General: Renamed leader' && row.value === '8'));
   assert.ok(!tooltip.rows.some(row => row.label.includes('Recorded leader')));
   const continued = commandHeldTooltip(commandHeldAt([data], 13));
-  assert.ok(continued.rows.some(row => row.label === 'Read' && row.value === formatDateTime(12)));
-  assert.ok(continued.rows.some(row => row.label === 'Recorded through' && row.value === formatDateTime(13)));
+  assert.ok(!continued.rows.some(row => row.label === 'Read'));
+  assert.ok(!continued.rows.some(row => row.label === 'Recorded through'));
   const unknown = commandHeldTooltip(commandHeldAt([data], 15));
   assert.ok(unknown.rows.some(row => row.label === 'Ability: Not identified' && row.value === 'Not known'));
 });
@@ -230,7 +229,7 @@ test('5,000 country holdings sum exactly and one missing country keeps the compl
   const full = commandHeldTooltip(held);
   const fitted = fitTooltip([full], 300, { keep: 1 });
   assert.equal(fitted.rows.at(-1)?.label, 'Total held');
-  assert.ok(fitted.rows.some(row => row.label.includes('more rows')));
+  assert.ok(fitted.rows.some(row => /more/.test(row.label)));
   assert.ok(tooltipText(fitted).includes('Raid: Recorded raid 4999'));
 });
 
@@ -239,7 +238,7 @@ test('native signed allocation operands are displayed exactly without clamping o
     holders: [{ id: 'orders:7', kind: 'OrdersGroup', name: 'Recorded orders', amountRaw: '-250001' }], reason: null }] }));
   const held = commandHeldAt([data], 12);
   assert.equal(held.total, -250001n);
-  assert.ok(commandHeldTooltip(held).rows.some(row => row.label === 'OrdersGroup: Recorded orders' && row.value === '-2.50001'));
+  assert.ok(commandHeldTooltip(held).rows.some(row => row.label === 'Orders: Recorded orders' && row.value === '-2.50001'));
   assert.equal(spendingTotals(spendingAt([data], 'Command', 12), []).total, 0n);
 });
 
@@ -249,10 +248,10 @@ test('Daily deficit remains its own recorded category alongside real costs', () 
     { id: 'daily-deficit', name: 'Daily deficit', identified: true }, { id: 'daily-costs', name: 'Daily costs', identified: true },
   ] }));
   const choices = categoryChoices([data], 'Command');
-  assert.deepEqual(choices.map(choice => choice.label), ['Daily deficit', 'Daily costs']);
+  assert.deepEqual(choices.map(choice => choice.label), ['Daily deficit', 'Daily costs', 'None']);
   const rows = spendingRows(spendingAt([data], 'Command', 12), [], 'daily-costs', 'newest');
   assert.equal(rows.length, 1);
-  assert.equal(rows[0].item.kind === 'spend' ? rows[0].item.at.category : '', 'Daily deficit');
+  assert.equal(rows[0].item.kind === 'spend' ? rows[0].item.at.category : '', 'Daily costs');
 });
 
 test('the spending view needs no raw ledger tables and resolves repeated tooltip icons from one artwork entry', () => {
@@ -380,7 +379,8 @@ test('a long mod category key stays selectable and filters rows without changing
   const at = spendingAt([data], 'Political', 12);
   assert.equal(spendingRows(at, [], '', 'newest').length, 1);
   assert.equal(spendingRows(at, [], choice.value, 'newest', 'include').length, 1);
-  assert.equal(spendingRows(at, [], choice.value, 'newest').length, 0);
+  assert.equal(spendingRows(at, [], choice.value, 'newest').length, 1);
+  assert.equal(spendingRows(at, [], choice.value, 'newest', 'exclude').length, 0);
   assert.equal(spendingTotals(at, []).total, 123456789012345678901n);
 });
 

@@ -95,7 +95,7 @@ test('a complete world and one known smart-group member cannot fill an incomplet
   const reading = territoryShareReading(series, world, 10, 10, look, rest, undefined, groupShareReason(resolved, choice.membership, 10));
   assert.equal(reading.items.length, 0, 'a known 30 of 100 cannot be presented as a complete 30 + 70 share');
   assert.equal(reading.missingLabel, 'Not recorded');
-  assert.match(reading.unavailableReason!, /members.*not recorded/);
+  assert.match(reading.unavailableReason!, /Group membership is unavailable at this time/);
   assert.equal(groupShareReason(resolved, 'hour', 9), null);
   assert.notEqual(groupShareReason(resolved, 'ever', 9), null);
 });

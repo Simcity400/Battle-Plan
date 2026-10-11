@@ -79,7 +79,7 @@ test('actual country time views forward dated badges, keyboard stops and full ev
     assert.equal(tip.rows.find(row => row.label === 'Native count')?.value, '3');
     assert.equal(tip.rows[0].label, '\u00d7 native alias at 15 capitulated');
     assert.equal(tip.rows[0].countryFlag?.flagReason, 'Exact dated flag refused');
-    assert.match(tooltipText(tip), /Exact native count 3.*native alias at 15 capitulated.*Exact dated flag refused/);
+    assert.match(tooltipText(tip), /Exact native count 3.*native alias at 15 capitulated/);
 
     props.lineTooltip = () => [];
     render();
@@ -119,7 +119,8 @@ test('actual country time views forward dated badges, keyboard stops and full ev
     assert.deepEqual(state.wanted, [{ hour: 15, tag: 'native alias' }], 'the event keeps its own name read even when no numeric supplying read exists');
     state.ready = false; render();
     const pending = host.__countryMarkerTime!.tooltip!(15, {} as PlotFrame, badges)!;
-    assert.equal(pending.rows[0].label, '\u00d7 native alias capitulated'); assert.match(tooltipText(pending), /Flag loading/);
+    assert.equal(pending.rows[0].label, '\u00d7 native alias capitulated'); assert.equal(pending.rows[0].countryFlag?.flagPending, true);
+    assert.doesNotMatch(tooltipText(pending), /Flag loading|Exact dated flag refused/);
     state.ready = true; props.countryLookHour = () => 12;
     const simultaneous = Array.from({ length: 5000 }, (_, index) => ({ hour: 15, glyph: '\u00d7', label: `opaque actor ${index} capitulated`, capitulationTag: `opaque actor ${index}` }));
     host.__countryMarkerHeight = 250; props.view = 'lines'; props.timeTooltip = undefined;

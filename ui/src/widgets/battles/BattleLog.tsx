@@ -51,7 +51,7 @@ function Side<T extends BattleRow>({ row, index, country, formatLoss }: { row: T
       return <span className="battle-country" key={JSON.stringify([part.hour, part.tag])} title={named.name}>
         <CountryFlagUrl className="log-flag" url={named.flag} reason={named.flagReason} pending={named.flagPending} />
       </span>; })}
-    {side.countriesUnknown && <span className="battle-muted">{side.countriesUnknown}</span>}
+    {side.countriesUnknown && <span className="battle-muted">Countries unknown</span>}
     {side.counts.map((value: BattleValue) => <span className="battle-count" key={value.label}>{battleValueText(value)} {value.label}</span>)}
     {side.losses.map((value: BattleValue) => <span className="battle-count" key={value.label}>{formatLoss ? formatLoss(value, row, index, false) : battleValueText(value)} {value.label}</span>)}
   </span>;

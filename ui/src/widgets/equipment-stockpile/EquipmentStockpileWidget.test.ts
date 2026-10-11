@@ -17,7 +17,8 @@ import { contentKey, resolveOptions } from '../../dashboard/options.ts';
 import { PlaybackController } from '../../dashboard/playback.ts';
 import { object } from '../../dashboard/validation.ts';
 import type { DashboardClient, ProductRequest } from '../../dashboard/client';
-import type { BranchMetadata, CountryGroupReply, EquipmentStockpileReply, HourSpan } from '../../generated/dashboard';
+import type { BranchMetadata, CountryGroupReply, EquipmentStockpileReply, HourSpan, StockpileArtworkReply } from '../../generated/dashboard';
+import type { TooltipContent } from '../../charts/tooltip';
 import { definition, OPTIONS } from './definition.ts';
 import type { DatedCountrySelection } from '../../dashboard/datedCountry';
 import { datedCountryToken } from '../../dashboard/datedCountry.ts';
@@ -60,6 +61,7 @@ const host = globalThis as typeof globalThis & {
   __stockRowPick?: (key: string, callback: () => void) => () => void;
   __stockCharts?: TimeChartProps[]; __stockParts?: readonly DrillPart[]; __stockHour?: number;
   __stockHost?: { open: boolean; mode: string; title: string; returnFocus?: string; onPin?: () => void; onFollow: () => void };
+  __stockArtwork?: StockpileArtworkReply; __stockTooltip?: (key: string) => TooltipContent | null;
 };
 
 /** Render the actual country widget, acquisition hook, picker, part calculation and
@@ -118,8 +120,9 @@ async function fixture() {
           categories: ['#123', '#456', '#789'], motion: 100, reducedMotion: true }); export const useViewportHeight = () => 1000;`;
         if (path.endsWith('/charts/useRowMotion.ts')) return `export const useRowMotion = rows => rows.map((row, slot) => ({ ...row, slot, phase: 'stable' }));
           export const movingRowClass = () => 'moving-row';`;
-        if (path.endsWith('/charts/useRowTooltips.ts')) return `export const useRowTooltips = () => ({ rowProps: () => ({ tabIndex: 0 }), descriptionId: key => key });`;
-        if (path.endsWith('/equipment-stockpile/useStockpileArtwork.ts')) return 'export const useStockpileArtwork = () => null;';
+        if (path.endsWith('/charts/useRowTooltips.ts')) return `export const useRowTooltips = props => {
+          globalThis.__stockTooltip = props.content; return { rowProps: () => ({ tabIndex: 0 }), descriptionId: key => key }; };`;
+        if (path.endsWith('/equipment-stockpile/useStockpileArtwork.ts')) return 'export const useStockpileArtwork = () => ({ data: globalThis.__stockArtwork });';
         if (path.endsWith('/charts/TimeChart.tsx')) return 'export default props => { globalThis.__stockCharts?.push(props); return null; };';
         if (path.endsWith('/charts/drill/DrillParts.tsx')) return source.replace('const rows = useMemo(', 'globalThis.__stockParts = parts; const rows = useMemo(');
         if (path.endsWith('/charts/drill/DrillHost.tsx')) return `export default props => {
@@ -167,10 +170,28 @@ async function fixture() {
   };
   return { widget, runtime, rows, pins, render, async close() {
     for (const key of ['__stockCountryPick', '__stockCatalogue', '__stockReplies', '__stockChip', '__stockFollow', '__stockActorNumbers', '__stockReply', '__stockRequests', '__stockWithin', '__stockNumbers', '__stockOwner', '__stockChoiceOwner', '__stockDrill',
-      '__stockDrillOwner', '__stockSelection', '__stockChoices', '__stockRowPick', '__stockCharts', '__stockParts', '__stockHour', '__stockHost'] as const) delete host[key];
+      '__stockDrillOwner', '__stockSelection', '__stockChoices', '__stockRowPick', '__stockCharts', '__stockParts', '__stockHour', '__stockHost', '__stockArtwork', '__stockTooltip'] as const) delete host[key];
     await vite.close();
   } };
 }
+
+test('stockpile artwork slots use a fallback and best-design names appear only on hover', async () => {
+  const view = await fixture();
+  try {
+    host.__stockArtwork = { branchId: '1', tag: 'AAA', hour: 100, warnings: [], entries: [
+      { key: 'type:mod/rifles', variant: '9007199254741001', name: 'Best rifle design', icon: null, reason: 'Native picture refused' },
+    ] };
+    const html = view.render();
+    assert.equal((html.match(/class="art-fallback"/g) ?? []).length, 2);
+    const visible = html.replace(/<span[^>]*class="sr-only"[^>]*>.*?<\/span>/g, '');
+    assert.doesNotMatch(visible, /<small>|Best rifle design/);
+    assert.doesNotMatch(html, /Native picture refused/);
+    assert.match(html, /class="sr-only">[^<]*Best rifle design/);
+    const tooltip = host.__stockTooltip!('mod/rifles')!;
+    assert.match(tooltip.note ?? '', /Best rifle design/);
+    assert.doesNotMatch(tooltip.note ?? '', /Picture:|read |Native picture refused/);
+  } finally { await view.close(); }
+});
 
 test('a reloaded stockpile pin dates its body/header through local picks, Follow, rename and tag reuse', async () => {
   const view = await fixture();
@@ -187,7 +208,7 @@ test('a reloaded stockpile pin dates its body/header through local picks, Follow
     view.render(pinned);
     assert.equal(host.__stockHour, 105);
     assert.equal(host.__stockChip!.props.label!.name, 'AAA at 105');
-    assert.match(view.render({ ...pinned, time: { mode: 'pin', windows: {} } }), /chosen moment is not in this campaign/);
+    assert.match(view.render({ ...pinned, time: { mode: 'pin', windows: {} } }), /Choose another time in widget settings/);
     assert.equal(host.__stockChip!.props.label, null);
     assert.equal(host.__stockChip!.props.hour, null);
     assert.equal(host.__stockCharts!.length, 0, 'a missing saved date cannot display the branch end');
@@ -207,7 +228,7 @@ test('a reloaded stockpile pin dates its body/header through local picks, Follow
     view.runtime.clock.seek(119); view.render(pinned);
     assert.equal(host.__stockChip!.props.label, null, 'neither replacement supplies the dated header');
     const invalid = { ...pinned, options: { ...pinned.options, stockpileCountry: datedCountryToken({ campaign: 'other', branch: '1', tag: 'AAA', originOffset: 105 }) } };
-    assert.match(view.render(invalid), /another country, campaign or branch/);
+    assert.match(view.render(invalid), /Choose a country again/);
     assert.equal(host.__stockChip!.props.label, null);
   } finally { await view.close(); }
 });

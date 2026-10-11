@@ -2,6 +2,7 @@ import type { HourSpan, LedgerCommandHold, LedgerSpend, LedgerSpendItem, Politic
 import type { LogRow } from '../charts/log/logData';
 import type { SunburstItem } from '../charts/sunburst/layout';
 import { drawableIcon } from './artwork.ts';
+import { NO_SPENDING_CATEGORIES } from './politicsSpendingOptions.ts';
 import { contentSet, setToken, storableToken, UNSTORABLE } from './options.ts';
 import { fixed5Text } from './ideaTooltip.ts';
 import { validateIdeaTooltipData } from './ideaHistoryReply.ts';
@@ -149,7 +150,7 @@ export function spendAt(spend: LedgerSpend, item: LedgerSpendItem, category: str
   }
   if (selectionUnknown) {
     charge = null; realized = null; covered = false;
-    item = { ...item, unknown: [item.unknown, 'Native payment hours were not recorded; the selected membership or date range is not known for every contribution.'].filter(Boolean).join(' ') };
+    item = { ...item, unknown: [item.unknown, 'Some payment dates are unavailable.'].filter(Boolean).join(' ') };
   }
   const dated = firstHour !== null && firstHour !== spend.hour ? { ...spend, hour: firstHour, countryName: null } : spend;
   return occurrences ? { spend: dated, item, category, identified, charge, realized, recordedCharge, knownCharges, missingCharges, occurrences, readHour, covered,
@@ -182,7 +183,7 @@ const heldRuns = new WeakMap<PoliticsLedgerReply, { firstHour: number; lastHour:
  * missing run is unknown, including before the first read and across gaps. */
 export function commandHeldAt(replies: readonly PoliticsLedgerReply[], hour: number, selection?: SpendingSelection): CommandHeldAt {
   if (selection?.unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour)) {
-    return { hour, total: null, countries: [], reason: 'Group membership was not recorded at this hour; current holdings are not known.' };
+    return { hour, total: null, countries: [], reason: 'Group members unavailable at this time.' };
   }
   let total: bigint | null = 0n;
   const countries = replies.filter(reply => !selection || selection.matches(reply.tag, hour)).map(reply => {
@@ -196,7 +197,7 @@ export function commandHeldAt(replies: readonly PoliticsLedgerReply[], hour: num
     return { tag: reply.tag, hold };
   });
   if (!countries.length && selection?.requireRecordedHolder) {
-    return { hour, total: null, countries, reason: 'No selected native country holder was recorded at this hour; current holdings are not known.' };
+    return { hour, total: null, countries, reason: 'Selected country unavailable at this time.' };
   }
   return { hour, total, countries };
 }
@@ -207,14 +208,12 @@ export function commandHeldTooltip(held: CommandHeldAt): TooltipContent {
   for (const { tag, hold } of held.countries) {
     if (held.countries.length > 1) rows.push({ label: tag, strong: true, divider: rows.length > 0 });
     if (!hold) { rows.push({ label: 'Holdings were not recorded at this hour.', tone: 'muted' }); continue; }
-    rows.push({ label: 'Read', value: formatDateTime(hold.readHour) });
-    rows.push({ label: 'Recorded through', value: formatDateTime(Math.min(held.hour, hold.throughHour)) });
-    for (const holder of hold.holders) rows.push({ label: `${holder.kind}: ${holder.name ?? 'Not identified'}`, value: spendText(holder.amountRaw === null ? null : BigInt(holder.amountRaw)) });
-    if (hold.reason) rows.push({ label: hold.reason, tone: 'muted' });
+    for (const holder of hold.holders) rows.push({ label: `${({ OrdersGroup: 'Orders', Army: 'Army', AirWing: 'Air wing', Country: 'Country', General: 'General', Admiral: 'Admiral', Ability: 'Ability', Raid: 'Raid' } as Record<string, string>)[holder.kind] ?? 'Reservation'}: ${holder.name ?? 'Not identified'}`, value: spendText(holder.amountRaw === null ? null : BigInt(holder.amountRaw)) });
+    if (hold.reason) rows.push({ label: 'Command power unavailable.', tone: 'muted' });
   }
   rows.push({ label: 'Total held', value: spendText(held.total), strong: true, divider: rows.length > 0 });
   return { title: 'Command power held', subtitle: `Current moment ${formatDateTime(held.hour)}`, rows,
-    note: 'Held command power is reserved and returned on release. It does not add to spending.' };
+    note: 'Reserved command power; excluded from spending.' };
 }
 
 /** Named gaps are rows too. Consecutive unavailable reads with the same reason
@@ -229,7 +228,7 @@ export function spendingGaps(replies: readonly PoliticsLedgerReply[], currency: 
       const through = cover.throughHour ?? cover.readHour;
       if (through < (window.from ?? -Infinity) || from > window.hour) continue;
       if (currency === 'Political' ? cover.political : cover.command) { last = undefined; continue; }
-      const reason = cover.reason ?? 'Spending coverage is incomplete';
+      const reason = cover.reason ?? 'Spending not recorded';
       if (last && last.reason === reason && from <= last.through + 1) {
         last.through = Math.min(window.hour, Math.max(last.through, through));
         last.readHour = Math.max(last.readHour, cover.readHour);
@@ -239,7 +238,7 @@ export function spendingGaps(replies: readonly PoliticsLedgerReply[], currency: 
       }
     }
     if (!reply.spendingCoverage.some(cover => cover.readHour <= window.hour)) gaps.push({ from: window.from ?? window.hour,
-      through: window.hour, readHour: window.hour, reason: 'Spending coverage was not recorded', tag: reply.tag });
+      through: window.hour, readHour: window.hour, reason: 'Spending not recorded', tag: reply.tag });
   }
   if (!selection?.membership) return gaps;
   const selected = gaps.flatMap(gap => (selection.membership!.get(gap.tag) ?? []).flatMap(span => {
@@ -254,9 +253,9 @@ export function spendingGaps(replies: readonly PoliticsLedgerReply[], currency: 
 }
 
 export type SpendOrder = 'newest' | 'oldest' | 'cost';
-export function spendingRows(spends: readonly SpendAt[], gaps: readonly SpendGap[], categories: string, order: SpendOrder, selection: 'include' | 'exclude' = 'exclude'): LogRow<SpendingRow>[] {
+export function spendingRows(spends: readonly SpendAt[], gaps: readonly SpendGap[], categories: string, order: SpendOrder, selection: 'include' | 'exclude' = 'include'): LogRow<SpendingRow>[] {
   const chosen = new Set(contentSet(categories));
-  const rows: LogRow<SpendingRow>[] = spends.filter(at => selection === 'include' ? chosen.has(setToken(at.spend.category)) : !chosen.has(setToken(at.spend.category)))
+  const rows: LogRow<SpendingRow>[] = spends.filter(at => selection === 'include' ? !chosen.size || chosen.has(setToken(at.spend.category)) : !chosen.has(setToken(at.spend.category)))
     .map(at => ({ key: JSON.stringify([at.spend.countryTag, at.spend.id]), hour: at.spend.hour, item: { kind: 'spend', at } }));
   for (const gap of gaps) rows.push({ key: JSON.stringify(['gap', gap.tag, gap.from]), hour: gap.from, item: { kind: 'gap', gap } });
   return rows.sort((a, b) => {
@@ -323,14 +322,14 @@ export function spendingItems(replies: readonly PoliticsLedgerReply[], currency:
     return { path: [{ id: at.spend.category, label: at.category }, { id: at.item.groupId, label: at.item.name ?? 'Not identified', icon: at.item.icon }],
       value: now ? Number(now.recordedCharge) : 0, exact: now ? now.recordedCharge : 0n, present: Boolean(now),
       unknownValue: unknown, final: Number(at.recordedCharge), finalUnknown: at.charge === null || !at.covered,
-      unknown: unknown ? { incomplete: 1 } : undefined, note: unknown ? at.item.unknown ?? 'The evaluated charge or coverage is not known.' : undefined,
+      unknown: unknown ? { incomplete: 1 } : undefined, note: unknown ? 'Some spending is missing.' : undefined,
       counted: now ? [key] : [] };
   });
   const gaps = spendingGaps(replies, currency, window, selection);
   const finalGaps = spendingGaps(replies, currency, { from: window.from, hour: window.end }, selection);
-  if (gaps.length || finalGaps.length) items.push({ path: [{ id: 'coverage-gap', label: 'Hours not recorded' }],
+  if (gaps.length || finalGaps.length) items.push({ path: [{ id: 'coverage-gap', label: 'Not recorded' }],
     value: null, exact: null, present: gaps.length > 0, unknownValue: gaps.length > 0, final: null, finalUnknown: finalGaps.length > 0,
-    unknown: gaps.length ? { coverage: gaps.length } : {}, note: 'Spending in gaps is not known; recorded spends are kept.' });
+    unknown: gaps.length ? { coverage: gaps.length } : {}, note: 'Some spending is missing.' });
   return items;
 }
 
@@ -338,8 +337,9 @@ export const spendText = (value: bigint | null) => value === null ? 'Not known' 
 export function categoryChoices(replies: readonly PoliticsLedgerReply[] | undefined, currency: PowerCurrency) {
   const used = new Set((replies ?? []).flatMap(reply => reply.spending.filter(spend => spend.currency === currency).map(spend => spend.category)));
   const categories = new Map((replies ?? []).flatMap(reply => reply.spendCategories.map(category => [category.id, category] as const)));
-  return [...categories.values()].filter(category => used.has(category.id)).map(category => {
+  const choices = [...categories.values()].filter(category => used.has(category.id)).map(category => {
     const value = setToken(category.id);
     return { value, label: category.name, identified: category.identified, unavailable: storableToken(value) ? undefined : UNSTORABLE };
   });
+  return [...choices, { value: NO_SPENDING_CATEGORIES, label: 'None', identified: false, unavailable: undefined }];
 }

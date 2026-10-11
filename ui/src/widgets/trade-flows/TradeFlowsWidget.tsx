@@ -14,7 +14,6 @@ import { usNumber } from '../../charts/numberFormat';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { formatAmount } from '../../charts/valueAxis';
-import { formatDateTime } from '../../dashboard/calendar';
 import { FAILED_FACT, MAX_NAME_HOURS } from '../../dashboard/countryFacts';
 import type { CountryFlagLook } from '../../components/CountryFlag';
 import { useContentRevision } from '../../dashboard/contentRevision';
@@ -281,7 +280,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const header = useCountryLabelsAt(runtime.client, track, countrySlot && headerTag && drillAt !== null ? [{ tag: headerTag, hour: drillAt }] : [], active);
   const pinnedHeader = pinnedView && countrySlot && widget.countries.kind === 'tags' && widget.countries.tags.length === 1
     ? createPortal(<DatedCountryChip hour={drillAt} label={headerTag && drillAt !== null ? header.labelAt(drillAt)(headerTag) : null}
-      reason={headerTag ? null : 'The selected native country is unknown or ambiguous at this moment.'} />, countrySlot) : null;
+      reason={headerTag ? null : 'Selected country unavailable.'} />, countrySlot) : null;
   const openDrill = useCallback((hit: FlowHit, hour: number) => {
     if (!track) return;
     const drawn = hit.kind === 'node' ? (hit.node as TradeNode).trade : (hit.link as TradeLink).trade;
@@ -298,28 +297,28 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   }, [data, diagram, message, nodeName, nodeById, amount, measure, moment, from]);
 
   if (!track) return <>{pinnedHeader}<WidgetState kind="empty" icon="flows" message="Load a campaign to see who trades with whom." /></>;
-  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This time is outside the campaign’s recorded branch." /></>;
-  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." /></>;
-  if (widget.countries.kind === 'group' && groups.error) return <>{pinnedHeader}<WidgetState kind="error" message={groups.error} onRetry={groups.retry} /></>;
+  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
+  if (widget.countries.kind === 'group' && groups.error) return <>{pinnedHeader}<WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /></>;
   const selectionReason = selectionMessage(resolved, atMoment, measure, from, moment, groupUnobserved);
   if (selectionReason && !pinnedView && !drill.breakdown) return <WidgetState kind="empty" message={selectionReason} />;
-  if (error) return <>{pinnedHeader}<WidgetState kind="error" message={error} onRetry={retry} /></>;
+  if (error) return <>{pinnedHeader}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
   if (!data || !trade || (widget.countries.kind === 'group' && !groups.data)) return <>{pinnedHeader}<WidgetState kind="loading" label="Loading trade…" /></>;
-  if (!data.reads.length) return <>{pinnedHeader}<WidgetState kind="unavailable" message="No trade deals were recorded in this branch." /></>;
+  if (!data.reads.length) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Trade was not recorded." /></>;
   if (resourceIds && !resourceIds.size) return <>{pinnedHeader}<WidgetState kind="empty" message="None of the chosen resources is in this campaign. Choose others in the widget settings." /></>;
-  if (pinnedView && options.tradeSelection && !savedSelection) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This saved trade selection is unavailable in this campaign or branch. Choose Trade flows in Show, then select contributors again." /></>;
+  if (pinnedView && options.tradeSelection && !savedSelection) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This trade selection is unavailable. Select trades again." /></>;
 
-  const caption = measure === 'current' ? `Per day${read != null && spanIndex >= 0 ? ` · read ${formatDateTime(read)}` : ''}`
-    : `${measure === 'total' ? 'Delivered' : 'Average per day while trading'} · ${dayLabel(from)} – ${dayLabel(moment)}`;
+  const caption = measure === 'current' ? 'Per day'
+    : `${measure === 'total' ? 'Delivered' : 'Average per trading day'} · ${dayLabel(from)} – ${dayLabel(moment)}`;
   const main = <div className="trade-main">
-    <p className="trade-caption">{caption}{perSide < asked ? ` · ${perSide} countries a side fit this size; the rest are summed` : ''}
+    <p className="trade-caption">{caption}
       {coverage ? <span> · {coverage}</span> : null}</p>
     <Legend always label="Resources" items={resourceLegend} windowed={shownResources.length > tokens.categories.length} />
     {options.colour === 'seller' ? <p className="chart-line-key">Ribbons in each seller’s map colour</p> : null}
     <div className="trade-inventory-action"><button type="button" className="button small quiet" onClick={() => {
       setSelection(ALL_CONTRIBUTORS);
       dispatchDrill(openContributions(widget, moment, clock.playing, playhead));
-    }}>All trade contributors</button></div>
+    }}>All trades</button></div>
     <FlowDiagram label={`Trade flows: sellers to buyers${all ? ', all countries' : ''}`} nodes={flowNodes} links={flowLinks}
       stretch={measure === 'current' ? spanIndex : 'all'} scale={scale} slots={perSide + 1} hour={moment} onPick={openDrill}
       hoursPerSecond={clock.hoursPerSecond} message={message} tooltip={tooltip} onContextMenu={onContextMenu} description={description} onCapacity={setCapacity}

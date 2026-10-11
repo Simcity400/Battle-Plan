@@ -45,7 +45,6 @@ import { useCountryLooks } from '../../dashboard/countryLooks';
 import { powerBalanceIndex, powerBalanceKeyHours, powerBalanceRows, powerCoverageAt, powerSpendTicks, validatePowerBalance } from '../../dashboard/powerBalance';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { readHourAt, validateStabilityReply } from '../../dashboard/stabilityReply';
-import { formatDateTime } from '../../dashboard/calendar';
 import type { OptionField } from '../../dashboard/options';
 import type { CountryStabilityReply, Measure, MeasureReply, PoliticsLedgerReply } from '../../generated/dashboard';
 import { formatBalance, nearestDrop, netSpend, rawAt, toRuns, validateMeasureReply } from './measureData';
@@ -82,7 +81,7 @@ export interface MeasureConfig {
 
 /** The balance line stays independent of captured income and attributed changes.
  * Missing capture retains the explicitly labelled net-drop fallback. */
-export default function MeasureWidget({ widget, runtime, active, headerSlot, countrySlot, onDiagnostics, config }: WidgetProps & { config: MeasureConfig }) {
+export default function MeasureWidget({ widget, runtime, active, countrySlot, onDiagnostics, config }: WidgetProps & { config: MeasureConfig }) {
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const options = resolveOptions(config.options ?? MEASURE_OPTIONS, widget.options);
@@ -290,18 +289,18 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, cou
   const shownTag = actorSpans && drillAt !== null ? countryDrillTagAt(actorSpans, Math.floor(drillAt)) : null;
   const countryLabels = useCountryLabelsAt(runtime.client, track, (drill.breakdown !== null || pinnedMode && savedCountry) && shownTag && drillAt !== null
     ? [{ tag: shownTag, hour: Math.floor(drillAt) }] : [], active);
-  const actorReason = hasSavedCountry && !savedCountry ? 'The saved native country selection is invalid.'
-    : !groupData ? 'The selected native country identity is loading.'
-      : !selectedCountry || !actorSpans ? 'The selected native country identity is unavailable at its origin.'
-        : !shownTag ? 'The selected native country identity is not recorded at this moment.' : null;
+  const actorReason = hasSavedCountry && !savedCountry ? 'Saved country selection unavailable. Choose it again.'
+    : !groupData ? 'Loading country…'
+      : !selectedCountry || !actorSpans ? 'Country unavailable at this time.'
+        : !shownTag ? 'Country unavailable at this time.' : null;
   const countryHeader = pinnedMode && countrySlot ? createPortal(<DatedCountryChip hour={drillAt === null ? null : Math.floor(drillAt)}
     label={savedCountry && shownTag && drillAt !== null ? countryLabels.labelAt(Math.floor(drillAt))(shownTag) : null}
-    reason={hasSavedCountry ? actorReason : 'This breakdown has no saved native country selection.'} />, countrySlot) : null;
+    reason={hasSavedCountry ? actorReason : 'Saved country unavailable.'} />, countrySlot) : null;
   const drillView = (mode: PowerBreakdown, at: number | null, pick?: (hour: number) => void) => error || (ledger.error && !drillDetail)
-    ? <WidgetState kind="error" message={error ?? ledger.error!} onRetry={error ? retry : ledger.retry} />
+    ? <WidgetState kind="error" what={pinnedMode ? undefined : 'the breakdown'} detail={error ?? ledger.error!} onRetry={error ? retry : ledger.retry} />
     : choosingActor ? <p className="drill-empty">Choose a country from the drawn lines for this moment.</p>
       : (hasSavedCountry && !savedCountry) || (groupData && (!selectedCountry || !actorSpans)) ? <WidgetState kind="unavailable" message={actorReason!} />
-        : groups.error && !groupData ? <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />
+        : groups.error && !groupData ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
           : !drillDetail || !data ? <WidgetState kind="loading" label="Loading income and causes..." />
           : <PowerDrill index={drillDetail} pickOwner={pickOwner} presentationReady={selectedLedger !== undefined} mode={mode} hour={at} visibleThrough={Math.floor(drillThrough)} extent={extent}
             within={null} countries={countrySegments}
@@ -327,26 +326,24 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, cou
   }, [series, options.areaFill, options.spendTicks, until]);
 
   if (!track) return <WidgetState kind="empty" icon="sparkle" message={`Load a campaign to see ${config.noun}.`} />;
-  if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-  if (widget.countries.kind === 'group' && groups.error && !groupData) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (widget.countries.kind === 'group' && groups.error && !groupData) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
   if (pinnedMode) return <div className="country-measure">
     {countryHeader}
-    {drillAt !== null && <p className="chart-line-key">{formatDateTime(Math.floor(drillAt))} {!pinnedFollowing && <button type="button" className="button small"
+    {drillAt !== null && <p className="chart-line-key">{dayLabel(Math.floor(drillAt))} {!pinnedFollowing && <button type="button" className="button small"
       onClick={() => setLocalHour(null)}>Follow playback</button>}</p>}
     {singleTag ? drillView(pinnedMode, drillAt, hour => setLocalHour(Math.floor(hour))) : <WidgetState kind="empty" message="Choose one country to see income and causes." />}
     {ledger.error && drillDetail && <button type="button" onClick={ledger.retry}>Retry income and causes</button>}
     {menu.menu}
   </div>;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data || (widget.countries.kind === 'group' && !groupData)) return <WidgetState kind="loading" label={`Loading ${config.noun}…`} />;
-  if (series.every(item => !item.runs.length)) return <WidgetState kind="unavailable" message={`No ${config.noun} was recorded for these countries in this branch.`} />;
+  if (series.every(item => !item.runs.length)) return <WidgetState kind="unavailable" message={`No ${config.noun} was recorded for these countries.`} />;
 
   const decimals = data.decimals;
-  const currentRaw = series.length === 1 ? series[0].valueAt(Math.floor(head)) : null;
   const hoursPerPixel = (frameWidth: number, span: number) => span / Math.max(1, frameWidth);
   const main = <div className="country-measure-view">
-    {headerSlot && currentRaw != null && createPortal(<span className="pill">{formatBalance(currentRaw, decimals)}</span>, headerSlot)}
     <Legend label="Countries" items={legendItems} windowed onVisibleItems={onVisibleItems} />
     {/* The dashed line is named, so it never rests on its dash pattern alone. */}
     {series.some(item => item.ceilingRuns.length) && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Dashed line: {config.ceiling}</p>}
@@ -375,33 +372,20 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, cou
             askedHover.current = hour;
             queueMicrotask(() => setHoverHour(hour));
           }
-          // Without maximum rows, maximums carried from an earlier read are still named.
-          const carriedNote = (at: number) => {
-            const carried = series.flatMap(item => {
-              const read = item.ceilingAt(at) != null ? item.ceilingReadAt(at) : null;
-              return read != null && read < at ? [`${labels.labelAt(at)(item.tag).name} (${formatDateTime(read)})`] : [];
-            });
-            if (!carried.length) return [];
-            const listed = carried.slice(0, CEILING_ROWS_MAX).join(', ');
-            return [`Maximums read earlier: ${listed}${carried.length > CEILING_ROWS_MAX ? ` and ${carried.length - CEILING_ROWS_MAX} more` : ''}.`];
-          };
           const rows: TooltipRow[] = series.flatMap(item => {
             const raw = item.valueAt(hour);
             const label = labels.labelAt(hour)(item.tag);
             const balance: TooltipRow = { label: label.name, countryFlag: label, swatch: item.hex, value: raw == null ? 'Not recorded' : formatFixed(raw, decimals, decimals), tone: raw == null ? 'muted' : undefined };
             if (!maxima || series.length > CEILING_ROWS_MAX) return [balance];
             const maximum = item.ceilingAt(hour);
-            const read = item.ceilingReadAt(hour);
-            // A carried maximum always names its read, even an hour with no calendar date.
-            const carried = maximum != null && read != null && read < hour ? ` (read ${formatDateTime(read)})` : '';
-            return [balance, { label: series.length > 1 ? `${label.name}: maximum` : 'Maximum', value: maximum == null ? 'Not recorded' : `${formatFixed(maximum, maxima.decimals, maxima.decimals)}${carried}`, tone: 'muted' }];
+            return [balance, { label: series.length > 1 ? `${label.name}: maximum` : 'Maximum', value: maximum == null ? 'Not recorded' : formatFixed(maximum, maxima.decimals, maxima.decimals), tone: 'muted' }];
           });
           for (const item of series) {
             if (!isMember(item.membership, hour) || item.valueAt(hour) === null) continue;
             const detail = details.get(item.tag);
             if (series.length > 1) rows.push({ label: labels.labelAt(hour)(item.tag).name, strong: true, divider: true });
             if (detail) rows.push(...powerBalanceRows(detail, hour, Math.floor(detailsThrough)));
-            else rows.push({ label: 'Income and causes', value: ledger.error ? 'Could not be loaded' : 'Loading…', tone: 'muted' });
+            else rows.push({ label: 'Income and causes', value: ledger.error ? 'Couldn’t load income and causes.' : 'Loading…', tone: 'muted' });
             const drop = item.drops.find(entry => entry.hour === hour);
             const cover = detail && powerCoverageAt(detail, hour);
             const captured = currency === 'Political' ? cover?.political : cover?.command;
@@ -410,9 +394,7 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, cou
           }
           rows.push(...badgeRows(hovered));
           const notes = [
-            ...(rows.some(row => row.label === 'Spent (net)') ? ['Captured spending is unavailable at this hour; Spent (net) is the balance fall, not a gross payment.'] : []),
-            ...(maxima && series.length > CEILING_ROWS_MAX ? [`Maximums are drawn dashed; they are listed here for up to ${CEILING_ROWS_MAX} countries.`, ...carriedNote(hour)] : []),
-            'Click a country line for its full breakdown. Overlapping lines offer a chooser.',
+            ...(rows.some(row => row.label === 'Spent (net)') ? ['Net balance decrease; payment details unavailable.'] : []),
           ];
           const content = { title: dayLabel(hour), rows, note: notes.length ? notes.join(' ') : undefined };
           return fitTooltip([content], viewport);

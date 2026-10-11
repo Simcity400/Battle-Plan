@@ -9,7 +9,7 @@ export const COLUMNS = [
 ] as const;
 export const DEFAULT_SORT = { column: 'resistance', direction: 'descending' } as const;
 export const OPTIONS: readonly OptionField[] = [
-  { key: 'countryRole', section: 'options', label: 'Match chosen countries as', kind: 'choice', default: 'occupier',
+  { key: 'countryRole', section: 'options', label: 'Filter by', kind: 'choice', default: 'occupier',
     choices: [{ value: 'occupier', label: 'Occupier' }, { value: 'occupied', label: 'Occupied country' }],
     hint: 'Occupied matches the original occupied country, which can differ from the legal owner.' },
   ...TABLE_OPTIONS, ...tableSortOptions(COLUMNS, DEFAULT_SORT),

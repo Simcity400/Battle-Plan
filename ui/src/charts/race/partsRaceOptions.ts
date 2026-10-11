@@ -7,7 +7,7 @@ export function partsRaceOptions(part: string): readonly OptionField[] {
   return [
     { key: 'drillOriginHour', section: 'options', label: 'Country selected at hour', kind: 'number',
       min: -0x8000_0000, max: 0x7fff_ffff, step: 1, default: null, visibleWhen: () => false },
-    { key: 'holder', section: 'options', label: 'Selected native country', kind: 'content-choice', automatic: '', default: '',
+    { key: 'holder', section: 'options', label: 'Selected country', kind: 'content-choice', automatic: '', default: '',
       visibleWhen: () => false },
     { ...raceViewOption(part), visibleWhen: options => options.show === 'main' },
     breakdownOption([{ id: 'breakdown', label: `By ${part}` }], 'Country totals'),

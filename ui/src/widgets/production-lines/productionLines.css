@@ -16,11 +16,8 @@
 .production-equipment small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 /* The equipment's art as the game's production row shows it, fitted into the row. */
 .production-art { flex: none; width: 72px; height: 30px; object-fit: contain; }
-/* No icon (the game shows none) or one the recording cannot tell: a neutral mark, its reason on hover. */
-.production-art.is-missing { box-sizing: border-box; width: 56px; height: 26px; margin: 2px 8px; border: 1px dashed color-mix(in srgb, var(--text) 25%, transparent); border-radius: var(--r-sm); }
 .production-organisation { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
-.production-organisation img { flex: none; width: 22px; height: 22px; object-fit: contain; }
-.production-org-art.is-missing { box-sizing: border-box; flex: none; width: 22px; height: 22px; border: 1px dashed color-mix(in srgb, var(--text) 25%, transparent); border-radius: var(--r-sm); }
+.production-organisation img, .production-organisation .art-fallback { flex: none; width: 22px; height: 22px; object-fit: contain; }
 .production-organisation small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .production-cell { display: flex; flex-direction: column; min-width: 0; }
 .production-number { font-variant-numeric: tabular-nums; }

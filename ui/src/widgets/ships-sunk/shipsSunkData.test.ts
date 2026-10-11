@@ -6,7 +6,7 @@ import { logCountryRequests } from '../../charts/log/logData.ts';
 import { contentKey, setToken } from '../../dashboard/options.ts';
 import { engineHour, formatDateTime } from '../../dashboard/calendar.ts';
 import { countryMatch } from '../../dashboard/groups.ts';
-import { shipAction, shipBattleLabel, shipBattleRequests, shipClassChoices, shipClassName, shipCountryLabels, shipCountryRequests, shipCoverage, shipCauseLabel, shipDescription, shipLogOrder, shipLogRows, shipTooltip,
+import { shipAction, shipBattleLabel, shipBattleRequests, shipClassChoices, shipClassName, shipCountryLabels, shipCountryRequests, shipCauseLabel, shipDescription, shipLogOrder, shipLogRows, shipTooltip,
   validateShipBattleTitlesReply, validateShipsSunkReply } from './shipsSunkData.ts';
 
 function row(overrides: Partial<ShipsSunkRow> = {}): ShipsSunkRow {
@@ -68,8 +68,8 @@ test('retained ships name and flag countries from the supplying read, with dated
   const tip = shipTooltip(data, retained, labels.victim.name, labels.attacker.name);
   assert.equal(tip.subtitle, formatDateTime(sink));
   assert.equal(tip.rows?.find(item => item.label === 'Victim')?.value, `${labels.victim.name} (as of ${formatDateTime(read)})`);
-  assert.equal(tip.rows?.find(item => item.label === 'Attribution country')?.value, `${labels.attacker.name} (as of ${formatDateTime(read)})`);
-  assert.doesNotMatch(String(shipTooltip(data, data.rows[1], 'Victim', 'Sinker').rows?.find(item => item.label === 'Attribution country')?.value), /as of/);
+  assert.equal(tip.rows?.find(item => item.label === 'Credited country')?.value, `${labels.attacker.name} (as of ${formatDateTime(read)})`);
+  assert.doesNotMatch(String(shipTooltip(data, data.rows[1], 'Victim', 'Sinker').rows?.find(item => item.label === 'Credited country')?.value), /as of/);
   assert.equal(shipCountryLabels(row({ victim: null }), labelAt).victim.name, 'Not recorded');
   assert.equal(shipLogRows(data, read + 2, [], 'both', () => true, read).length, 1, 'range filtering still uses sinking dates');
 });
@@ -85,7 +85,7 @@ test('modded class chips and sea zone are supplied by content; missing labels st
   assert.match(shipDescription(data, data.rows[0], 'Victim at event', 'Attacker at event'), /Extra mod ship class.*Renamed mod sea/);
   assert.doesNotMatch(shipDescription(data, data.rows[0], 'Victim', 'Attacker'), /Battle of|recorded reference/);
   data.classes[0].name = null;
-  assert.equal(shipClassName(data, data.rows[0]), 'Recorded design (recorded class)');
+  assert.equal(shipClassName(data, data.rows[0]), 'Recorded design');
   data.rows[0].recordedNameIndex = null;
   assert.equal(shipClassName(data, data.rows[0]), 'Class name unavailable');
   assert.equal(shipClassName(data, data.rows[3]), 'Class name unavailable');
@@ -121,10 +121,11 @@ test('non-hostile and assisted flags never read as ordinary hostile kills', () =
   assert.equal(shipCauseLabel(cause), 'Non-hostile cause');
   assert.doesNotMatch(shipDescription(data, cause, 'Victim', 'Attacker'), /sunk by/);
   assert.equal(shipTooltip(data, cause, 'Victim', 'Attacker').rows?.find(item => item.label === 'Assisted kill')?.value, 'Yes');
+  for (const ordinary of [row(), row({ cause: 'assisted', assistedKill: true }), row({ cause: 'cause' })])
+    assert.equal(shipTooltip(data, ordinary, 'Victim', 'Attacker').rows.find(item => item.label === 'Assisted kill'), undefined);
   assert.equal(shipAction(row({ cause: 'assisted', assistedKill: true }), 'Attacker'), 'sunk with assistance from Attacker');
   assert.equal(shipAction(row({ cause: 'hostile', assistedKill: true }), 'Attacker'), 'sunk with assistance from Attacker');
   assert.match(shipAction(row({ cause: 'cause' }), 'Attacker'), /Not recorded/);
-  assert.match(shipCoverage(data), /Recording:.*First complete.*1 unread span.*pruned/);
 });
 
 test('malformed ship rows refuse while undrawable mod icons become absent artwork', () => {
@@ -151,8 +152,8 @@ test('one token shares content and artwork while recorded class fallback names s
   data.classes[0].name = null;
   data.recordedNames.push('Another recorded design');
   data.rows[1].recordedNameIndex = 1;
-  assert.equal(shipClassName(validateShipsSunkReply(data), data.rows[0]), 'Recorded design (recorded class)');
-  assert.equal(shipClassName(data, data.rows[1]), 'Another recorded design (recorded class)');
+  assert.equal(shipClassName(validateShipsSunkReply(data), data.rows[0]), 'Recorded design');
+  assert.equal(shipClassName(data, data.rows[1]), 'Another recorded design');
   assert.equal(shipClassChoices(data, 'campaign').length, 2);
 });
 
@@ -195,8 +196,8 @@ test('drawn battle titles retain native content text, a supplying date and named
   assert.equal(shipBattleLabel(sunk, notApplicable), undefined);
   assert.equal(shipTooltip(data, sunk, 'Victim', 'Attacker', notApplicable).rows.some(row => row.label === 'Battle'), false);
   const missing = { ...battle, name: null, missing: 'province 71 has no recorded victory points' };
-  assert.equal(shipBattleLabel(sunk, missing), 'Battle title not recorded');
-  assert.equal(shipTooltip(data, sunk, 'Victim', 'Attacker', missing).rows.find(row => row.label === 'Battle title unavailable')?.value, missing.missing);
+  assert.equal(shipBattleLabel(sunk, missing), undefined);
+  assert.equal(shipTooltip(data, sunk, 'Victim', 'Attacker', missing).rows.find(row => row.label === 'Battle title unavailable'), undefined);
   const rows = shipLogOrder(data);
   assert.deepEqual(shipBattleRequests([rows[1], rows[0], rows[1]], data), [0, 3]);
   assert.deepEqual(shipBattleRequests(rows, fixture()), [], 'old-source drawn indices cannot resolve new-source rows');
@@ -208,4 +209,26 @@ test('drawn battle titles retain native content text, a supplying date and named
   for (const value of [{ ...battle, missing: 'unknown' }, { ...battle, index: 0x100000000 }, { ...battle, hour: 1.5 }]) {
     assert.throws(() => validateShipBattleTitlesReply({ rows: [value], warnings: [] }), /malformed/);
   }
+});
+
+test('duplicate unknown class choices stay distinct without showing campaign tokens', () => {
+  const data = fixture();
+  data.classes.forEach(type => { type.name = null; type.key = null; });
+  data.rows.forEach(row => { row.recordedNameIndex = null; });
+  const choices = shipClassChoices(data, 'private-campaign');
+  assert.equal(new Set(choices.map(choice => choice.value)).size, choices.length);
+  assert.deepEqual(choices.map(choice => choice.label), ['Class name unavailable', 'Class name unavailable']);
+  assert.deepEqual(choices.map(choice => choice.hint), ['Key: 999', 'Key: 888']);
+  assert.ok(choices.every(choice => !choice.label.includes('private-campaign')));
+});
+
+test('battle-title failures qualify only pending hostile titles and never expose the request reason', () => {
+  const data = fixture(), error = 'Synthetic malformed battle title request';
+  const failed = shipTooltip(data, row(), 'Victim', 'Attacker', undefined, error);
+  assert.ok(failed.rows.some(row => row.label === 'Couldn’t load the battle title.'));
+  assert.ok(!JSON.stringify(failed).includes(error));
+  const absent: ShipBattleTitle = { index: 0, hour: 110, name: null, missing: null };
+  for (const tooltip of [shipTooltip(data, row({ cause: 'cause' }), 'Victim', 'Attacker', undefined, error),
+    shipTooltip(data, row(), 'Victim', 'Attacker', absent, error)])
+    assert.ok(!tooltip.rows.some(row => row.label === 'Couldn’t load the battle title.'));
 });

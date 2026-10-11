@@ -168,7 +168,7 @@ test('all is the new widget default; explicit choices include either endpoint', 
   const placements = placementsAt(reply(), 10).placements;
   assert.equal(selectPlacements(placements, { kind: 'all' }, undefined, 10, 17).placements.length, 1);
   const groups = { countryIdentities: [{ tag: 'renamed target', identities: [{ firstHour: 10, lastHour: 17, slot: 1, countryId: 7 }] }] } as CountryGroupReply;
-  assert.match(selectPlacements(placements, { kind: 'tags', tags: ['renamed target'] }, undefined, 10, 17).reason!, /Loading native/);
+  assert.match(selectPlacements(placements, { kind: 'tags', tags: ['renamed target'] }, undefined, 10, 17).reason!, /Loading countries/);
   assert.equal(selectPlacements(placements, { kind: 'tags', tags: ['renamed target'] }, groups, 10, 17).placements.length, 1);
   assert.equal(selectPlacements(placements, { kind: 'tags', tags: ['absent'] }, undefined, 10, 17).placements.length, 0);
 });
@@ -177,7 +177,8 @@ test('a smart group resolves at its chosen hour and missing membership is unavai
   const groups = { countryIdentities: [{ tag: 'renamed target', identities: [{ firstHour: 10, lastHour: 17, slot: 1, countryId: 7 }] }], humans: [{ tag: 'renamed target', firstHour: 10, lastHour: 11 }], unobserved: { humans: [{ firstHour: 12, lastHour: 12 }] } } as CountryGroupReply;
   const selection = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } as const;
   assert.equal(selectPlacements(placements, selection, groups, 10, 17).placements.length, 1);
-  assert.match(selectPlacements(placements, selection, groups, 12, 17).reason!, /not recorded/);
+  assert.match(selectPlacements(placements, selection, groups, 12, 17).reason!, /Group membership is unavailable at this time/);
+  assert.equal(selectPlacements(placements, selection, undefined, 12, 17).reason, 'Loading countries…');
 });
 test('folding is lossless, preserves acting colours and names every Other member', () => {
   const placements = [
@@ -242,7 +243,7 @@ test('a home placement contributes to both arc totals and missing names stay vis
   const chord = placementChord(placements, 12, 10, labels, () => 'recorded', 'muted');
   const tip = placementTooltip({ kind: 'node', id: countryNodeId('modded home') }, chord)!;
   assert.deepEqual(tip.rows.map(r => r.value), ['1', '1']);
-  assert.match(tooltipText(placementTooltip({ kind: 'flow', id: chord.data.flows[0].id }, chord)!), /Name not recorded \(operative 44\)/);
+  assert.match(tooltipText(placementTooltip({ kind: 'flow', id: chord.data.flows[0].id }, chord)!), /Unknown operative/);
 });
 test('the widget words an unnamed state while a modded literal stays visible unchanged', () => {
   const r = reply();

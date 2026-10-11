@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contentKey, contentSet, MAX_OPTION_KEYS, parseStoredOptions, resolveOptions, sectionFields, setLimit, setOption, setToken, storableToken,
-  toggleContentSet } from './options.ts';
+  toggleContentSet, UNSTORABLE } from './options.ts';
 import type { OptionField } from './options';
 import { settingsSections, SETTINGS_SECTIONS } from './settingsSections.ts';
 import type { WidgetMeta } from './definitions';
@@ -60,12 +60,23 @@ test('fields show only in their own section and when their condition holds', () 
   assert.deepEqual(sectionFields(FIELDS, 'time', { ticks: false }), []);
 });
 
+test('a field that does nothing in a time mode is hidden in that mode, and its section with it', () => {
+  const departed: OptionField = { key: 'departed', section: 'axes', label: 'Include departed', kind: 'toggle', default: false,
+    visibleWhen: (_options, _countries, time) => time === 'campaign' };
+  const meta: WidgetMeta = { ...META, options: [departed] };
+  assert.deepEqual(sectionFields([departed], 'axes', {}, undefined, 'campaign').map(field => field.key), ['departed']);
+  assert.deepEqual(sectionFields([departed], 'axes', {}, undefined, 'follow'), []);
+  assert.equal(settingsSections(meta, {}, undefined, 'campaign').includes('axes'), true);
+  assert.equal(settingsSections(meta, {}, undefined, 'pin').includes('axes'), false);
+});
+
 const META: WidgetMeta = { kind: 'test-options', version: 2, title: 'Test', icon: 'grid', timeModes: ['follow', 'campaign'], defaultTime: 'campaign',
   scope: 'history', data: true, history: true, minSize: { w: 2, h: 2 }, defaultSize: { w: 4, h: 4 }, options: FIELDS,
   migrate: (from, widget) => from === 1 ? { ...widget, options: { order: 'size' } } : null };
 registerWidgets([META]);
 
 test('a content set stores distinct tokens and empties back to automatic', () => {
+  assert.equal(UNSTORABLE, 'This choice cannot be saved.');
   const fields: readonly OptionField[] = [{ key: 'picked', section: 'options', label: 'Picked', kind: 'content-set', automatic: 'Automatic', default: '' }];
   assert.deepEqual(resolveOptions(fields, { picked: 'steel mod_ore' }), { picked: 'steel mod_ore' });
   for (const bad of ['steel steel', 'steel  oil', ' steel', 'steel,oil', 3]) {

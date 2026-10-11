@@ -3,9 +3,8 @@ export interface CountryFlagLook { flag?: string; flagReason?: string; flagPendi
 
 /** One unavailable explanation for HTML flags and canvas decoding. */
 export function countryFlagUnavailable(reason?: string, pending = false, decodeFailed = false) {
-  const label = pending ? 'Flag loading' : 'Flag not available';
   const detail = decodeFailed ? 'The flag image could not be displayed.' : reason;
-  return { reason: detail, text: detail ? `${label}: ${detail}` : label };
+  return { reason: detail, text: pending ? 'Flag loading' : 'Flag unavailable' };
 }
 
 /** Fit the content's flag dimensions inside its slot without cropping or distortion. */

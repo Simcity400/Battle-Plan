@@ -71,12 +71,11 @@ export default function TransferDrill({ links, measure, day, cutoff, first, last
     },
     extent: x => compactStackExtent(stack, x[0], Math.min(x[1], cutoff)),
   }], [stack, colors, cutoff]);
-  const vp = (state: TransferOccurrence) => state.victoryPointsPending ? state.victoryPointsReadHour == null ? 'VP read hour not recorded'
-    : `VP not recorded at this moment; read ${formatDateTime(state.victoryPointsReadHour)}` : state.victoryPoints == null ? 'VP not recorded'
-      : `${usNumber.format(BigInt(state.victoryPoints))} VP${state.victoryPointsReadHour == null ? '; read hour not recorded' : `; read ${formatDateTime(state.victoryPointsReadHour)}`}`;
+  const vp = (state: TransferOccurrence) => state.victoryPointsPending || state.victoryPoints == null
+    ? 'Not available at this time' : `${usNumber.format(BigInt(state.victoryPoints))} VP`;
   const describe = (row: LogRow<TransferOccurrence>) => {
     const state = row.item, place = stateAt(row.hour, state.state);
-    return `${place.name ?? `State ${state.state}`} ${labelAt(state.fromCountry.hour)(state.fromCountry.tag).name} to ${labelAt(state.toCountry.hour)(state.toCountry.tag).name}; ${vp(state)}; ${state.derived === false ? 'Captured' : state.derived ? 'Derived net change' : 'Provenance not recorded'}${place.missing ? `; ${place.missing}` : ''}`;
+    return `${place.name ?? `State ${state.state}`} ${labelAt(state.fromCountry.hour)(state.fromCountry.tag).name} to ${labelAt(state.toCountry.hour)(state.toCountry.tag).name}; ${vp(state)}`;
   };
   const outside = day < first || day > last;
   return <div className="transfer-drill">
@@ -88,17 +87,17 @@ export default function TransferDrill({ links, measure, day, cutoff, first, last
       branchStart={track.branch.firstHour} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }}
       layers={layers} active={active} revision={[stack, colors]} onPick={onPick} onContextMenu={onContextMenu}
       overlay={(ctx, frame, chartTokens) => { if (day >= frame.x[0] && day <= frame.x[1]) drawPlayhead(ctx, frame, chartTokens, day); }}
-      tooltip={hour => { const known = transfersThrough(links, Math.floor(hour), Math.floor(hour), from); return { title: dayLabel(hour), rows: [{ label: measure === 'states' ? 'State occurrences' : 'Victory points', value: transferAmount(known, measure) }], note: 'Click to show this day. Missing VP reads break the stack.' }; }} />
+      tooltip={hour => { const known = transfersThrough(links, Math.floor(hour), Math.floor(hour), from); return { title: dayLabel(hour), rows: [{ label: measure === 'states' ? 'Transfers' : 'Victory points', value: transferAmount(known, measure) }] }; }} />
     </div>
     {!outside && <div className="transfer-drill-occurrences">
-      <div className="transfer-drill-detail-heading"><strong>{detail == null ? 'Recorded state occurrences' : 'Selected link’s state occurrences'}</strong>
-        {detail != null && <button type="button" className="button small quiet" onClick={() => setDetail(null)}>All occurrences</button>}</div>
+      <div className="transfer-drill-detail-heading"><strong>{detail == null ? 'Transferred states' : 'Selected transfers'}</strong>
+        {detail != null && <button type="button" className="button small quiet" onClick={() => setDetail(null)}>All transfers</button>}</div>
       <LogList rows={rows} label="Transferred states" density="comfortable" months={false} animate={false} layout="card" rowHeight={() => 96}
         onVisible={setVisibleRows} describe={describe} menu={row => [{ label: 'Show this day', run: () => onPick(row.hour) }, jumpItem(runtime, track.id, row.hour)]}
         renderRow={row => { const state = row.item, place = stateAt(row.hour, state.state); return <div className="transfer-occurrence">
-          <strong>{place.name ?? `State ${state.state} · name not recorded`}</strong><span>{labelAt(state.fromCountry.hour)(state.fromCountry.tag).name} → {labelAt(state.toCountry.hour)(state.toCountry.tag).name}</span>
-          <span>{state.derived === false ? 'Captured' : state.derived ? 'By' : 'Read through'} {formatDateTime(row.hour)}{state.derived !== false ? `; compared with ${formatDateTime(state.dates.beforeHour)}` : ''}</span>
-          <span>{vp(state)}</span>{place.missing && <small>Not recorded: {place.missing}</small>}
+          <strong>{place.name ?? `State ${state.state}`}</strong><span>{labelAt(state.fromCountry.hour)(state.fromCountry.tag).name} → {labelAt(state.toCountry.hour)(state.toCountry.tag).name}</span>
+          <span>{state.derived === false ? formatDateTime(row.hour) : state.derived ? `By ${formatDateTime(row.hour)}` : `${formatDateTime(state.dates.beforeHour)} – ${formatDateTime(row.hour)}`}</span>
+          <span>{vp(state)}</span>
         </div>; }} />
     </div>}
   </div>;

@@ -50,8 +50,10 @@ test('division rows forward dated flag state while null actors and the unknown k
     const html = renderToStaticMarkup(createElement(Widget, props));
     assert.equal((html.match(/role="img"/g) ?? []).length, 2);
     assert.match(html, /aria-label="Flag loading"/);
-    assert.match(html, /aria-label="Flag not available: Native flag unavailable at read 12\."/);
+    assert.match(html, /aria-label="Flag unavailable"/);
     assert.match(html, /Killer not known/); assert.match(html, /Country not known/);
+    assert.equal((html.match(/class="art-fallback"/g) ?? []).length, 2);
+    assert.doesNotMatch(html, /is-missing|>\?</);
     assert.doesNotMatch(html, /Read-hour enemy name must stay unused/);
     assert.ok(host.__divisionFlagReads.some(([hour, tag]) => hour === 10 && tag === 'owner'));
     assert.ok(host.__divisionFlagReads.some(([hour, tag]) => hour === 12 && tag === 'enemy'));

@@ -109,7 +109,7 @@ test('missing rows invent no amount or date, and exchange uncertainty belongs to
   cause.unknownSpans = [{ firstHour: 108, lastHour: 110, reason: 'endedAfterLastRead', detail: null }];
   cause.leaves[0].lowerBoundFrom = 108;
   const rows = lossRows(data, window);
-  assert.equal(rows[0].incomplete, true); assert.match(rows[0].note!, /exchange ended/);
+  assert.equal(rows[0].incomplete, true); assert.match(rows[0].note!, /Incomplete total/);
   assert.equal(rows[1].incomplete, false); assert.equal(rows[1].note, undefined);
   cause.leaves = [];
   assert.deepEqual(lossRows(data, window).map(row => [row.exact, row.readHour]), [[null, null]]);

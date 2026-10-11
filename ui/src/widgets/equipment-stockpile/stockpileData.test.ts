@@ -5,7 +5,7 @@ import { resolveY } from '../../charts/view.ts';
 import { chosenShown, storedChoices, toggleChosen } from '../../dashboard/chosen.ts';
 import { contentKey, contentSet, setToken, storableToken } from '../../dashboard/options.ts';
 import { OPTIONS } from './definition.ts';
-import { AI_NOTE, automaticGroups, automaticLines, chartChoices, chartRuns, choiceKey, choiceRow, CHOSEN_KEYS, oneChoicePerRow, columnVars, designAt, hasRecords, NO_DESIGN, OTHER_DESIGN, otherDesigns, stockChoices, typeName, undrawableReason, variantKey, balanceAt, typesComplete, variantsComplete, balanceMode, barExtent, formatPercent, groupChoices, groupLabel, groupTooltip, labelAt, orderGroups, overTimeTooltip,
+import { automaticGroups, automaticLines, chartChoices, chartRuns, choiceKey, choiceRow, CHOSEN_KEYS, oneChoicePerRow, columnVars, designAt, hasRecords, otherDesigns, stockChoices, typeName, undrawableReason, variantKey, balanceAt, typesComplete, variantsComplete, balanceMode, barExtent, formatPercent, groupChoices, groupLabel, groupTooltip, labelAt, orderGroups, overTimeTooltip,
   shareOf, shareRuns, shareScale, stockAt, stockGroups, stockRuns, validateStockpileReply, variantName, weeklyAt } from './stockpileData.ts';
 
 const U = 100000;
@@ -157,19 +157,19 @@ test('tooltips give the game’s surplus for a player, the note for an AI countr
     ['In stock', '720'], ['Needed', '1,093'], ['Shortage', '−373'], ['Share of need', '−34%'], ['Produced per week', '15'],
     ['Panzer II', '1,396'], ['Panzer I Ausf. A', '720']]);
   const trucks = groupTooltip(REPLY, groups[3], 'type', 110, { title: 'Truck' }, 1000);
-  assert.deepEqual(trucks.rows.slice(0, 3).map(row => [row.label, row.value]), [['In stock', '5,195'], ['Needed', 'Not derived'], ['Shortage', '−40']]);
-  assert.match(trucks.note ?? '', /trucks/);
+  assert.deepEqual(trucks.rows.slice(0, 3).map(row => [row.label, row.value]), [['In stock', '5,195'], ['Needed', 'Unavailable'], ['Shortage', '−40']]);
+  assert.equal(trucks.note, 'Need unavailable.');
   const ai = groupTooltip(REPLY, tanks, 'type', 145, { title: tanks.label }, 1000);
   assert.deepEqual(ai.rows.slice(0, 2).map(row => row.label), ['In stock', 'Produced per week']);
-  assert.ok(ai.note?.includes(AI_NOTE));
+  assert.doesNotMatch(ai.note ?? '', /AI-controlled/);
   const unknown = groupTooltip(REPLY, tanks, 'type', 135, { title: tanks.label }, 1000);
   assert.deepEqual(unknown.rows.map(row => [row.label, row.value]).slice(0, 2), [['In stock', 'Not recorded'], ['Surplus or shortage', 'Not recorded']]);
   const variant = stockGroups(REPLY, 'variant', 110)[2];
   const byVariant = groupTooltip(REPLY, variant, 'variant', 110, { title: variant.label }, 1000);
   assert.equal(byVariant.rows[0].label, 'Light Tank');
-  assert.match(byVariant.note ?? '', /by equipment type, not by variant/);
+  assert.match(byVariant.note ?? '', /Need is available by equipment type/);
   // A short window trims the variant list but keeps the totals, and the full list is spoken.
-  const short = groupTooltip(REPLY, tanks, 'type', 110, { title: tanks.label }, 190);
+  const short = groupTooltip(REPLY, tanks, 'type', 110, { title: tanks.label }, 150);
   assert.ok(short.rows.length < player.rows.length && short.rows[0].label === 'In stock' && short.spoken);
   assert.equal(groupLabel(REPLY, tanks, 110), 'Light Tank: shortage −373, −34% of need');
   assert.equal(groupLabel(REPLY, tanks, 145), 'Light Tank: 0 in stock');
@@ -364,7 +364,7 @@ test('an arm is unknown wherever an unresolved logistics type could belong to it
   assert.equal(groupLabel(reply, land, 110), 'Land: surplus or shortage not known');
   const tip = groupTooltip(reply, land, 'domain', 110, { title: 'Land' }, 1000);
   assert.equal(tip.rows.find(row => row.label === 'Surplus or shortage')?.value, 'Not known');
-  assert.ok(tip.note?.includes('which arm it belongs to cannot be told'));
+  assert.equal(tip.note, 'Total unavailable.');
   assert.deepEqual(orderGroups(reply, arms, 110, 'shortage').map(group => group.key), ['unresolved', 'land']);
   // The unresolved arm is exactly its own types; a type's own row is exact.
   assert.equal(balanceAt(reply, arms.find(group => group.key === 'unresolved')!, 110)?.balance, -100n * 100000n);
@@ -431,7 +431,7 @@ test('an arm\u2019s need is unknown while an unresolved type is listed, even at 
   const logistics = balanceAt(reply, land, 110)!;
   // Its zeros add nothing to the balance or the stock, but prove no zero need.
   assert.deepEqual([logistics.balance, logistics.stock, logistics.need], [-50n * 100000n, 10n * 100000n, null]);
-  assert.match(logistics.needNote ?? '', /not derived/);
+  assert.match(logistics.needNote ?? '', /Need unavailable/);
   assert.equal(shareOf(logistics), null);
   // The type's own row keeps its need.
   assert.equal(balanceAt(reply, stockGroups(reply, 'type', 110).find(group => group.key === 'light_tank_chassis')!, 110)?.need, 60n * 100000n);
@@ -587,13 +587,13 @@ test('a saved variant choice is its design: another design under the handle is s
   const rowsB = stockGroups(branchB, 'variant', 110);
   assert.equal(rowsB[0].key, row.key, 'same campaign, handle and token');
   assert.equal(stockChoices(rowsB, 'variant').lines(chosenEarly), 0);
-  assert.deepEqual(otherDesigns(rowsB, [chosenEarly]).map(other => [other.group.key, other.reason]), [[row.key, OTHER_DESIGN]]);
+  assert.deepEqual(otherDesigns(rowsB, [chosenEarly]).map(other => [other.group.key, other.reason]), [[row.key, 'Saved design unavailable. Choose another.']]);
   // A choice without a design, or of a variant whose design was never recorded, never matches.
   assert.equal(stockChoices(rowsB, 'variant').lines(row.key), 0);
   const unrecorded: EquipmentStockpileReply = { ...REPLY, variants: [tank([[90, null]])] };
   const rowsU = stockGroups(unrecorded, 'variant', 110);
   assert.equal(choiceKey(rowsU[0], 110), null);
-  assert.deepEqual(otherDesigns(rowsU, [chosenEarly]).map(other => other.reason), [NO_DESIGN]);
+  assert.deepEqual(otherDesigns(rowsU, [chosenEarly]).map(other => other.reason), ['Saved design unavailable. Choose another.']);
   // Types and arms are chosen by their keys.
   const types = stockGroups(REPLY, 'type', 110);
   assert.equal(choiceKey(types[0], 110), types[0].key);
@@ -607,7 +607,7 @@ test('settings offer only what can be drawn, and each chip says why it cannot', 
   const offered = chartChoices(REPLY, 'type').map(choice => contentKey(choice.value));
   assert.ok(!offered.includes('motorized_equipment'), offered.join(', '));
   assert.ok(offered.includes('infantry_equipment'));
-  assert.match(undrawableReason(REPLY, trucks, 'type'), /trucks .*so it has no share to draw$/);
+  assert.match(undrawableReason(REPLY, 'type'), /^Need data unavailable\.$/);
   // Chosen alone, it draws nothing, so the automatic lines show instead of an empty chart.
   const source = stockChoices(types, 'equipment type', group => chartRuns(REPLY, group, 'type').length > 0);
   assert.equal(source.lines('motorized_equipment'), 0);

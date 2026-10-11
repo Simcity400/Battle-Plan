@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aceRows, aceNameValue, aceStatus, aceJump, aceTooltip, aircraftName, wingName, validateAces, validateAcesWindow, validatePortraits } from './acesData.ts';
+import { aceRows, aceName, aceNameValue, aceStatus, aceJump, aceTooltip, aircraftName, wingName, validateAces, validateAcesWindow, validatePortraits } from './acesData.ts';
 import { DEFAULT_SORT, OPTIONS, definition } from './definition.ts';
 import { sortRows } from '../../charts/table/logic.ts';
 import { availabilityRequest, availabilityReason, validateWidgetAvailability } from '../../dashboard/widgetAvailability.ts';
@@ -88,6 +88,7 @@ test('first sightings and deaths are bounds; killer names come from their own ho
   assert.equal(aceJump(rows[0]), 124);
   assert.equal(aceJump(rows[1]), 124);
   const tip = aceTooltip(rows[0], tag => `At read: ${tag}`);
+  assert.equal(tip.note, undefined, 'bounds carry uncertainty without recorder notes');
   assert.equal(tip.title, 'Zed “Storm”');
   assert.equal(tip.rows[0].label, 'At read: opaque tag:Ω');
   assert.equal(tip.rows.find(r => r.label === 'Killer ace')?.value, 'Killer then');
@@ -98,13 +99,21 @@ test('first sightings and deaths are bounds; killer names come from their own ho
   data.readHours = [100, 101, 124, 131, 140];
   assert.equal(aceRows(data, detail, 123)[0].hour, 101, 'equal facts still date labels to the last actual read');
 });
+
+test('unknown ace and killer names do not expose their IDs', () => {
+  const detail = window();
+  detail.aces = detail.aces.map(ace => ({ ...ace, runs: ace.runs.map(run => ({ ...run, name: null })) }));
+  const row = aceRows(reply(), detail, 124)[0];
+  assert.equal(aceName(row), 'Unknown ace');
+  assert.equal(aceTooltip(row, String).rows.find(item => item.label === 'Killer ace')?.value, 'Unknown ace');
+});
 test('one aircraft-id run uses shared variant names; gaps and missing assignments stay explicit', () => {
   const data = reply();
   const detail = window();
   detail.aces = [{ id: '1', firstSeen: 100, runs: [{ ...alive, lastHour: 147, wing: '7', aircraft: ['80'] }] }];
   assert.equal(aircraftName(aceRows(data, detail, 124)[0]), 'First design');
   assert.equal(aircraftName(aceRows(data, detail, 131)[0]), 'Later design');
-  assert.equal(aircraftName(aceRows(data, detail, 140)[0]), 'Variant 80 (name not recorded)');
+  assert.equal(aircraftName(aceRows(data, detail, 140)[0]), 'Unknown aircraft');
   assert.equal(detail.aces[0].runs.length, 1);
   data.observed = [{ firstHour: 100, lastHour: 110 }, { firstHour: 124, lastHour: 147 }];
   const run = detail.aces[0].runs[0];

@@ -74,12 +74,12 @@ const date = (hour: number) => { const d = gameDate(hour); return d ? formatDate
 const runText = (window: AirAcesWindowReply, index: number | null) => index === null ? null : window.texts[index];
 export const aceCallsign = (row: AceRow) => runText(row.window, row.run.callsign);
 export const aceNameValue = (row: AceRow) => runText(row.window, row.run.name);
-export const aceName = (row: AceRow) => aceNameValue(row) || `Ace ${row.ace.id} (name unavailable)`;
+export const aceName = (row: AceRow) => aceNameValue(row) || 'Unknown ace';
 export const wingName = (row: AceRow) => row.run.wing === null ? 'No wing' : runText(row.window, row.run.wingName) ?? 'Wing name not recorded';
-export const aircraftName = (row: AceRow) => row.run.wing === null ? '' : row.run.aircraft === null ? 'Aircraft not recorded' : row.run.aircraft.length ? row.run.aircraft.map(id => variantNameAt(row.data.variants[id] ?? [], row.hour, `Variant ${id} (name not recorded)`)).join(' · ') : 'No aircraft recorded';
+export const aircraftName = (row: AceRow) => row.run.wing === null ? '' : row.run.aircraft === null ? 'Aircraft not recorded' : row.run.aircraft.length ? row.run.aircraft.map(id => variantNameAt(row.data.variants[id] ?? [], row.hour, 'Unknown aircraft')).join(' · ') : 'No aircraft recorded';
 export const aceStatus = (row: AceRow) => row.run.alive ? `Ace by ${date(row.ace.firstSeen)}` : row.run.death?.byHour != null ? `Killed by ${date(row.run.death.byHour)}` : 'Killed, date not recorded';
 export const aceJump = (row: AceRow) => row.run.death?.byHour ?? row.ace.firstSeen;
-export function aceTooltip(row: AceRow, name: (tag: string) => string, missing?: string): TooltipContent {
+export function aceTooltip(row: AceRow, name: (tag: string) => string): TooltipContent {
   const rows: TooltipRow[] = [
     { label: row.run.tag === null ? 'Country not recorded' : name(row.run.tag) },
     { label: 'Air wing', value: wingName(row) },
@@ -92,10 +92,8 @@ export function aceTooltip(row: AceRow, name: (tag: string) => string, missing?:
   if (d?.killerAce) {
     const killer = row.roster.get(d.killerAce);
     const run = killer && runAt(killer.runs, row.hour);
-    rows.push({ label: 'Killer ace', value: (run && runText(row.window, run.name)) || `Ace ${d.killerAce} (name unavailable)` });
+    rows.push({ label: 'Killer ace', value: (run && runText(row.window, run.name)) || 'Unknown ace' });
   }
   if (d) rows.push({ label: 'Killer country', value: d.killerTag === null ? 'Not recorded' : name(d.killerTag) });
-  if (missing) rows.push({ label: missing, tone: 'muted' });
-  return { title: `${aceName(row)}${aceCallsign(row) ? ` “${aceCallsign(row)}”` : ''}`, rows,
-    note: `Read ${date(row.hour)}. First sighting is an upper bound, not the creation date.` };
+  return { title: `${aceName(row)}${aceCallsign(row) ? ` “${aceCallsign(row)}”` : ''}`, rows };
 }

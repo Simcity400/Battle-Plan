@@ -11,9 +11,9 @@ import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
-import type { ConstructionSpendingReply, SpendingGap } from '../../generated/dashboard';
+import type { ConstructionSpendingReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
-import { GAP_LABELS, LEVELS, footnote, formatSpent, spendingItems, validateSpendingReply } from './spendingData';
+import { LEVELS, footnote, formatSpent, spendingItems, validateSpendingReply } from './spendingData';
 
 const NO_WARNINGS: string[] = [];
 const ROOT = { id: 'all', label: 'All construction' };
@@ -44,7 +44,6 @@ export default function ConstructionSpendingWidget({ widget, runtime, active, on
   const scale = data?.costScale ?? 1;
   const text = useMemo<SunburstText>(() => ({
     format: (value, exact) => formatSpent(value, exact, scale), unit: 'IC', valueLabel: 'Spent', countLabel: 'Projects',
-    unknownLabel: reason => GAP_LABELS[reason as SpendingGap] ?? reason,
   }), [scale]);
   useEffect(() => {
     onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
@@ -52,12 +51,11 @@ export default function ConstructionSpendingWidget({ widget, runtime, active, on
   }, [data, onDiagnostics]);
 
   if (!track || !tag) return <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its construction spending." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading construction spending…" />;
-  if (!data.reads.length && !data.railwayReads.length) return <WidgetState kind="unavailable" message="The construction queue was not recorded in this campaign branch." />;
-  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the campaign’s recorded branch." />;
-  if (!items.some(item => item.present !== false)) return <WidgetState kind="empty" icon="sunburst" message="No construction recorded"
-    detail="The queue is read once a day; a line created and removed between reads has no recorded country or target." />;
+  if (!data.reads.length && !data.railwayReads.length) return <WidgetState kind="unavailable" message="Construction was not recorded." />;
+  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (!items.some(item => item.present !== false)) return <WidgetState kind="empty" icon="sunburst" message="No construction recorded" />;
   return <Sunburst label="Construction spending" items={items} root={ROOT} levels={levels} text={text} settings={settings}
     hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} footnote={footnote(data)} />;
 }

@@ -109,7 +109,7 @@ test('a subjects reply is validated, down to steps covering their run and naming
 test('level colours follow the content order, never a level name, and fold past the palette', () => {
   const colours = levelColours(levels, ['c0', 'c1', 'c2'], 'other');
   assert.deepEqual([...colours], [['autonomy_mod_march', 'c0'], ['autonomy_puppet', 'c1'], ['autonomy_mod_unnamed', 'c2'], ['autonomy_mod_unordered', 'other']]);
-  // A level with no localisation shows its id, and an unrecorded level says so.
+  // Missing localized names use an unavailable label; an unrecorded level says so.
   assert.equal(levelName(byToken, 'autonomy_mod_unnamed'), 'Autonomy level name unavailable');
   assert.equal(levelName(byToken, null), 'Level not recorded');
 });
@@ -286,7 +286,7 @@ test('manual OLD never admits a replacement O tree when no tag-change event was 
   assert.equal(former.info.get(former.lanes[0].id)?.overlord.key, '[1,10]');
   assert.equal(former.lanes[0].label, 'No subjects');
   assert.equal(former.lanes[1].label, 'Ended day 10');
-  assert.equal(former.lanes[0].identity?.label, 'Native country identity not recorded');
+  assert.equal(former.lanes[0].identity?.label, 'Unknown country');
   assert.deepEqual(laneCountries(former.lanes, former.info, 19), ['S']);
 });
 
@@ -325,7 +325,7 @@ test('proved subject aliases across a native gap retain one relation but never s
   const asked: string[] = [];
   const layout = subjectLanes(views, byToken, new Map(), 10, options, { ...text, country: tag => { asked.push(tag); return text.country(tag); } }, []);
   assert.equal(layout.lanes[0].label, 'Subjects not recorded');
-  assert.equal(layout.lanes[1].identity?.label, 'Native country identity not recorded');
+  assert.equal(layout.lanes[1].identity?.label, 'Unknown country');
   assert.equal(layout.lanes[1].label, 'Level not recorded · since day 0');
   assert.deepEqual([...new Set(asked)], ['O']);
   assert.deepEqual(laneCountries(layout.lanes, layout.info, 10), ['O']);

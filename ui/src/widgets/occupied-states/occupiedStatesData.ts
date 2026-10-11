@@ -180,7 +180,7 @@ export function garrisonCell(value: OccupiedValues, cellBars: boolean): { text: 
   return { text: formatNativeFixed5(value.garrisonRequiredRaw, 2),
     bar: cellBars && value.garrisonStrengthRaw !== null ? strengthBar(value.garrisonStrengthRaw) : null, red: value.garrisonRed === true };
 }
-export function occupationTooltip(strengthMissing: string, row: OccupiedRow, countryName: (tag: string) => string): TooltipContent {
+export function occupationTooltip(row: OccupiedRow, countryName: (tag: string) => string): TooltipContent {
   const v = row.value;
   return { title: stateName(row), rows: [
     { label: 'Resistance', value: percent(v.resistanceRaw) }, { label: 'Resistance speed', value: `${formatSigned(v.resistanceSpeedRaw, 5, 5)} pp/day` },
@@ -190,9 +190,6 @@ export function occupationTooltip(strengthMissing: string, row: OccupiedRow, cou
     { label: 'Required garrison amount', value: v.garrisonRequiredRaw === null ? '—' : formatAmount(v.garrisonRequiredRaw, 5, 5) },
     { label: 'Garrison strength', value: v.garrisonStrengthRaw === null ? 'Not in this recording' : strengthPercent(v.garrisonStrengthRaw) },
     { label: 'Occupied country', value: v.occupied === null ? 'Unknown' : countryName(v.occupied) },
-    ...(v.garrisonAlert ? [{ label: 'The recorded requirement failure flag is set; the native strength getter returns zero.', tone: 'negative' as const }] : []),
-    ...(v.nameMissing ? [{ label: v.nameMissing, tone: 'muted' as const }] : []),
-    ...(v.garrisonMissing ? [{ label: v.garrisonMissing, tone: 'muted' as const }] : []),
-    ...(v.lawMissing ? [{ label: v.lawMissing, tone: 'muted' as const }] : []),
-  ], description: v.garrisonStrengthRaw === null ? strengthMissing : undefined };
+    ...(v.garrisonAlert ? [{ label: 'Garrison requirement not met.', tone: 'negative' as const }] : []),
+  ] };
 }

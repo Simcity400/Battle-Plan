@@ -1,10 +1,10 @@
+import { dayLabel } from '../../charts/draw.ts';
 import type { CasualtyParams, CasualtyReply, CasualtySeries, CasualtyValues, CountryGroupReply, HourSpan } from '../../generated/dashboard';
 import { runAt } from '../../charts/series.ts';
 import { IntervalIndex } from '../../charts/intervalIndex.ts';
 import { formatFixed } from '../../charts/valueAxis.ts';
 import { formatRatio } from '../../charts/butterfly/layout.ts';
 import type { TooltipContent } from '../../charts/tooltip';
-import { formatDateTime } from '../../dashboard/calendar.ts';
 import { groupMembers, groupRuns, groupUnobserved, resolveCountries } from '../../dashboard/groups.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { CountrySelection } from '../../dashboard/model';
@@ -223,20 +223,18 @@ export function casualtyRaceEntries(rows: readonly CountryCasualties[]): Country
   }).map(row => ({ tag: row.tag, value: casualtyBarValue(row.taken)!, label: formatCasualties(row.taken, row.atLeast), stretch: casualtyBarStretch(row) }));
 }
 
-export const SUBTOTAL_NOTE = 'Recorded subtotal (†): missing history may omit positive losses or negative corrections, so the full total and ratio are not known.';
+export const SUBTOTAL_NOTE = '† Incomplete total; ratio unavailable.';
 
-export const GAP_NOTE = "Wars fought entirely while the recording was not running are not counted.";
+export const GAP_NOTE = "Some losses may be missing.";
 
-export function casualtyTooltip(row: CountryCasualties, name: string, includeUnknown: boolean, unknownLabel: string, hasGap = false): TooltipContent {
-  const dated = row.readHour == null ? 'No reading at this hour.' : `As of ${formatDateTime(row.readHour)}; casualties update at each hourly reading.`;
-  return { title: name, subtitle: formatDateTime(row.hour), rows: [
+export function casualtyTooltip(row: CountryCasualties, name: string, unknownLabel: string, hasGap = false): TooltipContent {
+  return { title: name, subtitle: dayLabel(row.hour), rows: [
     { label: 'Dealt', value: formatCasualties(row.dealt, row.atLeast) },
-    { label: 'Taken (recorded attacker)', value: formatCasualties(row.knownTaken, row.atLeast) },
-    { label: unknownLabel, value: row.unknown == null ? 'Not recoverable exactly' : formatCasualties(row.unknown), tone: 'muted' },
-    { label: 'Included in taken', value: includeUnknown ? 'Yes' : 'No', tone: 'muted' },
+    { label: 'Taken (known attackers)', value: formatCasualties(row.knownTaken, row.atLeast) },
+    { label: unknownLabel, value: row.unknown == null ? 'Unknown' : formatCasualties(row.unknown), tone: 'muted' },
     { label: 'Taken', value: formatCasualties(row.taken, row.atLeast), strong: true },
     { label: 'Ratio', value: casualtyRatio(row), strong: true },
-  ], note: `${dated} The game’s casualty totals across land, sea and air. ${hasGap ? GAP_NOTE + ' ' : ''}${row.atLeast
-    ? SUBTOTAL_NOTE + ' ' : ''}${signedCorrection(row) ? 'Signed corrections remain exact; only positive amounts draw bars. A loss ratio is not shown for signed corrections. ' : ''}${row.unknown == null
-    ? 'Losses without a recorded attacker cannot be recovered exactly because earlier readings are missing or disagree.' : 'Losses with no recorded attacker add only to taken.'}` };
+  ], note: [hasGap ? GAP_NOTE : '', row.atLeast ? SUBTOTAL_NOTE : '',
+    signedCorrection(row) ? 'Ratio unavailable for corrections.' : '',
+    row.unknown == null ? 'Losses from unknown attackers are unavailable.' : ''].filter(Boolean).join(' ') || undefined };
 }

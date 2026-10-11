@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { CSSProperties } from 'react';
 import { ChipSet } from '../../components/ChipSet';
 import WidgetState from '../../components/WidgetState';
 import LogList from '../../charts/log/LogList';
@@ -17,7 +18,8 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { CATEGORIES, OPTIONS } from './definition';
+import { CATEGORIES, EVENT_ICONS, OPTIONS } from './definition';
+import { Icon } from '../../components/Icons';
 import { eventCountryName, eventDescription, eventSentence, eventTooltip, notRecorded } from './eventFeedData';
 import type { FeedEvent, FeedFilter } from './eventFeedData';
 import { useEventFeed } from './useEventFeed';
@@ -64,24 +66,24 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
   }, [labelAt]);
   const chips = CATEGORIES.map(category => ({ value: category.value, label: category.label,
     colour: tokens.categories[category.palette] }));
+  // What this recording could not capture is reported with the warnings, never drawn in the feed.
+  const unavailable = useMemo(() => feed.data ? notRecorded(feed.data) : NO_WARNINGS, [feed.data]);
   useEffect(() => {
-    onDiagnostics(feed.warnings.length ? feed.warnings : NO_WARNINGS);
+    const notes = [...feed.warnings, ...unavailable];
+    onDiagnostics(notes.length ? notes : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [feed.warnings, onDiagnostics]);
+  }, [feed.warnings, unavailable, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="clock" message="Load a campaign to see its key moments." />;
-  if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recorded branch." />;
-  if (filtered && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
-  if (feed.error) return <WidgetState kind="error" message={feed.error} onRetry={feed.retry} />;
+  if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (filtered && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+  if (feed.error) return <WidgetState kind="error" detail={feed.error} onRetry={feed.retry} />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
   if (!feed.data || !match.ready) return <WidgetState kind="loading" label="Loading the event feed…" />;
 
-  const unavailable = notRecorded(feed.data);
   return <div className="log-widget event-feed-widget">
     {log.chips && <div className="log-chips"><ChipSet label="Event categories" chips={chips}
       selected={[...categories]} max={CATEGORIES.length} onToggle={key => setOption?.(key, !categories.has(key))} /></div>}
-    {unavailable.length > 0 && <details className="event-feed-notes"><summary>Not recorded ({unavailable.length})</summary>
-      {unavailable.map((reason, index) => <p key={index}>{reason}</p>)}</details>}
     <LogList key={feed.identity} pages={feed.pages} label="Event feed" density={log.density} months={log.months}
       animate={log.animate && widget.time.mode === 'follow'} playhead={widget.time.mode === 'follow' ? hour : null}
       columns={artwork ? COLUMNS : 'minmax(0, 1fr) auto'} onVisible={setVisible} onWantedPages={feed.onWantedPages}
@@ -90,8 +92,8 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
         const label = labels(row);
         const category = CATEGORIES.find(category => category.value === at.event.category)!;
         return <>
-          {artwork && <span className={`log-art${at.item?.icon ? '' : ' is-missing'}`} aria-hidden="true">
-            {at.item?.icon ? <img src={at.item.icon} alt="" /> : '?'}</span>}
+          {artwork && <span className="log-art" aria-hidden="true">{at.item?.icon ? <img src={at.item.icon} alt="" />
+            : <span className="event-feed-icon" style={{ '--event-colour': tokens.categories[category.palette] } as CSSProperties}><Icon name={EVENT_ICONS[at.event.kind]} /></span>}</span>}
           <span className="log-text">{eventSentence(at).map((part, index) => 'tag' in part ? <span key={index}>
             <CountryFlagUrl className="log-flag" url={label(part.tag).flag} reason={label(part.tag).flagReason} pending={label(part.tag).flagPending} /><b>{label(part.tag).name}</b>
           </span> : <span key={index}>{part.text}</span>)}</span>
@@ -101,6 +103,6 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
       describe={row => eventDescription(row.item, tag => labels(row)(tag).name)}
       tooltip={row => eventTooltip(row.item, tag => labels(row)(tag).name)}
       menu={row => [jumpItem(runtime, track.id, row.hour)]} empty="No recorded events match these settings." />
-    {feed.errors.size > 0 && <div className="event-feed-load">Some event windows could not load. <button type="button" onClick={feed.retryPages}>Retry</button></div>}
+    {feed.errors.size > 0 && <div className="event-feed-load">Some events couldn’t load. <button type="button" onClick={feed.retryPages}>Retry</button></div>}
   </div>;
 }

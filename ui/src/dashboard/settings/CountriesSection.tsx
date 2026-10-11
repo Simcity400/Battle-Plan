@@ -35,7 +35,7 @@ export function CountriesSection({ widget, reference, runtime, limits, inline = 
   return <>
     <Segmented label="Choose countries by" value={mode} options={countrySelectionModes(limits)}
       onChange={value => { if (value !== mode) onChange(countrySelectionFor(value, limits.max)); }} />
-    {mode === 'all' ? <p className="field-hint">Every country the recording names.</p>
+    {mode === 'all' ? null
       : widget.countries.kind === 'group'
         ? <GroupFields widget={widget} selection={widget.countries} reference={reference} runtime={runtime} limits={limits} onChange={onChange} />
         : widget.countries.kind === 'factions'
@@ -90,7 +90,6 @@ function FactionFields({ selection, max, onChange }: {
         }} /></span></label>
     <div className="setting-row setting-row-stacked"><span>Members</span>
       <Segmented label="Faction membership" value={selection.membership} options={MEMBERSHIP} onChange={membership => onChange({ ...selection, membership })} /></div>
-    <p className="field-hint">Each recorded faction is one total. A missing member value or membership read leaves a gap.</p>
   </>;
 }
 
@@ -110,7 +109,7 @@ function GroupFields({ widget, selection, reference, runtime, limits, onChange }
   // A saved faction this branch did not record (or that is still loading) stays
   // visible as the selection instead of the list silently showing another group.
   if (group.type === 'faction' && !kinds.some(kind => kind.value === `faction:${group.id}`)) {
-    kinds.splice(1, 0, { value: `faction:${group.id}`, label: groups.data ? 'A faction not in this branch' : 'Loading factions…' });
+    kinds.splice(1, 0, { value: `faction:${group.id}`, label: groups.data ? 'Faction unavailable' : 'Loading factions…' });
   }
   const value = group.type === 'faction' ? `faction:${group.id}` : group.type;
   return <>
@@ -121,7 +120,7 @@ function GroupFields({ widget, selection, reference, runtime, limits, onChange }
             : choice === 'top' ? { type: 'top', count: Math.min(DEFAULT_TOP, limits.max) } : { type: 'humans' };
         if (next.type !== 'war' || next.tag) set({ group: next });
       }} /></div>
-    {groups.error && <p className="field-hint" role="alert">Groups unavailable: {groups.error}</p>}
+    {groups.error && <p className="field-hint" role="alert">Couldn’t load groups.</p>}
     {group.type === 'war' && <CountryPicker key={source?.id ?? 'unbound'} field source={source} client={runtime.client}
       countries={source?.metadata.countries ?? []} playerCountryId={source?.metadata.playerCountryId ?? null} selectedTag={group.tag}
       onChange={tag => { if (tag) set({ group: { type: 'war', tag } }); }} />}
@@ -130,7 +129,7 @@ function GroupFields({ widget, selection, reference, runtime, limits, onChange }
         onChange={event => { const count = Math.round(Number(event.currentTarget.value)); if (count >= 1 && count <= limits.max) set({ group: { type: 'top', count } }); }} /></span></label>}
     {group.type !== 'top' && <div className="setting-row setting-row-stacked"><span>Members</span>
       <Segmented label="Group membership" value={selection.membership} options={MEMBERSHIP} onChange={membership => set({ membership })} /></div>}
-    {limits.aggregate && <label className="setting-row"><SettingLabel label="Show as one total" hint="Sum the members into one series" />
+    {limits.aggregate && <label className="setting-row"><SettingLabel label="Show as one total" />
       <input type="checkbox" role="switch" checked={selection.aggregate} onChange={event => set({ aggregate: event.currentTarget.checked })} /></label>}
   </>;
 }
@@ -138,12 +137,12 @@ function GroupFields({ widget, selection, reference, runtime, limits, onChange }
 /** The groups a widget can offer: human players, each recorded faction, at war
  * with a country, and top N when the widget ranks countries. */
 export function groupKinds(reply: CountryGroupReply | undefined, limits: Limits, hour?: number,
-  overrides?: Readonly<Record<string, { name?: string }>>): { value: string; label: string; reason?: string }[] {
+  overrides?: Readonly<Record<string, { name?: string }>>): { value: string; label: string }[] {
   return [
     { value: 'humans', label: 'Human players' },
     ...(reply?.factions ?? []).map(faction => {
       const named = factionNameAt(faction, hour, overrides?.[faction.id]?.name);
-      return { value: `faction:${faction.id}`, label: named.name ?? UNNAMED_FACTION, reason: named.reason ?? undefined };
+      return { value: `faction:${faction.id}`, label: named.name ?? UNNAMED_FACTION };
     }),
     { value: 'war', label: 'At war with a country' },
     ...(limits.ranked ? [{ value: 'top', label: 'Top countries' }] : []),

@@ -7,9 +7,7 @@
 .aces-widget .chart-table th { font-size: var(--military-subtitle-font); text-transform: uppercase; letter-spacing: .04em; }
 .aces-widget { height: 100%; min-height: 0; display: flex; flex-direction: column; }
 .aces-widget .chart-table { flex: 1; min-height: 0; }
-.aces-subtitle { font-size: var(--military-subtitle-font); color: var(--muted); padding: 0 var(--space-4) var(--space-2); }
 .aces-portrait { display: inline-flex; width: var(--military-portrait-width); height: min(var(--military-portrait-height), var(--table-row-height)); object-fit: contain; align-items: center; justify-content: center; }
-.aces-portrait-missing { color: var(--muted); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--raised); fill: var(--muted); padding: 2px; }
 .aces-who, .aces-wing { min-width: 0; }
 .aces-who b, .aces-wing > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .aces-who b { font-weight: 500; }

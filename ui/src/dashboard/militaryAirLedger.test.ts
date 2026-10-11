@@ -97,7 +97,7 @@ test('manual ledger roots include all their native holders without recursively s
   assert.deepEqual(new Set(ledgerCountries(militaryAirAt(index, 10, 12), { kind: 'selected' }, ['X'], undefined,
     12, 14, 'taken', data.countries).rows.map(row => row.identity)), new Set(['3:9', '4:10']));
   const missing = ledgerCountries(militaryAirAt(index, 10, 12), { kind: 'tags', tags: ['unknown'] }, [], undefined, 12, 14, 'taken', data.countries);
-  assert.deepEqual(missing.rows, []); assert.match(missing.reason!, /no recorded native identity/);
+  assert.deepEqual(missing.rows, []); assert.equal(missing.reason, 'Selected countries are unavailable in this campaign.');
   assert.deepEqual(ledgerCountries(militaryAirAt(index, 10, 12), { kind: 'tags', tags: ['X'] }, [], undefined, 12, 14).rows, [],
     'missing native metadata never falls back to literal tags');
   assert.equal(ledgerCountries(militaryAirAt(index, 10, 10), { kind: 'all' }, [], undefined, 10, 14, 'taken', data.countries).rows.length, 3);
@@ -117,22 +117,22 @@ test('line hover uses exact wide signed values, native/read dates, dated labels 
   assert.equal(tip.rows[0].icon, 'dated-flag-11');
   assert.deepEqual(tip.rows[0].countryFlag, { name: 'Dated name 11', flag: 'dated-flag-11' });
   assert.equal(tip.rows[0].swatch, '#123456');
-  assert.equal(value('Own losses booked'), '9,007,199,254,740,992.12345');
-  assert.equal(value('Enemy losses credited'), '−9,007,199,254,740,993.12345');
+  assert.equal(value('Own losses'), '9,007,199,254,740,992.12345');
+  assert.equal(value('Enemy losses'), '−9,007,199,254,740,993.12345');
   assert.equal(value('Operational losses (accidents)'), '−1.00000');
   assert.equal(value('Other losses with unknown opponent'), '9,007,199,254,740,993.12345');
   assert.equal(value('Ratio'), '-1.00 : 1');
-  assert.equal(value('Last supplied native event'), 'Hour 8');
-  assert.equal(value('Event supplied'), 'Hour 11');
+  assert.equal(value('Last supplied native event'), undefined);
+  assert.equal(value('Event supplied'), undefined);
   assert.match(value('Aircraft combat')!, /9,007,199,254,740,993\.12345 lost/);
   assert.deepEqual(labelled, [11]);
   const gap = militaryAirLineTooltip(index, 10, 12, [], labelAt, () => '#123456');
   assert.equal(gap.rows[0].label, 'Not recorded');
   assert.equal(gap.rows[0].countryFlag, undefined);
   const incomplete = militaryAirLineTooltip(index, 10, 13, ['mod country'], labelAt, () => '#123456');
-  assert.equal(incomplete.rows.find(row => row.label === 'Ratio')?.value, 'Not known: incomplete recorded coverage');
-  assert.equal(incomplete.rows.find(row => row.label === 'Event supplied')?.value, 'Hour 11');
-  assert.match(incomplete.note!, /Unrecorded intervals are unknown/);
+  assert.equal(incomplete.rows.find(row => row.label === 'Ratio')?.value, 'Not available');
+  assert.equal(incomplete.rows.find(row => row.label === 'Event supplied'), undefined);
+  assert.match(incomplete.note!, /Some losses may be missing/);
   for (const hour of [11, 13]) {
     const native = { name: `Native holder at ${hour}`, flagPending: hour === 13,
       flagReason: hour === 11 ? 'The shown read refused this flag.' : undefined };

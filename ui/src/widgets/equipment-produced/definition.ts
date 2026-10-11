@@ -9,18 +9,18 @@ import { breakdownOption } from '../../charts/drill/drillState.ts';
 export const OPTIONS: readonly OptionField[] = [
   ...partsRaceOptions('equipment').map(field => field.key === 'show'
     ? breakdownOption([{ id: 'breakdown', label: 'Equipment produced breakdown' }], 'Equipment produced') : field),
-  { key: 'measure', section: 'options', label: 'Measure', hint: 'Per week and per month count what was delivered in the week or month before the moment shown',
+  { key: 'measure', section: 'options', label: 'Measure', hint: 'Uses the previous week or month.',
     kind: 'choice', default: 'total', choices: MEASURES.map(item => ({ value: item.value, label: item.label })) },
   { key: 'grouping', section: 'options', label: 'Group by', kind: 'choice', default: 'type',
     choices: GROUPINGS.map(item => ({ value: item.value, label: item.label })) },
-  { key: 'included', section: 'options', label: 'Included types', hint: 'From the campaign’s own content', kind: 'content-set',
+  { key: 'included', section: 'options', label: 'Included types', kind: 'content-set',
     automatic: 'All types', default: '' },
   REFITS_OPTION,
 ];
 
 export const definition = {
   kind: 'equipment-produced', version: 1, title: 'Equipment produced', icon: 'layers',
-  description: 'Equipment each country has produced: a race re-ranked every hour, lines over time or one country by type.',
+  description: 'Equipment production by country and type.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 },
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true },

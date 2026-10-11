@@ -26,10 +26,10 @@ test('a native cause appears after its supplying read, at its execution date wit
   assert.deepEqual(governmentBadges([transition], token => token, 25), []);
   const badge = governmentBadges([transition], token => token, 26)[0];
   assert.equal(badge.hour, 24);
-  assert.match(badge.label, /mod_new took power from mod_old.*Coup.*read.*interval incomplete/);
+  assert.match(badge.label, /mod_new took power from mod_old.*Coup.*Some changes may be missing/);
   assert.equal(governmentRows([transition], 25, 30, token => token).length, 0);
   assert.equal(governmentRows([transition], 26, 30, token => token)[0].value, 'Coup');
-  assert.equal(governmentCause('not-a-native-enum'), 'Not identified (not-a-native-enum)');
+  assert.equal(governmentCause('not-a-native-enum'), 'Unknown cause');
 });
 
 test('only exact endpoint and supplying-read matches supersede census; elections remain observations', () => {
@@ -96,13 +96,16 @@ test('registered ruling-party renderer requests causes conditionally, respects P
     assert.deepEqual(host.__governmentChart?.badges?.map(badge => badge.hour), [24, 26]);
     const tooltip = host.__governmentChart?.tooltip(26, {} as PlotFrame, []);
     assert.ok(tooltip?.rows.some(row => row.value === 'Coup'));
-    assert.ok(tooltip?.rows.some(row => row.label === 'Read'));
+    assert.ok(!tooltip?.rows.some(row => row.label === 'Read'));
+    assert.ok(tooltip?.rows.some(row => row.label === 'Some changes may be missing.'));
     props.widget.time = { mode: 'pin', windows: { track: { firstOffset: 1, lastOffset: 1 } } }; hour = 30; render();
     assert.ok(host.__governmentChart?.badges?.every(badge => !badge.label.includes('Coup')));
     props.widget.time = { mode: 'follow' }; host.__governmentError = 'Synthetic government refusal';
-    const refused = render(); assert.match(refused, /Retry government causes/); assert.match(refused, /Native party name/);
+    const refused = render(); assert.match(refused, /Couldn’t load government changes/); assert.match(refused, /Native party name/);
+    assert.match(refused, />Retry</);
+    assert.doesNotMatch(refused.replace(/<[^>]*>/g, ' '), /Synthetic government refusal/);
     props.widget.options = { changes: false }; requests.length = 0;
-    assert.doesNotMatch(render(), /Retry government causes/);
+    assert.doesNotMatch(render(), /Couldn’t load government changes/);
     assert.ok(requests.every(request => request.product !== 'politics-ledger'));
     props.widget.options = { changes: true }; delete host.__governmentError;
     host.__governmentLedger = { ...ledger, governments: [{ ...transition, afterToken: 'mod_between' }] };

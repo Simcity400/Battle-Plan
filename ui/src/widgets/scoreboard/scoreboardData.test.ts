@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { ScoreboardColumn, ScoreboardReply, ScoreboardSeries } from '../../generated/dashboard';
 import { rankChanges, sortRows } from '../../charts/table/logic.ts';
 import { tableSortOf, tableSortToken } from '../../charts/table/options.ts';
-import { rankingSort, scoreboardModel, scoreboardRequest, scoreboardRows, scoreboardSort, scoreboardTooltip, selectedColumns, formatCell, validateScoreboardReply } from './scoreboardData.ts';
+import { rankingSort, scoreboardModel, scoreboardRequest, scoreboardRows, scoreboardSort, scoreboardTooltip, scoreboardColumnNote, selectedColumns, formatCell, validateScoreboardReply } from './scoreboardData.ts';
 import { DEFAULT_SORT, OPTIONS, definition } from './definition.ts';
 
 const factories: ScoreboardColumn = { key: 'factories', label: 'Content factory label', unit: 'count', decimals: 0, available: true, reason: null };
@@ -38,9 +38,9 @@ test('signed wide casualty subtotals retain exact sorting, known-attacker meanin
   assert.equal(tooltip.rows[0].value, formatCell(casualty, -wide, true));
   assert.equal(tooltip.rows[0].value, '† −1,208,925,819,614,629,174,706,177');
   assert.ok(!tooltip.rows.some(note => note.label.startsWith('Read ')));
-  assert.ok(tooltip.rows.some(note => note.label.includes('Recorded subtotal (†)')));
-  assert.ok(tooltip.rows.some(note => note.label.includes('negative corrections')));
-  assert.ok(tooltip.rows.some(note => note.label.includes('attacker are excluded')));
+  assert.ok(tooltip.rows.some(note => note.label.includes('† Partial total')));
+  assert.ok(tooltip.rows.some(note => note.label.includes('losses or corrections may be missing')));
+  assert.ok(tooltip.rows.some(note => note.label.includes('with a known attacker')));
   const second = series('adjacent signed amount', 2, (-wide + 1n).toString(), (-wide + 1n).toString(), 10, 35);
   second.columns[0].key = casualty.key;
   const compared = scoreboardModel(validateScoreboardReply({ ...reply([entry, second]), columns: [...registry, casualty] }));
@@ -146,14 +146,14 @@ test('read gaps never carry a value and held reads stay dated in the tooltip', (
   assert.equal(row.cells.get('factories')?.amount, 12n);
   const gap = scoreboardRows(model, model.tags, 34, 'factories', 'descending')[0];
   assert.equal(gap.cells.get('factories')?.amount, null);
-  assert.match(scoreboardTooltip(gap, [factories], 'Name').rows[1].label, /Not recorded/);
+  assert.match(scoreboardTooltip(gap, [factories], 'Name').rows[1].label, /Not available at this time/);
   const unknownModel = scoreboardModel(reply([series('unknown', 2, null)]));
   const unknown = scoreboardRows(unknownModel, unknownModel.tags, 10, 'factories', 'descending')[0];
-  assert.match(scoreboardTooltip(unknown, [factories], 'Name').rows[1].label, /Not known/);
+  assert.match(scoreboardTooltip(unknown, [factories], 'Name').rows[1].label, /Not available at this time/);
   const tooltip = scoreboardTooltip(row, [factories, army], 'Name at row hour');
   assert.equal(tooltip.title, 'Name at row hour');
   assert.ok(!tooltip.rows.some(note => note.label.startsWith('Read ')));
-  assert.match(tooltip.rows.at(-1)!.label, /Not available yet/);
+  assert.match(tooltip.rows.at(-1)!.label, /Unavailable/);
 });
 
 test('formatting retains every recorded decimal and exact source units', () => {
@@ -196,4 +196,15 @@ test('five thousand countries sort, re-rank, and retain missing countries withou
   assert.equal(request.top, null);
   const topRequest = scoreboardRequest('branch', { tags: [], membership: null, unobserved: [], dropped: 0, reason: null, top: 5000 }, [factories], 'factories', 'descending');
   assert.equal(topRequest.top?.count, 5000);
+});
+
+test('scoreboard column help names the measure and hides product refusal details', () => {
+  assert.equal(scoreboardColumnNote({ ...army, available: true }), 'Manpower in deployed divisions, counted by owner.');
+  assert.equal(scoreboardColumnNote({ ...factories, key: 'casualtiesDealt' }), 'Land, naval and air casualties dealt. † Partial total.');
+  assert.equal(scoreboardColumnNote({ ...factories, key: 'casualtiesTaken' }), 'Casualties taken with a known attacker. † Partial total.');
+  assert.equal(scoreboardColumnNote(army), 'Unavailable');
+  const row = scoreboardRows(scoreboardModel(reply([series('Country', 1, '3')])), ['Country'], 10, 'factories', 'descending')[0];
+  const tooltip = scoreboardTooltip(row, [army], 'Country');
+  assert.equal(tooltip.rows.filter(row => row.label === 'Unavailable').length, 1);
+  assert.ok(!JSON.stringify(tooltip).includes(army.reason!));
 });

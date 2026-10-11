@@ -81,8 +81,8 @@ test('nuclear arsenal uses content type names, totals and hourly read notes', ()
   const tip = nuclearTooltip(model, 'AAA', 10, 'Name at read', new Map(), 'Hour 10')![0];
   assert.equal(tip.title, 'Name at read');
   assert.equal(tip.rows[0].label, 'Singularity bombs');
-  assert.ok(tip.note!.includes(`Read ${formatDateTime(10)}`));
-  assert.match(tip.note!, /queued drops/);
+  assert.equal(tip.note, undefined);
+  assert.doesNotMatch(tip.note ?? '', /queued drops/);
 });
 
 test('nuclear carried values and clipped runs retain the supplying read date', () => {
@@ -91,8 +91,8 @@ test('nuclear carried values and clipped runs retain the supplying read date', (
   const model = nuclearModel(validateNukesReply(data));
   const tip = nuclearTooltip(model, 'AAA', 12, 'Country', new Map(), formatDateTime(12))![0];
   assert.equal(tip.subtitle, formatDateTime(12));
-  assert.ok(tip.note!.includes(`Read ${formatDateTime(10)}`));
-  assert.ok(!tip.note!.includes(`Read ${formatDateTime(12)}`));
+  assert.equal(tip.note, undefined);
+  assert.ok(!(tip.note ?? '').includes(`Read ${formatDateTime(12)}`));
 });
 
 test('nuclear missing rows and country gaps never become zero or connect lines', () => {
@@ -222,7 +222,7 @@ test('nuclear drills join only the native origin aliases and pin that origin thr
   assert.equal(nuclearSegmentAt(model, 'OLD', 14), 10);
   const bands = nuclearDrillBands(model, 'OLD', null, { firstHour: 10, lastHour: 14 });
   assert.equal(runAt(bands[0], 12)?.breakBefore, undefined);
-  assert.equal(nuclearTooltip(model, 'OLD', 12, 'New alias', new Map(), 'Hour 12')![0].note!.includes(`Read ${formatDateTime(12)}`), true);
+  assert.equal(nuclearTooltip(model, 'OLD', 12, 'New alias', new Map(), 'Hour 12')![0].note, undefined);
   assert.equal(nuclearDrillAliasAt(data, 10), 'OLD');
   assert.equal(nuclearDrillAliasAt(data, 14), 'NEW');
   assert.equal(nuclearDrillAliasAt(data, 15), null);

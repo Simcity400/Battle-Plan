@@ -82,7 +82,7 @@ export function stabilityMarkers(sources: MarkerSources, kinds: ReadonlySet<Mark
     for (const faction of groups.factions) {
       const nameAt = (hour: number) => {
         const named = sources.factionName?.(faction, hour) ?? factionNameAt(faction, hour);
-        return `${named.name ?? UNNAMED_FACTION}${named.reason ? ` (${named.reason})` : ''}`;
+        return named.name ?? UNNAMED_FACTION;
       };
       const endsAt = new Set(faction.members.map(member => `${member.lastHour + 1}#${member.tag}`));
       const startsAt = new Set(faction.members.map(member => `${member.firstHour}#${member.tag}`));

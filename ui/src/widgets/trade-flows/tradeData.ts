@@ -285,7 +285,7 @@ export function tradeScope(data: TradeData, selection: CountrySelection, resolve
       if (without(without([member], holes), facts).length) missing = true;
     }
   }
-  return { ...base, countryIds, ...(missing ? { identityNote: 'Some native country identities were not recorded at the membership dates counted; their unidentified trade is omitted.' } : {}) };
+  return { ...base, countryIds, ...(missing ? { identityNote: 'Some trade could not be identified.' } : {}) };
 }
 
 export type Measure = 'current' | 'total' | 'average';
@@ -395,11 +395,11 @@ export function partialHours(partial: readonly PartialSpan[], from: number, to: 
 export function coverageNote(reply: Pick<TradeFlowsReply, 'known' | 'partial'>, measure: Measure, from: number, hour: number): string | undefined {
   if (measure === 'current') {
     const left = leftOutAt(reply.partial, hour);
-    return left ? `${usNumber.format(left)} ${left === 1 ? 'deal' : 'deals'} at this read could not be attributed (a seller, buyer or resource the recording does not name) and ${left === 1 ? 'is' : 'are'} not shown.` : undefined;
+    return left ? `${usNumber.format(left)} trades could not be identified.` : undefined;
   }
   const partial = partialHours(reply.partial, from, hour);
   return [unknownNote(reply.known, from, hour),
-    partial >= 1 ? `${formatDays(partial)} in this time had deals that could not be attributed; those deals are not counted.` : undefined]
+    partial >= 1 ? `Some trades are missing for ${formatDays(partial)}.` : undefined]
     .filter(Boolean).join(' ') || undefined;
 }
 
@@ -451,7 +451,7 @@ export function selectionMessage(resolved: { reason: string | null } | null, atM
   if (!resolved?.reason) return null;
   // An empty roster now does not explain missing membership earlier in the measured time.
   const missing = measure !== 'current' && groupUnobserved ? knownHours(groupUnobserved, from, hour) : 0;
-  if (missing >= 1) return `${formatDays(missing)} of the group’s membership in this time were not recorded; they are not counted.`;
+  if (missing >= 1) return `Group membership is missing for ${formatDays(missing)}.`;
   return atMoment.reason ?? resolved.reason;
 }
 
@@ -585,7 +585,7 @@ export function resourceColours(resources: readonly ResourceInfo[], order: Reado
   }));
 }
 
-/** A resource's name: content's, else its token; a repeated declaration numbered. */
+/** A resource's readable name, with repeated declarations numbered. */
 export const resourceName = (item: Pick<ResourceInfo, 'name' | 'token' | 'ordinal'>) => `${contentTitle(item.name, item.token, 'Resource name unavailable')}${item.ordinal > 1 ? ` (${item.ordinal})` : ''}`;
 
 
@@ -668,12 +668,12 @@ export function measureAmount(flows: readonly Flow[], measure: Measure, from: nu
 
 /** What a measure covers, for the tooltip's subtitle. */
 export function measureNote(measure: Measure): string {
-  return measure === 'current' ? 'Per day at the moment shown' : measure === 'total' ? 'Everything delivered so far' : 'Average per day while trading';
+  return measure === 'current' ? 'Per day' : measure === 'total' ? 'Total delivered' : 'Average per trading day';
 }
 
 /** A note on unrecorded days inside [from, hour] for the totals and averages, which
  * cover recorded days only; none when every hour was recorded. */
 export function unknownNote(known: readonly HourSpan[], from: number, hour: number): string | undefined {
   const missing = Math.max(0, hour - from + 1 - knownHours(known, from, hour));
-  return missing >= 1 ? `${formatDays(missing)} in this time had no recorded deals; they are not counted.` : undefined;
+  return missing >= 1 ? `Trade data is missing for ${formatDays(missing)}.` : undefined;
 }

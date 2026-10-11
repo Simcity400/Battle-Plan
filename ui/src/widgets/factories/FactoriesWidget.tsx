@@ -103,12 +103,12 @@ export default function FactoriesWidget(props: WidgetProps) {
 
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="factory" message="Load a campaign to see its factories." />;
-    if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-    if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-    if (grouped && groupReply.error) return <WidgetState kind="error" message={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
+    if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+    if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+    if (grouped && groupReply.error) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon="factory" message={resolved.reason} />;
     if (!shownReply || !model || (grouped && !numericGroups)) return <WidgetState kind="loading" label="Loading factories…" />;
-    if (!model.tags.length) return <WidgetState kind="unavailable" message="No factories were recorded for these countries in this branch." />;
+    if (!model.tags.length) return <WidgetState kind="unavailable" message="No factories were recorded for these countries." />;
     return undefined;
   })();
 
@@ -130,7 +130,7 @@ export default function FactoriesWidget(props: WidgetProps) {
     pickOwner={pickOwner} lineEmpty={{ icon: 'factory', message: 'No countries to draw. Choose countries in the widget settings.' }}
     mixEmpty={{ icon: 'factory', message: widget.countries.kind === 'group'
       ? `No country of this group was recorded on ${dayLabel(moment)}.` : 'Choose a country in the widget settings.',
-      unavailable: name => `No factories were recorded for ${name} in this branch.` }}
+      unavailable: name => `No factories were recorded for ${name}.` }}
     tooltip={(tag, hour, name, colours) => {
       if (!model) return null;
       const at = isMember(membershipOf(tag) ?? undefined, hour) ? factoriesAt(model, tag, hour, groups, mode) : null;

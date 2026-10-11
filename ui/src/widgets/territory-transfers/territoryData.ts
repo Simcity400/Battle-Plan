@@ -2,7 +2,8 @@ import { sumFlowParts } from '../../charts/flow/sum.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
 import type { SummedDiagram, SummedNode } from '../../charts/flow/sum';
 import type { PeaceDeal, PeaceDealsReply, PeaceTransferGraph, PeaceTransferredState } from '../../generated/dashboard';
-import { checkedPeaceVictoryPoints, peaceDealHour, peaceDealKnownAt } from '../../dashboard/peaceDealsData.ts';
+import { checkedPeaceVictoryPoints, peaceDealHour, peaceDealIsBy, peaceDealKnownAt } from '../../dashboard/peaceDealsData.ts';
+import { formatDateTime } from '../../dashboard/calendar.ts';
 import { campaignToken } from '../../dashboard/chosen.ts';
 import { contentKey, setToken } from '../../dashboard/options.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
@@ -215,25 +216,6 @@ export function transferAmount(links: readonly TransferLink[], measure: Transfer
   return usNumber.format(total);
 }
 
-export function transferProvenance(states: readonly TransferOccurrence[]): string {
-  let exact = 0;
-  let derived = 0;
-  let unknown = 0;
-  for (const state of states) if (state.derived === false) exact++; else if (state.derived) derived++; else unknown++;
-  return [exact ? `${usNumber.format(exact)} exact ${exact === 1 ? 'transfer' : 'transfers'} captured by the finalizer` : '',
-    derived ? `${usNumber.format(derived)} ${derived === 1 ? 'transfer' : 'transfers'} derived from what changed` : '',
-    unknown ? `${usNumber.format(unknown)} ${unknown === 1 ? 'transfer has' : 'transfers have'} provenance not recorded` : ''].filter(Boolean).join('; ');
-}
-
-/** Caption counts are about links before "other" aggregation, never about a
- * partial sum presented as the entire campaign. */
-export function victoryPointNote(diagram: Pick<TransferDiagram, 'missingVictoryPoints' | 'nonpositiveVictoryPoints'>): string | null {
-  const missing = diagram.missingVictoryPoints;
-  const nonpositive = diagram.nonpositiveVictoryPoints;
-  return [missing ? `${usNumber.format(missing)} ${missing === 1 ? 'link lacks' : 'links lack'} recorded victory points at the moment shown and ${missing === 1 ? 'is' : 'are'} not drawn` : '',
-    nonpositive ? `${usNumber.format(nonpositive)} ${nonpositive === 1 ? 'link has' : 'links have'} zero or negative recorded victory points and ${nonpositive === 1 ? 'has' : 'have'} no ribbon width` : ''].filter(Boolean).join('; ') || null;
-}
-
 /** A completed conference's gap warning belongs to its own observed interval,
  * rather than later unrelated campaign gaps. An active conference follows Live. */
 export function transferGapWindow(conference: PeaceDeal | null, links: readonly TransferLink[], firstHour: number, moment: number): [number, number] {
@@ -255,4 +237,9 @@ export function transferGapCount(reply: PeaceDealsReply, from: number, to: numbe
   let last = -Infinity;
   for (const span of spans) { if (span.first > last + 1) count++; last = Math.max(last, span.last); }
   return count;
+}
+
+/** Event bounds and the war name, without acquisition-method captions. */
+export function transferConferenceLabel(deal: PeaceDeal): string {
+  return `${peaceDealIsBy(deal) ? 'by ' : ''}${formatDateTime(peaceDealHour(deal))} · ${deal.warName ?? 'Unknown war'}`;
 }

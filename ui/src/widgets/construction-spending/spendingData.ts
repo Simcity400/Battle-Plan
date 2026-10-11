@@ -1,10 +1,9 @@
 import type { ConstructionSpendingReply, SpendingLeaf, SpentStep } from '../../generated/dashboard';
-import { GAP_LABELS, isBuildingInfo, isStateName, placeName, typeName } from '../../dashboard/construction.ts';
+import { isBuildingInfo, isSpendingGap, isStateName, placeName, typeName } from '../../dashboard/construction.ts';
 import type { StateNameAt } from '../../dashboard/construction';
 import type { SunburstItem } from '../../charts/sunburst/layout';
 import { formatAmount } from '../../charts/valueAxis.ts';
 
-export { GAP_LABELS } from '../../dashboard/construction.ts';
 
 /** The hierarchy's levels, innermost first, and the option that switches each off. */
 export const LEVELS = ['splitLevel', 'typeLevel', 'stateLevel'] as const;
@@ -18,7 +17,7 @@ const isLeaf = (leaf: SpendingLeaf, types: number) => typeof leaf === 'object' &
   && (leaf.kind === 'building' || leaf.kind === 'railway') && int(leaf.building) && leaf.building >= 0 && leaf.building < types
   && [leaf.state, leaf.toState].every(value => value == null || int(value))
   && Array.isArray(leaf.spent) && leaf.spent.every(isStep) && leaf.spent.every((step, index) => index === 0 || leaf.spent[index - 1].knownAt < step.knownAt)
-  && Array.isArray(leaf.unknown) && leaf.unknown.every(gap => typeof gap === 'object' && gap != null && int(gap.knownAt) && Object.hasOwn(GAP_LABELS, gap.reason) && typeof gap.project === 'string' && (gap.until == null || (int(gap.until) && gap.until > gap.knownAt)))
+  && Array.isArray(leaf.unknown) && leaf.unknown.every(gap => typeof gap === 'object' && gap != null && int(gap.knownAt) && isSpendingGap(gap.reason) && typeof gap.project === 'string' && (gap.until == null || (int(gap.until) && gap.until > gap.knownAt)))
   && Array.isArray(leaf.projects) && leaf.projects.length > 0 && leaf.projects.every((project, index) => typeof project === 'object' && project != null
     && typeof project.project === 'string' && int(project.firstRead) && (project.until == null || (int(project.until) && project.until > project.firstRead))
     && (project.knownAt == null || (int(project.knownAt) && project.knownAt >= project.firstRead))
@@ -35,7 +34,7 @@ export function validateSpendingReply(data: unknown): ConstructionSpendingReply 
     && Array.isArray(reply.types) && reply.types.every(isBuildingInfo) && (reply.repairIcon == null || typeof reply.repairIcon === 'string')
     && Array.isArray(reply.states) && reply.states.every(isStateName) && int(reply.beforeFirstRead) && reply.beforeFirstRead >= 0
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
-    && Array.isArray(reply.unattributed) && reply.unattributed.every(gap => int(gap.knownAt) && Object.hasOwn(GAP_LABELS, gap.reason) && typeof gap.project === 'string' && (gap.until == null || (int(gap.until) && gap.until > gap.knownAt)))
+    && Array.isArray(reply.unattributed) && reply.unattributed.every(gap => int(gap.knownAt) && isSpendingGap(gap.reason) && typeof gap.project === 'string' && (gap.until == null || (int(gap.until) && gap.until > gap.knownAt)))
     && Array.isArray(reply.leaves) && reply.leaves.every(leaf => isLeaf(leaf, reply.types.length));
   if (!ok) throw new Error('The construction spending reply is malformed.');
   return reply;
@@ -109,7 +108,7 @@ export function spendingItems(reply: ConstructionSpendingReply, window: Spending
       present: started > 0 || (exact != null && exact !== 0n) || Object.keys(unknown).length > 0,
       unknown,
       counted: projects,
-      note: place.missing,
+      note: place.missing ? 'State name unavailable.' : undefined,
     });
   }
   const applies = (gap: ConstructionSpendingReply['unattributed'][number], hour: number) =>
@@ -124,7 +123,6 @@ export function spendingItems(reply: ConstructionSpendingReply, window: Spending
       path: [{ id: 'unattributed', label: 'Not identified' }], value: null, exact: null,
       unknownValue: unowned.length > 0, finalUnknown: reply.unattributed.some(gap => applies(gap, window.end)),
       present: unowned.length > 0, unknown,
-      note: 'Output that the recording cannot attribute or did not capture leaves this country’s whole unknown.',
     });
   }
   return items;
@@ -139,5 +137,5 @@ export const formatSpent = (value: number, exact: bigint | null, scale: number) 
 export function footnote(reply: ConstructionSpendingReply): string | undefined {
   const count = reply.beforeFirstRead;
   if (!count) return undefined;
-  return `${count} ${count === 1 ? 'project was' : 'projects were'} already under way when output observation began; earlier output is not recorded.`;
+  return `Earlier spending is missing for ${count} ${count === 1 ? 'project' : 'projects'}.`;
 }

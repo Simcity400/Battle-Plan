@@ -74,8 +74,8 @@ function produced(reply: EquipmentProducedReply, tag = 'MOD', origin = 8, hour =
 
 test('all-unknown totals retain full known/correction/zero/unknown rows, status and Follow controls with blank geometry', () => {
   const html = produced(base);
-  for (const text of ['Known', '>12<', 'Correction', '>-2<', 'Zero', 'Unknown', 'Not known', 'Follow playback']) assert.ok(html.includes(text), text);
-  assert.match(html, /No recorded parts for MOD in this branch/);
+  for (const text of ['Known', '>12<', 'Correction', '>-2<', 'Zero', 'Unknown', 'Not known', 'Follow']) assert.ok(html.includes(text), text);
+  assert.match(html, /Breakdown unavailable for MOD/);
   assert.equal(/<small>[^<]*%/.test(html), false);
 });
 

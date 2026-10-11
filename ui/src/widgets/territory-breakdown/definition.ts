@@ -10,8 +10,9 @@ export const OPTIONS: readonly OptionField[] = [
 ];
 export const definition = {
   kind: 'territory-breakdown', version: 1, title: 'Territory breakdown', category: 'Diplomacy', icon: 'sunburst',
-  description: 'Territory grouped by recorded faction, country and strategic region.',
+  description: 'Territory grouped by faction, country and strategic region.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, all: true }, defaultCountries: { kind: 'all' },
+  factionColours: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 12 }, options: OPTIONS,
 } as const satisfies WidgetMeta;

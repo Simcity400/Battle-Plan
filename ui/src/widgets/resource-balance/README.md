@@ -18,6 +18,8 @@ Countries, campaign/follow/pin/range; bars/history, resource choices, order/scal
 - Use the game’s net and export reserve, not actual purchases, for balance. Missing deal coverage leaves pools usable; discrepancies are Not from a listed deal only when deals are known.
 - Signed corrections and native rounding residuals stay exact. Gaps and holder changes stop values; smart-group drills clip each native alias by that alias's membership without inventing zero.
 - Hide empty removes only zero supply and demand, retaining signed shortages. Picks/overlap choices hold the drawn date. Pin saves resource token/ordinal, native holder origin and history extent; its header follows local picks/Follow. Older fixed-date pins use that date as origin; other missing origins stay unavailable. Follow uses the aligned clock independently of parent time.
+- Selected resource chips show each declaration’s name, net value and curve styles: supply above demand in the key. Both curves share a colour; repeated colours use distinct dash pairs. A token selects all its declarations, each with its own chip, and buttons work with Enter or Space.
+- The shading setting shows for one selected token or Automatic. Shading draws only for one resolved series; duplicate declarations of the selected token have no shading.
 - Every deal contributes; window only the displayed partner rows and date names/flags to the drill hour. Keep the interval index and same-request NumericReply through label refresh; mount visible panels/neighbours only.
 
 ## Files

@@ -31,10 +31,7 @@ test('a sole trade through either other node names and flags both countries at t
       countryAt: (id, hour) => identityCountryAt(data, id, hour), ask: wanted => { asked.push(wanted); } });
     assert.deepEqual(asked, [[{ tag: 'C', hour: 5 }, { tag: 'X', hour: 5 }]]);
     assert.equal(tip.title, `${reverse ? 'X' : 'C'} at 5 → ${reverse ? 'C' : 'X'} at 5`);
-    assert.deepEqual(tip.rows.slice(-2).map(row => [row.label, row.value, row.countryFlag?.flag]), [
-      ['Seller', `${reverse ? 'X' : 'C'} at 5`, `flag:${reverse ? 'X' : 'C'}:5`],
-      ['Buyer', `${reverse ? 'C' : 'X'} at 5`, `flag:${reverse ? 'C' : 'X'}:5`],
-    ]);
+    assert.ok(!tip.rows.some(row => row.label === 'Seller' || row.label === 'Buyer'));
   }
 });
 
@@ -43,7 +40,7 @@ test('node tooltips share dated labels and bound their sorted country requests',
     const countries = [...Array.from({ length: 11 }, (_, index) => `Seller ${String(index).padStart(2, '0')}`), 'X'];
     const reply: TradeFlowsReply = { branchId: '1', decimals: 0, countries,
       countryIdentities: identities(countries, 23),
-      resources: [3, 7].map(id => ({ id, token: `R${id}`, ordinal: 1, name: null, icon: null })),
+      resources: [3, 7].map(id => ({ id, token: `R${id}`, ordinal: 1, name: id === 7 ? 'Mod resource seven' : 'Mod resource three', icon: null })),
       reads: [0, 5], known: [{ firstHour: 0, lastHour: 23 }], partial: [], warnings: [],
       flows: [...countries.slice(0, -1).map((_, index) => ({ seller: reverse ? 11 : index, buyer: reverse ? index : 11, resource: 7,
         sellerIdentity: identity(reverse ? 11 : index), buyerIdentity: identity(reverse ? index : 11), sellerTags: [reverse ? 11 : index], buyerTags: [reverse ? index : 11],
@@ -67,7 +64,7 @@ test('node tooltips share dated labels and bound their sorted country requests',
       assert.equal(tip.title, 'Other countries');
       assert.equal(tip.countryFlag, undefined, 'an aggregate keeps its flagless header');
       assert.ok(tip.subtitle?.startsWith(reverse ? 'Buys · ' : 'Sells · '));
-      assert.deepEqual(tip.rows.slice(0, 2).map(row => [row.label, row.value, row.swatch]), [['Resource name unavailable', '55', 'colour:7'], ['Resource name unavailable', '2', 'colour:3']]);
+      assert.deepEqual(tip.rows.slice(0, 2).map(row => [row.label, row.value, row.swatch]), [['Mod resource seven', '55', 'colour:7'], ['Mod resource three', '2', 'colour:3']]);
       assert.equal(tip.rows[2].value, '57');
       assert.equal(tip.rows[3].label, `Seller 01 at ${tipHour}`);
       assert.equal(tip.rows[3].countryFlag?.flag, `flag:Seller 01:${tipHour}`);

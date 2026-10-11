@@ -19,7 +19,7 @@ import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { ScoreboardReply } from '../../generated/dashboard';
 import { DEFAULT_SORT, OPTIONS } from './definition';
-import { formatCell, rankingSort, scoreboardModel, scoreboardRequest, scoreboardRows, scoreboardSort, scoreboardTooltip, selectedColumns, validateScoreboardReply } from './scoreboardData';
+import { formatCell, rankingSort, scoreboardModel, scoreboardRequest, scoreboardRows, scoreboardSort, scoreboardTooltip, scoreboardColumnNote, selectedColumns, validateScoreboardReply } from './scoreboardData';
 import type { ScoreboardRow } from './scoreboardData';
 import './scoreboard.css';
 
@@ -68,11 +68,11 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const names = useCountryNamesAt(runtime.client, track, nameWanted, active);
   const columns = useMemo<readonly TableColumn<ScoreboardRow>[]>(() => [
     { key: 'country', header: 'Country', label: 'Country', width: 'minmax(0, 2fr)',
-      hint: resolved.top != null ? 'Alphabetical order of the chosen numerical top N. Top N by is in Countries settings.' : undefined,
+      hint: resolved.top != null ? 'Top countries, sorted by name.' : undefined,
       value: row => names.get(nameKey(row.hour, row.tag)) ?? null, renderMissing: true,
       render: row => <CountryCell {...labelAt(row.hour)(row.tag)} /> },
     ...shown.map(column => ({ key: column.key, header: column.label, label: column.label, numeric: true, width: 'max-content', bar: 'visible' as const,
-      hint: column.reason ?? column.note, value: (row: ScoreboardRow) => row.cells.get(column.key)?.amount,
+      hint: scoreboardColumnNote(column), value: (row: ScoreboardRow) => row.cells.get(column.key)?.amount,
       render: (row: ScoreboardRow) => {
         const cell = row.cells.get(column.key);
         return formatCell(column, cell?.amount ?? null, cell?.atLeast);
@@ -97,14 +97,14 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   }, [data, registryResult.data, groups.data, options.columns, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="grid" message="Load a campaign to compare its countries." />;
-  if (!window) return <WidgetState kind="unavailable" message="The chosen moment is outside this campaign branch." />;
-  if (registryResult.error) return <WidgetState kind="error" message={registryResult.error} onRetry={registryResult.retry} />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (grouped && groups.error) return <WidgetState kind="error" message={`Country groups are unavailable: ${groups.error}`} onRetry={groups.retry} />;
+  if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (registryResult.error) return <WidgetState kind="error" detail={registryResult.error} onRetry={registryResult.retry} />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (grouped && groups.error) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groups.error}`} onRetry={groups.retry} />;
   if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
   if (registryResult.data && !shown.length) return <WidgetState kind="unavailable" message="The selected columns are not in this recording. Choose columns in settings." />;
   if (!registryResult.data || !data || (grouped && !groups.data)) return <WidgetState kind="loading" label="Loading scoreboard…" />;
-  if (!rows.length) return <WidgetState kind="unavailable" message="No countries were recorded for this selection at this hour. Gaps stay gaps." />;
+  if (!rows.length) return <WidgetState kind="unavailable" message="No countries available for this selection." />;
   return <div className="scoreboard">
     <Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Scoreboard" rows={rows} columns={columns}
       rowKey={rowKey} tieKey={tieKey} sort={sort} setOption={setOption ? setTableOption : undefined} sortOptionValue={tableSortToken}

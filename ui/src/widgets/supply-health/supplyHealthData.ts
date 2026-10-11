@@ -42,14 +42,13 @@ export const formatShare = (count: number, total: number) =>
 export function supplyTooltip(date: string, name: string, countryFlag: TooltipContent['countryFlag'], run: SupplyHealthRun | null,
   colors: readonly string[]): TooltipContent {
   if (!run) return { title: `${date} · ${name}`, countryFlag,
-    rows: [{ label: 'Supply health', value: 'Not known' }], note: 'No complete supply observation for this country at this hour.' };
+    rows: [{ label: 'Supply health', value: 'Not known' }], note: 'Supply was not recorded at this time.' };
   const total = totalDivisions(run);
   if (!total) return { title: `${date} · ${name}`, countryFlag, rows: [{ label: 'Divisions', value: '0' }],
-    note: 'No divisions: shares are undefined.' };
+    note: 'No divisions.' };
   return { title: `${date} · ${name}`, countryFlag,
     rows: [...STATES].reverse().map(state => ({ label: STATE_LABELS[state], swatch: colors[STATES.indexOf(state)],
-      value: `${formatShare(run[state], total)} · ${usNumber.format(run[state])} ${run[state] === 1 ? 'division' : 'divisions'}` })),
-    note: 'Shares rounded to two decimals; counts exact. In supply includes low received supply still covered by grace. No supply means native very-low frame 3, not necessarily zero received supply.' };
+      value: `${formatShare(run[state], total)} · ${usNumber.format(run[state])} ${run[state] === 1 ? 'division' : 'divisions'}` })) };
 }
 
 /** Supply's buckets exhaust a complete native read; a missing read has no denominator. */

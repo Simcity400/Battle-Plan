@@ -185,15 +185,15 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   }, [countries, groups.data, extent[0], extent[1], resolved.unobserved]);
 
   if (!track) return <WidgetState kind="empty" icon="sparkle" message="Load a campaign to see experience." />;
-  if ((widget.time.mode === 'pin' || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-  if (widget.countries.kind === 'group' && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if ((widget.time.mode === 'pin' || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (widget.countries.kind === 'group' && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data || (widget.countries.kind === 'group' && !groups.data)) return <WidgetState kind="loading" label="Loading experience…" />;
   if (!countries.some(country => country.recorded)) return <WidgetState kind="unavailable" message="Not in this recording" />;
   if (!branches.length) return <WidgetState kind="empty" message="Turn on an experience branch in the widget settings." />;
   if (measure === 'gain' && !countries.some(country => country.reads.some(read => read.gain !== null)))
-    return <WidgetState kind="unavailable" message={`Daily gain is not recorded here. It requires ${data.dayHours} fully observed hours for the same country.`} />;
+    return <WidgetState kind="unavailable" message="Daily gain needs a full day of data." />;
 
   return <div className="experience">
     <Legend label={single ? 'Branches' : 'Countries'} items={single ? branches.map(branch => {

@@ -35,10 +35,10 @@ export default function CampaignPicker({ widget, template, runtime }: { widget: 
     <button ref={menu.trigger} type="button" className="widget-country-trigger" popoverTarget={id} aria-haspopup="dialog" aria-expanded={menu.open} aria-label={`Widget campaign: ${label}`}>
       <Icon name={widget.campaign === 'default' ? 'star' : 'file'} /><span>{label}</span><Icon name="chevron-down" />
     </button>
-    {error && <p className="map-menu-error" role="alert">{error}</p>}
+    {error && <p className="map-menu-error" role="alert">Couldn’t load campaign.</p>}
     <Popover menu={menu} portal={false} id={id} className="campaign-picker" aria-label="Choose the widget's campaign" onToggle={event => { if (event.newState === 'closed') setQuery(''); }}>
       <button type="button" className="menu-item" aria-pressed={widget.campaign === 'default'} onClick={() => choose(null)}>
-        <Icon name="star" /><span className="menu-item-label">Default campaign<small>{defaultCampaign ? `Now ${displayName(defaultCampaign.path)}` : 'Follows the campaign shown in the sidebar'}</small></span>
+        <Icon name="star" /><span className="menu-item-label">Default campaign<small>{defaultCampaign ? `Now ${displayName(defaultCampaign.path)}` : 'Current campaign'}</small></span>
         {widget.campaign === 'default' && <Icon name="check" />}
       </button>
       {open.length > 0 && <div className="popover-label">Open</div>}
@@ -55,7 +55,6 @@ export default function CampaignPicker({ widget, template, runtime }: { widget: 
           <Icon name="folder-open" /><span className="menu-item-label">{file.name}{file.folder && <small>{file.folder}</small>}</span>
         </button>)}
           {!library.length && <p className="field-hint">{words ? 'No matching recordings.' : 'Every recording in your folder is already open.'}</p>}</div>
-        <p className="field-hint campaign-picker-note">Opening a recording keeps it loaded and shares it with every widget and map that uses it.</p>
       </>}
     </Popover>
   </div>;

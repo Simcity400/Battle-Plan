@@ -6,8 +6,7 @@ export const OPTIONS: readonly OptionField[] = [
     choices: [{ value: 'gained', label: 'Date gained' }, { value: 'ended', label: 'Date ended' }, { value: 'name', label: 'Name' }] },
   { key: 'ended', section: 'options', label: 'Ended spirits', kind: 'choice', default: 'shown',
     choices: [{ value: 'shown', label: 'Shown' }, { value: 'hidden', label: 'Hidden' }] },
-  { key: 'grow', section: 'axes', label: 'Grow with playback', kind: 'toggle', default: false,
-    hint: 'With Live on, grow the time axis as the campaign plays.' },
+  { key: 'grow', section: 'axes', label: 'Grow with playback', kind: 'toggle', default: false },
 ];
 
 export const definition = {

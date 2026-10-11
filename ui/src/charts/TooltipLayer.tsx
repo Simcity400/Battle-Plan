@@ -1,6 +1,5 @@
 import { useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import { CountryFlagUrl } from '../components/CountryFlag';
-import { countryFlagUnavailable } from '../components/countryFlagPresentation.ts';
 import { placeTooltip } from './tooltipPlacement';
 import { tooltipStore } from './tooltip';
 import { ScrollableTooltipRows, TooltipRowView } from './TooltipRows';
@@ -28,9 +27,7 @@ export default function TooltipLayer() {
           {state.content.countryFlag ? <CountryFlagUrl className="chart-tooltip-flag" url={state.content.countryFlag.flag}
             reason={state.content.countryFlag.flagReason} pending={state.content.countryFlag.flagPending} />
             : state.content.icon && <img src={state.content.icon} alt="" />}
-          <div><strong>{state.content.title}</strong>{state.content.subtitle && <small>{state.content.subtitle}</small>}
-            {state.content.countryFlag && !state.content.countryFlag.flag && <small>
-              {countryFlagUnavailable(state.content.countryFlag.flagReason, state.content.countryFlag.flagPending).text}</small>}</div>
+          <div><strong>{state.content.title}</strong>{state.content.subtitle && <small>{state.content.subtitle}</small>}</div>
         </div>
         : <strong>{state.content.title}</strong>}
       {state.content.scrollable ? <ScrollableTooltipRows content={state.content} owner={state.owner} top={state.scrollTop ?? 0} />

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { LedgerDaily, LedgerSpend, PoliticsLedgerReply } from '../../generated/dashboard';
 import { runAt } from '../../charts/series.ts';
 import { powerBalanceIndex } from '../../dashboard/powerBalance.ts';
-import { powerCountrySegments, powerPartHistory, powerPartsAt } from './powerDrillData.ts';
+import { powerActionDetails, powerCountrySegments, powerPartHistory, powerPartsAt } from './powerDrillData.ts';
 
 const daily: LedgerDaily = { country: 1, instance: 1, epoch: '1', dayHour: 24, readHour: 26,
   ppGrossRaw: '200001', ppCostRaw: '-50001', ppIncomeRaw: '250002', ppRealizedRaw: '0', ppSequence: '1',
@@ -93,4 +93,37 @@ test('an entirely absent command tuple creates neither dated bars nor history', 
   assert.deepEqual(powerPartsAt(index, 'income', 26, 30).parts, []);
   assert.equal(powerPartsAt(index, 'income', 26, 30).total, null);
   assert.deepEqual(powerPartHistory(index, 'income', null)[0].runs, []);
+});
+
+test('missing income and spending use concise statuses without backend reasons', () => {
+  const none = powerBalanceIndex(reply({ daily: [] }), 'Political');
+  assert.equal(powerPartsAt(none, 'income', 26, 30).reason, 'Income not recorded.');
+  const incomplete = powerBalanceIndex(reply({ daily: [{ ...daily, ppGrossRaw: null }] }), 'Political');
+  assert.equal(powerPartsAt(incomplete, 'income', 26, 30).total, 250002n);
+  assert.equal(powerPartsAt(incomplete, 'income', 26, 30).reason, 'Income breakdown incomplete.');
+  const unknown = powerBalanceIndex(reply({ spendingCoverage: [{ readHour: 24, sinceHour: null,
+    throughHour: 30, political: false, command: false, reason: 'CountryPolitics native operand unavailable' }] }), 'Political');
+  assert.equal(powerPartsAt(unknown, 'spending', 26, 30).reason, 'Spending total is incomplete.');
+  assert.equal(powerPartsAt(incomplete, 'income', 26, 30).parts[2].label, 'Adjustment');
+});
+
+test('an incomplete payment qualifies its known total without discarding its exact amount', () => {
+  const data = reply({ spending: [{ ...spend, changes: spend.changes.map(change => ({ ...change, covered: false })) }] });
+  const parts = powerPartsAt(powerBalanceIndex(data, 'Political'), 'spending', 26, 30);
+  assert.equal(parts.parts[0].raw, 4n);
+  assert.equal(parts.total, 4n);
+  assert.equal(parts.reason, 'Spending total is incomplete.');
+});
+
+test('action details preserve signed adjustments and refuse future publications without repeating totals', () => {
+  const index = powerBalanceIndex(reply({ balanceChanges: [{ hour: 24, readHour: 26, currency: 'Political', action: 'Synthetic adjustment',
+    amountRaw: '9', realizedDeltaRaw: '4', covered: true, reason: null }] }), 'Political');
+  assert.deepEqual(powerActionDetails(index, 25, 30), []);
+  const details = powerActionDetails(index, 26, 30);
+  assert.deepEqual(details.map(row => row.label), ['Synthetic adjustment · Hour 24', 'Adjustment']);
+  assert.equal(details.length, 2);
+  assert.deepEqual(details.map(row => row.value), ['+0.00004', '+0.00009']);
+  assert.deepEqual(powerActionDetails(index, 26, 25), []);
+  assert.equal(details.some(row => /income|Spending that day|Total costs/.test(row.label)), false);
+  assert.equal(powerActionDetails(powerBalanceIndex(reply(), 'Command'), 26, 30).some(row => row.label === 'Total held'), true);
 });

@@ -99,15 +99,15 @@ test('actual Army keeps dated flags, full inventories and focusable chart return
       actions.length = 0; effects.length = 0; portals.length = 0;
       const html = renderToStaticMarkup(createElement(Widget, props));
       for (const effect of effects.splice(0)) effect();
-      assert.match(html, /The saved native country selection is unavailable/);
+      assert.match(html, /Saved country unavailable/);
       assert.deepEqual(actions.filter(action => action.type === 'open' || action.type === 'actors'), [],
         'a malformed saved origin never selects the currently recorded actor');
-      assert.deepEqual(portals, [{ label: null, hour: 50, reason: 'The saved native country selection is unavailable.' }]);
+      assert.deepEqual(portals, [{ label: null, hour: 50, reason: 'Saved country unavailable.' }]);
     }
     props.widget.options = { show: 'breakdown', drillOriginHour: 50 };
     props.widget.time = { mode: 'pin', windows: {} };
     portals.length = 0;
-    assert.match(renderToStaticMarkup(createElement(Widget, props)), /The chosen moment is not in this campaign/);
+    assert.match(renderToStaticMarkup(createElement(Widget, props)), /Choose another time in widget settings/);
     assert.equal(portals.length, 1); assert.equal(portals[0].label, null); assert.equal(portals[0].hour, null);
     const { default: RaceChart } = await vite.ssrLoadModule('/ui/src/charts/race/RaceChart.tsx') as typeof import('../../charts/race/RaceChart');
     const { default: TimeChart } = await vite.ssrLoadModule('/ui/src/charts/TimeChart.tsx') as typeof import('../../charts/TimeChart');

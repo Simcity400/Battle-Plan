@@ -3,9 +3,9 @@ import type { OptionField } from '../../dashboard/options';
 import { SUNBURST_OPTIONS, levelOption } from '../../charts/sunburst/sunburstOptions.ts';
 
 export const OPTIONS: readonly OptionField[] = [
-  levelOption('splitLevel', 'New or repair', 'The innermost ring splits new buildings from repairs'),
-  levelOption('typeLevel', 'Building type', 'A ring of building types, from the campaign’s content'),
-  levelOption('stateLevel', 'State', 'A ring of the states built in'),
+  levelOption('splitLevel', 'New or repair'),
+  levelOption('typeLevel', 'Building type'),
+  levelOption('stateLevel', 'State'),
   ...SUNBURST_OPTIONS,
 ];
 

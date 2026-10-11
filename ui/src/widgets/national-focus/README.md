@@ -26,6 +26,7 @@ Country and campaign/follow/pin; Whole campaign is the default. There are no wid
 
 - Newly observed completions say By their confirming read; entries already in the first readable snapshot have no known date. Repeats retain separate ordinals. No future outcome fills a gap.
 - Progress uses recorded work/base duration. Days left require a previous daily gain of the same focus; do not estimate through gaps. Progress-budget refusal leaves ordered completions usable.
+- Missing pictures use a target icon; artwork failures are diagnostics, with no visible disclosure.
 - Artwork is dated to the shown or confirming hour, scoped to client/source/branch/country/content. Pending conditional art never keeps an older choice; defined empty names stay empty.
 - Titles show localized text, loading or unavailable wording. Hover reveals the focus key and any refusal reason.
 - Opening a completed row requests its description at that row's recorded hour. A refused description retains successful titles and icons and contributes its named, counted diagnostic. Client, source, branch, country or content changes close previous detail demand.

@@ -4,3 +4,4 @@
 .casualty-pair-details { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: var(--space-3); overflow: auto; }
 .casualty-pair-table { height: min(30vh, 240px); min-height: 96px; display: flex; flex-direction: column; }
 .casualty-pair-history { min-height: 180px; flex: 1; display: flex; flex-direction: column; }
+.casualty-pair-swatch { display: inline-block; width: .6em; height: .6em; margin-right: .4em; border-radius: 1px; }

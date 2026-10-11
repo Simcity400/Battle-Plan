@@ -20,6 +20,23 @@ const country = (tag: string): ScoreCountry => ({ tag, identity: [{ firstHour: 1
 const reply = (): GameScoreReply => ({ branchId: 'synthetic', scale: 100000, reads: [1, 2, 3], reasons: [{ kind: 'recording', reason: 'native roster unreadable' }],
   countries: [country('opaque country')], multipliers: series(), warnings: [], scoreWarnings: [], labels: { ...FALLBACK_LABELS, faction: 'Faction' }, hints: {} });
 
+test('score tooltips show every score and multiplier once, with field-local missing values', () => {
+  const data = reply();
+  const row = gameScoreRow(gameScoreModel(data), 'opaque country', 1)!;
+  row.cells.industry = { ...row.cells.industry, raw: null, reason: 'CountryGameScoreInputs refused' };
+  row.multipliers.total = { ...row.multipliers.total, raw: null, reason: 'Native total multiplier refused' };
+  const tip = gameScoreTooltip(data, row);
+  assert.equal(tip.rows.length, 13);
+  for (const part of SCORE_PARTS) assert.equal(tip.rows.filter(item => item.label === data.labels[part]).length, 1);
+  assert.equal(tip.rows.find(item => item.label === data.labels.industry)?.value, 'Unavailable');
+  assert.equal(tip.rows.find(item => item.label === 'Score multiplier')?.value, 'Unavailable');
+  assert.ok(!tip.rows.some(item => item.label === `${data.labels.total} multiplier`));
+  assert.ok(!JSON.stringify(tip).includes('refused'));
+  for (const part of SCORE_PARTS.filter(part => part !== 'total')) {
+    assert.equal(tip.rows.filter(item => item.label === `${data.labels[part]} multiplier`).length, 1);
+  }
+});
+
 test('Game score validates compressed values, reason indices and every identity without repairing malformed replies', () => {
   const data = reply();
   data.countries[0].scores.army[0].deltas = '1:1 1:r-3';
@@ -102,12 +119,12 @@ test('scores follow exact hourly reads and row identities; known zero, unknown a
   assert.equal(gameScoreRow(model, data.countries[0].tag, 3)!.cells.army.raw, '-100000');
   const tooltip = gameScoreTooltip(data, after);
   assert.equal(tooltip.title, 'After');
-  assert.ok(tooltip.rows.some(row => row.label === 'Content-evaluated; no recorded read date.'));
-  assert.ok(tooltip.rows.some(row => row.label === 'Raw fixed5: 100000'));
-  for (const part of SCORE_PARTS) assert.ok(tooltip.rows.some(row => row.label === `${data.labels[part]} multiplier`));
+  assert.ok(!tooltip.rows.some(row => row.label.includes('read date')));
+  assert.ok(!tooltip.rows.some(row => row.label.startsWith('Raw fixed5:')));
+  for (const part of SCORE_PARTS.filter(part => part !== 'total')) assert.ok(tooltip.rows.some(row => row.label === `${data.labels[part]} multiplier`));
   const compact = [...gameScoreTooltips(data, after)].at(-1)!;
-  assert.equal(compact.rows.filter(row => row.value?.includes(' · raw ')).length, 10);
-  assert.ok(compact.rows.some(row => row.label.includes('Content-evaluated; no recorded read date.')));
+  assert.equal(compact.rows.filter(row => row.value?.includes(' · raw ')).length, 0);
+  assert.ok(!compact.rows.some(row => row.label.includes('read date')));
 });
 
 test('score easing continues through look changes and breaks when a native holder returns after another holder', () => {
@@ -219,7 +236,7 @@ test('same-name factions keep distinct recorded identities and unknown membershi
   assert.equal(gameScoreFaction(unnamed).label, 'Faction name unavailable');
   assert.deepEqual(groupedRows(rows, gameScoreFaction, row => scoreValue(row, 'land'), 'descending', row => row.key).map(row => row.tag),
     ['a-high', 'b-highest', 'a-low', 'unknown', 'none']);
-  assert.ok(gameScoreTooltip(data, unnamed).rows.some(row => row.label === 'Faction localisation unavailable'));
+  assert.ok(!gameScoreTooltip(data, unnamed).rows.some(row => row.label === 'Faction localisation unavailable'));
 });
 
 test('race ranks Total exactly and scales only Army Navy Air shares inside it; Industry and Land remain tooltip-only', () => {
@@ -235,8 +252,8 @@ test('race ranks Total exactly and scales only Army Navy Air shares inside it; I
   const [item] = countryRaceItems(entries, new Map(), () => 'country', 'missing', false);
   assert.deepEqual(item.segments.map(part => part.value), [6, 4, 2]);
   assert.equal(gameScoreRace(rows, false)[0].parts, undefined);
-  assert.ok(gameScoreTooltip(data, rows[0], true).rows.some(row => row.label === data.labels.industry && row.value === '99'));
-  assert.ok(gameScoreTooltip(data, rows[0], true).rows.some(row => row.label === data.labels.land && row.value === '88'));
+  assert.ok(gameScoreTooltip(data, rows[0]).rows.some(row => row.label === data.labels.industry && row.value === '99'));
+  assert.ok(gameScoreTooltip(data, rows[0]).rows.some(row => row.label === data.labels.land && row.value === '88'));
   rows[0].cells.army.raw = '-1';
   assert.match(scoreInsetReason(rows[0])!, /Signed or wrapped/);
   assert.equal(gameScoreRace(rows, true)[0].parts, undefined);
@@ -268,7 +285,7 @@ test('race plot shares conserve the native truncated Total, including zero multi
     const [partial] = countryRaceItems(gameScoreRace(rows, true), new Map(), () => 'country', 'missing', false);
     assert.equal(partial.value, item.value);
     assert.deepEqual(partial.segments, item.segments, 'unavailable Industry stays outside the Total geometry');
-    assert.ok(gameScoreTooltip(data, rows[0], true).rows.some(row => row.label === 'Effective factories were not recorded.'));
+    assert.ok(gameScoreTooltip(data, rows[0]).rows.some(row => row.label === data.labels.industry && row.value === 'Unavailable'));
   }
 });
 

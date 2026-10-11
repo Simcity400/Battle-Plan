@@ -17,7 +17,7 @@ import { contentTitle } from './contentTitles';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack } from './model';
 import { usePlaybackSpeed } from './playback';
-import { LEDGER_GAP_NOTE, leafAmount, ledgerCountryAt, ledgerFormat, ledgerRuns, ledgerScale, ledgerShare, ledgerTotals, militaryAirIndex } from './militaryAirLedger';
+import { BOMBING_GAP_NOTE, leafAmount, ledgerCountryAt, ledgerFormat, ledgerRuns, ledgerScale, ledgerShare, ledgerTotals, militaryAirIndex } from './militaryAirLedger';
 import type { MilitaryAirLeaf, MilitaryAirReply } from '../generated/dashboard';
 
 const NO_FILTERS = { regions: new Set<number>(), causes: new Set<number>() };
@@ -86,7 +86,7 @@ export default function BombingDrill({ data, runtime, track, tag, identity, from
       onPick={id => { if (ownerRef.current.active && ownerRef.current.owner === selectionOwner && model.some(part => part.key === id))
         setSelected(before => before?.owner === selectionOwner && before.id === id ? null : { owner: selectionOwner, id }); }}
       totalRow={{ label: dealt ? 'Damage inflicted' : 'Damage suffered', value: ledgerFormat(total, 'bombing') }} />
-    <p className="chart-line-key">{selectedId == null ? 'All building types stacked. Select a building type to view its history.' : <>
+    <p className="chart-line-key">{selectedId == null ? 'All building types' : <>
       History: {model.find(part => part.key === selectedId)?.label}. <button type="button" className="button small"
         onClick={() => { if (ownerRef.current.active && ownerRef.current.owner === selectionOwner) setSelected(null); }}>Show all building types</button>
     </>}</p>
@@ -97,12 +97,13 @@ export default function BombingDrill({ data, runtime, track, tag, identity, from
       onPick={pickDay} onContextMenu={(at, x, y) => { if (ownerRef.current.active && ownerRef.current.owner === selectionOwner) menu.open(x, y, [jumpItem(runtime, track.id, at)]); }}
       tooltip={at => {
         at = Math.floor(at);
-        if (at < from || at > until || !ledgerCountryAt(index, tag, from, at, identity)) return null;
+        const current = ledgerCountryAt(index, tag, from, at, identity);
+        if (at < from || at > until || !current) return null;
         return { title: formatDateTime(at), rows: shown.map(part => ({ label: part.label, swatch: part.color,
           value: runAt(part.runs, at) ? ledgerFormat(part.leaves.reduce((sum, leaf) => sum + leafAmount(leaf, from, at), 0n), 'bombing') : 'Not recorded' })),
-          note: 'Click to pick this moment. ' + LEDGER_GAP_NOTE };
+          note: current.complete ? undefined : BOMBING_GAP_NOTE };
       }} />
-    <p className="chart-line-key">Areas show positive amounts; correction rows and totals retain their signs. {row?.complete ? '' : LEDGER_GAP_NOTE}</p>
+    <p className="chart-line-key">Areas show positive amounts; correction rows and totals retain their signs. {row?.complete ? '' : BOMBING_GAP_NOTE}</p>
     {menu.menu}
   </div>;
 }

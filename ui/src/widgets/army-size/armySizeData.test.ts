@@ -58,14 +58,14 @@ test('requests preserve opaque country tags, owner/host, recorded measures and m
 test('land tooltips name content groups and the exact hourly read without inventing a missing mix', () => {
   const model = countryValuesModel(REPLY);
   const at = countryValueAt(model, 'opaque tag', 104)!;
-  const [full, compact] = [...armyTooltips(model, 'Name at hour 104', at, 104, 'battalions', 'owner', new Map([['modded_group', 'palette']]))];
+  const [full, compact] = [...armyTooltips(model, 'Name at hour 104', at, 104, 'battalions', new Map([['modded_group', 'palette']]))];
   assert.equal(full.title, 'Name at hour 104');
   assert.deepEqual(full.rows.map(row => [row.label, row.value]), [['Modded unit group', '4'], ['Battalions', '4']]);
-  assert.match(full.note!, /Expeditionary forces count for their owner/);
+  assert.equal(full.note, undefined);
   assert.deepEqual(compact.rows, [full.rows[1]]);
   assert.equal(formatArmyValue(1234.00001), '1,234.00001');
   const absent = { ...REPLY, types: [], series: REPLY.series.map(series => ({ ...series, mix: undefined })) };
-  const [total] = [...armyTooltips(countryValuesModel(absent), 'Country', { ...at, values: [] }, 104, 'strength', 'host', new Map())];
+  const [total] = [...armyTooltips(countryValuesModel(absent), 'Country', { ...at, values: [] }, 104, 'strength', new Map())];
   assert.deepEqual(total.rows.map(row => row.label), ['Combined strength (hit points)']);
 });
 
@@ -139,6 +139,6 @@ test('large adjacent HP totals remain distinct in exact tooltips and ranking', (
   })) };
   validateArmySizeReply(reply);
   const model = countryValuesModel(reply);
-  const labels = raw.map((_, index) => [...armyTooltips(model, 'Country', countryValueAt(model, `country${index}`, 100)!, 100, 'strength', 'owner', new Map())][0].rows[0].value);
+  const labels = raw.map((_, index) => [...armyTooltips(model, 'Country', countryValueAt(model, `country${index}`, 100)!, 100, 'strength', new Map())][0].rows[0].value);
   assert.deepEqual(labels, ['90,071,992,547.40986', '90,071,992,547.40987']);
 });

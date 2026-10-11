@@ -87,10 +87,10 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
   }, [data, track, widget, runtime.clock, runtime.tracks, groups.data, options.mostCountries, labelAt, plottedColor, colors, hour, tokens.muted, selectedTag, chordAt]);
 
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its operative placements." />;
-  if (error || groups.error) return <WidgetState kind="error" message={error ?? groups.error!} onRetry={error ? retry : groups.retry} />;
+  if (error || groups.error) return <WidgetState kind="error" detail={error ?? groups.error!} onRetry={error ? retry : groups.retry} />;
   if (!data || !current) return <WidgetState kind="loading" label="Loading operative placements…" />;
   if (current.period?.availability !== 'recorded') return <WidgetState kind="unavailable" message={current.period?.availability === 'featureAbsent'
-    ? 'Not in this recording. The intelligence agency feature was disabled.' : 'Not in this recording. Operative placements were not recorded at this time.'} />;
+    ? 'Intelligence agencies were disabled.' : 'Operatives were not recorded at this time.'} />;
   if (picked?.reason) return <WidgetState kind="unavailable" message={picked.reason} />;
   return <div className={`who-spies-on-whom${chartError ? ' has-chart-error' : ''}`}>
     <ChordChart label="Who spies on whom" caption="Ribbon colour = the country spying" frame={{ data: null }} frameAt={frames.at} onError={setChartError}
@@ -101,7 +101,7 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
         if (chord && (hit.kind === 'flow' ? chord.flows.has(hit.id) : chord.nodes.has(hit.id))) menu.open(x, y, [jumpItem(runtime, track.id, chord.read)]);
       }} />
     {menu.menu}
-    {chartError && <WidgetState kind="error" message={chartError} />}
+    {chartError && <WidgetState kind="error" detail={chartError} />}
     {!picked?.placements.some(n => n.count > 0) && <p className="placements-empty">No operatives placed yet.</p>}
     {wanted.some(w => !colors.has(nameKey(w.hour, w.tag))) && <p className="sr-only">Some country colours were not recorded; their arcs use the muted theme colour.</p>}
   </div>;

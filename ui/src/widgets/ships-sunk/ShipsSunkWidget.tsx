@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import { ChipSet } from '../../components/ChipSet';
+import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
 import LogList from '../../charts/log/LogList';
 import type { LogRow } from '../../charts/log/logData';
@@ -16,12 +17,12 @@ import { usePlaybackHour } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { ShipsSunkRow } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
-import { shipBattleLabel, shipBattleRequests, shipClassChoices, shipClassName, shipCountryLabels, shipCountryRequests, shipCoverage, shipCauseLabel, shipDescription, shipLogOrder, shipLogRows, shipName, shipPlace, shipTooltip } from './shipsSunkData';
+import { shipBattleLabel, shipBattleRequests, shipClassChoices, shipClassName, shipCountryLabels, shipCountryRequests, shipDescription, shipLogOrder, shipLogRows, shipName, shipPlace, shipTooltip } from './shipsSunkData';
 import { useShipsSunk, useShipsSunkBattleTitles } from './useShipsSunk';
 
 const NO_WARNINGS: string[] = [];
 const NO_ROWS: readonly LogRow<ShipsSunkRow>[] = [];
-const COLUMNS = 'var(--space-6) minmax(0, 1fr) auto';
+const COLUMNS = 'var(--space-6) minmax(0, 1fr)';
 
 export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
@@ -63,13 +64,13 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
   }, [data, groups.data, titles.data, titles.error, titleRows.length, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see its ships sunk log." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (filtered && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (filtered && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!data || !match.ready) return <WidgetState kind="loading" label="Loading ships sunk…" />;
   if (!data.available) return <WidgetState kind="unavailable" message="Not in this recording" />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour)
-    return <WidgetState kind="unavailable" message="This time is outside the recorded branch." />;
+    return <WidgetState kind="unavailable" message="This time is outside the recording." />;
 
   const chosen = contentSet(classes);
   const renderRow = (logRow: LogRow<ShipsSunkRow>) => {
@@ -80,7 +81,7 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
     const attackerFlag = row.attacker === null ? null : <CountryFlagUrl className="log-flag"
       url={attacker.flag} reason={attacker.flagReason} pending={attacker.flagPending} />;
     return <>
-      <span className={`log-art${type.icon ? '' : ' is-missing'}`} aria-hidden="true">{type.icon ? <img src={type.icon} alt="" /> : '?'}</span>
+      <span className="log-art" aria-hidden="true">{type.icon ? <img src={type.icon} alt="" /> : <ArtFallback icon="anchor" />}</span>
       <span className="log-text">
         <b>{shipName(row)}</b>, {shipClassName(data, row)}{' · '}
         {row.victim !== null && <CountryFlagUrl className="log-flag" url={victim.flag} reason={victim.flagReason} pending={victim.flagPending} />}<b>{victim.name}</b>{', '}
@@ -89,7 +90,6 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
             : <>sunk by {attackerFlag}<b>{attacker.name}</b></>}
         {' in '}{shipPlace(data, row)}{battle && <>{', '}{battle}</>}
       </span>
-      <span className="log-tag">{shipCauseLabel(row)}</span>
     </>;
   };
   return <div className="log-widget">
@@ -102,6 +102,6 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
       columns={COLUMNS} renderRow={renderRow} onVisible={setVisible}
       describe={row => { const named = labels(row.item); return shipDescription(data, row.item, named.victim.name, named.attacker.name, titleByRow.get(row.key)); }}
       tooltip={row => { const named = labels(row.item); return [shipTooltip(data, row.item, named.victim.name, named.attacker.name, titleByRow.get(row.key), titles.error)]; }}
-      menu={row => [jumpItem(runtime, track.id, row.hour)]} empty={`No ships sunk recorded${chosen.length || from !== null || widget.countries.kind !== 'all' ? ' for these settings' : ''}. ${shipCoverage(data)}`} />
+      menu={row => [jumpItem(runtime, track.id, row.hour)]} empty="No ships sunk recorded for these settings." />
   </div>;
 }

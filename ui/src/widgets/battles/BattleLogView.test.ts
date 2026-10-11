@@ -5,6 +5,63 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { BattleViewAdapter } from './BattleLogView';
+import { battleOptions } from './battleOptions.ts';
+import { sortKey } from '../../charts/table/options.ts';
+
+test('background battle loading has one Updating status; dynamic and explicit sorts remain distinct', async () => {
+  const windows = [{ firstHour: 100, lastHour: 150 }, { firstHour: 151, lastHour: 200 }];
+  const data = { observed: [[100, 150]], warnings: [], contentWarnings: [] };
+  const state = { data: new Map([[0, data]]), available: true, sort: undefined as { column: string } | undefined };
+  const host = globalThis as typeof globalThis & { __battleRefresh?: typeof state };
+  host.__battleRefresh = state;
+  const replacements: Record<string, string> = {
+    '/charts/table/useTableHour.ts': 'export const useTableHour = () => 125;',
+    '/dashboard/products.ts': `export const useProduct = (_client, request) => ({
+      data: request?.product.endsWith('-manifest') ? { windows: ${JSON.stringify(windows)},
+        available: globalThis.__battleRefresh.available, unavailable: 'Synthetic native refusal', contentWarnings: [] }
+        : request?.product.endsWith('-ranking') ? {censusHour: 125, effectiveMeasure: 'losses', warnings: [], contentWarnings: []} : undefined,
+      retry() {} });`,
+    '/dashboard/productWindows.ts': 'export const useProductWindows = () => ({data: globalThis.__battleRefresh.data, errors: new Map(), retry() {}});',
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({retry() {}});',
+    '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({labelAt: () => tag => ({name: tag})});',
+    '/widgets/battles/BattleLog.tsx': 'export default props => {globalThis.__battleRefresh.sort = props.sort; return null;};',
+  };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'battle-refresh', enforce: 'pre',
+      transform: (_source, id) => Object.entries(replacements).find(([suffix]) => id.replaceAll('\\', '/').endsWith(suffix))?.[1],
+    }] });
+  try {
+    const { default: View } = await vite.ssrLoadModule('/ui/src/widgets/battles/BattleLogView.tsx') as typeof import('./BattleLogView');
+    const fields = battleOptions([{ value: 'losses', label: 'Losses' }, { value: 'length', label: 'Duration' }]);
+    const props = { widget: { id: 'battles', trackIds: ['main'], countries: { kind: 'all' }, time: { mode: 'follow' }, options: {} },
+      runtime: { tracks: [{ id: 'main', axisOffset: 0, source: { id: 'source', revision: '1' }, branch: { id: '1', firstHour: 100, lastHour: 200 } }],
+        clock: { getHour: () => 125, getSpeed: () => 0, subscribe: () => () => {} }, client: {} }, active: true, onDiagnostics() {},
+      adapter: { definition: { title: 'Battles', icon: 'target', options: fields }, product: 'battles',
+        validateManifest: (data: unknown) => data, validateWindow: (data: unknown) => data, validateRanking: (data: unknown) => data,
+        rows: () => [{ id: 'battle', provinceId: 1, windowIndex: 0, place: { hour: 100, name: 'Synthetic location' } }],
+        rankedRows: () => [{ id: 'battle', provinceId: 1, windowIndex: 0, place: { hour: 100, name: 'Synthetic location' } }],
+        labels: {}, measures: [{ label: 'losses' }, { label: 'length' }] },
+    } as unknown as WidgetProps & { adapter: BattleViewAdapter<never, never, never> };
+    const render = () => renderToStaticMarkup(createElement(View<never, never, never>, props));
+    const pending = render();
+    assert.equal((pending.match(/Updating…/g) ?? []).length, 1);
+    assert.doesNotMatch(pending, /Battle reads through|Shown census reads through/);
+    state.data.set(1, data);
+    assert.doesNotMatch(render(), /Updating…/);
+    assert.doesNotMatch(render(), /whole battle/, 'outside a range the battle spans need no note');
+    props.widget.time = { mode: 'range', firstOffset: 0, lastOffset: 100 } as never;
+    assert.match(render(), /Peak and duration cover the whole battle\./, 'a range keeps the whole-battle note');
+    props.widget.time = { mode: 'follow' } as never;
+    props.widget.options = { view: 'biggest', measure: 'length' };
+    render(); assert.equal(state.sort?.column, 'losses', 'Selected measure follows the effective backend ranking');
+    props.widget.options = { view: 'biggest', measure: 'length', tableSort: sortKey({ column: 'length', direction: 'descending' }) };
+    render(); assert.equal(state.sort?.column, 'length', 'an explicit column sort stays fixed');
+    state.available = false;
+    const unavailable = render();
+    assert.match(unavailable, /Battles were not recorded\./);
+    assert.doesNotMatch(unavailable, /Synthetic native refusal/);
+  } finally { await vite.close(); delete host.__battleRefresh; }
+});
 
 test('actual battle loader refuses aligned Follow and stored Pin moments outside its branch', async () => {
   const replacements: Record<string, string> = {
@@ -39,20 +96,20 @@ test('actual battle loader refuses aligned Follow and stored Pin moments outside
     host.__battleWindowLoads = [];
     const track = props.runtime.tracks[0];
     assert.equal(resolveWindow(props.widget, track, [track], position)?.lastHour, 150);
-    assert.doesNotMatch(renderToStaticMarkup(createElement(View<never, never, never>, props)), /outside this campaign branch/);
+    assert.doesNotMatch(renderToStaticMarkup(createElement(View<never, never, never>, props)), /outside the recording/);
     for (const later of [-950, -750]) {
       position = later;
       host.__battleWindowLoads = [];
-      assert.match(renderToStaticMarkup(createElement(View<never, never, never>, props)), /outside this campaign branch/);
+      assert.match(renderToStaticMarkup(createElement(View<never, never, never>, props)), /outside the recording/);
       assert.deepEqual(host.__battleWindowLoads, [{ wanted: [], active: false }]);
     }
     props.widget = { ...props.widget, time: { mode: 'pin', windows: { short: { firstOffset: 101, lastOffset: 101 } } } };
     assert.equal(resolveWindow(props.widget, track, [track], position)?.lastHour, 201);
-    assert.match(renderToStaticMarkup(createElement(View<never, never, never>, props)), /outside this campaign branch/);
+    assert.match(renderToStaticMarkup(createElement(View<never, never, never>, props)), /outside the recording/);
     props.widget = { ...props.widget, time: { mode: 'pin', windows: { short: { firstOffset: 5, lastOffset: 5 } } } };
     position = 5000;
     assert.equal(resolveWindow(props.widget, track, [track], position)?.lastHour, 105);
-    assert.doesNotMatch(renderToStaticMarkup(createElement(View<never, never, never>, props)), /outside this campaign branch/);
+    assert.doesNotMatch(renderToStaticMarkup(createElement(View<never, never, never>, props)), /outside the recording/);
   } finally {
     delete host.__battleWindowLoads;
     await vite.close();

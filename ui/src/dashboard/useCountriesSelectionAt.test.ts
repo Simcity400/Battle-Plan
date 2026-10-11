@@ -71,7 +71,7 @@ test('actual selection hook loads manual identities and keeps literal request ro
     assert.deepEqual(new Set(view.countries(view.widget({ kind: 'selected' }), view.runtime, 95, true).countries), new Set(['A', 'B']));
     const missing = view.countries(view.widget({ kind: 'tags', tags: ['unknown'] }), view.runtime, 125, true);
     assert.equal(missing.requestTags, undefined);
-    assert.match(missing.selectionReason!, /no recorded native identity/);
+    assert.match(missing.selectionReason!, /Selected countries are unavailable in this campaign\./);
     const all = view.countries(view.widget({ kind: 'all' }), view.runtime, 125, true);
     assert.equal(all.countries, null); assert.equal(all.requestTags, null);
     assert.equal(view.state.groupReads.at(-1)!.track, undefined);
@@ -124,6 +124,6 @@ test('actual spending hook fetches dated alias ledgers without broadening rows o
     assert.equal(view.state.groupRetries, 1); assert.equal(view.state.ledgerRetries, 1);
     const missing = view.politics(view.widget({ kind: 'tags', tags: ['unknown'] }), view.runtime, true);
     assert.deepEqual(missing.tags, []); assert.deepEqual(view.state.requests, []);
-    assert.match(missing.reason!, /no recorded native identity/);
+    assert.match(missing.reason!, /Selected countries are unavailable in this campaign\./);
   } finally { await view.close(); }
 });

@@ -23,7 +23,7 @@ type HostProps = Parameters<typeof DrillHost>[0];
 type ChordProps = Parameters<typeof ChordChart>[0];
 type TableProps = Parameters<typeof Table>[0];
 type State = { hour: number; drill: DrillState; slots: unknown[]; cursor: number; host?: HostProps; chord?: ChordProps;
-  chart?: TimeChartProps; table?: TableProps; subscriptions: boolean[]; data: unknown; windows: Map<number, unknown>;
+  chart?: TimeChartProps; table?: TableProps; parts?: number; subscriptions: boolean[]; data: unknown; windows: Map<number, unknown>;
   groups?: CountryGroupReply; groupsError?: string; groupActive?: boolean; groupRetries?: number; windowIdentity?: string | null;
   windowRequests?: { params: { tags: string[]; between: boolean; window: number } }[];
   career?: { hour: number; widget: WidgetSpec; onPick: (hour: number) => void }; timeline?: TimelineProps; actions?: { label: string; run: () => void }[] };
@@ -76,7 +76,7 @@ async function fixture(state: State, module: string, realCareer = false) {
       export const useViewportHeight = () => 1000;`,
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null, open(_x, _y, actions) { globalThis.__landDrill.actions = actions; } });',
     '/charts/drill/DrillHost.tsx': 'export default props => { globalThis.__landDrill.host = props; return props.open ? props.children : props.main; };',
-    '/charts/drill/DrillParts.tsx': 'export default () => null;',
+    '/charts/drill/DrillParts.tsx': 'export default () => {globalThis.__landDrill.parts++; return null;};',
     '/charts/chord/ChordChart.tsx': 'export default props => { globalThis.__landDrill.chord = props; return null; };',
     '/charts/sunburst/Sunburst.tsx': 'export default () => null;',
     '/charts/table/Table.tsx': `export const CountryCell = () => null;
@@ -110,6 +110,7 @@ async function fixture(state: State, module: string, realCareer = false) {
     getSnapshot: () => ({ position: state.hour, playing: true, seekSequence: 0 }) }, addWidgetBelow: (_id: string, widget: WidgetSpec) => pinned.push(widget) };
   const render = (widget: WidgetSpec) => {
     state.cursor = 0; memoCursor = 0; refCursor = 0;
+    state.parts = 0;
     state.chart = undefined; state.host = undefined; state.chord = undefined; state.table = undefined; state.timeline = undefined; state.career = undefined; state.subscriptions = [];
     return renderToStaticMarkup(createElement(Widget, { widget, runtime, active: true, onDiagnostics() {} } as unknown as WidgetProps));
   };
@@ -143,7 +144,7 @@ test('actual manual pair choices load their catalogue and request original nativ
     const frame = state.chord!.frameAt!(0).data;
     assert.ok(frame, 'the backend-selected renamed native pair remains usable');
     const all = state.host!.main as unknown as { props: { children: { props?: { children?: string; onClick?: () => void } }[] } };
-    all.props.children.find(child => child?.props?.children === 'All recorded pairs')!.props!.onClick!();
+    all.props.children.find(child => child?.props?.children === 'All pairs')!.props!.onClick!();
     view.render(widget);
     assert.equal((state.table!.rows[0] as { value: bigint }).value, -12n);
     assert.equal((state.table!.rows[0] as { from: string }).from, 'Y');
@@ -156,10 +157,13 @@ test('actual manual pair choices load their catalogue and request original nativ
     state.hour = 100;
     view.render(grouped); assert.equal(state.chord, undefined, 'the group does not acquire manual all-ever membership');
     state.groupsError = 'Native catalogue unavailable';
-    assert.match(view.render(widget), /Native catalogue unavailable/);
+    const failure = view.render(widget);
+    assert.match(failure, /Couldn’t load\./);
+    assert.match(failure, /Retry/);
+    assert.doesNotMatch(failure.replace(/<[^>]*>/g, ' '), /Native catalogue unavailable/);
     state.groupsError = undefined;
     const missing = { ...widget, countries: { kind: 'tags' as const, tags: ['unknown'] } };
-    assert.match(view.render(missing), /no recorded native identity/);
+    assert.match(view.render(missing), /Selected countries are unavailable in this campaign\./);
     assert.equal(state.windowIdentity, null); assert.deepEqual(state.windowRequests, []);
     view.render({ ...widget, countries: { kind: 'all' as const } });
     assert.equal(state.groupActive, false); assert.deepEqual(requests()![0].params.tags, []);
@@ -184,11 +188,18 @@ test('actual pair Drill picks dates, follows the offset clock and pins exact sig
     const id = casualtyPairsAt(first, 110).flows[0].id;
     // The all-pairs button reaches corrections even though their ribbons have no geometry.
     const all = state.host!.main as unknown as { props: { children: { props?: { children?: string; onClick?: () => void } }[] } };
-    const button = all.props.children.find(child => child?.props?.children === 'All recorded pairs');
+    const button = all.props.children.find(child => child?.props?.children === 'All pairs');
+    assert.ok(all.props.children.find(child => child?.props?.children === 'Corrections')?.props?.onClick,
+      'the dedicated Corrections control stays available');
     assert.ok(button?.props?.onClick);
     assert.ok(frame, 'the current zero/correction frame remains available');
     button.props.onClick();
-    view.render(widget);
+    const details = view.render(widget);
+    assert.match(details, /Signed total: <b>-12<\/b>/);
+    assert.equal(state.parts, 0, 'the same pairs are presented only in the table');
+    assert.deepEqual(state.table!.columns.map(column => column.key), ['from', 'to', 'value', 'share']);
+    assert.equal(state.table!.columns.find(column => column.key === 'share')!.value(state.table!.rows[0]), null,
+      'corrections do not supply a positive share');
     assert.equal(state.host!.open, true);
     assert.equal(state.host!.canFollow, true);
     assert.ok(state.chart!.onPick, 'same-parts history supplies a date picker');
@@ -210,10 +221,22 @@ test('actual pair Drill picks dates, follows the offset clock and pins exact sig
     assert.equal((state.table!.rows[0] as { id: string; value: bigint }).id, id);
     assert.equal((state.table!.rows[0] as { from: string }).from, 'renamed mod attacker');
     assert.equal((state.table!.rows[0] as { value: bigint }).value, 3n);
+    const share = state.table!.columns.find(column => column.key === 'share')!;
+    assert.equal(share.value(state.table!.rows[0]), 100);
+    assert.equal(share.render!(state.table!.rows[0]), '100%');
+    const amount = state.table!.columns.find(column => column.key === 'value')!;
+    assert.match(renderToStaticMarkup(createElement(() => amount.render!(state.table!.rows[0]))), /casualty-pair-swatch/);
+    const completeWindows = state.windows;
+    state.windows = new Map([[0, first], [1, { ...next, pairs: next.pairs.map(pair => ({ ...pair,
+      runs: pair.runs.map(run => ({ ...run, incomplete: true })) })) }], [2, replaced]]);
+    const subtotal = view.render(widget);
+    assert.match(subtotal, /Recorded subtotal: <b>3<\/b>/);
+    assert.equal(state.table!.columns.find(column => column.key === 'share')!.value(state.table!.rows[0]), null);
+    state.windows = completeWindows;
     for (const clock of [50, 140]) {
       state.hour = clock;
       const outside = view.render(widget);
-      assert.match(outside, /outside this campaign branch/);
+      assert.match(outside, /outside the recording/);
       assert.doesNotMatch(outside, /Loading this moment/);
       assert.equal(state.host!.day, formatDateTime(clock + 30), 'Follow retains the actual clock date outside either branch boundary');
       assert.equal(state.host!.open, true);
@@ -238,7 +261,7 @@ test('actual pair Drill picks dates, follows the offset clock and pins exact sig
     state.slots = []; state.hour = 140;
     const mainOutside = view.render(widget);
     assert.equal(state.host!.open, false);
-    assert.match(mainOutside, /outside this campaign branch/);
+    assert.match(mainOutside, /outside the recording/);
     assert.doesNotMatch(mainOutside, /Loading casualty pairs/);
   } finally { await view.close(); }
 });
@@ -281,7 +304,7 @@ test('actual casualty breakdown holds Campaign and Pin dates until explicit Foll
       state.hour = clock;
       state.slots = [{ breakdown: 'details', follow: true, hour: null }];
       const outside = view.render(following);
-      assert.match(outside, /outside this campaign branch/);
+      assert.match(outside, /outside the recording/);
       assert.doesNotMatch(outside, /Loading this moment|Loading casualty history/);
       assert.equal(state.host!.open, true, 'missing parent windows cannot discard an open Drill');
       assert.equal(state.host!.day, formatDateTime(clock + 30));
@@ -294,7 +317,7 @@ test('actual casualty breakdown holds Campaign and Pin dates until explicit Foll
       state.slots = [];
       const mainOutside = view.render(following);
       assert.equal(state.host!.open, false);
-      assert.match(mainOutside, /outside this campaign branch/);
+      assert.match(mainOutside, /outside the recording/);
       assert.doesNotMatch(mainOutside, /Loading casualty history/);
     }
   } finally { await view.close(); }

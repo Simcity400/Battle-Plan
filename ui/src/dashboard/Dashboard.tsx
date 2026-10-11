@@ -404,7 +404,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
         <Select label="Saved layout" value={library.activeId} disabled={editing || dirty || campaigns.some(campaign => campaign.loading)}
           onChange={selectLayout} options={library.layouts.map(entry => ({ value: entry.id, label: entry.template.name }))} /></div>
       <div className="dash-toolbar" role="toolbar" aria-label="Layout changes">
-        <span className="toolbar-slot" data-shown={editing || undefined}><WidgetPicker runtime={runtime} disabled={!editing || template.widgets.length >= MAX_WIDGETS} onOpen={() => saveMenu.popup.current?.hidePopover()} onAdd={(kind, initial) => {
+        <span className="toolbar-slot" data-shown={editing || undefined}><WidgetPicker runtime={runtime} placed={template.widgets} disabled={!editing || template.widgets.length >= MAX_WIDGETS} onOpen={() => saveMenu.popup.current?.hidePopover()} onAdd={(kind, initial) => {
           const widget = { ...createWidget(kind, template.tracks[0].id), ...initial };
           update((previous) => ({ ...previous, widgets: [...previous.widgets, widget], layouts: addGridItem(previous.layouts, widget) }));
         }} /></span>

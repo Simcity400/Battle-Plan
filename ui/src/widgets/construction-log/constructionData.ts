@@ -1,6 +1,6 @@
+import { dayLabel } from '../../charts/draw.ts';
 import type { BattleWindow, ConstructionLogManifestReply, ConstructionLogReply, ConstructionOutputRun, ConstructionProject, EndKind, LevelsBuilt, ProjectRun, SpendingGap, UnknownEnd } from '../../generated/dashboard';
-import { formatDateTime } from '../../dashboard/calendar.ts';
-import { GAP_LABELS, isBuildingInfo, placeName, typeName } from '../../dashboard/construction.ts';
+import { isBuildingInfo, isSpendingGap, placeName, typeName } from '../../dashboard/construction.ts';
 import type { StateNameAt } from '../../dashboard/construction';
 import { readAt } from '../../dashboard/reads.ts';
 import type { LogRow } from '../../charts/log/logData';
@@ -12,13 +12,7 @@ import { battleWindowIndex } from '../battles/battleRows.ts';
 export { typeName };
 const RAW = /^-?\d{1,20}$/;
 const END_KINDS: readonly EndKind[] = ['finished', 'removed', 'unknown'];
-/** Why an ending is not known, as the tooltip says it. */
-export const UNKNOWN_END: Readonly<Record<UnknownEnd, string>> = {
-  completionNotRecorded: 'The native queue-completion decision was not recorded across its departure; building changes cannot prove completion.',
-  notRecorded: 'Some hours before this read were not recorded, so whether it was finished is not known.',
-  sharedTarget: 'Another project was building the same thing there, so which of them the building’s rise belongs to is not known.',
-  nothingLeft: 'Its last read showed no levels left to build.',
-};
+const UNKNOWN_ENDS: readonly UnknownEnd[] = ['completionNotRecorded', 'notRecorded', 'sharedTarget', 'nothingLeft'];
 
 const int = (value: unknown) => Number.isSafeInteger(value);
 const optionalInt = (value: unknown) => value == null || int(value);
@@ -30,7 +24,7 @@ const isRun = (run: ProjectRun) => typeof run === 'object' && run != null && int
 // A run with no reason holds exact output; an absent row's reason is the table's at each read.
 const isOutputRun = (run: ConstructionOutputRun) => typeof run === 'object' && run != null && int(run.from) && int(run.to) && run.from <= run.to
   && [run.constructionRaw, run.repairRaw].every(raw => raw == null || (typeof raw === 'string' && RAW.test(raw)))
-  && (run.reason == null || Object.hasOwn(GAP_LABELS, run.reason)) && typeof run.beforeObservation === 'boolean' && typeof run.absent === 'boolean'
+  && (run.reason == null || isSpendingGap(run.reason)) && typeof run.beforeObservation === 'boolean' && typeof run.absent === 'boolean'
   && (run.reason == null && !run.absent ? run.constructionRaw != null && run.repairRaw != null : run.constructionRaw == null && run.repairRaw == null)
   && !(run.absent && (run.reason != null || run.beforeObservation));
 const isProject = (project: ConstructionProject, types: number) => typeof project === 'object' && project != null && typeof project.id === 'string'
@@ -47,7 +41,7 @@ const isProject = (project: ConstructionProject, types: number) => typeof projec
     && typeof levels.repair === 'boolean'))
   && (project.end == null || (typeof project.end === 'object' && END_KINDS.includes(project.end.kind) && optionalInt(project.end.hour)
     && int(project.end.knownAt) && project.end.knownAt > project.firstRead
-    && (project.end.unknown == null || Object.hasOwn(UNKNOWN_END, project.end.unknown))));
+    && (project.end.unknown == null || UNKNOWN_ENDS.includes(project.end.unknown))));
 
 /** Checks the manifest's shape: its windows in hour order and the types its projects name. */
 export function validateConstructionLogManifest(data: unknown): ConstructionLogManifestReply {
@@ -66,7 +60,7 @@ export function validateConstructionLogWindow(data: unknown, types: number): Con
   const reply = data as ConstructionLogReply;
   const ok = typeof reply === 'object' && reply != null && int(reply.window) && reply.window >= 0 && isSpan(reply.interval)
     && hours(reply.outputReads) && Array.isArray(reply.outputUnavailable) && reply.outputUnavailable.every(read => Array.isArray(read)
-      && read.length === 2 && reply.outputReads.includes(read[0]) && Object.hasOwn(GAP_LABELS, read[1]))
+      && read.length === 2 && reply.outputReads.includes(read[0]) && isSpendingGap(read[1]))
     && Array.isArray(reply.projects) && reply.projects.every(project => isProject(project, types))
     && Array.isArray(reply.outputs) && reply.outputs.every(output => typeof output === 'object' && output != null && typeof output.id === 'string'
       && Array.isArray(output.runs) && output.runs.length > 0 && output.runs.every((run, index) => isOutputRun(run) && (index === 0 || output.runs[index - 1].to < run.from)))
@@ -295,7 +289,7 @@ export const placeLabel = (project: ConstructionProject, hour: number, stateAt: 
 export function describeRow(log: ConstructionLog, row: LogRow<ProjectAt>, country: string, hour: number, stateAt: StateNameAt): string {
   const at = row.item;
   const levels = levelsLabel(at);
-  return `${country}, ${typeName(projectType(log, at.project))}${levels ? ` ${levels}` : ''} in ${placeLabel(at.project, hour, stateAt)}, ${statusLabel(at).toLowerCase()}, ${row.by ? 'by ' : ''}${formatDateTime(row.hour)}${at.earlierUnknown ? ', work before its first read was not recorded' : ''}`;
+  return `${country}, ${typeName(projectType(log, at.project))}${levels ? ` ${levels}` : ''} in ${placeLabel(at.project, hour, stateAt)}, ${statusLabel(at).toLowerCase()}, ${row.by ? 'by ' : ''}${dayLabel(row.hour)}${at.earlierUnknown ? ', earlier progress unknown' : ''}`;
 }
 
 /** Levels built as then known, with ranges for work built or dropped unseen and
@@ -344,10 +338,10 @@ export function projectTooltip(log: ConstructionLog, at: ProjectAt, hour: number
   const type = projectType(log, project);
   const end = project.end && project.end.knownAt <= hour ? project.end : null;
   const pending = at.status === 'unread' ? 'Not recorded' : 'Not yet';
-  const rows: TooltipRow[] = [{ label: 'Started', value: formatDateTime(project.createdHour) }];
+  const rows: TooltipRow[] = [{ label: 'Started', value: dayLabel(project.createdHour) }];
   // Completions follow what it did per stretch: a repair, then new levels, each
   // with its own date.
-  const dated = (risen: number | null, knownAt: number) => risen != null ? formatDateTime(risen) : `by ${formatDateTime(knownAt)}`;
+  const dated = (risen: number | null, knownAt: number) => risen != null ? dayLabel(risen) : `by ${dayLabel(knownAt)}`;
   if (at.kind === 'repairThenNew') {
     const latest = project.built.filter(levels => levels.repair && levels.knownAt <= hour)
       .reduce<LevelsBuilt | null>((found, levels) => !found || (levels.hour ?? levels.knownAt) > (found.hour ?? found.knownAt) ? levels : found, null);
@@ -370,26 +364,24 @@ export function projectTooltip(log: ConstructionLog, at: ProjectAt, hour: number
   }
   if (at.unknown) rows.push({ label: 'Built or dropped, not recorded', value: `${at.unknown} ${unit}${at.unknown === 1 ? '' : 's'}`, tone: 'muted' });
   const factories = factoriesShown(at);
-  rows.push({ label: 'Factories', value: factories == null ? 'Not recorded since a gap' : String(factories) });
+  rows.push({ label: 'Factories', value: factories == null ? 'Factories unknown' : String(factories) });
   const cost = formatAmount(project.costRaw, Math.round(Math.log10(log.manifest.costScale)));
   rows.push({ label: 'Cost', value: project.kind === 'railway' ? `${cost} for the route` : `${cost} per ${unit}` });
   const output = outputAt(log, project, hour);
   if (output) {
     const digits = Math.round(Math.log10(log.manifest.costScale));
-    rows.push({ label: 'New-building factory IC', value: output.constructionRaw == null ? 'Not recorded' : formatAmount(output.constructionRaw, digits, digits) });
-    rows.push({ label: 'Repair factory IC', value: output.repairRaw == null ? 'Not recorded' : formatAmount(output.repairRaw, digits, digits) });
-    rows.push({ label: 'Output read', value: formatDateTime(output.knownAt), tone: 'muted' });
+    rows.push({ label: 'Construction output', value: output.constructionRaw == null ? 'Not recorded' : formatAmount(output.constructionRaw, digits, digits) });
+    rows.push({ label: 'Repair output', value: output.repairRaw == null ? 'Not recorded' : formatAmount(output.repairRaw, digits, digits) });
   }
   const detail: TooltipRow[] = [];
-  if (project.province != null) detail.push({ label: 'Province', value: String(project.province), divider: true });
   if (project.kind === 'railway') {
     detail.push({ label: 'Railway level', value: `${project.baseLevel ?? '?'} → ${project.targetLevel ?? '?'}`, divider: true });
     if (project.routeProvinces != null) detail.push({ label: 'Provinces on the route', value: String(project.routeProvinces) });
   }
   const place = placeName({ state: project.state, toState: project.toState, province: project.province, railway: project.kind === 'railway' }, hour, stateAt);
-  const notes = [place.missing, output?.reason ? GAP_LABELS[output.reason] : null, output?.beforeObservation ? 'Output before observation began is not recorded.' : null, end?.unknown ? UNKNOWN_END[end.unknown] : null, end?.kind === 'removed' ? 'Cancelled or otherwise removed from the queue. Its work remains bounded by the recorded reads.' : null,
-    at.earlierUnknown ? 'Work before its first read was not recorded.' : null,
-    at.possible ? 'Extra possible completions may have been built with more levels added, or supplied by a focus, decision, event or effect.' : null].filter(Boolean).join(' ');
+  const notes = [...new Set([place.missing ? 'State name unavailable.' : null, output?.reason ? 'Output unavailable.' : null, output?.beforeObservation ? 'Earlier progress unknown.' : null, end?.unknown ? 'Completion unknown.' : null, end?.kind === 'removed' ? 'Removed from the queue.' : null,
+    at.earlierUnknown ? 'Earlier progress unknown.' : null,
+    at.possible ? 'Completion count uncertain.' : null].filter(Boolean))].join(' ');
   const base = { title: typeName(type), icon: type?.icon ?? undefined, subtitle: `${country} · ${place.label}${at.kind === 'new' ? '' : ` · ${kindLabel(at.kind).toLowerCase()}`}`, note: notes || undefined };
   return [{ ...base, rows: [...rows, ...detail] }, { ...base, rows }];
 }

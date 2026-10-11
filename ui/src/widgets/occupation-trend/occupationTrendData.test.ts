@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { countryRaceEnds } from '../../charts/race/countryRace.ts';
 import { SECONDARY_DASH } from '../../charts/palette.ts';
-import { formatDateTime } from '../../dashboard/calendar.ts';
 import { createWidget } from '../../dashboard/model.ts';
 import { countryMatchFilter, projectResolvedCountries, rankedCandidates, resolveCountries, worldRequestTags } from '../../dashboard/groups.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
@@ -57,10 +56,10 @@ test('occupation defaults to all occupiers and lines with resistance, with top r
 
 test('gaining and losing held states changes coverage without inventing values for unread states', () => {
   const model = occupationModel(validateOccupationTrendReply(reply()));
-  assert.equal(heldCoverage(occupationAt(model, 'MOD A', 101)!.run), '2 of 2 held states');
-  assert.equal(heldCoverage(occupationAt(model, 'MOD A', 102)!.run), '1 of 2 held states');
+  assert.equal(heldCoverage(occupationAt(model, 'MOD A', 101)!.run), '2/2 states');
+  assert.equal(heldCoverage(occupationAt(model, 'MOD A', 102)!.run), '1/2 states');
   assert.equal(occupationEntries(model, ['MOD A'], 102, 'resistance', 10)[0].label, '50%');
-  assert.equal(heldCoverage(occupationAt(model, 'MOD A', 104)!.run), '1 of 1 held states');
+  assert.equal(heldCoverage(occupationAt(model, 'MOD A', 104)!.run), '1/1 states');
   assert.equal(occupationAt(model, 'MOD A', 103), null);
   assert.equal(occupationAt(model, 'MOD A', 106), null);
   assert.equal(occupationSegmentAt(model, 'MOD A', 106), null);
@@ -76,12 +75,12 @@ test('tooltips use hovered names and flags, exact averages and supplying read da
   assert.equal(tip.title, 'MOD A renamed at 101');
   assert.equal(tip.rows[0].value, '41.3354%');
   assert.equal(tip.rows[1].value, '9.40099%');
-  assert.equal(tip.rows.find(row => row.label === 'Read')?.value, `Read ${formatDateTime(100)}`);
+  assert.equal(tip.rows.find(row => row.label === 'Read')?.value, undefined);
   assert.deepEqual(tip.rows.find(row => row.label.startsWith('Country collaboration:')), {
     label: 'Country collaboration: Occupied country renamed at 101', countryFlag: { name: 'Occupied country renamed at 101', flag: 'flag-101' }, value: '12.5%',
   });
-  assert.equal(tip.rows.find(row => row.label === 'Collaboration read')?.value, formatDateTime(100));
-  assert.match(tip.note!, /Politics → Exiles & Collaborations/);
+  assert.equal(tip.rows.find(row => row.label === 'Collaboration read')?.value, undefined);
+  assert.match(tip.note!, /Average across 2 states/);
   assert.deepEqual(occupationTooltipTags(model, 101, ['MOD A'], true), ['Occupied country']);
   assert.deepEqual(occupationTooltipTags(model, 101, ['MOD A'], false), []);
   const line = occupationLineTooltip(model, 101, ['MOD A'], labels, () => 'recorded-colour', 'both', 'resistance', false);
@@ -120,8 +119,8 @@ test('held collaboration refuses another holder\'s looks while keeping its exact
     assert.equal(row.value, '12.5%'); assert.equal(row.countryFlag?.flag, undefined);
     assert.match(row.countryFlag!.flagReason!, /identity/);
     assert.equal(row.label, 'Country collaboration: Country name unavailable');
-    assert.equal(tip.rows.find(row => row.label === 'Collaboration read')!.value, formatDateTime(100));
-    assert.match(tip.rows.find(row => row.label === 'Country identity')!.value!, /identity/);
+    assert.equal(tip.rows.find(row => row.label === 'Collaboration read')?.value, undefined);
+    assert.equal(tip.rows.find(row => row.label === 'Country identity'), undefined);
   }
 });
 
@@ -129,9 +128,9 @@ test('partial held and missing collaboration reads stay explicitly unknown', () 
   const data = reply();
   data.series[0].runs[0] = run(100, 101, { heldComplete: false, heldStates: 2, collaboration: [{ tag: 'Occupied country', raw: null, readHour: null }] });
   const tip = occupationTooltip(occupationModel(validateOccupationTrendReply(data)), 'MOD A', 101, labels, 'resistance', true)!;
-  assert.equal(tip.rows.find(row => row.label === 'Coverage')?.value, '2 states; total held not recorded (2 known)');
+  assert.equal(tip.rows.find(row => row.label === 'States')?.value, '2 states; total unknown');
   assert.equal(tip.rows.find(row => row.label.startsWith('Country collaboration:'))?.value, 'Not recorded');
-  assert.equal(tip.rows.find(row => row.label === 'Collaboration read')?.value, 'Not recorded');
+  assert.equal(tip.rows.find(row => row.label === 'Collaboration read')?.value, undefined);
 });
 
 test('zero is a readable average and ranking uses the exact native raw before geometry', () => {

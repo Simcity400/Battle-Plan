@@ -48,6 +48,6 @@ test('resource acquisition uses alias membership and preserves end/ever historie
       render(membership); assert.equal(countryDrillTagAt(output!.spans!, 118), 'Y');
     }
     globals.__resourceGroups = { ...catalogue, humans: [], unobserved: { ...catalogue.unobserved, humans: [{ firstHour: 100, lastHour: 120 }] } };
-    render('hour'); assert.equal(output!.spans!.size, 0); assert.match(output!.reason!, /not recorded/);
+    render('hour'); assert.equal(output!.spans!.size, 0); assert.match(output!.reason!, /Group membership is incomplete/);
   } finally { delete globals.__resourceGroups; await vite.close(); }
 });

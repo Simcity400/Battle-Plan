@@ -1,4 +1,5 @@
 import type { CountryIdentityRun, ExperienceRead, ExperienceReply } from '../../generated/dashboard';
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { clipToSpans, lineEndHour, runAt } from '../../charts/series.ts';
@@ -86,10 +87,9 @@ export const formatExperience = (raw: string, scale: number, measure: Experience
   : formatAmount(rescale(raw, scale, DECIMALS), DECIMALS, DECIMALS);
 
 export type ExperienceNameRead = string | null | undefined | typeof FAILED_FACT;
-/** Names belong to their dated read; missing titles retain their read status. */
-export function experienceName(_tag: string, name: ExperienceNameRead): string {
-  if (typeof name === 'string') return name;
-  return `Country (${name === undefined ? 'name loading' : name === FAILED_FACT ? 'name request failed' : 'name not recorded'})`;
+/** Names belong to their dated read; unresolved titles use neutral labels. */
+export function experienceName(tag: string, name: ExperienceNameRead): string {
+  return contentTitle(typeof name === 'string' ? name : null, tag, 'Country name unavailable', name === undefined);
 }
 
 /** Date an end label to the actual last drawn value, including an earlier holder
@@ -172,24 +172,15 @@ export function experienceHolderEnd<T extends ExperienceTooltipCountry>(parts: r
 export function experienceTooltip(reply: Pick<ExperienceReply, 'scale' | 'dayHours'>, countries: readonly ExperienceTooltipCountry[],
   branches: readonly ExperienceBranch[], measure: ExperienceMeasure, hour: number, label: CountryLabel, height: number, extraRows: readonly TooltipRow[] = []): TooltipContent {
   const reads = countries.map(country => runAt(country.reads, hour));
-  const dates = new Set(reads.flatMap(read => {
-    const date = read?.readHour ?? null;
-    return date == null ? [] : [date];
-  }));
-  const date = dates.size === 1 ? [...dates][0] : hour;
   const notes = new Set<string>();
   const rows = countries.flatMap<TooltipRow>((country, index) => {
     const read = reads[index];
     const named: ReturnType<CountryLabel> = country.identityKnown === false
       ? { name: 'Country name unavailable', known: false, flagPending: false, flagReason: 'The country identity was not recorded at this hour.' }
       : label(country.tag);
-    if (named.nameFailed) notes.add(`${country.tag}: the country name request failed at this hour.`);
-    else if (named.known === false) notes.add(`${country.tag}: the country name was not recorded at this hour.`);
-    else if (named.known === undefined) notes.add(`${country.tag}: the country name is loading.`);
     if (!read) return [{ label: named.name, countryFlag: named, value: country.recorded ? 'Not recorded at this time' : 'Not in this recording', tone: 'muted' }];
-    if (dates.size > 1) notes.add(`${named.name}: Read ${formatDateTime(read.readHour)}.`);
-    if (measure === 'change' && read.change == null) notes.add('No read exactly a day earlier in the same unbroken recorded stretch of this country.');
-    if (measure === 'gain' && read.gain == null) notes.add(`The preceding ${reply.dayHours} hours were not fully observed for this country, so daily gain is not recorded.`);
+    if (measure === 'change' && read.change == null) notes.add('A full day of data is unavailable.');
+    if (measure === 'gain' && read.gain == null) notes.add('A full day of data is unavailable.');
     return branches.map<TooltipRow>((branch, branchIndex) => {
       const raw = experienceRaw(read, branch, measure);
       return { label: countries.length === 1 ? BRANCH_LABELS[branch] : `${named.name}: ${BRANCH_LABELS[branch]}`, countryFlag: named,
@@ -197,8 +188,8 @@ export function experienceTooltip(reply: Pick<ExperienceReply, 'scale' | 'dayHou
         value: raw == null ? measure === 'gain' ? 'Not recorded' : 'Not known' : formatExperience(raw, reply.scale, measure), tone: raw == null ? 'muted' : undefined };
     });
   });
-  if (measure === 'change') notes.add(`Net change since the read ${reply.dayHours} hours earlier, including experience spent and the game’s cap.`);
-  if (measure === 'gain') notes.add(`Positive experience awards during the preceding ${reply.dayHours} hours, after the game's gain modifiers and daily limits, before spending and the bank cap.`);
-  return fitTooltip([{ title: formatDateTime(date), subtitle: date < hour ? `Shown at ${formatDateTime(hour)}` : undefined,
+  if (measure === 'change') notes.add('Net change includes spending.');
+  if (measure === 'gain') notes.add('Gain before spending.');
+  return fitTooltip([{ title: formatDateTime(hour),
     rows: [...rows, ...extraRows], note: [...notes].join(' ') }], height);
 }

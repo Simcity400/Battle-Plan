@@ -9,7 +9,7 @@
 **Notable behaviour:**
 
 - Selection follows the native country holder through aliases. Missing or multiple viewpoint holders are refused, never replaced with the player. Hourly lifetime reads can expose losses before the country-summary sample updates.
-- Each bilateral lifetime counts once. Ambiguous groups or missing grouping operands put its amount in **Other / not identified** with a reason. Ended relations keep their actual grouping/enemy supplying hours; replacement tags never name old losses.
+- Each bilateral lifetime counts once. Ambiguous groups or missing grouping operands put its amount in **Other**. Ended relations keep their actual grouping/enemy supplying hours; replacement tags never name old losses.
 - Enemy titles and table sorting use the dated localized country name. Missing names remain **Country name unavailable**, with the recorded enemy key in details; empty known names remain empty.
 - Unknown-attacker losses have no enemy and are excluded. No land/naval/air ring is inferred. Gaps can hide losses or wars; affected totals say **Recorded subtotal**.
 - The signed total and all signed/zero lifetimes remain accessible; only positive amounts form slices, bands and shares. Fill is unknown for incomplete/missing final values or another holder.

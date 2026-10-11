@@ -1,10 +1,10 @@
 # Casualties between countries
 
-**What it shows:** Directed known casualty flows between countries on a chord, with complete signed pair details and histories.
+**What it shows:** Directed known casualty flows between countries on a chord, with a single signed pair table, total and histories. All pairs and Corrections open the corresponding rows.
 
 **Product(s) it reads:** [`casualty-pairs`](../../../../crates/dashboard/src/products/war_casualties/pairs.rs) shares the [`war_casualties.rs`](../../../../crates/dashboard/src/products/war_casualties.rs) branch scan with [Casualties](../casualties/README.md).
 
-**Settings:** All countries by default; chosen countries' casualties with anyone or only between them; countries around the chord, Chord/Recorded casualty pairs and inline/pop-out drill; Campaign, Follow, Pin and Range.
+**Settings:** All countries by default; chosen countries' casualties with anyone or only between them; countries around the chord, Chord/Casualty pairs and inline/pop-out drill; Campaign, Follow, Pin and Range.
 
 **Notable behaviour:**
 

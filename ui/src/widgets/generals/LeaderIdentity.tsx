@@ -1,3 +1,4 @@
+import ArtFallback from '../../components/ArtFallback';
 import { CountryCell } from '../../charts/table/Table';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import type { LeaderRow } from './generalsData';
@@ -26,7 +27,7 @@ export function SkillStars({ level, maximum }: { level: number | null; maximum: 
     return () => observer.disconnect();
   }, [level, maximum]);
   if (level == null) return <span className="leader-missing">Not recorded</span>;
-  if (maximum == null) return <span data-tooltip="The maximum skill level could not be established from content">{level} · maximum unknown</span>;
+  if (maximum == null) return <span>{level}</span>;
   return <span ref={element} className="leader-stars" aria-label={`Skill ${level} of ${maximum}`}>
     {display.maximum !== maximum || display.compact ? <span aria-hidden="true">★ {level} / {maximum}</span> : <>
       <span aria-hidden="true">{'★'.repeat(Math.max(0, Math.min(level, maximum)))}</span>
@@ -37,8 +38,8 @@ export function SkillStars({ level, maximum }: { level: number | null; maximum: 
 
 export function LeaderPortrait({ art }: { art?: UnitLeaderPortrait }) {
   const portrait = art?.image;
-  return <span className="leader-portrait" role={portrait ? undefined : 'img'} aria-label={portrait ? undefined : art?.missing ?? 'Portrait not recorded'}>
-    {portrait ? <img src={portrait} alt="" /> : <span aria-hidden="true">?</span>}
+  return <span className="leader-portrait">
+    {portrait ? <img src={portrait} alt="" /> : <ArtFallback icon="helmet" />}
   </span>;
 }
 

@@ -25,5 +25,5 @@ Campaign/follow/pin/range; refitted ships (off), hierarchy levels and shared sun
 | File | Responsibility |
 |---|---|
 | [ProductionSpendingWidget.tsx](ProductionSpendingWidget.tsx) | Product and Sunburst adapter. |
-| [spendingData.ts](spendingData.ts) | Exact amounts, hierarchy, attribution unknowns and footnotes; adjacent tests. |
+| [spendingData.ts](spendingData.ts) | Exact amounts, hierarchy and plain attribution unknowns; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts) | Levels, shared options and registration. |

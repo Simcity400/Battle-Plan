@@ -41,10 +41,15 @@ export interface WidgetProps {
   headerSlot: HTMLElement | null;
   /** A semantic drill's country chip target, separate from the title summary. */
   countrySlot?: HTMLElement | null;
+  /** Receives the notes behind what the widget cannot show (unread texts, ambiguous artwork), each
+   * named and counted. Tests read them; the dashboard does not display them. */
   onDiagnostics: (warnings: string[]) => void;
   /** Saves one of the widget's own options from inside it (such as chips above a
    * chart), as the settings panel would; absent where the widget is not in a layout. */
   setOption?: (key: string, value: OptionValue) => void;
+  /** Saves several of the widget's options as one change, so a stored dashboard never
+   * holds only some of them (such as a migration and its marker). */
+  setOptions?: (values: Readonly<Record<string, OptionValue>>) => void;
 }
 
 export interface HeaderControlsProps {
@@ -58,7 +63,6 @@ export interface HeaderControlsProps {
   onReset?: () => void;
   mapOptions: MapOptions;
   onMapOptions: (options: MapOptions) => void;
-  diagnostics: string[];
 }
 
 /** Pure widget metadata: safe to import in node tests. */
@@ -68,8 +72,10 @@ export interface WidgetMeta {
   title: string;
   /** One line for the widget picker. */
   description?: string;
-  /** Optional category shown beside the description in the widget picker. */
+  /** The widget catalogue's group; by default the first subject page that shows the widget. */
   category?: string;
+  /** False when a second copy cannot be drawn in the catalogue's preview (the native map). */
+  preview?: false;
   icon: IconName;
   timeModes: readonly WidgetTime['mode'][];
   defaultTime: 'follow' | 'campaign';
@@ -78,6 +84,8 @@ export interface WidgetMeta {
   data: boolean;
   /** False for whole-world views without a country chip or Countries settings. */
   countrySelection?: boolean;
+  /** Uses the campaign's shared faction colours and offers their editor in settings. */
+  factionColours?: boolean;
   /** Has a meaningful whole-campaign view, so the header offers a Live switch.
    * Without one (a map) the widget always follows playback. */
   history: boolean;
@@ -106,14 +114,11 @@ export interface WidgetMeta {
  * key; a content set shows each choice's icon (an image URL) when it has one. */
 export type OptionChoices = Readonly<Record<string, readonly { value: string; label: string; icon?: string | null }[]>>;
 
-export interface WidgetPickerItemsProps {
-  definition: WidgetDefinition;
-  runtime: WidgetRuntime;
-  track: BoundTrack | undefined;
-  active: boolean;
-  disabled: boolean;
-  onAdd: (kind: string, initial?: Pick<WidgetSpec, 'title' | 'options'>) => void;
-}
+/** One catalogue entry derived from the campaign's content (one idea category). It is its own
+ * card and stores the definition's kind with this title and these options. */
+export interface WidgetPreset { key: string; initial: Pick<WidgetSpec, 'title' | 'options'> }
+/** A content-derived widget's entries for the shown campaign; `reason` says why there are none yet. */
+export interface WidgetPresets { presets: readonly WidgetPreset[]; reason: string | null }
 
 export type WidgetCountryChipProps = Pick<WidgetProps, 'widget' | 'runtime' | 'active'> & {
   onSlot: (element: HTMLSpanElement | null) => void;
@@ -121,8 +126,10 @@ export type WidgetCountryChipProps = Pick<WidgetProps, 'widget' | 'runtime' | 'a
 
 export interface WidgetDefinition extends WidgetMeta {
   render?: ComponentType<WidgetProps>;
-  /** Content-derived picker entries; the stored widget kind stays the same. */
-  pickerItems?: ComponentType<WidgetPickerItemsProps>;
+  /** Splits the widget into one catalogue entry per content choice, replacing its own card while
+   * there are any. The catalogue calls it for every such widget while open; the registry is fixed
+   * once widgets register, so the calls keep one order. */
+  usePresets?: (definition: WidgetMeta, runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean) => WidgetPresets;
   /** A hook listing the choices of the widget's content-choice fields from its
    * campaign's content. The settings panel calls it while open. */
   useOptionChoices?: (widget: WidgetSpec, runtime: WidgetRuntime) => OptionChoices;
@@ -133,7 +140,7 @@ export interface WidgetDefinition extends WidgetMeta {
 }
 
 /** The React half of a widget; its folder's index.ts exports one. */
-export type WidgetRenderer = Pick<WidgetDefinition, 'render' | 'headerControls' | 'countryChip' | 'useOptionChoices' | 'pickerItems'>;
+export type WidgetRenderer = Pick<WidgetDefinition, 'render' | 'headerControls' | 'countryChip' | 'useOptionChoices' | 'usePresets'>;
 
 const registry = new Map<string, WidgetDefinition>();
 

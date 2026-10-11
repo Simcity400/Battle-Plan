@@ -130,16 +130,16 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const measureInfo = MEASURES.find(item => item.value === measure) ?? MEASURES[0];
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="layers" message="Load a campaign to see the equipment it produced." />;
-    if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-    if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-    if (grouped && groupReply.error) return <WidgetState kind="error" message={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
+    if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+    if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+    if (grouped && groupReply.error) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon="layers" message={resolved.reason} />;
     // A group's members are not known until its history arrives; nothing is shown as empty meanwhile.
     if (!shownReply || !model || (grouped && !numericGroups)) return <WidgetState kind="loading" label="Loading equipment produced…" />;
-    if (!shownReply.reads.length) return <WidgetState kind="unavailable" message="Not in this recording: it has no count of the equipment production lines delivered." />;
+    if (!shownReply.reads.length) return <WidgetState kind="unavailable" message="Production data is not in this recording." />;
     // A shorter branch has no week/month value, which is not the same as no production.
-    if (!produced && !model.tags.length) return <WidgetState kind="unavailable" message={measure === 'total' ? 'No production was recorded for these countries in this branch.'
-      : `No ${measureInfo.label.toLowerCase()} value yet: each needs a read of the same country a ${measure === 'week' ? 'week' : 'month'} before, and this branch has none that long.`} />;
+    if (!produced && !model.tags.length) return <WidgetState kind="unavailable" message={measure === 'total' ? 'No production data for these countries.'
+      : `A full ${measure === 'week' ? 'week' : 'month'} of production data is unavailable.`} />;
     return null;
   })();
   // `name` names the country as recorded at the hour the tooltip is about.
@@ -160,10 +160,10 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const window_ = measure === 'week' ? 'week' : 'month';
   // The top N show a country once it has produced something; say so when none has.
   const nothingYet = produced && model && emptyRace(model, moment) === 'nothing'
-    ? (measure === 'total' ? `No country has produced anything by ${dayLabel(moment)}; a country appears here once it has.`
-      : `No country produced anything in the ${window_} before ${dayLabel(moment)}; a country appears here once it has.`)
+    ? (measure === 'total' ? `No production by ${dayLabel(moment)}.`
+      : `No production in the previous ${window_}.`)
     : measure === 'total' ? `No production recorded on ${dayLabel(moment)}.`
-      : `Nothing to show on ${dayLabel(moment)}: ${measureInfo.label.toLowerCase()} needs unbroken reads over the ${window_} before.`;
+      : `A full ${window_} of production data is unavailable.`;
 
   return <CountryPartsDrill {...props} widget={widget} runtime={runtime} active={active} onDiagnostics={onDiagnostics} track={track}
     options={options} extent={extent} playhead={playhead} moment={moment} product="equipment-produced" params={drillParams}
@@ -174,8 +174,6 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
     moment={moment} slots={slots} ranked={entries} lines={lines} countryTags={shownTags} parts={parts}
     mix={mix ? { ...mix, parts: mixParts } : null} partsLabel="Equipment"
     raceLegendParts={split && model && !foldsPerCountry(model) && bands.length > 1 ? parts : []}
-    beforeChart={view === 'race' && split && model && foldsPerCountry(model)
-      ? <p className="equipment-produced-note">Each bar keeps its own country’s largest variants in colour; the rest are Other. Hover a bar to name them.</p> : null}
     label={`Equipment ${measureInfo.unit}`} empty={nothingYet} formatValue={formatUnits} tooltip={tooltipAt}
     lineTooltip={(hour, _tags, labelAt, country) => [linesTooltip(hour, lines, labelAt, country, dayLabel(hour), measureInfo.label, formatUnits)]}
     labels={{ race: `Equipment ${measureInfo.unit}, ${dayLabel(moment)}`, lines: `Equipment ${measureInfo.unit} over time`,
@@ -185,6 +183,6 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
     pickOwner={pickOwner} lineEmpty={{ icon: 'layers', message: 'No countries to draw. Choose countries in the widget settings.' }}
     mixEmpty={{ icon: 'layers', message: widget.countries.kind === 'group'
       ? `No country of this group was recorded on ${dayLabel(moment)}.` : 'Choose a country in the widget settings.',
-      unavailable: name => `No production was recorded for ${name} in this branch.` }}
+      unavailable: name => `No production data for ${name}.` }}
     resetKey={`${track?.source.id ?? ''}:${track?.branch.id ?? ''}:${measure}:${grouping}`} onPick={onPick} />} />;
 }

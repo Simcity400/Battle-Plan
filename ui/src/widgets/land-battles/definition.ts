@@ -7,7 +7,7 @@ export const OPTIONS = battleOptions([
 ]);
 export const definition = {
   kind: 'land-battles', version: 1, title: 'Land battles', icon: 'shield',
-  description: 'Observed land battles, their recorded sides and division counts, with a biggest-battles leaderboard.',
+  description: 'Land battles, division counts, losses and results.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 10, h: 14 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   availability: { product: 'land-battles-manifest', params: {} },

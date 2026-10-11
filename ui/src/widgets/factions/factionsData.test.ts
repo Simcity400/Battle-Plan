@@ -1,5 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { createServer } from 'vite';
+import type { WidgetProps } from '../../dashboard/definitions';
+import type { TimelineProps } from '../../charts/timeline/Timeline';
+import type { LegendItem } from '../../charts/Legend';
 import type { CountryGroupReply, FactionGroup } from '../../generated/dashboard';
 import { LEADER_GLYPH, UNNAMED, factionLabel, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt, membersHeld, tagAt } from './factionsData.ts';
 import type { LaneOptions } from './factionsData';
@@ -31,6 +37,49 @@ const text = { country: (tag: string) => ({ name: names[tag] ?? tag, flag: `flag
 const options: LaneOptions = { order: 'founded', members: 'joined', ended: true, countries: null };
 const summaryName = (faction: FactionGroup) => ({ name: faction.name, reason: faction.nameReason });
 const views = factionViews(reply, summaryName, id => `colour-${id}`);
+
+test('the faction legend names factions, retains colour editing and shows one concise name refusal', async () => {
+  const host = globalThis as typeof globalThis & {
+    __factionLegend?: readonly LegendItem[]; __factionTimeline?: TimelineProps; __factionColour?: unknown[];
+  };
+  const replacements: Record<string, string> = {
+    '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: ${JSON.stringify(reply)}, retry() {} });`,
+    '/dashboard/FactionColours.tsx': `export const useFactionColours = () => ({ names: faction => ({ name: faction.name, reason: faction.nameReason }),
+      colours: new Map(), warnings: [], setColour: (...args) => { globalThis.__factionColour = args; } });`,
+    '/dashboard/useCountriesAt.ts': 'export const useCountriesAt = () => ({ country: tag => ({ name: tag }), revision: 0 });',
+    '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask() {}, labelAt: () => tag => ({ name: tag }), revision: 0 });',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
+    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
+    '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
+    '/charts/Legend.tsx': 'export default props => { globalThis.__factionLegend = props.items; return null; };',
+    '/charts/timeline/Timeline.tsx': 'export default props => { globalThis.__factionTimeline = props; return null; };',
+  };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'faction-legend-fixture', enforce: 'pre',
+      transform: (_source, id) => { const key = Object.keys(replacements).find(key => id.endsWith(key)); return key ? replacements[key] : undefined; },
+    }] });
+  try {
+    const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/factions/FactionsWidget.tsx');
+    const props = { widget: { id: 'factions', kind: 'factions', trackIds: ['main'], countries: { kind: 'all' }, time: { mode: 'campaign' },
+      options: { legend: true, colourScope: 'campaign' } }, runtime: { client: {}, clock: { getHour: () => 400, getSnapshot: () => ({ hoursPerSecond: 24 }) },
+        tracks: [{ id: 'main', axisOffset: 0, branch: { id: '1', firstHour: 100, lastHour: 400 },
+          source: { id: 'synthetic', revision: '1', metadata: { countries: [] } } }] }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
+    renderToStaticMarkup(createElement(Widget, props));
+    const unnamed = host.__factionLegend!.find(item => item.id === factions[0].id)!;
+    assert.equal(unnamed.label, 'Unnamed faction');
+    assert.equal(unnamed.tooltip, undefined);
+    unnamed.onColor!('#123456');
+    assert.deepEqual(host.__factionColour, [factions[0].id, '#123456', 'campaign']);
+    const chart = host.__factionTimeline!;
+    const lane = chart.lanes.find(lane => lane.id === `faction:${factions[0].id}`) ?? chart.lanes[0];
+    const tip = chart.tooltip!(lane, null, 300)!;
+    assert.equal(tip.rows.filter(row => row.value === 'Name unavailable').length, 1);
+    assert.doesNotMatch(JSON.stringify(tip), /Faction template not recorded|recorded every hour/);
+  } finally {
+    delete host.__factionLegend; delete host.__factionTimeline; delete host.__factionColour;
+    await vite.close();
+  }
+});
 
 test('a late recorded name outside the window moves its member from Zulu to Aardvark', () => {
   const tags = Array.from({ length: 50 }, (_, index) => `T${index}`);
@@ -102,7 +151,7 @@ test('lanes list each faction founded by the hour, then its members, the leader 
   // The second faction is founded at 200: not yet listed.
   assert.deepEqual(early.lanes.map(lane => lane.identity?.label), [UNNAMED, 'Free Republic', 'Hungary', 'Italy']);
   assert.equal(early.lanes[0].heading, true);
-  assert.equal(early.lanes[0].label, 'Led by Free Republic · 3 members');
+  assert.equal(early.lanes[0].label, '3 members', 'the heading counts members; the leader is marked in its row');
   assert.equal(early.lanes[1].label, `${LEADER_GLYPH} Leader · Member before day 100`);
   assert.equal(early.lanes[3].label, 'Joined day 150');
   assert.equal(early.lanes[1].spans[0].glyph, LEADER_GLYPH);
@@ -143,7 +192,7 @@ test('a member whose tag changes stays one member, neither leaving nor joining',
   assert.equal(view.members.length, 2);
   const lanes = factionLanes([view], 250, options, text, [], 0).lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
   // Named by its tag at the hour, a member since its first run, still leading.
-  assert.deepEqual(lanes, ['Pact: Led by BBB · 2 members', `BBB: ${LEADER_GLYPH} Leader · Joined day 100`, 'CCC: Joined day 100']);
+  assert.deepEqual(lanes, ['Pact: 2 members', `BBB: ${LEADER_GLYPH} Leader · Joined day 100`, 'CCC: Joined day 100']);
   // Native holder evidence remains authoritative without a rename event.
   assert.equal(factionViews({ ...renamed, identityChanges: [] }, summaryName, id => id)[0].members.length, 2);
   // With unrelated native holders, AAA left at 200 and BBB joined then.
@@ -253,8 +302,8 @@ test('a native alias across a missing identity hour retains one membership and a
   const layout = factionLanes([view], 10, options, { ...text, country: tag => { asked.push(tag); return text.country(tag); } }, [], 0);
   assert.deepEqual(asked, []);
   assert.deepEqual(laneCountries(layout.lanes, layout.info, 10), []);
-  assert.equal(layout.lanes[1].identity?.label, 'Native country identity not recorded');
-  assert.equal(layout.lanes[1].identity?.countryFlag?.flagReason, 'Native country identity not recorded at this hour.');
+  assert.equal(layout.lanes[1].identity?.label, 'Unknown country');
+  assert.equal(layout.lanes[1].identity?.countryFlag?.flagReason, 'Unknown country');
   const later = factionLanes([view], 15, options, text, [], 0);
   assert.equal(later.lanes[1].identity?.label, 'Y');
   assert.equal(later.lanes[1].label, `${LEADER_GLYPH} Leader · Member before day 0`);
@@ -268,7 +317,7 @@ test('a member with a missing native suffix stays an unknown roster rather than 
   assert.equal(view.members.length, 0);
   assert.equal(membersAt(view, 15), null);
   const layout = factionLanes([view], 15, options, text, [], 0);
-  assert.equal(layout.lanes[0].label, 'Leader not recorded · members not recorded');
+  assert.equal(layout.lanes[0].label, 'Members not recorded');
   assert.deepEqual(laneCountries(layout.lanes, layout.info, 15), []);
 });
 

@@ -10,7 +10,14 @@ import { selectedTags } from '../countrySelection.ts';
 import { parseTemplate } from '../storage.ts';
 
 const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false } });
-const { CountriesSection } = await vite.ssrLoadModule('/ui/src/dashboard/settings/CountriesSection.tsx').finally(() => vite.close()) as typeof import('./CountriesSection.tsx');
+const { CountriesSection, groupKinds } = await vite.ssrLoadModule('/ui/src/dashboard/settings/CountriesSection.tsx').finally(() => vite.close()) as typeof import('./CountriesSection.tsx');
+
+test('faction choices keep their labels without showing backend naming refusals', () => {
+  const reply = { factions: [{ id: '42', name: null, nameReason: 'Synthetic native faction refusal', names: [] }] } as unknown as import('../../generated/dashboard').CountryGroupReply;
+  const kinds = groupKinds(reply, { max: 5000 });
+  assert.deepEqual(kinds[1], { value: 'faction:42', label: 'Unnamed faction' });
+  assert.equal(groupKinds(reply, { max: 5000 }, undefined, { '42': { name: 'Readable override' } })[1].label, 'Readable override');
+});
 
 function elements(value: ReactNode): ReactElement<Record<string, unknown>>[] {
   if (Array.isArray(value)) return value.flatMap(elements);

@@ -16,7 +16,7 @@ for (const currency of ['Political', 'Command'] as const) test(`${currency} spen
       category: 'mod category', itemId: 'mod action', chargeRaw: '100000', realizedDeltaRaw: '-100000', covered: true, occurrences: 1,
       changes: [{ readHour: 12, chargeRaw: '100000', realizedDeltaRaw: '-100000', covered: true, occurrences: 1 }] }],
     spendItems: [{ id: 'mod action', groupId: 'mod action', name: 'Recorded action', action: 'Recorded action', icon: null, tooltipToken: null,
-      character: null, targetTag: 'native target', targetName: 'Recorded target', unknown: null }],
+      character: null, targetTag: 'native target', targetName: 'Recorded target', unknown: 'Synthetic private operand reason' }],
     spendCategories: [{ id: 'mod category', name: 'Recorded category', identified: true }], ideaTooltips: null, commandHolds: [],
     spendingCoverage: [{ readHour: 7, sinceHour: 3, throughHour: 8, political: false, command: false, reason: 'Synthetic native stream refusal' }] };
   const state = { visible: [] as readonly LogRow<SpendingRow>[], list: undefined as LogListProps<SpendingRow> | undefined,
@@ -79,25 +79,42 @@ for (const currency of ['Political', 'Command'] as const) test(`${currency} spen
     assert.deepEqual(tip().rows[0].countryFlag, {name: 'Dated native actor at 10', flag: undefined, flagPending: true, flagReason: undefined});
     assert.equal(tip().rows[0].value, 'Recorded actor');
     assert.equal(tip().rows[0].countryFlag?.flagPending, true);
+    assert.equal(tip().rows.find(row => row.label === 'Cost')!.value, '1');
+    assert.equal(tip().rows.some(row => row.label === 'Read'), false);
+    assert.doesNotMatch(JSON.stringify(tip()), /Synthetic private operand reason|Dated to the native/);
+    assert.doesNotMatch(state.list!.describe(nativeGap), /Synthetic native stream refusal/);
+    assert.doesNotMatch(JSON.stringify(state.list!.tooltip!(nativeGap)), /Synthetic native stream refusal|label":"Read/);
     assert.equal(tip().rows.find(row => row.label === 'Target')!.value, 'Recorded target');
     assert.equal(state.list!.tooltip!(nativeGap)[0].rows[0].countryFlag?.flagPending, true);
     assert.equal(state.list!.tooltip!(groupGap)[0].rows[0].countryFlag, undefined);
     state.pending = false; state.reason = 'Synthetic recorded-stack flag refusal'; render();
-    assert.match(markup(spend), /Flag not available: Synthetic recorded-stack flag refusal/);
+    assert.match(markup(spend), /Flag unavailable/);
     assert.doesNotMatch(markup(spend), /Flag loading/);
     assert.equal(tip().rows.find(row => row.label === 'Target')!.countryFlag?.flagReason, state.reason);
-    state.reason = 'The flag request failed.'; render(); assert.match(markup(nativeGap), /The flag request failed/);
-    state.reason = 'No readable flag was returned for this country at this hour.'; render(); assert.match(markup(spend), /No readable flag/);
+    state.reason = 'The flag request failed.'; render(); assert.match(markup(nativeGap), /Flag unavailable/);
+    state.reason = 'No readable flag was returned for this country at this hour.'; render(); assert.match(markup(spend), /Flag unavailable/);
     for (const filterMode of ['show', 'hide']) {
       props.widget.options = { totals: false, chips: true, artwork: false, filterMode, categories: 'mod:20:category' };
       const filtered = render();
-      assert.match(filtered, new RegExp(`aria-label="${filterMode === 'show' ? 'Shown' : 'Hidden'} spending categories"`));
+      assert.match(filtered, /aria-label="Shown spending categories"/);
       assert.match(filtered, /aria-pressed="true"/);
       assert.match(filtered, /class="chip-dot" style="background:#123456"/);
       assert.equal(rows().filter(row => row.item.kind === 'spend').length, filterMode === 'show' ? 1 : 0);
       assert.equal(rows().filter(row => row.item.kind === 'gap').length, 2, 'filtering keeps unknown coverage visible');
     }
-    props.widget.options = { totals: false, chips: false, artwork: false };
+    props.widget.options = { totals: true, chips: false, artwork: true, filterMode: 'shown', categories: 'mod:20:category' };
+    const shownTotal = render();
+    assert.match(shownTotal, new RegExp(`1 ${currency === 'Political' ? 'PP' : 'CP'} known; total unknown\\.`));
+    assert.equal((shownTotal.match(/known; total unknown/g) ?? []).length, 1);
+    assert.match(markup(spend), /art-fallback/);
+    assert.match(markup(nativeGap), /art-fallback/);
+    assert.doesNotMatch(markup(nativeGap), /Synthetic native stream refusal/);
+    props.widget.options = { totals: true, chips: false, artwork: true, filterMode: 'shown', categories: ':none:' };
+    const hiddenTotal = render();
+    assert.match(hiddenTotal, /known; total unknown/);
+    assert.doesNotMatch(hiddenTotal, /Recorded category/);
+    assert.equal(rows().filter(row => row.item.kind === 'spend').length, 0);
+    props.widget.options = { totals: false, chips: false, artwork: false, filterMode: 'shown' };
     state.url = 'data:image/png;base64,synthetic'; state.reason = undefined; render();
     const findFlag = (node: ReactNode): ReactElement | undefined => {
       if (Array.isArray(node)) return node.map(findFlag).find(Boolean);
@@ -108,7 +125,7 @@ for (const currency of ['Political', 'Command'] as const) test(`${currency} spen
     const flag = findFlag(state.list!.renderRow(spend))!;
     const image = () => (flag.type as (props: unknown) => ReactElement)(flag.props);
     (image() as ReactElement<{onError: () => void}>).props.onError();
-    assert.match(renderToStaticMarkup(image()), /The flag image could not be displayed/);
+    assert.match(renderToStaticMarkup(image()), /Flag unavailable/);
     state.clock = 99; state.url = undefined; state.pending = true; render();
     assert.deepEqual(wanted().map(row => row.hour), [10, 10, 3], 'playback cannot redate the native actor or target');
     state.list!.onVisible!([nativeGap]); render(); assert.deepEqual(wanted(), [{hour: 3, tag: 'native actor'}]);

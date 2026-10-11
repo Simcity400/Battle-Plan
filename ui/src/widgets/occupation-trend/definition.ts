@@ -10,10 +10,8 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'rankingMeasure', section: 'options', label: 'Rank both measures by', kind: 'choice', default: 'resistance',
     choices: [{ value: 'resistance', label: 'Resistance' }, { value: 'compliance', label: 'Compliance' }],
     visibleWhen: options => options.measure === 'both' },
-  { key: 'collaboration', section: 'options', label: 'Country collaboration context', kind: 'toggle', default: false,
-    hint: 'Tooltip context from Politics → Exiles & Collaborations; separate from occupied-state compliance.' },
-  { key: 'digits', section: 'options', label: 'Decimals in chart labels', kind: 'number', min: 0, max: 5, step: 1, default: 2,
-    hint: 'Tooltips retain all five fixed-point decimal places.' },
+  { key: 'collaboration', section: 'options', label: 'Show collaboration', kind: 'toggle', default: false },
+  { key: 'digits', section: 'options', label: 'Decimals in chart labels', kind: 'number', min: 0, max: 5, step: 1, default: 2 },
   { ...END_LABELS_OPTION, visibleWhen: options => options.view !== 'race' },
   DATE_OVERLAY_OPTION, ...RACE_TIME_OPTIONS, ...RACE_AXIS_OPTIONS,
 ];

@@ -1,3 +1,4 @@
+import ArtFallback from '../../components/ArtFallback';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import { ChipSet } from '../../components/ChipSet';
@@ -63,12 +64,12 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
   }, [data, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its raids." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (filtered && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (filtered && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!data || !match.ready) return <WidgetState kind="loading" label="Loading raids…" />;
-  if (data.available !== true) return <WidgetState kind="unavailable" message={data.unavailable ?? (data.available === false ? 'Not in this recording' : 'Raid availability not known')} />;
+  if (data.available !== true) return <WidgetState kind="unavailable" message={data.available === false ? 'No raid types available.' : 'Raids unavailable.'} />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recorded branch." />;
+  if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
 
   const chosen = contentSet(types);
   const renderRow = (row: LogRow<RaidAt>) => {
@@ -77,7 +78,7 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
     const preparation = raidPreparation(data, row.item);
     const { raider, victim } = labels(row);
     return <>
-      <span className={`log-art${icon ? '' : ' is-missing'}`} aria-hidden="true">{icon ? <img src={icon} alt="" /> : '?'}</span>
+      <span className={`log-art${icon ? '' : ' is-missing'}`} aria-hidden="true">{icon ? <img src={icon} alt="" /> : <ArtFallback icon="target" />}</span>
       <span className="log-text">
         {row.item.latest.raider !== null && <CountryFlagUrl className="log-flag" url={raider.flag} reason={raider.flagReason} pending={raider.flagPending} />}<b>{raider.name}</b> targets{' '}
         {row.item.latest.victim !== null && <CountryFlagUrl className="log-flag" url={victim.flag} reason={victim.flagReason} pending={victim.flagPending} />}<b>{victim.name}</b> at {raidPlace(row.item.latest)}

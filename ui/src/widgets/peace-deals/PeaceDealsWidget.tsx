@@ -15,9 +15,9 @@ import { usePlaybackHour } from '../../dashboard/playback';
 import { usePeaceDeals } from '../../dashboard/usePeaceDeals';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
-import { peaceCaptureLabel as captureLabel, peaceObservationLabel, peaceWarName } from '../../dashboard/peaceDealsData';
+import { peaceWarName } from '../../dashboard/peaceDealsData';
 import { formatDateTime } from '../../dashboard/calendar';
-import { derivedNote, filterPeaceLog, gapLabel, peaceActionChoices, peaceActionName, peaceDescription, peaceHasConferences, peaceRowHeight, peaceRowsAt, peaceTooltipRows, peaceWanted, preparePeaceLog } from './peaceData';
+import { conferenceLabel, derivedNote, filterPeaceLog, gapLabel, peaceActionChoices, peaceActionName, peaceDescription, peaceHasConferences, peaceRowHeight, peaceRowsAt, peaceTooltipRows, peaceWanted, preparePeaceLog } from './peaceData';
 import type { PeaceChip, PeaceLogEntry } from './peaceData';
 import { OPTIONS } from './definition';
 import './peaceDeals.css';
@@ -49,27 +49,26 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
   const stateAt = useStateNamesAt(runtime.client, track, wanted.states, active && !!data);
   useEffect(() => { onDiagnostics(data?.warnings ?? NO_WARNINGS); return () => onDiagnostics(NO_WARNINGS); }, [data, onDiagnostics]);
 
-  const chipLabel = useCallback((chip: PeaceChip) => chip.state != null ? stateAt(chip.hour, chip.state).name ?? `State ${chip.state} · name not recorded`
+  const chipLabel = useCallback((chip: PeaceChip) => chip.state != null ? stateAt(chip.hour, chip.state).name ?? `State ${chip.state}`
     : chip.tag != null ? labelAt(chip.hour)(chip.tag).name : chip.missing ?? 'Target not recorded', [stateAt, labelAt]);
-  const stateMissing = useCallback((chip: PeaceChip) => chip.state == null ? null : stateAt(chip.hour, chip.state).missing, [stateAt]);
   const countryDescription = useCallback((tag: string, hour: number) => {
     const label = labelAt(hour)(tag);
     return [label.name, !label.flag && countryFlagUnavailable(label.flagReason, label.flagPending).text].filter(Boolean).join('; ');
   }, [labelAt]);
   const chipDescription = useCallback((chip: PeaceChip) => [chip.tag != null ? countryDescription(chip.tag, chip.hour) : chipLabel(chip),
-    stateMissing(chip), chip.note, chip.derived ? 'Derived from what changed' : null].filter(Boolean).join('; '), [chipLabel, stateMissing, countryDescription]);
+    chip.note].filter(Boolean).join('; '), [chipLabel, countryDescription]);
   const tooltip = useCallback((row: LogRow<PeaceLogEntry>): readonly TooltipContent[] => {
-    if (row.item.kind === 'gap') return [{ title: 'Not recorded', rows: [{ label: gapLabel(row.item.span) }], note: 'This gap is not evidence that no peace conferences occurred.' }];
+    if (row.item.kind === 'gap') return [{ title: 'Not recorded', rows: [{ label: gapLabel(row.item.span) }] }];
     const { card } = row.item;
-    const details = peaceTooltipRows(card, labelAt, chipLabel, stateMissing);
+    const details = peaceTooltipRows(card, labelAt, chipLabel);
     return [{ title: peaceWarName(card.deal), subtitle: `${card.by ? 'by ' : ''}${formatDateTime(card.hour)}`, rows: details,
-      note: [peaceObservationLabel(card.deal), derivedNote(card.deal), captureLabel(card.deal), ...card.deal.limitations].filter(Boolean).join(' ') }];
-  }, [labelAt, chipLabel, stateMissing]);
+      note: [conferenceLabel(card.deal), derivedNote(card.deal)].filter(Boolean).join(' · ') || undefined }];
+  }, [labelAt, chipLabel]);
 
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see its peace conferences." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading peace conferences…" />;
-  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the campaign’s recorded branch." />;
+  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
 
   const country = (tag: string, at: number, name = true) => {
     const label = labelAt(at)(tag);
@@ -92,7 +91,7 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
     return <article className="peace-deal">
       <div className="peace-heading"><b className={deal.warName == null ? 'peace-muted' : undefined}>{peaceWarName(deal)}</b>
         <small>{card.by && 'by '}{formatDateTime(card.hour)}</small></div>
-      {peaceObservationLabel(deal) && <div className="peace-muted peace-observation">{peaceObservationLabel(deal)}</div>}
+      {conferenceLabel(deal) && <div className="peace-muted peace-observation">{conferenceLabel(deal)}</div>}
       <div className="peace-sides">
         <div className="peace-side">{side(deal.winners, card.hour)}
         {missingWinners > 0 && <span>{missingWinners} winner{missingWinners === 1 ? '' : 's'} not recorded</span>}
@@ -104,13 +103,12 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
       </div>
       <div className="peace-actions">{card.actions.map(action => <div className="peace-action" key={action.key}>
         <div className="peace-action-label">{action.winner == null ? <span className="peace-muted">Taker not recorded</span> : country(action.winner, card.hour, false)}
-          <em data-tooltip={action.name == null && !action.outcome ? `Action name not recorded${action.token ? ` (${action.token})` : ''}` : undefined}>{peaceActionName(action)}</em></div>
+          <em>{peaceActionName(action)}</em></div>
         <FittedList items={action.chips} className="peace-chips" moreClassName="peace-chip peace-more"
           itemKey={chipKey} label={chipLabel} describe={chipDescription} extraWidth={chipExtraWidth} renderItem={chip} />
       </div>)}</div>
-      {!card.actions.length && <div className="peace-muted peace-observation">{deal.captured ? 'No captured peace actions.' : 'Peace outcomes not recorded.'}</div>}
-      {deal.derived && <span className="peace-derived" tabIndex={0} data-tooltip={derivedNote(deal)}>Derived from what changed</span>}
-      {captureLabel(deal) && <div className="peace-capture-unavailable">{captureLabel(deal)}</div>}
+      {!card.actions.length && !derivedNote(deal) && <div className="peace-muted peace-observation">{deal.captured ? 'No actions recorded.' : 'Outcomes not recorded'}</div>}
+      {derivedNote(deal) && <span className="peace-derived">{derivedNote(deal)}</span>}
     </article>;
   };
   const chosen = contentSet(actions);

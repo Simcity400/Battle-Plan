@@ -69,7 +69,7 @@ test('Event feed validates the resolved track cutoff, suspends old viewport read
         onDiagnostics() {} } as unknown as WidgetProps));
     };
     const invalid = (hour: number) => {
-      assert.match(render(hour), /outside the recorded branch/);
+      assert.match(render(hour), /outside the recording/);
       assert.equal(host.__eventBounds!.log, undefined);
       assert.equal(host.__eventBounds!.feed!.active, false);
       assert.equal(host.__eventBounds!.feed!.hour, null);

@@ -125,23 +125,19 @@ export default function TensionDrill({ model, runtime, track, active, options, e
           icon: sample ? flags.get(nameKey(sample.hour, sample.tag)) : undefined };
       }) ?? []}
       format={value => `${value}%`} total={at ? contributionPercent(model, at.read.sumRaw) : null}
-      unattributed={at ? { label: 'Other / not identified', value: contributionPercent(model, at.remainder), raw: BigInt(at.remainder),
+      unattributed={at ? { label: 'Other', value: contributionPercent(model, at.remainder), raw: BigInt(at.remainder),
         text: exact(at.remainder), shareText: tensionShareText(at.remainder, at.read.sumRaw), color: tokens.muted } : undefined}
-      totalRow={{ label: 'Recorded contributions', value: at ? exact(at.read.sumRaw) : 'Not recorded' }} />
-    <p className="drill-empty">World tension: {at ? formatTension(model, at.read.tensionRaw, model.tensionDecimals) : 'Not recorded'}.
-      {at && ` Read ${formatDateTime(at.read.firstHour)}; world tension and country contributions are read once a day.`}
-      {' '}Contributions keep their recorded signs and can exceed the game’s capped world tension.</p>
-    <div className="world-tension-cause">Recorded cause
-      <Select label="Recorded cause" value={selectedCause == null ? '' : String(selectedCause)} onChange={value => onCause(value === '' ? null : Number(value))}
-        options={[{ value: '', label: 'No cause selected' }, ...model.reply.events.map((event, index) => ({ value: String(index), label: `${dayLabel(event.hour)} · ${event.reason}` }))]} />
+      totalRow={{ label: 'Total contributions', value: at ? exact(at.read.sumRaw) : 'Not recorded' }} />
+    <p className="drill-empty">World tension: {at ? formatTension(model, at.read.tensionRaw, model.tensionDecimals) : 'Not recorded'}.</p>
+    <div className="world-tension-cause">Cause
+      <Select label="Cause" value={selectedCause == null ? '' : String(selectedCause)} onChange={value => onCause(value === '' ? null : Number(value))}
+        options={[{ value: '', label: 'Choose a cause' }, ...model.reply.events.map((event, index) => ({ value: String(index), label: `${dayLabel(event.hour)} · ${event.reason}` }))]} />
     </div>
-    {cause && <div className="drill-empty" role="group" aria-label="Selected recorded cause">
+    {cause && <div className="drill-empty" role="group" aria-label="Selected cause">
       <strong>{cause.reason}</strong><p>{formatDateTime(cause.hour)} · {cause.tag ?? 'Country not identified'}.</p>
-      <p>Final contribution: {causeRead ? exact(causeRead.addedRaw) : 'Not yet recorded'}.
-        {causeRead && ` Read ${formatDateTime(causeRead.hour)}.`}</p>
-      <p>Current contribution: not known. The final amount is shown separately from the current country total.</p>
+      <p>Final contribution: {causeRead ? exact(causeRead.addedRaw) : 'Not yet recorded'}.</p>
     </div>}
-    <div className="world-tension-drill-chart"><TimeChart label="Every recorded country contribution over time" extent={extent} playhead={playhead}
+    <div className="world-tension-drill-chart"><TimeChart label="Country contributions over time" extent={extent} playhead={playhead}
       playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
       hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
       axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} active={active}
@@ -162,8 +158,8 @@ export default function TensionDrill({ model, runtime, track, active, options, e
         const rowKeys = new Map<TooltipRow, string>(countryRows.map((row, index) => [row, value.parts[index].key]));
         const fitted = fitTooltip([{ title: formatDateTime(shown), rows: [
           ...countryRows,
-          ...(value.remainder !== '0' ? [{ label: 'Other / not identified', value: exact(value.remainder), swatch: tokens.muted }] : []),
-          { label: 'Recorded contributions', value: exact(value.read.sumRaw), strong: true, divider: true },
+          ...(value.remainder !== '0' ? [{ label: 'Other', value: exact(value.remainder), swatch: tokens.muted }] : []),
+          { label: 'Total contributions', value: exact(value.read.sumRaw), strong: true, divider: true },
           { label: 'World tension', value: formatTension(model, value.read.tensionRaw, model.tensionDecimals) },
         ] }], viewport, { keep: 2 });
         ask(fitted.rows.flatMap(row => {

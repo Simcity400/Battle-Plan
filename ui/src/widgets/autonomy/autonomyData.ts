@@ -59,7 +59,7 @@ export function progressOf(run: AutonomyRun): number | null {
 /** Progress as a percentage for labels, one decimal. */
 export function formatProgress(run: AutonomyRun): string {
   const progress = progressOf(run);
-  return progress == null ? 'Not defined (both scores are equal)' : `${(Math.round(progress * 1000) / 10).toFixed(1)}%`;
+  return progress == null ? 'Progress unavailable' : `${(Math.round(progress * 1000) / 10).toFixed(1)}%`;
 }
 
 /** A score as the game counts it, with one decimal. */
@@ -199,13 +199,6 @@ export function clipSubject<S extends AutonomySubject & { countryId?: string }>(
   return runs.length === subject.runs.length && runs.every((run, index) => run === subject.runs[index]) ? subject : { ...subject, runs };
 }
 
-/** Whether any hour of the branch was recorded without the autonomy tables: then a
- * country without a lane may be one nobody saw, not one that had no subjects. */
-export function partlyRecorded(reply: AutonomyReply, branch: Span): boolean {
-  const covered = reply.recorded.reduce((sum, span) => sum + Math.max(0, Math.min(span.lastHour, branch.lastHour) - Math.max(span.firstHour, branch.firstHour) + 1), 0);
-  return covered < branch.lastHour - branch.firstHour + 1;
-}
-
 /** Whether some hour of `within` was recorded with a subject or overlord the
  * recording does not name: then a country without a lane may be one of them. */
 export const partlyIdentified = (reply: AutonomyReply, within: Span) =>
@@ -217,14 +210,14 @@ export const partlyIdentified = (reply: AutonomyReply, within: Span) =>
 export function absentAt(reply: AutonomyReply, hour: number, unobserved: readonly Span[]): { text: string; short: string } {
   if (inSpans(unobserved, hour)) return { text: 'Group membership not recorded', short: 'Membership not recorded' };
   if (!inSpans(reply.recorded, hour)) return { text: 'Not recorded', short: 'Not recorded' };
-  if (inSpans(reply.unidentified, hour)) return { text: 'Not known: the recording does not name every subject and overlord at this hour', short: 'Not known' };
+  if (inSpans(reply.unidentified, hour)) return { text: 'Subject status unknown', short: 'Not known' };
   return { text: 'Not a subject shown here', short: 'Not a subject here' };
 }
 
 /** A lane's labels at an hour: its level, else what is known of its absence, as the
  * tooltip says it. */
 export function laneLabels(reply: AutonomyReply, lane: SubjectLane, hour: number, unobserved: readonly Span[], identityRecorded = true): { label: string; pill: string; description: string } {
-  if (!identityRecorded) return { label: 'Native country identity not recorded', pill: 'Not recorded', description: 'Native country identity not recorded' };
+  if (!identityRecorded) return { label: 'Country unavailable at this time.', pill: 'Not recorded', description: 'Country unavailable at this time.' };
   const run = runOf(lane, hour);
   if (run) {
     const label = levelName(reply.levels[run.level]);
@@ -251,21 +244,8 @@ export function membershipUnknownFor(subjects: readonly AutonomySubject[], bySub
   });
 }
 
-/** The message when no chosen country has a lane in `branch`: it claims no absence
- * the recording cannot support, naming the hours it lacks, a group's membership it
- * did not record where a lane was cut (`membershipUnknown`, `membershipUnknownFor`)
- * and the countries it could not name. `names` are the chosen overlords' names. */
-export function noLanesMessage(reply: AutonomyReply, branch: Span, bySubject: boolean, names: readonly string[], membershipUnknown = false): string {
-  const where = partlyRecorded(reply, branch) ? 'in the hours this campaign branch recorded' : 'in this campaign branch';
-  if (membershipUnknown) {
-    return bySubject
-      ? `None of these countries is shown as a subject ${where}: the group’s membership was not recorded at some hours one of them was a subject.`
-      : `No subjects of ${names.join(', ')} are shown ${where}: the group’s membership was not recorded at some hours they may have had subjects.`;
-  }
-  if (partlyIdentified(reply, branch)) {
-    return bySubject
-      ? `None of these countries was recorded as a subject ${where}, but at some hours the recording does not name every subject or overlord, so one of them may have been.`
-      : `${names.join(', ')} had no subjects the recording names ${where}; at some hours it does not name every subject or overlord, so they may have had one.`;
-  }
-  return bySubject ? `None of these countries was a subject ${where}.` : `${names.join(', ')} had no subjects ${where}.`;
+/** Missing identities or membership cannot establish that there were no subjects. */
+export function noLanesMessage(reply: AutonomyReply, branch: Span, membershipUnknown = false): string {
+  return membershipUnknown || partlyIdentified(reply, branch)
+    ? 'Subject data is incomplete for these countries.' : 'No subjects found for these countries.';
 }

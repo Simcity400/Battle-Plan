@@ -29,7 +29,6 @@ import type { FactionOrder, MemberOrder } from './factionsData';
 import './factions.css';
 
 const NO_WARNINGS: string[] = [];
-const NOTE = 'Faction membership is recorded every hour. The leader is the member the game lists first.';
 
 /** Every recorded faction over time: a band per faction
  * whose thickness follows its member count, and a lane per member from join to
@@ -86,22 +85,21 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   }, [data, factionColours.warnings, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its factions." />;
-  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the campaign’s recorded branch." />;
-  if (groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading factions…" />;
   if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
-  if (!data.factions.length) return <WidgetState kind="empty" message={data.warnings.length ? 'No factions could be read from this campaign branch.' : 'No factions were recorded in this campaign branch.'} />;
+  if (!data.factions.length) return <WidgetState kind="empty" message={data.warnings.length ? 'Faction data unavailable.' : 'No factions recorded.'} />;
   if (!lanes.length) return <WidgetState kind="empty" message={filter.tags ? 'None of the chosen countries has been in a faction yet.' : 'No factions yet.'} />;
 
-  // An unnamed faction is told apart by its leader at the moment shown.
+  // The legend names each visible faction; leader details belong to the timeline.
   const shownFactions = new Set(lanes.filter(lane => !lane.depth).map(lane => info.get(lane.id)!.faction.id));
   const legend = views.filter(view => shownFactions.has(view.id)).map(view => {
     const named = view.nameAt(at);
     const name = named.name ?? UNNAMED_FACTION;
-    const leader = named.name == null ? leaderAt(view.leaders, at) : null;
     return {
-      id: view.id, label: leader ? `${name} (${country(leader).name})` : name, color: view.color, tooltip: named.reason ?? undefined,
+      id: view.id, label: name, color: view.color,
       // For every campaign by default, or this one only (the widget's setting).
       onColor: (hex: string) => { factionColours.setColour(view.id, hex, options.colourScope as ColourScope); },
     };
@@ -113,7 +111,7 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
     const view = about.faction;
     const roster = view.unknown;
     const factionName = view.nameAt(hour);
-    const nameRows: TooltipRow[] = factionName.reason ? [{ label: 'Name', value: factionName.reason, tone: 'muted' }] : [];
+    const nameRows: TooltipRow[] = factionName.reason ? [{ label: 'Name', value: 'Name unavailable', tone: 'muted' }] : [];
     const named = hover.labelAt(hour);
     if (!about.member) {
       const leader = leaderAt(view.leaders, hour);
@@ -136,13 +134,13 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
         .sort((a, b) => (a === leader ? -1 : b === leader ? 1 : named(a).name.localeCompare(named(b).name)));
       const memberRows: TooltipRow[] = members.map((tag, index) => ({ label: `${tag === leader ? `${LEADER_GLYPH} ` : ''}${named(tag).name}`, countryFlag: named(tag),
         indent: true, short: true, divider: index === 0 }));
-      const content: TooltipContent = { title: factionName.name ?? UNNAMED_FACTION, subtitle: `Faction · ${day(hour)}`, rows: [...nameRows, ...rows, ...memberRows], note: NOTE };
+      const content: TooltipContent = { title: factionName.name ?? UNNAMED_FACTION, subtitle: `Faction · ${day(hour)}`, rows: [...nameRows, ...rows, ...memberRows] };
       return full ? content : fitTooltip([content], viewport, { more: hidden => `${hidden} more ${hidden === 1 ? 'member' : 'members'}` });
     }
     const member = about.member;
     const tag = tagAt(view, member, hour);
     hover.ask(hour, tag === null ? [] : [tag]);
-    const label = tag === null ? { name: 'Native country identity not recorded', flagReason: 'Native country identity not recorded at this hour.' } : named(tag);
+    const label = tag === null ? { name: 'Unknown country', flagReason: 'Country unavailable at this time.' } : named(tag);
     const run = member.runs.find(item => item.firstHour <= hour && hour <= item.lastHour);
     const led = run ? leadershipParts(run, view.leaders).find(part => part.firstHour <= hour && hour <= part.lastHour)?.leader ?? false : false;
     // An hour whose roster is not known says so, not that the country was out.
@@ -159,7 +157,7 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
       { label: 'Left', value: state.kind === 'ended' ? (state.lastSeen == null ? day(state.at) : `by ${day(state.at)}`)
         : state.kind === 'unknown' ? `not recorded after ${day(state.lastSeen)}` : 'Still a member' },
     ];
-    return { title: label.name, countryFlag: label, subtitle: `Member · ${day(hour)}`, rows, note: NOTE };
+    return { title: label.name, countryFlag: label, subtitle: `Member · ${day(hour)}`, rows };
   };
   // What the timeline shows at the moment shown, for keyboard and screen-reader users.
   const description = `${dayLabel(at)}: ${lanes.filter(lane => !lane.depth).map(lane => {

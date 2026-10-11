@@ -10,4 +10,3 @@
 .special-project-portrait { display:grid; place-items:center; color:var(--muted); background:var(--raised); }
 .special-project-card.is-complete { opacity:.8; }
 .special-project-detail .progress-meter { margin:6px 0 4px; }
-.special-project-country-note { color:var(--muted); font-size: 0.65625rem; }

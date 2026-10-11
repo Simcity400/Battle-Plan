@@ -16,8 +16,8 @@ import { navalDetailKey, navalFleetDescription, navalDetailTooltip, validateNava
 
 const MEASURES = NAVAL_BATTLE_SIZE_LABELS.map<BattleMeasure<NavalBattleRow>>(label => ({
   label, title: label, value: row => navalBattleSize(row, label), format: navalBattleMeasureText,
-  hint: label === 'Peak ships' ? 'Largest simultaneous recorded ship roster. Ended peaks are as recorded.'
-    : label === 'Length' ? 'Observed hours. Ended lengths are as recorded; unread hours are never filled.' : 'Ships sunk; convoys are shown separately in the tooltip.',
+  hint: label === 'Peak ships' ? 'Most ships at once.'
+    : label === 'Length' ? undefined : 'Convoys shown separately.',
   tooltipFormat: (value, row) => `${navalBattleMeasureText(value, row)}${label === 'Peak ships' && row.peakHour !== null ? ` at ${formatDateTime(row.peakHour)}` : ''}`,
 }));
 const SIDES: BattleSideSummary = { label: 'Sides', countLabel: 'Ships', separator: 'v', unknown: 'Not recorded',
@@ -28,10 +28,6 @@ const adapter: BattleViewAdapter<NavalBattleRow, NavalBattlesReply, NavalBattles
   labels: { place: 'Battle', date: 'Date', start: 'Started', end: 'Ended', winner: 'Winner',
     ongoing: 'Ongoing', unknownPlace: 'Unnamed province', unknownStart: 'Start not recorded' },
   measures: MEASURES, resultMeasure: MEASURES[0], compactSides: SIDES,
-  summary: () => 'Ended peak and length are as recorded. Battles not seen running show Not recorded.',
-  note: row => `Province ${row.provinceId}. Side counts read at ${formatDateTime(row.observedHour)}. ≥ marks a recorded minimum. Convoys are counted separately. ${row.end === null
-    ? 'Running losses are so far; detached members can make their totals minima.'
-    : 'Only the native combat-to-result link supplies observed peak and length; unread hours are never filled.'}`,
   formatLoss: (value, row) => `${battleValueText(value)}${value.value !== null && row.end === null ? ' so far' : ''}`,
 };
 export default function NavalBattlesWidget(props: WidgetProps) {

@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import { ChipSet } from '../../components/ChipSet';
 import { Icon } from '../../components/Icons';
+import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
 import LogList from '../../charts/log/LogList';
 import type { LogRow } from '../../charts/log/logData';
@@ -78,12 +79,12 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   useDiagnostics(onDiagnostics, warnings);
 
   if (!track) return <WidgetState kind="empty" icon="hammer" message="Load a campaign to see its construction." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (filtered && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (filtered && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!manifest || !match.ready) return <WidgetState kind="loading" label="Loading the construction log…" />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (!manifest.recorded) return <WidgetState kind="unavailable" message="The construction queue was not recorded in this campaign branch." />;
-  if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the campaign’s recorded branch." />;
+  if (!manifest.recorded) return <WidgetState kind="unavailable" message="Construction was not recorded." />;
+  if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (!log || hour == null) return <WidgetState kind="loading" label="Loading the construction log…" />;
 
   const chosen = contentSet(types);
@@ -95,8 +96,8 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
     const levels = levelsLabel(at);
     const factories = factoriesShown(at);
     return <>
-      <span className={`log-art${type?.icon ? '' : ' is-missing'}`} aria-hidden="true">
-        {type?.icon ? <img src={type.icon} alt="" /> : '?'}
+      <span className="log-art" aria-hidden="true">
+        {type?.icon ? <img src={type.icon} alt="" /> : <ArtFallback icon="factory" />}
         {(at.repairing || (at.status !== 'building' && at.status !== 'unread' && at.kind === 'repair')) && manifest.repairIcon && <img className="log-art-overlay" src={manifest.repairIcon} alt="" />}
       </span>
       <span className="log-text">
@@ -105,7 +106,7 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
         <span className="construction-muted"> in </span>{placeLabel(at.project, hour, stateAt)}
       </span>
       <span className={`log-tag construction-status is-${at.status}`}><i />{statusLabel(at)}</span>
-      <span className={`log-value${factories == null ? ' is-muted' : ''}`} data-tooltip={factories == null ? 'Not read since a gap in the recording' : 'Factories on it'}>
+      <span className={`log-value${factories == null ? ' is-muted' : ''}`} data-tooltip={factories == null ? 'Factories unknown' : 'Factories on it'}>
         <Icon name="hammer" className="construction-factory-icon" />{factories ?? '—'}
       </span>
     </>;

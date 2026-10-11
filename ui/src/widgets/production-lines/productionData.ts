@@ -171,13 +171,20 @@ export const organisationAt = (reply: ProductionLinesReply, id: string, hour: nu
  * variant is not recorded, its id, so a line is never blank. */
 export const variantName = (variant: VariantName | null, id: string) => variant ? variant.name ?? 'Variant name unavailable' : `Variant ${id}`;
 
+export function productionLineLabel(reply: ProductionLinesReply, line: LineHistory, index: number, hour: number): string {
+  const step = entryAt(line.steps, hour);
+  const id = step?.variant ?? line.variants[0];
+  const variant = id === undefined ? null : variantAt(reply, id, hour);
+  return `${variant?.name ?? variant?.typeName ?? 'Equipment unavailable'} · line ${index + 1}`;
+}
+
 /** Why a variant shows only its id, for its tooltip. */
 const UNNAMED = 'The variant’s name is not recorded at this time.';
 
 /** Why lines may be missing at an hour: a due output read, the only place a line
  * made and ended between two reads publishes its rows, could not be read. */
 export function unreadNote(reply: ProductionLinesReply, hour: number): string | undefined {
-  return runAt(reply.unreadOutput, hour) ? 'Lines made and ended here may be missing: the output read that would show them was not recorded.' : undefined;
+  return runAt(reply.unreadOutput, hour) ? 'Some production lines may be missing.' : undefined;
 }
 
 /** A tooltip's note with any further ones, joined. */
@@ -269,16 +276,16 @@ export function outputTotal(output: OutputRun): bigint | null {
 export function totalText(output: OutputRun | null): string {
   if (!output) return 'Not recorded';
   const total = outputTotal(output);
-  return total == null ? 'Not exact' : gbNumber.format(total);
+  return total == null ? 'Unknown' : gbNumber.format(total);
 }
 
 /** What a total counts, for its tooltip. */
-export function totalNote(output: OutputRun | null, day: (hour: number) => string): string | undefined {
+export function totalNote(output: OutputRun | null): string | undefined {
   if (!output) return 'Units made are not recorded at this time.';
-  const from = output.wholeLife ? 'since the line was created' : `since ${day(output.sinceHour)}, when recording began`;
+  const from = output.wholeLife ? 'Since the line was created.' : '';
   return outputTotal(output) == null
-    ? `Units made ${from}: not exact, since some production could not be counted.`
-    : `Units made ${from}.`;
+    ? 'Total unknown; some production is missing.'
+    : from || undefined;
 }
 
 /** The organisation column: its name, else its script key; a dash for none. */
@@ -308,7 +315,7 @@ function countRows(reply: ProductionLinesReply, output: OutputRun | null, hour: 
   const byVariant = output ? variantParts(output) : [];
   const split = byVariant.length > 1 ? byVariant : [];
   const rows: TooltipRow[] = parts ? split.map(part => ({
-    label: variantName(variantAt(reply, part.variant, hour), part.variant), value: part.units == null ? 'Not exact' : gbNumber.format(part.units), indent: true, short: true,
+    label: variantName(variantAt(reply, part.variant, hour), part.variant), value: part.units == null ? 'Unknown' : gbNumber.format(part.units), indent: true, short: true,
   })) : split.length ? [{ label: `Of ${split.length} variants`, tone: 'muted', indent: true }] : [];
   return [{ label, value: totalText(output), strong: true, divider: true, tone: output && total == null ? 'muted' : undefined }, ...rows];
 }
@@ -319,15 +326,14 @@ const forms = (build: (parts: boolean) => TooltipContent): TooltipForms => [buil
 /** Both hover forms retain the whole's status; the full form supplies speech. */
 export function modifierTooltip(group: ProductionModifierRun['groups'][number] | undefined, title: string,
   color: (id: string) => string | undefined): TooltipForms {
-  if (!group) return [{ title, rows: [{ label: 'Breakdown', value: 'Not recorded', tone: 'muted' }], note: 'Click to show this day.' }];
+  if (!group) return [{ title, rows: [{ label: 'Breakdown', value: 'Not recorded', tone: 'muted' }] }];
   const total: TooltipRow = { label: group.label, value: group.totalRaw == null ? 'Not recorded'
     : `${formatFixed(group.totalRaw, group.decimals, group.decimals)} ${group.unit}`, strong: true };
-  const rows: TooltipRow[] = group.parts.map(part => ({ label: part.label ?? 'Other / not identified',
+  const rows: TooltipRow[] = group.parts.map(part => ({ label: part.label ?? 'Other',
     value: `${formatFixed(part.raw, group.decimals, group.decimals)} ${group.unit}`, swatch: color(part.id),
     tone: part.unknown == null ? undefined : 'muted' }));
-  const note = withNote(group.note, ...new Set(group.parts.flatMap(part => part.unknown == null ? [] : [part.unknown])), 'Click to show this day.');
-  return [{ title, rows: [total, ...rows], note }, { title, rows: [total,
-    { label: `${group.parts.length} recorded source rows`, tone: 'muted' }], note: 'Click to show this day.' }];
+  return [{ title, rows: [total, ...rows] }, { title, rows: [total,
+    { label: `${group.parts.length} factors`, tone: 'muted' }] }];
 }
 
 /** Recorded line values stay alongside their supplying modifier parts. Older
@@ -340,34 +346,32 @@ export function breakdownTooltip(reply: ProductionLinesReply, run: LineRun, hour
   const rows: TooltipRow[] = part === 'efficiency' ? [
     { label: 'Efficiency', value: `${efficiencyPercent(run)}%`, strong: true },
     { label: 'Factories included in average', value: String(Math.max(0, Math.min(run.activeFactories, run.maxFactories))) },
-    { label: 'Other / not identified', value: 'Not recorded', divider: true, tone: 'muted' },
+    { label: 'Other', value: 'Not recorded', divider: true, tone: 'muted' },
   ] : [
     { label: 'Output', value: weekly == null ? 'Not recorded' : `${weeklyText(weekly, reply.decimals)} per week`, strong: true },
     { label: 'Factories', value: `${run.activeFactories} of ${run.requestedFactories} requested` },
     { label: 'Efficiency', value: `${efficiencyPercent(run)}%` },
-    { label: 'Recorded output per tick', value: `${exact(run.speedRaw)} IC` },
+    { label: 'Output rate', value: `${exact(run.speedRaw)} IC` },
     { label: 'Cost per unit', value: `${exact(run.costRaw)} IC` },
-    { label: 'Other / not identified', value: 'Not recorded', divider: true, tone: 'muted' },
+    { label: 'Other', value: 'Not recorded', divider: true, tone: 'muted' },
   ];
   const groups = modifiers?.groups.filter(group => part === 'output' ? group.id === 'output' : ['efficiency', 'start', 'cap', 'gain', 'daily'].includes(group.id) || group.id.startsWith('retention-'));
   if (groups?.length) {
     const sourceRows: TooltipRow[] = groups.flatMap(group => [{ label: group.label,
       value: group.totalRaw == null ? 'Not recorded' : `${formatFixed(group.totalRaw, group.decimals, group.decimals)} ${group.unit}`, strong: true, divider: true },
-      ...group.parts.map(source => ({ label: source.label ?? 'Other / not identified',
+      ...group.parts.map(source => ({ label: source.label ?? 'Other',
         value: `${formatFixed(source.raw, group.decimals, group.decimals)} ${group.unit}`, tone: source.unknown ? 'muted' as const : undefined }))]);
       const title = variantName(variant, run.variant);
-      const note = withNote(head.note, 'Click for the full breakdown and its history.');
-      const recordedRows = rows.filter(row => row.label !== 'Other / not identified');
+      const note = head.note;
+      const recordedRows = rows.filter(row => row.label !== 'Other');
       const icon = iconImage(reply, variant?.icon ?? null) ?? undefined;
-      return [{ title, icon, subtitle: head.subtitle, rows: [...recordedRows, ...sourceRows], note: withNote(note, ...groups.map(group => group.note)) },
+      return [{ title, icon, subtitle: head.subtitle, rows: [...recordedRows, ...sourceRows], note },
         { title, icon, subtitle: head.subtitle, rows: [...recordedRows, ...groups.map(group => ({ label: group.label, value: group.totalRaw == null ? 'Not recorded'
           : `${formatFixed(group.totalRaw, group.decimals, group.decimals)} ${group.unit}`, strong: true }))], note }];
   }
-  const why = part === 'efficiency'
-    ? 'The recording contains the line’s average efficiency, but not the contributions from growth, cap, retention or source modifiers.'
-    : 'The recording contains the final output rate and cost, but not the contributions from factory output modifiers. Cost includes the organisation’s recorded bonus.';
+  const why = 'Breakdown not recorded.';
   return [{ title: variantName(variant, run.variant), icon: iconImage(reply, variant?.icon ?? null) ?? undefined,
-    subtitle: head.subtitle, rows, note: withNote(head.note, variant ? undefined : UNNAMED, why) }];
+    subtitle: head.subtitle, rows, note: withNote(head.note, why) }];
 }
 
 /** The tooltip of a line at an hour after it ended, or of one made and deleted
@@ -382,9 +386,8 @@ export function finalTooltip(reply: ProductionLinesReply, line: LineHistory, hou
       ? `Ran before recording began; ended by ${day(line.betweenReads.lastHour)}`
       : `Made and deleted between ${day(line.betweenReads.firstHour)} and ${day(line.betweenReads.lastHour)}`, tone: 'muted' }
     : { label: line.endedBy != null ? `Ended by ${day(line.endedBy)}` : 'Ended', tone: 'muted' };
-  const pending = line.finalOutput != null && hour < line.finalOutput.firstHour;
-  const note = [head.note, variant ? null : UNNAMED, final ? totalNote(final, day)
-    : pending ? `Its final count is recorded only from ${day(line.finalOutput!.firstHour)}.` : 'Its final count was not recorded.'].filter(Boolean).join(' ');
+  const note = [head.note, final ? totalNote(final)
+    : 'Final total unavailable at this time.'].filter(Boolean).join(' ');
   return forms(parts => ({ title: variantName(variant, id), icon: iconImage(reply, variant?.icon ?? null) ?? undefined, subtitle: head.subtitle,
     rows: [when, ...countRows(reply, final, hour, 'Made in all', parts)], note }));
 }
@@ -399,7 +402,7 @@ export function lineTooltip(reply: ProductionLinesReply, line: LineHistory, deta
   const weekly = weeklyOutput(run);
   const output = outputAt(line, detail, hour);
   const final = finalAt(line, until);
-  const note = [head.note, variant ? null : UNNAMED, organisation?.nameUnknown, totalNote(output, day)].filter(Boolean).join(' ');
+  const note = [head.note, totalNote(output)].filter(Boolean).join(' ');
   return forms(parts => {
     const ended: TooltipRow[] = final ? [{ label: `Ended by ${day(line.endedBy!)}`, tone: 'muted', divider: true },
       ...countRows(reply, final, until, 'Made in all', parts).map(row => ({ ...row, divider: false }))] : [];

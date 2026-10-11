@@ -16,15 +16,15 @@ import { nameKey, useCountryFactsRead } from '../../dashboard/countryNamesAt';
 import { STYLES } from '../../dashboard/useCountriesAt';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveOptions } from '../../dashboard/options';
-import { peaceCaptureLabel, peaceDealAt, peaceDealHour, peaceDealLabel, peaceObservationLabel } from '../../dashboard/peaceDealsData';
+import { peaceDealAt, peaceDealHour } from '../../dashboard/peaceDealsData';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { usePeaceDeals } from '../../dashboard/usePeaceDeals';
 import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
 import { OPTIONS, TRANSFER_BREAKDOWN } from './definition';
 import TransferDrill from './TransferDrill';
 import { transferDrillKey, transferDrillOpen, transferDrawnSelection, transferHitSelection, transferRestoreFocus, transferScopeLinks, transferSelected, transferSelection, transferSelectionToken, transferTime } from './transferDrillData';
-import { buildTransferDiagram, chosenConference, conferenceChoiceId, conferenceToken, decodeTransfers, transferColourPlan, transferCutoff, transferDiagramDescription, transferGapCount, transferGapWindow,
-  transfersThrough, transferNodeCountries, transferLookPlan, victoryPointNote, visibleConferences } from './territoryData';
+import { buildTransferDiagram, transferConferenceLabel, chosenConference, conferenceChoiceId, conferenceToken, decodeTransfers, transferColourPlan, transferCutoff, transferDiagramDescription, transferGapCount, transferGapWindow,
+  transfersThrough, transferNodeCountries, transferLookPlan, visibleConferences } from './territoryData';
 import type { TransferDrawnSelection } from './transferDrillData';
 import type { TransferLink, TransferMeasure } from './territoryData';
 import { transferNodeTooltip, transferRibbonTooltip } from './territoryTooltip';
@@ -101,7 +101,7 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
   const nodeColours = useMemo(() => new Map([...nodeCountries].map(([key, country]) => [key, countryColours.get(nameKey(country.hour, country.tag)) ?? flowOtherColour(tokens)])), [nodeCountries, countryColours, tokens]);
   const look = useCallback((key: string) => {
     const sample = nodeCountries.get(key);
-    return sample ? nodeLabels.labelAt(sample.hour)(sample.tag) : { name: 'Country identity not recorded', flagPending: false };
+    return sample ? nodeLabels.labelAt(sample.hour)(sample.tag) : { name: 'Unknown country', flagPending: false };
   }, [nodeCountries, nodeLabels]);
   const nodeName = useCallback((node: SummedNode) => node.tag != null ? look(node.tag).name
     : `${usNumber.format(node.members.length)} other ${node.side === 'source' ? 'givers' : 'takers'}`, [look]);
@@ -150,28 +150,22 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
   useEffect(() => { if (!active) { requestKey.current = ''; setRequested(NO_REQUESTS); } }, [active]);
   const hover = useCountryLabelsAt(runtime.client, track, requested.countries, active, Infinity);
   const states = useStateNamesAt(runtime.client, track, requested.states, active);
-  const stateNameAt = useCallback((hour: number, state: number) => states(hour, state).name ?? `State ${state} · name not recorded`, [states]);
-  const stateMissingAt = useCallback((hour: number, state: number) => states(hour, state).missing, [states]);
+  const stateNameAt = useCallback((hour: number, state: number) => states(hour, state).name ?? `State ${state}`, [states]);
 
   const [gapFrom, until] = useMemo(() => transferGapWindow(conference, shown, track?.branch.firstHour ?? 0, moment),
     [conference, shown, track?.branch.firstHour, moment]);
   const from = Math.max(rangeFrom, gapFrom);
   const gaps = useMemo(() => data ? transferGapCount(data, from, until) : 0, [data, from, until]);
-  const gapNote = gaps ? `${usNumber.format(gaps)} ${gaps === 1 ? 'span was' : 'spans were'} not recorded; totals include only recorded transfer outcomes.` : null;
-  const vpNote = victoryPointNote(diagram);
-  const captureNote = conference ? peaceCaptureLabel(conference) : null;
-  const observationNote = conference ? peaceObservationLabel(conference) : null;
-  const note = [gapNote, vpNote, captureNote].filter(Boolean).join(' ') || undefined;
-  const tooltipNote = [observationNote, note].filter(Boolean).join(' ') || undefined;
+  const note = gaps ? 'Some transfers may be missing.' : undefined;
   const tooltip = useCallback((hit: FlowHit) => {
-    const tooltipOptions = { measure, note: tooltipNote, nodeName, labelAt: hover.labelAt, stateNameAt, stateMissingAt, ask };
+    const tooltipOptions = { note, nodeName, labelAt: hover.labelAt, stateNameAt, ask };
     if (hit.kind === 'link') {
       const link = linkById.get(hit.link.id);
       return link ? transferRibbonTooltip(link, nodeById.get(link.source)!, nodeById.get(link.target)!, tooltipOptions) : null;
     }
     const node = nodeById.get(hit.node.id);
     return node ? transferNodeTooltip(node, linksByNode.get(node.id) ?? [], tooltipOptions) : null;
-  }, [measure, tooltipNote, nodeName, hover.labelAt, stateNameAt, stateMissingAt, ask, nodeById, linkById, linksByNode]);
+  }, [note, nodeName, hover.labelAt, stateNameAt, ask, nodeById, linkById, linksByNode]);
 
   const onContextMenu = useCallback((hit: FlowHit | null, x: number, y: number) => {
     if (!track) return;
@@ -229,18 +223,18 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
   const description = useMemo(() => transferDiagramDescription(diagram, measure, nodeName, note), [diagram, nodeName, measure, note]);
 
   if (!track) return <WidgetState kind="empty" icon="flows" message="Load a campaign to see territory transfers." />;
-  if (moment < track.branch.firstHour || moment > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the campaign’s recorded branch." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
+  if (moment < track.branch.firstHour || moment > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data || !transfers) return <WidgetState kind="loading" label="Loading territory transfers…" />;
   if (showParts && missingSelection) return <WidgetState kind="unavailable" message={`${usNumber.format(missingSelection)} selected transfer links are not recorded in this scope.`} />;
   if (scope === 'conference' && !conference) return <WidgetState kind="empty" message={selectedToken ? 'This conference is outside the selected recorded interval.' : 'No peace conferences yet.'} />;
   const message = capacity == null || diagram.links.length ? null : measure === 'victoryPoints' && diagram.missingVictoryPoints ? 'The links’ victory points were not recorded.'
-    : shown.length && measure === 'victoryPoints' ? 'The recorded victory points have no positive ribbon width.'
-      : gaps || captureNote || conference?.limitations.length ? 'No territory transfers could be attributed in the recorded data.' : 'No peace territory transfers recorded yet.';
-  const caption = conference ? peaceDealLabel(conference) : `${widget.time.mode === 'range' ? `Range from ${formatDateTime(rangeFrom)}` : 'Campaign'}${widget.time.mode !== 'campaign' ? ` · up to ${formatDateTime(moment)}` : ''}`;
+    : shown.length && measure === 'victoryPoints' ? 'No positive victory points to show.'
+      : gaps || conference?.captureUnavailable != null || conference?.limitations.length ? 'No transfers could be identified.' : 'No peace territory transfers recorded yet.';
+  const caption = conference ? transferConferenceLabel(conference) : `${widget.time.mode === 'range' ? `Range from ${formatDateTime(rangeFrom)}` : 'Campaign'}${widget.time.mode !== 'campaign' ? ` · up to ${formatDateTime(moment)}` : ''}`;
   const main = <div className="territory-transfers">
     <p className="territory-transfer-caption">{caption} · {measure === 'states' ? 'State count' : 'Victory points'}
-      {diagram.nodes.some(node => node.tag == null) ? ` · ${capacity} nodes a side fit this size; the remaining countries are summed` : ''}{note ? ` · ${note}` : ''}</p>
+      {note ? ` · ${note}` : ''}</p>
     <p className="chart-line-key">Ribbons in each {options.colour === 'taker' ? 'taker' : 'giver'} country’s map colour</p>
     <button type="button" className="button small transfer-all-parts" onClick={() => openDrill([], moment, scope === 'conference' ? conference?.id ?? null : null)}>All transfer details</button>
     <FlowDiagram label="Territory transfers: losers to winners" nodes={nodes} links={links} stretch={JSON.stringify([track.source.id, track.branch.id, scope, conference?.id ?? null, measure])}
@@ -259,11 +253,11 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
       options: { ...pinned.options, scope: selectedConference == null ? 'campaign' : 'conference', conference: selectedConference == null ? '' : conferenceToken(track.source.metadata.campaignKey, track.branch.id, selectedConference), selection: transferSelectionToken(track.source.metadata.campaignKey, track.branch.id, selectedIds ?? [], Number.isFinite(rangeFrom) ? rangeFrom - track.branch.firstHour : null) } });
   };
   return <div className="territory-transfer-host" ref={drillAnchor}>
-    {showParts ? storedSelection == null ? <WidgetState kind="unavailable" message="This transfer selection belongs to another recording or branch." /> : <>
-      <div className="drill-header"><strong>Transfer breakdown</strong><span className="drill-day">{formatDateTime(drillAt)}</span>
+    {showParts ? storedSelection == null ? <WidgetState kind="unavailable" message="This transfer selection is unavailable. Select transfers again." /> : <>
+      <div className="drill-header"><span className="drill-day">{formatDateTime(drillAt)}</span>
         {drill.breakdown && drill.follow ? <span className="pill drill-following">Following playback</span>
           : <button type="button" className="button small" onClick={() => dispatchDrill({ type: 'open', breakdown: 'parts', hour: drillAt, playing: true, playhead })}>Follow playback</button>}
-        <button type="button" className="button small" onClick={pin}>Pin as widget</button></div>{breakdown}</>
+      </div>{breakdown}</>
       : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null} anchor={drillAnchor} title="Transfer breakdown"
         day={formatDateTime(drillAt)} following={drill.follow} canFollow={playhead != null} onClose={closeDrill}
         onFollow={() => dispatchDrill({ type: 'follow' })} onPin={pin} main={main}>{breakdown}</DrillHost>}

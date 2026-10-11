@@ -140,9 +140,9 @@ test('a log row passes the country choice at its own hour, and all countries pas
   assert.deepEqual([atEnd.matches('ITA', 150), atEnd.matches('HUN', 100)], [false, true]);
   // Factions were not recorded at the branch's last hour: its members then are unknown, not none.
   const unknownEnd = countryMatch({ ...axis, membership: 'end' }, [], REPLY, 200);
-  assert.deepEqual([unknownEnd.matches('GER', 150), unknownEnd.reason], [false, 'This group’s members were not recorded at the end of this campaign branch.']);
+  assert.deepEqual([unknownEnd.matches('GER', 150), unknownEnd.reason], [false, 'Group membership is unavailable at this time.']);
   assert.equal(countryMatch({ ...axis, membership: 'ever' }, [], REPLY, 200).matches('ITA', 100), true);
-  assert.equal(countryMatch({ ...axis, group: { type: 'faction', id: '99' }, membership: 'ever' }, [], REPLY, 200).reason, 'This group is not in this campaign branch.');
+  assert.equal(countryMatch({ ...axis, group: { type: 'faction', id: '99' }, membership: 'ever' }, [], REPLY, 200).reason, 'This group is unavailable in this campaign.');
 });
 
 test('a widget about the whole world shows all countries by default, narrowed by chosen ones or a group', () => {
@@ -155,7 +155,7 @@ test('a widget about the whole world shows all countries by default, narrowed by
   assert.deepEqual([...filter({ kind: 'selected' }, ['GER']).tags!], ['GER']);
   assert.deepEqual([...filter({ kind: 'tags', tags: ['D01', 'MY TAG'] }, ['GER']).tags!], ['D01', 'MY TAG']);
   assert.match(filter({ kind: 'selected' }).reason!, /Choose a country/);
-  assert.match(filter({ kind: 'group', group: { type: 'faction', id: '9' }, membership: 'hour', aggregate: false }).reason!, /not in this campaign branch/);
+  assert.match(filter({ kind: 'group', group: { type: 'faction', id: '9' }, membership: 'hour', aggregate: false }).reason!, /unavailable in this campaign/);
   // While the groups load, nothing is shown rather than everything.
   assert.deepEqual(worldFilter({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [], undefined, 150, 200), { tags: new Set(), countryIds: new Set(), reason: null });
 });
@@ -175,8 +175,8 @@ test('a whole-world widget narrowed to a group honours its membership setting', 
   assert.deepEqual([...axis('hour', 150).tags!].sort(), ['GER', 'ITA']);
   assert.deepEqual([...axis('ever', 150).tags!].sort(), ['GER', 'HUN', 'ITA']);
   // The faction's roster was not recorded from 190: unknown, not empty.
-  assert.match(axis('end', 150).reason!, /not recorded at the end/);
-  assert.match(axis('hour', 195).reason!, /not recorded at this moment/);
+  assert.match(axis('end', 150).reason!, /Group membership is unavailable at this time/);
+  assert.match(axis('hour', 195).reason!, /Group membership is unavailable at this time/);
   // Before any member joined, the group is empty at that moment.
   assert.match(axis('hour', 90).reason!, /no members at this moment/);
 });

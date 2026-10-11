@@ -22,7 +22,7 @@ test('genuine missing flags keep a filled slot and their exact read reason; flag
   const native = countryFlagContent(generic, missing, wake)!;
   assert.equal(native.icon, generic.icon);
   assert.equal(native.countryFlag?.flagReason, missing.flagReason);
-  assert.equal(countryFlagUnavailable(missing.flagReason).text, `Flag not available: ${missing.flagReason}`);
+  assert.equal(countryFlagUnavailable(missing.flagReason).text, 'Flag unavailable', 'the reason never reaches the label');
   assert.equal(countryFlagUnavailable(undefined, true).text, 'Flag loading');
 });
 
@@ -61,7 +61,7 @@ test('a country canvas decode failure replaces its URL and preserves full keyboa
     assert.equal(content.countryFlag?.flagPending, false);
     assert.equal(content.countryFlag?.flagReason, expected.reason);
     assert.equal(content.rows[0].countryFlag?.flagReason, expected.reason);
-    assert.equal(content.spoken, `The complete untrimmed battle rows; ${expected.text}`);
+    assert.equal(content.spoken, 'The complete untrimmed battle rows', 'a missing flag adds nothing to what is read out');
   } finally { globalThis.Image = before; }
 });
 

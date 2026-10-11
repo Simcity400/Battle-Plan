@@ -67,7 +67,7 @@ export function divisionRows(windows: ReadonlyMap<number, DivisionLogReply>, at:
 }
 export function divisionStatus(row: DivisionLogEntry): string {
   const names: Record<string, string> = {
-    first_observed: 'Created (first observed)', division_destroyed: 'Destroyed', division_overrun: 'Overrun',
+    first_observed: 'First seen', division_destroyed: 'Destroyed', division_overrun: 'Overrun',
     division_deleted: 'Removed', division_disbanded: 'Disbanded', division_capitulation: 'Removed at capitulation',
     division_scripted: 'Removed by script', division_template_removed: 'Template removed', unknown: 'Removed (cause unknown)',
     returned: 'Returned', merged: 'Merged', hq_transferred: 'HQ transfer', volunteer_transferred: 'Volunteer transfer', exile_transferred: 'Exile transfer',
@@ -80,16 +80,10 @@ export function divisionTooltip(row: DivisionLogEntry, country: ReturnType<Count
     { label: 'Country', value: country.name, countryFlag: row.tag === null ? undefined
       : { flag: country.flag, flagReason: country.flagReason, flagPending: country.flagPending } },
     { label: 'Template', value: row.templateName ?? 'Template name not recorded' },
-    { label: row.placeAtEvent ? 'Location' : 'Last observed location', value: place },
+    { label: row.placeAtEvent ? 'Location' : 'Last seen at', value: place },
     { label: 'When', value: `${row.by ? 'By ' : ''}${formatDateTime(row.hour)}` },
     ...(row.afterHour === null ? [] : [{ label: 'First appeared after', value: formatDateTime(row.afterHour) }]),
     ...(row.kind === 'created' ? [] : [{ label: 'Killer', value: killer.name, countryFlag: row.killerTag === null ? undefined
       : { flag: killer.flag, flagReason: killer.flagReason, flagPending: killer.flagPending } }]),
-    ...(row.presentationHour === null ? [] : [{ label: 'Division presentation read', value: formatDateTime(row.presentationHour) }]),
-    ...(row.templateHour === null ? [] : [{ label: 'Template read', value: formatDateTime(row.templateHour) }]),
-    { label: 'Available from', value: formatDateTime(row.readHour) },
-  ], note: [row.nameMissing, row.templateMissing, row.iconMissing,
-    row.kind === 'created' ? 'First observation bounds creation; existing divisions at the initial census are excluded.' : 'Only a native removal witness creates this entry.',
-    row.province === null ? 'Location not recorded.' : `Province ${row.province}.`,
-    row.killerDivision === null ? null : `Killer division handle ${row.killerDivision}.`].filter(Boolean).join(' ') };
+  ] };
 }

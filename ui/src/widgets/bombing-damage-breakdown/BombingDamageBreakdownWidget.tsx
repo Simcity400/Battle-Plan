@@ -26,10 +26,11 @@ export default function BombingDamageBreakdownWidget({ widget, runtime, active, 
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, onDiagnostics]);
   if (!track || !tag) return <WidgetState kind="empty" message="Load a campaign and choose a country to see its bombing damage." />;
-  if (!window || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="The chosen time is outside this campaign." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
+  if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading bombing damage…" />;
-  if (!data.available) return <WidgetState kind="unavailable" message="Not in this recording: the exact bombing event ledger was not captured." />;
+  if (!data.available) return <WidgetState kind="unavailable" message="Bombing damage was not recorded." />;
   const identity = ledgerPinnedIdentity(widget.options?.holder, track.source.metadata.campaignKey, track.branch.id, tag);
   return <BombingBreakdown data={data} runtime={runtime} track={track} tag={tag} identity={identity} countrySlot={countrySlot}
     headerSelection={widget.countries.kind === 'tags' && widget.countries.tags.length === 1 && identity ? { tag, identity } : null}

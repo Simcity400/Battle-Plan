@@ -78,7 +78,7 @@ test('the actual occupation mix waits for a native country choice and keeps that
     const oldTips = [...(state.chart!.tooltip('alias', 100, 'alias', new Map(), () => tag => ({ name: tag })) ?? [])];
     assert.equal(oldTips[0].title, 'root', 'historical tooltips use the chosen holder’s alias at that hour');
     state.hour = 109;
-    assert.match(render(), /chosen native country was not recorded/);
+    assert.match(render(), /Country unavailable at this time/);
     assert.deepEqual(state.picker!.allowedTags, ['root'], 'a reused alias is not an additional selected holder');
     assert.equal(state.chart!.mix!.tag, 'alias', 'a missing chosen holder never becomes the tag replacement');
     props.active = false; render(); props.active = true; render();

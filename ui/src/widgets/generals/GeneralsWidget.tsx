@@ -77,38 +77,38 @@ export default function GeneralsWidget(props: WidgetProps) {
         render: row => <Attributes values={row.value.components} maxima={attributeMaxima} names={attributeNames(row.value)} bars={options.cellBars === true} /> },
       { key: 'traits', header: 'Traits', label: 'Traits', sortable: false, width: '1.1fr', value: r => r.value.traits?.length,
         renderMissing: true, render: r => <span className="leader-traits">{r.value.traits == null ? <span className="leader-missing">Not recorded</span> : r.value.traits.map(token => {
-          const trait = r.traitCatalogue[token]; return trait?.icon ? <img key={token} src={trait.icon} alt={contentTitle(trait.name, trait.token, 'Trait name unavailable')} /> : <i key={token} aria-label={`${contentTitle(trait?.name, token, 'Trait name unavailable')}: icon unavailable`}>?</i>;
+          const trait = r.traitCatalogue[token]; const name = contentTitle(trait?.name, trait?.token ?? token, 'Trait name unavailable');
+          return trait?.icon ? <img key={token} src={trait.icon} alt={name} /> : <span className="leader-trait-chip" key={token}>{name}</span>;
         })}</span> },
       { key: 'won', header: 'Won', label: 'Battles won', numeric: true, width: '64px', value: r => r.won, renderMissing: true,
-        render: r => r.won ?? <span className="leader-missing" data-tooltip={data?.resultsMissing}>Result not recorded</span> },
+        render: r => r.won ?? <span className="leader-missing" data-tooltip="Result not recorded">—</span> },
       { key: 'lost', header: 'Lost', label: 'Battles lost', numeric: true, width: '64px', value: r => r.lost, renderMissing: true,
-        render: r => r.lost ?? <span className="leader-missing" data-tooltip={data?.resultsMissing}>Result not recorded</span> },
+        render: r => r.lost ?? <span className="leader-missing" data-tooltip="Result not recorded">—</span> },
       { key: 'unresolved', header: 'Unresolved', label: 'Unresolved battles', numeric: true, width: '88px', value: r => r.unresolved,
-        render: r => <span data-tooltip="Observed battles without a decided recorded outcome at this hour.">{r.unresolved}</span> },
+        render: r => <span data-tooltip="Battles with no known result.">{r.unresolved}</span> },
       { key: 'fought', header: 'Fought', label: 'Fought', sortable: false, numeric: true, width: '64px', value: r => r.fought, renderMissing: true,
         render: r => <span data-tooltip={recordedSince(r.career, data!.firstHour)}>{r.fought}</span> },
       { key: 'winRate', header: 'Win %', label: 'Win rate among decided battles', numeric: true, width: '56px', value: r => r.winRate, renderMissing: true,
-        render: r => r.winRate == null ? <span className="leader-missing" data-tooltip={r.won == null ? data?.resultsMissing : "No decided recorded battles at this hour"}>—</span> : <span data-tooltip="Win rate among decided battles">{Math.round(r.winRate)}%</span> },
+        render: r => r.winRate == null ? <span className="leader-missing" data-tooltip={r.won == null ? "Result not recorded" : "No battles with known results."}>—</span> : <span data-tooltip="Win rate among decided battles">{Math.round(r.winRate)}%</span> },
     ];
   }, [data, labelAt, portraits, attributeMaxima, options.cellBars, rows]);
-  const tooltip = useCallback((row: LeaderRow) => fitTooltip([leaderTooltip(data!, row, row.value.owner ? labelAt(row.hour)(row.value.owner) : { name: 'Owner not recorded' })], viewportHeight), [data, labelAt, viewportHeight]);
+  const tooltip = useCallback((row: LeaderRow) => fitTooltip([leaderTooltip(row, row.value.owner ? labelAt(row.hour)(row.value.owner) : { name: 'Owner not recorded' })], viewportHeight), [labelAt, viewportHeight]);
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see its leaders." />;
-  if (!window) return <WidgetState kind="unavailable" message="The chosen moment is outside this campaign." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (selection.group.error) return <WidgetState kind="error" message={selection.group.error} onRetry={selection.group.retry} />;
+  if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (selection.group.error) return <WidgetState kind="error" detail={selection.group.error} onRetry={selection.group.retry} />;
   if (selection.selectionReason) return <WidgetState kind="unavailable" message={selection.selectionReason} />;
   if (!data) return <WidgetState kind="loading" label="Loading leaders…" />;
   const observed = data.observed.find(r => r.firstHour <= hour && hour <= r.lastHour);
   const main = selection.countries === undefined ? <WidgetState kind="unavailable" message="Country group membership was not recorded at this hour." />
-    : !rows.length && !observed?.leaders ? <WidgetState kind="unavailable" message="The visible leader inventory could not be established at this hour." />
-    : !rows.length ? <WidgetState kind="empty" message="No visible leaders were recorded for these countries at this hour." />
+    : !rows.length && !observed?.leaders ? <WidgetState kind="unavailable" message="Leaders weren’t recorded at this time." />
+    : !rows.length ? <WidgetState kind="empty" message="No leaders for these countries at this time." />
     : <div className="leader-table"><Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Generals leaderboard" rows={rows} columns={columns} rowKey={rowKey} rowHeight={48} rank
       sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption} cellBars={options.cellBars === true} rankMarkers={options.rankMarkers === true}
       density={options.density === 'compact' ? 'compact' : 'comfortable'} onRowClick={open} tooltip={tooltip} onVisibleRows={setVisible}
       menu={r => [{ ...jumpItem(runtime, track.id, r.career.runs[0].firstHour), label: `Jump to first seen ${formatDateTime(r.career.runs[0].firstHour)}` }, { label: 'Open career', run: () => open(r) }]}
       hoursPerSecond={hoursPerSecond} />
-      <p className="career-note">Recorded battles; each leader’s counts start at his first recorded hour.</p>
-      {!observed?.leaders && <p className="career-note">Some leader visibility or owner inputs are unresolved; this list is partial.</p>}
+      {!observed?.leaders && <p className="career-note">Some leaders are missing.</p>}
     </div>;
   const clockHour = Math.floor(runtime.clock.getHour()) + track.axisOffset;
   const pickedHour = drillHour(drill, clockHour) ?? hour;

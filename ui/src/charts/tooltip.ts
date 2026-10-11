@@ -2,8 +2,6 @@
  * not HTML, so every tooltip looks the same and no recorded text is ever parsed
  * as markup. The layer renders it above every widget. */
 
-import { countryFlagUnavailable } from '../components/countryFlagPresentation.ts';
-
 export interface TooltipRow {
   label: string;
   /** Internal content identity, available on hover without becoming the label. */
@@ -49,8 +47,8 @@ export interface TooltipState { owner: string; content: TooltipContent; x: numbe
  * not read out). */
 export function tooltipText(content: TooltipContent): string {
   if (content.spoken) return content.spoken;
-  return [content.title, content.subtitle, content.countryFlag && !content.countryFlag.flag && countryFlagUnavailable(content.countryFlag.flagReason, content.countryFlag.flagPending).text,
-    ...content.rows.map(row => [row.label, row.value, row.countryFlag && !row.countryFlag.flag && countryFlagUnavailable(row.countryFlag.flagReason, row.countryFlag.flagPending).text].filter(Boolean).join(' ')),
+  return [content.title, content.subtitle,
+    ...content.rows.map(row => [row.label, row.value].filter(Boolean).join(' ')),
     content.description, content.note]
     .filter(Boolean).join('; ');
 }
@@ -76,15 +74,12 @@ const lines = (text: string, perLine: number) => Math.max(1, Math.ceil(text.leng
 
 /** One row's height in pixels: a short row keeps to one line, a long one wraps. */
 export function tooltipRowHeight(row: TooltipRow): number {
-  const status = row.countryFlag && !row.countryFlag.flag ? countryFlagUnavailable(row.countryFlag.flagReason, row.countryFlag.flagPending).text : undefined;
-  return (row.short ? 1 : lines(`${row.label}  ${row.value ?? ''}${status ? ` ${status}` : ''}`, ROW_CHARS)) * LINE + (row.divider ? DIVIDER : 0);
+  return (row.short ? 1 : lines(`${row.label}  ${row.value ?? ''}`, ROW_CHARS)) * LINE + (row.divider ? DIVIDER : 0);
 }
 
 /** About how tall a tooltip is, in pixels, as the layer draws it. */
 export function tooltipHeight(content: TooltipContent): number {
-  const status = content.countryFlag && !content.countryFlag.flag ? countryFlagUnavailable(content.countryFlag.flagReason, content.countryFlag.flagPending).text : undefined;
-  const title = lines(content.title, ROW_CHARS) * TITLE_LINE + (content.subtitle ? lines(content.subtitle, SMALL_CHARS) * SMALL_LINE : 0)
-    + (status ? lines(status, SMALL_CHARS) * SMALL_LINE : 0);
+  const title = lines(content.title, ROW_CHARS) * TITLE_LINE + (content.subtitle ? lines(content.subtitle, SMALL_CHARS) * SMALL_LINE : 0);
   const header = (content.countryFlag ? Math.max(FLAG, title) : content.icon ? Math.max(ICON, title) : title) + GAP;
   const rows = content.rows.reduce((sum, row) => sum + tooltipRowHeight(row), 0);
   const description = content.description ? GAP * 2 + 1 + content.description.split('\n').reduce((sum, part) => sum + lines(part, SMALL_CHARS), 0) * SMALL_LINE : 0;
@@ -103,7 +98,7 @@ export const tooltipRoom = (height: number) => height - WINDOW_MARGIN;
  * eye); without it the first form is read. */
 export interface FitOptions { keep?: number; more?: (hidden: number) => string; full?: TooltipContent }
 
-const moreRows = (hidden: number) => `${hidden} more ${hidden === 1 ? 'row' : 'rows'}: a taller window shows them`;
+const moreRows = (hidden: number) => `${hidden} more`;
 
 /** The fullest of `forms` that fits a window `height` pixels tall, so a tooltip is
  * never cut off by the window. Forms are tried in order, fullest first, and built

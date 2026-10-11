@@ -10,7 +10,7 @@
 
 - Native member order zero supplies the leader. Missing identities make roster counts unknown; gaps in bars/bands never imply a join or departure. A continuing membership stays one lane across aliases, while a replacement under the same tag gets another lane.
 - Manual roots select their native holders and aliases, excluding unrelated alias holders. Group choices preserve hour/end/ever counting dates.
-- Literal faction names require the recording language; otherwise empty literals use recorded content templates. Missing reads or unsupported templates stay **Unnamed faction** with reasons. Campaign display names override native names.
+- Literal faction names require the recording language; otherwise empty literals use recorded content templates. Missing reads or unsupported templates stay **Unnamed faction**, with one **Name unavailable** tooltip status. The legend shows faction names. Campaign display names override native names.
 - Colours use shared campaign/global faction preferences, defaulting to the first recorded leader's map colour. The game's own override colour is not recorded. Member looks are dated and bounded by holder/coverage; headings stay flagless.
 - Live reveals reached lanes and grows bars. The shared timeline owns zoom, keyboard, hover and Jump; labels use the shown hour, tooltips the hovered hour.
 

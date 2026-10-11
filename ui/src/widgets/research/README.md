@@ -15,6 +15,7 @@ Country and campaign/follow/pin; Whole campaign is the default. No widget-specif
 ## Notable behaviour
 
 - Dates are observation bounds. A later technology-inventory read can confirm completion, but the row stays hidden until confirmation. Jump retains the recorded ending bound.
+- Missing technology pictures use a flask icon. Idle slots retain saved days without a repeated empty-assignment caption.
 - The product’s sliced observations govern progress/modifiers; modifier-only changes wait for the next country read. Never invent fresher samples or interpolate through gaps.
 - Expected/took attribution keeps saved-day juggling, prior work, unfinished work, out-of-slot time, minimum-speed recovery and unexplained residuals separate. Additive bonuses are not independent multiplicative discounts.
 - Current-card Jump uses the earliest joined assignment observation, including earlier slots. No pre-recording start is inferred. Enter/Space open details.

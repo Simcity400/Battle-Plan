@@ -24,5 +24,6 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 },
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true, aggregate: true, factions: true }, defaultCountries: TOP_COUNTRIES,
+  factionColours: true,
   options: OPTIONS,
 } as const satisfies WidgetMeta;

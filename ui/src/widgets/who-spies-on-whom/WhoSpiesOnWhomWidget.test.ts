@@ -74,9 +74,9 @@ test('registered operative placements retain feature and missing-read reasons in
         branch: { id: 'branch', firstHour: 0, lastHour: 20 } }], client: {}, clock: { getHour: () => 20 },
     }, active: true, onDiagnostics() {} };
     const render = () => renderToStaticMarkup(createElement(registered.render, props));
-    assert.match(render(), /Not in this recording\. The intelligence agency feature was disabled\./);
+    assert.match(render(), /Intelligence agencies were disabled\./);
     supplied.periods[0].availability = 'tablesNotRecorded';
-    assert.match(render(), /Not in this recording\. Operative placements were not recorded at this time\./);
+    assert.match(render(), /Operatives were not recorded at this time\./);
     props.runtime.tracks = [];
     const empty = render();
     assert.match(empty, /Load a campaign to see its operative placements\./);

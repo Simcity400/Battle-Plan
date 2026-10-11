@@ -1,3 +1,4 @@
+import FollowControl from '../drill/FollowControl';
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -85,9 +86,9 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   const model = binding?.data;
   const shownTag = binding?.tagAt(hour) ?? null;
   const headerReason = !active ? 'The breakdown is inactive.' : missingPinnedDate ? 'The chosen moment is unavailable.'
-    : invalidSaved ? 'The saved native country selection is unavailable.'
-    : saved === undefined && (hasSavedOrigin || widget.time.mode !== 'campaign') ? 'This older pin has no saved native holder.'
-      : !shownTag ? 'The selected native country identity is unknown or conflicting at this hour.' : null;
+    : invalidSaved ? 'Saved country unavailable.'
+    : saved === undefined && (hasSavedOrigin || widget.time.mode !== 'campaign') ? 'Saved country unavailable.'
+      : !shownTag ? 'Country unavailable at this time.' : null;
   const headerWanted = useMemo(() => pinned && countrySlot && headerReason === null && shownTag ? [{ tag: shownTag, hour }] : [],
     [pinned, countrySlot, headerReason, shownTag, hour]);
   const headerLabels = useCountryLabelsAt(runtime.client, track, headerWanted, active && pinned && !!countrySlot);
@@ -117,12 +118,15 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
     return { ...part, value, raw, shareText: exactPartShare(raw, at?.total ?? null), color: colours.get(part.id) };
   }), [parts, at, colours]);
   const unavailable = missingPinnedDate ? <WidgetState kind="unavailable" message="The chosen moment is unavailable." />
-    : invalidSaved ? <WidgetState kind="unavailable" message="The saved native country selection is unavailable." />
-    : state ?? (reply.error ? <WidgetState kind="error" message={reply.error} onRetry={reply.retry} />
+    : invalidSaved ? <WidgetState kind="unavailable" message="Saved country unavailable." />
+    : state ?? (reply.error ? <WidgetState kind="error" detail={reply.error} onRetry={reply.retry} />
     : tag && !model ? <WidgetState kind="loading" label={`Loading ${title.toLowerCase()}…`} />
       : !tag ? <WidgetState kind="empty" message="Choose a country in the widget settings." /> : undefined);
   const follow = () => {
     if (current() && tag && liveHour != null) dispatch({ type: 'open', breakdown: tag, hour, playing: true, playhead: liveHour, owner: contextOwner });
+  };
+  const pause = () => {
+    if (current() && tag) dispatch({ type: 'open', breakdown: tag, hour, playing: false, playhead: null, owner: contextOwner });
   };
   const selection = drill.choices && track ? <div className="parts-race-details">
     <p className="drill-empty">Choose a country for {dayLabel(hour)}.</p>
@@ -142,17 +146,15 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
         : at?.values[index] == null ? 'Not known' : exactPartAmount(at.values[index]!) })) } : null}
     tooltip={(country, shownHour, name, chartColours) => model?.tooltip(country, shownHour, name, chartColours) ?? null}
     presentation={{ held: true, strongMixName: true, mixKeyHours: 'starts', windowedLegend: virtual }}
-    mixEmpty={{ message: 'Choose a country in the widget settings.', unavailable: name => `No recorded parts for ${name} in this branch.` }}
+    mixEmpty={{ message: 'Choose a country in the widget settings.', unavailable: name => `Breakdown unavailable for ${name}.` }}
     beforeChart={<div className="parts-race-details">
-      {pinned && <p className="drill-empty">{dayLabel(hour)} · {following ? 'Following playback' : 'Showing a chosen day'}
-        {!following && liveHour != null && <button type="button" className="button small" onClick={follow}>Follow playback</button>}</p>}
+      {pinned && <p className="drill-empty">{dayLabel(hour)} {tag && liveHour != null && <FollowControl following={following} onFollow={follow} onPause={pause} />}</p>}
       <DrillParts parts={rows} format={exactPartAmount} total={at?.total ?? null} showShares={at?.total != null}
         virtual={virtual} active={active} positiveBars={positiveGeometry} signedShares
         unattributed={remainder == null ? undefined : { ...UNATTRIBUTED_PART, value: Number(remainder), raw: remainder,
           shareText: exactPartShare(remainder, at?.total ?? null), text: exactPartAmount(remainder), color: colours.get('') }}
         totalRow={{ label: measure, value: at == null ? 'Not recorded' : at.total == null ? 'Not known' : exactPartAmount(at.total) }} />
       {at?.note && <p className="drill-empty">{at.note}</p>}
-      {positiveGeometry && <p className="drill-empty">Areas show positive amounts; correction rows and the total retain their signs.</p>}
     </div>}
     onPick={tag ? picked => { if (current()) dispatch({ type: 'open', breakdown: tag, hour: picked, playing: false,
       playhead: null, owner: contextOwner }); } : undefined} />;
@@ -169,6 +171,7 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null || drill.choices != null} anchor={anchor}
       title={title} day={dayLabel(hour)} following={following} canFollow={tag != null && liveHour != null}
       returnFocus=".country-race-chart canvas" onClose={() => { if (current()) dispatch({ type: 'close' }); }} onFollow={follow}
+      onPause={pause}
       onPin={track && nativeSelection ? () => { if (current()) runtime.addWidgetBelow(widget.id,
         pinNativeCountryParts(widget, track, nativeSelection, hour, following, title)); } : undefined}
       main={main(open, (drill.breakdown == null && drill.choices == null) || options.drill === 'popout')}>{selection ?? breakdown}</DrillHost>

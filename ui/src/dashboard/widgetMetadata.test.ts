@@ -62,7 +62,7 @@ test('widget metadata preserves world controls and content-choice title policies
     assert.match(settings(country), /COUNTRIES_SETTINGS/);
     const grid = () => renderToStaticMarkup(createElement(Grid, { template, runtime, editing: false, onLayouts() {}, onApply() {}, onRemove() {} }));
     assert.doesNotMatch(grid(), /COUNTRY_CHIP/);
-    assert.match(grid(), /Synthetic campaign/);
+    assert.doesNotMatch(grid(), /Synthetic campaign/, 'a widget on the sidebar’s campaign needs no recording name under its title');
     assert.match(grid(), /World history: follow playback/);
     template.widgets = [country];
     assert.match(grid(), /COUNTRY_CHIP/);
@@ -74,9 +74,11 @@ test('widget metadata preserves world controls and content-choice title policies
     } finally { Reflect.deleteProperty(globalThis, 'IntersectionObserver'); }
     assert.match(grid(), /WIDGET_BODY/, 'server rendering mounts the body at once');
     const picker = renderToStaticMarkup(createElement(Picker, { runtime, disabled: false, onAdd() {}, onOpen() {} }));
-    assert.match(picker, /<strong>World history<\/strong><small>Diplomacy · Recorded world outcomes\.<\/small>/);
-    assert.match(picker, /<strong>Country history<\/strong><small>Recorded world outcomes\.<\/small>/);
-    assert.match(picker, /<button[^>]*disabled=""[^>]*>[\s\S]*?<strong>Unavailable world<\/strong><small>Checking this recording…<\/small>/);
+    assert.match(picker, /<strong>World history<\/strong><\/span>/, 'a card shows its name; the description is in the details pane');
+    assert.match(picker, /<span>Diplomacy<\/span><small>\d+<\/small>/, 'a declared category is a rail entry');
+    assert.match(picker, /<strong>Country history<\/strong><\/span>/);
+    assert.match(picker, /<strong>Unavailable world<\/strong><small>Checking this recording…<\/small>/);
+    assert.match(picker, /<button(?=[^>]*aria-label="Add Unavailable world")(?=[^>]*disabled="")[^>]*>/, 'an entry the recording may lack cannot be added yet');
 
     const { definition: army } = await vite.ssrLoadModule('/ui/src/widgets/army-size/definition.ts');
     const { measureChoices } = await vite.ssrLoadModule('/ui/src/widgets/army-size/armySizeData.ts');

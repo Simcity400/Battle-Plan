@@ -1,13 +1,13 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 
-export const VIEWS = [{ value: 'live', label: 'Live' }, { value: 'history', label: 'History' }] as const;
+export const VIEWS = [{ value: 'live', label: 'Current' }, { value: 'history', label: 'History' }] as const;
 export const OPTIONS: readonly OptionField[] = [
-  { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'live', choices: VIEWS },
+  { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'live', choices: VIEWS, visibleWhen: () => false },
   { key: 'completedRetentionDays', section: 'options', label: 'Keep completed projects', kind: 'number', default: 240,
     min: 0, max: 36500, step: 1, unit: 'game days', visibleWhen: options => options.view === 'live' },
   { key: 'grow', section: 'axes', label: 'Grow with playback', kind: 'toggle', default: false,
-    hint: 'With Live on, grow the History time axis as the campaign plays.', visibleWhen: options => options.view === 'history' },
+    visibleWhen: options => options.view === 'history' },
 ];
 export const definition = {
   kind: 'special-projects', version: 1, title: 'Special projects', description: 'Projects, prototype progress and assigned scientists, or their campaign timeline.',

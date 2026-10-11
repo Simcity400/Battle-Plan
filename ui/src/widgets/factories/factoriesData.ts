@@ -225,7 +225,7 @@ export function groupRows(model: FactoryModel, values: readonly number[], group:
   const civilian = key === 'civilian';
   return [
     { label: groupName(group), value: formatCount(count), strong: true, divider: true, ...(color ? { swatch: color } : {}) },
-    { label: 'Total', value: formatCount(get('total')), indent: true },
+    ...(mode === 'built' ? [] : [{ label: 'Total', value: formatCount(get('total')), indent: true }]),
     ...line('Owned', get('owned'), formatCount(get('owned'))),
     ...added('From occupation', get('controlled') - get('owned')),
     ...added('From subjects', get('fromSubjects')),

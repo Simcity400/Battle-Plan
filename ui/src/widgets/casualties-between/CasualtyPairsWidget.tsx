@@ -5,9 +5,8 @@ import ChordChart from '../../charts/chord/ChordChart';
 import type { ChordFrame } from '../../charts/chord/ChordChart';
 import type { ChordData } from '../../charts/chord/layout';
 import DrillHost from '../../charts/drill/DrillHost';
-import DrillParts from '../../charts/drill/DrillParts';
 import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
-import { drawBands, drawPlayhead } from '../../charts/draw';
+import { dayLabel, drawBands, drawPlayhead } from '../../charts/draw';
 import { compactStackExtent, forEachCompactStackSegment, stackEdges } from '../../charts/stack';
 import { runAt } from '../../charts/series';
 import { heldStackSegment } from '../../charts/race/countryRace';
@@ -19,7 +18,6 @@ import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { fitTooltip } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
-import { formatDateTime } from '../../dashboard/calendar';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
@@ -49,7 +47,6 @@ const pairKey = (flow: PairFlow) => flow.id;
 // Columns that name no country keep their accessors: arriving labels never re-sort by them.
 const AMOUNT: TableColumn<PairFlow> = { key: 'value', header: 'Casualties', label: 'Casualties', numeric: true, width: 'max-content',
   value: flow => flow.value, render: pairAmount };
-const READ: TableColumn<PairFlow> = { key: 'read', header: 'Read', label: 'Read', value: flow => flow.readHour, render: flow => formatDateTime(flow.readHour) };
 
 /** The selected pairs' exact signed rows. Built only once the breakdown mounts,
  * and again only when the rows, their labels or colours change. */
@@ -59,20 +56,22 @@ const PairRows = memo(function PairRows({ rows, label, hour, colors, columns, sp
   runtime: WidgetProps['runtime']; trackId: string;
 }) {
   const subtotal = rows.some(row => row.incomplete);
-  const parts = useMemo(() => {
-    const positive = rows.reduce((sum, row) => sum + (row.value > 0n ? row.value : 0n), 0n);
-    return rows.map(flow => ({ id: flow.id, label: `${label(flow.from).name} → ${label(flow.to).name}`,
-      countryFlag: label(flow.from), raw: flow.value, value: Number(flow.value), text: pairAmount(flow), color: colors.get(flow.id),
-      shareText: flow.value > 0n && positive > 0n ? `${Number(flow.value * 1000n / positive) / 10}%` : '—' }));
-  }, [rows, label, colors]);
   const total = useMemo(() => exactCount(rows.reduce((sum, row) => sum + row.value, 0n)), [rows]);
-  const menu = useCallback((flow: PairFlow) => [{ label: 'Show this read', run: () => onPick(flow.readHour) }, jumpItem(runtime, trackId, flow.readHour)],
+  const tableColumns = useMemo(() => {
+    const positive = rows.reduce((sum, row) => sum + (row.value > 0n ? row.value : 0n), 0n);
+    return [...columns.map(column => column.key === 'value' ? { ...column,
+      render: (flow: PairFlow) => <span><i className="casualty-pair-swatch" style={{ background: colors.get(flow.id) }} aria-hidden="true" />{pairAmount(flow)}</span>,
+    } : column), { key: 'share', label: 'Share', header: 'Share', numeric: true, width: 'max-content',
+      value: (flow: PairFlow) => subtotal || positive === 0n || flow.value <= 0n ? null : Number(flow.value * 1000n / positive) / 10,
+      render: (flow: PairFlow) => subtotal || positive === 0n || flow.value <= 0n ? '—' : `${Number(flow.value * 1000n / positive) / 10}%`,
+    }];
+  }, [rows, columns, subtotal, colors]);
+  const menu = useCallback((flow: PairFlow) => [{ label: 'Show this day', run: () => onPick(flow.readHour) }, jumpItem(runtime, trackId, flow.readHour)],
     [onPick, runtime, trackId]);
   const tooltip = useCallback((flow: PairFlow) => fitTooltip([pairTooltip([flow], label, hour)], height), [label, hour, height]);
-  return <><DrillParts parts={parts} format={exactCount} virtual positiveBars showShares={!subtotal}
-    totalRow={{ label: subtotal ? 'Recorded subtotal' : 'Signed total', value: total }} />
-    <div className="casualty-pair-table"><Table label="Recorded casualty pairs" rows={rows} columns={columns} rowKey={pairKey}
-      sort={SORT} hoursPerSecond={speed} cellBars={false} rankMarkers={false} menu={menu} tooltip={tooltip} /></div></>;
+  return <><p className="casualty-breakdown-total">{subtotal ? 'Recorded subtotal' : 'Signed total'}: <b>{total}</b></p>
+    <div className="casualty-pair-table"><Table label="Casualty pairs" rows={rows} rowKey={pairKey}
+      sort={SORT} hoursPerSecond={speed} cellBars={false} rankMarkers={false} menu={menu} tooltip={tooltip} columns={tableColumns} /></div></>;
 });
 
 export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
@@ -194,29 +193,29 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
       render: flow => <CountryCell {...detailLabel(flow.from)} /> },
     { key: 'to', header: 'Taken by', label: 'Taken by', value: flow => detailLabel(flow.to).name,
       render: flow => <CountryCell {...detailLabel(flow.to)} /> },
-    AMOUNT, READ,
+    AMOUNT,
   ], [detailLabel]);
   useEffect(() => { dispatch({ type: 'close' }); setDetail(null); setChartRange(null); }, [runtime.client, identity, widget.time, options.show, options.pairSelection]);
   const diagnostics = useMemo(() => [...new Set([...(manifest.data?.warnings ?? []),
     ...[...histories.data.values()].flatMap(reply => reply.warnings), ...(groups.data?.warnings ?? [])])], [manifest.data, histories.data, groups.data]);
   useDiagnostics(onDiagnostics, diagnostics);
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see casualties between countries." />;
-  if (!window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign." />;
-  if (manifest.error) return <WidgetState kind="error" message={manifest.error} onRetry={manifest.retry} />;
-  if (needsGroups && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (manifest.error) return <WidgetState kind="error" detail={manifest.error} onRetry={manifest.retry} />;
+  if (needsGroups && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (manifest.data?.available === false) return <WidgetState kind="unavailable" message="Not in this recording" />;
   if (selection.reason) return <WidgetState kind="empty" message={selection.reason} />;
   if (!manifest.data || needsGroups && !groups.data) return <WidgetState kind="loading" label="Loading casualty pairs…" />;
-  if (pinned && options.pairSelection && !savedSelection) return <WidgetState kind="unavailable" message="This saved pair selection belongs to another campaign or branch. Select pairs again in the chord." />;
+  if (pinned && options.pairSelection && !savedSelection) return <WidgetState kind="unavailable" message="Saved pairs unavailable. Select them again." />;
   const body = <div className="casualty-pair-details">
-    {pinned && <p className="chart-line-key">{formatDateTime(detailHour)} {!effectiveDrill.follow
+    {pinned && <p className="chart-line-key">{dayLabel(detailHour)} {!effectiveDrill.follow
       && <button type="button" className="button small" onClick={follow}>Follow playback</button>}</p>}
-    {detailOutside ? <WidgetState kind="unavailable" message={`The chosen moment ${formatDateTime(detailHour)} is outside this campaign branch.`} />
-      : detailError ? <WidgetState kind="error" message={detailError} onRetry={histories.retry} />
+    {detailOutside ? <WidgetState kind="unavailable" message="This time is outside the recording." />
+      : detailError ? <WidgetState kind="error" detail={detailError} onRetry={histories.retry} />
       : !detailData ? <WidgetState kind="loading" label="Loading this moment…" />
         : !detailData.observed.some(span => span.firstHour <= detailHour && detailHour <= span.lastHour)
-          ? <p className="drill-empty">Casualty pairs were not recorded at {formatDateTime(detailHour)}.</p>
-          : !rows.length ? <p className="drill-empty">No selected native pair lifetimes were recorded at {formatDateTime(detailHour)}.</p>
+          ? <p className="drill-empty">Casualty pairs were not recorded at {dayLabel(detailHour)}.</p>
+          : !rows.length ? <p className="drill-empty">No selected casualty pairs at this time.</p>
             : <PairRows rows={rows} label={detailLabel} hour={detailHour} colors={colorById} columns={columns} speed={speed}
               height={height} onPick={pickDay} runtime={runtime} trackId={track.id} />}
     <div className="casualty-pair-history"><TimeChart label="Positive recorded casualties by directed pair over time"
@@ -230,17 +229,16 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
         const index = casualtyPairWindows(manifest.data, at, false)[0];
         const reply = index === undefined ? undefined : histories.data.get(index);
         const flows = reply ? casualtyPairsAt(reply, at).flows.filter(flow => selected.has(flow.id)) : [];
-        return { title: formatDateTime(Math.floor(at)), rows: [{ label: flows.some(flow => flow.incomplete) ? 'Recorded subtotal' : 'Signed total',
+        return { title: dayLabel(Math.floor(at)), rows: [{ label: flows.some(flow => flow.incomplete) ? 'Recorded subtotal' : 'Signed total',
           value: reply?.observed.some(span => span.firstHour <= at && at <= span.lastHour)
-            ? flows.length ? exactCount(flows.reduce((sum, flow) => sum + flow.value, 0n)) : 'No selected pair lifetimes'
-            : reply ? 'Not recorded' : 'Loading…' }], note: 'Click to select this moment’s exact signed rows.' };
+            ? flows.length ? exactCount(flows.reduce((sum, flow) => sum + flow.value, 0n)) : 'No selected casualty pairs at this time.'
+            : reply ? 'Not recorded' : 'Loading…' }] };
       }} /></div>
     {chartWindows.some(index => !histories.data.has(index) && !histories.errors.has(index)) && <p className="drill-empty">Loading history in the visible time range…</p>}
     {chartWindows.some(index => histories.errors.has(index)) && <button type="button" className="button small" onClick={histories.retry}>Retry history</button>}
-    <p className="chart-line-key">Only positive amounts have geometry. Signed corrections and recorded zero remain exact in the table.</p>
   </div>;
-  const main = outside ? <WidgetState kind="unavailable" message={`The chosen moment ${formatDateTime(hour)} is outside this campaign branch.`} />
-    : error ? <WidgetState kind="error" message={error} onRetry={histories.retry} />
+  const main = outside ? <WidgetState kind="unavailable" message="This time is outside the recording." />
+    : error ? <WidgetState kind="error" detail={error} onRetry={histories.retry} />
     : !data ? <WidgetState kind="loading" label="Loading casualty pairs…" />
       : filter.reason ? <WidgetState kind="empty" message={filter.reason} />
         : !data.observed.some(span => span.firstHour <= hour && hour <= span.lastHour)
@@ -259,17 +257,15 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
         if (flows.length) menu.open(x, y, [{ label: 'Recorded pairs', icon: 'grid', run: () => openPairs(flows.map(flow => flow.id), exact!.hour) },
           jumpItem(runtime, track.id, exact!.hour)]);
       }} />
-    {chartError && <WidgetState kind="error" message={chartError} />}
+    {chartError && <WidgetState kind="error" detail={chartError} />}
     {!snapshot.flows.some(flow => flow.value > 0n) && <p className="chart-line-key">No positive attributable casualties are recorded at this moment.</p>}
-    <button type="button" className="button small" onClick={() => openPairs(snapshot.flows.map(flow => flow.id), hour)}>All recorded pairs</button>
+    <button type="button" className="button small" onClick={() => openPairs(snapshot.flows.map(flow => flow.id), hour)}>All pairs</button>
     {snapshot.flows.some(flow => flow.value < 0n) && <button type="button" className="button small"
-      onClick={() => openPairs(snapshot.flows.filter(flow => flow.value < 0n).map(flow => flow.id), hour)}>Signed corrections</button>}
-    <p className="chart-line-key">Across all recorded wars and military branches. Negative corrections are listed with their exact signs.
-      {data.hasGap ? ' Missing hours may hide losses or entire wars; affected amounts are recorded subtotals.' : ''}</p>
+      onClick={() => openPairs(snapshot.flows.filter(flow => flow.value < 0n).map(flow => flow.id), hour)}>Corrections</button>}
   </>;
   return <div className="casualty-pairs" ref={anchor}>
-    {pinned ? body : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={open} title="Recorded casualty pairs"
-      day={formatDateTime(detailHour)} following={effectiveDrill.follow} canFollow onFollow={follow}
+    {pinned ? body : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={open} title="Casualty pairs"
+      day={dayLabel(detailHour)} following={effectiveDrill.follow} canFollow onFollow={follow}
       onPin={selectedIds.length ? () => runtime.addWidgetBelow(widget.id, pinPairs(widget, track, selectedIds, detailHour, effectiveDrill.follow)) : undefined}
       onClose={() => { dispatch({ type: 'close' }); setDetail(null); }}
       returnFocus=".chord-chart canvas" anchor={anchor} main={main}>{body}</DrillHost>}

@@ -180,6 +180,13 @@ test('actual cipher label reads finish during fast playback and retain only thei
     const gap = { ...data, coverage: [], pairs: data.pairs.map(pair => ({ ...pair, runs: [], tagRuns: [] })) };
     render(130, true, gap); await settle();
     assert.equal(beforeMissingRead.signal.aborted, true, 'a missing native read releases sampled demand immediately');
+    const unnamed = { ...data, pairs: data.pairs.map(pair => ({ ...pair, tagRuns: [
+      { firstHour: 100, lastHour: 150, ownerTag: null, targetTag: null },
+    ] })) };
+    active = false;
+    view = render(130, true, unnamed);
+    assert.equal(view.labels.pair(view.row).owner.name, 'Country name unavailable');
+    assert.equal(view.labels.pair(view.row).target.name, 'Country name unavailable');
   } finally {
     for (const effect of effects.values()) effect.cleanup?.();
     await vite.close(); delete host.__cipherCountryHooks;

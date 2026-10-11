@@ -8,14 +8,13 @@ function Flags({ side, country }: { side: BattleSide; country: BattleCountryLabe
   const host = useRef<HTMLSpanElement>(null);
   const probe = useRef<HTMLElement>(null);
   const more = useRef<HTMLSpanElement>(null);
-  const unknown = useRef<HTMLSpanElement>(null);
   const [shown, setShown] = useState(0);
   const count = side.countries.length;
   useLayoutEffect(() => {
     const element = host.current!;
     const measure = () => {
       const gap = parseFloat(getComputedStyle(element).columnGap) || 0;
-      const width = element.clientWidth - (unknown.current ? unknown.current.offsetWidth + gap : 0);
+      const width = element.clientWidth;
       setShown(battleFlagCount(count, width, probe.current!.offsetWidth, gap, more.current!.offsetWidth));
     };
     measure();
@@ -24,7 +23,7 @@ function Flags({ side, country }: { side: BattleSide; country: BattleCountryLabe
     return () => observer.disconnect();
   }, [count, side.countriesUnknown]);
   const names = side.countries.map(part => country(part.tag, part.hour).name);
-  const title = [side.label, ...names, side.countriesUnknown].filter(Boolean).join(' · ');
+  const title = [side.label, ...names, side.countriesUnknown ? 'Countries unknown' : null].filter(Boolean).join(' · ');
   return <span ref={host} className="battle-flags" title={title} aria-label={title}>
     <span className="battle-probe" aria-hidden="true"><i ref={probe} className="battle-flag-missing" /><span ref={more}>+{count}</span></span>
     {side.countries.slice(0, shown).map(part => {
@@ -34,7 +33,6 @@ function Flags({ side, country }: { side: BattleSide; country: BattleCountryLabe
       </span>;
     })}
     {shown < count && <span className="battle-flags-more">+{count - shown}</span>}
-    {side.countriesUnknown && <span ref={unknown} className="battle-muted" title={side.countriesUnknown}>?</span>}
   </span>;
 }
 

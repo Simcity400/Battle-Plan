@@ -4,7 +4,7 @@ import type { TooltipRow } from '../../charts/tooltip';
 import type { NameAt } from '../../dashboard/countryFacts';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import type { StateAt } from '../../dashboard/stateNamesData';
-import { peaceCaptureLabel as captureLabel, peaceDealHour, peaceDealKnownAt, peaceDealAt, peaceDealIsBy, peaceObservationLabel, peaceWarName } from '../../dashboard/peaceDealsData.ts';
+import { peaceDealHour, peaceDealKnownAt, peaceDealAt, peaceDealIsBy, peaceWarName } from '../../dashboard/peaceDealsData.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { setToken } from '../../dashboard/options.ts';
 
@@ -14,7 +14,7 @@ export interface PeaceCard { deal: PeaceDeal; actions: PeaceActionRow[]; hour: n
 export type PeaceLogEntry = { kind: 'card'; card: PeaceCard } | { kind: 'gap'; span: HourSpan };
 export interface PeaceLog { rows: readonly LogRow<PeaceLogEntry>[]; gaps: readonly HourSpan[] }
 export const peaceHasConferences = (rows: readonly LogRow<PeaceLogEntry>[]) => rows.some(row => row.item.kind === 'card');
-export const peaceActionName = (row: PeaceActionRow) => row.outcome ? 'Captured outcomes; action not recorded' : row.name ?? 'Action name not recorded';
+export const peaceActionName = (row: PeaceActionRow) => row.outcome ? 'Outcome; action unknown' : row.name ?? 'Action name not recorded';
 const UNRECORDED_ACTION = JSON.stringify(['unrecorded']);
 const NO_ACTIONS = JSON.stringify(['noActions']);
 const actionCategory = (action: PeaceActionRow) => action.outcome || action.name == null ? UNRECORDED_ACTION : JSON.stringify(['action', action.token ?? action.name]);
@@ -26,7 +26,7 @@ export function peaceActionChoices(log: PeaceLog | null): { value: string; label
     if (row.item.kind !== 'card') continue;
     if (!row.item.card.actions.length) {
       const category = emptyCategory(row.item.card);
-      choices.set(category, category === NO_ACTIONS ? 'No captured actions' : 'Action not recorded');
+      choices.set(category, category === NO_ACTIONS ? 'No actions recorded' : 'Action not recorded');
     }
     for (const action of row.item.card.actions) {
       const category = actionCategory(action);
@@ -46,8 +46,7 @@ export function filterPeaceLog(log: PeaceLog, categories: readonly string[]): Pe
 }
 
 /** Width fitting never cuts the complete participant or outcome tooltip. */
-export function peaceTooltipRows(card: PeaceCard, countryAt: (hour: number) => CountryLabel, chipLabel: (chip: PeaceChip) => string,
-  stateMissing?: (chip: PeaceChip) => string | null): TooltipRow[] {
+export function peaceTooltipRows(card: PeaceCard, countryAt: (hour: number) => CountryLabel, chipLabel: (chip: PeaceChip) => string): TooltipRow[] {
   const country = countryAt(card.hour);
   return [
     { label: 'Winners', strong: true },
@@ -59,7 +58,7 @@ export function peaceTooltipRows(card: PeaceCard, countryAt: (hour: number) => C
         countryFlag: action.winner == null ? undefined : country(action.winner), value: peaceActionName(action), strong: true },
       ...action.chips.map(chip => ({ label: chipLabel(chip),
         countryFlag: chip.tag == null ? undefined : countryAt(chip.hour)(chip.tag),
-        value: [chip.note ?? (chip.derived ? 'Derived from what changed' : 'Captured'), stateMissing?.(chip)].filter(Boolean).join('; '), indent: true })),
+        value: chip.note, indent: true })),
     ]),
   ];
 }
@@ -101,7 +100,7 @@ export function peaceActions(deal: PeaceDeal): PeaceActionRow[] {
     add(subject.overlordTag, null, null, 'capturedOutcome', {
       key: JSON.stringify(['subject', subject.subject]), hour: deal.captured!.hour,
       ...(subject.subjectTag != null ? { tag: subject.subjectTag } : { missing: 'Subject country not recorded' }),
-      note: 'Captured subject relationship', derived: false,
+      note: 'Subject', derived: false,
     });
   }
   const addItem = (item: PeaceItem) => {
@@ -165,12 +164,14 @@ export function peaceRowsAt(log: PeaceLog, until: number | null, from = -Infinit
 }
 export const gapLabel = (span: HourSpan) => `Not recorded between ${formatDateTime(span.firstHour)} and ${formatDateTime(span.lastHour)}`;
 export function derivedNote(deal: PeaceDeal): string {
-  if (!deal.derived) return '';
+  if (!deal.derived) return deal.captureUnavailable != null ? 'Outcomes not recorded' : '';
   let before = Infinity, after = -Infinity;
   for (const item of deal.items) { before = Math.min(before, item.dates.beforeHour); after = Math.max(after, item.dates.afterHour); }
-  return Number.isFinite(before) ? `Compared recorded ownership and war-end evidence between ${formatDateTime(before)} and ${formatDateTime(after)}. Subject, government and existence reads supply their corresponding changes. These are net changes between reads, not captured peace actions.`
-    : 'The conference roster was observed, but the recording has no complete before-and-after outcome comparison.';
+  return Number.isFinite(before) ? `Estimated between ${formatDateTime(before)} and ${formatDateTime(after)}`
+    : 'Outcomes not recorded';
 }
+export const conferenceLabel = (deal: PeaceDeal) => deal.observation === 'recordedConference' ? null
+  : deal.observation === 'conferenceNotRecorded' ? 'War-end outcomes' : 'Conference unknown';
 export function peaceWanted(rows: readonly LogRow<PeaceLogEntry>[]): { countries: NameAt[]; states: StateAt[] } {
   const countries = new Map<string, NameAt>();
   const states = new Map<string, StateAt>();
@@ -194,10 +195,10 @@ export function peaceRowHeight(row: LogRow<PeaceLogEntry>, density: LogDensity):
   const compact = density === 'compact';
   if (row.item.kind === 'gap') return compact ? 38 : 46;
   const { card } = row.item;
-  return (compact ? 70 : 88) + card.actions.length * (compact ? 24 : 28) + (card.deal.derived ? 20 : 0) + (card.deal.captureUnavailable != null ? 22 : 0);
+  return (compact ? 70 : 88) + card.actions.length * (compact ? 24 : 28) + (derivedNote(card.deal) ? 20 : 0) + (conferenceLabel(card.deal) ? 20 : 0);
 }
 export function peaceDescription(row: LogRow<PeaceLogEntry>): string {
   if (row.item.kind === 'gap') return gapLabel(row.item.span);
   const { card } = row.item;
-  return `${peaceWarName(card.deal)} · ${card.by ? 'by ' : ''}${formatDateTime(card.hour)}${peaceObservationLabel(card.deal) ? ` · ${peaceObservationLabel(card.deal)}` : ''}${card.deal.derived ? ' · Derived from what changed' : ''}${captureLabel(card.deal) ? ` · ${captureLabel(card.deal)}` : ''}`;
+  return [peaceWarName(card.deal), `${card.by ? 'by ' : ''}${formatDateTime(card.hour)}`, conferenceLabel(card.deal), derivedNote(card.deal)].filter(Boolean).join(' · ');
 }

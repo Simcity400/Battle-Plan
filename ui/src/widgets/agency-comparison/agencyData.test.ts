@@ -3,7 +3,6 @@ import test from 'node:test';
 import type { AgencyComparisonReply, AgencyValue } from '../../generated/dashboard';
 import { agencyRequestParams, agencyRows, agencyTooltip, operativesCell, upgradesCell, validateAgencyComparisonReply } from './agencyData.ts';
 import { sortRows } from '../../charts/table/logic.ts';
-import { formatDateTime } from '../../dashboard/calendar.ts';
 
 const value = (created = true): AgencyValue => ({ created, name: created ? 'Recorded agency' : 'Agence par défaut', defenseRaw: '125000', defenseText: 'Defence level: 1.25', defenseValue: '1.25', activeCount: 3, maximum: 5,
   upgrades: { readHour: null, unavailable: null, nonnegativeLevelSum: null, items: [] } });
@@ -34,7 +33,7 @@ test('content defence label and native numeric text stay separate from the compl
   const row = agencyRows(checked, 12, null)[0];
   assert.equal(checked.defenseLabel, 'Protection spéciale');
   assert.equal(row.value.defenseValue, '1.2%');
-  assert.equal(agencyTooltip(row, 'Country', null).rows.find(row => row.label === 'Defence')?.value, 'Protection spéciale : 1.2%');
+  assert.equal(agencyTooltip(row, 'Country').rows.find(row => row.label === 'Defence')?.value, 'Protection spéciale : 1.2%');
   reply.defenseLabel = null;
   row.value.defenseValue = null;
   assert.equal(validateAgencyComparisonReply(reply).defenseLabel, null);
@@ -46,14 +45,14 @@ test('content defence label and native numeric text stay separate from the compl
 
 test('never-created agency keeps the content-localised name; upgrades are never elapsed work', () => {
   const row = { key: 'CUSTOM', tag: 'CUSTOM', hour: 10, value: value(false), operativeRosterCount: 2, operativeReadHour: 10 };
-  assert.equal(agencyTooltip(row, 'Country at this hour', fixture().upgradesUnrecorded).subtitle, 'Agence par défaut');
+  assert.equal(agencyTooltip(row, 'Country at this hour').subtitle, 'Agence par défaut');
   assert.equal(upgradesCell(row.value), 'Not recorded');
   assert.equal(operativesCell(row.value), '3 / 5');
-  const tooltip = agencyTooltip(row, 'Country at this hour', fixture().upgradesUnrecorded);
+  const tooltip = agencyTooltip(row, 'Country at this hour');
   assert.equal(tooltip.rows.find(row => row.label === 'Defence')?.value, 'Defence level: 1.25');
-  assert.equal(tooltip.rows.filter(row => row.label === fixture().upgradesUnrecorded).length, 1);
+  assert.equal(tooltip.rows.filter(row => row.label === fixture().upgradesUnrecorded).length, 0);
   row.value.name = '';
-  assert.equal(agencyTooltip(row, 'Country at this hour', null).subtitle, '');
+  assert.equal(agencyTooltip(row, 'Country at this hour').subtitle, '');
 });
 
 test('agency upgrade identity retains its branch and a recorded level sum hides the unrecorded reason', () => {
@@ -61,10 +60,10 @@ test('agency upgrade identity retains its branch and a recorded level sum hides 
   const agency = reply.series[0].entries[0].value;
   agency.upgrades = { readHour: 10, unavailable: null, nonnegativeLevelSum: '2', items: [{ ordinal: 0, definitionPointer: '18446744073709551615', branchPointer: '9007199254740993', branchToken: 'mod_branch', token: 'mod_upgrade', branchTokenId: 0, tokenId: 0xffff_ffff, level: 2, identityStatus: 0, identityRefusal: null, name: null, contentReason: null, icon: null }] };
   validateAgencyComparisonReply(reply);
-  const tooltip = agencyTooltip({ key: 'CUSTOM', tag: 'CUSTOM', hour: 10, value: agency, operativeRosterCount: null, operativeReadHour: null }, 'Country', reply.upgradesUnrecorded);
+  const tooltip = agencyTooltip({ key: 'CUSTOM', tag: 'CUSTOM', hour: 10, value: agency, operativeRosterCount: null, operativeReadHour: null }, 'Country');
   assert.equal(tooltip.rows.some(row => row.label === reply.upgradesUnrecorded), false);
   assert.equal(tooltip.rows.find(row => row.label === 'Upgrade name unavailable')?.value, 'Level 2');
-  assert.equal(tooltip.rows.some(row => row.label === 'Agency-upgrade read'), true);
+  assert.equal(tooltip.rows.some(row => row.label === 'Agency-upgrade read'), false);
   const malformed = structuredClone(reply) as unknown as { series: { entries: { value: { upgrades: { items: { branchToken?: string }[] } } }[] }[] };
   delete malformed.series[0].entries[0].value.upgrades.items[0].branchToken;
   assert.throws(() => validateAgencyComparisonReply(malformed), /malformed/);
@@ -82,9 +81,9 @@ test('agency acquired levels preserve repeated definitions, signed levels and re
   const checked = validateAgencyComparisonReply(reply);
   const row = agencyRows(checked, 12, null)[0];
   assert.equal(upgradesCell(row.value), 'Unknown');
-  const tooltip = agencyTooltip(row, 'Country', reply.upgradesUnrecorded);
+  const tooltip = agencyTooltip(row, 'Country');
   assert.deepEqual(tooltip.rows.filter(row => row.value?.startsWith('Level ')).map(row => row.value), ['Level 0', 'Level -3', 'Level 7']);
-  assert.equal(tooltip.rows.some(row => row.label === agency.upgrades.items[2].identityRefusal), true);
+  assert.equal(tooltip.rows.some(row => row.label === agency.upgrades.items[2].identityRefusal), false);
   assert.equal(tooltip.rows.some(row => row.label === reply.upgradesUnrecorded), false);
   assert.equal(checked.series[0].entries[0].value.upgrades.items[0].definitionPointer, '9007199254740993');
   const duplicateOrdinal = structuredClone(reply);
@@ -107,8 +106,8 @@ test('a failed acquired-list read is unknown with its recording-gap reason', () 
   agency.upgrades.unavailable = 'AgencyUpgradeLevels read failed; acquired levels are unknown.';
   const row = agencyRows(validateAgencyComparisonReply(reply), 12, null)[0];
   assert.equal(upgradesCell(row.value), 'Unknown');
-  const tooltip = agencyTooltip(row, 'Country', reply.upgradesUnrecorded);
-  assert.equal(tooltip.rows.some(row => row.label === agency.upgrades.unavailable), true);
+  const tooltip = agencyTooltip(row, 'Country');
+  assert.equal(tooltip.rows.some(row => row.label === agency.upgrades.unavailable), false);
   assert.equal(tooltip.rows.some(row => row.label === reply.upgradesUnrecorded), false);
   const unavailableCount = structuredClone(reply);
   unavailableCount.series[0].entries[0].value.upgrades.nonnegativeLevelSum = '0';
@@ -125,9 +124,9 @@ test('agency level sums exceed signed totals and keep content refusals', () => {
     items: [item, { ...item, ordinal: 1 }, { ...item, ordinal: 2, level: -3, contentReason: null }] };
   const row = agencyRows(validateAgencyComparisonReply(reply), 12, null)[0];
   assert.equal(upgradesCell(row.value), '4,294,967,294');
-  const tooltip = agencyTooltip(row, 'Country', reply.upgradesUnrecorded);
-  assert.equal(tooltip.rows.some(row => row.label === item.contentReason), true);
-  assert.match(tooltip.note ?? '', /inventory total/);
+  const tooltip = agencyTooltip(row, 'Country');
+  assert.equal(tooltip.rows.some(row => row.label === item.contentReason), false);
+  assert.equal(tooltip.note, undefined);
   for (const invalid of [-1, 4, '-1', '1.5', '', '0', '4294967293', '4294967295']) {
     const malformed = structuredClone(reply) as unknown as { series: { entries: { value: { upgrades: { nonnegativeLevelSum: unknown } } }[] }[] };
     malformed.series[0].entries[0].value.upgrades.nonnegativeLevelSum = invalid;
@@ -190,9 +189,9 @@ test('an off-read alias keeps its actual census date without a visible source-al
   assert.deepEqual(checked.operativeReadHours, [15, 20]);
   assert.deepEqual(agencyRows(checked, 16, null).map(row => [row.tag, row.value.activeCount, row.operativeRosterCount, row.operativeReadHour]),
     [['Y', 7, 2, 15]]);
-  for (const [hour, read] of [[16, 15], [20, 20]]) {
+  for (const hour of [16, 20]) {
     const row = agencyRows(checked, hour, null)[0];
-    assert.equal(agencyTooltip(row, 'Country', null).rows.find(item => item.label === 'Active-list read')?.value, formatDateTime(read));
+    assert.equal(agencyTooltip(row, 'Country').rows.find(item => item.label === 'Active-list read')?.value, undefined);
   }
   assert.deepEqual(agencyRows(checked, 22, null).map(row => [row.value.activeCount, row.operativeRosterCount, row.operativeReadHour]), [[7, null, null]]);
   const clipped = structuredClone(reply);

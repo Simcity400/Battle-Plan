@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { NavalLossesReply, NavalLossRun } from '../../generated/dashboard';
-import { navalAsOf, navalBands, navalChoiceReads, navalHolderBands, navalLines, navalLookHour, navalModel, navalNote, navalPeriodLabel, navalReadHour, navalRequest, navalTooltip, navalValue, rankNaval, validateNavalLossesReply } from './navalLossesData.ts';
+import { navalBands, navalChoiceReads, navalHolderBands, navalLines, navalLookHour, navalModel, navalPeriodLabel, navalReadHour, navalRequest, navalTooltip, navalValue, rankNaval, validateNavalLossesReply } from './navalLossesData.ts';
 import { countryDrillSpans } from '../../dashboard/countryIdentity.ts';
 import { definition } from './definition.ts';
 import { resolveCountries } from '../../dashboard/groups.ts';
@@ -61,11 +61,21 @@ test('naval counts preserve zero and omit unknown parts from the selected rankin
   assert.equal(rankNaval(model, ['mod tag'], 105, 'ships', 10)[0].value, 5);
   assert.equal(navalValue(model.reply.series[0].runs[2], 'convoys'), null);
   assert.deepEqual(rankNaval(model, ['mod tag'], 102, 'both', 10)[0].parts, [{ id: 'ships', value: 4 }, { id: 'convoys', value: 2 }]);
-  assert.match(navalTooltip(model, 'mod tag', 109, 'Country', 'both', 'lost', 'running').subtitle!, /as of/);
+  assert.equal(navalTooltip(model, 'mod tag', 109, 'Country', 'both', 'lost').subtitle, formatDateTime(109));
   assert.deepEqual(rankNaval(model, model.tags, 99, 'ships', 10), []);
-  const unknown = navalTooltip(model, 'mod tag', 105, 'Name at hover', 'both', 'lost', 'month');
+  const unknown = navalTooltip(model, 'mod tag', 105, 'Name at hover', 'both', 'lost');
   assert.equal(unknown.rows?.find(row => row.label === 'Convoys')?.value, 'Unknown');
   assert.equal(unknown.rows?.find(row => row.label === 'Lost')?.value, 'Unknown');
+});
+
+test('single-measure naval tooltips keep one value while combined measures keep their total', () => {
+  const model = navalModel(fixture());
+  for (const kind of ['ships', 'convoys'] as const) {
+    const rows = navalTooltip(model, 'mod tag', 109, 'Country', kind, 'lost').rows;
+    assert.deepEqual(rows?.map(row => [row.label, row.value]), [[kind === 'ships' ? 'Ships' : 'Convoys', kind === 'ships' ? '2' : '3']]);
+  }
+  const both = navalTooltip(model, 'mod tag', 109, 'Country', 'both', 'lost').rows;
+  assert.deepEqual(both?.map(row => [row.label, row.value]), [['Ships', '2'], ['Convoys', '3'], ['Lost', '5']]);
 });
 
 test('an all-zero naval reply supplies ranked rows and a valid shared race axis', () => {
@@ -102,27 +112,27 @@ test('naval lines break at unknown coverage, holder changes and per-hour group b
   assert.equal(navalLines(model, ['mod tag'], 'ships', { firstHour: 100, lastHour: 109 }, null)[0].runs.find(run => run.firstHour === 104)?.breakBefore, true);
 });
 
-test('trailing totals label each requested table by its own last read', () => {
+test('trailing tooltips show the selected time rather than supplying dates', () => {
   const reply = fixture();
   reply.shipLastRead = 107;
   reply.shipReads.pop();
-  assert.equal(navalAsOf(reply, 109, 'both'), `${formatDateTime(109)} · ships as of ${formatDateTime(107)}; convoys as of ${formatDateTime(108)}`);
-  assert.equal(navalAsOf(reply, 109, 'ships'), `${formatDateTime(109)} · as of ${formatDateTime(107)}`);
-  assert.equal(navalAsOf(reply, 107, 'convoys'), `${formatDateTime(107)} · as of ${formatDateTime(102)}`);
+  assert.equal(navalTooltip(navalModel(reply), 'mod tag', 109, 'Country', 'both', 'lost').subtitle, formatDateTime(109));
+  assert.equal(navalTooltip(navalModel(reply), 'mod tag', 109, 'Country', 'ships', 'lost').subtitle, formatDateTime(109));
+  assert.equal(navalTooltip(navalModel(reply), 'mod tag', 107, 'Country', 'convoys', 'lost').subtitle, formatDateTime(107));
 });
 
 test('intermediate carries retain separate supplying dates, including unchanged reads', () => {
   const reply = fixture();
-  assert.equal(navalAsOf(reply, 103, 'both'), `${formatDateTime(103)} · ships as of ${formatDateTime(102)}; convoys as of ${formatDateTime(102)}`);
-  assert.equal(navalAsOf(reply, 107, 'both'), `${formatDateTime(107)} · convoys as of ${formatDateTime(102)}`);
-  assert.equal(navalAsOf(reply, 108, 'both'), formatDateTime(108));
+  assert.equal(navalTooltip(navalModel(reply), 'mod tag', 103, 'Country', 'both', 'lost').subtitle, formatDateTime(103));
+  assert.equal(navalTooltip(navalModel(reply), 'mod tag', 107, 'Country', 'both', 'lost').subtitle, formatDateTime(107));
+  assert.equal(navalTooltip(navalModel(reply), 'mod tag', 108, 'Country', 'both', 'lost').subtitle, formatDateTime(108));
   assert.equal(navalReadHour(reply, 99, 'both'), null);
   assert.equal(navalReadHour(reply, 106, 'ships'), 102);
   assert.equal(navalReadHour(reply, 107, 'both'), 107);
   assert.equal(navalReadHour(reply, 107, 'convoys'), 102);
   const model = navalModel(reply);
   assert.equal(navalValue(reply.series[1].runs[0], 'both'), 6);
-  assert.match(navalTooltip(model, 'another tag', 107, 'Name at supplying read', 'both', 'lost', 'running').subtitle!, /convoys as of/);
+  assert.equal(navalTooltip(model, 'another tag', 107, 'Name at supplying read', 'both', 'lost').subtitle, formatDateTime(107));
 });
 
 test('signed corrections stay in ranking, lines, parts and exact tooltip values', () => {
@@ -137,7 +147,7 @@ test('signed corrections stay in ranking, lines, parts and exact tooltip values'
   assert.ok(raceMin(items) < -7);
   assert.equal(navalLines(model, ['mod tag'], 'convoys', { firstHour: 107, lastHour: 109 }, null)[0].runs[0].value, -7);
   assert.equal(navalBands(model, 'mod tag', { firstHour: 107, lastHour: 109 }, null)[1][0].value, -7);
-  assert.equal(navalTooltip(model, 'mod tag', 109, 'Country', 'both', 'lost', 'running').rows?.find(row => row.label === 'Convoys')?.value, '-7');
+  assert.equal(navalTooltip(model, 'mod tag', 109, 'Country', 'both', 'lost').rows?.find(row => row.label === 'Convoys')?.value, '-7');
 });
 
 test('naval requests keep opaque tags and use the server ranking for top countries', () => {
@@ -145,9 +155,9 @@ test('naval requests keep opaque tags and use the server ranking for top countri
     { branchId: 'branch', tags: ['tag with space', 'a,b'], top: null, kind: 'ships', attribution: 'sunkBy', period: 'month' });
   assert.deepEqual(navalRequest('branch', { tags: ['ignored'], top: 10 }, 'both', 'lost', 'running').tags, []);
   assert.equal(navalPeriodLabel(fixture(), 'running'), `Since ${formatDateTime(100)}`);
-  assert.match(navalNote(fixture(), 'both', 'sunkBy', 'running'), /month buckets.*read.*Non-hostile.*assisted-kill.*unknown/);
-  assert.match(navalNote(fixture(), 'both', 'lost', 'month'), /appear from the supplying read.*never in earlier playback hours/);
-  assert.doesNotMatch(navalNote(fixture(), 'convoys', 'lost', 'month'), /completed months/);
+  assert.match(navalTooltip(navalModel(fixture()), 'mod tag', 109, 'Country', 'both', 'sunkBy').note!, /Non-hostile.*assisted kills/);
+  assert.equal(navalTooltip(navalModel(fixture()), 'mod tag', 109, 'Country', 'both', 'lost').note, undefined);
+  assert.equal(navalTooltip(navalModel(fixture()), 'mod tag', 109, 'Country', 'convoys', 'lost').note, undefined);
 });
 
 test('naval validator refuses duplicate countries, missing counts and overlapping reads', () => {

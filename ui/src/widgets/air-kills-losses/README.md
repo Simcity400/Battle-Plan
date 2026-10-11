@@ -4,7 +4,7 @@
 
 **Product(s) it reads:** [`military-air-ledger`](../../../../crates/dashboard/src/products/military_air_ledger.rs), using its aircraft-loss family; shared numerical loading also serves both bombing widgets.
 
-**Settings:** Top-ten race by own booked losses by default; enemy credited losses, recorded regions/causes, manual countries and smart groups, ratio, line/axis controls, Chart/Loss causes and inline/pop-out drill. Campaign, Follow, Pin and Range.
+**Settings:** Top-ten race by own losses by default; enemy losses, regions/causes, manual countries and smart groups, ratio, line/axis controls, one View selector for Race, Lines over time or Loss causes, and inline/pop-out drill. Chart controls appear in the views that use them; Loss causes keeps its future-history switch. Campaign, Follow, Pin and Range.
 
 **Notable behaviour:**
 

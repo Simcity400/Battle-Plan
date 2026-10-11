@@ -61,16 +61,16 @@ export function stockpileCountryData(replies: readonly EquipmentStockpileReply[]
 export function stockpilePartsAt(reply: EquipmentStockpileReply, group: StockGroup, hour: number, mode: StockpileMode) {
   if (mode === 'stock') {
     const stock = stockAt(reply, group, hour);
-    return { total: stock, note: group.kind === 'variant' ? 'The game records need by equipment type, not by variant.' : null,
+    return { total: stock, note: group.kind === 'variant' ? 'Need is available by equipment type.' : null,
       parts: [{ id: 'stock', label: 'In stock', raw: stock }] satisfies StockpilePart[] };
   }
   const value = balanceOperandsAt(reply, group, hour);
   const available = value?.available ?? null, need = value?.need ?? null;
   return { total: value?.balance ?? null, note: group.kind === 'variant'
-    ? 'The game records need by equipment type, not by variant.' : value?.needNote ?? null, parts: [
+    ? 'Need is available by equipment type.' : value?.needNote ? 'Need unavailable.' : null, parts: [
     { id: 'available', label: 'Available', raw: available },
     { id: 'need', label: 'Needed', raw: need == null ? null : -need },
-    { id: 'other', label: 'Other / not identified', raw: value && available != null && need != null ? value.balance - available + need : null },
+    { id: 'other', label: 'Other', raw: value && available != null && need != null ? value.balance - available + need : null },
   ] satisfies StockpilePart[] };
 }
 

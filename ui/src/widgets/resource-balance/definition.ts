@@ -1,5 +1,5 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
-import { AFTER_PLAYHEAD_OPTION } from '../../dashboard/options.ts';
+import { AFTER_PLAYHEAD_OPTION, contentSet } from '../../dashboard/options.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
 
@@ -12,18 +12,20 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'resourceCountry', section: 'options', label: 'Breakdown country', kind: 'content-choice', default: '',
     automatic: 'Choose a country and date', visibleWhen: () => false },
   { key: 'partResource', section: 'options', label: 'Breakdown resource', kind: 'content-choice', default: '',
-    automatic: 'Automatic: the first resource in game order',
+    automatic: 'First resource',
     visibleWhen: options => options.show === 'resource' },
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'bars',
     choices: [{ value: 'bars', label: 'Balance bars' }, { value: 'time', label: 'Over time' }] },
-  { key: 'resources', section: 'options', label: 'Resources over time', hint: 'From the campaign’s own content', kind: 'content-set',
-    automatic: 'Automatic: the largest resource', default: '', visibleWhen: overTime },
-  { key: 'gap', section: 'options', label: 'Shade surplus and shortfall', hint: 'With one resource chosen', kind: 'toggle', default: true, visibleWhen: overTime },
+  { key: 'resources', section: 'options', label: 'Resources over time', kind: 'content-set',
+    automatic: 'Largest resource', default: '', visibleWhen: overTime },
+  // Automatic counts as one selection; the chart separately checks drawn declarations.
+  { key: 'gap', section: 'options', label: 'Shade surplus and shortfall', kind: 'toggle', default: true,
+    visibleWhen: options => options.show !== 'resource' && overTime(options) && contentSet(options.resources ?? '').length <= 1 },
   { key: 'order', section: 'options', label: 'Order', kind: 'choice', default: 'game', visibleWhen: options => options.view === 'bars',
     choices: [{ value: 'game', label: 'Game order' }, { value: 'shortfall', label: 'Biggest shortfall first' }, { value: 'volume', label: 'Largest first' }] },
   { key: 'scale', section: 'options', label: 'Bar length', kind: 'choice', default: 'campaign', visibleWhen: options => options.view === 'bars',
     choices: [{ value: 'campaign', label: 'Same scale all campaign' }, { value: 'moment', label: 'Fit the moment shown' }] },
-  { key: 'hideEmpty', section: 'options', label: 'Hide resources with nothing', hint: 'No supply and no demand at the moment shown', kind: 'toggle', default: false,
+  { key: 'hideEmpty', section: 'options', label: 'Hide unused resources', kind: 'toggle', default: false,
     visibleWhen: options => options.view === 'bars' },
   { key: 'playback', section: 'time', label: 'While following playback', kind: 'choice', default: 'draw-in', visibleWhen: overTime,
     choices: [{ value: 'draw-in', label: 'Grow to now' }, { value: 'cursor', label: 'Whole campaign' }, { value: 'window', label: 'Recent window' }] },

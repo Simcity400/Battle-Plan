@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryMetadata } from '../shell/api';
 import type { DashboardSource } from './client';
-import { bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate, pinTime, rebaseWidget, resolveWindow } from './model.ts';
+import { bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate, pinTime, rebaseWidget, recordingEndTime, resolveWindow } from './model.ts';
 import { setOption } from './options.ts';
 import type { OptionField } from './options';
 import { parseTemplate } from './storage.ts';
@@ -150,4 +150,14 @@ test('unlinked maps hold the branch end and linked maps follow the shared axis',
   assert.deepEqual(resolveWindow(history, track, [track], 120), { firstHour: 1000, lastHour: 2000 });
   template.widgets[0].time = { mode: 'follow' };
   assert.deepEqual(parseTemplate(JSON.parse(JSON.stringify(template)))?.widgets.map((widget) => widget.time), template.widgets.map((widget) => widget.time));
+});
+
+test('previews show each campaign at its end, where widgets have data', () => {
+  const tracks = [{ id: 'a', branch: { firstHour: 100, lastHour: 9_000 } }, { id: 'b', branch: { firstHour: 40, lastHour: 50 } }];
+  assert.deepEqual(recordingEndTime({ timeModes: ['campaign', 'follow', 'pin'], scope: 'moment' }, tracks), { mode: 'campaign' });
+  assert.deepEqual(recordingEndTime({ timeModes: ['follow', 'pin'], scope: 'moment' }, tracks),
+    { mode: 'pin', windows: { a: { firstOffset: 8_900, lastOffset: 8_900 }, b: { firstOffset: 10, lastOffset: 10 } } }, 'a follow-only moment pins the last hour, not the first');
+  assert.deepEqual(recordingEndTime({ timeModes: ['follow', 'pin'], scope: 'history' }, tracks),
+    { mode: 'pin', windows: { a: { firstOffset: 0, lastOffset: 8_900 }, b: { firstOffset: 0, lastOffset: 10 } } });
+  assert.equal(recordingEndTime({ timeModes: ['follow'], scope: 'moment' }, tracks), null);
 });

@@ -26,7 +26,7 @@ test('balance operands are signed and exact, with evaluated and realized amounts
   assert.equal(rows.find(row => row.label === 'Daily income')?.value, '+2.00001');
   assert.equal(rows.find(row => row.label === 'Daily costs')?.value, '−0.50001');
   assert.equal(rows.find(row => row.label === 'Net daily income')?.value, '+2.50002');
-  assert.equal(rows.find(row => row.label === 'Evaluated adjustment')?.value, '−150.00001');
+  assert.equal(rows.find(row => row.label === 'Adjustment')?.value, '−150.00001');
   assert.equal(rows.find(row => row.label.startsWith('Hired a recorded advisor ·'))?.value, '−100');
   assert.equal(rows.find(row => row.label === 'Hired a recorded advisor')?.value, '150.00001');
 });
@@ -58,7 +58,7 @@ test('capture gaps do not become zero or borrow a neighboring coverage witness',
   assert.equal(powerCoverageAt(index, 26), null);
   const rows = powerBalanceRows(index, 26, 30);
   assert.equal(rows.find(row => row.label === 'Daily income')?.value, 'Not recorded');
-  assert.ok(rows.some(row => row.label.includes('coverage was not recorded')));
+  assert.ok(rows.some(row => row.label === 'Spending unavailable at this time.'));
   assert.deepEqual(powerSpendTicks(index, [{ hour: 26, beforeRaw: '2', afterRaw: '1' }], 30), [{ hour: 26 }]);
 });
 
@@ -134,7 +134,18 @@ test('an absent command tuple supplies no application date, while a known applic
   for (const application of [{ cpRealizedRaw: '0' }, { cpSequence: '2' }]) {
     const known = powerBalanceIndex(reply({ daily: [{ ...absent, ...application }], balanceChanges: [], spending: [] }), 'Command');
     assert.equal(powerBalanceRows(known, 26, 30).find(row => row.label === 'Daily income')?.value, 'Not recorded');
-    assert.ok(powerBalanceRows(known, 26, 30).some(row => row.label === 'Income applied / read'));
+    assert.ok(!powerBalanceRows(known, 26, 30).some(row => row.label === 'Income applied / read'));
+    assert.equal(powerBalanceRows(known, 26, 30).find(row => row.label === 'Daily income')?.value, 'Not recorded');
     assert.deepEqual(powerBalanceKeyHours(known), [26]);
   }
+});
+
+
+test('several missing changes have one plain status while action values remain separate', () => {
+  const index = powerBalanceIndex(reply({ balanceChanges: [change({action: 'First', covered: false, reason: 'Synthetic private reason'}),
+    change({action: 'Second', covered: false, reason: 'Another private reason'})] }), 'Political');
+  const rows = powerBalanceRows(index, 26, 30);
+  assert.equal(rows.filter(row => row.label === 'Some changes are missing.').length, 1);
+  assert.equal(rows.filter(row => row.label.startsWith('First ·') || row.label.startsWith('Second ·')).length, 2);
+  assert.equal(rows.some(row => /private reason|Change read|Income applied/.test(row.label)), false);
 });

@@ -37,6 +37,17 @@ test('the whole is independent, labels are dated, and a gap never borrows a valu
   assert.equal(breakdownWhole(data, 9, 20, 'states', 'controlled').unknownValue, true);
 });
 
+test('missing region labels stay readable and tooltip notes omit backend reasons', () => {
+  for (const region of [null, 12]) {
+    const missing: TerritoryBreakdownReply = { ...data, regions: [{ id: 12, name: null, missing: 'Unresolved content token' }],
+      series: [{ ...data.series[0], region, missing: 'State province roster absent' }] };
+    const shape = breakdownItems(missing, groups, 12, 20, 'states', 'controlled', looks);
+    assert.equal(shape.items[0].path[2].label, region === null ? 'Unknown region' : 'Region 12');
+    assert.ok(shape.items.every(item => item.note === undefined));
+    assert.equal(shape.items[0].exact, 1n);
+  }
+});
+
 test('selected territory uses its native catalogue for aliases, reused tags and identity gaps', () => {
   const chosen: TerritoryBreakdownReply = { ...data,
     countries: [{ ...data.countries[0], tag: 'X', identities: [{ firstHour: 10, lastHour: 11, slot: 1, countryId: 10 }, { firstHour: 20, lastHour: 20, slot: 1, countryId: 20 }],

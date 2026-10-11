@@ -6,7 +6,7 @@ import type { DashboardClient } from './client';
 /** Shared semantic settings; the two widgets keep independent saved choices. */
 export const AIR_OPTIONS: readonly OptionField[] = [
   { key: 'mode', section: 'options', label: 'Comparison', kind: 'choice', default: 'sides', choices: [
-    { value: 'sides', label: 'Per side' }, { value: 'viewpoint', label: 'Exact viewpoint' }] },
+    { value: 'sides', label: 'Per side' }, { value: 'viewpoint', label: 'Country viewpoint' }] },
   { key: 'viewpoint', section: 'options', label: 'Viewpoint', kind: 'content-choice', automatic: 'Dashboard’s current country', default: '',
     hint: 'A country, or a side using its leader’s view', visibleWhen: o => o.mode === 'viewpoint' },
   { key: 'sides', section: 'options', label: 'Sides compared', kind: 'content-set', automatic: 'All recorded sides', default: '',

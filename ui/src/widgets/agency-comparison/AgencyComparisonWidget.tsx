@@ -75,20 +75,20 @@ export default function AgencyComparisonWidget({ widget, runtime, active, onDiag
       value: row => row.value.activeCount,
       render: row => <CellBar value={options.cellBars === true && row.value.maximum > 0 ? row.value.activeCount : null} maximum={row.value.maximum}>{operativesCell(row.value)}</CellBar> },
   ], [names, labelAt, options.cellBars, data?.defenseLabel]);
-  const tooltip = useCallback((row: AgencyRow) => fitTooltip([agencyTooltip(row, labelAt(row.hour)(row.tag).name, data?.upgradesUnrecorded ?? null)], viewport), [labelAt, viewport, data?.upgradesUnrecorded]);
+  const tooltip = useCallback((row: AgencyRow) => fitTooltip([agencyTooltip(row, labelAt(row.hour)(row.tag).name)], viewport), [labelAt, viewport]);
   useEffect(() => {
     onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to compare its intelligence agencies." />;
-  if (!window) return <WidgetState kind="unavailable" message="The chosen moment is outside this campaign branch." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (needsGroups && groups.error) return <WidgetState kind="error" message={`Country identities are unavailable: ${groups.error}`} onRetry={groups.retry} />;
+  if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (needsGroups && groups.error) return <WidgetState kind="error" detail={`Country identities are unavailable: ${groups.error}`} onRetry={groups.retry} />;
   if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
   if (!data || (needsGroups && !groups.data)) return <WidgetState kind="loading" label="Loading intelligence agencies…" />;
   if (!data.available) return <WidgetState kind="unavailable" message="Intelligence agencies are not in this recording." />;
-  if (!runAt(data.observed, hour)) return <WidgetState kind="unavailable" message="Agency values were not recorded at this hour. Gaps stay gaps." />;
+  if (!runAt(data.observed, hour)) return <WidgetState kind="unavailable" message="Agency values were not recorded at this time." />;
   if (!rows.length) return <WidgetState kind="empty" icon="shield" message="No recorded agencies match these countries and settings at this hour." />;
   return <div className="agency-comparison">
     <Table key={`${track.source.id}:${track.branch.id}`} label="Intelligence agencies" rows={rows} rowKey={rowKey} columns={columns} sort={sort} setOption={setOption}

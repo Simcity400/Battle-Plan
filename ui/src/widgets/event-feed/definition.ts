@@ -1,6 +1,18 @@
+import type { IconName } from '../../components/Icons';
 import type { WidgetMeta } from '../../dashboard/definitions';
+import type { EventFeedKind } from '../../generated/dashboard';
 import type { OptionField } from '../../dashboard/options';
 import { LOG_OPTIONS } from '../../charts/log/logOptions.ts';
+
+/** What a row shows when the game has no picture for it: most kinds never do (wars, peace, factions);
+ * laws, advisors, focuses, projects and stockpiles fall back to these only when their artwork is missing. */
+export const EVENT_ICONS: Record<EventFeedKind, IconName> = {
+  warStarted: 'swords', warDeclared: 'swords', warJoined: 'swords', civilWarWarTransferred: 'flag-torn',
+  annexed: 'flag-plus', peace: 'olive-branch', capitulated: 'flag', ceasedToExist: 'flag-x',
+  factionJoined: 'users-plus', factionLeft: 'users-minus', becameSubject: 'link', guaranteeGranted: 'shield-check',
+  rulingPartyChanged: 'ballot', lawChanged: 'parliament', advisorHired: 'star', focusCompleted: 'target',
+  projectFinished: 'flask', nukesIncreased: 'sparkle',
+};
 
 export const CATEGORIES = [
   { value: 'warsPeace', label: 'Wars & peace', palette: 1 },
@@ -18,7 +30,7 @@ export const OPTIONS: readonly OptionField[] = [
 
 export const definition = {
   kind: 'event-feed', version: 1, title: 'Event feed', icon: 'clock',
-  description: 'Key moments across every country, dated by the recording that establishes them.',
+  description: 'Key moments across every country.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 7, h: 14 },
   countries: { max: Number.MAX_SAFE_INTEGER, all: true }, options: OPTIONS,

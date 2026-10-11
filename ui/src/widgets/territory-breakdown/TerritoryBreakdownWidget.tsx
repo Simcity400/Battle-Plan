@@ -78,14 +78,14 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS); return () => onDiagnostics(NO_WARNINGS);
   }, [product.data, groups.data, colours.warnings, onDiagnostics]);
   if (!track) return <WidgetState kind="empty" icon="sunburst" message="Load a campaign to see its territory breakdown." />;
-  if (!window) return <WidgetState kind="unavailable" message="The chosen moment is outside this campaign branch." />;
-  if (product.error) return <WidgetState kind="error" message={product.error} onRetry={product.retry} />;
-  if (groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (product.error) return <WidgetState kind="error" detail={product.error} onRetry={product.retry} />;
+  if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!product.data || !groups.data || colours.loading) return <WidgetState kind="loading" label="Loading territory breakdown..." />;
-  if (colours.error) return <WidgetState kind="unavailable" message={colours.error} />;
+  if (colours.error) return <WidgetState kind="error" what="faction colours" detail={colours.error} />;
   if (options.growth === 'fill' && endFilter.reason) return <WidgetState kind="unavailable" message={endFilter.reason} />;
   if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
-  if (measure === 'area' && product.data.areaReason) return <WidgetState kind="unavailable" message={product.data.areaReason} />;
+  if (measure === 'area' && product.data.areaReason) return <WidgetState kind="unavailable" message="Map area is unavailable." />;
   return <><Sunburst key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Territory breakdown" items={shape.items}
     root={{ id: 'territory', label: widget.countries.kind === 'all' ? 'World territory' : 'Selected territory' }} authoritativeTotal={whole}
     stretch={stretch} unavailableReason={whole?.unknownValue ? 'Territory not recorded at this hour.' : undefined}

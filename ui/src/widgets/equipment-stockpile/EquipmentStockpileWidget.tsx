@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import ArtFallback from '../../components/ArtFallback';
 import { Select } from '../../components/Select';
 import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
@@ -26,7 +27,6 @@ import { useRowTooltips } from '../../charts/useRowTooltips';
 import { formatAmount, formatAxisPercent, formatSigned } from '../../charts/valueAxis';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
-import { formatDateTime } from '../../dashboard/calendar';
 import { chosenShown, storedChoices, toggleChosen } from '../../dashboard/chosen';
 import type { WidgetProps } from '../../dashboard/definitions';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
@@ -45,7 +45,7 @@ import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { EquipmentStockpileReply } from '../../generated/dashboard';
 import { BREAKDOWN, OPTIONS } from './definition';
 import { AI_NOTE, automaticLines, CHOSEN_KEYS, hasRecords, balanceAt, balanceMode, barExtent, chartRuns, choiceKey, choiceRow, formatPercent, oneChoicePerRow, GROUP_NOUNS, groupLabel, groupTooltip, labelAt,
-  NO_DESIGN, orderGroups, otherDesigns, overTimeTooltip, shareModeOf, shareOf, shareScale, stockAt, stockChoices, stockGroups, typesComplete, undrawableReason, weeklyAt, columnVars } from './stockpileData';
+  SAVED_DESIGN_UNAVAILABLE, orderGroups, otherDesigns, overTimeTooltip, shareModeOf, shareOf, shareScale, stockAt, stockChoices, stockGroups, typesComplete, undrawableReason, weeklyAt, columnVars } from './stockpileData';
 import type { Grouping, RowOrder, StockGroup } from './stockpileData';
 import { useEquipmentStockpile, useStockpileCountry } from './useEquipmentStockpile';
 import { useStockpileArtwork } from './useStockpileArtwork';
@@ -74,7 +74,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
-  const { track, tag, data: reply, numbers, contentPending, error, retry } = useEquipmentStockpile(widget, runtime, active);
+  const { track, tag, data: reply, numbers, error, retry } = useEquipmentStockpile(widget, runtime, active);
   const data = useMemo(() => reply && within ? { ...reply, stockHours: clipToSpans(reply.stockHours, within), lineHours: clipToSpans(reply.lineHours, within),
     balanceHours: clipToSpans(reply.balanceHours, within), aiHours: clipToSpans(reply.aiHours, within) } : reply, [reply, within]);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
@@ -119,9 +119,9 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
     : selection?.owner === pickOwner ? detailGroups.find(group => group.key === selection.key) : undefined;
   const headerTag = actor.spans ? countryDrillTagAt(actor.spans, at) : null;
   const headerReason = missingSavedDate ? 'The chosen moment is unavailable.' : !selectedCountry ? options.stockpileCountry
-    ? 'This country selection belongs to another country, campaign or branch, or is malformed.'
+    ? 'Choose a country again.'
     : 'The original country choice was not saved. Select a stockpile breakdown again.'
-    : actor.reason ?? (headerTag ? null : 'The selected native country is not recorded at this moment.');
+    : actor.reason ?? (headerTag ? null : 'Country unavailable at this time.');
   const header = useCountryLabelsAt(runtime.client, track, saved && countrySlot && headerTag && !headerReason ? [{ tag: headerTag, hour: at }] : [], active);
   const pinnedHeader = saved && countrySlot ? createPortal(<DatedCountryChip hour={missingSavedDate ? null : at} reason={headerReason}
     label={headerTag && !headerReason ? header.labelAt(at)(headerTag) : null} />, countrySlot) : null;
@@ -136,13 +136,13 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   useEffect(() => { dispatch({ type: 'close' }); setDrillOwner(null); setSelection(null); setCountryPick(null); }, [pickOwner]);
 
   if (!track || !tag) return <>{pinnedHeader}<WidgetState kind="empty" icon="grid" message="Load a campaign and choose a country to see its equipment stockpile." /></>;
-  if (!saved && shownDrill.breakdown === null && playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This time is outside the country’s recorded branch." /></>;
-  if (shownDrill.breakdown === null && (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." /></>;
-  if (!saved && shownDrill.breakdown === null && error) return <>{pinnedHeader}<WidgetState kind="error" message={error} onRetry={retry} /></>;
+  if (!saved && shownDrill.breakdown === null && playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+  if (shownDrill.breakdown === null && (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
+  if (!saved && shownDrill.breakdown === null && error) return <>{pinnedHeader}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
   if (!saved && shownDrill.breakdown === null && !data) return <>{pinnedHeader}<WidgetState kind="loading" label="Loading the stockpile…" /></>;
   // Whatever was recorded shows (production without a stockpile read, say); each value
   // not recorded says so.
-  if (!saved && shownDrill.breakdown === null && data && !hasRecords(data)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="No stockpile, production or logistics was recorded for this country in this branch." /></>;
+  if (!saved && shownDrill.breakdown === null && data && !hasRecords(data)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Stockpile data unavailable for this country." /></>;
 
   const jump = (hour: number) => [jumpItem(runtime, track.id, hour)];
   const open = (group: StockGroup, hour: number, mode: StockpileMode) => {
@@ -165,7 +165,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
         hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} />}
   </div> : null;
   const detail = !selectedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
-    : actor.error ? <WidgetState kind="error" message={actor.error} onRetry={actor.retry} />
+    : actor.error ? <WidgetState kind="error" detail={actor.error} onRetry={actor.retry} />
       : actor.reason ? <WidgetState kind="unavailable" message={actor.reason} />
         : picked && detailData ? <StockpileDrill data={detailData} group={picked} mode={mode} percentage={mode === 'balance'} hour={at}
     extent={extent} playhead={detailHead} playback="cursor" afterPlayhead selectedHour={at} branchStart={track.branch.firstHour}
@@ -175,7 +175,6 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
     onContextMenu={(hour, x, y) => menu.open(x, y, jump(hour))} />
     : <p className="drill-empty">The chosen equipment or saved design is not defined by this campaign.</p>;
   return <div ref={anchor} className="stockpile-drill-host">
-    {contentPending && <p className="stockpile-caption">Equipment names are updating.</p>}
     {saved ? <div className="drill-body">
       {pinnedHeader}
       {(shownDrill.breakdown === null ? widget.time.mode !== 'follow' : !shownDrill.follow) && <button type="button" className="button small quiet"
@@ -236,13 +235,10 @@ function StockBars({ data, tokens, hour, grouping, included, allGroups, order, s
   // and window); moving the pointer reuses them.
   const described = useMemo(() => new Map(groups.map(group => {
     const picture = art.get(grouping === 'variant' ? `variant:${group.variants[0]?.id}` : `type:${group.key}`);
-    const note = [picture && artHour !== null
-      ? `Picture: ${picture.name ?? `variant ${picture.variant}`}, read ${formatDateTime(artHour)}.${picture.reason ? ` ${picture.reason}.` : ''}`
-      : grouping === 'domain' ? 'An arm combines equipment types and has no single native best variant.'
-        : artwork?.data ? 'A native picture is unavailable at this value read.' : undefined].filter(Boolean).join(' ');
+    const note = grouping === 'type' ? picture?.name ?? undefined : undefined;
     const content = groupTooltip(data, group, grouping, hour, { title: group.label, subtitle: dayLabel(hour), note }, viewport);
     return [group.key, { content, text: tooltipText(content) }] as const;
-  })), [data, groups, grouping, hour, viewport, art, artHour, artwork?.data]);
+  })), [data, groups, grouping, hour, viewport, art]);
   const content = useCallback((key: string) => described.get(key)?.content ?? null, [described]);
   const rowTips = useRowTooltips<string>({ owner, active, content, revision: `${hour}:${data.branchId}:${grouping}`, onMenu: (_, x, y) => onMenu(jumpHour, x, y) });
   const glide = Math.round(3 * easeTau(tokens.motion, hoursPerSecond, tokens.reducedMotion));
@@ -256,9 +252,7 @@ function StockBars({ data, tokens, hour, grouping, included, allGroups, order, s
   });
   const columns = columnVars(labels, amounts) as CSSProperties;
   const style = { '--stock-glide': `${glides ? glide : 0}ms`, '--row-glide': `${glide * 2}ms`, height: items.length * ROW_HEIGHT } as CSSProperties;
-  const caption = diverging ? `Surplus or shortage as a share of what is needed${read != null ? ` · read ${formatDateTime(read)}` : ''}`
-    : `In stock${read != null ? ` · read ${formatDateTime(read)}` : ''}${mode === 'ai' ? ` · ${AI_NOTE}` : mode === 'unknown' ? ' · the surplus or shortage was not recorded at this time'
-      : ' · the game counts surplus and need by equipment type, not by variant'}`;
+  const caption = diverging ? 'Surplus / shortage (% of need)' : 'In stock';
 
   const divergingRow = (group: StockGroup) => {
     const logistics = balanceAt(data, group, hour);
@@ -310,8 +304,8 @@ function StockBars({ data, tokens, hour, grouping, included, allGroups, order, s
             <span className="stockpile-name">
               {picture?.icon
                 ? <img className="stockpile-art" src={picture.icon} alt="" />
-                : <span className="stockpile-art" aria-hidden="true" />}
-              <span>{group.label}{grouping === 'type' && picture?.name && <small>{picture.name}</small>}</span>
+                : <span className="stockpile-art"><ArtFallback icon="hammer" /></span>}
+              <span>{group.label}</span>
             </span>
             {diverging ? divergingRow(group) : stockRow(group)}
           </li>;
@@ -380,7 +374,7 @@ function OverTime({ data, tokens, viewport, options, runtime, track, extent, pla
   ], [lines, until]);
   const actions = new Map(groups.map(group => {
     const choice = choiceKey(group, head, chosenTokens.map(contentKey));
-    if (choice == null) return [group.key, { reason: NO_DESIGN }];
+    if (choice == null) return [group.key, { reason: SAVED_DESIGN_UNAVAILABLE }];
     // Deselecting a row drops every saved choice of it, not only the one shown.
     const token = setToken(choice);
     const kept = chosenTokens.includes(token) ? stored.filter(item => item === token || choiceRow(contentKey(item)) !== group.key) : stored;
@@ -391,14 +385,11 @@ function OverTime({ data, tokens, viewport, options, runtime, track, extent, pla
     if (action && 'value' in action && setOption) setOption(chosenKey, action.value);
   };
   const endLabels = options.endLabels !== false;
-  const aiThroughout = data.balanceHours.length === 0 && data.aiHours.length > 0;
-  const caption = shareMode ? 'Surplus as a share of what is needed, where the game computed it'
-    : grouping === 'variant' ? 'In stock · the game counts surplus and need by equipment type, not by variant'
-      : aiThroughout ? `In stock · ${AI_NOTE}` : 'In stock · the surplus or shortage is not in this recording';
+  const caption = shareMode ? 'Surplus / shortage (% of need)' : 'In stock';
   return <>
     {setOption && <ChipSet label="Shown over time" chips={[...groups.map(group => {
       const action = actions.get(group.key);
-      const cannot = !drawable.includes(group) ? undrawableReason(data, group, grouping) : undefined;
+      const cannot = !drawable.includes(group) ? undrawableReason(data, grouping) : undefined;
       return { value: group.key, label: labelAt(group, grouping, head), unavailable: cannot ?? (action && 'reason' in action ? action.reason : undefined) };
     }), ...others.map(other => ({ value: setToken(other.key), label: `${labelAt(other.group, grouping, head)} (saved design)`, unavailable: other.reason }))]}
       selected={chosen} max={Number.MAX_SAFE_INTEGER} onToggle={pick} />}
@@ -417,8 +408,8 @@ function OverTime({ data, tokens, viewport, options, runtime, track, extent, pla
     }} options={[{ value: '', label: 'Choose equipment…', disabled: true },
       ...lines.filter(line => pending.keys.includes(line.group.key)).map(line => ({ value: line.group.key, label: labelAt(line.group, grouping, pending.hour) }))]} /></div>}
     {lines.length === 0 && <p className="stockpile-empty">{shareMode
-      ? 'Nothing here can be plotted: what is needed cannot be derived for these types, so they have no share to draw.'
-      : 'Nothing chosen was recorded in stock.'}</p>}
+      ? 'Need data unavailable.'
+      : 'No stock history.'}</p>}
     <div className="stockpile-chart">
       <TimeChart label={`${shareMode ? 'Surplus as a share of need' : 'Equipment in stock'}: ${lines.map(line => labelAt(line.group, grouping, head)).join(', ')}`} extent={extent} playhead={playhead}
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}

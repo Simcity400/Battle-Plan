@@ -19,14 +19,14 @@ const data: UnitLeadersData = { branchId: '1', firstHour: 100,
 test('actual career renderer preserves growing zoom and supplies the shown label hour', async () => {
   // Keep the widget and shared career renderer; replace transport, artwork and canvas leaves.
   const replacements: Record<string, string> = {
-    '/widgets/generals/useLeaders.ts': `export const useLeaders = () => ({ data: ${JSON.stringify(data)}, retry() {} });`,
+    '/widgets/generals/useLeaders.ts': `export const useLeaders = () => ({ data: globalThis.__careerData ?? ${JSON.stringify(data)}, retry() {} });`,
     '/widgets/generals/portraits.ts': 'export const useLeaderPortraits = () => ({ at() {}, warnings: [] });',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000; export const useChartTokens = () => ({});',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/charts/timeline/Timeline.tsx': 'export default props => { globalThis.__careerTimelines.push(props); return null; };',
   };
-  const host = globalThis as typeof globalThis & { __careerTimelines?: TimelineProps[] };
+  const host = globalThis as typeof globalThis & { __careerTimelines?: TimelineProps[]; __careerData?: UnitLeadersData };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'career-renderer-fixture', enforce: 'pre',
       transform: (_source, id) => { const key = Object.keys(replacements).find(key => id.endsWith(key)); return key ? replacements[key] : undefined; },
@@ -66,8 +66,23 @@ test('actual career renderer preserves growing zoom and supplies the shown label
       widget: { ...props.widget, time: { mode: 'pin', windows: { main: { firstOffset: 0, lastOffset: 20 } } } }, onPick() {} }));
     assert.equal(host.__careerTimelines.at(-1)!.lanes.at(-1)!.spans[0].positiveCount, 1,
       'A window selects native result dates but eligibility uses the displayed read');
+    host.__careerData = structuredClone(data);
+    host.__careerData.roles[0].kind = 2;
+    host.__careerData.leaders[0].partialFrom = 101;
+    host.__careerData.leaders[0].commands = [{ firstHour: 100, lastHour: 500, formation: '999999', kind: 'fleet',
+      name: null, nameReadHour: null, nameUnknown: [] }];
+    const html = renderToStaticMarkup(createElement(Career, { ...props, reference: '21474841193', hour: 130 }));
+    assert.match(html, /Fleet command history is incomplete/);
+    assert.match(html, /Battle counts are incomplete/);
+    assert.doesNotMatch(html, /win rate among decided|Navy commands not recorded/);
+    const fleetView = host.__careerTimelines.at(-1)!;
+    const commands = fleetView.lanes.find(lane => lane.id === 'commands')!;
+    const tip = fleetView.tooltip!(commands, commands.spans[0], 130)!;
+    assert.equal(tip.rows[0].value, 'Unnamed fleet');
+    assert.equal(tip.note, 'Fleet command history is incomplete.');
+    assert.doesNotMatch(JSON.stringify(tip), /999999/);
   } finally {
-    delete host.__careerTimelines;
+    delete host.__careerTimelines; delete host.__careerData;
     await vite.close();
   }
 });

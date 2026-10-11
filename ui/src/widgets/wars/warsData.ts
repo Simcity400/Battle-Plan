@@ -381,7 +381,7 @@ export function warsLanes(data: PreparedWars, at: number, options: WarsLaneOptio
   const info = new Map<string, WarsLaneInfo>();
   const looks = new Map<string, ReturnType<CountryResolver>>();
   const country = (tag: string | null): ReturnType<CountryResolver> => {
-    if (tag === null) return { name: NAME_WORDS.missing, known: false, flagReason: 'Native country identity not recorded at this hour.' };
+    if (tag === null) return { name: NAME_WORDS.missing, known: false, flagReason: 'Unknown country at this hour.' };
     let look = looks.get(tag);
     if (!look) { look = options.named.has(tag) ? options.country(tag) : { name: NAME_WORDS.pending, flagPending: true }; looks.set(tag, look); }
     return look;

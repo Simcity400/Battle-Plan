@@ -30,13 +30,14 @@ for (const kind of ['political-power', 'command-power']) test(`${kind} uses moun
     maxima: undefined as CountryStabilityReply | undefined, maximaTagReads: 0,
     drillHost: undefined as { open: boolean; canFollow: boolean; onFollow: () => void; onPin?: () => void } | undefined,
     drill: undefined as { hour: number | null; visibleThrough: number; playback: { playhead: number | null } } | undefined,
-    added: [] as WidgetSpec[],
+    added: [] as WidgetSpec[], portals: [] as unknown[],
   };
   const host = globalThis as typeof globalThis & { __powerFlags?: typeof state;
     __powerFlagData?: MeasureReply; __powerHook?: (kind: string, ...args: unknown[]) => unknown;
-    __powerFlagHook?: () => [string | undefined, (url: string) => void] };
+    __powerFlagHook?: () => [string | undefined, (url: string) => void]; __powerPortal?: (node: unknown) => null };
   host.__powerFlags = state; host.__powerFlagData = data;
   host.__powerFlagHook = () => [state.failedImage, url => { state.failedImage = url; }];
+  host.__powerPortal = node => { state.portals.push(node); return null; };
   host.__powerHook = (name, ...args) => {
     const slot = state.slots[state.cursor++] ??= {};
     if (name === 'useMemo' || name === 'useCallback' || name === 'useEffect') {
@@ -103,7 +104,7 @@ for (const kind of ['political-power', 'command-power']) test(`${kind} uses moun
         if (path.endsWith('/widgets/country-measure/powerPickModel.ts')) return source.replace('tag: row.tag',
           'get tag() { globalThis.__powerFlags.maximaTagReads++; return row.tag; }');
         if (path.endsWith('/widgets/country-measure/MeasureWidget.tsx')) return source.replace(/\b(useMemo|useCallback|useState|useReducer|useRef|useEffect)(?:<[\s\S]*?>)?\(/g,
-          (_match, name) => `globalThis.__powerHook(${JSON.stringify(name)}, `);
+          (_match, name) => `globalThis.__powerHook(${JSON.stringify(name)}, `).replace(/\bcreatePortal\(/g, 'globalThis.__powerPortal(');
       },
     }] });
   try {
@@ -115,9 +116,10 @@ for (const kind of ['political-power', 'command-power']) test(`${kind} uses moun
     const props = { widget: { id: kind, kind, configVersion: 1, trackIds: ['track'], countries: { kind: 'tags', tags },
       time: { mode: 'follow' }, options: { endLabels: false, ceiling: false } }, runtime: { client: {}, tracks: [track],
       clock: { getHour: () => state.clock, getSnapshot: () => ({playing: false, hoursPerSecond: 24}) },
-      addWidgetBelow: (_id: string, widget: WidgetSpec) => state.added.push(widget) }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
+      addWidgetBelow: (_id: string, widget: WidgetSpec) => state.added.push(widget) }, headerSlot: {}, active: true, onDiagnostics() {} } as unknown as WidgetProps;
     const render = (flush = true) => {
       state.cursor = 0; state.effects = []; state.chart = undefined; state.wanted = [];
+      state.portals = [];
       const html = renderToStaticMarkup(createElement(Widget, props));
       if (flush) for (const effect of state.effects) effect();
       return html;
@@ -137,16 +139,16 @@ for (const kind of ['political-power', 'command-power']) test(`${kind} uses moun
     assert.equal(state.segmentAt!('unrecorded actor', 100), null);
     assert.match(renderToStaticMarkup(image()), /Flag loading/);
     state.flagPending = false; state.flagReason = 'No readable flag was returned for this country at this hour.'; render();
-    assert.match(renderToStaticMarkup(image()), /Flag not available: No readable flag/);
+    assert.match(renderToStaticMarkup(image()), /Flag unavailable/);
     assert.doesNotMatch(renderToStaticMarkup(image()), /has not loaded|Flag loading/);
     state.flagReason = 'Synthetic recorded-stack refusal'; render();
-    assert.match(renderToStaticMarkup(image()), /Synthetic recorded-stack refusal/);
+    assert.match(renderToStaticMarkup(image()), /Flag unavailable/);
     state.flagReason = 'The flag request failed.'; render();
-    assert.match(renderToStaticMarkup(image()), /The flag request failed/);
+    assert.match(renderToStaticMarkup(image()), /Flag unavailable/);
     state.flag = 'data:image/png;base64,synthetic'; state.flagReason = undefined; render();
     const loaded = image() as ReactElement<{ onError: () => void }>;
     assert.equal(loaded.type, 'img'); loaded.props.onError();
-    assert.match(renderToStaticMarkup(image()), /The flag image could not be displayed/);
+    assert.match(renderToStaticMarkup(image()), /Flag unavailable/);
     state.flag = undefined; state.flagPending = true; state.clock = 21; render();
     assert.equal(state.flagHour, 21); assert.match(renderToStaticMarkup(image()), /Flag loading/);
     state.clock = 100; render();
@@ -194,6 +196,7 @@ for (const kind of ['political-power', 'command-power']) test(`${kind} uses moun
     props.active = true; props.widget.options = { ...props.widget.options, ceiling: true };
     props.widget.countries = { kind: 'group', group: { type: 'faction', id: 'native group' }, membership: 'hour', aggregate: false };
     host.__powerFlagData = balance('700000'); state.groups = groups; state.ledger = ledger(97); state.maxima = maxima('1100001'); render();
+    assert.equal(state.portals.length, 0, 'one current balance stays in its chart/legend without a duplicate header pill');
     const ownerA = chart().pickOwner;
     assert.ok(chart().keyHours!.includes(97));
     assert.equal(rows().find(row => row.label === 'Daily income')?.value, '+3.00001');
@@ -257,5 +260,5 @@ for (const kind of ['political-power', 'command-power']) test(`${kind} uses moun
       render(false);
       assert.equal(state.drillHost!.open, false, 'a different client masks the previous native drill before effects');
     }
-  } finally { await vite.close(); delete host.__powerFlags; delete host.__powerFlagData; delete host.__powerHook; delete host.__powerFlagHook; }
+  } finally { await vite.close(); delete host.__powerFlags; delete host.__powerFlagData; delete host.__powerHook; delete host.__powerFlagHook; delete host.__powerPortal; }
 });

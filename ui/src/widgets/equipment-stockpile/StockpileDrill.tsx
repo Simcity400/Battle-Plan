@@ -2,11 +2,8 @@ import { useMemo } from 'react';
 import DrillParts from '../../charts/drill/DrillParts';
 import BreakdownChart from '../../charts/drill/BreakdownChart';
 import type { BreakdownSeries } from '../../charts/drill/BreakdownChart';
-import { dayLabel } from '../../charts/draw';
-import { runAt } from '../../charts/series';
 import { fixedNumber, formatAxisPercent } from '../../charts/valueAxis';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
-import { readAt, readNote } from '../../dashboard/reads';
 import type { EquipmentStockpileReply } from '../../generated/dashboard';
 import type { StockGroup } from './stockpileData';
 import { formatPercent, labelAt } from './stockpileData';
@@ -33,8 +30,6 @@ export default function StockpileDrill({ data, group, mode, percentage, hour, ..
       return percentage ? `${amount} (${percentOfNeed(raw, sample.parts.find(part => part.id === 'need')?.raw)})` : amount;
     }, missingAt: at => stockpilePartsAt(data, group, at, mode).note ?? 'Not recorded',
   })), [history, data, group, mode, percentage, tokens.categories]);
-  const read = runAt(mode === 'balance' ? data.balanceHours : data.stockHours, hour)
-    ? readAt(mode === 'balance' ? data.logisticsReads : data.reads, hour) : null;
   return <>
     <DrillParts parts={value.parts.map((part, index) => ({ id: part.id, label: part.label,
       raw: part.raw, value: part.raw == null ? null : fixedNumber(part.raw, data.decimals),
@@ -44,9 +39,6 @@ export default function StockpileDrill({ data, group, mode, percentage, hour, ..
       totalRow={{ label: mode === 'stock' ? 'In stock' : 'Surplus or shortage',
         value: stockpilePartAmount(value.total, data.decimals) }} />
     {value.note && <p className="drill-empty">{value.note}</p>}
-    {mode === 'balance' && <p className="drill-empty">Available is the native operand at the balance write; needed contributes with the opposite sign.
-      {percentage && ' Percentages use the same positive recorded need; zero or unknown need leaves the percentage history unavailable.'}</p>}
-    {read != null && <p className="drill-empty">{readNote(read, hour, 'these values are read once a day.') ?? `Read ${dayLabel(read)}.`}</p>}
     <BreakdownChart {...chart} series={series} selectedHour={hour} tooltipHeight={viewport}
       label={`${labelAt(group, group.kind, hour)} ${mode === 'balance' ? 'stock and need' : 'stock'} over time`}
       axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} keyHours={history.hours}

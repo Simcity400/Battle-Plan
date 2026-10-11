@@ -184,6 +184,9 @@ test('time out of a slot lengthens the Took row instead of replacing research ti
   const value = (key: string) => rows.took.find(s => s.key === key)?.value;
   assert.equal(value('core'), 1500000n, 'every researched day stays in the row');
   assert.equal(value('paused'), 1000000n);
+  const saved = researchTimeRows({ ...split, juggle: 100000n }, true)!.took.find(segment => segment.key === 'juggle');
+  assert.equal(saved?.name, 'Saved research days');
+  assert.equal(saved?.effect, '−1 day');
   // Researched, paused and what came off still close exactly on Expected plus the pause.
   assert.equal(rows.took.reduce((sum, s) => sum + s.value, 0n), rows.expectedTotal + split.paused);
 });

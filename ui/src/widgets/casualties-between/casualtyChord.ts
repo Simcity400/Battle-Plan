@@ -1,9 +1,9 @@
+import { dayLabel } from '../../charts/draw.ts';
 import { foldChord } from '../../charts/chord/fold.ts';
 import type { FoldedChord } from '../../charts/chord/fold';
 import type { ChordHit } from '../../charts/chord/layout';
 import { chordTotals } from '../../charts/chord/totals.ts';
 import type { TooltipContent } from '../../charts/tooltip';
-import { formatDateTime } from '../../dashboard/calendar.ts';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import { pairAmount } from './casualtyPairsData.ts';
@@ -44,11 +44,10 @@ export function chordPairs(hit: ChordHit, chord: CasualtyChord): PairFlow[] {
 }
 
 export function pairTooltip(flows: readonly PairFlow[], labels: CountryLabel, hour: number): TooltipContent {
-  return { title: 'Casualties dealt', subtitle: formatDateTime(hour),
+  return { title: 'Casualties dealt', subtitle: dayLabel(hour),
     rows: flows.map(flow => {
       const from = labels(flow.from);
       return { label: `${from.name} → ${labels(flow.to).name}`,
-        value: `${pairAmount(flow)} · Read ${formatDateTime(flow.readHour)}`, icon: from.flag, countryFlag: from };
-    }),
-    note: 'All wars and military branches. Unknown-attacker losses cannot be attributed to an enemy. A final tick can fall between reads.' };
+        value: pairAmount(flow), icon: from.flag, countryFlag: from };
+    }) };
 }

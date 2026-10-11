@@ -5,7 +5,7 @@ import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts'
 
 export const OPTIONS: readonly OptionField[] = [
   { ...raceViewOption('nuke type'), visibleWhen: options => options.show === 'main' },
-  breakdownOption([{ id: 'breakdown', label: 'Nuke types' }], 'Country totals'),
+  breakdownOption([{ id: 'breakdown', label: 'Weapon types' }], 'Country totals'),
   { key: 'drillOriginHour', section: 'options', label: 'Country selected at hour', kind: 'number',
     min: -2147483648, max: 2147483647, step: 1, default: null, visibleWhen: () => false },
   { ...DATE_OVERLAY_OPTION, visibleWhen: options => options.show === 'main' && options.view === 'race' },
@@ -18,7 +18,7 @@ export const OPTIONS: readonly OptionField[] = [
 
 export const definition = {
   kind: 'nuclear-arsenal', version: 1, title: 'Nuclear arsenal', icon: 'target',
-  description: 'The game’s nuclear stockpile counter for every country, split by its content’s nuke types.',
+  description: 'Nuclear stockpiles by country and weapon type.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 },
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true }, defaultCountries: TOP_COUNTRIES, options: OPTIONS,

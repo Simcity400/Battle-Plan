@@ -325,10 +325,10 @@ test('native focus details request only opened dated rows and preserve static de
     tree = render(); hooks.commit();
     assert.deepEqual(fixture.detailsWanted, [{ tag: 'scoped', hour: 101 }]);
     assert.deepEqual(details(tree).map(element => element.props.open), [true, false]);
-    assert.ok(paragraphs(tree).includes('Loading focus description…'));
+    assert.ok(!paragraphs(tree).includes('Loading focus description…'), 'a loading description adds no paragraph');
     fixture.details.set(nameKey(101, 'scoped'), FAILED_FACT);
     tree = render(); hooks.commit();
-    assert.ok(paragraphs(tree).includes('Focus description request failed.'));
+    assert.ok(!paragraphs(tree).includes('Focus description request failed.'), 'a failed description adds no paragraph');
     assert.ok(tree.some(element => element.type === 'strong' && element.props.children === 'Localized focus'));
     assert.ok(tree.some(element => element.type === 'strong' && element.props.children === ''), 'empty title remains empty');
     assert.ok(fixture.diagnostics.includes('Focus description request failed. (1)'));

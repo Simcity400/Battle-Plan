@@ -104,7 +104,7 @@ export function occupationHolderMix(model: OccupationModel, tag: string, originH
 }
 
 export function heldCoverage(run: OccupationTrendRun): string {
-  return run.heldComplete ? `${run.states} of ${run.heldStates} held states` : `${run.states} states; total held not recorded (${run.heldStates} known)`;
+  return run.heldComplete ? `${run.states}/${run.heldStates} states` : `${run.states} states; total unknown`;
 }
 const collaborationNamed = (item: OccupationCollaboration): item is OccupationCollaboration & { tag: string; actor: OccupationCollaborationActor & { nameHour: number } } =>
   item.tag !== null && item.actor !== undefined && item.actor.nameHour !== null;
@@ -118,10 +118,7 @@ function collaborationRows(run: OccupationTrendRun, hour: number, labelAt: Label
       : 'The occupied country identity has no recorded name at this hour.';
     const label = named ? labelAt(hour)(item.tag) : { name: 'Country name unavailable', flagReason: reason, flagPending: false };
     return [{ label: `Country collaboration: ${label.name}`, countryFlag: label,
-      value: item.raw === null ? 'Not recorded' : `${formatAmount(BigInt(item.raw) * 100n, 5, 5)}%` },
-    { label: 'Collaboration read', value: item.readHour === null ? 'Not recorded' : formatDateTime(item.readHour) },
-    ...(!named ? [{ label: 'Country identity', value: reason, tone: 'muted' as const }] : []),
-    ...(item.raw === null ? [{ label: 'Missing collaboration', value: 'No readable CountryCollaboration pair supplied this value.' }] : [])];
+      value: item.raw === null ? 'Not recorded' : `${formatAmount(BigInt(item.raw) * 100n, 5, 5)}%` }];
   });
 }
 export function occupationTooltip(model: OccupationModel, tag: string, hour: number, labelAt: LabelAt, shown: ShownMeasure, collaboration: boolean): TooltipContent | null {
@@ -131,10 +128,9 @@ export function occupationTooltip(model: OccupationModel, tag: string, hour: num
   return { title: label.name, subtitle: formatDateTime(hour), rows: [
     ...(shown !== 'compliance' ? [{ label: 'Average resistance', value: occupationPercent(at.run.resistanceRaw), strong: true }] : []),
     ...(shown !== 'resistance' ? [{ label: 'Average compliance', value: occupationPercent(at.run.complianceRaw), strong: true }] : []),
-    { label: 'Coverage', value: heldCoverage(at.run) }, { label: 'Read', value: `Read ${formatDateTime(at.run.readHour)}` },
+    { label: 'States', value: heldCoverage(at.run) },
     ...(collaboration ? collaborationRows(at.run, hour, labelAt) : []),
-  ], note: 'Unweighted mean of readable held states; native fixed-point arithmetic.'
-    + (collaboration ? ' Country collaboration is Politics → Exiles & Collaborations context, separate from state compliance.' : '') };
+  ], note: `Average across ${at.run.states} states.` };
 }
 export function occupationLineTooltip(model: OccupationModel, hour: number, tags: readonly string[], labelAt: LabelAt,
   colour: (tag: string) => string, shown: ShownMeasure, rank: OccupationMeasure, collaboration: boolean): TooltipContent {
@@ -145,11 +141,10 @@ export function occupationLineTooltip(model: OccupationModel, hour: number, tags
     return [{ label: label.name, value: entry.label, swatch: colour(entry.tag), strong: true, countryFlag: label },
       ...(shown === 'both' ? [{ label: `Average ${measureName(rank === 'resistance' ? 'compliance' : 'resistance').toLowerCase()}`,
         value: occupationPercent(measureRaw(at.run, rank === 'resistance' ? 'compliance' : 'resistance')) }] : []),
-      { label: 'Coverage', value: heldCoverage(at.run) }, { label: 'Read', value: `Read ${formatDateTime(at.run.readHour)}` },
+      { label: 'States', value: heldCoverage(at.run) },
       ...(collaboration ? collaborationRows(at.run, hour, labelAt) : [])];
   });
   return { title: formatDateTime(hour), subtitle: shown === 'both' ? `Occupation averages; ${measureName(rank).toLowerCase()} first` : `Average ${measureName(rank).toLowerCase()}`,
     rows: rows.length ? rows : [{ label: 'Not recorded', tone: 'muted' }],
-    note: 'Unweighted mean of readable held states; native fixed-point arithmetic.'
-      + (collaboration ? ' Country collaboration is Politics → Exiles & Collaborations context, separate from state compliance.' : '') };
+  };
 }

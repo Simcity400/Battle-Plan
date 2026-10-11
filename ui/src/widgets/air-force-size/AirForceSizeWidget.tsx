@@ -9,10 +9,10 @@ const config: PartsRaceViewConfig = {
   options: OPTIONS, request: airForceRequest, validate: validateAirForceReply,
   measure: options => options.measure === 'wings' ? 'Number of wings' : 'Number of planes',
   ownership: options => options.ownership === 'effective' ? 'Country it fights for' : 'Roster owner',
-  partsLabel: () => 'Equipment archetypes',
+  partsLabel: () => 'Aircraft types',
   resetKey: options => [options.measure, options.ownership],
-  zeroMix: options => `The recorded ${options.measure === 'wings' ? 'wing' : 'plane'} total is zero; there are no equipment types to mix.`,
-  note: options => options.measure === 'wings' ? 'Each recorded wing counts once; wings with multiple types are shown as Mixed types.' : 'Planes in wings; stockpiled planes are not included.',
+  zeroMix: options => options.measure === 'wings' ? 'No wings.' : 'No planes in wings.',
+  note: options => options.measure === 'wings' ? '' : 'Planes in wings; stockpiled planes are not included.',
 };
 
 export default function AirForceSizeWidget(props: WidgetProps) {

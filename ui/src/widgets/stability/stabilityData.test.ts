@@ -70,7 +70,7 @@ test('lines that do not add up show the rest as its own part, and missing inputs
   const partial: StabilityBreakdown = { ...GER, modifiers: [{ ...GER.modifiers[0], totalRaw: '8000', remainderRaw: '3000' }],
     stability: { ...GER.stability, terms: GER.stability.terms.map(term => term.term === 'popularity' ? { ...term, valueRaw: null } : term) } };
   const { rows, unavailable } = breakdownRows(partial, 'stability', 5, 'Stability');
-  assert.ok(rows.some(row => row.label === 'Other / not identified' && row.value === '+3.0%'));
+  assert.ok(rows.some(row => row.label === 'Other' && row.value === '+3.0%'));
   assert.ok(rows.some(row => row.label === 'Party popularity' && row.value === 'Not recorded'));
   assert.equal(unavailable, true);
   // Lines from another read are not shown as this hour's: the term stands alone.

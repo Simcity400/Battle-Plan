@@ -153,8 +153,8 @@ test('server ranking preserves label-keyed measures and order; unknown is never 
 test('recorded ended measures have as-recorded wording; unproved links stay Not recorded', () => {
   const result = rows(reply())[1];
   assert.equal(navalBattleMeasureText(navalBattleSize(result, 'Peak ships'), result), 'Not recorded');
-  assert.equal(navalBattleMeasureText({ label: 'Peak ships', value: 9 }, result), '9 as recorded');
-  assert.equal(navalBattleMeasureText({ label: 'Length', value: 5 }, result), '5 h as recorded');
+  assert.equal(navalBattleMeasureText({ label: 'Peak ships', value: 9 }, result), '9');
+  assert.equal(navalBattleMeasureText({ label: 'Length', value: 5 }, result), '5 h');
 });
 
 test('linked result length and peak stay at the observed reads rather than extending to later result reads', () => {
@@ -172,7 +172,7 @@ test('linked result length and peak stay at the observed reads rather than exten
     assert.equal(navalBattleSize(shown, 'Length').value, 4);
     assert.equal(navalBattleSize(shown, 'Peak ships').value, 8);
     assert.equal(shown.peakHour, 104);
-    assert.equal(navalBattleMeasureText(navalBattleSize(shown, 'Length'), shown), '≥ 4 h as recorded');
+    assert.equal(navalBattleMeasureText(navalBattleSize(shown, 'Length'), shown), '≥ 4 h');
   }
 });
 

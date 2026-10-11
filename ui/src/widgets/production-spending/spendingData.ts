@@ -2,33 +2,32 @@ import type { ProductionSpendingReply, ProductionSpendingRun, ProductionSpending
 import type { SunburstItem, SunburstTotal } from '../../charts/sunburst/layout';
 import { runAt, sameStretch } from '../../charts/series.ts';
 import { formatAmount } from '../../charts/valueAxis.ts';
-import { formatDateTime } from '../../dashboard/calendar.ts';
 import { DOMAINS, UNRESOLVED_ARM, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
-import { readAt, readNote } from '../../dashboard/reads.ts';
+import { readAt } from '../../dashboard/reads.ts';
 
 export const LEVELS = ['domainLevel', 'typeLevel', 'variantLevel'] as const;
-/** The centre's unit; the value label and footnote say how it is valued. */
+/** The centre's unit. */
 export const UNIT = 'IC';
-const ATTRIBUTION_NOTE = 'A recorded equipment type is unresolved; its applied IC may belong to this arm or type.';
+const ATTRIBUTION_NOTE = 'Equipment type unknown.';
 
 export const UNKNOWN_LABELS: Readonly<Record<ProductionSpendingUnknown, string>> = {
-  notRecorded: 'Exact applied IC was not recorded',
-  spendingUnavailable: 'An applied-input read, instant classification or spending total was unavailable',
-  lostOutput: 'A line disappeared without its final applied IC total',
-  missedPublication: 'A production-output read was missed',
+  notRecorded: 'Spending not recorded.',
+  spendingUnavailable: 'Spending unavailable at this time.',
+  lostOutput: 'Final total missing.',
+  missedPublication: 'Spending unavailable at this time.',
   recordingGap: 'Hours were not recorded',
-  observationRestarted: 'Applied IC observation restarted; the whole-campaign total cannot be recovered',
-  observationMismatch: 'The production sources count from different dates',
-  countryChanged: 'The country holding this tag changed',
-  rocketTableUnavailable: 'Independent Rocket production coverage was not recorded or readable',
-  rocketInputInexact: 'A Rocket applied input or cumulative total was unavailable',
-  rocketOwnerUnreadable: 'A Rocket event has no known producing country',
-  rocketDesignUnreadable: 'A Rocket event has no known design',
+  observationRestarted: 'Campaign total unavailable.',
+  observationMismatch: 'Production totals start on different dates.',
+  countryChanged: 'Country changed during this period.',
+  rocketTableUnavailable: 'Rocket spending not recorded.',
+  rocketInputInexact: 'Rocket spending total unknown.',
+  rocketOwnerUnreadable: 'Rocket producer unknown.',
+  rocketDesignUnreadable: 'Rocket design unknown.',
 };
 
 type UnknownReason = ProductionSpendingUnknown | 'outsideRead' | 'observationChanged';
 export const unknownLabel = (reason: string) => UNKNOWN_LABELS[reason as ProductionSpendingUnknown]
-  ?? (reason === 'observationChanged' ? 'The range crosses a restart of applied IC observation' : 'No production-output read covers this hour');
+  ?? (reason === 'observationChanged' ? 'Campaign total unavailable.' : 'Spending unavailable at this time.');
 
 const RAW = /^-?\d{1,39}$/;
 const int = (value: unknown): value is number => Number.isSafeInteger(value);
@@ -84,7 +83,7 @@ export function spendingEmptyLabel(reply: ProductionSpendingReply, hour: number,
   if (amount.exact == null) return unknownLabel(amount.reason ?? 'outsideRead');
   if (noProductionAt(reply, hour)) return 'No military production yet.';
   return runAt(reply.production, Math.floor(hour))?.present == null
-    ? 'No factory IC spent; production presence is not known.' : 'No factory IC spent in this view.';
+    ? 'No factory IC spending recorded.' : 'No factory IC spent in this view.';
 }
 
 function amountIn(reply: ProductionSpendingReply, values: readonly ProductionSpendingRun[], from: number | null, hour: number,
@@ -141,7 +140,7 @@ export function productionSpendingItems(reply: ProductionSpendingReply, window: 
     const identity = leaf.rocket ? `rocket:${leaf.variant}` : leaf.variant;
     return {
       path: [
-        leaf.rocket ? { id: 'rocket', label: reply.rocketName ?? reply.rocketKey ?? 'Rocket sites (name unavailable)' }
+        leaf.rocket ? { id: 'rocket', label: reply.rocketName ?? reply.rocketKey ?? 'Rocket sites' }
           : { id: leaf.domain ?? UNRESOLVED_ARM, label: domainName(leaf.domain ?? UNRESOLVED_ARM) },
         { id: leaf.typeKey, label: leaf.name ?? unresolvedTypeName(leaf.typeKey) },
         { id: identity, label: variantNameAt(leaf.names, window.hour, leaf.variant) },
@@ -181,14 +180,3 @@ export function spendingTotal(reply: ProductionSpendingReply, window: SpendingWi
 /** Every recorded fixed5 digit is retained, including values beyond 2^53. */
 export const formatAppliedIc = (value: number, exact: bigint | null, decimals = 5) =>
   formatAmount(exact ?? BigInt(Math.round(value)), decimals, decimals);
-
-export function spendingFootnote(reply: ProductionSpendingReply, window: SpendingWindow, growth: 'share' | 'fill' = 'share'): string {
-  const since = [['Equipment lines', reply.equipmentObservations[0]], ['Rocket sites', reply.rocketObservations[0]]] as const;
-  const counting = since.flatMap(([source, hour]) => hour == null ? [] : [`${source} counting began ${formatDateTime(hour)}.`]).join(' ');
-  const read = [readNote(readAt(reply.equipmentReads, window.hour), window.hour, 'equipment output is read once a day.'),
-    readNote(readAt(reply.rocketReads, window.hour), window.hour, 'Rocket output is read once a day.')].filter(Boolean).join(' ');
-  const total = amountIn(reply, reply.total, window.from, window.hour);
-  const why = total.exact == null ? ` Total not known: ${unknownLabel(total.reason ?? 'outsideRead')}.` : '';
-  const finalUnknown = amountIn(reply, reply.total, window.from, window.end).exact == null;
-  return `Exact signed factory IC applied to equipment-line and Rocket-site progress, including ticks without delivery. Excludes instant progress and IC before counting began.${counting ? ` ${counting}` : ''} Gaps and restarts leave whole-campaign totals not known.${why}${read ? ` ${read}` : ''}${finalUnknown && growth === 'fill' ? ' Fill uses Share while the whole total is not known.' : ''}`;
-}

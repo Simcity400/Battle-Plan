@@ -554,6 +554,8 @@ pub(crate) struct FocusCompletionProjection {
     views: Option<[ViewIdentity; 4]>,
     /// The last read's country keys, and the refusals a read of the same tables repeats.
     last_read: Option<(CountryKeys, BTreeMap<&'static str, usize>)>,
+    /// The last frame's hour, so a break in the recording is noticed.
+    last_hour: Option<i32>,
     #[cfg(test)]
     changed_frames: usize,
     pub observed: bool,
@@ -570,6 +572,23 @@ impl FocusCompletionProjection {
 
     pub(crate) fn observe(&mut self, frame: &DecodedFrame) -> Vec<FocusCompletion> {
         use crate::metadata::{TaggedCountry, link_slot, tagged_countries};
+        // A completion is dated only by consecutive reads. Across a break in the
+        // recording the first read after it is a new baseline, so a focus completed
+        // inside the break is not listed; each such break is counted once.
+        if self
+            .last_hour
+            .is_some_and(|last| last.checked_add(1) != Some(frame.hour))
+        {
+            if !self.previous.is_empty() {
+                *self
+                    .unavailable
+                    .entry("Focus completion observation: completions inside a break in the recording are not dated")
+                    .or_default() += 1;
+            }
+            self.previous.clear();
+            self.views = None;
+        }
+        self.last_hour = Some(frame.hour);
         const VIEWS: [TableId; 4] = [
             TableId::Countries,
             TableId::Focus,
@@ -741,8 +760,6 @@ impl FocusCompletionProjection {
                         .or_default() += 1;
                 }
             }
-            // Comparing an intact prefix across a gap can date only an upper
-            // bound, exactly as Focus does; the missing hours remain missing.
             self.previous.insert(identity, current);
         }
         events

@@ -28,7 +28,7 @@ test('registered force breakdowns date their native headers and follow an indepe
     effects: [] as (() => unknown)[], portals: [] as ReactElement<{ label: ReturnType<CountryLabel> | null; hour: number | null }>[], views: [] as CountryRaceViewProps[],
     charts: [] as TimeChartProps[], races: [] as RaceChartProps[], lists: [] as { onPick?: (id: string) => void }[],
     subscriptions: [] as boolean[], pins: [] as WidgetSpec[], sought: [] as number[], menu: [] as { run: () => void }[],
-    demands: [] as { tag: string; hour: number }[], host: null as { onFollow: () => void; onPin?: () => void } | null };
+    demands: [] as { tag: string; hour: number }[], host: null as { onFollow: () => void; onPause?: () => void; onPin?: () => void } | null };
   const root = globalThis as typeof globalThis & { __partsIdentity?: typeof state; __partsHooks?: {
     useMemo: (factory: () => unknown, deps: readonly unknown[]) => unknown;
     useRef: (value: unknown) => unknown; useState: (value: unknown) => unknown;
@@ -101,6 +101,7 @@ test('registered force breakdowns date their native headers and follow an indepe
   try {
     const RaceView = (await vite.ssrLoadModule('/ui/src/charts/race/CountryRaceView.tsx')).default as ComponentType<CountryRaceViewProps>;
     const { default: CountryPartsDrill } = await vite.ssrLoadModule('/ui/src/charts/race/CountryPartsDrill.tsx') as typeof import('./CountryPartsDrill.tsx');
+    const { default: FollowControl } = await vite.ssrLoadModule('/ui/src/charts/drill/FollowControl.tsx') as typeof import('../drill/FollowControl.tsx');
     const { partsRaceDrillData, nativePartsRaceNumbers } = await vite.ssrLoadModule('/ui/src/charts/race/partsRaceDrill.ts') as typeof import('./partsRaceDrill.ts');
     const { partsRaceModel } = await vite.ssrLoadModule('/ui/src/dashboard/partsRace.ts') as typeof import('../../dashboard/partsRace.ts');
     for (const kind of ['air-force-size', 'navy-size']) {
@@ -124,7 +125,8 @@ test('registered force breakdowns date their native headers and follow an indepe
         if (!node || typeof node !== 'object') return null;
         if (Array.isArray(node)) return node.map(button).find(Boolean) ?? null;
         const element = node as ReactElement<{ children?: unknown; onClick?: () => void }>;
-        if (element.type === 'button' && element.props.children === 'Follow playback') return element.props.onClick ?? null;
+        if (typeof element.type === 'function' && element.type.name === 'FollowControl') return FollowControl(element.props as Parameters<typeof FollowControl>[0]).props.onClick;
+        if (element.type === 'button' && element.props.children === 'Follow') return element.props.onClick ?? null;
         return button(element.props?.children);
       };
       state.slots = []; state.reply = reply; state.hour = 113;
@@ -145,6 +147,13 @@ test('registered force breakdowns date their native headers and follow an indepe
       assert.equal(body.moment, 120); assert.equal(state.portals[0].props.label!.name, 'NEW at 120');
       assert.equal(state.subscriptions.at(-1), true);
       state.hour = 123; body = render(); assert.equal(body.moment, 130);
+      const savedTime = JSON.stringify(props.widget.time);
+      button(body.beforeChart)!(); body = render(); assert.equal(body.moment, 130);
+      state.hour = 133; body = render(); assert.equal(body.moment, 130, 'pause retains the displayed branch hour');
+      assert.equal(state.subscriptions.at(-1), false);
+      button(body.beforeChart)!(); body = render(); assert.equal(body.moment, 140, 'Follow resumes the independent clock');
+      assert.equal(JSON.stringify(props.widget.time), savedTime, 'local pause does not rewrite the saved pin');
+      state.hour = 123; body = render();
       state.reply = undefined; body = render(); assert.equal(body.mix?.parts?.[0].value, '7');
       assert.equal(state.portals[0].props.label!.name, 'NEW at 130'); state.reply = reply; render();
       const detailChart = state.charts[0];
@@ -182,6 +191,17 @@ test('registered force breakdowns date their native headers and follow an indepe
       assert.equal(state.pins.at(-1)!.options?.drillOriginHour, 20);
       assert.deepEqual(JSON.parse(state.pins.at(-1)!.options!.holder as string), ['campaign', '1', 'OLD', 7, 101]);
       assert.equal(state.pins.at(-1)!.time.mode, 'follow');
+      state.host!.onPause!(); render(); state.hour = 133; render();
+      assert.equal(state.views[0].moment, 120);
+      state.host!.onPin!();
+      const pausedPin = JSON.parse(JSON.stringify(state.pins.at(-1)!)) as WidgetSpec;
+      assert.deepEqual(pausedPin.time, { mode: 'pin', windows: { track: { firstOffset: 120, lastOffset: 120 } } });
+      assert.equal(pausedPin.options?.drillOriginHour, 20);
+      const sourceWidget = props.widget;
+      props.widget = pausedPin; state.slots = []; render(); render();
+      assert.equal(state.views[0].moment, 120, 'saved paused drills restore their displayed moment');
+      assert.equal(state.portals[0].props.label!.name, 'NEW at 120');
+      props.widget = sourceWidget; state.slots = []; state.hour = 113; render();
       props.active = false; render(); assert.equal(state.subscriptions.at(-1), false);
 
       const picks: [number, string | undefined][] = [];
@@ -238,6 +258,16 @@ test('registered force breakdowns date their native headers and follow an indepe
       props.widget.time = { mode: 'pin', windows: { track: { firstOffset: 100, lastOffset: 100 } } }; body = renderCountryParts();
       body.onPick!(20); body = renderCountryParts(); assert.equal(state.portals[0].props.label!.name, 'OLD at 20');
       button(body.beforeChart)!(); body = renderCountryParts(); assert.equal(state.portals[0].props.label!.flag, 'flag:NEW:120');
+      button(body.beforeChart)!(); body = renderCountryParts(); assert.equal(body.moment, 120);
+      state.hour = 133; body = renderCountryParts(); assert.equal(body.moment, 120, 'country-parts pause retains owner and date');
+      button(body.beforeChart)!(); body = renderCountryParts(); assert.equal(body.moment, 140);
+      props.widget.time = { mode: 'follow' }; state.slots = []; countryPartsMoment = 140; body = renderCountryParts(); renderCountryParts();
+      button(body.beforeChart)!(); body = renderCountryParts();
+      state.hour = 143; countryPartsMoment = 150; body = renderCountryParts();
+      assert.equal(body.moment, 140, 'a restored Follow pin can pause before it has any local drill state');
+      button(body.beforeChart)!(); body = renderCountryParts(); assert.equal(body.moment, 150);
+      props.widget.time = { mode: 'pin', windows: { track: { firstOffset: 100, lastOffset: 100 } } };
+      countryPartsMoment = 100; state.hour = 113;
       state.charts[0].onContextMenu!(20, 0, 0); state.menu[0].run(); assert.equal(state.sought.at(-1), 20);
       props.widget.options = { show: 'breakdown', drillOriginHour: 90 }; renderCountryParts();
       assert.equal(state.portals[0].props.label, null); assert.equal(state.charts.length, 0, 'an invalid saved native origin refuses the body');

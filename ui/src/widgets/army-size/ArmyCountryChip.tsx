@@ -2,7 +2,7 @@ import CountryChip from '../../dashboard/CountryChip';
 import type { WidgetCountryChipProps } from '../../dashboard/definitions';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { OPTIONS } from './definition';
+import { normaliseArmyOptions, OPTIONS } from './definition';
 import { opaqueTag, signed32 } from '../../dashboard/validation';
 
 export function armyCountrySelection(widget: WidgetSpec, track: BoundTrack | undefined) {
@@ -12,5 +12,5 @@ export function armyCountrySelection(widget: WidgetSpec, track: BoundTrack | und
 }
 
 export default function ArmyCountryChip(props: WidgetCountryChipProps) {
-  return resolveOptions(OPTIONS, props.widget.options).show === 'breakdown' ? <span className="dash-widget-country-slot" ref={props.onSlot} /> : <CountryChip {...props} />;
+  return resolveOptions(OPTIONS, normaliseArmyOptions(props.widget.options)).view === 'breakdown' ? <span className="dash-widget-country-slot" ref={props.onSlot} /> : <CountryChip {...props} />;
 }

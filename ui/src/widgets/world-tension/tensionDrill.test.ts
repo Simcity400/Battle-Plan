@@ -10,6 +10,13 @@ import { runAt } from '../../charts/series.ts';
 import { orderedDrillParts } from '../../charts/drill/parts.ts';
 import { tensionModel, tensionPlot } from './tensionData.ts';
 import { pinTensionDrill, tensionCauseAt, tensionDrillAt, tensionDrillHistory, tensionLookAt, tensionShareText, tensionVisibleParts } from './tensionDrill.ts';
+import { createElement } from 'react';
+import type { ComponentProps } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { createServer } from 'vite';
+import type TensionDrill from './TensionDrillView';
+import type DrillParts from '../../charts/drill/DrillParts';
+import type { Select } from '../../components/Select';
 
 const reply = (): TensionReply => ({ branchId: 'branch', tensionScale: 1000, contributionScale: 100000, ceilingRaw: '10000000', warnings: [],
   reads: [{ firstHour: 100, lastHour: 123, startsSegment: true, tensionRaw: '100000', sumRaw: '13350000', unnamedRaw: '50000' },
@@ -18,6 +25,45 @@ const reply = (): TensionReply => ({ branchId: 'branch', tensionScale: 1000, con
     { tag: 'same tag', slot: 2, runs: [{ firstHour: 100, lastHour: 123, valueRaw: '-200000', startsSegment: true }] }],
   events: [{ hour: 99, tag: 'mod country', reason: 'Native cause text', firstRead: 100, lastRead: 123,
     added: [{ hour: 100, addedRaw: '20000000' }, { hour: 120, addedRaw: '19000000' }] }],
+});
+
+test('tension drill uses plain cause controls while retaining signed contributions and totals', async () => {
+  const state = { parts: undefined as ComponentProps<typeof DrillParts> | undefined, select: undefined as ComponentProps<typeof Select> | undefined };
+  const host = globalThis as typeof globalThis & { __tensionPresentation?: typeof state }; host.__tensionPresentation = state;
+  const replacements: Record<string, string> = {
+    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsRead = () => new Map();',
+    '/dashboard/countryFlagsAt.ts': 'export const useCountryFlagsAt = () => new Map(); export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
+    '/dashboard/useCountriesAt.ts': 'export const STYLES = {};',
+    '/dashboard/countryLooks.ts': 'export const lookHour = (_branch, hour) => ({ hour });',
+    '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000; export const useChartTokens = () => ({ muted: "#888888", surface: "#000000", countryColours: "game" });',
+    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null });',
+    '/components/Select.tsx': 'export const Select = props => { globalThis.__tensionPresentation.select = props; return props.label; };',
+    '/charts/drill/DrillParts.tsx': 'export default props => { globalThis.__tensionPresentation.parts = props; return props.totalRow.label; };',
+    '/charts/TimeChart.tsx': 'export default () => null;',
+  };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{ name: 'tension-drill-presentation', enforce: 'pre', transform(_code, id) {
+      return Object.entries(replacements).find(([suffix]) => id.replaceAll('\\', '/').endsWith(suffix))?.[1];
+    } }] });
+  try {
+    const { default: Component } = await vite.ssrLoadModule('/ui/src/widgets/world-tension/TensionDrillView.tsx');
+    const track = { id: 'main', source: { id: 'source', revision: '1' }, branch: { id: 'branch', firstHour: 99, lastHour: 150, gaps: [] } } as unknown as BoundTrack;
+    const picks: (number | null)[] = [];
+    const props = { model: tensionModel(reply()), runtime: { client: {}, tracks: [track], clock: { getSnapshot: () => ({ hoursPerSecond: 0 }) } }, track,
+      active: true, options: { playback: 'cursor' }, extent: [99, 150], playhead: null, hour: 110, selectedCause: null,
+      onCause: (index: number | null) => picks.push(index), onPick() {} } as unknown as ComponentProps<typeof TensionDrill>;
+    const render = () => renderToStaticMarkup(createElement(Component, props));
+    assert.match(render(), /Total contributions/);
+    assert.equal(state.select!.label, 'Cause');
+    assert.equal(state.select!.options[0].label, 'Choose a cause');
+    state.select!.onChange('0'); state.select!.onChange(''); assert.deepEqual(picks, [0, null]);
+    assert.equal(state.parts!.unattributed?.label, 'Other');
+    assert.deepEqual(state.parts!.parts.map(part => part.raw), [13500000n, -200000n]);
+    props.selectedCause = 0;
+    const selected = render();
+    assert.match(selected, /Final contribution/);
+    assert.doesNotMatch(selected, /Selected recorded cause|Read |read once a day|Current contribution: not known/);
+  } finally { delete host.__tensionPresentation; await vite.close(); }
 });
 
 test('full tension drill keeps signed native aggregates, the exact unidentified remainder and independent world total', () => {

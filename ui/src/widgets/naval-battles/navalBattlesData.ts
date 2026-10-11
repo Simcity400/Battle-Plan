@@ -76,7 +76,7 @@ export function navalBattleSize(row: NavalBattleRow, label: NavalBattleMeasure):
 export function navalBattleMeasureText(value: BattleValue, row: NavalBattleRow): string {
   const text = `${battleValueText(value)}${value.value !== null && value.label === 'Length' ? ' h' : ''}`;
   if (value.value !== null && row.end === null && value.label === 'Ships sunk') return `${text} so far`;
-  return value.value !== null && row.end !== null && ['Peak ships', 'Length'].includes(value.label) ? `${text} as recorded` : text;
+  return text;
 }
 
 /** Merge loaded reads in recording order; prefetched future windows cannot backfill facts. */

@@ -92,7 +92,7 @@ export function resourceParts(run: PoolRun) {
     { id: 'production', label: 'Needed by Production Lines', raw: -balance.production },
     { id: 'overlord', label: 'To the overlord', raw: -balance.toOverlord },
     { id: 'exported', label: 'Export reserve', raw: -balance.exportReserve },
-    { id: 'unidentified', label: 'Other / not identified', raw: balance.net - (balance.supply - balance.demand) },
+    { id: 'unidentified', label: 'Other', raw: balance.net - (balance.supply - balance.demand) },
   ];
 }
 
@@ -324,7 +324,7 @@ export function resourceTooltip(head: Pick<TooltipContent, 'title' | 'icon' | 's
   function* forms(): Generator<TooltipContent> {
     for (const count of dealCounts([deals])) yield { ...head, rows: breakdownRows(balance, deals, decimals, partner, count) };
     const summary = summaryRows(balance, decimals);
-    yield { ...head, rows: [...summary.slice(0, 2), { label: 'A taller window shows where it comes from and goes.', tone: 'muted' }, { ...summary[2], divider: true, strong: true }] };
+    yield { ...head, rows: [...summary.slice(0, 2), { ...summary[2], divider: true, strong: true }] };
   }
   return fitTooltip(forms(), height, { keep: 1 });
 }
@@ -346,10 +346,9 @@ export function overTimeTooltip(title: string, lines: readonly LineAt[], decimal
         yield { title, rows: lines.flatMap((line, index) => [head(line, index), ...(line.balance ? breakdownRows(line.balance, line.deals, decimals, partner, count) : [missing])]) };
       }
     }
-    yield { title, rows: lines.flatMap((line, index) => [head(line, index), ...(line.balance ? summaryRows(line.balance, decimals) : [missing])]),
-      note: lines.length > FULL_BREAKDOWN_MAX ? `Choose at most ${FULL_BREAKDOWN_MAX} resources to see where each comes from and goes.` : 'A taller window shows where each comes from and goes.' };
-    yield { title, note: 'Each resource’s net: a taller window shows supply and demand.',
+    yield { title, rows: lines.flatMap((line, index) => [head(line, index), ...(line.balance ? summaryRows(line.balance, decimals) : [missing])]) };
+    yield { title,
       rows: lines.map(line => ({ label: resourceName(line.resource), swatch: line.color, short: true, ...(line.balance ? netValue(line.balance, decimals) : { value: 'Not recorded', tone: 'muted' as const }) })) };
   }
-  return fitTooltip(forms(), height, { more: hidden => `${hidden} more ${hidden === 1 ? 'resource' : 'resources'}: a taller window shows them` });
+  return fitTooltip(forms(), height, { more: hidden => `${hidden} more` });
 }

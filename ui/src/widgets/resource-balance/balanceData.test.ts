@@ -358,7 +358,7 @@ test('a resource’s tooltip fits any window with its surplus or deficit shown',
   assert.deepEqual(resourceTooltip(HEAD, balance, deals, 5, tag => ({ name: tag }), 300).rows.filter(row => row.indent).map(row => row.label),
     ['I00 · 1 civilian factory', '19 more deals', 'E00 · 1 civilian factory', '19 more deals', 'Set aside, not bought']);
   assert.deepEqual(resourceTooltip(HEAD, balance, deals, 5, tag => ({ name: tag }), 280).rows.map(row => row.label),
-    ['Supply', 'Demand', 'A taller window shows where it comes from and goes.', 'Surplus']);
+    ['Supply', 'Demand', 'Surplus']);
 });
 
 test('an over-time tooltip fits the window with every chosen resource’s net', () => {

@@ -43,10 +43,10 @@ test('operative country roles preserve their own dated flag metadata and a depar
       flagPending: tag === 'MOD old target', flagReason: tag === 'MOD capturer' ? 'Capturer flag failed at its read' : undefined };
   });
   assert.ok(wanted.length > 0 && wanted.every(([, hour]) => hour === 199));
-  assert.equal(tip.rows.find(row => row.label === 'Owner')?.countryFlag?.flag, 'old-owner-flag');
+  assert.equal(tip.rows.find(row => row.label === 'Country')?.countryFlag?.flag, 'old-owner-flag');
   assert.equal(tip.rows.find(row => row.label === 'Target')?.countryFlag?.flagPending, true);
   assert.equal(tip.rows.find(row => row.label === 'Capturer')?.countryFlag?.flagReason, 'Capturer flag failed at its read');
-  assert.ok(tip.rows.filter(row => !['Roster country', 'Owner', 'Target', 'Capturer'].includes(row.label)).every(row => row.countryFlag === undefined));
+  assert.ok(tip.rows.filter(row => !['Country', 'Roster country', 'Owner', 'Target', 'Capturer'].includes(row.label)).every(row => row.countryFlag === undefined));
   row.run.value = { ...row.run.value, ownerTag: null, targetTag: null, capturerTag: null };
   const unknown = flaggedOperativeTooltip(reply, row, 250, () => ({ name: 'Roster', flag: 'must-not-use-for-unknown' }));
   assert.equal(unknown.rows.find(row => row.label === 'Owner')?.countryFlag, undefined);
@@ -151,7 +151,7 @@ test('one equal value run takes its read date from each daily membership observa
   entry.departedHour = 180;
   const departed = rosterAt(reply, 200, true).rows[0];
   assert.equal(departed.readHour, 148);
-  assert.match(operativeTooltip(reply, departed, 200, tag => tag).note ?? '', /Last operative details read .*148/);
+  assert.equal(operativeTooltip(reply, departed, 200, tag => tag).note ?? '', '');
 });
 
 test('literal, localised and empty names come from the dated value, never a later name', () => {
@@ -170,7 +170,7 @@ test('a name unresolved without content stays unknown, while an empty name is un
   value.nameMissing = reply.reasons.push('The recorded content stack is unavailable; saved key versus literal cannot be established') - 1;
   const row = rosterAt(reply, 110, false).rows[0];
   assert.equal(operativeTooltip(reply, row, 110, tag => tag).title, 'Name unknown');
-  assert.match(operativeTooltip(reply, row, 110, tag => tag).note ?? '', /key versus literal cannot be established/);
+  assert.equal(operativeTooltip(reply, row, 110, tag => tag).note ?? '', '');
   value.name = null; value.unnamed = true; value.nameMissing = null;
   assert.equal(operativeTooltip(reply, row, 110, tag => tag).title, 'Unnamed operative');
   value.name = 'Content says empty'; value.unnamed = false;
@@ -223,7 +223,7 @@ test('departures between reads say by and only campaign view includes them muted
   const row = rosterAt(reply, 220, true).rows[0];
   assert.equal(row.departed, true);
   assert.equal(row.readHour, 124);
-  assert.match(departureText(row) ?? '', /^Left \(reason not recorded\) by /);
+  assert.match(departureText(row) ?? '', /^Left by /);
   assert.deepEqual(operativeMoments(row).map(moment => [moment.kind, moment.hour]), [['joined', 100], ['captured', 119], ['departed', 220]]);
   assert.equal(operativeLabelHour(row, 300), 199);
 });
@@ -249,7 +249,7 @@ test('target identities use hovered hour for current rows and last projected hou
   entry.runs.pop(); entry.departedHour = 220;
   const departed = rosterAt(reply, 300, true).rows[0];
   assert.equal(operativeTooltip(reply, departed, 300, label).rows.find(row => row.label === 'Target')?.value, 'MOD old target as of 199');
-  assert.match(operativeTooltip(reply, departed, 300, label).note ?? '', /Last operative details read .*124/);
+  assert.equal(operativeTooltip(reply, departed, 300, label).note ?? '', '');
 });
 
 test('a final gap leaves current roster unknown while previously proven departures remain known', () => {
@@ -286,7 +286,7 @@ test('unknown skill, experience and assignment are said and native missing detai
   const row = rosterAt(reply, 220, false).rows[0];
   const tip = operativeTooltip(reply, row, 220, tag => tag);
   for (const label of ['Skill', 'Experience', 'Assignment', 'Captured']) assert.equal(tip.rows.find(row => row.label === label)?.value, 'Unknown');
-  assert.match(tip.note ?? '', /Assignment operands not recorded/);
+  assert.equal(tip.note ?? '', '');
   assert.equal(row.run.value.experienceRatio, null);
 });
 
@@ -296,7 +296,7 @@ test('operation definition read is dated independently of the membership read', 
   value.assignmentName = 'Content operation name'; value.assignmentOperation = true;
   reply.operations = [{ firstHour: 97, lastHour: 123, readHour: 97 }];
   const tip = operativeTooltip(reply, rosterAt(reply, 110, false).rows[0], 110, tag => tag);
-  assert.equal(tip.rows.find(row => row.label === 'Assignment read')?.value, 'Hour 97');
+  assert.equal(tip.rows.find(row => row.label === 'Assignment read')?.value, undefined);
   assert.doesNotMatch(tip.note ?? '', /read once a day/);
   reply.operations = [{ firstHour: 100, lastHour: 123, readHour: 100 }];
   assert.equal(operativeTooltip(reply, rosterAt(reply, 110, false).rows[0], 110, tag => tag).rows.some(row => row.label === 'Assignment read'), false);
@@ -333,7 +333,7 @@ test('one equal operation run uses the current Operations read without repeating
     assert.equal(row.readHour, readHour);
     assert.equal(row.assignmentReadHour, assignmentReadHour);
     assert.equal(row.run, entry.runs[0]);
-    assert.equal(operativeTooltip(reply, row, hour, tag => tag).rows.find(row => row.label === 'Assignment read')?.value, `Hour ${assignmentReadHour}`);
+    assert.equal(operativeTooltip(reply, row, hour, tag => tag).rows.find(row => row.label === 'Assignment read')?.value, undefined);
   }
   assert.equal(entry.runs.length, 1);
   entry.departedHour = 180;
@@ -363,7 +363,7 @@ test('reply artwork and reasons resolve index zero and every run reference is bo
   validateOperativesRosterReply(reply);
   const tip = operativeTooltip(reply, rosterAt(reply, 110, false).rows[0], 110, tag => tag);
   assert.equal(tip.icon, reply.artwork[0]);
-  assert.match(tip.note ?? '', /Portrait link not recorded/);
+  assert.equal(tip.note ?? '', '');
   for (const field of ['portrait', 'assignmentIcon', 'nameMissing', 'portraitMissing', 'experienceMissing', 'assignmentMissing', 'assignmentIconMissing']) {
     for (const index of [-1, 0.5, 2 ** 32, Infinity, NaN, '0', undefined]) {
       const malformed = fixture();

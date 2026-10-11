@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { syntheticRaidRun, syntheticRaids } from '../../dashboard/raids.fixtures.ts';
 import { raidDescription, raidLogRows, raidLogTypes, raidPreparation, raidStatus, raidTooltip } from './raidLogData.ts';
-import { formatDateTime } from '../../dashboard/calendar.ts';
 import { resolveCountries } from '../../dashboard/groups.ts';
 import { definition } from './definition.ts';
 
@@ -22,7 +21,7 @@ test('raid log dates each observation and never backfills a later outcome or pre
   assert.match(raidStatus(data, earlier.item), /preparation/);
   assert.doesNotMatch(raidStatus(data, earlier.item), /success/);
   const gap = raidLogRows(data, 102, [], () => true, null)[0];
-  assert.match(raidStatus(data, gap.item), /Last observed:.*not recorded at this time/);
+  assert.match(raidStatus(data, gap.item), /Last known:/);
   assert.equal(raidPreparation(data, gap.item), 'Preparation not known');
   const later = raidLogRows(data, 105, ['mod/sky_raid'], () => true, null)[0];
   assert.match(raidDescription(data, later.item, 'New country name', 'Mod victim'), /Mod victim.*Sky raid from a mod.*Modded success/);
@@ -42,9 +41,9 @@ test('hourly preparation and launch witnesses update values without rekeying or 
   assert.doesNotMatch(raidStatus(data, prepared.item), /No result|None/);
   assert.equal(raidPreparation(data, raidLogRows(data, 102, [], () => true, null)[0].item), 'Preparation not known');
   const tooltip = raidTooltip(data, prepared.item, 'Raider', 'Victim');
-  assert.equal(tooltip.rows.find(row => row.label === 'Preparation read')?.value, formatDateTime(101));
+  assert.equal(tooltip.rows.find(row => row.label === 'Preparation read')?.value, undefined);
   data.readHours = [100];
-  assert.equal(raidTooltip(data, prepared.item, 'Raider', 'Victim').rows.find(row => row.label === 'Last read')?.value, formatDateTime(101));
+  assert.equal(raidTooltip(data, prepared.item, 'Raider', 'Victim').rows.find(row => row.label === 'Last read')?.value, undefined);
   assert.match(raidDescription(data, prepared.item, 'Raider', 'Victim'), /1,140 h prepared/);
   assert.doesNotMatch(raidDescription(data, prepared.item, 'Raider', 'Victim'), /has a/);
   data.episodes[0].runs.push(syntheticRaidRun(106, 106, { province: 9 }));
@@ -74,7 +73,7 @@ test('an unchanged post-gap observation keeps the episode row date and key witho
   assert.equal(gap.item.current, null);
   assert.equal(raidPreparation(data, gap.item), 'Preparation not known');
   assert.equal(raidPreparation(data, resumed.item), '8 h prepared');
-  assert.equal(raidTooltip(data, resumed.item, 'Raider', 'Victim').rows.find(row => row.label === 'Last read')?.value, formatDateTime(103));
+  assert.equal(raidTooltip(data, resumed.item, 'Raider', 'Victim').rows.find(row => row.label === 'Last read')?.value, undefined);
 });
 
 test('ended raid text uses the outcome and omits preparation', () => {

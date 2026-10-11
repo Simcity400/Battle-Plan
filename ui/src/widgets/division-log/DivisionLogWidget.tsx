@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import ArtFallback from '../../components/ArtFallback';
 import { ChipSet } from '../../components/ChipSet';
 import ContentSetPicker from '../../components/ContentSetPicker';
 import { CountryFlagUrl } from '../../components/CountryFlag';
@@ -110,21 +111,21 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
   useEffect(() => { onDiagnostics(warnings); return () => onDiagnostics(NO_WARNINGS); }, [warnings, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its divisions." />;
-  if (manifest.error) return <WidgetState kind="error" message={manifest.error} onRetry={manifest.retry} />;
-  if (widget.countries.kind !== 'all' && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
-  if (!window) return <WidgetState kind="unavailable" message="The chosen time is outside this campaign branch." />;
+  if (manifest.error) return <WidgetState kind="error" detail={manifest.error} onRetry={manifest.retry} />;
+  if (widget.countries.kind !== 'all' && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+  if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
   if (!manifest.data || !match.ready) return <WidgetState kind="loading" label="Loading division log…" />;
   if (!manifest.data.available || events === 'lost' && !manifest.data.lossesAvailable) return <WidgetState kind="unavailable" message="Not in this recording" />;
   const error = history.errors.get(browseIndex);
-  if (error) return <WidgetState kind="error" message={error} onRetry={history.retry} />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={history.retry} />;
   if (browseIndex >= 0 && !history.data.has(browseIndex)) return <WidgetState kind="loading" label="Loading division log…" />;
   const preceding = wantedWindows.filter(index => index <= browseIndex);
   const oldest = preceding.length ? Math.min(...preceding) : 0;
   const earlier = oldest > 0 && manifest.data.windows[oldest - 1].lastHour >= first;
   const renderRow = ({ item: row }: LogRow<DivisionLogItem>) => {
     const { country, killer, place } = labels(row);
-    return <><span className={`log-art${row.icon ? '' : ' is-missing'}`} aria-hidden="true">{row.icon ? <img src={row.icon} alt="" /> : '?'}</span>
+    return <><span className="log-art" aria-hidden="true">{row.icon ? <img src={row.icon} alt="" /> : <ArtFallback icon="helmet" />}</span>
       <span className="log-text">{row.tag !== null && <CountryFlagUrl className="log-flag" url={country.flag} reason={country.flagReason} pending={country.flagPending} />}<b>{country.name}</b>: <b>{divisionName(row)}</b>
         {' · '}{row.templateName ?? 'Template not recorded'}{' · '}{row.placeAtEvent ? 'at ' : 'last seen at '}{place}
         {row.killerTag !== null && <>{' · by '}<CountryFlagUrl className="log-flag" url={killer.flag} reason={killer.flagReason} pending={killer.flagPending} />{killer.name}</>}
@@ -132,11 +133,11 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
   };
   return <div className="log-widget division-log">
     {options.totals === true && <div className="division-log-summary" aria-live="polite">
-      {totals.error ? <button type="button" onClick={totals.retry}>Retry totals: {totals.error}</button> : !totals.data ? 'Loading totals…' : <>
+      {totals.error ? <WidgetState kind="error" what="division totals" detail={totals.error} onRetry={totals.retry} /> : !totals.data ? 'Loading totals…' : <>
         {events !== 'lost' && <span><b>{totals.data.created.toLocaleString()}</b> created</span>}
         {events !== 'created' && <><span><b>{manifest.data.lossesAvailable ? totals.data.lost.toLocaleString() : 'Not recorded'}</b> lost / removed</span>
           <span><b>{manifest.data.lossesAvailable ? totals.data.transferred.toLocaleString() : 'Not recorded'}</b> transferred / merged</span></>}
-        <small>Observed totals</small></>}
+      </>}
     </div>}
     {!manifest.data.lossesAvailable && events !== 'created' && <p className="division-log-note">Losses and transfers: Not in this recording.</p>}
     {log.chips && <div className="log-chips"><ChipSet label="Division events" chips={[{ value: 'both', label: 'Both' }, { value: 'created', label: 'Created' }, { value: 'lost', label: 'Lost / transferred' }]}

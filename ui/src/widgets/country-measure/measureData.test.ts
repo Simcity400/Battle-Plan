@@ -50,12 +50,12 @@ test('group members draw only while they belong', () => {
   assert.deepEqual(atEachHour.membership?.get('ITA'), [{ tag: 'ITA', firstHour: 50, lastHour: 80 }]);
   const atEnd = resolveCountries({ kind: 'group', group: { type: 'faction', id: '5' }, membership: 'end', aggregate: false }, [], groups, 200);
   assert.deepEqual([atEnd.tags, atEnd.membership], [['GER'], null]);
-  assert.equal(resolveCountries({ kind: 'group', group: { type: 'faction', id: '9' }, membership: 'ever', aggregate: false }, [], groups, 200).reason, 'This group is not in this campaign branch.');
+  assert.equal(resolveCountries({ kind: 'group', group: { type: 'faction', id: '9' }, membership: 'ever', aggregate: false }, [], groups, 200).reason, 'This group is unavailable in this campaign.');
   // Membership not recorded at the branch end is unknown, not an empty group; other histories' gaps do not count.
   const gapAtEnd = { ...groups, unobserved: { humans: [], factions: [{ firstHour: 190, lastHour: 200 }], wars: [] } };
   const unknown = resolveCountries({ kind: 'group', group: { type: 'faction', id: '5' }, membership: 'end', aggregate: false }, [], gapAtEnd, 200);
   assert.deepEqual([unknown.tags, unknown.unobserved], [[], [{ firstHour: 190, lastHour: 200 }]]);
-  assert.match(unknown.reason ?? '', /not recorded/);
+  assert.equal(unknown.reason, 'Group membership is unavailable at this time.');
   const humansGap = { ...groups, unobserved: { humans: [{ firstHour: 190, lastHour: 200 }], factions: [], wars: [] } };
   assert.deepEqual(resolveCountries({ kind: 'group', group: { type: 'faction', id: '5' }, membership: 'end', aggregate: false }, [], humansGap, 200).tags, ['GER']);
   assert.deepEqual(resolveCountries({ kind: 'selected' }, ['GER'], undefined, 0).tags, ['GER']);

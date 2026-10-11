@@ -61,10 +61,11 @@ test('malformed replies and future presentation dates refuse', () => {
 });
 test('tooltips retain native disposition, bounded dates and the supplying read', () => {
   assert.equal(divisionStatus({ ...entry(), status: 'division_disbanded' }), 'Disbanded');
+  assert.equal(divisionStatus({ ...entry(), status: 'first_observed' }), 'First seen');
   assert.equal(divisionStatus({ ...entry(), status: 'volunteer_transferred' }), 'Volunteer transfer');
   const tooltip = divisionTooltip({ ...entry(), by: true, afterHour: 10, placeAtEvent: false }, { name: 'Owner' }, { name: 'Enemy' }, 'A place');
-  assert.ok(tooltip.rows.some(row => row.label === 'Last observed location'));
-  assert.ok(tooltip.rows.some(row => row.label === 'Available from'));
+  assert.ok(tooltip.rows.some(row => row.label === 'Last seen at'));
+  assert.ok(!tooltip.rows.some(row => ['Available from', 'Template read', 'Division presentation read'].includes(row.label)));
   assert.ok(tooltip.rows.some(row => row.label === 'When' && row.value?.startsWith('By ')));
 });
 test('country tooltip flags retain pending and named failure state without replacing division artwork', () => {

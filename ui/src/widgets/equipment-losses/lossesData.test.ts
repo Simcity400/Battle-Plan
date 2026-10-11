@@ -5,7 +5,7 @@ import { amountText, arcTargets, foldTree, groupTree, listed, sliceColours, slic
 import { resolveOptions } from '../../dashboard/options.ts';
 import { sunburstSettings, levelsShown } from '../../charts/sunburst/sunburstOptions.ts';
 import { definition, OPTIONS } from './definition.ts';
-import { LEVELS, causeName, destructionCoverageAt, destructionCoverageHours, coverageAt, coverageHours, coverageLegend, destructionLegend, destructionCountingNote, formatLosses, landNote, lossDetails, lossItems, lossesTotal, lossesFootnote, lossKey, pointAt, unknownCauses, validateLossesReply } from './lossesData.ts';
+import { LEVELS, causeName, destructionCoverageAt, destructionCoverageHours, coverageAt, coverageHours, coverageLegend, destructionLegend, destructionCountingNote, formatLosses, landNote, lossItems, lossesTotal, lossesFootnote, lossKey, pointAt, unknownCauses, validateLossesReply } from './lossesData.ts';
 
 const ROOT = { id: 'all', label: 'All losses' };
 const TOKENS = { positive: '#00aa00', warning: '#aaaa00', error: '#aa0000', surface: '#000000', text: '#ffffff' };
@@ -92,17 +92,17 @@ test('names are content types and the design name recorded at the hour shown, ne
   assert.deepEqual(lossItems(data, live(104))[1].path.map(key => key.label), ['Mod combat', 'Walking machines', 'First walker']);
   assert.equal(lossItems(data, whole)[1].path[2].label, 'Renamed walker');
   data.designs[0].names = [{ firstHour: 105, name: 'Future name', known: true, design: null }];
-  assert.equal(lossItems(data, live(104))[1].path[2].label, 'Design 91001 (name not known)');
+  assert.equal(lossItems(data, live(104))[1].path[2].label, 'Name unavailable');
   data.designs[0].names.unshift({ firstHour: 100, name: null, known: false, design: null });
-  assert.equal(lossItems(data, live(104))[1].path[2].label, 'Design 91001 (name not known)');
+  assert.equal(lossItems(data, live(104))[1].path[2].label, 'Name unavailable');
   data.designs[0].archetypeName = null;
   assert.equal(lossItems(data, live(104))[1].path[1].label, 'Equipment type name unavailable');
 });
 
 test('each hourly land state has its legend entry, shared status colour and Partial exact N', () => {
   const states: Coverage[] = ['logged', { partial: { ungrouped: 17 } }, 'notLogged', 'unknown'];
-  const labels = ['Logged', 'Partial: 17 divisions outside armies', 'Not logged', 'Unknown'];
-  const colours = [TOKENS.positive, TOKENS.warning, TOKENS.error, '#1a1a1a'];
+  const labels = ['Complete', 'Incomplete', 'Incomplete', 'Incomplete'];
+  const colours = [TOKENS.positive, TOKENS.warning, TOKENS.warning, TOKENS.warning];
   for (const [index, coverage] of states.entries()) {
     const data = reply(); data.coverage[0].coverage = coverage;
     const entries = coverageLegend(data, live(105), TOKENS);
@@ -112,7 +112,7 @@ test('each hourly land state has its legend entry, shared status colour and Part
     assert.deepEqual(coverageAt(data, 105), coverage);
     assert.equal(treeAt(data, 105).exact, 450001n); // Coverage never discards captured losses.
     if (index === 0) assert.equal(landNote(data, 100, 105), undefined);
-    else assert.match(lossesFootnote(data, live(105)), index === 3 ? /unknown/ : /incomplete/);
+    else assert.match(lossesFootnote(data, live(105)), /Incomplete/i);
   }
 });
 
@@ -124,9 +124,9 @@ test('Partial N follows the hour, and Live off lists hours in every state presen
     { firstHour: 106, lastHour: 107, coverage: 'notLogged' },
     { firstHour: 108, lastHour: 109, coverage: 'unknown' },
   ];
-  assert.equal(coverageLegend(data, live(103), TOKENS)[0].label, 'Partial: 3 divisions outside armies');
-  assert.equal(coverageLegend(data, live(104), TOKENS)[0].label, 'Partial: 19 divisions outside armies');
-  assert.deepEqual(coverageLegend(data, whole, TOKENS).map(entry => entry.label), ['Logged: 2 hours', 'Partial: 4 hours', 'Not logged: 2 hours', 'Unknown: 2 hours']);
+  assert.equal(coverageLegend(data, live(103), TOKENS)[0].label, 'Incomplete');
+  assert.equal(coverageLegend(data, live(104), TOKENS)[0].label, 'Incomplete');
+  assert.deepEqual(coverageLegend(data, whole, TOKENS).map(entry => entry.label), ['Incomplete']);
   assert.deepEqual(coverageHours(data, 101, 108), { logged: 1, partial: 4, notLogged: 2, unknown: 1 });
 });
 
@@ -137,20 +137,20 @@ test('missing coverage hours and unobserved retention are Unknown, with the expl
   ];
   assert.equal(coverageAt(data, 104), 'unknown');
   assert.deepEqual(coverageHours(data, 100, 109), { logged: 3, partial: 0, notLogged: 0, unknown: 7 });
-  assert.equal(coverageLegend(data, live(105), TOKENS)[0].label, 'Unknown: retention was not observed');
-  assert.match(landNote(data, 100, 105)!, /retention was not observed/);
+  assert.equal(coverageLegend(data, live(105), TOKENS)[0].label, 'Incomplete');
+  assert.match(landNote(data, 100, 105)!, /Incomplete total/);
   data.coverage = [];
-  assert.equal(coverageLegend(data, whole, TOKENS)[0].label, 'Unknown: 10 hours');
+  assert.equal(coverageLegend(data, whole, TOKENS)[0].label, 'Incomplete');
 });
 
 test('a later Logged hour keeps cumulative land losses explicitly incomplete', () => {
   const data = reply(); data.coverage = [{ firstHour: 100, lastHour: 103, coverage: { partial: { ungrouped: 2 } } },
     { firstHour: 104, lastHour: 109, coverage: 'logged' }];
-  assert.equal(coverageLegend(data, live(105), TOKENS)[0].label, 'Logged');
+  assert.equal(coverageLegend(data, live(105), TOKENS)[0].label, 'Complete');
   const root = treeAt(data, 105);
   const land = root.children.find(node => node.label === 'Mod combat')!;
-  for (const node of walk(land)) assert.match(node.notes.join(' '), /Land losses are incomplete/);
-  assert.match(lossesFootnote(data, live(105)), /incomplete/);
+  for (const node of walk(land)) assert.match(node.notes.join(' '), /Incomplete total/);
+  assert.match(lossesFootnote(data, live(105)), /Incomplete/i);
 });
 
 test('unknown causes say Not known with the reason, and have no equipment leaves or slices', () => {
@@ -168,8 +168,8 @@ test('unknown causes say Not known with the reason, and have no equipment leaves
     assert.ok(sliceTooltip(node, root, TEXT)[0].note);
   }
   assert.match(sunburstSummary(root, TEXT), /not known/);
-  assert.deepEqual(unknownCauses(data, 105).map(entry => entry.label), ['Mod combat: Not known — Content retention deletes changing entries.',
-    'Cause name unavailable: Not known — Destruction table is unavailable.']);
+  assert.deepEqual(unknownCauses(data, 105).map(entry => entry.label), ['Mod combat: Unavailable',
+    'Cause name unavailable: Unavailable']);
   assert.equal(root.exact, 100000n);
 });
 
@@ -179,8 +179,8 @@ test('unread spans never become zero; they mark the cause once and stop when it 
   const unknown = treeAt(data, 104).children.find(node => node.label === 'Mod combat')!;
   assert.deepEqual(unknown.unknown, {});
   assert.ok(!sliceTooltip(unknown, treeAt(data, 104), TEXT)[0].rows.some(row => row.label === 'Not counted'));
-  assert.match(unknown.notes.join(' '), /not read/);
-  assert.match(unknownCauses(data, 104)[0].label, /cause not read/);
+  assert.match(unknown.notes.join(' '), /Incomplete total/);
+  assert.match(unknownCauses(data, 104)[0].label, /Incomplete/);
   assert.deepEqual(treeAt(data, 105).unknown, {});
   data.causes[0].leaves = [];
   assert.equal(treeAt(data, 104).children.find(node => node.label === 'Mod combat')!.unmeasured, true);
@@ -193,12 +193,12 @@ test('lend-lease incomplete subtotals retain exact amounts and named notes throu
   assert.equal(lossesTotal(lossItems(data, live(104))).incomplete, false);
   const root = treeAt(data, 105);
   const lease = root.children.find(node => node.label === 'Mod combat')!;
-  for (const node of walk(lease)) assert.match(node.notes.join(' '), /recorded subtotal/i);
+  for (const node of walk(lease)) assert.match(node.notes.join(' '), /Incomplete total/i);
   assert.equal(amountText(root, TEXT), '4.50001');
   assert.equal(root.finalUnknown, true);
-  assert.match(sliceTooltip(lease, root, TEXT)[0].note!, /recorded subtotal/i);
+  assert.match(sliceTooltip(lease, root, TEXT)[0].note!, /Incomplete total/i);
   const folded = foldTree(groupTree(lossItems(data, live(105)), ROOT), 1);
-  assert.match(folded.children.find(node => node.other)!.notes.join(' '), /recorded subtotal/i);
+  assert.match(folded.children.find(node => node.other)!.notes.join(' '), /Incomplete total/i);
   data.causes[0].leaves = [];
   assert.equal(lossesTotal(lossItems(data, live(105))).incomplete, true); // An ended exchange can hide losses with no known sunk leaf.
 });
@@ -213,13 +213,6 @@ test('recovered and lend-lease sent are left out of totals, hierarchy, counts an
   assert.ok(!walk(root).some(node => ['recovered', 'lendLeaseSent'].includes(node.label)));
   assert.ok(!root.counted.has(lossKey(data.causes[3], data.designs[0])));
   assert.ok(!root.counted.has(lossKey(data.causes[4], data.designs[0])));
-});
-
-test('date details name recorded changes and do not invent equal later read dates', () => {
-  const data = reply(); const root = treeAt(data, 109);
-  const land = root.children.find(node => node.label === 'Mod combat')!;
-  assert.deepEqual(lossDetails(land, data, 109), [{ label: 'Last recorded change', value: 'Hour 105', tone: 'muted' }]);
-  assert.equal(lossDetails(root, data, 109)[0].value, 'Hour 104 - Hour 105');
 });
 
 test('all three levels are optional and default behaviour uses the shared sunburst settings', () => {
@@ -263,15 +256,15 @@ test('destruction coverage uses Recorded and Unknown with the drain reason and h
   assert.equal(destructionCoverageAt(data, 100), 'No destruction drain was recorded at this hour.');
   assert.equal(destructionCoverageAt(data, 101), null);
   assert.deepEqual(coverageLegend(data, live(100), TOKENS), []);
-  assert.deepEqual(coverageLegend(data, live(105), TOKENS), [{ id: 'recorded', color: TOKENS.positive, label: 'Recorded' }]);
+  assert.deepEqual(coverageLegend(data, live(105), TOKENS), [{ id: 'recorded', color: TOKENS.positive, label: 'Complete' }]);
   assert.deepEqual(destructionCoverageHours(data, 100, 109), { recorded: 9, unknown: 0, reasons: [] });
-  assert.deepEqual(coverageLegend(data, whole, TOKENS).map(entry => entry.label), ['Recorded: 9 hours']);
+  assert.deepEqual(coverageLegend(data, whole, TOKENS).map(entry => entry.label), ['Complete']);
   data.destructionCoverage = [{ firstHour: 103, lastHour: 104, reason: null },
     { firstHour: 105, lastHour: 109, reason: 'Destruction table withheld after overflow.' }];
-  assert.match(coverageLegend(data, live(101), TOKENS)[0].label, /Unknown: No destruction drain/);
+  assert.match(coverageLegend(data, live(101), TOKENS)[0].label, /Incomplete/);
   assert.deepEqual(destructionCoverageHours(data, 100, 109), { recorded: 2, unknown: 7,
     reasons: ['Destruction table withheld after overflow.', 'No destruction drain was recorded at this hour.'] });
-  assert.match(coverageLegend(data, whole, TOKENS)[1].label, /overflow/);
+  assert.match(coverageLegend(data, whole, TOKENS)[0].label, /Incomplete/);
 });
 
 test('complete supplemental destruction has no permanent deletion or paradrop exclusion', () => {
@@ -280,7 +273,7 @@ test('complete supplemental destruction has no permanent deletion or paradrop ex
   assert.equal(lossesTotal(lossItems(data, live(105))).incomplete, false);
   assert.equal(amountText(root, TEXT), '4.50001');
   assert.equal(landNote(data, 100, 105), undefined);
-  assert.match(lossesFootnote(data, whole), /Destruction counted from Hour 101/);
+  assert.equal(lossesFootnote(data, whole), '');
   assert.doesNotMatch(root.notes.join(' '), /Not included/);
 });
 
@@ -291,16 +284,16 @@ test('destruction unknown intervals never become zero; known subtotals remain in
     const root = treeAt(data, 105);
     const land = root.children.find(node => node.label === 'Mod combat')!;
     assert.equal(land.exact, 350001n);
-    assert.match(land.notes.join(' '), /recorded subtotal/i);
-    assert.match(land.notes.join(' '), new RegExp(`Named ${reason}`));
+    assert.match(land.notes.join(' '), /Incomplete total/i);
+    assert.doesNotMatch(land.notes.join(' '), new RegExp(`Named ${reason}`));
     assert.deepEqual(land.unknown, {});
     assert.ok(!sliceTooltip(land, root, TEXT)[0].rows.some(row => row.label === 'Not counted'));
-    assert.match(unknownCauses(data, 105)[0].label, /recorded subtotal; total Not known/);
+    assert.match(unknownCauses(data, 105)[0].label, /Incomplete/);
     data.causes[0].leaves = [];
     const empty = treeAt(data, 105).children.find(node => node.label === 'Mod combat')!;
     assert.equal(empty.unmeasured, true);
     assert.equal(sliceTooltip(empty, treeAt(data, 105), TEXT)[0].rows[0].value, 'Not known');
-    assert.match(unknownCauses(data, 105)[0].label, /Not known/);
+    assert.match(unknownCauses(data, 105)[0].label, /Unavailable/);
   }
 });
 
@@ -321,7 +314,7 @@ test('every stable air cause has design leaves in both land modes, with product 
       const air = treeAt(data, 105).children.find(node => node.label === label)!;
       assert.equal(air.children[0].children[0].label, 'Renamed walker');
       assert.equal(air.exact, 100000n);
-      assert.doesNotMatch(air.notes.join(' '), /recorded subtotal/i);
+      assert.doesNotMatch(air.notes.join(' '), /Incomplete total/i);
       assert.doesNotMatch(air.notes.join(' '), /Not included:/);
     }
     assert.ok(!lossItems(data, whole).some(item => item.path[0].label === 'Unnamed cause (air)'));
@@ -361,7 +354,7 @@ test('unavailable air writers stay Not known in both modes and a complete empty 
     data.causes.push(air);
     const root = treeAt(data, 105);
     assert.equal(sliceTooltip(root.children.find(node => node.label === 'Air accidents')!, root, TEXT)[0].rows[0].value, 'Not known');
-    assert.match(unknownCauses(data, 105).find(item => item.label.startsWith('Air accidents'))!.label, /lost drain/);
+    assert.match(unknownCauses(data, 105).find(item => item.label.startsWith('Air accidents'))!.label, /Unavailable/);
     air.unknownSpans = [];
     assert.equal(treeAt(data, 105).children.find(node => node.label === 'Air accidents')!.value, 0);
     assert.ok(!unknownCauses(data, 105).some(item => item.label.startsWith('Air accidents')));
@@ -380,7 +373,7 @@ test('an ended exchange keeps unrelated lend-lease designs exact while its cause
   assert.equal(items.find(item => item.counted?.includes(key))!.incomplete, false);
   const root = treeAt(data, 105);
   const unrelated = walk(root).find(node => node.label === 'Design not recorded' && node.counted.has(key))!;
-  assert.doesNotMatch(unrelated.notes.join(' '), /recorded subtotal/i);
+  assert.doesNotMatch(unrelated.notes.join(' '), /Incomplete total/i);
   assert.equal(amountText(unrelated, TEXT), '1');
   assert.equal(lossesTotal(items).incomplete, true);
 });
@@ -393,8 +386,8 @@ test('counting starts at a complete drain; empty causes have no slice, row or un
   assert.ok(!treeAt(data, 101).children.some(listed));
   assert.deepEqual(treeAt(data, 101).unknown, {});
   assert.deepEqual(unknownCauses(data, 101), []);
-  assert.match(destructionCountingNote(data, 100), /has not started/);
-  assert.equal(destructionCountingNote(data, 101), 'Destruction counted from Hour 101.');
+  assert.match(destructionCountingNote(data, 100), /Unavailable/);
+  assert.equal(destructionCountingNote(data, 101), '');
   assert.equal(lossesTotal(lossItems(data, live(101))).incomplete, false);
 });
 
@@ -408,7 +401,7 @@ test('each gap reason appears once without claiming a known number of uncounted 
   const root = treeAt(data, 105);
   const land = root.children.find(node => node.label === 'Mod combat')!;
   assert.deepEqual(land.unknown, {});
-  assert.equal(land.notes.filter(note => note.includes('Owner unresolved.')).length, 1);
+  assert.equal(land.notes.filter(note => note.includes('Owner unresolved.')).length, 0);
   assert.ok(!sliceTooltip(land, root, TEXT)[0].rows.some(row => row.label === 'Not counted'));
   assert.doesNotMatch(land.notes.join(' '), /lower bound from/);
 });
@@ -423,24 +416,24 @@ test('distinct details of the same reason survive in cause notes and Unknown cau
     { firstHour: 104, lastHour: 109, reason: 'destructionGap', detail: 'A later interval was partial.' },
   ];
   const unknown = unknownCauses(data, 105);
-  assert.equal(unknown.length, 4);
-  assert.equal(new Set(unknown.map(item => item.id)).size, 4);
+  assert.equal(unknown.length, 1);
+  assert.equal(new Set(unknown.map(item => item.id)).size, 1);
   const notes = treeAt(data, 105).children.find(node => node.label === 'Mod combat')!.notes.join(' ');
   for (const detail of ['Country identity was unavailable.', 'Raw owner had no CountryLink.', 'A drain was lost.', 'A later interval was partial.']) {
-    assert.equal(notes.split(detail).length - 1, 1);
-    assert.equal(unknown.filter(item => item.label.includes(detail)).length, 1);
+    assert.equal(notes.split(detail).length - 1, 0);
+    assert.equal(unknown.filter(item => item.label.includes(detail)).length, 0);
   }
 });
 
-test('withheld destruction before a complete drain says it was not recorded on the branch', () => {
+test('destruction without a counting start stays unavailable even with later refusal spans', () => {
   const data = destruction();
   data.destructionCountedFrom = null;
   data.destructionCoverage = [{ firstHour: 102, lastHour: 109, reason: 'Destruction table withheld after overflow.' }];
   for (const hour of [100, 105, 109]) assert.equal(destructionCountingNote(data, hour),
-    'Destruction was not recorded on this branch: Destruction table withheld after overflow.');
-  assert.doesNotMatch(lossesFootnote(data, whole), /has not started/);
+    'Unavailable');
+  assert.match(lossesFootnote(data, whole), /Unavailable/);
   data.destructionCoverage = [];
-  assert.equal(destructionCountingNote(data, 100), 'Destruction counting has not started at this moment.');
+  assert.equal(destructionCountingNote(data, 100), 'Unavailable');
 });
 
 test('before counting starts destruction coverage has no rows in either land mode', () => {
@@ -449,7 +442,7 @@ test('before counting starts destruction coverage has no rows in either land mod
   assert.deepEqual(destructionLegend(data, live(100), TOKENS), []);
   data.landSource = 'combatLog';
   data.coverage = [{ firstHour: 100, lastHour: 109, coverage: 'logged' }];
-  assert.equal(coverageLegend(data, live(100), TOKENS)[0].label, 'Logged');
+  assert.equal(coverageLegend(data, live(100), TOKENS)[0].label, 'Complete');
   assert.deepEqual(destructionLegend(data, live(100), TOKENS), []);
 });
 
@@ -458,7 +451,7 @@ test('unresolved cause labels and dated lend-lease notes stay on their own items
   data.causes = [data.causes[0]];
   data.causes[0].name.text = null;
   let root = treeAt(data, 105);
-  assert.match(lossDetails(root.children[0], data, 105).map(row => row.value).join(' '), /no fully resolved cause label/);
+  assert.equal(root.children[0].label, 'Mod combat');
   assert.doesNotMatch(root.notes.join(' '), /no fully resolved cause label/);
   assert.equal(root.exact, 350001n);
   data = reply();
@@ -470,9 +463,9 @@ test('unresolved cause labels and dated lend-lease notes stay on their own items
   root = treeAt(data, 105);
   const causeNode = root.children[0];
   const design = causeNode.children[0].children[0];
-  assert.match(lossDetails(design, data, 105).map(row => row.value).join(' '), /Hour 105/);
+  assert.doesNotMatch(sliceTooltip(design, root, TEXT)[0].note ?? '', /Incomplete from Hour/);
   for (const node of [root, causeNode, causeNode.children[0]]) assert.doesNotMatch(node.notes.join(' '), /Incomplete from Hour 105/);
-  assert.match(root.notes.join(' '), /An exchange ended after its last read/);
+  assert.match(root.notes.join(' '), /Incomplete total/);
   assert.equal(root.exact, 350001n);
   assert.equal(root.count, 1);
   const items = lossItems(data, live(105));
@@ -491,20 +484,27 @@ test('a view containing only unknown amounts has no fabricated zero subtotal', (
   assert.equal(root.exact, null);
 });
 
+test('an unstarted destruction source has no fabricated zero subtotal', () => {
+  const data = destruction();
+  data.causes = [cause({ source: { kind: 'destruction', reason: 'land_combat' }, leaves: [] })];
+  assert.equal(lossesTotal(lossItems(data, live(100))).exact, null);
+  assert.equal(lossesTotal(lossItems(data, live(101))).exact, 0n);
+});
+
 test('Combat Log keeps land states and exposes shared air destruction coverage separately', () => {
   const data = reply();
   data.destructionCoverage = [{ firstHour: 100, lastHour: 103, reason: null },
     { firstHour: 104, lastHour: 109, reason: 'A drain was lost.' }];
-  assert.equal(coverageLegend(data, live(105), TOKENS)[0].label, 'Logged');
-  assert.equal(destructionLegend(data, live(105), TOKENS)[0].label, 'Unknown: A drain was lost.');
-  assert.deepEqual(destructionLegend(data, whole, TOKENS).map(item => item.label), ['Recorded: 4 hours', 'Unknown: 6 hours — A drain was lost.']);
+  assert.equal(coverageLegend(data, live(105), TOKENS)[0].label, 'Complete');
+  assert.equal(destructionLegend(data, live(105), TOKENS)[0].label, 'Incomplete');
+  assert.deepEqual(destructionLegend(data, whole, TOKENS).map(item => item.label), ['Incomplete']);
 });
 
-test('an app label keeps resolved source text in its tooltip, never a template with fill-ins', () => {
+test('resolved cause labels keep game templates out of their slice notes', () => {
   const data = reply();
   data.causes[0].name = { key: 'FIXTURE_RESOLVED_LOSS_HINT', template: 'A completed source label for this loss category', text: 'Sunk ships' };
-  const notes = (tree: ReturnType<typeof treeAt>) => lossDetails(tree.children.find(node => node.label === 'Sunk ships')!, data, 105).map(row => `${row.label}: ${row.value}`).join(' ');
-  assert.match(notes(treeAt(data, 105)), /Game text: A completed source label for this loss category/);
+  const notes = (tree: ReturnType<typeof treeAt>) => sliceTooltip(tree.children.find(node => node.label === 'Sunk ships')!, tree, TEXT)[0].note ?? '';
+  assert.doesNotMatch(notes(treeAt(data, 105)), /Game text/);
   data.causes[0].name = { key: 'FIXTURE_PENDING_LOSS_HINT', template: 'Synthetic category amount: $AMOUNT|H$', text: 'Sunk ships' };
   assert.doesNotMatch(notes(treeAt(data, 105)), /Game text/);
 });
@@ -521,8 +521,8 @@ test('negative corrections retain exact digits, legend access and zero arc geome
   assert.equal(listed(part), true);
   assert.equal(arcTargets(root, root, 'share').get(part.id)!.shown, false);
   const text = TEXT;
-  assert.equal(amountText(part, text), 'Correction: \u221290,071,992,547.41499 (the game returned equipment)');
-  assert.match(sunburstSummary(root, text), /Correction:.*90,071,992,547/);
+  assert.equal(amountText(part, text), 'Returned: \u221290,071,992,547.41499');
+  assert.match(sunburstSummary(root, text), /Returned:.*90,071,992,547/);
   assert.equal(sliceTooltip(part, root, text)[0].rows.some(row => row.label.startsWith('Of ')), false);
   const folded = foldTree(root, 1);
   assert.equal(folded.exact, root.exact);
@@ -535,11 +535,11 @@ test('a missing signed interval is an incomplete subtotal rather than a mathemat
     unknownSpans: [{ firstHour: 102, lastHour: 109, reason: 'destructionGap', detail: 'Missing drain' }] })];
   const root = treeAt(data, 105);
   const text = TEXT;
-  assert.match(amountText(root, text), /^Correction: \u221212/);
+  assert.match(amountText(root, text), /^Returned: \u221212/);
   assert.equal(lossesTotal(lossItems(data, live(105))).incomplete, true);
   assert.equal(root.finalUnknown, true);
   assert.doesNotMatch(amountText(root, text), /at least/);
-  assert.match(unknownCauses(data, 105)[0].label, /total Not known/);
+  assert.match(unknownCauses(data, 105)[0].label, /Incomplete/);
   assert.equal(root.exact, -1200000n);
 });
 

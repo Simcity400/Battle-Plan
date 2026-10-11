@@ -25,6 +25,21 @@ const reply = (rows: EventFeedRow[] = []): EventFeedReply => ({ branchId: '1', f
 const named = { token: 'mod/item', name: 'A modded item', description: null,
   icon: 'data:image/png;base64,AA==', idea: null };
 
+test('event tooltips show gameplay caveats without country-label provenance', () => {
+  for (const [kind, category, note] of [
+    ['warStarted', 'warsPeace', 'War entry; declaration or joining unknown.'],
+    ['ceasedToExist', 'milestones', 'Lost all owned states.'],
+    ['nukesIncreased', 'milestones', 'Stockpile increase.'],
+  ] as const) {
+    const data = reply([row(kind, category, 150, { nameHour: 149, amount: 1 })]);
+    const at = filteredEventRows(data, all)[0].item;
+    const tip = eventTooltip(at, () => 'Country')[0];
+    assert.equal(tip.note, note);
+    assert.ok(!tip.rows.some(row => row.label === 'Country last observed'));
+    assert.ok(tip.rows.some(row => row.label === 'Date'));
+  }
+});
+
 test('native roles stay unknown in their original positions and remain visible for all countries', () => {
   const data = reply([row('annexed', 'warsPeace', 115, {
     exact: true, readHour: 140, tags: ['mod,partner'], participants: [null, 'mod,partner'],
@@ -88,21 +103,25 @@ test('every recorded event has honest wording and keeps countries as opaque iden
     const text = eventDescription(at.item, tag => tag === 'mod | country' ? 'Country at this hour' : 'Partner at this hour');
     assert.ok(text.includes(words), text);
     assert.ok(text.startsWith('Country at this hour'), text);
-    assert.equal(at.by, true);
+    assert.equal(at.by, false, 'a listed event shows its day, never "by"');
   }
 });
 
-test('native dates stay exact but wait for their supplying read; upper bounds say by', () => {
+test('native dates stay exact but wait for their supplying read, and every row shows only its day', () => {
   const data = reply([row('focusCompleted', 'milestones', 115, { exact: true, readHour: 140, nameHour: 115 }),
     row('lawChanged', 'politics', 120)]);
   const index = logPlaybackIndex(filteredEventRows(data, all));
   assert.deepEqual(logPlaybackAt(index, 119).rows, []);
-  assert.equal(logPlaybackAt(index, 120).rows[0].by, true);
+  assert.equal(logPlaybackAt(index, 120).rows[0].by, false);
   const exact = logPlaybackAt(index, 140).rows.find(candidate => candidate.item.event.kind === 'focusCompleted')!;
   assert.equal(exact.hour, 115);
   assert.equal(exact.revealedHour, 140);
   assert.equal(exact.by, false);
-  assert.equal(eventTooltip(exact.item, tag => tag)[0].rows?.[0].label, 'Native date');
+  const labels = eventTooltip(exact.item, tag => tag)[0].rows?.map(row => row.label) ?? [];
+  assert.equal(labels[0], 'Date');
+  assert.ok(!labels.some(label => /observed by|supplying|Native date/i.test(String(label))), 'the hover gives the day, not reads or bounds');
+  assert.ok(!labels.includes('Artwork'), 'an event without a picture says nothing about artwork');
+  assert.doesNotMatch(String(eventTooltip(exact.item, tag => tag)[0].rows?.[0].value), /·/, 'no hour');
   assert.deepEqual(filteredEventRows(data, { ...all, firstHour: 121 }), []);
 });
 
@@ -131,7 +150,7 @@ test('renames and disappeared countries request only their row-hour identities w
   const names = new Map([[110, 'Old name'], [150, 'New name'], [169, 'Last observed name']]);
   assert.ok(eventDescription(rows[2].item, () => names.get(rows[2].item.event.nameHour)!).startsWith('Old name'));
   assert.ok(eventDescription(rows[0].item, () => names.get(169)!).startsWith('Last observed name'));
-  assert.match(eventTooltip(rows[0].item, tag => tag)[0].note!, /cannot tell whether.*annexation/);
+  assert.match(eventTooltip(rows[0].item, tag => tag)[0].note!, /Lost all owned states/);
 });
 
 test('country filters use row hours and last-known membership for left and vanished countries', () => {
@@ -235,4 +254,10 @@ test('technology completion rows are outside the Event feed contract', () => {
   const data = reply([row('focusCompleted', 'milestones')]);
   assert.throws(() => validateEventFeedReply({ ...data, rows: [{ ...data.rows[0], kind: 'technologyResearched' }] }),
     /event feed reply is malformed/);
+});
+
+test('kinds without game artwork have their own icon', async () => {
+  const { EVENT_ICONS } = await import('./definition.ts');
+  assert.deepEqual([EVENT_ICONS.warDeclared, EVENT_ICONS.civilWarWarTransferred, EVENT_ICONS.peace, EVENT_ICONS.capitulated,
+    EVENT_ICONS.becameSubject, EVENT_ICONS.rulingPartyChanged], ['swords', 'flag-torn', 'olive-branch', 'flag', 'link', 'ballot']);
 });

@@ -67,7 +67,8 @@ test('log state labels follow shown-hour renames, stored owners and named refusa
   for (const [hour, refusal] of [[130, 'States read failed'], [148, 'language differs']] as const) {
     const tip = datedProjectTooltip(data, row.item, hour, 'Country', names)[0];
     assert.match(tip.subtitle ?? '', /State 5/);
-    assert.match(tip.note ?? '', new RegExp(refusal));
+    assert.equal(tip.note, 'State name unavailable.');
+    assert.doesNotMatch(tip.note, new RegExp(refusal));
   }
   assert.deepEqual(calls, [100, 124, 130, 148]);
 });
@@ -111,7 +112,7 @@ test('extra possible completions widen both counts only from their read, includi
   for (const tip of projectTooltip(LOG, at, 148, 'Germany')) {
     assert.equal(tip.rows.find(item => item.label === 'Levels built')?.value, '1–2 of 2–3');
     assert.equal(tip.rows.find(item => item.label === 'Added while under way')?.value, '0–1 level');
-    assert.match(tip.note ?? '', /Extra possible completions/);
+    assert.match(tip.note ?? '', /Completion count uncertain/);
   }
   const [row] = logRows(logOf([uncertain]), 148, every, 'change');
   assert.deepEqual([row.hour, row.by, at.stage], [148, true, 2]);
@@ -139,7 +140,7 @@ test('possible completions combine with unaccounted levels and earlier unknown w
     assert.equal(tip.rows.find(item => item.label === 'Built or dropped, not recorded')?.value, '1 level');
   }
   const [row] = logRows(logOf([uncertain]), 148, every, 'change');
-  assert.match(describeRow(LOG, row, 'Germany'), /1–3\+ of 4–5\+.*work before its first read was not recorded/);
+  assert.match(describeRow(LOG, row, 'Germany'), /1–3\+ of 4–5\+.*earlier progress unknown/);
 });
 
 test('possible work alone changes a merged run without claiming exact work', () => {
@@ -162,10 +163,10 @@ test('work before the first read stays unknown, including on a single level', ()
   assert.equal(builtLabel(at), '1+ of 1+');
   assert.equal(levelsLabel(at), '1+ of 1+');
   const [row] = logRows(logOf([opening]), 148, every, 'change');
-  assert.match(describeRow(LOG, row, 'Germany'), /work before its first read was not recorded/);
+  assert.match(describeRow(LOG, row, 'Germany'), /earlier progress unknown/);
   for (const tip of projectTooltip(LOG, at, 148, 'Germany')) {
     assert.equal(tip.rows.find(item => item.label === 'Levels built')?.value, '1+ of 1+');
-    assert.match(tip.note ?? '', /Work before its first read was not recorded/);
+    assert.match(tip.note ?? '', /Earlier progress unknown/);
   }
   const unseen = project({ earlierUnknown: true,
     runs: [{ firstHour: 100, lastHour: 123, factories: 10, remaining: 2, repairLevels: 0 },
@@ -248,7 +249,7 @@ test('a gap or failed queue read leaves status and pending dates unread until th
           const dates = tip.rows.filter(row => ['Repaired', 'Built', 'Finished'].includes(row.label));
           assert.equal(dates.length, remaining && repairLevels ? 2 : 1);
           assert.ok(dates.every(row => row.value === 'Not recorded' && row.tone === 'muted'));
-          assert.equal(tip.rows.find(row => row.label === 'Factories')?.value, 'Not recorded since a gap');
+          assert.equal(tip.rows.find(row => row.label === 'Factories')?.value, 'Factories unknown');
         }
       }
       const resumed = projectAt(item, nextRead)!;
@@ -283,7 +284,7 @@ test('the tooltip dates its read, names its levels and cost, and says why an end
   assert.equal(value('Cost'), '560 for the route');
   assert.equal(value('Railway level'), '1 → 2');
   assert.match(value('Left the queue') ?? '', /^by /);
-  assert.match(full.note ?? '', /Some hours before this read were not recorded/);
+  assert.match(full.note ?? '', /Completion unknown/);
   assert.doesNotMatch(full.note ?? '', /read once a day/, 'tooltips carry no read cadence note');
   assert.ok(compact.rows.length < full.rows.length);
   const repair = projectTooltip(LOG, projectAt(PROJECTS[1], 124)!, 124, 'Germany')[0];
@@ -431,10 +432,10 @@ test('the log keeps exact signed output and distinguishes natural repair from fa
   const at = projectAt(p, 124)!;
   assert.equal(at.kind, 'repairThenNew');
   const tip = projectTooltip(log, at, 124, 'Synthetic country')[0];
-  assert.equal(tip.rows?.find(row => row.label === 'New-building factory IC')?.value, '90,071,992,547.41499');
-  assert.equal(tip.rows?.find(row => row.label === 'Repair factory IC')?.value, '−0.00001');
-  assert.equal(tip.rows?.find(row => row.label === 'Output read')?.value, formatDateTime(100));
-  assert.match(tip.note ?? '', /before observation began/);
+  assert.equal(tip.rows?.find(row => row.label === 'Construction output')?.value, '90,071,992,547.41499');
+  assert.equal(tip.rows?.find(row => row.label === 'Repair output')?.value, '−0.00001');
+  assert.equal(tip.rows?.find(row => row.label === 'Output read')?.value, undefined);
+  assert.match(tip.note ?? '', /Earlier progress unknown/);
 });
 
 // The output table was read at 100, 124, 148 and 172, and was unavailable at 172.

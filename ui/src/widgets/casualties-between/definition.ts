@@ -1,7 +1,7 @@
 import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 
-export const DETAIL = { id: 'pairs', label: 'Recorded casualty pairs' };
+export const DETAIL = { id: 'pairs', label: 'Casualty pairs' };
 export const definition = {
   kind: 'casualties-between', version: 1, title: 'Casualties between countries', icon: 'target',
   description: 'Recorded casualties dealt from each country to each enemy country.',

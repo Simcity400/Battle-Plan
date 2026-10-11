@@ -10,7 +10,7 @@ Country intelligence-agency names, defence, acquired upgrades and active/maximum
 
 ## Settings
 
-All created agencies by default, manual/groups/Top N; campaign/follow/pin, include-uncreated, separate ranking measure and shared table controls. Defence descending is the default sort.
+All created agencies by default, manual/groups/Top N; campaign/follow/pin, include-uncreated, Top countries by only for Top N selections, and shared table controls. Defence descending is the default sort.
 
 ## Notable behaviour
 

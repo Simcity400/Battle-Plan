@@ -216,8 +216,9 @@ export function factionLanes(views: readonly FactionView[], hour: number, option
     const leader = leaderAt(view.leaders, hour);
     const recordedCount = count(view);
     const members = recordedCount < 0 ? null : recordedCount;
+    // The heading counts members; its leader is marked in the member rows below it.
     const state = exists
-      ? [leader ? `Led by ${text.country(leader).name}` : 'Leader not recorded', members == null ? 'members not recorded' : `${members} ${members === 1 ? 'member' : 'members'}`].join(' · ')
+      ? members == null ? 'Members not recorded' : `${members} ${members === 1 ? 'member' : 'members'}`
       : describeRun(view.lifetime, hour, factionWords(text.day), unobserved, branchFirstHour) ?? '';
     const headingId = laneId(view.id, null);
     info.set(headingId, { faction: view, member: null });
@@ -236,7 +237,7 @@ export function factionLanes(views: readonly FactionView[], hour: number, option
     const tags = new Map(shownMembers.map(member => [member, tagAt(view, member, hour)]));
     const tagOf = (member: MemberView) => tags.get(member) ?? null;
     const leading = (member: MemberView) => leader !== null && leader === tagOf(member) ? 0 : 1;
-    const countryAt = (tag: string | null) => tag === null ? { name: 'Native country identity not recorded', flagReason: 'Native country identity not recorded at this hour.' } : text.country(tag);
+    const countryAt = (tag: string | null) => tag === null ? { name: 'Unknown country', flagReason: 'Unknown country' } : text.country(tag);
     const nameOf = (member: MemberView) => countryAt(tagOf(member)).name;
     shownMembers.sort(options.members === 'name' ? (a, b) => nameOf(a).localeCompare(nameOf(b)) || compareTags(a.key, b.key)
       : (a, b) => firstHour(a.runs) - firstHour(b.runs) || leading(a) - leading(b) || nameOf(a).localeCompare(nameOf(b)) || compareTags(a.key, b.key));

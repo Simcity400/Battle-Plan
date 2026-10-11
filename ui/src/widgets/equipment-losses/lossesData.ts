@@ -1,15 +1,11 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { Coverage, LossCause, LossDesign, LossLeaf, LossName, LossPoint, LossSource, LossesReply, UnknownSpan } from '../../generated/dashboard';
-import type { SunburstItem, SunburstNode, SunburstTotal } from '../../charts/sunburst/layout';
+import type { SunburstItem, SunburstTotal } from '../../charts/sunburst/layout';
 import type { LegendItem } from '../../charts/Legend';
 import type { ChartTokens } from '../../charts/tokens';
 import { mix } from '../../shell/appearance/color.ts';
-import type { TooltipRow } from '../../charts/tooltip';
 import { formatAmount } from '../../charts/valueAxis.ts';
-import { usNumber } from '../../charts/numberFormat.ts';
-import { unresolvedTypeName } from '../../dashboard/equipment.ts';
 import { entryAt } from '../../dashboard/reads.ts';
-import { formatDateTime } from '../../dashboard/calendar.ts';
 import { int, object } from '../../dashboard/validation.ts';
 
 export const LEVELS = ['causeLevel', 'typeLevel', 'designLevel'] as const;
@@ -106,24 +102,18 @@ function weightAt(leaf: LossLeaf, hour: number, from?: number | null): number {
 }
 
 export const causeName = (cause: LossCause) => contentTitle(cause.name.text ?? cause.name.template, cause.name.key, 'Cause name unavailable');
-export const typeName = (design: LossDesign | undefined) => design?.archetypeName
-  ?? (design?.archetype != null ? unresolvedTypeName(design.archetype) : 'Equipment type not known');
+export const typeName = (design: LossDesign | undefined) => contentTitle(design?.archetypeName, design?.archetype, 'Equipment type name unavailable');
 
 const spansAt = (cause: LossCause, hour: number) => [...new Map(cause.unknownSpans
   .filter(span => span.firstHour <= hour && hour <= span.lastHour)
   .map(span => [JSON.stringify([span.reason, span.detail]), span])).values()];
 const destructionReason = (span: UnknownSpan) => span.reason.startsWith('destruction');
-const spanNote = (span: UnknownSpan) => span.detail ?? UNKNOWN_LABELS[span.reason];
 
-/** Reasons stay visible when the cause ring or slice legend is switched off. */
+/** One short limitation per cause for the completeness disclosure. */
 export const unknownCauses = (reply: LossesReply, hour: number) => reply.causes.filter(cause => cause.loss).flatMap(cause => {
-  if (cause.unknown !== null) return [{ id: sourceKey(cause.source), label: `${causeName(cause)}: Not known — ${cause.unknown}` }];
-  const spans = spansAt(cause, hour);
-  const known = cause.leaves.some(leaf => pointAt(leaf, hour));
-  return spans.map(span => ({ id: `${sourceKey(cause.source)}:${JSON.stringify([span.reason, span.detail])}`, label: span.reason === 'unread'
-    ? `${causeName(cause)}: Not known at this hour — cause not read; recorded amounts may lag.`
-    : destructionReason(span) ? `${causeName(cause)}: ${known ? 'recorded subtotal; total Not known' : 'Not known'} — ${spanNote(span)}`
-      : `${causeName(cause)}: recorded subtotal; total Not known — an exchange ended after its last read.` }));
+  if (cause.unknown !== null) return [{ id: sourceKey(cause.source), label: `${causeName(cause)}: Unavailable` }];
+  if (!spansAt(cause, hour).length) return [];
+  return [{ id: sourceKey(cause.source), label: `${causeName(cause)}: ${cause.leaves.some(leaf => pointAt(leaf, hour)) ? 'Incomplete' : 'Unavailable'}` }];
 });
 
 type LandState = 'logged' | 'partial' | 'notLogged' | 'unknown';
@@ -168,7 +158,7 @@ export const lossKey = (cause: LossCause, design: LossDesign | undefined) => JSO
 export const lossDesignName = (design: LossDesign | undefined, hour: number) => {
   if (!design) return 'Design not recorded';
   const read = entryAt(design.names, hour);
-  return (read?.known ? read.name : null) ?? `Design ${design.variant} (name not known)`;
+  return (read?.known ? read.name : null) ?? 'Name unavailable';
 };
 
 export interface LossItem extends SunburstItem {
@@ -178,7 +168,6 @@ export interface LossItem extends SunburstItem {
   incomplete?: boolean;
 }
 export interface LossTotal extends SunburstTotal { exact: bigint | null; incomplete: boolean }
-
 
 const NO_DESTRUCTION_READ = 'No destruction drain was recorded at this hour.';
 export function destructionCoverageAt(reply: LossesReply, hour: number): string | null {
@@ -203,47 +192,29 @@ export function destructionCoverageHours(reply: LossesReply, first: number, last
   return { recorded, unknown, reasons: [...reasons] };
 }
 
-/** Moment coverage with Partial's exact N, or hours per state for Live off. */
+/** Compact status for the selected destruction intervals. */
 export function destructionLegend(reply: LossesReply, window: LossWindow, tokens: Pick<ChartTokens, 'positive' | 'surface' | 'text'>): LegendItem[] {
-  const neutral = mix(tokens.surface, tokens.text, 0.1);
   const first = reply.destructionCountedFrom;
-  // The uncounted opening interval is explained by the footnote, not a gap state.
   if ((first === null && !reply.destructionCoverage.length) || (first !== null && window.hour < first)) return [];
-  if (!window.campaign) {
-    const reason = destructionCoverageAt(reply, window.hour);
-    return [{ id: reason === null ? 'recorded' : 'unknown', color: reason === null ? tokens.positive : neutral,
-      label: reason === null ? 'Recorded' : `Unknown: ${reason}` }];
-  }
-  const counts = destructionCoverageHours(reply, window.first, window.hour);
-  const hours = (count: number) => `${usNumber.format(count)} ${count === 1 ? 'hour' : 'hours'}`;
-  return [counts.recorded ? { id: 'recorded', color: tokens.positive, label: `Recorded: ${hours(counts.recorded)}` } : null,
-    counts.unknown ? { id: 'unknown', color: neutral, label: `Unknown: ${hours(counts.unknown)} — ${counts.reasons.join(' ')}` } : null]
-    .filter((item): item is NonNullable<typeof item> => item !== null);
+  const missing = window.campaign ? destructionCoverageHours(reply, window.first, window.hour).unknown > 0
+    : destructionCoverageAt(reply, window.hour) !== null;
+  return [{ id: missing ? 'unknown' : 'recorded', color: missing ? mix(tokens.surface, tokens.text, 0.1) : tokens.positive,
+    label: missing ? 'Incomplete' : 'Complete' }];
 }
 
 export function coverageLegend(reply: LossesReply, window: LossWindow, tokens: Pick<ChartTokens, 'positive' | 'warning' | 'error' | 'surface' | 'text'>): LegendItem[] {
   if (reply.landSource === 'destruction') return destructionLegend(reply, window, tokens);
-  const neutral = mix(tokens.surface, tokens.text, 0.1);
-  const colours = { logged: tokens.positive, partial: tokens.warning, notLogged: tokens.error, unknown: neutral };
-  const labels = { logged: 'Logged', partial: 'Partial', notLogged: 'Not logged', unknown: 'Unknown' };
-  if (window.campaign) return Object.entries(coverageHours(reply, window.first, window.hour)).filter(([, hours]) => hours > 0)
-    .map(([state, hours]) => ({ id: state, color: colours[state as LandState], label: `${labels[state as LandState]}: ${usNumber.format(hours)} ${hours === 1 ? 'hour' : 'hours'}` }));
-  const coverage = coverageAt(reply, window.hour);
-  const state = stateOf(coverage);
-  const label = typeof coverage === 'object' ? `Partial: ${usNumber.format(coverage.partial.ungrouped)} ${coverage.partial.ungrouped === 1 ? 'division' : 'divisions'} outside armies`
-    : coverage === 'pruneUnobserved' ? 'Unknown: retention was not observed' : labels[state];
-  return [{ id: state, color: colours[state], label }];
+  const counts = coverageHours(reply, window.first, window.hour);
+  const incomplete = window.campaign ? counts.partial + counts.notLogged + counts.unknown > 0 : stateOf(coverageAt(reply, window.hour)) !== 'logged';
+  return [{ id: incomplete ? 'partial' : 'logged', color: incomplete ? tokens.warning : tokens.positive,
+    label: incomplete ? 'Incomplete' : 'Complete' }];
 }
 
 /** Unlogged land hours cannot become a complete campaign total after rejoining an army. */
 export function landNote(reply: LossesReply, first: number, hour: number): string | undefined {
-  if (reply.landSource === 'destruction') return reply.landLowerBound ?? undefined;
+  if (reply.landSource === 'destruction') return reply.landLowerBound ? 'Incomplete total.' : undefined;
   const counts = coverageHours(reply, first, hour);
-  const notes: string[] = [];
-  if (counts.partial || counts.notLogged) notes.push('Land losses are incomplete: some hours were partial or not logged.');
-  if (counts.unknown) notes.push('Land losses are unknown for some hours; recorded amounts may be incomplete.');
-  if (reply.coverage.some(span => span.coverage === 'pruneUnobserved' && span.firstHour <= hour && span.lastHour >= first)) notes.push('Land-loss retention was not observed at some hours.');
-  return notes.join(' ') || undefined;
+  return counts.partial || counts.notLogged || counts.unknown ? 'Incomplete total.' : undefined;
 }
 
 /** Native cause, content archetype and recorded design; unknown causes invent no leaves. */
@@ -254,21 +225,18 @@ export function lossItems(reply: LossesReply, window: LossWindow): LossItem[] {
     if (!cause.loss) continue;
     const causePath = [{ id: `cause:${sourceKey(cause.source)}`, label: causeName(cause) }];
     if (cause.unknown !== null) {
-      items.push({ path: causePath, value: null, final: null, finalUnknown: true, unknownValue: true, incomplete: true, note: cause.unknown });
+      items.push({ path: causePath, value: null, final: null, finalUnknown: true, unknownValue: true, incomplete: true, note: 'Unavailable' });
       continue;
     }
     const spans = spansAt(cause, window.hour), finalSpans = spansAt(cause, window.end);
-    const destructionNotes = [...new Set(spans.filter(destructionReason).map(spanNote))];
+    const destructionMissing = spans.some(destructionReason);
     const unread = spans.some(span => span.reason === 'unread');
     const ended = spans.some(span => span.reason === 'endedAfterLastRead');
     const started = cause.source.kind !== 'destruction' || reply.destructionCountedFrom !== null && window.hour >= reply.destructionCountedFrom;
-    const incomplete = unread || ended || destructionNotes.length > 0 || !!(cause.domain === 'land' && started && land);
+    const incomplete = unread || ended || destructionMissing || !!(cause.domain === 'land' && started && land);
     const finalUnknown = finalSpans.length > 0 || !!(cause.domain === 'land' && landNote(reply, window.first, window.end));
     const noAmount = !cause.leaves.some(leaf => pointAt(leaf, window.hour));
-    const note = [incomplete && !noAmount ? 'Recorded subtotal; total Not known.' : undefined,
-      cause.domain === 'land' ? land : undefined, ...destructionNotes,
-      unread ? 'This cause was not read at the moment shown; its recorded amount may lag.' : undefined,
-      ended ? 'An exchange ended after its last read; losses since that read are not known.' : undefined].filter(Boolean).join(' ');
+    const note = incomplete ? noAmount ? 'Unavailable' : 'Incomplete total.' : undefined;
     const noKnownAmount = noAmount && incomplete;
     items.push({ path: causePath, value: noKnownAmount ? null : 0, exact: 0n, final: 0,
       unknownValue: noKnownAmount, incomplete, finalUnknown, note: note || undefined, present: started || spans.length > 0 });
@@ -293,60 +261,16 @@ export function lossItems(reply: LossesReply, window: LossWindow): LossItem[] {
   return items;
 }
 
-const leafCatalogues = new WeakMap<LossesReply, Map<string, { cause: LossCause; leaf: LossLeaf }>>();
-function leafCatalogue(reply: LossesReply) {
-  let catalogue = leafCatalogues.get(reply);
-  if (!catalogue) {
-    catalogue = new Map();
-    for (const cause of reply.causes) if (cause.loss) for (const leaf of cause.leaves)
-      catalogue.set(lossKey(cause, leaf.design === null ? undefined : reply.designs[leaf.design]), { cause, leaf });
-    leafCatalogues.set(reply, catalogue);
-  }
-  return catalogue;
-}
-
-/** Supplying dates and item-only label/exchange notes do not spread to ancestors. */
-export function lossDetails(node: SunburstNode, reply: LossesReply, hour: number): TooltipRow[] {
-  let first: number | null = null, last: number | null = null;
-  const rows: TooltipRow[] = [];
-  const cause = node.key.startsWith('cause:') ? reply.causes.find(cause => node.key === `cause:${sourceKey(cause.source)}`) : undefined;
-  if (cause) {
-    const template = cause.name.template;
-    if (cause.name.text === null) rows.push({ label: 'Cause label', value: 'The content supplies no fully resolved cause label; its template or identifier is shown verbatim.', tone: 'muted' });
-    else if (template && template !== cause.name.text && !template.includes('$')) rows.push({ label: 'Game text', value: template, tone: 'muted' });
-  }
-  const catalogue = leafCatalogue(reply);
-  for (const key of node.counted) {
-    const entry = catalogue.get(key);
-    if (!entry) continue;
-    const { cause, leaf } = entry;
-    const point = pointAt(leaf, hour);
-    if (!point) continue;
-    first = first === null ? point.hour : Math.min(first, point.hour);
-    last = last === null ? point.hour : Math.max(last, point.hour);
-    if (node.key.startsWith('design:') && cause.source.kind !== 'destruction' && leaf.lowerBoundFrom !== null && leaf.lowerBoundFrom <= hour)
-      rows.push({ label: 'Incomplete from', value: `${formatDateTime(leaf.lowerBoundFrom)}: an exchange ended after its last read.`, tone: 'muted' });
-  }
-  if (first !== null && last !== null) rows.unshift({ label: first === last ? 'Last recorded change' : 'Last changes of included amounts',
-    value: first === last ? formatDateTime(last) : `${formatDateTime(first)} - ${formatDateTime(last)}`, tone: 'muted' });
-  return rows;
-}
-
 /** Preserve every recorded fixed-point digit, including amounts beyond 2^53. */
 export function formatLosses(value: number, exact: bigint | null, scale: number): string {
   const raw = exact ?? BigInt(Math.round(value));
   const amount = formatAmount(raw, Math.round(Math.log10(scale)), Math.round(Math.log10(scale)));
-  return raw < 0n ? `Correction: ${amount} (the game returned equipment)` : amount;
+  return raw < 0n ? `Returned: ${amount}` : amount;
 }
 
 export function lossesFootnote(reply: LossesReply, window: LossWindow): string {
-  return [reply.landSource === 'combatLog' ? landNote(reply, window.first, window.hour) : undefined, 'Recorded signed net amounts only; incomplete amounts are subtotals and their full totals are Not known. Negative corrections mean the game returned equipment and have no arc.',
-    destructionCountingNote(reply, window.hour),
-    window.from != null ? 'The range counts signed changes at their supplying reads; the first retained Combat Log read can include losses before its read date.' : undefined,
-    reply.landSource === 'destruction' ? undefined
-      : reply.retainedMonths === null ? 'Land retention is not known.' : reply.retainedMonths > 0
-      ? `The first land read can include up to ${reply.retainedMonths} months retained by the game.`
-      : 'Land retention prevents a known total; see the cause reasons.'].filter(Boolean).join(' ');
+  return [landNote(reply, window.first, window.hour), destructionCountingNote(reply, window.hour),
+    reply.landSource === 'combatLog' && reply.retainedMonths !== 0 ? 'Includes earlier Combat Log losses.' : undefined].filter(Boolean).join(' ');
 }
 
 /** Independently counted subtotal: missing cause amounts leave the full signed total unknown. */
@@ -367,16 +291,10 @@ export function lossesTotal(items: readonly LossItem[]): LossTotal {
     incomplete ||= item.incomplete === true || item.value === null;
   }
   return { value: measured ? value : null, exact: measured ? exact : null, final, finalUnknown, incomplete, unknownValue: !measured,
-    note: incomplete ? 'Recorded subtotal; the full signed total is Not known.' : undefined };
+    note: incomplete ? 'Incomplete total.' : undefined };
 }
 
 /** Counting-start wording lives here so product wording changes need one edit. */
 export function destructionCountingNote(reply: LossesReply, hour: number): string {
-  if (reply.destructionCountedFrom === null) {
-    const reasons = [...new Set(reply.destructionCoverage.flatMap(span => span.reason === null ? [] : [span.reason]))];
-    if (reasons.length) return `Destruction was not recorded on this branch: ${reasons.join(' ')}`;
-  }
-  return reply.destructionCountedFrom === null || hour < reply.destructionCountedFrom
-    ? 'Destruction counting has not started at this moment.'
-    : `Destruction counted from ${formatDateTime(reply.destructionCountedFrom)}.`;
+  return reply.destructionCountedFrom === null || hour < reply.destructionCountedFrom ? 'Unavailable' : '';
 }

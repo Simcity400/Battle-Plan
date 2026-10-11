@@ -1,3 +1,4 @@
+import ArtFallback from '../../components/ArtFallback';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
@@ -15,6 +16,7 @@ import { FAILED_FACT, nameKey } from '../../dashboard/countryFacts';
 import { useFocusArtwork } from './useFocusArtwork';
 import { focusSegmentAt, focusCompletion, focusProgressAt, focusRequest, validateFocusReply } from './focusData';
 import type { FocusProgressState } from './focusData';
+import WidgetState from '../../components/WidgetState';
 import ListSkeleton from '../../components/Skeleton';
 import { Icon } from '../../components/Icons';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -25,8 +27,8 @@ import './nationalFocus.css';
 const NO_WARNINGS: string[] = [];
 const days = (value: number) => `${enTwoDecimals.format(value)} ${value === 1 ? 'day' : 'days'}`;
 
-function FocusArt({ art, size, reason }: { art: Artwork | undefined; size: 'large' | 'small'; reason?: string }) {
-  return <span className={`focus-art is-${size}`}>{art?.icon ? <img src={art.icon} alt="" /> : <span className="focus-missing-art" data-tooltip={reason ?? 'Game artwork unavailable in the recorded content'}><Icon name="target" /></span>}</span>;
+function FocusArt({ art, size }: { art: Artwork | undefined; size: 'large' | 'small' }) {
+  return <span className={`focus-art is-${size}`}>{art?.icon ? <img src={art.icon} alt="" /> : <ArtFallback icon="target" />}</span>;
 }
 
 /** Live or pinned: the focus being worked on at that hour, with the game's progress line along its lower edge. */
@@ -39,17 +41,17 @@ function CurrentFocus({ order, art, state, live, reason, pending }: { order: Foc
     return <div className="focus-now is-idle" role="status">
       <span className="focus-art is-large"><span className="focus-missing-art"><Icon name="pause" /></span></span>
       <span className="focus-now-text"><strong>No national focus selected</strong>
-        <span>{banked > 0 ? `${days(banked)} of progress saved for the next focus` : 'The country is not working on a national focus.'}</span></span>
+        <span>{banked > 0 ? `${days(banked)} of progress saved for the next focus` : null}</span></span>
     </div>;
   }
   const status = continuous ? 'Continuous focus' : order.paused ? 'Paused' : 'In progress';
   const name = contentTitle(art?.name, token, 'Focus name unavailable', pending);
   return <div className={`focus-now${order.paused ? ' is-paused' : ''}`} aria-live="polite">
-    <FocusArt art={art} size="large" reason={reason} />
+    <FocusArt art={art} size="large" />
     <span className="focus-now-text"><strong data-tooltip={contentTitleHint(token, reason)}>{name}</strong>
       <span className="focus-now-status">{live && !continuous && !order.paused && <span className="live-dot" />}{status}
-        {completion && <span className="focus-now-days" data-tooltip="Recorded work toward this focus's base duration">· Day {Math.min(completion.elapsedDays + 1, Math.ceil(completion.totalDays))} of {enTwoDecimals.format(completion.totalDays)}</span>}</span></span>
-    {completion && <span className="focus-now-left" data-tooltip={completion.daysLeft == null ? 'The daily rate is not known yet: it needs one recorded day of progress on this focus.' : 'At the last recorded daily rate. Focus speed changes can shift it.'}>
+        {completion && <span className="focus-now-days">· Day {Math.min(completion.elapsedDays + 1, Math.ceil(completion.totalDays))} of {enTwoDecimals.format(completion.totalDays)}</span>}</span></span>
+    {completion && <span className="focus-now-left" data-tooltip={completion.daysLeft == null ? undefined : 'Estimated at current focus speed.'}>
       {completion.daysLeft == null ? <><strong>{Math.round(completion.fraction * 100)}%</strong><small>complete</small></>
         : <><strong>{completion.daysLeft}</strong><small>{completion.daysLeft === 1 ? 'day left' : 'days left'}</small></>}
     </span>}
@@ -110,16 +112,12 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
     return { identity: detailsIdentity, client: runtime.client, rows: next };
   });
   const at = (token: string, readHour: number) => {
-    const key = nameKey(readHour, token), item = dated.read.get(key), description = dated.details?.get(key);
+    const item = dated.read.get(nameKey(readHour, token));
     const fallback = metadata.get(token);
-    const descriptionState = { descriptionPending: detailsKeys.has(key) && description === undefined,
-      descriptionReason: description === FAILED_FACT ? 'Focus description request failed.'
-        : description === null ? 'Focus description was not recorded at this hour.' : description?.reason ?? undefined };
     return item && item !== FAILED_FACT ? { art: { ...item.artwork, description: item.artwork.description ?? fallback?.description ?? null },
-      ...descriptionState,
-      reason: [item.titlePending ? 'Loading focus name\u2026' : item.titleReason, item.reason, item.imagePending ? 'Loading game artwork…' : item.imageReason].filter(Boolean).join('; ') || undefined, pending: item.titlePending ?? false }
-      : { art: fallback, ...descriptionState, pending: item === undefined, reason: item === undefined ? 'Loading game artwork…'
-        : item === FAILED_FACT ? 'Game artwork request failed.' : 'Game artwork was not recorded at this hour.' };
+      reason: [item.titlePending ? 'Loading focus name\u2026' : item.titleReason, item.reason].filter(Boolean).join('; ') || undefined, pending: item.titlePending ?? false }
+      : { art: fallback, pending: item === undefined, reason: item === undefined ? 'Loading focus name\u2026'
+        : item === FAILED_FACT ? 'Focus name request failed.' : 'Focus name was not recorded at this hour.' };
   };
   const unavailable = useMemo(() => {
     const reasons = new Map<string, number>();
@@ -135,7 +133,6 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
     }
     return [...reasons].map(([reason, count]) => ({ reason, count }));
   }, [dated.read, dated.details]);
-  const unavailableCount = unavailable.reduce((sum, item) => sum + item.count, 0);
   const diagnostics = useMemo(() => [...(data?.warnings ?? NO_WARNINGS), ...dated.warnings,
     ...unavailable.map(item => `${item.reason} (${item.count})`)], [data, dated.warnings, unavailable]);
   useDiagnostics(onDiagnostics, diagnostics);
@@ -148,8 +145,8 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
     seen.current = count;
   }, [live, count]);
   if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="target" /></span><p>Load a campaign and choose a country to see its national focuses.</p></div>;
-  if (!inRange) return <div className="dash-empty" role="status">This time is outside the country’s recorded branch.</div>;
-  if (error) return <div className="dash-empty" role="alert"><p>{error}</p><button className="button small" onClick={retry}>Retry</button></div>;
+  if (!inRange) return <div className="dash-empty" role="status">This time is outside the recording.</div>;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return <ListSkeleton label="Loading national focuses…" />;
   if (!order) return <div className="dash-empty" role="status">No complete focus data recorded at this date.</div>;
   const newest = live ? order.completed.at(-1)?.ordinal : undefined;
@@ -159,21 +156,19 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
   return <section key={detailsIdentity} className="national-focus" aria-label="National focus">
     {headerSlot && createPortal(<span className="pill focus-header-count">{order.completed.length} completed</span>, headerSlot)}
     {moment && <CurrentFocus order={order} art={currentArt.art} state={state} live={live} reason={currentArt.reason} pending={currentArt.pending} />}
-    {unavailable.length > 0 && <details className="focus-empty"><summary>Artwork unavailable ({unavailableCount})</summary>
-      {unavailable.map(item => <p key={item.reason}>{item.reason} ({item.count})</p>)}</details>}
     <div className="focus-scroll" ref={list}>
       {order.completed.length || unfinished ? <ol className="focus-list" aria-label="Completed focuses in order">{order.completed.map(entry => {
         const readHour = entry.completedByHour ?? readingHour!, key = nameKey(readHour, entry.token);
-        const { art, reason, pending, descriptionPending, descriptionReason } = at(entry.token, readHour);
+        const { art, reason, pending } = at(entry.token, readHour);
         const date = entry.completedByHour == null ? null : gameDate(entry.completedByHour);
         return <li key={entry.ordinal} className={`focus-entry${entry.ordinal === newest ? ' is-newest' : ''}`}
           {...rowJumpProps(runtime, track.id, entry.completedByHour, menu.open)}>
           <details className="focus-details" open={detailsKeys.has(key)} onToggle={event => toggleDetails(key, event.currentTarget.open)}>
             <summary className="focus-row">
               <span className="focus-number" aria-label={`Focus ${entry.ordinal + 1}`}>{String(entry.ordinal + 1).padStart(2, '0')}</span>
-              <FocusArt art={art} size="small" reason={reason} />
+              <FocusArt art={art} size="small" />
               <span className="focus-label"><strong data-tooltip={contentTitleHint(entry.token, reason)}>{contentTitle(art?.name, entry.token, 'Focus name unavailable', pending)}</strong>
-                <span className="focus-date" data-tooltip={entry.completedByHour == null ? 'This focus was already complete when readable recording history began, or its completion could not be dated.' : 'First recorded observation of this completion; the exact completion time is not stored.'}>
+                <span className="focus-date" data-tooltip={entry.completedByHour == null ? 'Completion date unknown.' : 'Complete by this date.'}>
                   {date == null ? 'Date not recorded' : `By ${formatDate(date)}`}
                 </span>
               </span>
@@ -181,8 +176,7 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
             </summary>
             <div className="focus-description">
               <div className="focus-duration">{art?.baseDurationDays != null ? <>Base duration <strong>{days(art.baseDurationDays)}</strong></> : 'Duration unavailable'}</div>
-              <p data-tooltip={descriptionReason}>{art?.description ?? (descriptionPending ? 'Loading focus description…'
-                : descriptionReason ?? 'Description unavailable in the recorded game localisation.')}</p>
+              {art?.description && <p>{art.description}</p>}
             </div>
           </details>
         </li>;
@@ -190,10 +184,9 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
         {unfinished && <li className="focus-entry is-unfinished">
           <div className="focus-row">
             <span className="focus-number" aria-hidden="true">{String(order.completed.length + 1).padStart(2, '0')}</span>
-            <FocusArt art={currentArt.art} size="small" reason={currentArt.reason} />
+            <FocusArt art={currentArt.art} size="small" />
             <span className="focus-label"><strong data-tooltip={contentTitleHint(unfinished, currentArt.reason)}>{contentTitle(currentArt.art?.name, unfinished, 'Focus name unavailable', currentArt.pending)}</strong>
-              <span>{order.paused ? 'Paused when the recording ended' : 'Still in progress when the recording ended'}</span></span>
-            <span className="pill">Unfinished</span>
+              <span>{order.paused ? 'Paused' : 'In progress'}</span></span>
           </div>
         </li>}
       </ol> : <p className="focus-empty">No completed focuses recorded at this point.</p>}

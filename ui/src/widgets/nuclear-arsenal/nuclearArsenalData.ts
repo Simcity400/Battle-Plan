@@ -6,7 +6,6 @@ import type { Run, Span } from '../../charts/series';
 import { usNumber } from '../../charts/numberFormat.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { compareTags } from '../../dashboard/tagOrder.ts';
-import { formatDateTime } from '../../dashboard/calendar.ts';
 import { readAt } from '../../dashboard/reads.ts';
 import type { CountryNukesReply, NukeRun, NukesParams } from '../../generated/dashboard';
 import { pinPartsRace } from '../../charts/race/partsRaceDrill.ts';
@@ -101,17 +100,13 @@ export function validateNuclearDrillReply(data: unknown): CountryNukesReply {
 export function pinNuclearDrill(widget: WidgetSpec, track: Pick<BoundTrack, 'id' | 'branch'>, tag: string,
   hour: number, originHour: number, follow: boolean): WidgetSpec {
   return pinPartsRace({ ...widget, time: follow ? { mode: 'follow' } : widget.time,
-    options: { ...widget.options, drillOriginHour: Math.floor(originHour) } }, track, tag, hour, follow, 'Nuke types');
+    options: { ...widget.options, drillOriginHour: Math.floor(originHour) } }, track, tag, hour, follow, 'Weapon types');
 }
 
 export function nukeTypeName(type: CountryNukesReply['types'][number]): string {
   return contentTitle(type.name, type.token, 'Nuclear weapon name unavailable');
 }
 export const formatNukes = (value: number) => usNumber.format(value);
-export function nuclearReadNote(model: NuclearModel, hour: number): string {
-  const read = readAt(model.reply.readHours, hour);
-  return `${read == null ? 'Read time unknown' : `Read ${formatDateTime(read)}`}. The game counter counts the stockpile. The recorded “ready” field counts queued drops after their delay and is outside this widget.`;
-}
 
 export function nuclearModel(reply: CountryNukesReply) {
   return { reply, tags: reply.series.map(series => series.tag),
@@ -196,7 +191,7 @@ export function nuclearTooltip(model: NuclearModel, tag: string, hour: number, n
         const value = at.run.counts.find(count => count.ordinal === type.ordinal)?.value;
         return value == null ? 'Unknown' : formatNukes(value);
       })(), swatch: colours.get(String(type.ordinal)) })),
-      { label: 'Nuclear stockpile (game counter)', value: at.run.total == null ? 'Unknown' : formatNukes(at.run.total), strong: true, divider: true },
-    ], note: nuclearReadNote(model, hour),
+      { label: 'Nuclear stockpile', value: at.run.total == null ? 'Unknown' : formatNukes(at.run.total), strong: true, divider: true },
+    ],
   }];
 }

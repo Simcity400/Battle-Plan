@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { loadProduct } from './products';
 import { FactRequests, HourStore, nameKey, readFacts } from './countryFacts';
 import { factionFounders, founderReads, leaderColours } from './factionLeaders';
@@ -6,7 +6,6 @@ import { STYLES } from './useCountriesAt';
 import type { Rgb } from '../shell/appearance/color';
 import { validateCountryGroupReply } from './groupsReply';
 import { Icon } from '../components/Icons';
-import { Popover, PopoverHeading, usePopover } from '../components/Popover';
 import { factionColours } from '../charts/factionColours';
 import { readTokens, subscribeTokens } from '../charts/tokens';
 import type { DashboardClient, DashboardSource } from './client';
@@ -115,22 +114,8 @@ export function useFactionColours(client: DashboardClient, source: DashboardSour
   return { factions, colours, names, displayNames, identity, founder, setColour, loading: !campaign.factions && !campaign.error, warnings: campaign.warnings, error: campaign.error };
 }
 
-/** A campaign's faction colours, for every campaign or this one only, and its display
- * names. Opened from the campaign's row in the sidebar. */
-export default function FactionColoursButton({ client, source, label }: { client: DashboardClient; source: DashboardSource; label: string }) {
-  const id = useId();
-  const menu = usePopover('start');
-  return <>
-    <button ref={menu.trigger} type="button" className="icon-button small campaign-factions" popoverTarget={id} aria-haspopup="dialog" aria-expanded={menu.open}
-      aria-label={`Faction colours for ${label}`} data-tooltip="Faction colours"><Icon name="palette" /></button>
-    <Popover menu={menu} id={id} className="faction-colours" aria-label={`Faction colours for ${label}`}>
-      <PopoverHeading title="Faction colours" menu={menu} />
-      {menu.open && <FactionColoursEditor client={client} source={source} />}
-    </Popover>
-  </>;
-}
-
-function FactionColoursEditor({ client, source }: { client: DashboardClient; source: DashboardSource }) {
+/** Campaign-wide faction colours and display names, edited from a chart's settings. */
+export function FactionColoursEditor({ client, source }: { client: DashboardClient; source: DashboardSource }) {
   const settings = useCampaignSettings();
   const campaign = source.metadata.campaignKey;
   const { factions, colours, identity, founder, setColour, loading, warnings, error } = useFactionColours(client, source);
@@ -141,7 +126,7 @@ function FactionColoursEditor({ client, source }: { client: DashboardClient; sou
     return name ? `Unnamed faction (${name})` : 'Unnamed faction';
   };
   const chosen = settings.campaigns[campaign]?.factions ?? {};
-  const [scope, setScope] = useState<ColourScope>('all');
+  const [scope, setScope] = useState<ColourScope>('campaign');
   const [message, setMessage] = useState<string | null>(null);
   /** Saves and returns whether it worked; a failure leaves its message showing. */
   const save = (next: typeof settings) => {
@@ -150,20 +135,19 @@ function FactionColoursEditor({ client, source }: { client: DashboardClient; sou
     setMessage(failure);
     return failure == null;
   };
-  if (error) return <p className="field-hint" role="alert">Factions unavailable: {error}</p>;
-  if (loading) return <p className="field-hint" role="status"><span className="spinner" /> Reading the campaign's factions…</p>;
+  if (error) return <p className="field-hint" role="alert">Couldn’t load factions.</p>;
+  if (loading) return <p className="field-hint" role="status"><span className="spinner" /> Loading factions…</p>;
   // With warnings, an empty list may be history the recording could not read, not no factions.
-  if (!factions.length) return <p className="field-hint">{warnings.length
-    ? `No factions could be read from this campaign. ${warnings.join(' ')}` : 'No factions were recorded in this campaign.'}</p>;
+  if (!factions.length) return <p className="field-hint">{warnings.length ? 'Factions unavailable.' : 'No factions were recorded in this campaign.'}</p>;
   return <div className="faction-colours-body">
-    <p className="field-hint">A colour you choose applies in every chart. Faction names come from the game; a display name here replaces it in this campaign.</p>
+    <p className="field-hint">Names apply to this campaign; colours can apply to all campaigns.</p>
     <Segmented label="Colour changes apply to" value={scope} options={SCOPES} onChange={setScope} />
     <ul className="faction-colours-list">{factions.map(faction => {
       const style = chosen[faction.id];
       const named = factionNameAt(faction, undefined, style?.name);
       const shared = identity(faction.id) != null ? settings.shared[identity(faction.id)!] : undefined;
       const set = scope === 'campaign' ? style?.colour : shared?.colour;
-      return <li key={faction.id} data-tooltip={named.reason ?? undefined}>
+      return <li key={faction.id}>
         <label className="faction-swatch" data-tooltip="Change colour" style={{ background: colours.get(faction.id) }}>
           <input type="color" value={colours.get(faction.id) ?? '#888888'} aria-label={`Colour for ${named.name ?? unnamed(faction.id)}`}
             onChange={event => setMessage(setColour(faction.id, event.currentTarget.value, scope))} /></label>
@@ -185,6 +169,6 @@ function FactionColoursEditor({ client, source }: { client: DashboardClient; sou
 }
 
 const SCOPES: readonly { value: ColourScope; label: string; tooltip: string }[] = [
-  { value: 'all', label: 'All campaigns', tooltip: 'The faction takes this colour in every campaign, matched by its recorded name (or, unnamed, its first leader), until you change it' },
-  { value: 'campaign', label: 'This campaign only', tooltip: 'Only this campaign, over any colour chosen for every campaign' },
+  { value: 'all', label: 'All campaigns', tooltip: 'Use this colour in all campaigns.' },
+  { value: 'campaign', label: 'This campaign only', tooltip: 'Override the colour for this campaign.' },
 ];

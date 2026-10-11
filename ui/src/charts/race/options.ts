@@ -36,7 +36,7 @@ const overTime = (options: Readonly<Record<string, unknown>>) => !inRace(options
 /** The moment shown as a large date in the race's corner; off by default, the same
  * rule for every race widget. */
 export const DATE_OVERLAY_OPTION: OptionField = { key: 'dateOverlay', section: 'options', label: 'Date in the corner',
-  hint: 'The moment shown, large and faint behind the bars', kind: 'toggle', default: false, visibleWhen: inRace };
+  kind: 'toggle', default: false, visibleWhen: inRace };
 
 /** The time charts' playback settings, shown for the lines and mix views. */
 export const RACE_TIME_OPTIONS: readonly OptionField[] = [

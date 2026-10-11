@@ -30,24 +30,21 @@ export function navalFleetDescription(detail: NavalBattleDetail | undefined): st
     : side.unknown ? 'Fleet names not recorded' : 'No fleet recorded').join(' v ');
 }
 export function navalDetailTooltip(detail: NavalBattleDetail | undefined, error?: string): TooltipRow[] {
-  if (!detail) return [{ label: error ? `Battle details: ${error}` : 'Loading fleet and named ship details', tone: 'muted', divider: true }];
+  if (!detail) return [{ label: error ? 'Couldn’t load battle details.' : 'Loading battle details…', tone: 'muted', divider: true }];
   const rows: TooltipRow[] = [];
   for (const [index, side] of detail.fleets.entries()) {
     rows.push({ label: `${index === 0 ? 'Attacking' : 'Defending'} fleets`, strong: true, divider: true });
     rows.push(...side.names.map(label => ({ label, indent: true })));
-    if (side.unknown) rows.push({ label: side.unknown, indent: true, tone: 'muted' });
+    if (side.unknown) rows.push({ label: 'Fleet details unavailable.', indent: true, tone: 'muted' });
     if (!side.names.length && !side.unknown) rows.push({ label: 'No fleet recorded', indent: true });
   }
-  if (detail.rosterHour !== null) rows.push({ label: 'Fleet roster read', value: formatDateTime(detail.rosterHour) });
   rows.push({ label: 'Named ships lost', strong: true, divider: true });
-  if (detail.unavailable || detail.shipRead === null) rows.push({ label: detail.unavailable ?? 'Ship history not recorded', tone: 'muted' });
+  if (detail.unavailable || detail.shipRead === null) rows.push({ label: 'Named ship losses unavailable.', tone: 'muted' });
   else {
-    rows.push({ label: 'Ship history read', value: formatDateTime(detail.shipRead) });
-    if (!detail.namedShips.length) rows.push({ label: 'No named ship losses recorded at this read', tone: 'muted' });
+    if (!detail.namedShips.length) rows.push({ label: 'No named ship losses recorded.', tone: 'muted' });
     for (const ship of detail.namedShips) {
       rows.push({ label: ship.name ?? 'Ship name unavailable', value: ship.className ?? 'Class unavailable', indent: true });
       rows.push({ label: 'Sunk', value: formatDateTime(ship.sinkHour), indent: true });
-      if (ship.knownAt !== ship.sinkHour) rows.push({ label: 'Recorded at', value: formatDateTime(ship.knownAt), indent: true });
     }
   }
   return rows;

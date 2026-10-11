@@ -1,4 +1,5 @@
-import { isEngineHour, formatDateTime } from '../../dashboard/calendar.ts';
+import { dayLabel } from '../../charts/draw.ts';
+import { isEngineHour } from '../../dashboard/calendar.ts';
 import { logDate } from '../../charts/log/logData.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
@@ -77,7 +78,7 @@ export const battleHour = (row: BattleRow) => row.end && 'hour' in row.end ? row
 export const battleJumpHour = (row: BattleRow) => row.start?.hour ?? row.place.hour;
 export const battleWinner = (row: BattleRow) => 'unknown' in row.winner ? row.winner.unknown : row.sides[row.winner.side].label;
 export const battleDate = (bound: BattleRow['end'], unknown: string) => bound === null ? unknown
-  : 'unknown' in bound ? bound.unknown : `${bound.bound === 'by' ? 'by ' : ''}${formatDateTime(bound.hour)}`;
+  : 'unknown' in bound ? bound.unknown : `${bound.bound === 'by' ? 'by ' : ''}${dayLabel(bound.hour)}`;
 export const battleValueText = (value: BattleValue) => value.value === null ? value.unknown
   : `${value.atLeast ? '≥ ' : ''}${Number.isInteger(value.value) ? usNumber.format(value.value) : String(value.value)}`;
 
@@ -118,12 +119,11 @@ export function battleTooltip<T extends BattleRow>(row: T, labels: BattleLabels,
     { label: labels.end, value: battleDate(row.end, labels.ongoing) },
     ...measures.map(measure => ({ label: measure.title, value: (measure.tooltipFormat ?? measure.format ?? battleValueText)(measure.value(row), row) })),
   ];
-  if (row.place.namedAt !== undefined) rows.push({ label: `named as of ${formatDateTime(row.place.namedAt)}` });
   for (const [index, side] of row.sides.entries()) {
     rows.push({ label: side.label, strong: true, divider: true });
     for (const part of side.countries) { const named = country(part.tag, part.hour);
-      rows.push({ label: named.name, countryFlag: named, value: formatDateTime(part.hour), indent: true }); }
-    if (side.countriesUnknown) rows.push({ label: side.countriesUnknown, indent: true });
+      rows.push({ label: named.name, countryFlag: named, indent: true }); }
+    if (side.countriesUnknown) rows.push({ label: 'Countries unknown', indent: true });
     for (const value of side.counts) rows.push({ label: value.label, value: battleValueText(value), indent: true });
     for (const value of side.losses) rows.push({ label: value.label, value: formatLoss ? formatLoss(value, row, index, true) : battleValueText(value), indent: true });
   }

@@ -1,6 +1,6 @@
 import type { RaidAt } from '../../dashboard/raids';
 import type { RaidsReply } from '../../generated/dashboard';
-import { raidIcon, raidPlace, raidPreparationRead, raidReadAt, raidType, raidTypeChoices, raidTypeName } from '../../dashboard/raids.ts';
+import { raidIcon, raidPlace, raidPreparationRead, raidType, raidTypeChoices, raidTypeName } from '../../dashboard/raids.ts';
 import { entryAt } from '../../dashboard/reads.ts';
 import { runAt } from '../../charts/series.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
@@ -43,12 +43,12 @@ export function raidLogRows(data: RaidsReply, hour: number, types: readonly stri
 
 export function raidStatus(data: RaidsReply, at: RaidAt): string {
   const value = at.current ?? at.latest;
-  const phase = value.phaseName ?? `Unknown phase ${value.phase}`;
+  const phase = value.phaseName ?? 'Unknown phase';
   // Outcome text is shown only once ended and excludes the no-outcome sentinel.
   // The product carries both the phase and outcome classifications.
-  const outcome = value.phase === data.phaseEnded && value.outcome !== data.outcomeNone ? value.outcomeName ?? `Unknown outcome ${value.outcome}` : null;
+  const outcome = value.phase === data.phaseEnded && value.outcome !== data.outcomeNone ? value.outcomeName ?? 'Unknown outcome' : null;
   const status = outcome === null ? phase : `${phase} · ${outcome}`;
-  return at.current ? status : `Last observed: ${status}; not recorded at this time`;
+  return at.current ? status : `Last known: ${status}`;
 }
 export function raidPreparation(data: RaidsReply, at: RaidAt): string | null {
   // Preparation hours are shown only during the preparation phase.
@@ -67,9 +67,7 @@ export function raidTooltip(data: RaidsReply, at: RaidAt, raider: string, victim
   return { title: raidTypeName(type), icon: raidIcon(data, at.latest) ?? undefined, rows: [
     { label: 'Raider', value: raider }, { label: 'Target country', value: victim }, { label: 'Target', value: raidPlace(at.latest) },
     { label: 'Phase / outcome', value: raidStatus(data, at) },
-    ...(preparing ? [{ label: 'Hours prepared', value: preparation ? usNumber.format(preparation.hours) : 'Not known' },
-      ...(preparation ? [{ label: 'Preparation read', value: formatDateTime(preparation.readHour) }] : [])] : []),
-    { label: 'First observed', value: `By ${formatDateTime(at.episode.start.hour)}` },
-    { label: 'Last read', value: formatDateTime(raidReadAt(at.episode, Math.min(at.hour, at.latest.lastHour))?.readHour ?? at.latest.firstHour) },
-  ], note: 'Dates are upper bounds supplied by the reads. Raids completed between reads may be absent. A gap supplies no current phase or preparation.' };
+    ...(preparing ? [{ label: 'Hours prepared', value: preparation ? usNumber.format(preparation.hours) : 'Not known' }] : []),
+    { label: 'Seen by', value: formatDateTime(at.episode.start.hour) },
+  ] };
 }

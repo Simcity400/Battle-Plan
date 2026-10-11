@@ -1083,7 +1083,8 @@ fn focus_completion_projection_keeps_only_previous_orders() {
 }
 
 #[test]
-fn focus_completion_projection_matches_topic_bounds_repeats_gaps_and_resets() {
+fn focus_completion_projection_matches_topic_bounds_repeats_and_resets_and_lists_nothing_across_a_break()
+ {
     use super::FocusCompletionProjection;
     let frames = vec![
         focus_countries_frame(1, 100, (9001, 7, &["old"]), &[]),
@@ -1102,7 +1103,8 @@ fn focus_completion_projection_matches_topic_bounds_repeats_gaps_and_resets() {
             .iter()
             .map(|event| (event.token.as_str(), event.hour))
             .collect::<Vec<_>>(),
-        [("repeat", 101), ("repeat", 104), ("later", 106)]
+        [("repeat", 101), ("later", 106)],
+        "the repeat completed inside the 102-103 break has no date, so it is not listed"
     );
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
     let history = crate::focus_history(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
@@ -1118,7 +1120,12 @@ fn focus_completion_projection_matches_topic_bounds_repeats_gaps_and_resets() {
                 })
         );
     }
-    assert_eq!(projection.unavailable.values().sum::<usize>(), 1);
+    assert_eq!(
+        projection.unavailable.get("Focus completion observation: completions inside a break in the recording are not dated"),
+        Some(&1),
+        "the break is counted"
+    );
+    assert_eq!(projection.unavailable.values().sum::<usize>(), 2);
 }
 
 #[test]
@@ -1135,7 +1142,7 @@ fn focus_completion_projection_dates_new_tag_and_counts_incomplete_observation()
         reason: "synthetic missing completed order".into(),
     };
     assert!(projection.observe(&missing).is_empty());
-    let mut renamed = focus_countries_frame(1, 104, (9001, 7, &["new"]), &[]);
+    let mut renamed = focus_countries_frame(1, 102, (9001, 7, &["new"]), &[]);
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *renamed.tables[TableId::Countries.index()]
     {
@@ -1147,7 +1154,7 @@ fn focus_completion_projection_dates_new_tag_and_counts_incomplete_observation()
         [super::FocusCompletion {
             tag: "renamed/tag".into(),
             token: "new".into(),
-            hour: 104,
+            hour: 102,
         }]
     );
     assert_eq!(projection.unavailable.values().sum::<usize>(), 1);
@@ -1157,7 +1164,7 @@ fn focus_completion_projection_dates_new_tag_and_counts_incomplete_observation()
         projection
             .observe(&focus_countries_frame(
                 1,
-                105,
+                103,
                 (9002, 7, &["new", "another"]),
                 &[]
             ))

@@ -2,7 +2,7 @@
 
 ## What it shows
 
-One country’s signed losses by cause → equipment type → exact design, with coverage and a complete recorded-loss inventory.
+One country’s signed losses by cause → equipment type → exact design, with a compact completeness status and the full loss inventory.
 
 ## Products it reads
 
@@ -14,8 +14,8 @@ Land losses from Every destruction (default) or Game’s Combat Log; hierarchy l
 
 ## Notable behaviour
 
-- Air uses destruction in both modes; recovered equipment and lend-lease sent are excluded. Names use supplying reads and the content stack; unresolved designs/causes retain identifiers and reasons.
-- Destruction starts at the first complete branch/load drain, excluding the opening partial interval. Later lost drains/writers leave an incomplete subtotal, never a bound; complete reads cannot recover it. Coverage reasons stay visible with legends off.
+- Air uses destruction in both modes; recovered equipment and lend-lease sent are excluded. Names use supplying reads and the content stack; unavailable amounts retain their missing-value states without acquisition diagnostics.
+- Destruction starts at the first complete branch/load drain, excluding the opening partial interval. Later lost drains/writers leave an incomplete subtotal, never a bound; complete reads cannot recover it. Completeness stays visible with legends off; affected amounts show short unavailable or incomplete statuses.
 - Combat Log may retain earlier losses. Runtime feature/country gates and hourly orders-group census determine coverage; captured amounts still count. Inclusive ranges subtract before their start; Follow keeps the counting origin. Outside-branch pins/ranges refuse.
 - BigInt preserves every signed digit. Negative corrections and recorded zero remain selectable; only positive geometry draws. Corrections or incomplete full totals disable shares/Fill.
 - Leaves drill native cohorts; parents zoom. History steps at supplying changes and breaks at unread intervals. Picking holds; Follow uses the clock. Range drills keep their subtraction basis without Follow.

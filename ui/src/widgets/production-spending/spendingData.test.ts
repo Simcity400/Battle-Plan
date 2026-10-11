@@ -7,7 +7,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import type { ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun } from '../../generated/dashboard';
 import { groupTree, amountText, arcTargets, sliceTooltip } from '../../charts/sunburst/layout.ts';
 import type { SunburstText } from '../../charts/sunburst/layout';
-import { UNIT, formatAppliedIc, productionSpendingItems, spendingAt, spendingEmptyLabel, spendingFinals, spendingFootnote, spendingTotal, validateProductionSpendingReply } from './spendingData.ts';
+import { UNIT, formatAppliedIc, productionSpendingItems, spendingAt, spendingEmptyLabel, spendingFinals, spendingTotal, validateProductionSpendingReply } from './spendingData.ts';
 import { definition, OPTIONS } from './definition.ts';
 import { levelsShown, sunburstSettings } from '../../charts/sunburst/sunburstOptions.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
@@ -106,8 +106,6 @@ test('signed cumulative corrections and negative range changes remain selectable
   assert.equal(tree.exact, -500000n);
   assert.equal(amountText(tree, text), '\u22125');
   assert.ok([...arcTargets(tree, tree, 'share').values()].every(target => !target.shown));
-  assert.match(spendingFootnote(data, window), /including ticks without delivery/);
-  assert.match(spendingFootnote(data, window), /Excludes instant progress and IC before/);
 });
 
 test('Live looks up the playhead and Live off shows the whole branch at its final hour', () => {
@@ -163,7 +161,7 @@ test('unresolved attribution makes resolved arms and types unknown while country
   assert.equal(land.children[0].valueUnknown, true);
   assert.equal(land.children[0].children[0].valueUnknown, false);
   assert.equal(land.children[0].children[0].exact, 2000001n);
-  assert.match(land.notes.join(' '), /unresolved/);
+  assert.match(land.notes.join(' '), /Equipment type unknown/);
   assert.equal(tree.children.find(node => node.key === 'unresolved')?.valueUnknown, false);
   const designs = groupTree(items, ROOT, [false, false, true], spendingTotal(data, window));
   assert.ok(designs.children.every(node => !node.valueUnknown));
@@ -219,9 +217,6 @@ test('a gap ends what is known; a whole-campaign value never falls back to the l
   assert.equal(amountText(tree, text), 'Not known');
   assert.ok([...arcTargets(tree, tree, 'share').values()].every(target => !target.shown));
   assert.equal(tree.children.find(node => node.key === 'air')?.valueUnknown, false);
-  assert.match(spendingFootnote(data, { from: null, hour: 171, end: 171 }, 'fill'), /Fill uses Share/);
-  assert.match(spendingFootnote(data, { from: null, hour: 171, end: 171 }), /Total not known: Hours were not recorded/);
-  assert.doesNotMatch(spendingFootnote(data, { from: null, hour: 171, end: 171 }), /Fill uses Share/);
 });
 
 test('a country-level unknown is represented even with no attributable designs', () => {
@@ -230,7 +225,7 @@ test('a country-level unknown is represented even with no attributable designs',
   data.total = [{ firstHour: 100, lastHour: 171, totalRaw: null, reason: 'missedPublication' }];
   const tree = groupTree(productionSpendingItems(data, { from: null, hour: 124, end: 171 }), ROOT);
   assert.equal(amountText(tree, text), 'Not known');
-  assert.match(sliceTooltip(tree, tree, text)[0].note!, /read was missed/);
+  assert.match(sliceTooltip(tree, tree, text)[0].note!, /Spending unavailable at this time/);
 });
 
 test('a known zero remains exact zero, including a country with no designs', () => {
@@ -285,7 +280,7 @@ test('a range crossing a gap or observation restart stays unknown', () => {
   data.total = [known(100, 147, '2734567'), { firstHour: 148, lastHour: 171, totalRaw: null, reason: 'observationRestarted' }];
   const tree = groupTree(productionSpendingItems(data, { from: 124, hour: 171, end: 171 }), ROOT);
   assert.equal(tree.valueUnknown, true);
-  assert.match(tree.notes.join(' '), /restarted/);
+  assert.match(tree.notes.join(' '), /Campaign total unavailable/);
   assert.equal(spendingAt(data.total, 171).exact, null);
 });
 
@@ -352,7 +347,6 @@ test('missing Rocket coverage keeps equipment slices exact while the whole remai
   const tree = groupTree(productionSpendingItems(data, window), ROOT, [], spendingTotal(data, window));
   assert.equal(tree.exact, null);
   assert.equal(tree.children.find(node => node.key === 'land')?.exact, 2000001n);
-  assert.match(spendingFootnote(data, window), /Independent Rocket production coverage/);
 });
 
 test('unresolved Rocket type does not make unrelated equipment arms unknown', () => {
@@ -416,18 +410,18 @@ test('empty-state wording requires dated complete-empty census evidence and exac
   data.production[0].present = true;
   assert.equal(spendingEmptyLabel(data, 124), 'No factory IC spent in this view.');
   data.production[0].present = null;
-  assert.match(spendingEmptyLabel(data, 124), /presence is not known/);
+  assert.match(spendingEmptyLabel(data, 124), /No factory IC spending recorded/);
   data.production[0] = { firstHour: 100, lastHour: 171, present: false, emptyCensusHour: 100 };
   data.total = [known(100, 171, '1')];
   assert.doesNotMatch(spendingEmptyLabel(data, 124), /No military production/);
   assert.doesNotMatch(spendingEmptyLabel(data, 99), /No military production/);
   data.total = [{ firstHour: 100, lastHour: 171, totalRaw: null, reason: 'rocketTableUnavailable' }];
-  assert.match(spendingEmptyLabel(data, 124), /Rocket production coverage/);
+  assert.match(spendingEmptyLabel(data, 124), /Rocket spending not recorded/);
   assert.doesNotMatch(spendingEmptyLabel(data, 124), /No military production/);
 });
 
 test('the actual spending widget shows the census-backed empty state even with its legend disabled', async () => {
-  const state = { data: reply() };
+  const state = { data: reply(), footnote: undefined as string | undefined };
   const host = globalThis as typeof globalThis & { __spendingEmpty?: typeof state };
   host.__spendingEmpty = state;
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
@@ -436,7 +430,7 @@ test('the actual spending widget shows the census-backed empty state even with i
       const path = id.replaceAll('\\', '/');
       if (path.endsWith('/dashboard/products.ts')) return 'export const useProduct = () => ({ data: globalThis.__spendingEmpty.data });';
       if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = () => {};';
-      if (path.endsWith('/charts/sunburst/Sunburst.tsx')) return "import { createElement } from 'react'; export default () => createElement('div', null, 'Spending chart');";
+      if (path.endsWith('/charts/sunburst/Sunburst.tsx')) return "import { createElement } from 'react'; export default props => { globalThis.__spendingEmpty.footnote = props.footnote; return createElement('div', null, 'Spending chart'); };";
     } }] });
   try {
     const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/production-spending/ProductionSpendingWidget.tsx');
@@ -452,6 +446,7 @@ test('the actual spending widget shows the census-backed empty state even with i
     assert.match(render(), /No military production yet\./);
     state.data.production[0].emptyCensusHour = null;
     assert.match(render(), /Spending chart/);
+    assert.equal(state.footnote, undefined, 'the dense recording footnote is absent from the rendered chart props');
     state.data.production[0] = { firstHour: 100, lastHour: 171, present: true, emptyCensusHour: null };
     assert.match(render(), /Spending chart/, 'zero amounts from active lines do not prove emptiness');
     state.data.total = [{ firstHour: 100, lastHour: 171, totalRaw: null, reason: 'rocketTableUnavailable' }];

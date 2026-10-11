@@ -13,8 +13,7 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'colourScope', section: 'options', label: 'A colour changed from a swatch applies to', kind: 'choice', default: 'all',
     choices: [{ value: 'all', label: 'All campaigns' }, { value: 'campaign', label: 'This campaign only' }],
     visibleWhen: options => options.legend === true },
-  { key: 'grow', section: 'axes', label: 'Grow with playback', kind: 'toggle', default: false,
-    hint: 'With Live on, grow the time axis as the campaign plays.' },
+  { key: 'grow', section: 'axes', label: 'Grow with playback', kind: 'toggle', default: false },
 ];
 
 export const definition = {
@@ -23,5 +22,6 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 8, h: 10 },
   countries: { max: Number.MAX_SAFE_INTEGER, all: true },
+  factionColours: true,
   options: OPTIONS,
 } as const satisfies WidgetMeta;

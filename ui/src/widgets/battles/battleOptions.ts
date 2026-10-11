@@ -14,7 +14,7 @@ export function battleOptions(measures: readonly { value: string; label: string 
     { key: 'topN', section: 'options', label: 'Top battles', kind: 'number', min: 1, max: Infinity, step: 1, default: DEFAULT_TOP_N, visibleWhen: biggest },
     ...LOG_OPTIONS.filter(field => field.key !== 'chips' && field.key !== 'density').map(field => ({ ...field, visibleWhen: log })),
     ...TABLE_OPTIONS.map(field => field.key === 'density' ? field : { ...field, visibleWhen: biggest }),
-    ...tableSortOptions([{ key: 'measure', label: 'Leaderboard measure' }, ...measures.map(measure => ({ key: measure.value, label: measure.label })),
+    ...tableSortOptions([{ key: 'measure', label: 'Selected measure' }, ...measures.map(measure => ({ key: measure.value, label: measure.label })),
       { key: 'date', label: 'Date' }, { key: 'winner', label: 'Winner' }], DEFAULT_SORT).map(field => ({ ...field, visibleWhen: biggest })),
   ];
 }

@@ -19,9 +19,7 @@ export function factoryDrillData(model: FactoryModel, groups: readonly FactoryGr
     warnings: model.reply.warnings, parts: () => parts,
     at: (tag, hour) => {
       const at = factoriesAt(model, tag, hour, groups, mode);
-      const read = factoryReadAt(model, tag, hour);
-      return at ? { total: at.total, values: at.groups.map(group => group.count),
-        note: read == null ? 'The supplying read is not recorded.' : `Read ${formatDateTime(read)}.` } : null;
+      return at ? { total: at.total, values: at.groups.map(group => group.count) } : null;
     },
     bands: (tag, range) => [...mixBands(model, tag, groups, mode, null, range),
       shownRuns(countRuns(model, tag, groups, mode).map(run => ({ ...run, value: 0 })), null, range)],
@@ -30,9 +28,7 @@ export function factoryDrillData(model: FactoryModel, groups: readonly FactoryGr
     keyHours: [...new Set(model.reply.series.flatMap(series => (series.reads ?? []).map(read => read.firstHour)))].sort((a, b) => a - b),
     tooltip: (tag, hour, name, colours) => {
       const at = factoriesAt(model, tag, hour, groups, mode);
-      const read = factoryReadAt(model, tag, hour);
-      return at ? [...factoryTooltips(model, name, at, formatDateTime(hour), mode, colours)].map(form => ({ ...form,
-        note: [form.note, read == null ? 'The supplying read is not recorded.' : `Read ${formatDateTime(read)}.`].filter(Boolean).join(' ') })) : null;
+      return at ? [...factoryTooltips(model, name, at, formatDateTime(hour), mode, colours)] : null;
     },
   };
 }

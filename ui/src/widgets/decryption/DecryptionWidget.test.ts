@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { createServer } from 'vite';
 import type { DecryptionReply } from '../../generated/dashboard';
 import type { TooltipContent } from '../../charts/tooltip';
+import { tooltipText } from '../../charts/tooltip.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 
 const data: DecryptionReply = { branchId: '1', warnings: [], coverage: [{ firstHour: 100, lastHour: 100, complete: true, reason: null }],
@@ -41,8 +42,13 @@ test('one cipher-list tooltip owner serves both rows and their accessible descri
     assert.equal(host.__intelTooltipCalls.length, 1);
     const tips = host.__intelTooltipCalls[0];
     assert.equal(tips.owner, 'decryption:cipher-list');
-    for (const [index, pair] of data.pairs.entries()) assert.equal(tips.content(JSON.stringify([pair.ownerId, pair.targetId]))!.title,
-      `Recorded Owner ${index} → Recorded Target ${index}`);
+    for (const pair of data.pairs) {
+      const tip = tips.content(JSON.stringify([pair.ownerId, pair.targetId]))!;
+      assert.equal(tip.title, 'Decryption');
+      const description = tooltipText(tip);
+      assert.ok(description.includes(`Decryptor Recorded ${pair.tagRuns[0].ownerTag}`));
+      assert.ok(description.includes(`Target Recorded ${pair.tagRuns[0].targetTag}`));
+    }
     const ids = [...html.matchAll(/aria-describedby="([^"]+)"/g)].map(match => match[1]);
     assert.equal(ids.length, 2);
     for (const id of ids) assert.ok(html.includes(`id="${id}" class="sr-only"`));

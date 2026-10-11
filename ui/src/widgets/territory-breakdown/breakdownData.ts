@@ -100,17 +100,16 @@ export function breakdownItems(model: ReturnType<typeof breakdownModel>, groups:
         { id: JSON.stringify(series.tag !== null ? ['country', series.tag] : ['holder', holderUnknown ? 'unknown' : 'unassigned']), label: country.name,
           countryFlag: series.tag !== null ? country : undefined,
           stretch: series.tag !== null ? stretchAt(countryRuns.get(series.tag) ?? [], countryStarts.get(series.tag) ?? [], at) : null },
-        { id: series.region === null ? 'region-unattributed' : String(series.region), label: region?.name ?? (series.region === null ? 'Region not attributable' : `Strategic region ${series.region} (name not recorded)`),
+        { id: series.region === null ? 'region-unattributed' : String(series.region), label: region?.name ?? (series.region === null ? 'Unknown region' : `Region ${series.region}`),
           stretch: stretchAt(knownRuns.get(series)!, starts.get(series)!, at) },
       ];
       const unknownLevels = [present && member.unknown, present && holderUnknown, false];
-      const note = [series.missing, region?.missing, faction?.reason].filter(Boolean).join('; ') || undefined;
       items.push({ path, value: final ? 0 : value, exact: final ? 0n : exact?.[0] ?? null,
         exactDenominator: final ? undefined : exact?.[1],
         unknownValue: !final && present && exact === null, unknownLevels: final ? undefined : unknownLevels,
         final: final ? value : 0,
         finalUnknown: final && present && exact === null, finalUnknownLevels: final ? unknownLevels : undefined,
-        present: !final && present, note });
+        present: !final && present });
     }
   }
   return { items };

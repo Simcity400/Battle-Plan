@@ -83,7 +83,6 @@ export default function StabilityDrill({ reply, numbers, pickOwner, presentation
     const label = named(item.part);
     return { id: item.part.id, label: label.name, muted: label.recorded, value: percent(item.raw), text: formatPercent(item.raw, decimals, true), color: colorOf.get(item.part.id) };
   });
-  const recorded = shown.some(part => part.muted);
   const remainder = values?.find(item => item.part.id === 'remainder');
   // Values carried from an earlier read say when they were read, as the hover does.
   const read = day != null && values && readAt ? readAt(day) : null;
@@ -91,14 +90,13 @@ export default function StabilityDrill({ reply, numbers, pickOwner, presentation
   return <div className="stability-drill">
     {onMeasure && <Segmented label="Breakdown of" value={measure} onChange={onMeasure}
       options={(['stability', 'warSupport'] as const).map(value => ({ value, label: MEASURE_NAMES[value] }))} />}
-    {day == null ? <p className="drill-empty">Click the chart to choose a day.</p>
+    {day == null ? <p className="drill-empty">Choose a day.</p>
       : values == null ? <p className="drill-empty">No breakdown was recorded for {dayLabel(day)}.</p>
         : <DrillParts parts={shown} format={value => `${value > 0 ? '+' : ''}${value.toFixed(1)}%`} total={percent(sum.toString())}
           unattributed={remainder ? { label: REMAINDER_LABEL, value: percent(remainder.raw), text: formatPercent(remainder.raw, decimals, true), color: colorOf.get('remainder') } : undefined}
           totalRow={{ label: 'Total', value: formatPercent(sum.toString(), decimals) }} />}
-    {read != null && day != null && read < day && <p className="drill-empty">As read at {formatDateTime(read)}.</p>}
-    {!presentationReady && <p className="drill-empty">Source names are loading; recorded amounts remain available.</p>}
-    {recorded && <p className="drill-empty">Grey names are the game's own text, in the recording's language; their source is not identified.</p>}
+    {read != null && day != null && read < day && <p className="drill-empty">As of {formatDateTime(read)}.</p>}
+    {!presentationReady && <p className="drill-empty">Loading names…</p>}
     <div className="stability-drill-chart">
       <TimeChart label={`${MEASURE_NAMES[measure]} parts over time`} extent={[extent[0], extent[1]]} playhead={playback.playhead} playback={playback.mode}
         afterPlayhead={playback.afterPlayhead} windowHours={playback.windowHours}
@@ -113,10 +111,9 @@ export default function StabilityDrill({ reply, numbers, pickOwner, presentation
             .map(item => ({ label: named(item.part).name, swatch: colorOf.get(item.part.id), value: formatPercent(item.raw, decimals, true), short: true }));
           const total = engineSum(known.map(item => item.raw));
           rows.push({ label: 'Total', value: formatPercent(total.toString(), decimals), strong: true });
-          // Parts carried from an earlier read say when they were read.
+          // Keep the date of carried parts.
           const readThen = readAt ? readAt(at) : at;
-          const notes = [readThen !== null && readThen < at ? `As read at ${formatDateTime(readThen)}.` : '', onPick ? 'Click to show this day.' : ''];
-          return fitTooltip([{ title: dayLabel(at), rows, note: notes.filter(Boolean).join(' ') || undefined }], viewport, { keep: 1 });
+          return fitTooltip([{ title: dayLabel(at), rows, note: readThen !== null && readThen < at ? `As of ${formatDateTime(readThen)}.` : undefined }], viewport, { keep: 1 });
         }}
         onPick={onPick ? (picked, context?: ChartPick) => { if (context?.frame) onPick(picked); } : undefined} onContextMenu={onContextMenu} />
     </div>

@@ -4,7 +4,7 @@
  * its choices) and against the field when read, so a bad value falls back to the
  * field's default instead of reaching the widget. */
 
-import type { CountrySelection } from './model';
+import type { CountrySelection, WidgetTime } from './model';
 
 export type OptionValue = boolean | number | string | null;
 export type WidgetOptions = Readonly<Record<string, OptionValue>>;
@@ -16,8 +16,9 @@ interface FieldBase {
   section: OptionSection;
   label: string;
   hint?: string;
-  /** Shown only when this returns true for the resolved options and country choice. */
-  visibleWhen?: (options: Readonly<Record<string, OptionValue>>, countries?: CountrySelection) => boolean;
+  /** Shown only when this returns true for the resolved options, country choice and
+   * time mode (a setting that does nothing in a mode is hidden there, not explained). */
+  visibleWhen?: (options: Readonly<Record<string, OptionValue>>, countries?: CountrySelection, time?: WidgetTime['mode']) => boolean;
 }
 export type OptionField = FieldBase & (
   | { kind: 'toggle'; default: boolean }
@@ -53,7 +54,7 @@ const validEscapes = (token: string) => [...token.matchAll(ESCAPED_POINT)].every
  * offering them says so rather than failing when picked. */
 export const storableToken = (token: string) => setTokenText(token) && validEscapes(token);
 /** Why a chip for a token that cannot be stored is disabled. */
-export const UNSTORABLE = 'Its content name holds characters a setting cannot store';
+export const UNSTORABLE = 'This choice cannot be saved.';
 
 /** A content key as a storable token: each character a setting cannot store (and
  * `:` itself) is written as `:<hex code point>:`, so a key with any characters, such
@@ -146,6 +147,7 @@ export function setOption(fields: readonly OptionField[] = [], stored: WidgetOpt
 }
 
 /** Fields shown in one settings section, in declaration order. */
-export function sectionFields(fields: readonly OptionField[] = [], section: OptionSection, resolved: Readonly<Record<string, OptionValue>>, countries?: CountrySelection): OptionField[] {
-  return fields.filter(field => field.section === section && (field.visibleWhen?.(resolved, countries) ?? true));
+export function sectionFields(fields: readonly OptionField[] = [], section: OptionSection, resolved: Readonly<Record<string, OptionValue>>,
+  countries?: CountrySelection, time?: WidgetTime['mode']): OptionField[] {
+  return fields.filter(field => field.section === section && (field.visibleWhen?.(resolved, countries, time) ?? true));
 }

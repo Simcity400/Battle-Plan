@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import type { DecryptionPair, DecryptionReply, DecryptionRun } from '../../generated/dashboard';
-import { activeBonusDays, amountText, CIPHER_BROKEN, cipherStatus, decryptionTooltip as flaggedDecryptionTooltip, observationDate, NATIVE_PROGRESS_UNKNOWN, progressLabel, progressPercent, progressText, raceRows, validateDecryptionReply, valueAt, workingStatus } from './decryptionData.ts';
+import { activeBonusDays, amountText, CIPHER_BROKEN, cipherStatus, decryptionTooltip as flaggedDecryptionTooltip, observationDate, progressLabel, progressPercent, progressText, raceRows, validateDecryptionReply, valueAt, workingStatus } from './decryptionData.ts';
 import { createWidget } from '../../dashboard/model.ts';
 import { parseTemplate } from '../../dashboard/storage.ts';
 import { defaultTemplate } from '../../dashboard/model.ts';
@@ -53,7 +53,7 @@ test('decryption native endpoints keep independent flag loading/refusal metadata
   const [row] = raceRows(reply(), 101, 'progress');
   const tip = flaggedDecryptionTooltip(row, { name: 'Owner at 101', flagPending: true },
     { name: 'Target at 101', flagReason: 'Target flag unreadable at 101' }, 800);
-  assert.equal(tip.title, 'Owner at 101 → Target at 101');
+  assert.equal(tip.title, 'Decryption');
   assert.equal(tip.rows.find(row => row.label === 'Decryptor')?.countryFlag?.flagPending, true);
   assert.equal(tip.rows.find(row => row.label === 'Target')?.countryFlag?.flagReason, 'Target flag unreadable at 101');
   assert.ok(tip.rows.filter(row => !['Decryptor', 'Target'].includes(row.label)).every(row => row.countryFlag === undefined));
@@ -61,10 +61,11 @@ test('decryption native endpoints keep independent flag loading/refusal metadata
     { name: 'Country 100', flag: 'must-not-use' }, { name: 'Country 200', flag: 'must-not-use' }, 800);
   assert.ok(missing.rows.slice(0, 2).every(row => row.countryFlag === undefined));
   const earlier = flaggedDecryptionTooltip(row, { name: 'Owner at 100', known: true, flagPending: false },
-    { name: 'Target at 100', known: true, flagPending: false }, 800, 100);
-  assert.match(earlier.note ?? '', /Country names and flags at Hour 100/);
+    { name: 'Target at 100', known: true, flagPending: false }, 800);
+  assert.equal(earlier.note, undefined);
+  assert.ok(!earlier.rows.some(row => row.label === 'Bonus days'));
   assert.equal(earlier.rows.find(row => row.label === 'Started')?.value, observationDate(row.run.started, row.hour));
-  assert.equal(flaggedDecryptionTooltip(row, { name: 'Owner' }, { name: 'Target' }, 800, 102).note, undefined);
+  assert.equal(flaggedDecryptionTooltip(row, { name: 'Owner' }, { name: 'Target' }, 800).note, undefined);
 });
 
 test('payload checks raw signed values, native bytes, ordered runs, coverage and dated observations', () => {
@@ -149,7 +150,7 @@ test('native progress matches exact rounding, wrapping, sentinel and overflow ve
   overflow.pairs[0].runs[0].thresholdRaw = '-1';
   overflow.pairs[0].runs[0].broken = true;
   overflow.pairs[0].breaks = [{ hour: 100, upperBound: true }];
-  assert.equal(decryptionTooltip(raceRows(validateDecryptionReply(overflow), 100, 'progress')[0], 'Owner', 'Target', 800).note, NATIVE_PROGRESS_UNKNOWN);
+  assert.equal(decryptionTooltip(raceRows(validateDecryptionReply(overflow), 100, 'progress')[0], 'Owner', 'Target', 800).note, undefined);
 });
 
 test('run validation rejects endpoint overflow and hidden work or break transitions', () => {
@@ -389,7 +390,7 @@ test('bonus badge requires a broken row and retains the native signed active cou
   const data = reply([unknown]); data.pairs[0].breaks = [{ hour: 100, upperBound: true }];
   validateDecryptionReply(data);
   const tip = decryptionTooltip(raceRows(data, 100, 'progress')[0], 'Custom owner', 'Custom target', 800);
-  assert.equal(tip.title, 'Custom owner → Custom target');
+  assert.equal(tip.title, 'Decryption');
   assert.equal(tip.rows.find(row => row.label === 'Progress')?.value, 'Progress unknown · 4');
   assert.equal(tip.rows.find(row => row.label === 'Bonus days')?.value, '23');
   assert.equal(tip.rows.find(row => row.label === 'Status')?.divider, true);

@@ -15,7 +15,7 @@ Countries, campaign/follow/pin/range and shared [spending options](../../dashboa
 ## Notable behaviour
 
 - Exact evaluated charges and differing realized changes remain distinct. A batch appears at its supplying read; row countries/targets and flags use the native action hour.
-- Totals include hidden categories. Coverage gaps produce gap rows and unknown campaign totals. Grants, refunds, resets and clamps are excluded by the Rust spending projection.
+- The overall total includes every category; each category total appears only for a shown category. An empty category selection shows them all. Unrecorded spans produce gap rows and an unknown campaign total. Grants, refunds, resets and clamps are excluded by the Rust spending projection.
 - Shared virtual log rows retain pending/unavailable flag reasons. Native coverage gaps use the gap-start country; membership gaps are flagless. Jump uses the dated row action.
 
 ## Files

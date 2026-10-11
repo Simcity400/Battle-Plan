@@ -47,13 +47,13 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
   }, [data, onDiagnostics]);
 
   if (!track || !tag) return <WidgetState kind="empty" icon="layers" message="Load a campaign and choose a country to see its idea history." />;
-  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the country’s recorded branch." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
+  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading ideas…" />;
   if (!category) return <WidgetState kind="unavailable" message={options.category
-    ? 'This campaign’s content has no such idea category. Choose another in the widget settings.'
-    : 'This campaign’s content has no idea categories with slots.'} />;
+    ? 'Choose another idea category in settings.'
+    : 'No idea categories available.'} />;
 
   const infos = new Map(data.ideas.map(info => [info.token, info]));
   const tokenOf = (span: { id: string }) => span.id.slice(0, span.id.lastIndexOf(':'));
@@ -74,13 +74,12 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
         const level = lawLevel(category, infos.get(token));
         const until = playhead != null && span.lastHour + 1 > playhead ? 'now' : dayLabel(span.lastHour);
         const rows: TooltipRow[] = [
-          { label: 'Observed from', value: dayLabel(span.firstHour) },
+          { label: 'Held by', value: dayLabel(span.firstHour) },
           { label: 'Until', value: until },
         ];
-        const note = 'Spans start when first observed, not at an exact change time. Active ideas are read hourly; appointed advisors use their daily supplying read between reads.';
         const subtitle = level ? `${lane.label} · level ${level}` : lane.label;
-        if (!tooltips) return { title: span.label, subtitle, icon: span.icon, rows, note };
-        return ideaTooltip({ title: span.label, icon: span.icon, subtitle }, infos.get(token), tooltips.sources, tooltips.art.get(token)?.description, rows, note, span.firstHour,
+        if (!tooltips) return { title: span.label, subtitle, icon: span.icon, rows };
+        return ideaTooltip({ title: span.label, icon: span.icon, subtitle }, infos.get(token), tooltips.sources, tooltips.art.get(token)?.description, rows, undefined, span.firstHour,
           full ? Infinity : undefined);
       }}
       onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />

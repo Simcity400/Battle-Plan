@@ -3,7 +3,7 @@ import { AIR_OPTIONS } from '../../dashboard/airOptions.ts';
 import type { OptionField } from '../../dashboard/options';
 export const OPTIONS: readonly OptionField[] = [...AIR_OPTIONS,
   { key: 'regions', section: 'options', label: 'Regions', kind: 'content-set', automatic: 'All active regions', default: '' },
-  { key: 'order', section: 'options', label: 'Regions', kind: 'choice', default: 'contested', choices: [
+  { key: 'order', section: 'options', label: 'Sort regions by', kind: 'choice', default: 'contested', choices: [
     { value: 'contested', label: 'Most contested first' }, { value: 'active', label: 'Most active' }, { value: 'name', label: 'Name' }] },
 ];
 export const definition = {

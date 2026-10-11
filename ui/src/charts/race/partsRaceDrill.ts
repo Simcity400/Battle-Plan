@@ -10,7 +10,7 @@ import type { CountryPartsData, CountryPartsSelection } from './countryPartsDril
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 
 // Native part keys are nonempty, so this internal residual cannot collide with one.
-export const UNATTRIBUTED_PART = { id: '', label: 'Other / not identified' };
+export const UNATTRIBUTED_PART = { id: '', label: 'Other' };
 
 export interface NativePartsRaceReply extends PartsRaceReply {
   series: (PartsRaceSeries & { identities: CountryIdentityRun[] })[];

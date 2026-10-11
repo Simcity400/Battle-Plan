@@ -10,13 +10,14 @@ One country’s active production table at a moment, or line histories across th
 
 ## Settings
 
-Campaign/follow/pin/range; live order/columns, ended-history rows, selected line/factor, Show and drill placement. Whole campaign is the default.
+Campaign/follow/pin/range; order/columns in follow and pin, ended lines in campaign and range, selected line, Show and drill placement. The breakdown body owns the factor selector. Whole campaign is the default.
 
 ## Notable behaviour
 
 - A line keeps its native identity through equipment switches; deleted lines retain final output. Units made are captured deliveries, not the game’s progress toward its next unit. Unseen between-read lines lack factory census data.
 - Weekly output and rounded efficiency use the backend’s native formulas. Factor attribution uses recorded operands and explicit residuals; missing sources are not reconstructed from present content.
 - Values, output, organisations and variant definitions have independent coverage/read dates. Gaps, incomplete tables and replacement countries stop carries; missing final output can make totals unknown.
+- Missing equipment and organisation pictures use subject icons. Line choices use equipment names and line numbers.
 - Names/art follow the read’s variant and country context. Native icon/organisation fallback logic belongs to Rust, not a frontend catalogue.
 - Hover, moment parts and factor history share one part model. Signed corrections remain exact rows; only positive bands draw. A picked day holds, Follow resumes playback and Pin preserves the line/factor and picked date. Saved line keys and original choice dates bind campaign, branch and native producer. Breakdown histories follow its renames, exclude reused tags and date the header to local Pick/Follow. Missing saved origins keep a neutral header and unavailable body.
 

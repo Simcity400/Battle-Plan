@@ -22,8 +22,8 @@
 .peace-chip { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--text) 8%, transparent); font-size: 0.6875rem; }
 .peace-chip > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .peace-more { color: var(--muted); cursor: help; }
-.peace-derived { display: inline-block; margin-top: 6px; color: var(--muted); font-size: 0.625rem; cursor: help; }
-.peace-observation, .peace-capture-unavailable { margin-top: 5px; color: var(--muted); font-size: 0.6875rem; overflow-wrap: anywhere; }
+.peace-derived { display: inline-block; margin-top: 6px; color: var(--muted); font-size: 0.625rem; }
+.peace-observation { margin-top: 5px; color: var(--muted); font-size: 0.6875rem; overflow-wrap: anywhere; }
 .peace-gap { padding: 8px 12px 12px; color: var(--muted); font-size: 0.6875rem; }
 .peace-none { padding: 8px 12px; color: var(--muted); font-size: 0.75rem; }
 .peace-deals .log.is-compact .peace-deal { margin-bottom: 6px; padding: 6px 8px; }

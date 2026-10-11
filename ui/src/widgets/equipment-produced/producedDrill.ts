@@ -49,10 +49,8 @@ export function producedDrillData(model: ProducedModel): CountryPartsData {
       const value = groupValue(series, key, at.index);
       return Number.isNaN(value) ? null : value;
     });
-    const read = readAt(model.reply.reads, hour);
     const since = model.reply.measure === 'total' ? countedSince(model.reply, hour) : null;
-    return { total: at.total, values, note: [read == null ? null : `Read ${formatDateTime(read)}.`,
-      since == null ? null : `Counted since ${formatDateTime(since)}.`].filter(Boolean).join(' ') };
+    return { total: at.total, values, note: since == null ? '' : `Counted since ${formatDateTime(since)}.` };
   };
   return {
     histories: [...model.series.values()].map(series => ({ tag: series.tag, identities: series.identities })),
@@ -78,7 +76,7 @@ export function producedDrillData(model: ProducedModel): CountryPartsData {
       if (remainder) rows.push({ label: UNATTRIBUTED_PART.label, value: exactPartAmount(remainder), swatch: colours.get('') });
       rows.push({ label: measure.label, value: value.total == null ? 'Not known' : exactPartAmount(value.total), strong: true, divider: true });
       return [{ title: name, subtitle: `${formatDateTime(hour)} · ${measure.label}`, rows,
-        note: `${value.note}${equipment.length ? ' Equipment-line subtotals are independent; combined amounts are not known.' : ''}` }];
+        note: `${value.note}${equipment.length ? ' Total unavailable; equipment subtotal shown.' : ''}` }];
     },
   };
 }

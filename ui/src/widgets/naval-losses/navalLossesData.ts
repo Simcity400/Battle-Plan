@@ -104,25 +104,11 @@ export function navalLines(model: NavalModel, tags: readonly string[], kind: Nav
 }
 
 export function navalPeriodLabel(reply: NavalLossesReply, period: NavalPeriod): string {
-  return period === 'month' ? 'Per month' : reply.firstRead === null ? 'Running total; first read not recorded' : `Since ${formatDateTime(reply.firstRead)}`;
+  return period === 'month' ? 'Per month' : reply.firstRead === null ? 'Running total' : `Since ${formatDateTime(reply.firstRead)}`;
 }
 
-export function navalNote(reply: NavalLossesReply, kind: NavalKind, attribution: NavalAttribution, period: NavalPeriod): string {
-  return [navalPeriodLabel(reply, period) + '.',
-    kind !== 'convoys' ? 'Ships retain their sinking month and appear from the supplying read.' : null,
-    kind !== 'ships' ? 'Convoys have signed month buckets, including corrections; amounts appear from the supplying read, never in earlier playback hours. The current month is month-to-date as of its last read.' : null,
-    attribution === 'sunkBy' ? 'Non-hostile causes and assisted-kill records are excluded from sunk-by counts.' : null,
-    'Unread hours are unknown; totals recover after breaks shorter than retention. Possible unseen pruning leaves the affected totals unknown.',
-  ].filter(Boolean).join(' ');
-}
-
-export function navalAsOf(reply: NavalLossesReply, hour: number, kind: NavalKind): string {
-  const carried = [
-    { label: 'ships', read: kind !== 'convoys' ? readAt(reply.shipReads, hour) : null },
-    { label: 'convoys', read: kind !== 'ships' ? readAt(reply.convoyReads, hour) : null },
-  ].flatMap(({ label, read }) => read !== null && hour > read
-    ? [`${kind === 'both' ? `${label} ` : ''}as of ${formatDateTime(read)}`] : []);
-  return `${formatDateTime(hour)}${carried.length ? ` · ${carried.join('; ')}` : ''}`;
+function navalNote(attribution: NavalAttribution): string | undefined {
+  return attribution === 'sunkBy' ? 'Non-hostile causes and assisted kills are excluded.' : undefined;
 }
 
 /** Both keeps each part's date; its single country look uses the newest read. */
@@ -159,25 +145,25 @@ export function navalChoiceReads(model: NavalModel | null, tags: readonly string
 }
 
 export function navalTooltip(model: NavalModel, tag: string, hour: number, name: string, kind: NavalKind,
-  attribution: NavalAttribution, period: NavalPeriod): TooltipContent {
+  attribution: NavalAttribution): TooltipContent {
   const run = navalSegmentAt(model, tag, hour) === null ? null : runAt(model.series.get(tag)?.runs ?? [], Math.floor(hour));
   const value = run ? navalValue(run, kind) : null;
-  return { title: name, subtitle: navalAsOf(model.reply, hour, kind), rows: [
+  return { title: name, subtitle: formatDateTime(hour), rows: [
     ...(kind !== 'convoys' ? [{ label: 'Ships', value: run?.ships == null ? 'Unknown' : formatNavalCount(run.ships) }] : []),
     ...(kind !== 'ships' ? [{ label: 'Convoys', value: run?.convoys == null ? 'Unknown' : formatNavalCount(run.convoys) }] : []),
-    { label: attribution === 'lost' ? 'Lost' : 'Sunk by', value: value === null ? 'Unknown' : formatNavalCount(value), strong: true, divider: true },
-  ], note: navalNote(model.reply, kind, attribution, period) };
+    ...(kind === 'both' ? [{ label: attribution === 'lost' ? 'Lost' : 'Sunk by', value: value === null ? 'Unknown' : formatNavalCount(value), strong: true, divider: true }] : []),
+  ], note: navalNote(attribution) };
 }
 
 export function navalLineTooltip(model: NavalModel, hour: number, tags: readonly string[], labelAt: LabelAt,
-  colour: (tag: string) => string, kind: NavalKind, attribution: NavalAttribution, period: NavalPeriod): TooltipContent {
-  return { title: `${navalKindLabel(kind)} ${attribution === 'lost' ? 'lost' : 'sunk by'}`, subtitle: navalAsOf(model.reply, hour, kind),
+  colour: (tag: string) => string, kind: NavalKind, attribution: NavalAttribution): TooltipContent {
+  return { title: `${navalKindLabel(kind)} ${attribution === 'lost' ? 'lost' : 'sunk by'}`, subtitle: formatDateTime(hour),
     rows: tags.length ? tags.map(tag => {
       const label = labelAt(hour)(tag);
       const run = runAt(model.series.get(tag)?.runs ?? [], Math.floor(hour));
       const value = run ? navalValue(run, kind) : null;
       return { label: label.name, countryFlag: label, swatch: colour(tag), value: value === null ? 'Unknown' : formatNavalCount(value) };
-    }) : [{ label: 'Counts unknown at this time', tone: 'muted' }], note: navalNote(model.reply, kind, attribution, period) };
+    }) : [{ label: 'Counts unknown at this time', tone: 'muted' }], note: navalNote(attribution) };
 }
 
 export const NAVAL_PARTS: readonly CountryRacePart[] = [{ id: 'ships', label: 'Ships' }, { id: 'convoys', label: 'Convoys' }];

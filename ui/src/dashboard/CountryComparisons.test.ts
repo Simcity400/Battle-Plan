@@ -28,7 +28,8 @@ test('country comparison headers retain neutral missing flags and request only m
       widget: { time: { mode: 'campaign' } }, runtime: {} }));
     assert.ok(state.wanted.length > 0 && state.wanted.length < 10);
     assert.equal((html.match(/country-flag-unavailable/g) ?? []).length, state.wanted.length);
-    assert.match(html, /Flag not available: Synthetic dated flag missing/);
+    assert.match(html, /Flag unavailable/);
+    assert.doesNotMatch(html, /Synthetic dated flag missing/);
     assert.doesNotMatch(html, /<img/);
   } finally { delete host.__comparisonHeaders; await vite.close(); }
 });

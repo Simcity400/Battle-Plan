@@ -99,13 +99,20 @@ test('ranked factions and a summed faction group shape the same server totals, i
   assert.equal(runAt(selected[0].runs, 17), null);
 });
 
-test('a faction whose fixed roster is unavailable keeps its gap reason in the generic tooltip', () => {
-  const data = reply();
-  data.series[0].runs = [];
-  data.series[0].unavailableReason = "This faction's membership was not recorded at the end of this campaign branch";
-  const forms = factionTooltipForms(factionTotalsModel(data), ['42'], 15, tag => ({ name: tag }), () => '#888888', String, 'Faction factories', 'Date');
-  assert.equal(forms[0].rows[0].value, 'Not recorded');
-  assert.equal(forms[0].rows[1].label, data.series[0].unavailableReason);
+test('an unavailable faction total hides its raw gap reason and retains membership scope', () => {
+  for (const [membershipMode, scope] of [['hour', 'Members at this hour'], ['end', 'Members at the end'], ['ever', 'Anyone ever a member']] as const) {
+    const data = reply();
+    data.membershipMode = membershipMode;
+    data.series[0].runs = [];
+    data.series[0].unavailableReason = "This faction's membership was not recorded at the end of this campaign branch";
+    const forms = factionTooltipForms(factionTotalsModel(data), ['42'], 15, tag => ({ name: tag }), () => '#888888', String, 'Faction factories', 'Date');
+    for (const form of forms) {
+      assert.equal(form.rows[0].value, 'Total unavailable');
+      assert.equal(form.rows[1].label, scope);
+      assert.ok(!form.rows.some(row => row.label === data.series[0].unavailableReason));
+      assert.ok(!form.spoken?.includes(data.series[0].unavailableReason!));
+    }
+  }
 });
 
 test('faction member previews reserve room for the supplied measure tooltip title', () => {
@@ -239,8 +246,8 @@ test('a dissolved faction with an incomplete last roster keeps its dated note be
   const note = 'last members before it dissolved on 2 Jan 0 · 01:00';
   const forms = factionTooltipForms(model, ['42'], 15, tag => ({ name: tag }), () => '#888888', String, 'Faction factories', 'Date');
   for (const form of forms) {
-    assert.equal(form.rows[0].value, 'Not recorded');
-    assert.ok(form.rows.some(row => row.label === data.series[0].unavailableReason));
+    assert.equal(form.rows[0].value, 'Total unavailable');
+    assert.ok(!form.rows.some(row => row.label === data.series[0].unavailableReason));
     assert.ok(form.rows.some(row => row.label === note));
     assert.ok(form.spoken?.includes(note));
   }
@@ -303,10 +310,10 @@ test('Territory faction labels and tooltips use branch template names, gaps, ref
       'Territory', 'Date', undefined, Infinity, names)) {
       assert.equal(form.rows[0].label, label);
       assert.equal(form.rows[0].value, '5');
-      assert.equal(form.rows.some(row => row.label === 'Name'), reason !== null);
+      assert.equal(form.rows.some(row => row.label === 'Name'), false);
       if (reason) {
-        assert.ok(form.rows.some(row => row.label === 'Name' && row.value === reason));
-        assert.ok(form.spoken?.includes(reason));
+        assert.ok(!form.rows.some(row => row.value === reason));
+        assert.ok(!form.spoken?.includes(reason));
       }
     }
     const edited = { factions, names: (item: FactionGroup, hour?: number) => recordedNameAt(item, hour, 'My pact') };
@@ -325,7 +332,7 @@ test('faction totals retain the main name reason when a roster-only faction has 
   assert.equal(factionNameReasonAt(model, '42', 17, settings), 'Not recorded');
 });
 
-test('faction tooltips retain every native member flag status without flagging the faction', () => {
+test('faction tooltips keep member flag metadata without repeating flag status in spoken text', () => {
   const pending = { name: 'Pending member', flagPending: true };
   const failed = { name: 'Failed member', flagReason: 'Member flag request failed' };
   const [full] = factionTooltipForms(factionTotalsModel(reply()), ['42'], 15,
@@ -334,13 +341,14 @@ test('faction tooltips retain every native member flag status without flagging t
   assert.equal(full.rows[0].countryFlag, undefined);
   assert.equal(full.rows[2].countryFlag, pending);
   assert.equal(full.rows[3].countryFlag, failed);
-  assert.match(full.spoken!, /Failed member: Flag not available: Member flag request failed/);
-  assert.match(full.spoken!, /Pending member: Flag loading/);
+  assert.match(full.spoken!, /Failed member/);
+  assert.doesNotMatch(full.spoken!, /Flag|request failed/);
+  assert.match(full.spoken!, /Pending member/);
   const forms = factionTooltipForms(factionTotalsModel(reply()), ['42'], 15,
     tag => tag === 'New/B' ? { name: 'Missing member' } : { name: 'Loaded member', flag: 'dated.png' },
     () => '#888888', String, 'Date', 'Measure', undefined, 0);
   assert.equal(forms[0].spoken, forms[1].spoken);
-  assert.match(forms[1].spoken!, /Missing member: Flag not available/);
+  assert.match(forms[1].spoken!, /Missing member/);
   assert.match(forms[1].spoken!, /Loaded member/);
   assert.doesNotMatch(forms[1].spoken!, /Loaded member: Flag/);
   assert.equal(forms[0].rows[0].value, '5');

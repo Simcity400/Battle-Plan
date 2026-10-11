@@ -1,3 +1,4 @@
+import ArtFallback from '../../components/ArtFallback';
 import { useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -14,6 +15,7 @@ import { researchNumber } from './researchBreakdown';
 import { researchJourney } from './researchJourney';
 import { researchAt, researchArtworkTokens, researchColumns, researchProgressAt, researchRequest, researchStateAt, researchView, validateResearchReply } from './researchData';
 import '../national-focus/nationalFocus.css';
+import WidgetState from '../../components/WidgetState';
 import ListSkeleton from '../../components/Skeleton';
 import { Icon } from '../../components/Icons';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -23,7 +25,7 @@ import './research.css';
 const NO_WARNINGS: string[] = [];
 type Art = ResearchReply['artwork'][number] | undefined;
 function ResearchArt({ art }: { art: Art }) {
-  return <span className="focus-art is-large">{art?.icon ? <img src={art.icon} alt="" /> : <span className="focus-missing-art" data-tooltip="Game artwork unavailable in the recorded content"><Icon name="flask" /></span>}</span>;
+  return <span className="focus-art is-large">{art?.icon ? <img src={art.icon} alt="" /> : <ArtFallback icon="flask" />}</span>;
 }
 
 /** A completed technology. Its row opens the full explanation. */
@@ -34,7 +36,7 @@ function ResearchCard({ history, slots, slot, entry, art, jump }: {
   const [open, setOpen] = useState(false);
   return <li {...jump}><details className="focus-details research-details" onToggle={event => setOpen(event.currentTarget.open)}>
     <summary className="focus-row research-row" aria-label={`${contentTitle(art?.name, entry.token, 'Technology name unavailable')}, slot ${slot.index + 1}, show details`}>
-      <span className="focus-art">{art?.icon ? <img src={art.icon} alt="" width="66" height="64" /> : <span className="focus-missing-art" aria-label="Game artwork unavailable">&#9671;</span>}</span>
+      <span className="focus-art">{art?.icon ? <img src={art.icon} alt="" width="66" height="64" /> : <ArtFallback icon="flask" />}</span>
       <span className="focus-label"><strong data-tooltip={contentTitleHint(entry.token)}>{contentTitle(art?.name, entry.token, 'Technology name unavailable')}</strong></span>
       <Icon name="chevron-down" className="focus-chevron" aria-hidden="true" />
     </summary>
@@ -72,7 +74,7 @@ function IdleSlot({ current }: { current: ResearchSlotState | null }) {
   return <div className="focus-now is-idle research-now" role="status">
     <span className="focus-art is-large"><span className="focus-missing-art"><Icon name="pause" /></span></span>
     <span className="focus-now-text"><strong>{current ? 'Idle' : 'Unavailable'}</strong>
-      <span>{!current ? 'Not recorded at this hour' : banked > 0n ? `${researchNumber(banked)} days saved for the next research` : 'Nothing assigned to this slot'}</span></span>
+      <span>{!current ? 'Not recorded at this hour' : banked > 0n ? `${researchNumber(banked)} days saved for the next research` : null}</span></span>
   </div>;
 }
 
@@ -96,8 +98,8 @@ export default function ResearchWidget({ widget, runtime, active, onDiagnostics 
   useDiagnostics(onDiagnostics, diagnostics);
   const artwork = useMemo(() => new Map(data?.artwork.map(art => [art.token, { ...art, icon: images.artwork.get(art.token)?.icon ?? art.icon }])), [data, images.artwork]);
   if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
-  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <div className="dash-empty" role="status">This time is outside the country’s recorded branch.</div>;
-  if (error) return <div className="dash-empty" role="alert"><p>{error}</p><button className="button small" onClick={retry}>Retry</button></div>;
+  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <div className="dash-empty" role="status">This time is outside the recording.</div>;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return <ListSkeleton label="Loading research…" />;
   if (!columns || !slots) return <div className="dash-empty" role="status">No complete research data recorded at this date.</div>;
   if (!columns.length) return <div className="dash-empty" role="status">No research slots recorded at this date.</div>;
@@ -115,7 +117,6 @@ export default function ResearchWidget({ widget, runtime, active, onDiagnostics 
             ? <CurrentResearch history={data.history} slots={slots} slot={slot} entry={currentEntry} current={current} art={artwork.get(currentEntry.token)} hour={hour} live={live}
                 jump={rowJumpProps(runtime, track.id, () => researchJourney(slots, slot, currentEntry).firstHour, menu.open)} />
             : <IdleSlot current={current} />)}
-          {moment && earlier.length > 0 && <div className="research-earlier-label">Completed</div>}
           <ol className="research-entries" style={{ paddingTop: `calc(${offset} * var(--research-row-height))` }}>
           {earlier.map(entry => <ResearchCard key={`${entry.firstObservedHour}:${entry.token}`} history={data.history} slots={slots} slot={slot} entry={entry}
             art={artwork.get(entry.token)} jump={rowJumpProps(runtime, track.id, entry.endedByHour, menu.open)} />)}

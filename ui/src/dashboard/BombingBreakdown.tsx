@@ -17,10 +17,10 @@ import { useCountryLabelsAt } from './countryFlagsAt';
 import DatedCountryChip from './DatedCountryChip';
 import { validatePlaceNamesReply } from './placeNamesData';
 import { contentTitle, contentTitleHint } from './contentTitles';
-import { LEDGER_GAP_NOTE, leafAmount, ledgerComplete, ledgerCountryAt, ledgerFormat, ledgerScale, militaryAirIndex } from './militaryAirLedger';
+import { leafAmount, ledgerComplete, ledgerCountryAt, ledgerFormat, ledgerScale, militaryAirIndex } from './militaryAirLedger';
 
 const NO_FILTERS = { regions: new Set<number>(), causes: new Set<number>() };
-const TEXT: SunburstText = { format: (_value, exact) => exact == null ? 'Not recorded' : ledgerFormat(exact, 'bombing'), unit: 'building levels', valueLabel: 'Applied health loss', countLabel: 'Building/state parts', unknownLabel: reason => reason };
+const TEXT: SunburstText = { format: (_value, exact) => exact == null ? 'Not recorded' : ledgerFormat(exact, 'bombing'), unit: 'building levels', valueLabel: 'Damage', countLabel: 'Locations' };
 
 /** The same building → dated-state projection serves the separate widget and drill. */
 export default function BombingBreakdown({ data, runtime, track, tag, identity, countrySlot, headerSelection, from, hour, end, dealt, options, active }: {
@@ -39,11 +39,10 @@ export default function BombingBreakdown({ data, runtime, track, tag, identity, 
   const wanted = useMemo(() => countrySlot && headerRow ? [{ tag: headerRow.tag, hour }] : [], [countrySlot, headerRow?.tag, hour]);
   const labels = useCountryLabelsAt(runtime.client, track, wanted, active && !!countrySlot);
   const header = countrySlot && createPortal(<DatedCountryChip label={headerRow ? labels.labelAt(hour)(headerRow.tag) : null} hour={hour}
-    reason={!headerSelection ? 'The saved native holder selection is unavailable.'
-      : !headerRow ? 'The selected native country identity is unknown or conflicting at this hour.' : null} />, countrySlot);
+    reason={!headerSelection ? 'Saved country unavailable.'
+      : !headerRow ? 'Country unavailable at this time.' : null} />, countrySlot);
   const leaves = row?.series.leaves.filter(leaf => leaf.dealt === dealt) ?? [];
   const stateIds = [...new Set(leaves.flatMap(leaf => leaf.state ? [leaf.state] : []))].sort((a, b) => a - b);
-  const stateKey = JSON.stringify(stateIds);
   const request = stateIds.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'place-names',
     params: { branchId: track.branch.id, places: [], states: stateIds.map(stateId => ({ stateId, hour })) } } : null;
   const states = useProduct<PlaceNamesReply>(runtime.client, request, active, validatePlaceNamesReply);
@@ -55,15 +54,13 @@ export default function BombingBreakdown({ data, runtime, track, tag, identity, 
       const building = leaf.buildingToken == null ? null : buildings.get(leaf.buildingToken);
       const state = leaf.state == null || leaf.state === 0 ? null : names.get(leaf.state);
       const buildingLabel = contentTitle(building?.name, leaf.buildingToken, leaf.buildingToken == null ? 'Building type not recorded' : 'Building name unavailable');
-      const stateLabel = leaf.state === 0 ? 'No containing state' : state?.name ?? 'State name not recorded';
-      const notes = [contentTitleHint(leaf.buildingToken, building?.missing), leaf.buildingToken == null ? 'The event read did not hold its building type spelling.' : null,
-        leaf.state === 0 ? 'The native province building has no containing state.' : state?.missing ?? (states.error ? states.error : states.data ? 'The dated state name is unavailable.' : 'Loading the dated state name.')].filter((note): note is string => !!note);
+      const stateLabel = leaf.state === 0 ? 'State unknown' : contentTitle(state?.name, leaf.state, 'State name not recorded', !states.data && !states.error);
       return { path: [{ id: `building:${leaf.buildingToken ?? leaf.buildingId}`, label: buildingLabel }, { id: `state:${leaf.state}`, label: stateLabel }],
         value: Number(exact) / ledgerScale('bombing'), exact, final: Number(final) / ledgerScale('bombing'), present: exact !== 0n,
         unknownValue: !ledgerComplete(data.observed, from, hour, data.incomplete), finalUnknown: !ledgerComplete(data.observed, from, end, data.incomplete),
-        counted: [JSON.stringify([leaf.buildingToken ?? leaf.buildingId, leaf.state])], note: notes.join(' ') || undefined };
+        counted: [JSON.stringify([leaf.buildingToken ?? leaf.buildingId, leaf.state])], note: contentTitleHint(leaf.buildingToken) };
     });
-  }, [data, row, dealt, from, hour, end, states.data, states.error, stateKey]);
+  }, [data, row, dealt, from, hour, end, states.data, states.error]);
   if (!row) return <>{header}<WidgetState kind="unavailable" message="Bombing damage or this country was not recorded at this moment." /></>;
   const complete = ledgerComplete(data.observed, from, hour, data.incomplete);
   const exact = dealt ? row.dealt : row.taken;
@@ -77,7 +74,7 @@ export default function BombingBreakdown({ data, runtime, track, tag, identity, 
     authoritativeTotal={{ value: Number(exact) / ledgerScale('bombing'), exact, unknownValue: !complete,
       final: final === null ? null : Number(final) / ledgerScale('bombing'), finalUnknown: final === null || !ledgerComplete(data.observed, from, end, data.incomplete) }}
     hoursPerSecond={hoursPerSecond} active={active}
-    footnote={`${complete ? 'Exact observed bombing health loss, measured in building levels.' : LEDGER_GAP_NOTE} State names are dated at the shown read. Damage without a recorded attacker stays in the victim’s suffered total.`} />
+    footnote={`Building levels.${complete ? '' : ' Some damage may be missing.'}`} />
     {menu.menu}
   </div>;
 }

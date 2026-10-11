@@ -4,7 +4,7 @@ import ProductionLinesWidget from './ProductionLinesWidget';
 import ProductionCountryChip from './ProductionCountryChip';
 import { readDatedCountry } from '../../dashboard/datedCountry';
 import { useProductionLines, useLineBreakdown } from './useProductionLines';
-import { productionLineKey, productionLineToken } from './productionData';
+import { productionLineKey, productionLineToken, productionLineLabel } from './productionData';
 
 function useLineChoices(widget: WidgetSpec, runtime: WidgetRuntime) {
   const { data, track, tag } = useProductionLines(widget, runtime, true);
@@ -12,8 +12,8 @@ function useLineChoices(widget: WidgetSpec, runtime: WidgetRuntime) {
   const group = widget.options?.show === 'output' ? 'output' : 'efficiency';
   const country = track ? readDatedCountry(widget.options?.productionCountry, track.source.metadata.campaignKey, track.branch.id, widget.countries) : null;
   const breakdown = useLineBreakdown(runtime, track, tag, key, group, true, country && track ? track.branch.firstHour + country.originOffset : undefined);
-  return { line: data && track ? data.lines.map(line => ({ value: productionLineToken(track.source.metadata.campaignKey, data.branchId, data.tag, line.key),
-      label: `Line ${line.handle} · ${line.key}` })) : [],
+  return { line: data && track ? data.lines.map((line, index) => ({ value: productionLineToken(track.source.metadata.campaignKey, data.branchId, data.tag, line.key),
+      label: productionLineLabel(data, line, index, country && track ? track.branch.firstHour + country.originOffset : track.branch.lastHour) })) : [],
     factor: (breakdown.data?.groups ?? []).map(group => ({ value: group.id, label: group.label })) };
 }
 export default { render: ProductionLinesWidget, countryChip: ProductionCountryChip, useOptionChoices: useLineChoices } satisfies WidgetRenderer;

@@ -1,6 +1,7 @@
 import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles.ts';
 import { useEffect, useMemo, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
+import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
 import { badgeRows } from '../../charts/badges';
 import { dayLabel, drawBands } from '../../charts/draw';
@@ -88,11 +89,11 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   }] : [], [data, list, stack]);
 
   if (!track || !tag) return <WidgetState kind="empty" icon="palette" message="Load a campaign and choose a country to see its politics." />;
-  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the country’s recorded branch." />;
-  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
+  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading parties…" />;
-  if (!list.length && !data.leaders.length) return <WidgetState kind="unavailable" message="No parties were recorded for this country in this branch." />;
+  if (!list.length && !data.leaders.length) return <WidgetState kind="unavailable" message="Party data is unavailable." />;
 
   const ruling = rulingAt(data, Math.floor(head));
   const rulingBand = list.find(band => band.token === ruling);
@@ -104,10 +105,8 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   // The party as the game names it ("NSDAP"); left out when that is not known.
   const detail = [leader.ideology, partyNameAt(data, Math.floor(head)), rulingRaw ? formatPopularity(rulingRaw, data.decimals) : null].filter(Boolean).join(' · ');
   const header = <div className="ruling-party-leader">
-    {/* Why a portrait is missing is on the shared tooltip, reachable by keyboard too. */}
-    <span className="ruling-party-portrait" style={rulingBand ? { borderColor: rulingBand.color } : undefined}
-      {...(leader.portraitMissing ? { tabIndex: 0, role: 'img', 'aria-label': `Portrait not shown: ${leader.portraitMissing}`, 'data-tooltip': leader.portraitMissing } : {})}>
-      {leader.portrait ? <img src={leader.portrait} alt="" /> : <span className="ruling-party-silhouette" aria-hidden="true" />}
+    <span className="ruling-party-portrait" style={rulingBand ? { borderColor: rulingBand.color } : undefined}>
+      {leader.portrait ? <img src={leader.portrait} alt="" /> : <ArtFallback icon="helmet" />}
     </span>
     <div className="ruling-party-leader-text">
       <strong className={leader.known ? undefined : 'is-notice'}>{leader.name}</strong>
@@ -116,7 +115,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   </div>;
   // A recorded leader still shows when no party popularity was recorded.
   if (!list.length) return <div className="ruling-party">{header}
-    <WidgetState kind="unavailable" message="No party popularity was recorded for this country in this branch." />
+    <WidgetState kind="unavailable" message="Party popularity is unavailable." />
   </div>;
   return <div className="ruling-party">
     {header}
@@ -137,7 +136,6 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
           const party = name === undefined ? null : name ?? 'Not known';
           const rows: TooltipRow[] = [{ label: 'Leader', value: shown.name, tone: shown.known ? undefined : 'muted' as const }];
           if (shown.ideology || party) rows.push({ label: 'Ideology · party', value: [shown.ideology ?? 'Not recorded', party ?? 'Not recorded'].join(' · ') });
-          if (shown.portraitMissing) rows.push({ label: 'Portrait', value: `Not shown: ${shown.portraitMissing}`, tone: 'muted' });
           rows.push(...list.map(band => ({ band, raw: rawAt(band.series, hour) }))
             .sort((a, b) => Number(b.raw ?? -1) - Number(a.raw ?? -1))
             .map(({ band, raw }) => ({ label: band.token === rulingAt(data, hour) ? `${band.name} (ruling)` : band.name, swatch: band.color,
@@ -148,7 +146,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
         }}
         onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
     </div>
-    {governments.error && <button type="button" onClick={governments.retry}>Retry government causes</button>}
+    {governments.error && <WidgetState kind="error" what="government changes" detail={governments.error} onRetry={governments.retry} />}
     {menu.menu}
   </div>;
 }

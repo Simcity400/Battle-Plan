@@ -31,7 +31,7 @@ function source(id: string, firstHour: number, lastHour: number): DashboardSourc
     countries: [], playerCountryId: null, contentVerified: false, partial: null, warnings: [] } };
 }
 type ShownTimeline = { extent: [number, number]; playhead: number | null; labelHour: number; preserveZoomOnExtentChange: boolean; lanes: TimelineLane[];
-  tooltip: (lane: TimelineLane, span: TimelineLane['spans'][number], hour: number, full: boolean) => { note?: string } };
+  tooltip: (lane: TimelineLane, span: TimelineLane['spans'][number], hour: number, full: boolean) => { note?: string; rows?: { label: string; value?: string }[] } };
 const host = globalThis as typeof globalThis & { __politicsTimeline?: ShownTimeline; __politicsHistory?: unknown };
 
 test('Idea and spirit history growth uses each resolved track hour, preserving held clocks and recorded spans', async () => {
@@ -66,10 +66,13 @@ test('Idea and spirit history growth uses each resolved track hour, preserving h
       render(150);
       if (kind === 'idea-timeline') {
         const timeline = host.__politicsTimeline!;
-        const note = timeline.tooltip(timeline.lanes[0], timeline.lanes[0].spans[0], 150, true).note ?? '';
-        assert.match(note, /first observed/);
-        assert.match(note, /Active ideas are read hourly/);
-        assert.match(note, /advisors use their daily supplying read/);
+        const tip = timeline.tooltip(timeline.lanes[0], timeline.lanes[0].spans[0], 150, true);
+        assert.ok(tip.rows?.some(row => row.label === 'Held by' && row.value));
+        assert.ok(!tip.rows?.some(row => row.label === 'First observed'));
+        const note = tip.note ?? '';
+        assert.doesNotMatch(note, /first observed/);
+        assert.doesNotMatch(note, /Active ideas are read hourly/);
+        assert.doesNotMatch(note, /advisors use their daily supplying read/);
       }
       assert.deepEqual(host.__politicsTimeline?.extent, [100, 201], `${kind}: default axis includes the final recorded hour`);
       assert.equal(host.__politicsTimeline?.preserveZoomOnExtentChange, false);
@@ -96,7 +99,7 @@ test('Idea and spirit history growth uses each resolved track hour, preserving h
       assert.equal(host.__politicsTimeline?.playhead, null);
       widget.time = { mode: 'follow' };
       assert.equal(resolveWindow(widget, tracks[0], tracks, 400)?.lastHour, 400);
-      assert.match(render(400), /outside the country.*recorded branch/);
+      assert.match(render(400), /outside the recording/);
       assert.equal(host.__politicsTimeline, undefined, 'another aligned track cannot extend this branch');
     }
   } finally { delete host.__politicsTimeline; delete host.__politicsHistory; await vite.close(); }
