@@ -43,11 +43,11 @@ mod world;
 pub use eval::{Combat, Evaluator, VariableSession};
 pub use operands::{Selected, Selector, compare, scope_selector, shown, trigger_boolean};
 pub use variables::Temps;
-pub(crate) use world::fixed_round;
 pub use world::{
     ContentFacts, LeaderRoles, NULL_STATE, PartyLeader, PartyLeaders, RecordedTemplate, World,
     required_invasion_hours,
 };
+pub(crate) use world::{GeographyInputs, LeaderVisibility, core_gap, fixed_round};
 
 /// Marks an undecided reason as a refused token, which the viewer's raid
 /// report counts apart.

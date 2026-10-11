@@ -1,3 +1,4 @@
+import { contentTitle } from './contentTitles.ts';
 import type { TooltipContent, TooltipRow } from '../charts/tooltip';
 import type { EffectGroup, EffectLine, IdeaHistoryReply, IdeaInfo, ModifierFormat, TraitEffects } from '../generated/dashboard';
 
@@ -114,20 +115,20 @@ function modifierRows(lines: readonly EffectLine[], sources: IdeaTooltipSources)
     // No format: the engine's exact value, unformatted.
     if (!format) {
       authored = true;
-      rows.push({ label: `${line.key}:`, value: fixed5Text(raw, -1), tone: 'muted' });
+      rows.push({ label: 'Modifier name unavailable:', lookupKey: line.key, value: fixed5Text(raw, -1), tone: 'muted' });
       continue;
     }
     if (raw === 0n && !(format.flags & 0x100)) continue;
     const shown = formatModifier(format, raw, words);
     // The game writes the name, then ": ", then the value.
-    // A name localisation lacks is shown as the script key; a unit whose text is
-    // missing is shown as its key, marked, never dropped.
+    // Missing labels and units retain the value with an explicit unavailable label.
+    // The script identity remains available on the row's hover hint.
     const unitMissing = format.postfix == null && format.postfixKey != null;
     authored ||= format.label == null || unitMissing;
     // A modifier that needs a game feature applies only while it is on, which the
     // recording does not say: it is marked, not shown as certainly in effect.
     if (format.feature !== 0) featured = true;
-    rows.push({ label: `${format.label ?? line.key}:`, value: `${unitMissing ? `${shown.text} [${format.postfixKey}]` : shown.text}${format.feature !== 0 ? ' *' : ''}`,
+    rows.push({ label: `${contentTitle(format.label, line.key, 'Modifier name unavailable')}:`, lookupKey: line.key, value: `${unitMissing ? `${shown.text} [unit unavailable]` : shown.text}${format.feature !== 0 ? ' *' : ''}`,
       tone: unitMissing || format.feature !== 0 ? 'muted' : shown.tone });
   }
   return { rows, authored, featured };
@@ -143,26 +144,26 @@ function section(heading: string | null, rows: readonly TooltipRow[]): TooltipRo
 /** A trait: its name, its modifiers and custom tooltips, then its targeted
  * modifiers and equipment bonuses, each in its own group as the idea's are. */
 function traitSection(found: TraitEffects, sources: IdeaTooltipSources): Section {
-  const name = found.name ?? found.token;
+  const name = contentTitle(found.name, found.token, 'Trait name unavailable');
   if (!found.known) return { rows: section(name, [{ label: 'Effects', value: found.unknown ?? 'not in the content files', tone: 'muted' }]), authored: false };
   const own = modifierRows(found.lines, sources);
   const groups = [...found.targeted.map(group => targetedSection(group, sources)), ...found.equipment.map(group => equipmentSection(group, sources))];
-  return { rows: [...section(name, [...own.rows, ...found.tooltips.map(key => ({ label: sources.text(key) ?? key }))]), ...groups.flatMap(group => group.rows)],
+  return { rows: [...section(name, [...own.rows, ...found.tooltips.map(key => ({ label: contentTitle(sources.text(key), key, 'Tooltip text unavailable'), lookupKey: key }))]), ...groups.flatMap(group => group.rows)],
     authored: own.authored || groups.some(group => group.authored), featured: own.featured || groups.some(group => group.featured) };
 }
 
 /** A targeted modifier: its modifier lines, then its custom tooltips. */
 function targetedSection(group: EffectGroup, sources: IdeaTooltipSources): Section {
   const lines = modifierRows(group.lines, sources);
-  const rows = [...lines.rows, ...group.tooltips.map(key => ({ label: sources.text(key) ?? key }))];
+  const rows = [...lines.rows, ...group.tooltips.map(key => ({ label: contentTitle(sources.text(key), key, 'Tooltip text unavailable'), lookupKey: key }))];
   return { rows: section(group.target ? `Against ${sources.countryName(group.target)}:` : 'Against a country:', rows), authored: lines.authored, featured: lines.featured };
 }
 
 /** An equipment bonus: its stats are named and formatted by an engine table the
  * recording does not hold, so they are shown as authored. */
 function equipmentSection(group: EffectGroup, sources: IdeaTooltipSources): Section {
-  const name = group.target ? sources.text(group.target) ?? group.target : 'Equipment';
-  const rows = group.lines.filter(line => !line.hidden).map(line => ({ label: `${line.key}:`, tone: 'muted' as const,
+  const name = group.target ? contentTitle(sources.text(group.target), group.target, 'Equipment name unavailable') : 'Equipment';
+  const rows = group.lines.filter(line => !line.hidden).map(line => ({ label: 'Equipment modifier name unavailable:', lookupKey: line.key, tone: 'muted' as const,
     value: fixed5Text(BigInt(line.fixed5), -1) }));
   return { rows: section(`${name}${group.instant ? ' (at once)' : ''}:`, rows), authored: rows.length > 0 };
 }
@@ -170,9 +171,9 @@ function equipmentSection(group: EffectGroup, sources: IdeaTooltipSources): Sect
 /** A research bonus: category, then the factor as a signed whole percentage. */
 function researchRows(lines: readonly EffectLine[], sources: IdeaTooltipSources): TooltipRow[] {
   return lines.filter(line => !line.hidden).map(line => {
-    const label = `${sources.text(`${line.key}_research`) ?? line.key}:`;
+    const label = `${contentTitle(sources.text(`${line.key}_research`), `${line.key}_research`, 'Research category name unavailable')}:`;
     const raw = BigInt(line.fixed5);
-    return { label, value: `${raw > 0n ? '+' : ''}${fixed5Text(raw * 100n, 0)}%`, tone: raw < 0n ? 'negative' as const : 'positive' as const };
+    return { label, lookupKey: line.key, value: `${raw > 0n ? '+' : ''}${fixed5Text(raw * 100n, 0)}%`, tone: raw < 0n ? 'negative' as const : 'positive' as const };
   });
 }
 
@@ -186,7 +187,7 @@ export function ideaEffectRows(info: IdeaInfo, sources: IdeaTooltipSources): { r
     ...info.traits.map(found => traitSection(found, sources)),
   ];
   const own = modifierRows(info.effects, sources);
-  sections.push({ rows: section(null, [...own.rows, ...info.tooltips.map(key => ({ label: sources.text(key) ?? key }))]), authored: own.authored, featured: own.featured });
+  sections.push({ rows: section(null, [...own.rows, ...info.tooltips.map(key => ({ label: contentTitle(sources.text(key), key, 'Tooltip text unavailable'), lookupKey: key }))]), authored: own.authored, featured: own.featured });
   sections.push(...info.targeted.map(group => targetedSection(group, sources)));
   sections.push({ rows: section(null, researchRows(info.research, sources)), authored: false });
   sections.push(...info.equipment.map(group => equipmentSection(group, sources)));

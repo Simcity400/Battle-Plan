@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { EventBadge } from '../../charts/badges';
 import { runAt } from '../../charts/series.ts';
 import { buildStack as buildStackOf, stackedSegments } from '../../charts/stack.ts';
@@ -39,7 +40,7 @@ export function bands(reply: PartyHistoryReply, palette: readonly string[]): Ban
   return sorted.map(series => {
     const ideology = reply.ideologies.find(item => item.token === series.token);
     const color = ideology?.color ? `rgb(${ideology.color.join(' ')})` : palette[fallback++ % Math.max(1, palette.length)];
-    return { token: series.token, name: ideology?.name ?? series.token, color, series };
+    return { token: series.token, name: contentTitle(ideology?.name, series.token, 'Ideology name unavailable'), color, series };
   });
 }
 
@@ -139,7 +140,8 @@ export function leaderShown(reply: PartyHistoryReply, run: LeaderRun | null): Le
   const none = (name: string, ideology: string | null = null): LeaderShown => ({ name, known: false, portrait: null, portraitMissing: null, ideology });
   if (!run) return none('Leader not recorded');
   if (!run.ideology) return none('No leader');
-  const ideology = reply.ideologyTypes.find(item => item.token === run.ideology)?.name ?? run.ideology;
+  const ideology = contentTitle(reply.ideologyTypes.find(item => item.token === run.ideology)?.name,
+    run.ideology, 'Ideology name unavailable');
   const person = run.person == null ? undefined : reply.people[run.person];
   if (!person) return none('Leader not identified', ideology);
   return { name: person.name ?? 'Leader’s name not known', known: person.name != null, portrait: person.portrait, portraitMissing: person.portraitMissing, ideology };

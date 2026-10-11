@@ -16,6 +16,7 @@ import { useProductWindows } from './productWindows';
 import { useFactionColours } from './FactionColours';
 import { useCountryLooks } from './countryLooks';
 import { useAirCountryColours } from './useAirSuperiorityColours';
+import type { AirColourLookup } from './useAirSuperiorityColours';
 import { FOLLOW_MS, useCountriesAt } from './useCountriesAt';
 import { useThrottled } from './useThrottled';
 import { useHoverLabels } from './useHoverLabels';
@@ -74,7 +75,8 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
     ...(mode.theatres.length ? { theatres: mode.theatres } : {}) }), [mode]);
   const needsViewpoint = mode.mode === 'viewpoint' && !mode.viewpoint;
   const follow = !moment && widget.time.mode === 'follow';
-  const heldIdentity = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, contentRevision, firstHour, params, options.regionCount, follow]);
+  const heldIdentity = useMemo(() => JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, contentRevision, firstHour, params, options.regionCount, follow]),
+    [track?.source.id, track?.source.revision, track?.branch.id, contentRevision, firstHour, params, options.regionCount, follow]);
   const [held, setHeld] = useState<{ client: DashboardClient; identity: string; timeline?: AirTimeline; day?: AirMoment }>();
   const previousTimeline = heldAirReply(held, runtime.client, heldIdentity, 'timeline');
   // The first reply supplies cadence; subsequent requests change only by day.
@@ -154,38 +156,44 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
   const nameHour = useThrottled(Math.floor(lookHour), FOLLOW_MS);
   const labelLooks = useCountryLooks(runtime.client, track, tags, nameHour, active, segmentAt, undefined, true);
   const names = useMemo(() => ({ country: (tag: string) => ({ name: labelLooks.name(tag, lookHour), flag: labelLooks.flag(tag, lookHour) }) }), [labelLooks, lookHour]);
-  const { ask: askHover, labelAt: hoverLabels, revision: hoverRevision } = useHoverLabels(runtime.client, track, active, names.country);
-  const countryNameKey = JSON.stringify(tags.map(tag => [tag, names.country(tag).name]));
-  const countryNames = useMemo(() => new Map<string, string>(JSON.parse(countryNameKey)), [countryNameKey]);
+  const { ask: askHover, labelAt: hoverLabels, revision: hoverRevision } = useHoverLabels(runtime.client, track, active, names.country, undefined, segmentAt);
+  // Rebuilt only when a country or its name changes, not each played hour.
+  const shownNames = tags.map(tag => names.country(tag).name);
+  const namesHeld = useRef<{ tags: readonly string[]; names: readonly string[]; byTag: ReadonlyMap<string, string> } | null>(null);
+  const named = namesHeld.current;
+  const countryNames = named && named.tags.length === tags.length && tags.every((tag, index) => tag === named.tags[index] && shownNames[index] === named.names[index])
+    ? named.byTag : (namesHeld.current = { tags, names: shownNames, byTag: new Map(tags.map((tag, index) => [tag, shownNames[index]])) }).byTag;
   const factionNames = factions.displayNames;
   const sideName = useCallback((side: AirSide) => airSideName(side, tag => countryNames.get(tag) ?? 'Country name not recorded', factionNames), [factionNames, countryNames]);
-  const color = useCallback((side: AirSide, at = dataHour) => side.colourFaction ? factions.colours.get(side.colourFaction) ?? tokens.muted
-    : countryColours.color(side, at), [factions.colours, countryColours, tokens.muted, dataHour]);
-  const appearance = useMemo<AirLooks>(() => ({ name: sideName, color,
-    viewpoint: { name: viewpointSide ? sideName(viewpointSide) : viewpointTag ? countryNames.get(viewpointTag) ?? viewpointTag : 'No country selected', tag: viewpointSide ? undefined : viewpointTag,
-      color: viewpointSide ? color(viewpointSide) : countryColours.viewpoint(dataHour) },
-    viewpointAt: at => ({ name: viewpointTag ? countryNames.get(viewpointTag) ?? viewpointTag : 'No country selected', tag: viewpointTag, color: countryColours.viewpoint(at) }), enemy: tokens.error,
-    scale: data?.scale ?? 1, badBelow: data?.badBelow ?? 0, goodAbove: data?.goodAbove ?? 1, mode: mode.mode }),
-    [sideName, color, viewpointSide, viewpointTag, countryNames, countryColours, dataHour, tokens.error, data?.scale, data?.badBelow, data?.goodAbove, mode.mode]);
+  const looksWith = useCallback((colours: AirColourLookup): AirLooks => {
+    const color = (side: AirSide, at = dataHour) => side.colourFaction ? factions.colours.get(side.colourFaction) ?? tokens.muted : colours.color(side, at);
+    return { name: sideName, color, lookAt: colours.at,
+      viewpoint: { name: viewpointSide ? sideName(viewpointSide) : viewpointTag ? countryNames.get(viewpointTag) ?? 'Country name unavailable' : 'No country selected', tag: viewpointSide ? undefined : viewpointTag,
+        color: viewpointSide ? color(viewpointSide) : colours.viewpoint(dataHour) },
+      viewpointAt: at => ({ name: viewpointTag ? countryNames.get(viewpointTag) ?? 'Country name unavailable' : 'No country selected', tag: viewpointTag, color: colours.viewpoint(at) }), enemy: tokens.error,
+      scale: data?.scale ?? 1, badBelow: data?.badBelow ?? 0, goodAbove: data?.goodAbove ?? 1, mode: mode.mode };
+  }, [sideName, factions.colours, tokens.muted, viewpointSide, viewpointTag, countryNames, dataHour, tokens.error, data?.scale, data?.badBelow, data?.goodAbove, mode.mode]);
+  // The reply's own hours keep their looks while the current day's read moves.
+  const appearance = useMemo(() => looksWith(countryColours.reply), [looksWith, countryColours.reply]);
+  const dayLooks = useMemo(() => looksWith(countryColours.latest), [looksWith, countryColours.latest]);
   const baseTimeline = useMemo(() => data?.view === 'timeline' ? timelineViews(data, appearance) : null, [data, appearance]);
   const projectedTimeline = useMemo(() => {
     if (!baseTimeline || !follow || !dayData || dayRead == null || data?.view !== 'timeline' || Math.floor(dayData.firstHour / data.dayHours) !== Math.floor(data.lastHour / data.dayHours)) return baseTimeline;
     const regions = data.rows.map(row => ({ id: row.region, name: row.name }));
-    const liveRows = new Map(momentViews(dayData, dayRecorded ?? dayRead, appearance, { regions }).map(row => [row.region.id, row]));
+    const liveRows = new Map(momentViews(dayData, dayRecorded ?? dayRead, dayLooks, { regions }).map(row => [row.region.id, row]));
     const periods = [...baseTimeline.periods];
     const column = periods.length - 1;
     periods[column] = { firstHour: periods[column].firstHour, lastHour: dayData.lastHour, readHour: dayRecorded };
-    const views = new Map(baseTimeline.views);
+    const gap: AirView = { ...appearance, state: 'gap', parts: [], total: 0n, unknown: [], noAirObject: [], excluded: 0, wings: null, hour: null };
     const rows = baseTimeline.rows.map(row => {
-      const live = liveRows.get(Number(row.id));
-      const view = live?.view;
+      const view = liveRows.get(Number(row.id))?.view;
       const cells = [...row.cells];
       cells[column] = { parts: view?.parts ?? [], unknown: view?.state === 'unknown', filtered: view?.reason === 'outside-theatres' };
-      views.set(Number(row.id), [...(views.get(Number(row.id))?.slice(0, column) ?? []), view ?? { ...appearance, state: 'gap', parts: [], total: 0n, unknown: [], noAirObject: [], excluded: 0, wings: null, hour: null }]);
       return { ...row, cells };
     });
-    return { rows, periods, views };
-  }, [baseTimeline, follow, dayData, dayRead, dayRecorded, appearance, data]);
+    const shown = new Set(rows.map(row => Number(row.id)));
+    return { rows, periods, viewAt: (region: number, day: number) => day === column && shown.has(region) ? liveRows.get(region)?.view ?? gap : baseTimeline.viewAt(region, day) };
+  }, [baseTimeline, follow, dayData, dayRead, dayRecorded, appearance, dayLooks, data]);
   const allChoices = options.order === 'name' ? choices.data : undefined;
   const projectedMoment = useMemo(() => data?.view === 'moment' ? momentViews(data, dataHour, appearance, allChoices) : [], [data, dataHour, appearance, allChoices]);
   const regionMap = useMemo(() => new Map(projectedMoment.map(row => [row.region.id, row])), [projectedMoment]);
@@ -195,7 +203,7 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
     if (data?.view === 'timeline' && projectedTimeline) {
       const index = at == null ? -1 : Math.floor((at - data.firstHour) / data.dayHours);
       region = timelineRegions.get(regionId);
-      const cell = projectedTimeline.views.get(regionId)?.[index];
+      const cell = projectedTimeline.viewAt(regionId, index);
       if (cell) view = { ...cell, hour: projectedTimeline.periods[index]?.readHour ?? null,
         ...(projectedTimeline.periods[index]?.readHour == null ? { state: 'gap' as const } : {}) };
     } else { const row = regionMap.get(regionId); region = row?.region; view = row && { ...row.view, hour: at }; }
@@ -207,9 +215,9 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
   const legend = useMemo(() => mode.mode === 'viewpoint' ? [
     { id: 'friendly', label: `${appearance.viewpoint.name} (friendly)`, color: appearance.viewpoint.color },
     { id: 'enemy', label: `Enemies of ${appearance.viewpoint.name}`, color: tokens.error },
-  ] : [...new Map(sides.map(side => sideAt(side, dataHour)).map(side => [side.key, { id: side.key, label: sideName(side), color: color(side),
+  ] : [...new Map(sides.map(side => sideAt(side, dataHour)).map(side => [side.key, { id: side.key, label: sideName(side), color: appearance.color(side),
     onColor: side.colourFaction ? (hex: string) => changeFactionColour(side.colourFaction!, hex) : undefined }])).values()],
-    [mode.mode, appearance, tokens.error, sides, sideName, color, changeFactionColour, dataHour]);
+    [mode.mode, appearance, tokens.error, sides, sideName, changeFactionColour, dataHour]);
   const orderedLegend = useMemo(() => {
     const order = sideOrder(sides);
     return [...legend].sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));

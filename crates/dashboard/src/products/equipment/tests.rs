@@ -28,6 +28,48 @@ fn equipment_localisation_keeps_names_past_the_old_length_limit() {
 }
 
 #[test]
+fn equipment_names_preserve_authored_empty_and_key_equal_titles() {
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
+        "localisation/english/equipment_l_english.yml",
+        "\u{feff}l_english:\n empty_type:0 \"\"\n type:0 \"Base type\"\n GER_type:0 \"\"\n same_type:0 \"same_type\"\n",
+    )]);
+    assert_eq!(
+        localise_for(&catalogue, None, "empty_type"),
+        Some(String::new())
+    );
+    assert_eq!(
+        localise_for(&catalogue, Some("GER"), "type"),
+        Some(String::new())
+    );
+    assert_eq!(
+        localise_for(&catalogue, None, "same_type").as_deref(),
+        Some("same_type")
+    );
+    assert_eq!(localise_for(&catalogue, None, "missing_type"), None);
+    let named = production::Named {
+        texts: Some(&catalogue),
+        units: None,
+    };
+    assert_eq!(named.type_name("empty_type"), Some(String::new()));
+    assert_eq!(named.type_name("same_type").as_deref(), Some("same_type"));
+    assert_eq!(named.type_name("missing_type"), None);
+    assert_eq!(
+        named.type_name(&format!("{UNRESOLVED_MARK}empty_type")),
+        None
+    );
+    let raw = RawVariant {
+        token: "type".into(),
+        name_tag: Some("GER".into()),
+        type_tag: Some("GER".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        variant_names(&raw, Some(&catalogue)),
+        (Some(String::new()), Some(String::new()))
+    );
+}
+
+#[test]
 fn equipment_reader_warnings_keep_every_named_refusal() {
     let mut types = installed_content::equipment::Database::default();
     types.misreads = (0..9)

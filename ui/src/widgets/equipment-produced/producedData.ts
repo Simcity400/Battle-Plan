@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 /** The Equipment produced widget's data: the `equipment-produced` reply checked and
  * decoded, and each country's units at an hour. The product counts every unit a
  * country's production lines delivered from the exact per-line output, groups them
@@ -11,8 +12,8 @@ import { runIndexAt, stretchStarts } from '../../charts/series.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
-import { domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
-import { readAt, readNote } from '../../dashboard/reads.ts';
+import { domainName, variantNameAt } from '../../dashboard/equipment.ts';
+import { readAt } from '../../dashboard/reads.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import { validCountryIdentityRuns } from '../../dashboard/countryIdentity.ts';
 import type { CountryIdentityRun, EquipmentProducedReply, HourSpan, ProducedCoded, ProducedGrouping, ProducedKey, ProducedMeasure, ProducedParams } from '../../generated/dashboard';
@@ -217,11 +218,11 @@ export function keyLabel(model: ProducedModel, key: number, hour: number): strin
   if (!item) return '';
   if (model.reply.grouping === 'domain') return domainName(item.key);
   if (model.reply.grouping === 'variant') return variantNameAt(item.names, hour, `Variant ${item.key}`);
-  return item.name ?? unresolvedTypeName(item.key);
+  return contentTitle(item.name, item.key, 'Equipment type name unavailable');
 }
 
 /** A type's name in the settings list: content's, else its recorded token. */
-export const typeLabel = (type: { key: string; name: string | null }) => type.name ?? unresolvedTypeName(type.key);
+export const typeLabel = (type: { key: string; name: string | null }) => contentTitle(type.name, type.key, 'Equipment type name unavailable');
 
 /** How keys are coloured: each its own palette colour while they fit, else the
  * largest keep theirs (in the reply's order) and the rest share "Other" (spec: a
@@ -356,8 +357,7 @@ export function* producedTooltips(model: ProducedModel, tag: string, name: strin
   const measure = MEASURES.find(item => item.value === model.reply.measure)!;
   const colorOf = new Map(bands.flatMap(band => band.keys.map(key => [key, band.color] as const)));
   const since = model.reply.measure === 'total' ? countedSince(model.reply, hour) : null;
-  const notes = [since !== null ? `Counted since ${formatDateTime(since)}.` : null, readNote(readAt(model.reply.reads, hour), hour, 'production is read once a day.')]
-    .filter((note): note is string => !!note);
+  const notes = since !== null ? [`Counted since ${formatDateTime(since)}.`] : [];
   const total: TooltipRow = { label: 'Total', value: at.total === null ? 'Not known' : formatUnits(at.total), strong: true, divider: true };
   const base = { title: name, subtitle: `${date} · ${measure.label}`, ...(notes.length ? { note: notes.join(' ') } : {}) };
   const parts = [...series.values.keys()].flatMap(key => {

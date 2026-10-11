@@ -7,7 +7,7 @@
 .research-column-heading {
   position: sticky; top: 0; z-index: 1; margin: 0; padding: 4px 8px;
   border-radius: var(--r-md) var(--r-md) 0 0; background: color-mix(in srgb, var(--surface) 94%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
-  box-shadow: 0 1px 0 var(--line-soft); font-family: var(--font-ui); font-size: 12px; font-weight: 600;
+  box-shadow: 0 1px 0 var(--line-soft); font-family: var(--font-ui); font-size: 0.75rem; font-weight: 600;
 }
 .research-entries { list-style: none; margin: 0; padding: 0 3px 3px; }
 .research-details { border-radius: var(--r-sm); }
@@ -17,12 +17,12 @@
 .research-row .focus-art img { max-width: 40px; max-height: 40px; }
 .research-row .focus-label strong, .research-now .focus-now-text > strong {
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: normal; overflow-wrap: anywhere;
-  font-size: 13px; font-weight: 500; line-height: 1.25;
+  font-size: 0.8125rem; font-weight: 500; line-height: 1.25;
 }
 .research-row .focus-chevron, .research-now .focus-chevron { width: 15px; height: 15px; }
-.research-earlier-label { padding: 6px 8px 0; color: var(--quiet); font-size: 11px; font-weight: 600; }
-.research-empty-slot { padding: 8px 10px; color: var(--quiet); font-size: 12px; }
-.research-unavailable { margin: 0; color: var(--muted); font-size: 12px; }
+.research-earlier-label { padding: 6px 8px 0; color: var(--quiet); font-size: 0.6875rem; font-weight: 600; }
+.research-empty-slot { padding: 8px 10px; color: var(--quiet); font-size: 0.75rem; }
+.research-unavailable { margin: 0; color: var(--muted); font-size: 0.75rem; }
 
 /* Live: the slot's assignment, like the current national focus. */
 .research-now-details { margin: 3px 3px 0; border-radius: var(--r-md); }
@@ -34,7 +34,7 @@ summary.research-now:hover, .research-now-details[open] > .research-now { backgr
 .research-now:focus-visible { outline-offset: -2px; }
 .research-now .focus-art.is-large { width: 40px; height: 40px; flex-basis: 40px; }
 .research-now .focus-now-text { gap: 1px; }
-.research-now .focus-now-status { font-size: 12px; }
+.research-now .focus-now-status { font-size: 0.75rem; }
 .research-now .focus-progress { left: 8px; right: 8px; bottom: 6px; height: 3px; }
 .research-now .focus-progress > span::after { top: -2.5px; width: 7px; height: 7px; }
 summary.research-now:hover .focus-chevron { color: var(--text); }
@@ -45,13 +45,13 @@ summary.research-now:hover .focus-chevron { color: var(--text); }
 
 /* Details: when it finished, one bar of how its time came about, the game's description. */
 .research-description { padding: 6px 8px 10px; }
-.research-when { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 8px; white-space: nowrap; font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.research-when small { margin-right: 6px; color: var(--muted); font-size: 12px; font-weight: 400; }
+.research-when { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 8px; white-space: nowrap; font-size: 0.8125rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+.research-when small { margin-right: 6px; color: var(--muted); font-size: 0.75rem; font-weight: 400; }
 /* Expected against actual time, on one axis. Solid segments are time spent;
    glassy ones are time a modifier saved. Hover lifts one and dims the rest. */
 .research-time { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 5px 8px; margin-top: 8px; font-variant-numeric: tabular-nums; }
-.research-time-label { color: var(--muted); font-size: 11px; }
-.research-time-value { justify-self: end; font-size: 12px; font-weight: 500; }
+.research-time-label { color: var(--muted); font-size: 0.6875rem; }
+.research-time-value { justify-self: end; font-size: 0.75rem; font-weight: 500; }
 .research-time-track { position: relative; height: 10px; border-radius: 999px; background: color-mix(in srgb, var(--text) 5%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 4%, transparent); }
 .research-time-row { display: flex; gap: 1.5px; height: 100%; }
 .research-time-row > span {
@@ -82,11 +82,11 @@ summary.research-now:hover .focus-chevron { color: var(--text); }
 }
 .research-description .research-time-readout {
   grid-column: 1 / -1; display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; column-gap: 6px; min-height: 34px; margin: 2px 0 0;
-  color: var(--muted); font-size: 12px; line-height: 1.35; white-space: nowrap;
+  color: var(--muted); font-size: 0.75rem; line-height: 1.35; white-space: nowrap;
 }
 .research-time-readout > span:not(.research-time-swatch, .research-time-name) { grid-column: 1 / 3; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .research-time-readout > .research-time-name { grid-column: 2 / -1; color: var(--text); white-space: normal; overflow-wrap: anywhere; }
-.research-time-readout > small { grid-column: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
+.research-time-readout > small { grid-column: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 0.6875rem; }
 .research-time-readout > strong { grid-column: 3; justify-self: end; color: var(--text); font-weight: 600; }
 .research-time-readout > strong[data-tone='faster'] { color: var(--positive); }
 .research-time-readout > strong[data-tone='slower'] { color: var(--error); }
@@ -99,9 +99,9 @@ summary.research-now:hover .focus-chevron { color: var(--text); }
 .research-time-swatch.is-juggle { --tone: var(--glow); }
 [data-motion='reduced'] .research-time-row > span { transition: none; }
 .research-description-text { margin-top: 8px; }
-.research-description-text > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; cursor: pointer; list-style: none; color: var(--muted); font-size: 12px; font-weight: 500; }
+.research-description-text > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; cursor: pointer; list-style: none; color: var(--muted); font-size: 0.75rem; font-weight: 500; }
 .research-description-text > summary::-webkit-details-marker { display: none; }
 .research-description-text > summary:hover { color: var(--text); }
 .research-chevron { flex-shrink: 0; width: 14px; height: 14px; transition: transform var(--t) var(--ease); }
 .research-description-text[open] .research-chevron { transform: rotate(180deg); }
-.research-description-text p { margin: 4px 0 0; font-size: 12px; line-height: 1.55; color: color-mix(in srgb, var(--text) 86%, var(--muted)); }
+.research-description-text p { margin: 4px 0 0; font-size: 0.75rem; line-height: 1.55; color: color-mix(in srgb, var(--text) 86%, var(--muted)); }

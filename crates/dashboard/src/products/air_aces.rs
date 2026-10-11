@@ -522,39 +522,47 @@ fn scan(replay: &Replay, branch_id: u64, flag: &AtomicBool) -> io::Result<Scan> 
     selected.extend(VariantCatalogue::TABLES);
     selected.sort_unstable_by_key(|table| table.index());
     selected.dedup();
-    for block in replay
-        .index
-        .iter()
-        .filter(|block| block.branch == branch_id)
-    {
-        cancelled(flag)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            result.unread = true;
-            result
-                .warnings
-                .insert("Unread replay block; ace history has a gap".into());
-            continue;
-        };
-        for frame in frames {
-            cancelled(flag)?;
-            let Ok(decoded) = decoder.advance(&frame) else {
-                result.unread = true;
-                result
-                    .warnings
-                    .insert("Unread replay frame; ace history has a gap".into());
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                result.unread = true;
-                result
-                    .warnings
-                    .insert("Campaign identity mismatch; ace history has a gap".into());
-                break;
+    crate::blocks::scan_blocks(
+        replay,
+        replay
+            .index
+            .iter()
+            .filter(|block| block.branch == branch_id),
+        &selected,
+        flag,
+        |blocks| {
+            for (_, frames) in blocks {
+                cancelled(flag)?;
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    result.unread = true;
+                    result
+                        .warnings
+                        .insert("Unread replay block; ace history has a gap".into());
+                    continue;
+                };
+                for frame in frames {
+                    cancelled(flag)?;
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        result.unread = true;
+                        result
+                            .warnings
+                            .insert("Unread replay frame; ace history has a gap".into());
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        result.unread = true;
+                        result
+                            .warnings
+                            .insert("Campaign identity mismatch; ace history has a gap".into());
+                        break;
+                    }
+                    result.observe(decoded);
+                }
             }
-            result.observe(decoded);
-        }
-    }
+            Ok(())
+        },
+    )?;
     if let Some(last) = result.last_frame {
         result.close(last);
     }
@@ -782,34 +790,42 @@ fn recording_available(
 ) -> io::Result<Option<bool>> {
     let selected = [TableId::Campaign, TableId::AirAces];
     let mut unread = false;
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        cancelled(flag)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            unread = true;
-            continue;
-        };
-        for frame in frames {
-            cancelled(flag)?;
-            let Ok(decoded) = decoder.advance(&frame) else {
-                unread = true;
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                unread = true;
-                break;
-            }
-            if slot_read(&decoded.metrics, TableId::AirAces, decoded.hour)
-                && let Ok(rows) = decoded.complete::<tables::AirAces>()
-            {
-                let mut ids = HashSet::new();
-                if rows.iter().all(|row| ids.insert(row.id)) {
-                    return Ok(Some(true));
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        flag,
+        |blocks| {
+            for (_, frames) in blocks {
+                cancelled(flag)?;
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    unread = true;
+                    continue;
+                };
+                for frame in frames {
+                    cancelled(flag)?;
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        unread = true;
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        unread = true;
+                        break;
+                    }
+                    if slot_read(&decoded.metrics, TableId::AirAces, decoded.hour)
+                        && let Ok(rows) = decoded.complete::<tables::AirAces>()
+                    {
+                        let mut ids = HashSet::new();
+                        if rows.iter().all(|row| ids.insert(row.id)) {
+                            return Ok(Some(true));
+                        }
+                    }
                 }
             }
-        }
-    }
-    Ok((!unread).then_some(false))
+            Ok((!unread).then_some(false))
+        },
+    )
 }
 
 // The portrait ladder uses a named literal first, then the retained country/gender pool.
@@ -1051,6 +1067,7 @@ impl Product for AirAces {
 impl Product for AirAcePortraits {
     const KEY: &'static str = "air-ace-portraits";
     const CONTENT_DEPENDENT: bool = true;
+    const INTERACTIVE: bool = true;
     type Params = AirAcePortraitParams;
     type Reply = AirAcePortraitReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

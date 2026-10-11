@@ -2,9 +2,13 @@
 // interface feel, typography and backdrop. Background images live in
 // IndexedDB (backdrops.ts); only their IDs are stored here.
 import { normalizeColor } from './color.ts';
+import { isSidebarIconId } from './sidebarIcons.ts';
+import type { SidebarIconColours } from './sidebarIcons.ts';
 import { BUILT_IN_THEMES, DEFAULT_THEME_ID, completeColors, findTheme, themeColors, themeRoles } from './themes.ts';
 import type { ThemeColors, ThemeDefinition, ThemeMode } from './themes.ts';
 import { MAX_THEME_NAME } from './themeFile.ts';
+import { DEFAULT_TYPOGRAPHY, parseTypography } from './typography.ts';
+import type { FontFamilies, TypographySettings } from './typography.ts';
 
 export const APPEARANCE_KEY = 'hoi4-replay.appearance.v2';
 const LEGACY_KEY = 'hoi4-replay.appearance.v1';
@@ -17,38 +21,48 @@ export type BackdropKind = 'ambient' | 'solid' | 'image';
 export type ChartMotion = 'snappy' | 'smooth' | 'cinematic';
 /** Raw recorded map colours, or colours lightened or darkened to read on the theme and kept apart. */
 export type CountryColours = 'raw' | 'fixed';
+/** The top-bar flag at the content's large flag size, or enlarged to fill the bar with smoothing. */
+export type HeaderFlag = 'native' | 'large';
 
 export interface AppearanceSettings {
   version: 2;
   scheme: ColorScheme;
   themes: Record<ThemeMode, string>;
   custom: ThemeDefinition[];
+  /** Text and border contrast, 50–100 % in steps of 5; 100 shows the theme as defined. */
+  contrast: number;
   /** Panel opacity, 40–100 %. 100 turns the frosted blur off. */
   glass: number;
   /** Base corner radius in CSS pixels, 0–18. */
   radius: number;
   motion: MotionPreference;
-  /** Font family names; empty uses the bundled default. */
-  fonts: { interface: string; display: string };
+  headerFlag: HeaderFlag;
+  /** Font family names; empty uses the role's default stack. */
+  fonts: FontFamilies;
+  typography: TypographySettings;
   backdrop: { kind: BackdropKind; imageId: string | null; dim: number; blur: number };
   charts: { motion: ChartMotion; countryColours: CountryColours };
+  sidebarIcons: SidebarIconColours;
 }
 
 export const DEFAULT_APPEARANCE: AppearanceSettings = {
   version: 2, scheme: 'dark', themes: { dark: DEFAULT_THEME_ID, light: DEFAULT_THEME_ID }, custom: [],
-  glass: 78, radius: 8, motion: 'system', fonts: { interface: '', display: '' },
+  contrast: 100, glass: 78, radius: 8, motion: 'system', headerFlag: 'native', fonts: { interface: '', display: '', tables: '', diagnostics: '' },
+  typography: structuredClone(DEFAULT_TYPOGRAPHY),
   backdrop: { kind: 'solid', imageId: null, dim: 55, blur: 0 },
   charts: { motion: 'smooth', countryColours: 'raw' },
+  sidebarIcons: {},
 };
 
-export const LIMITS = { glass: [40, 100], radius: [0, 18], dim: [0, 90], blur: [0, 40] } as const;
+export const CONTRAST_STEP = 5;
+export const LIMITS = { contrast: [50, 100], glass: [40, 100], radius: [0, 18], dim: [0, 90], blur: [0, 40] } as const;
 
 type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem'>;
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const id = (value: unknown): value is string => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(value);
 const number = (value: unknown, [min, max]: readonly [number, number], fallback: number) =>
   typeof value === 'number' && Number.isFinite(value) ? Math.round(Math.min(max, Math.max(min, value))) : fallback;
-const fontName = (value: unknown) => typeof value === 'string' ? value.replace(/["'`;{}<>\\]/g, '').replace(/\s+/g, ' ').trim().slice(0, 80) : '';
+const fontName = (value: unknown) => typeof value === 'string' ? value.replace(/["'`;{}<>\\]/g, '').replace(/\s+/g, ' ').trim().slice(0, 200) : '';
 
 function parseColors(input: unknown): ThemeColors | null {
   if (!object(input) || !themeRoles.every(role => normalizeColor(input[role]))) return null;
@@ -76,16 +90,24 @@ export function parseAppearance(input: unknown): AppearanceSettings {
   const fonts = object(input.fonts) ? input.fonts : {};
   const backdrop = object(input.backdrop) ? input.backdrop : {};
   const charts = object(input.charts) ? input.charts : {};
+  const sidebarIcons = object(input.sidebarIcons) ? input.sidebarIcons : {};
   const defaults = DEFAULT_APPEARANCE;
   return {
     version: 2,
+    sidebarIcons: Object.fromEntries(Object.entries(sidebarIcons).flatMap(([id, value]) => {
+      const colour = isSidebarIconId(id) ? normalizeColor(value) : null;
+      return colour ? [[id, colour]] : [];
+    })),
     scheme: input.scheme === 'system' || input.scheme === 'light' || input.scheme === 'dark' ? input.scheme : defaults.scheme,
     themes: { dark: choose('dark'), light: choose('light') },
     custom,
+    contrast: Math.round(number(input.contrast, LIMITS.contrast, defaults.contrast) / CONTRAST_STEP) * CONTRAST_STEP,
     glass: number(input.glass, LIMITS.glass, defaults.glass),
     radius: number(input.radius, LIMITS.radius, defaults.radius),
     motion: input.motion === 'full' || input.motion === 'reduced' || input.motion === 'system' ? input.motion : defaults.motion,
-    fonts: { interface: fontName(fonts.interface), display: fontName(fonts.display) },
+    headerFlag: input.headerFlag === 'native' || input.headerFlag === 'large' ? input.headerFlag : defaults.headerFlag,
+    fonts: { interface: fontName(fonts.interface), display: fontName(fonts.display), tables: fontName(fonts.tables), diagnostics: fontName(fonts.diagnostics) },
+    typography: parseTypography(input.typography, !!fontName(fonts.display)),
     backdrop: {
       kind: backdrop.kind === 'solid' || backdrop.kind === 'image' || backdrop.kind === 'ambient' ? backdrop.kind : defaults.backdrop.kind,
       imageId: id(backdrop.imageId) ? backdrop.imageId : null,

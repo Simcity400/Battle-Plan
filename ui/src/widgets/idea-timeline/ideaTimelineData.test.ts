@@ -44,7 +44,7 @@ test('a mod category is offered with its own name, and one the mod removed is go
   assert.equal(chosenCategory(modded, 'government'), null);
   const reply = { ...REPLY, categories: modded, spans: [{ token: 'mod_open', firstHour: 0, lastHour: 10, slot: null, character: null }], ideas: [idea('mod_open', 'mod_seat', 'mod_council')] };
   const lanes = lanesFor(reply, modded[0], { laws: 'both', holders: 'both' });
-  assert.deepEqual(lanes.map(lane => [lane.label, lane.spans.map(span => span.label)]), [['Seat', ['mod_open']]]);
+  assert.deepEqual(lanes.map(lane => [lane.label, lane.spans.map(span => span.label)]), [['Seat', ['Idea name unavailable']]]);
 });
 
 test('only political-screen categories with slots are offered, the first one by default', () => {
@@ -59,7 +59,7 @@ test('law slots shade by escalation and advisor seats take the first free seat',
   assert.deepEqual(lanes.map(lane => [lane.id, lane.label, lane.spans.length]), [
     ['economy', 'Economy Law', 2], ['political_advisor#0', 'Political Advisor', 2], ['political_advisor#1', 'Political Advisor', 1],
   ]);
-  assert.deepEqual(lanes[0].spans.map(span => [span.label, span.shade]), [['civilian_economy', 0], ['War Economy', 1]]);
+  assert.deepEqual(lanes[0].spans.map(span => [span.label, span.shade]), [['Idea name unavailable', 0], ['War Economy', 1]]);
   // Schacht leaves at 300, so Speer (from 320) takes his seat while Todt keeps the second.
   assert.deepEqual(lanes[1].spans.map(span => span.id), ['schacht:10', 'speer:320']);
   assert.deepEqual(lanes[2].spans.map(span => span.id), ['todt:50']);

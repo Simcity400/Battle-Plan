@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { Icon } from '../../components/Icons';
+import { ZoomReset } from '../ZoomReset';
 import { mix, parseColor, readableText } from '../../shell/appearance/color';
 import { font } from '../draw';
 import { countryTooltipContent, drawCountryFlag } from '../countryFlag';
@@ -95,6 +95,16 @@ const FADE_MS = 350;
 /** How much the left column may squeeze a text before it ends it in an ellipsis. */
 const SQUEEZE = 1.12;
 
+/** Whether two lane lists give the left column the same texts to fit. */
+const sameLaneLabels = (a: readonly TimelineLane[], b: readonly TimelineLane[]) => a.length === b.length && a.every((lane, index) => {
+  const other = b[index];
+  return lane.compact === other.compact && lane.depth === other.depth && lane.heading === other.heading && !lane.pill === !other.pill
+    && lane.label === other.label && lane.identity?.label === other.identity?.label
+    && lane.spans.length === other.spans.length && lane.spans.every((span, at) => span.label === other.spans[at].label);
+});
+const sameCatalogue = (a: readonly TimelineLabel[], b: readonly TimelineLabel[]) => a.length === b.length && a.every((label, index) =>
+  label.text === b[index].text && label.space === b[index].space && label.weight === b[index].weight && label.size === b[index].size);
+
 /** The nearest ancestor that scrolls vertically, if any. */
 function scrollParent(element: HTMLElement): HTMLElement | null {
   let parent = element.parentElement;
@@ -154,8 +164,8 @@ export default function Timeline(props: TimelineProps) {
     let x: [number, number] = [0, 1];
     let left = 120;
     let fitted = 120;
-    let labelKey = '';
-    let measured: readonly TimelineLane[] | null = null;
+    let labelsFitted = false;
+    let measured: readonly TimelineLane[] = [];
     let labelEmpty: string | undefined;
     let labelTruncate: boolean | undefined;
     let catalogue: TimelineProps['labelCatalogue'];
@@ -275,15 +285,15 @@ export default function Timeline(props: TimelineProps) {
       if (pointer) pointer = local(pointer);
 
       // Fit the campaign's names only when their text or presentation changes.
-      const key = (p.labelCatalogue || p.lanes === measured) && p.labelCatalogue === catalogue && p.emptyLabel === labelEmpty && p.truncateLabels === labelTruncate && labelKey ? labelKey
-        : JSON.stringify([p.emptyLabel, p.truncateLabels, p.labelCatalogue ?? p.lanes.map(lane => [lane.compact, lane.depth, lane.heading, !!lane.pill,
-          lane.label, lane.identity?.label, lane.spans.map(span => span.label)])]);
+      const refit = !labelsFitted || p.emptyLabel !== labelEmpty || p.truncateLabels !== labelTruncate || (p.labelCatalogue
+        ? p.labelCatalogue !== catalogue && !(catalogue && sameCatalogue(catalogue, p.labelCatalogue))
+        : !!catalogue || p.lanes !== measured && !sameLaneLabels(measured, p.lanes));
       catalogue = p.labelCatalogue;
       measured = p.lanes;
       labelEmpty = p.emptyLabel;
       labelTruncate = p.truncateLabels;
-      if (key !== labelKey) {
-        labelKey = key;
+      if (refit) {
+        labelsFitted = true;
         if (p.labelCatalogue) fitted = catalogueWidth(p.labelCatalogue, item => {
           context.font = font(tokens, item.size ?? tokens.fontSize.body, item.weight);
           return context.measureText(item.text).width;
@@ -581,7 +591,7 @@ export default function Timeline(props: TimelineProps) {
     task.current = current;
     const wake = () => scheduler.wake(current);
     const remove = scheduler.add(current);
-    const unsubscribe = subscribeTokens(next => { tokens = next; labelKey = ''; wake(); });
+    const unsubscribe = subscribeTokens(next => { tokens = next; labelsFitted = false; wake(); });
     const measureView = () => {
       const parent = scrollParent(spacer.current!);
       setViewportHeight(parent ? viewHeight(parent, latest.current.rowHeight ?? ROW_HEIGHT) : window.innerHeight);
@@ -858,8 +868,7 @@ export default function Timeline(props: TimelineProps) {
       <canvas ref={canvas} tabIndex={0} role="img" aria-label={props.label} aria-describedby={props.description ? `${owner}-description` : undefined}
         aria-keyshortcuts={props.onLaneActivate ? 'ArrowUp ArrowDown ArrowLeft ArrowRight Enter Space' : 'ArrowUp ArrowDown ArrowLeft ArrowRight'} onKeyDown={keyDown} onBlur={() => { keyed.current = null; notifyHover(null); hideTooltip(owner); setSpoken(''); }}
         style={{ position: 'absolute', top: 0, height: region.current.height }} />
-      {zoomed && <button type="button" className="button small time-chart-reset" onClick={() => controls.current?.dispatch({ type: 'reset' })}>
-        <Icon name="refresh" />Reset zoom</button>}
+      {zoomed && <ZoomReset onReset={() => controls.current?.dispatch({ type: 'reset' })} />}
     </div>
     <p className="sr-only" aria-live="polite">{spoken}</p>
     {props.description && <p id={`${owner}-description`} className="sr-only">{props.description}</p>}

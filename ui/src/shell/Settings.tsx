@@ -9,6 +9,7 @@ import MapDiagnostics from './MapDiagnostics';
 import MapAppearance, { MAP_OPTION_LABELS } from '../components/MapAppearance';
 import { VIDEO_OPTION_LABELS } from './VideoSettings';
 import GameFolderSettings from './GameFolderSettings';
+import HistoryCacheSetting from './HistoryCacheSetting';
 import type { ContentFolders, DesktopState, ReplayMetadata } from './api';
 import AppearanceSettings, { newThemeId, SettingsBlock } from './appearance/AppearanceSettings';
 import ThemeEditor from './appearance/ThemeEditor';
@@ -34,18 +35,26 @@ const searchItems: SettingsTarget[] = [
   { section: 'folders', title: 'Game installation', keywords: 'game folder install steam path' },
   { section: 'folders', title: 'Paradox user folder', keywords: 'documents mods user path' },
   { section: 'folders', title: 'Replay folder', keywords: 'recordings library replays path' },
+  { section: 'folders', title: 'Widget history', id: 'folders-history', keywords: 'cache storage disk space size clear history' },
   { section: 'appearance', title: 'Colour scheme', id: 'appearance-scheme', keywords: 'color dark light system mode' },
   { section: 'appearance', title: 'Themes', id: 'appearance-themes', keywords: 'theme palette colours colors accent' },
   { section: 'appearance', title: 'Import theme', id: 'appearance-themes', keywords: 'vs code vscode json file paste' },
   { section: 'appearance', title: 'Create theme', id: 'appearance-themes', keywords: 'custom editor colour color' },
   { section: 'appearance', title: 'Backdrop', id: 'appearance-backdrop', keywords: 'background image wallpaper glow ambient' },
+  { section: 'appearance', title: 'Contrast', id: 'appearance-contrast', keywords: 'colours colors borders text readability' },
   { section: 'appearance', title: 'Glass', id: 'appearance-glass', keywords: 'blur opacity transparency frosted' },
   { section: 'appearance', title: 'Corner radius', id: 'appearance-radius', keywords: 'rounding rounded corners' },
   { section: 'appearance', title: 'Motion', id: 'appearance-motion', keywords: 'animation reduced transitions' },
   { section: 'appearance', title: 'Chart motion', id: 'appearance-chart-motion', keywords: 'charts animation easing playback smooth cinematic snappy' },
+  { section: 'appearance', title: 'Top-bar flag', id: 'appearance-header-flag', keywords: 'flag header country size native large smooth' },
   { section: 'appearance', title: 'Country colours', id: 'appearance-country-colours', keywords: 'charts map colours colors contrast raw adjusted' },
-  { section: 'appearance', title: 'Interface font', id: 'appearance-interface-font', keywords: 'typeface font inter typography' },
-  { section: 'appearance', title: 'Display font', id: 'appearance-display-font', keywords: 'typeface headings typography' },
+  { section: 'appearance', title: 'Interface font', id: 'appearance-interface-font', keywords: 'typeface font inter typography size' },
+  { section: 'appearance', title: 'Reset analytics pages', id: 'appearance-pages', keywords: 'pages tabs layouts defaults restore analytics' },
+  { section: 'appearance', title: 'Headings font', id: 'appearance-display-font', keywords: 'typeface display headings typography size advanced' },
+  { section: 'appearance', title: 'Tables font', id: 'appearance-tables-font', keywords: 'typeface monospace numeric typography size' },
+  { section: 'appearance', title: 'Diagnostics font', id: 'appearance-diagnostics-font', keywords: 'typeface monospace report typography size advanced' },
+  ...(/mac|iphone|ipad|ipod/i.test(navigator.platform) ? [{ section: 'appearance' as const, title: 'Font smoothing', id: 'appearance-font-smoothing', keywords: 'typography antialias grayscale advanced' }] : []),
+  { section: 'appearance', title: 'Word wrapping', id: 'appearance-word-wrap', keywords: 'tables text lines wrap' },
   ...[...MAP_OPTION_LABELS.slice(0, 2), ...VIDEO_OPTION_LABELS, ...MAP_OPTION_LABELS.slice(2)]
     .map(title => ({ section: 'graphics' as const, title, keywords: title === MAP_OPTION_LABELS[0] ? 'msaa' : title === VIDEO_OPTION_LABELS[1] ? 'zoom ui size' : title === VIDEO_OPTION_LABELS[2] ? 'counters icons labels size gui_scale' : 'map graphics' })),
   { section: 'graphics', title: 'Visual mods', keywords: 'mods artwork' },
@@ -116,22 +125,22 @@ export function SettingsNav({ section, onBack, onSection, onTarget, disabled }: 
     </nav>
     {searching ? <div className="sidebar-menu" id="settings-search-results" role="listbox" aria-label="Settings search results">
       {results.map((item, index) => <button key={`${item.section}:${item.title}`} id={`settings-result-${index}`} type="button" role="option" tabIndex={-1}
-        aria-selected={index === active} className="sidebar-row sidebar-result" onMouseMove={() => setActive(index)} onClick={() => choose(item)}>
-        <Icon name={settingsSections.find(section => section.id === item.section)!.icon} />
+        aria-selected={index === active} className="sidebar-row sidebar-result" data-sidebar-icon={item.section} onMouseMove={() => setActive(index)} onClick={() => choose(item)}>
+        <Icon name={settingsSections.find(section => section.id === item.section)!.icon} style={{ color: `var(--sidebar-icon-${item.section})` }} />
         <span><strong>{item.title}</strong><small>{settingsSections.find(section => section.id === item.section)!.label}</small></span>
       </button>)}
       {!results.length && <p className="sidebar-empty" role="status">No settings found</p>}
     </div> : <nav className="sidebar-menu" aria-label="Settings sections">
-      {settingsSections.map(item => <button key={item.id} type="button" className="sidebar-row" aria-current={section === item.id ? 'page' : undefined}
-        onClick={() => onSection(item.id)}><Icon name={item.icon} /><span>{item.label}</span></button>)}
+      {settingsSections.map(item => <button key={item.id} type="button" className="sidebar-row" data-sidebar-icon={item.id} aria-current={section === item.id ? 'page' : undefined}
+        onClick={() => onSection(item.id)}><Icon name={item.icon} style={{ color: `var(--sidebar-icon-${item.id})` }} /><span>{item.label}</span></button>)}
     </nav>}
   </>;
 }
 
-export default function Settings({ section, target, onTargetShown, appearance, library, client, native, metadata, folders, folderError, onFoldersChange }: {
+export default function Settings({ section, target, onTargetShown, appearance, library, client, native, metadata, folders, folderError, onFoldersChange, onResetPages }: {
   section: SettingsSection; target: SettingsTarget | null; onTargetShown: () => void;
   folders: ContentFolders | null; folderError: string | null; onFoldersChange: (folders: ContentFolders) => void; native: DesktopState | null; metadata: ReplayMetadata | null;
-  library: ReplayLibraryState; client: DashboardClient; appearance: Appearance;
+  library: ReplayLibraryState; client: DashboardClient; appearance: Appearance; onResetPages: () => void;
 }) {
   const page = useRef<HTMLDivElement>(null);
   const [editor, setEditor] = useState<ThemeDraft | null>(null);
@@ -180,8 +189,11 @@ export default function Settings({ section, target, onTargetShown, appearance, l
             <ReplayFolderSetting compact library={library} client={client} />
           </SettingsBlock>
           {folderError && <p className="map-menu-error" role="alert">{folderError}</p>}
+          {client.historyCache && <SettingsBlock id="folders-history" title="Widget history">
+            <HistoryCacheSetting client={client} contentReady={!!folders?.contentReady} />
+          </SettingsBlock>}
         </>}
-        {section === 'appearance' && <AppearanceSettings appearance={appearance} onEdit={setEditor} />}
+        {section === 'appearance' && <><AppearanceSettings appearance={appearance} searchTarget={target?.id} onEdit={setEditor} /><ResetPages onReset={onResetPages} /></>}
         {section === 'graphics' && <SettingsBlock id="graphics-defaults" title="Defaults">
           <div className="global-map-settings">
             <MapAppearance key={`${folders?.game ?? ''}:${folders?.user ?? ''}`} global source={null} client={client} userFolder={folders?.user} />
@@ -192,4 +204,23 @@ export default function Settings({ section, target, onTargetShown, appearance, l
     </div>
     {editor && <ThemeEditor key={editor.id ?? 'new'} draft={editor} onSave={saveTheme} onClose={() => setEditor(null)} onPreview={appearance.setPreview} />}
   </div>;
+}
+
+/** Restores the built-in analytics pages and every page's layout; a second click confirms. */
+function ResetPages({ onReset }: { onReset: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  const [done, setDone] = useState(false);
+  useEffect(() => {
+    if (!confirming && !done) return;
+    const timer = setTimeout(() => { setConfirming(false); setDone(false); }, 4000);
+    return () => clearTimeout(timer);
+  }, [confirming, done]);
+  return <SettingsBlock id="appearance-pages" title="Analytics pages">
+    <div className="settings-row"><span className="settings-row-text"><strong>Reset to defaults</strong>
+      <small>Restores the built-in pages with their names, order and widget layouts, and removes pages you added. Loaded recordings stay open.</small></span>
+      <button type="button" className={`button small${confirming ? ' is-danger' : ''}`} onClick={() => {
+        if (!confirming) { setConfirming(true); setDone(false); return; }
+        onReset(); setConfirming(false); setDone(true);
+      }}><Icon name={done ? 'check' : 'refresh'} />{confirming ? 'Click again to reset' : done ? 'Reset' : 'Reset to defaults'}</button></div>
+  </SettingsBlock>;
 }

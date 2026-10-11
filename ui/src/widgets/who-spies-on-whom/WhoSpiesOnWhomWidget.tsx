@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
 import ChordChart from '../../charts/chord/ChordChart';
@@ -16,6 +16,7 @@ import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { compareTags } from '../../dashboard/tagOrder';
 import type { CountryStyleReply, OperativePlacementReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
@@ -52,11 +53,11 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
   const menu = useContextMenu('Operative placement actions');
   const [chartError, setChartError] = useState<string | null>(null);
   const chordAt = useMemo(() => placementChordMemo(), []);
-  useEffect(() => {
+  const diagnostics = useMemo(() => {
     const missing = wanted.filter(w => !colors.has(nameKey(w.hour, w.tag))).length;
-    onDiagnostics([...(data?.warnings ?? NO_WARNINGS), ...(missing ? [`${missing} country map colours are unavailable at the shown hour; their arcs use the muted theme colour.`] : [])]);
-    return () => onDiagnostics(NO_WARNINGS);
-  }, [data, wanted, colors, onDiagnostics]);
+    return [...(data?.warnings ?? NO_WARNINGS), ...(missing ? [`${missing} country map colours are unavailable at the shown hour; their arcs use the muted theme colour.`] : [])];
+  }, [data, wanted, colors]);
+  useDiagnostics(onDiagnostics, diagnostics);
 
   // Resolve each hour, but fold only when exact data or presentation changes.
   // Weak keys connect an exact frame to its tooltip, without retaining old hours.

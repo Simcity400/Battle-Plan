@@ -107,7 +107,7 @@ test('off-read aliases and return episodes retain their supplying census only wi
     assert.equal(row.entry.joinedHour, 100);
   }
   const held = rosterAt(reply, 101, false).rows[0];
-  assert.match(operativeTooltip(reply, held, 101, tag => tag).note ?? '', /Read .*100/);
+  assert.doesNotMatch(operativeTooltip(reply, held, 101, tag => tag).note ?? '', /Read /);
   const oldKey = rosterAt(reply, 100, false).rows[0].key;
   assert.notEqual(rosterAt(reply, 102, false).rows[0].key, oldKey);
   assert.deepEqual(rosterAt(reply, 103, false).rows, []);
@@ -146,8 +146,7 @@ test('one equal value run takes its read date from each daily membership observa
     const row = rosterAt(reply, hour, false).rows[0];
     assert.equal(row.readHour, readHour);
     const note = operativeTooltip(reply, row, hour, tag => tag).note ?? '';
-    if (hour !== readHour) assert.match(note, new RegExp(`Read .*${readHour}`));
-    else assert.doesNotMatch(note, /Read /);
+    assert.doesNotMatch(note, /Read /);
   }
   entry.departedHour = 180;
   const departed = rosterAt(reply, 200, true).rows[0];
@@ -186,7 +185,7 @@ test('capture has the recorded capturer and exact date, while joins are observat
   assert.equal(tip.rows.find(row => row.label === 'Capturer')?.value, 'MOD capturer');
   assert.match(tip.rows.find(row => row.label === 'Captured on')?.value ?? '', /119/);
   assert.match(tip.rows.find(row => row.label === 'Present')?.value ?? '', /^by /);
-  assert.match(tip.note ?? '', /Read .*124.*read once a day/);
+  assert.doesNotMatch(tip.note ?? '', /read once a day/);
 });
 
 test('past captures remain jumpable after release and later capture reads stay hidden', () => {
@@ -298,7 +297,7 @@ test('operation definition read is dated independently of the membership read', 
   reply.operations = [{ firstHour: 97, lastHour: 123, readHour: 97 }];
   const tip = operativeTooltip(reply, rosterAt(reply, 110, false).rows[0], 110, tag => tag);
   assert.equal(tip.rows.find(row => row.label === 'Assignment read')?.value, 'Hour 97');
-  assert.match(tip.note ?? '', /Read .*100.*read once a day/);
+  assert.doesNotMatch(tip.note ?? '', /read once a day/);
   reply.operations = [{ firstHour: 100, lastHour: 123, readHour: 100 }];
   assert.equal(operativeTooltip(reply, rosterAt(reply, 110, false).rows[0], 110, tag => tag).rows.some(row => row.label === 'Assignment read'), false);
 });

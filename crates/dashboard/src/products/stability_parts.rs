@@ -309,128 +309,148 @@ fn scan(replay: &Replay, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::
     // breakdown names them. A read older than these is left unnamed.
     let mut recent_names: VecDeque<(i32, SharedView, SharedView)> = VecDeque::new();
     let mut runs = 0_usize;
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancel());
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancel());
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            let hour = frame.hour;
-            recent_names.push_back((
-                hour,
-                decoded.tables[TableId::Characters.index()].clone(),
-                decoded.tables[TableId::LexicalTokens.index()].clone(),
-            ));
-            while recent_names.len() > NAMED_HOURS {
-                recent_names.pop_front();
-            }
-            let (Ok(countries), Ok(links), Ok(inputs), Ok(reads)) = (
-                decoded.complete::<tables::Countries>(),
-                decoded.complete::<tables::CountryLinks>(),
-                recorded_rows::<tables::CountryStabilityInputs>(decoded),
-                decoded.complete::<tables::SliceReads>(),
-            ) else {
-                continue;
-            };
-            let Some((country, slot)) = tagged_country(countries, links, tag).found() else {
-                continue;
-            };
-            let Ok(index) = inputs.binary_search_by_key(&country.id, |row| row.country) else {
-                continue;
-            };
-            let row = &inputs[index];
-            let Some(read) =
-                replay::sliced::read_hour(reads, TableId::CountryStabilityInputs, row.country)
-            else {
-                continue;
-            };
-            let identity = (slot, country.id);
-            let joined =
-                last.is_some_and(|(seen, at)| seen == identity && at.checked_add(1) == Some(hour));
-            last = Some((identity, hour));
-            // Parts are known at an hour only if its lines table holds this read's
-            // lines, whether or not the read's parts were worked out before.
-            let lines_read =
-                replay::sliced::read_hour(reads, TableId::CountryStabilityLines, row.country);
-            if decoded.complete::<tables::CountryStabilityLines>().is_err()
-                || lines_read.is_some_and(|lines_read| lines_read != read)
-            {
-                unlined.insert(read);
-                continue;
-            }
-            if !current
-                .as_ref()
-                .is_some_and(|(seen, at, _)| *seen == identity && *at == read)
-            {
-                let mut notes = Vec::new();
-                let breakdown = country_stability::breakdown_of(
-                    country_stability::BreakdownInput {
-                        decoded,
-                        hour,
-                        row,
-                        slot,
-                        read_hour: read,
-                        reads,
-                        tag,
-                    },
-                    &mut notes,
-                );
-                let at_read = recent_names.iter().find(|(at, _, _)| *at == read);
-                let characters = at_read.and_then(|(_, view, _)| match &**view {
-                    TableView::Complete(rows) => rows.rows::<tables::Characters>(),
-                    _ => None,
-                });
-                let lexical = at_read.and_then(|(_, _, view)| match &**view {
-                    TableView::Complete(rows) => rows.rows::<tables::LexicalTokens>(),
-                    _ => None,
-                });
-                let character = |line: &BreakdownLine| {
-                    if !matches!(&*line.kind, "advisor" | "countryLeader") {
-                        return None;
-                    }
-                    let found = country_stability::recorded_character(line, characters, lexical)?;
-                    Some((
-                        found.script.map(str::to_owned),
-                        found.saved.to_owned(),
-                        found.template,
-                    ))
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancel());
+                }
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    continue;
                 };
-                let values = [
-                    (&breakdown.stability, LINES_OF[0]),
-                    (&breakdown.war_support, LINES_OF[1]),
-                ]
-                .map(|(formula, (term, key))| parts_of(formula, &breakdown, key, term, &character));
-                lined.insert(read);
-                current = Some((identity, read, values));
-            }
-            let Some((_, _, values)) = current.as_ref() else {
-                continue;
-            };
-            let naming = NamingCountry::read(decoded, country);
-            for (measure, values) in result.measures.iter_mut().zip(values.iter()) {
-                if let Some(values) = values {
-                    measure.record(hour, joined, values, &naming, &mut runs);
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(cancel());
+                    }
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    let hour = frame.hour;
+                    recent_names.push_back((
+                        hour,
+                        decoded.tables[TableId::Characters.index()].clone(),
+                        decoded.tables[TableId::LexicalTokens.index()].clone(),
+                    ));
+                    while recent_names.len() > NAMED_HOURS {
+                        recent_names.pop_front();
+                    }
+                    let (Ok(countries), Ok(links), Ok(inputs), Ok(reads)) = (
+                        decoded.complete::<tables::Countries>(),
+                        decoded.complete::<tables::CountryLinks>(),
+                        recorded_rows::<tables::CountryStabilityInputs>(decoded),
+                        decoded.complete::<tables::SliceReads>(),
+                    ) else {
+                        continue;
+                    };
+                    let Some((country, slot)) = tagged_country(countries, links, tag).found()
+                    else {
+                        continue;
+                    };
+                    let Ok(index) = inputs.binary_search_by_key(&country.id, |row| row.country)
+                    else {
+                        continue;
+                    };
+                    let row = &inputs[index];
+                    let Some(read) = replay::sliced::read_hour(
+                        reads,
+                        TableId::CountryStabilityInputs,
+                        row.country,
+                    ) else {
+                        continue;
+                    };
+                    let identity = (slot, country.id);
+                    let joined = last.is_some_and(|(seen, at)| {
+                        seen == identity && at.checked_add(1) == Some(hour)
+                    });
+                    last = Some((identity, hour));
+                    // Parts are known at an hour only if its lines table holds this read's
+                    // lines, whether or not the read's parts were worked out before.
+                    let lines_read = replay::sliced::read_hour(
+                        reads,
+                        TableId::CountryStabilityLines,
+                        row.country,
+                    );
+                    if decoded.complete::<tables::CountryStabilityLines>().is_err()
+                        || lines_read.is_some_and(|lines_read| lines_read != read)
+                    {
+                        unlined.insert(read);
+                        continue;
+                    }
+                    if !current
+                        .as_ref()
+                        .is_some_and(|(seen, at, _)| *seen == identity && *at == read)
+                    {
+                        let mut notes = Vec::new();
+                        let breakdown = country_stability::breakdown_of(
+                            country_stability::BreakdownInput {
+                                decoded,
+                                hour,
+                                row,
+                                slot,
+                                read_hour: read,
+                                reads,
+                                tag,
+                            },
+                            &mut notes,
+                        );
+                        let at_read = recent_names.iter().find(|(at, _, _)| *at == read);
+                        let characters = at_read.and_then(|(_, view, _)| match &**view {
+                            TableView::Complete(rows) => rows.rows::<tables::Characters>(),
+                            _ => None,
+                        });
+                        let lexical = at_read.and_then(|(_, _, view)| match &**view {
+                            TableView::Complete(rows) => rows.rows::<tables::LexicalTokens>(),
+                            _ => None,
+                        });
+                        let character = |line: &BreakdownLine| {
+                            if !matches!(&*line.kind, "advisor" | "countryLeader") {
+                                return None;
+                            }
+                            let found =
+                                country_stability::recorded_character(line, characters, lexical)?;
+                            Some((
+                                found.script.map(str::to_owned),
+                                found.saved.to_owned(),
+                                found.template,
+                            ))
+                        };
+                        let values = [
+                            (&breakdown.stability, LINES_OF[0]),
+                            (&breakdown.war_support, LINES_OF[1]),
+                        ]
+                        .map(|(formula, (term, key))| {
+                            parts_of(formula, &breakdown, key, term, &character)
+                        });
+                        lined.insert(read);
+                        current = Some((identity, read, values));
+                    }
+                    let Some((_, _, values)) = current.as_ref() else {
+                        continue;
+                    };
+                    let naming = NamingCountry::read(decoded, country);
+                    for (measure, values) in result.measures.iter_mut().zip(values.iter()) {
+                        if let Some(values) = values {
+                            measure.record(hour, joined, values, &naming, &mut runs);
+                        }
+                    }
+                    if runs > MAX_RUNS {
+                        return Err(io::Error::other(
+                            "Stability parts exceed their memory budget",
+                        ));
+                    }
                 }
             }
-            if runs > MAX_RUNS {
-                return Err(io::Error::other(
-                    "Stability parts exceed their memory budget",
-                ));
-            }
-        }
-    }
+            Ok(())
+        },
+    )?;
     let missing = unlined.difference(&lined).count();
     if missing > 0 {
         result.warnings.push(format!(

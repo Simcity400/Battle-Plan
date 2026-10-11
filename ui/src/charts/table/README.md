@@ -25,7 +25,7 @@ Every table widget declares `TABLE_OPTIONS` and `tableSortOptions(columns, defau
 
 ## Rows and interaction
 
-Heights and width measurements use layout pixels under Size zoom. `rowHeight` specifies comfortable density and scales for compact density; CSS and windowing share it. Use `minmax(0, 1fr)` for truncating names and `max-content` for natural numeric widths. Keep full names available in titles/tooltips. `muted` changes appearance without hiding, disabling or reordering rows.
+Heights and width measurements use layout pixels under Size zoom. `rowHeight` specifies comfortable density and scales for compact density; CSS and windowing share it. Typography uses the Tables family and size independently from Interface text. Word wrapping measures each mounted row without a line limit; prefix offsets keep windowing, motion and keyboard scrolling aligned. Unmounted rows use their last measured height or the density minimum, and resizing or font changes invalidate measurements. Turning wrapping off restores fixed rows and ellipsis. Use `minmax(0, 1fr)` for names and `max-content` for natural numeric widths. Keep full names available in titles/tooltips. `muted` changes appearance without hiding, disabling or reordering rows.
 
 `onRowClick` handles click/Enter/Space. `menu` handles right-click, the menu key or Shift+F10; add [jumpItem](../jump.ts) only when a recorded hour exists. Arrow keys and Home/End reveal rows below the sticky header, retaining focus through reorders.
 

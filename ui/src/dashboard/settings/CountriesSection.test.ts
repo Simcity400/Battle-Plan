@@ -26,7 +26,7 @@ test('removing the last country chip or picker choice follows the dashboard coun
       limits: { max: 5_000, all }, onChange: value => changes.push(value) });
     const child = (section.props.children as ReactElement<Record<string, unknown>>[])[1];
     const chips = (child.type as (props: Record<string, unknown>) => ReactElement)(child.props);
-    const remove = elements(chips).find(element => element.props['aria-label'] === 'Remove Opaque mod | country')!;
+    const remove = elements(chips).find(element => element.props['aria-label'] === 'Remove Country name unavailable')!;
     (remove.props.onClick as () => void)();
     const picker = elements(chips).find(element => element.props.addLabel !== undefined)!;
     (picker.props.onChange as (tag: string) => void)('Opaque mod | country');

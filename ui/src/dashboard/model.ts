@@ -2,6 +2,8 @@ import { newId } from '../shell/ids.ts';
 import type { DashboardSource } from './client';
 import { widgetDefinition } from './definitions.ts';
 import type { WidgetOptions } from './options';
+import { pageDefinition } from './pages.ts';
+import type { PageId } from './pages.ts';
 
 export const TRAILING_HOURS = 168;
 /** Most widgets one layout holds. */
@@ -73,27 +75,16 @@ export function createWidget(kind: WidgetKind, trackId: string, id: string = new
   };
 }
 
-export function defaultTemplate(): DashboardTemplate {
-  const panels = [
-    ['summary-1', 'Industry', 0, 0, 3, 3],
-    ['summary-2', 'Military', 3, 0, 3, 3],
-    ['summary-3', 'Research', 6, 0, 3, 3],
-    ['summary-4', 'Resources', 9, 0, 3, 3],
-    ['map', 'Campaign map', 0, 3, 7, 12],
-    ['panel-1', 'National focus', 7, 3, 5, 12],
-    ['panel-2', 'Military balance', 7, 15, 5, 7],
-    ['panel-3', 'Country comparison', 0, 15, 7, 7],
-    ['panel-4', 'Campaign notes', 7, 22, 5, 7],
-  ] as const;
-  const kindOf = (id: string) => id === 'map' ? 'map' : id === 'panel-1' ? 'national-focus' : 'placeholder';
-  const minSize = (id: string) => widgetDefinition(kindOf(id))?.minSize ?? { w: 1, h: 4 };
-  const widgets = panels.map(([id, title]) => ({ ...createWidget(kindOf(id), 'main', id), title }));
-  const wide = panels.map(([i, , x, y, w, h]) => ({ i, x, y, w, h, minW: minSize(i).w, minH: minSize(i).h }));
+/** A page's designed arrangement (empty for a page the user added); narrow screens stack its widgets in reading order. */
+export function defaultTemplate(page: PageId = 'overview'): DashboardTemplate {
+  const panels = pageDefinition(page)?.panels ?? [];
+  const minSize = (kind: WidgetKind) => widgetDefinition(kind)?.minSize ?? { w: 1, h: 4 };
+  const widgets = panels.map(([kind]) => createWidget(kind, 'main', `${page}-${kind}`));
+  const wide = panels.map(([kind, x, y, w, h], index) => ({ i: widgets[index].id, x, y, w, h, minW: minSize(kind).w, minH: minSize(kind).h }));
   const narrow = (cols: number) => {
     let y = 0;
-    return panels.map(([i]) => {
-      const h = i === 'map' ? 11 : i.startsWith('summary') ? 3 : 6;
-      const item = { i, x: 0, y, w: cols, h, minW: Math.min(cols, minSize(i).w), minH: minSize(i).h };
+    return panels.map(([kind, , , , h], index) => {
+      const item = { i: widgets[index].id, x: 0, y, w: cols, h, minW: Math.min(cols, minSize(kind).w), minH: minSize(kind).h };
       y += h;
       return item;
     });

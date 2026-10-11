@@ -38,6 +38,23 @@ export function pinPairs(widget: WidgetSpec, track: BoundTrack, ids: readonly st
     branch: track.branch.id, ids: [...new Set(ids)] })) } };
 }
 
+// A window's directed runs are decoded once, however many other windows arrive after it.
+const decoded = new WeakMap<CasualtyPairsReply, { id: string; run: StackRun; positive: bigint }[]>();
+function directedRuns(reply: CasualtyPairsReply) {
+  let runs = decoded.get(reply);
+  if (!runs) {
+    runs = reply.pairs.flatMap(pair => (['first', 'second'] as const).flatMap(direction => {
+      const id = pairFlowId(pair.identity, direction);
+      return pair.runs.map(run => {
+        const value = BigInt(direction === 'first' ? run.secondTaken : run.firstTaken), positive = value > 0n ? value : 0n;
+        return { id, positive, run: { firstHour: run.firstHour, lastHour: run.lastHour, value: Number(positive) } };
+      });
+    }));
+    decoded.set(reply, runs);
+  }
+  return runs;
+}
+
 /** Positive geometry for the same directed native lifetimes. Outside an observed
  * block the stack breaks. An absent relation contributes no geometry; exact rows
  * still distinguish its absence from a recorded zero. */
@@ -47,18 +64,14 @@ export function pairHistory(replies: readonly CasualtyPairsReply[], ids: readonl
   const events = new Map<number, bigint>();
   const add = (hour: number, amount: bigint) => events.set(hour, (events.get(hour) ?? 0n) + amount);
   for (const span of observed) { add(span.firstHour, 0n); add(span.lastHour, 0n); add(span.lastHour + 1, 0n); }
-  for (const reply of replies) for (const pair of reply.pairs) {
-    for (const [direction, field] of [['first', 'secondTaken'], ['second', 'firstTaken']] as const) {
-      const runs = source.get(pairFlowId(pair.identity, direction));
-      if (!runs) continue;
-      for (const run of pair.runs) {
-        const value = BigInt(run[field]);
-        runs.push({ firstHour: run.firstHour, lastHour: run.lastHour, value: value > 0n ? Number(value) : 0 });
-        add(run.firstHour, value > 0n ? value : 0n);
-        add(run.lastHour, 0n);
-        add(run.lastHour + 1, value > 0n ? -value : 0n);
-      }
-    }
+  for (const reply of replies) for (const directed of directedRuns(reply)) {
+    const runs = source.get(directed.id);
+    if (!runs) continue;
+    const { run } = directed;
+    runs.push(run);
+    add(run.firstHour, directed.positive);
+    add(run.lastHour, 0n);
+    add(run.lastHour + 1, -directed.positive);
   }
   const model: CompactStackModel = { bands: ids.map(id => source.get(id)!.sort((a, b) => a.firstHour - b.firstHour)),
     hours: [...events.keys()].sort((a, b) => a - b), bounds: [], breakBefore: [] };

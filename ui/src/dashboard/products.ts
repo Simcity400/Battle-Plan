@@ -6,13 +6,17 @@ import { forgetFlags } from './flagCache.ts';
 import { contentRevision, useContentRevision } from './contentRevision.ts';
 import { CONTENT_PRODUCTS } from '../generated/dashboard.ts';
 
+/** Each reply's length as the transport received it, so the cache sizes a reply
+ * without serialising it again; a reply without one is measured by serialising. */
+export const replyLengths = new WeakMap<object, number>();
+
 /** One shared, bounded cache of product replies per client. Identical requests
  * share one native round trip; playback reads the cached full-branch data. */
 const caches = new WeakMap<DashboardClient, ResourceCache<ProductReply<unknown>>>();
 function cache(client: DashboardClient): ResourceCache<ProductReply<unknown>> {
   let entry = caches.get(client);
   if (!entry) {
-    entry = new ResourceCache(128, 64 * 1024 * 1024, reply => JSON.stringify(reply).length * 2);
+    entry = new ResourceCache(128, 64 * 1024 * 1024, reply => (replyLengths.get(reply) ?? JSON.stringify(reply).length) * 2);
     caches.set(client, entry);
   }
   return entry;
@@ -30,7 +34,11 @@ export function productKey(request: ProductRequest, content = 0): string {
 export function loadProduct<T>(client: DashboardClient, request: ProductRequest, signal: AbortSignal, validate?: (data: unknown) => T): Promise<T> {
   return cache(client).get(productKey(request, contentRevision(client).snapshot()), async shared => {
     const reply = validateProductReply(await client.product<unknown>(request, shared), request);
-    return validate ? { ...reply, data: validate(reply.data) } : reply;
+    if (!validate) return reply;
+    const validated = { ...reply, data: validate(reply.data) };
+    const length = replyLengths.get(reply);
+    if (length !== undefined) replyLengths.set(validated, length);
+    return validated;
   }, signal).then(reply => reply.data as T);
 }
 

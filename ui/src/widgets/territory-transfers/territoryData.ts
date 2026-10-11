@@ -1,4 +1,5 @@
 import { sumFlowParts } from '../../charts/flow/sum.ts';
+import { usNumber } from '../../charts/numberFormat.ts';
 import type { SummedDiagram, SummedNode } from '../../charts/flow/sum';
 import type { PeaceDeal, PeaceDealsReply, PeaceTransferGraph, PeaceTransferredState } from '../../generated/dashboard';
 import { checkedPeaceVictoryPoints, peaceDealHour, peaceDealKnownAt } from '../../dashboard/peaceDealsData.ts';
@@ -205,13 +206,13 @@ export function chosenConference(deals: readonly PeaceDeal[], id: string): Peace
 }
 
 export function transferAmount(links: readonly TransferLink[], measure: TransferMeasure): string {
-  if (measure === 'states') return links.reduce((sum, link) => sum + link.stateCount, 0).toLocaleString('en-US');
+  if (measure === 'states') return usNumber.format(links.reduce((sum, link) => sum + link.stateCount, 0));
   let total = 0n;
   for (const link of links) {
     if (link.victoryPoints == null) return 'Not recorded';
     total += link.victoryPoints;
   }
-  return total.toLocaleString('en-US');
+  return usNumber.format(total);
 }
 
 export function transferProvenance(states: readonly TransferOccurrence[]): string {
@@ -219,9 +220,9 @@ export function transferProvenance(states: readonly TransferOccurrence[]): strin
   let derived = 0;
   let unknown = 0;
   for (const state of states) if (state.derived === false) exact++; else if (state.derived) derived++; else unknown++;
-  return [exact ? `${exact.toLocaleString('en-US')} exact ${exact === 1 ? 'transfer' : 'transfers'} captured by the finalizer` : '',
-    derived ? `${derived.toLocaleString('en-US')} ${derived === 1 ? 'transfer' : 'transfers'} derived from what changed` : '',
-    unknown ? `${unknown.toLocaleString('en-US')} ${unknown === 1 ? 'transfer has' : 'transfers have'} provenance not recorded` : ''].filter(Boolean).join('; ');
+  return [exact ? `${usNumber.format(exact)} exact ${exact === 1 ? 'transfer' : 'transfers'} captured by the finalizer` : '',
+    derived ? `${usNumber.format(derived)} ${derived === 1 ? 'transfer' : 'transfers'} derived from what changed` : '',
+    unknown ? `${usNumber.format(unknown)} ${unknown === 1 ? 'transfer has' : 'transfers have'} provenance not recorded` : ''].filter(Boolean).join('; ');
 }
 
 /** Caption counts are about links before "other" aggregation, never about a
@@ -229,8 +230,8 @@ export function transferProvenance(states: readonly TransferOccurrence[]): strin
 export function victoryPointNote(diagram: Pick<TransferDiagram, 'missingVictoryPoints' | 'nonpositiveVictoryPoints'>): string | null {
   const missing = diagram.missingVictoryPoints;
   const nonpositive = diagram.nonpositiveVictoryPoints;
-  return [missing ? `${missing.toLocaleString('en-US')} ${missing === 1 ? 'link lacks' : 'links lack'} recorded victory points at the moment shown and ${missing === 1 ? 'is' : 'are'} not drawn` : '',
-    nonpositive ? `${nonpositive.toLocaleString('en-US')} ${nonpositive === 1 ? 'link has' : 'links have'} zero or negative recorded victory points and ${nonpositive === 1 ? 'has' : 'have'} no ribbon width` : ''].filter(Boolean).join('; ') || null;
+  return [missing ? `${usNumber.format(missing)} ${missing === 1 ? 'link lacks' : 'links lack'} recorded victory points at the moment shown and ${missing === 1 ? 'is' : 'are'} not drawn` : '',
+    nonpositive ? `${usNumber.format(nonpositive)} ${nonpositive === 1 ? 'link has' : 'links have'} zero or negative recorded victory points and ${nonpositive === 1 ? 'has' : 'have'} no ribbon width` : ''].filter(Boolean).join('; ') || null;
 }
 
 /** A completed conference's gap warning belongs to its own observed interval,

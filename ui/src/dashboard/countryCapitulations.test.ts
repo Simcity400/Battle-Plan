@@ -21,9 +21,9 @@ test('capitulations use the drawn native holder, exact event coverage and dated 
   const before = JSON.stringify(countries);
   const badges = countryCapitulationBadges(groups, countries, [10, 20]);
   assert.deepEqual([...badges], [
-    ['old', [{ hour: 11, glyph: '\u00d7', label: 'old capitulated', capitulationTag: 'old' }]],
-    ['new', [{ hour: 15, glyph: '\u00d7', label: 'new capitulated', capitulationTag: 'new' }]],
-    ['legacy', [{ hour: 17, glyph: '\u00d7', label: 'legacy capitulated', capitulationTag: 'legacy' }]],
+    ['old', [{ hour: 11, glyph: '\u00d7', label: 'Country capitulated', capitulationTag: 'old' }]],
+    ['new', [{ hour: 15, glyph: '\u00d7', label: 'Country capitulated', capitulationTag: 'new' }]],
+    ['legacy', [{ hour: 17, glyph: '\u00d7', label: 'Country capitulated', capitulationTag: 'legacy' }]],
   ]);
   assert.equal(JSON.stringify(countries), before, 'markers never split or alter the numeric coverage');
   assert.deepEqual(visibleBadges([...badges.values()].flat(), [10, 20], 14).map(badge => badge.hour), [11]);

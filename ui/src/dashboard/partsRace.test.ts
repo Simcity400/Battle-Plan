@@ -64,7 +64,7 @@ test('unresolved content keeps its visible count; unknown breakdown hatches the 
   const complete = partsRaceEntries(model, rankPartsRace(model, model.tags, 10, 10), true)[0];
   assert.equal(complete.value, 5);
   assert.deepEqual(complete.parts, [{ id: 'mod aircraft', value: 3 }, { id: ':variant/7', value: 2 }]);
-  assert.equal(partsRacePartName(model.reply.parts[1]), ':variant/7');
+  assert.equal(partsRacePartName(model.reply.parts[1]), 'Part name unavailable');
   const unknown = partsRaceEntries(model, rankPartsRace(model, model.tags, 13, 10), true)[0];
   assert.equal(unknown.value, 5);
   assert.equal(unknown.hatched, 5);
@@ -95,7 +95,7 @@ test('parts race tooltips show unknown parts and exact totals in every fitted fo
   const model = partsRaceModel(reply());
   const forms = [...partsRaceTooltips({ model, name: 'Name at hour', at: partsRaceAt(model, model.tags[0], 13)!,
     date: 'Date', measure: 'Planes', ownership: 'Roster owner', colours: new Map() })];
-  assert.ok(forms[0].rows.some(row => row.label === ':variant/7' && row.value === 'Not known'));
+  assert.ok(forms[0].rows.some(row => row.label === 'Part name unavailable' && row.value === 'Not known'));
   assert.ok(forms.every(form => form.rows.at(-1)?.value === '5'));
 });
 

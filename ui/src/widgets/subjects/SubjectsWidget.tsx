@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
@@ -113,8 +114,8 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   const legendLevels = data.levels.filter(level => shownLevels.has(level.token));
   const own = legendLevels.filter(level => colours.get(level.token) !== other);
   const folded = legendLevels.filter(level => colours.get(level.token) === other);
-  const legend = [...own.map(level => ({ id: level.token, label: level.name ?? level.token, color: colours.get(level.token)! })),
-    ...(folded.length ? [{ id: '\u0000other', label: `Other levels (${folded.map(level => level.name ?? level.token).join(', ')})`, color: other }] : [])];
+  const legend = [...own.map(level => ({ id: level.token, label: contentTitle(level.name, level.token, 'Autonomy level name unavailable'), color: colours.get(level.token)! })),
+    ...(folded.length ? [{ id: '\u0000other', label: `Other levels (${folded.map(level => contentTitle(level.name, level.token, 'Autonomy level name unavailable')).join(', ')})`, color: other }] : [])];
   const day = dayLabel;
   const tooltip = (laneId: string, hour: number, full: boolean): TooltipContent | null => {
     const about = info.get(laneId);

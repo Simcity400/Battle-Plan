@@ -1,4 +1,4 @@
-import { contrast, isDark, normalizeColor, oklchHex, oklchToRgb, parseColor, readableText, rgbToOklch, solveLightness, toHex } from './color.ts';
+import { contrast, isDark, mixOklab, normalizeColor, oklchHex, oklchToRgb, parseColor, readableText, rgbToOklch, solveLightness, toHex, toHexAlpha } from './color.ts';
 
 export type ThemeMode = 'dark' | 'light';
 
@@ -147,4 +147,14 @@ export function findTheme(id: string, custom: readonly ThemeDefinition[]): Theme
 /** The colours shown for `mode`, falling back to the default theme's variant. */
 export function themeColors(theme: ThemeDefinition | undefined, mode: ThemeMode): ThemeColors {
   return theme?.variants[mode] ?? BUILT_IN_THEMES[0].variants[mode]!;
+}
+
+/** Text and secondary text fade toward the canvas and borders toward transparent below 100%.
+ * At 100% the theme is unchanged. Surfaces keep their colours; derived roles follow. */
+export function contrastColors(colors: ThemeColors, percent: number): ThemeColors {
+  if (percent >= 100) return colors;
+  const amount = Math.max(0, percent) / 100;
+  const canvas = parseColor(colors.canvas)!;
+  const ink = (role: 'text' | 'muted') => toHex(mixOklab(canvas, parseColor(colors[role])!, amount));
+  return { ...colors, text: ink('text'), muted: ink('muted'), border: toHexAlpha(parseColor(colors.border)!, amount) };
 }

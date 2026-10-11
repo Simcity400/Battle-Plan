@@ -3,6 +3,7 @@ import { validateNativePartsRaceReply } from '../../charts/race/partsRaceDrill.t
 import type { NativePartsRaceReply } from '../../charts/race/partsRaceDrill';
 import type { OptionValue } from '../../dashboard/options';
 import { formatAxisValue, formatFixed } from '../../charts/valueAxis.ts';
+import { usNumber } from '../../charts/numberFormat.ts';
 
 export function validateNavyReply(data: unknown): NativePartsRaceReply {
   const reply = validateNativePartsRaceReply(data);
@@ -14,7 +15,7 @@ export function validateNavyReply(data: unknown): NativePartsRaceReply {
 
 /** Hull HP is fixed5; preserve all five recorded decimals. */
 export const formatNavyValue = (value: number, options: Readonly<Record<string, OptionValue>>) =>
-  options.measure === 'strength' ? formatFixed(BigInt(Math.round(value)), 5, 5).replace(/\.?0+$/, '') : value.toLocaleString('en-US');
+  options.measure === 'strength' ? formatFixed(BigInt(Math.round(value)), 5, 5).replace(/\.?0+$/, '') : usNumber.format(value);
 
 /** Settings are in displayed HP; chart geometry and recorded totals are fixed5. */
 export function navyChartOptions(options: Readonly<Record<string, OptionValue>>): Readonly<Record<string, OptionValue>> {

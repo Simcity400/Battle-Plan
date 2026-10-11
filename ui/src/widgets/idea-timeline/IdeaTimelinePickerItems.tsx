@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { useEffect, useMemo, useRef } from 'react';
 import type { WidgetPickerItemsProps } from '../../dashboard/definitions';
 import { useIdeaHistory } from '../../dashboard/ideaHistory';
@@ -28,7 +29,7 @@ export default function IdeaTimelinePickerItems({ definition, runtime, track, ac
     <WidgetPickerItem definition={definition} disabled={disabled} onAdd={onAdd} />
     {reason !== null ? <WidgetPickerItem definition={{ ...definition, title: 'Idea categories' }} disabled reason={reason} onAdd={onAdd} />
       : categories.map(category => {
-        const title = category.name ?? category.token;
+        const title = contentTitle(category.name, category.token, 'Category name unavailable');
         return <WidgetPickerItem key={category.token} definition={{ ...definition, title }} disabled={disabled}
           initial={{ title: title || definition.title, options: { category: category.token } }} onAdd={(kind, initial) => {
             if (mounted.current && current.current === owner && active && !disabled) onAdd(kind, initial);

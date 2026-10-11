@@ -1222,38 +1222,47 @@ const CENSUS_TABLES: [TableId; 11] = [
 
 fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan> {
     let mut scan = Scan::default();
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        check_cancel(cancelled)?;
-        let frames = match replay.read_block_selected(block, &CENSUS_TABLES) {
-            Ok(frames) => frames,
-            Err(error) => {
-                scan.hour = block.first_hour;
-                scan.combats.clear();
-                scan.refuse(&format!("Naval battle block unavailable: {error}"));
-                continue;
-            }
-        };
-        let mut decoder = FrameDecoder::for_tables(&CENSUS_TABLES);
-        for frame in frames {
-            check_cancel(cancelled)?;
-            let decoded = match decoder.advance(&frame) {
-                Ok(decoded) => decoded,
-                Err(error) => {
-                    scan.hour = frame.hour;
-                    scan.combats.clear();
-                    scan.refuse(&format!("Naval battle baseline unavailable: {error}"));
-                    break;
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &CENSUS_TABLES,
+        cancelled,
+        |blocks| {
+            for (block, frames) in blocks {
+                check_cancel(cancelled)?;
+                let frames = match frames {
+                    Ok(frames) => frames,
+                    Err(error) => {
+                        scan.hour = block.first_hour;
+                        scan.combats.clear();
+                        scan.refuse(&format!("Naval battle block unavailable: {error}"));
+                        continue;
+                    }
+                };
+                let mut decoder = FrameDecoder::for_tables(&CENSUS_TABLES);
+                for frame in frames {
+                    check_cancel(cancelled)?;
+                    let decoded = match decoder.advance(&frame) {
+                        Ok(decoded) => decoded,
+                        Err(error) => {
+                            scan.hour = frame.hour;
+                            scan.combats.clear();
+                            scan.refuse(&format!("Naval battle baseline unavailable: {error}"));
+                            break;
+                        }
+                    };
+                    if let Err(error) = validate_campaign(decoded, replay) {
+                        scan.hour = frame.hour;
+                        scan.combats.clear();
+                        scan.refuse(&format!("Naval battle campaign refused: {error}"));
+                        break;
+                    }
+                    scan.observe(decoded);
                 }
-            };
-            if let Err(error) = validate_campaign(decoded, replay) {
-                scan.hour = frame.hour;
-                scan.combats.clear();
-                scan.refuse(&format!("Naval battle campaign refused: {error}"));
-                break;
             }
-            scan.observe(decoded);
-        }
-    }
+            Ok(())
+        },
+    )?;
     Ok(scan)
 }
 
@@ -1263,29 +1272,37 @@ fn recording_available(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> 
         TableId::NavalCombats,
         TableId::NavalResults,
     ];
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        check_cancel(cancelled)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            check_cancel(cancelled)?;
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                check_cancel(cancelled)?;
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                for frame in frames {
+                    check_cancel(cancelled)?;
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    // Empty complete censuses also prove availability. Stop at the first.
+                    if decoded.complete::<tables::NavalCombats>().is_ok()
+                        || decoded.complete::<tables::NavalResults>().is_ok()
+                    {
+                        return Ok(true);
+                    }
+                }
             }
-            // Empty complete censuses also prove availability. Stop at the first.
-            if decoded.complete::<tables::NavalCombats>().is_ok()
-                || decoded.complete::<tables::NavalResults>().is_ok()
-            {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
+            Ok(false)
+        },
+    )
 }
 fn branch_id(source: &Source, branch: &str) -> io::Result<u64> {
     let branch = branch

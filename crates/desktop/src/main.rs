@@ -179,6 +179,7 @@ fn main() {
             dashboard_service::dashboard_open_source,
             dashboard_service::dashboard_product,
             dashboard_service::dashboard_map_settings,
+            dashboard_service::dashboard_history_cache,
             dashboard_service::dashboard_cancel,
             dashboard_service::dashboard_release_source,
         ])

@@ -99,6 +99,13 @@ export function rowOffsets(count: number, rowHeight: number, headerHeight = 0): 
   return Array.from({ length: count + 1 }, (_, slot) => headerHeight + slot * rowHeight);
 }
 
+/** Prefix offsets for measured wrapped rows, with a minimum for rows not mounted yet. */
+export function measuredRowOffsets(keys: readonly string[], heights: ReadonlyMap<string, number>, minimum: number, headerHeight = 0): number[] {
+  const offsets = [headerHeight];
+  for (const key of keys) offsets.push(offsets[offsets.length - 1] + Math.max(minimum, heights.get(key) ?? minimum));
+  return offsets;
+}
+
 // Same contracts as the log kit's logData.ts; kept local until both kits land.
 /** [start, end) covering top..top+height, widened by overscan items each way. */
 export function visibleRange(offsets: readonly number[], top: number, height: number, overscan = 6): [number, number] {

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FAILED_FACT, nameKey } from '../../dashboard/countryFacts.ts';
 import type { FlagRead } from '../../dashboard/countryFlagsAt';
-import { casualtyCountryCell } from './casualtyFlags.ts';
+import { casualtyCountryCell, casualtyEnemyName } from './casualtyFlags.ts';
 
 const row = { enemyTag: 'Opaque enemy [x:y]', enemyHour: 23 };
 const key = nameKey(row.enemyHour, row.enemyTag);
@@ -17,6 +17,16 @@ test('an ended enemy table keeps its supplying facts rather than the later tag r
   assert.equal(pending.flag, undefined);
   assert.equal(pending.flagPending, true);
   assert.equal(pending.name, 'Supplying enemy');
+});
+
+test('country names never promote tags for titles or sorting, while empty and key-equal names stay authoritative', () => {
+  const names = new Map<string, string>();
+  assert.equal(casualtyEnemyName(row, names), 'Country name unavailable');
+  assert.equal(casualtyCountryCell(row, names, new Map()).name, casualtyEnemyName(row, names));
+  names.set(key, '');
+  assert.equal(casualtyEnemyName(row, names), '');
+  names.set(key, row.enemyTag);
+  assert.equal(casualtyEnemyName(row, names), row.enemyTag);
 });
 
 test('native flag reasons, completed empty reads and failures remain distinct from pending', () => {

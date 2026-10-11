@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DashboardClient, ReplayLibrary } from './client';
 
 export function useReplayLibrary(client: DashboardClient) {
@@ -8,12 +8,11 @@ export function useReplayLibrary(client: DashboardClient) {
   const controller = useRef<AbortController | null>(null);
   const saving = useRef(false);
   const refresh = useCallback(async () => {
-    if (saving.current) return;
+    if (saving.current || !client.replayLibrary) return;
     controller.current?.abort();
     const request = new AbortController(); controller.current = request;
     setLoading(true); setError(null);
     try {
-      if (!client.replayLibrary) throw new Error('Replay folders are unavailable.');
       const result = await client.replayLibrary(request.signal);
       if (!request.signal.aborted) setLibrary(result);
     } catch (error) { if (!request.signal.aborted) setError(String(error)); }
@@ -26,13 +25,14 @@ export function useReplayLibrary(client: DashboardClient) {
     const request = new AbortController(); controller.current = request;
     setLoading(true); setError(null);
     try {
-      if (!client.setReplayFolder) throw new Error('Replay folders are unavailable.');
+      if (!client.setReplayFolder) throw new Error('Open the desktop app to choose a replay folder.');
       const result = await client.setReplayFolder(folder);
       if (!request.signal.aborted) { setLibrary(result); return result; }
     } catch (error) { if (!request.signal.aborted) { setError(String(error)); throw error; } }
     finally { saving.current = false; if (!request.signal.aborted) setLoading(false); }
   }, [client]);
   useEffect(() => { void refresh(); return () => controller.current?.abort(); }, [refresh]);
-  return { ...library, loading, error, refresh, setFolder };
+  // One object until something changes, so memoised views skip the shell's other renders.
+  return useMemo(() => ({ ...library, loading, error, refresh, setFolder }), [library, loading, error, refresh, setFolder]);
 }
 export type ReplayLibraryState = ReturnType<typeof useReplayLibrary>;

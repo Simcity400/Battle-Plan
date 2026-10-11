@@ -2,7 +2,7 @@
 
 use super::country_groups::HourSpan;
 use super::country_measure::Measure;
-use crate::metadata::{IdentityTrack, link_slot};
+use crate::metadata::{CountryKeys, IdentityTrack, link_slot};
 use replay::rows::{CountryLinkRow, CountryRow};
 use std::collections::{HashMap, HashSet};
 
@@ -12,7 +12,7 @@ use crate::{
 };
 use replay::{
     container::Replay,
-    frame::FrameDecoder,
+    frame::{DecodedFrame, FrameDecoder, SharedView, ViewIdentity},
     rows::{TableId, tables},
 };
 use serde::{Deserialize, Serialize};
@@ -20,7 +20,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -120,7 +120,7 @@ impl RecordedCountry {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct RecordedHistories {
     pub countries: BTreeMap<String, RecordedCountry>,
     /// Complete native identity reads, usable as proof that a holder is absent.
@@ -135,6 +135,9 @@ pub(crate) struct RecordedHistories {
 #[derive(Default)]
 struct HistoriesCache {
     entries: BTreeMap<u64, Arc<RecordedHistories>>,
+    /// One walk of a branch at a time, outside the cache lock: a request never
+    /// waits on another branch's walk.
+    gates: BTreeMap<u64, Arc<Mutex<()>>>,
 }
 
 /// Countries and country links supply identity and only requested balance fields
@@ -148,19 +151,30 @@ pub(crate) fn branch_histories(
     cancelled: &AtomicBool,
 ) -> io::Result<Arc<RecordedHistories>> {
     let state = source.state::<HistoriesCache>();
-    let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some(found) = cache.entries.get(&branch).filter(|found| {
+    let lock = || state.lock().unwrap_or_else(|error| error.into_inner());
+    let covers = |found: &RecordedHistories| {
         (found.territory_loaded || !territory)
             && measures
                 .iter()
                 .all(|measure| found.measures.contains(measure))
-    }) {
+    };
+    let gate = {
+        let mut cache = lock();
+        if let Some(found) = cache.entries.get(&branch).filter(|found| covers(found)) {
+            return Ok(Arc::clone(found));
+        }
+        Arc::clone(cache.gates.entry(branch).or_default())
+    };
+    // A failed or cancelled walk publishes nothing and frees the next request.
+    let _walk = gate.lock().unwrap_or_else(|error| error.into_inner());
+    let base = lock().entries.get(&branch).cloned();
+    if let Some(found) = base.as_ref().filter(|found| covers(found)) {
         return Ok(Arc::clone(found));
     }
-    let found = if let Some(base) = cache.entries.get(&branch) {
+    let found = if let Some(base) = base {
         // Cloning the branch index shares all field histories. An upgrade only
         // writes newly requested empty fields; existing histories never copy.
-        let mut found = (**base).clone();
+        let mut found = (*base).clone();
         let missing: Vec<_> = measures
             .iter()
             .copied()
@@ -182,8 +196,20 @@ pub(crate) fn branch_histories(
             cancelled,
         )?)
     };
-    cache.entries.insert(branch, Arc::clone(&found));
+    lock().entries.insert(branch, Arc::clone(&found));
     Ok(found)
+}
+
+/// Keep another walk's histories of the same frames for later requests. Histories
+/// already kept for the branch are returned instead.
+pub(crate) fn share(
+    source: &Source,
+    branch: u64,
+    found: Arc<RecordedHistories>,
+) -> Arc<RecordedHistories> {
+    let state = source.state::<HistoriesCache>();
+    let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+    Arc::clone(cache.entries.entry(branch).or_insert(found))
 }
 
 /// Add only newly requested balance fields. Existing field histories and their
@@ -196,74 +222,83 @@ fn add_measures(
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
     let selected = [TableId::Campaign, TableId::Countries, TableId::CountryLinks];
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Balance history cancelled",
-                ));
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            let (Ok(countries), Ok(links)) = (
-                decoded.complete::<tables::Countries>(),
-                decoded.complete::<tables::CountryLinks>(),
-            ) else {
-                continue;
-            };
-            for (tag, lookup) in tagged_countries(countries, links) {
-                let TaggedCountry::Found(row, slot) = lookup else {
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
                     continue;
                 };
-                let Some(found) = std::str::from_utf8(tag)
-                    .ok()
-                    .and_then(|tag| out.countries.get_mut(tag))
-                else {
-                    continue;
-                };
-                let index = found
-                    .identities
-                    .partition_point(|identity| identity.first_hour <= frame.hour);
-                let Some(identity) = index
-                    .checked_sub(1)
-                    .and_then(|index| found.identities.get(index))
-                    .filter(|identity| {
-                        identity.last_hour >= frame.hour
-                            && identity.slot == slot
-                            && identity.country_id == row.id
-                    })
-                else {
-                    continue;
-                };
-                let contiguous = frame.hour > identity.first_hour;
-                if measures.contains(&Measure::PoliticalPower) {
-                    append_balance(
-                        Arc::make_mut(&mut found.political_power),
-                        row.political_power_raw,
-                        frame.hour,
-                        contiguous,
-                    );
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "Balance history cancelled",
+                        ));
+                    }
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    let (Ok(countries), Ok(links)) = (
+                        decoded.complete::<tables::Countries>(),
+                        decoded.complete::<tables::CountryLinks>(),
+                    ) else {
+                        continue;
+                    };
+                    for (tag, lookup) in tagged_countries(countries, links) {
+                        let TaggedCountry::Found(row, slot) = lookup else {
+                            continue;
+                        };
+                        let Some(found) = std::str::from_utf8(tag)
+                            .ok()
+                            .and_then(|tag| out.countries.get_mut(tag))
+                        else {
+                            continue;
+                        };
+                        let index = found
+                            .identities
+                            .partition_point(|identity| identity.first_hour <= frame.hour);
+                        let Some(identity) = index
+                            .checked_sub(1)
+                            .and_then(|index| found.identities.get(index))
+                            .filter(|identity| {
+                                identity.last_hour >= frame.hour
+                                    && identity.slot == slot
+                                    && identity.country_id == row.id
+                            })
+                        else {
+                            continue;
+                        };
+                        let contiguous = frame.hour > identity.first_hour;
+                        if measures.contains(&Measure::PoliticalPower) {
+                            append_balance(
+                                Arc::make_mut(&mut found.political_power),
+                                row.political_power_raw,
+                                frame.hour,
+                                contiguous,
+                            );
+                        }
+                        if measures.contains(&Measure::CommandPower) {
+                            append_balance(
+                                Arc::make_mut(&mut found.command_power),
+                                Some(row.command_power_raw),
+                                frame.hour,
+                                contiguous,
+                            );
+                        }
+                    }
                 }
-                if measures.contains(&Measure::CommandPower) {
-                    append_balance(
-                        Arc::make_mut(&mut found.command_power),
-                        Some(row.command_power_raw),
-                        frame.hour,
-                        contiguous,
-                    );
-                }
             }
-        }
-    }
+            Ok(())
+        },
+    )?;
     out.measures.extend(measures.iter().copied());
     Ok(())
 }
@@ -283,71 +318,80 @@ fn add_territory(
         TableId::CountryLinks,
         TableId::CountryCounterInputs,
     ];
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "State count history cancelled",
-                ));
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            let (Ok(countries), Ok(links), Ok(rows)) = (
-                decoded.complete::<tables::Countries>(),
-                decoded.complete::<tables::CountryLinks>(),
-                decoded.complete::<tables::CountryCounterInputs>(),
-            ) else {
-                continue;
-            };
-            let rows = unique_by_slot(rows, links, |row| row.country);
-            out.unreadable_territory += rows.unresolved_rows + rows.duplicate_rows;
-            for (tag, lookup) in tagged_countries(countries, links) {
-                let TaggedCountry::Found(row, slot) = lookup else {
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
                     continue;
                 };
-                let Some(country) = std::str::from_utf8(tag)
-                    .ok()
-                    .and_then(|tag| out.countries.get_mut(tag))
-                else {
-                    continue;
-                };
-                let index = country
-                    .identities
-                    .partition_point(|identity| identity.first_hour <= frame.hour);
-                let Some(identity) = index
-                    .checked_sub(1)
-                    .and_then(|index| country.identities.get(index))
-                    .filter(|identity| {
-                        identity.last_hour >= frame.hour
-                            && identity.slot == slot
-                            && identity.country_id == row.id
-                    })
-                else {
-                    continue;
-                };
-                let amount = rows
-                    .rows
-                    .get(&identity.slot)
-                    .and_then(|row| *row)
-                    .map(|row| i64::from(row.owned_state_count));
-                append_fixed(
-                    Arc::make_mut(&mut country.territory),
-                    amount,
-                    frame.hour,
-                    frame.hour > identity.first_hour,
-                );
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "State count history cancelled",
+                        ));
+                    }
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    let (Ok(countries), Ok(links), Ok(rows)) = (
+                        decoded.complete::<tables::Countries>(),
+                        decoded.complete::<tables::CountryLinks>(),
+                        decoded.complete::<tables::CountryCounterInputs>(),
+                    ) else {
+                        continue;
+                    };
+                    let rows = unique_by_slot(rows, links, |row| row.country);
+                    out.unreadable_territory += rows.unresolved_rows + rows.duplicate_rows;
+                    for (tag, lookup) in tagged_countries(countries, links) {
+                        let TaggedCountry::Found(row, slot) = lookup else {
+                            continue;
+                        };
+                        let Some(country) = std::str::from_utf8(tag)
+                            .ok()
+                            .and_then(|tag| out.countries.get_mut(tag))
+                        else {
+                            continue;
+                        };
+                        let index = country
+                            .identities
+                            .partition_point(|identity| identity.first_hour <= frame.hour);
+                        let Some(identity) = index
+                            .checked_sub(1)
+                            .and_then(|index| country.identities.get(index))
+                            .filter(|identity| {
+                                identity.last_hour >= frame.hour
+                                    && identity.slot == slot
+                                    && identity.country_id == row.id
+                            })
+                        else {
+                            continue;
+                        };
+                        let amount = rows
+                            .rows
+                            .get(&identity.slot)
+                            .and_then(|row| *row)
+                            .map(|row| i64::from(row.owned_state_count));
+                        append_fixed(
+                            Arc::make_mut(&mut country.territory),
+                            amount,
+                            frame.hour,
+                            frame.hour > identity.first_hour,
+                        );
+                    }
+                }
             }
-        }
-    }
+            Ok(())
+        },
+    )?;
     out.territory_loaded = true;
     Ok(())
 }
@@ -393,90 +437,194 @@ pub(crate) fn scan_histories(
     if territory {
         selected.push(TableId::CountryCounterInputs);
     }
-    let mut out = RecordedHistories::default();
-    out.measures.extend(measures.iter().copied());
-    out.territory_loaded = territory;
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Country history cancelled",
-                ));
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            let (Ok(countries), Ok(links)) = (
-                decoded.complete::<tables::Countries>(),
-                decoded.complete::<tables::CountryLinks>(),
-            ) else {
-                continue;
-            };
-            let counts = territory
-                .then(|| {
-                    decoded
-                        .complete::<tables::CountryCounterInputs>()
-                        .ok()
-                        .map(|rows| unique_by_slot(rows, links, |row| row.country))
-                })
-                .flatten();
-            if let Some(rows) = &counts {
-                out.unreadable_territory += rows.unresolved_rows + rows.duplicate_rows;
-            }
-            let tagged = tagged_countries(countries, links);
-            let known: HashSet<_> = tagged
-                .iter()
-                .filter_map(|(tag, lookup)| {
-                    let TaggedCountry::Found(row, slot) = lookup else {
-                        return None;
+    let mut scan = HistoryScan::new(territory, measures);
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "Country history cancelled",
+                        ));
+                    }
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
                     };
-                    (!tag.is_empty() && std::str::from_utf8(tag).is_ok()).then_some((*slot, row.id))
-                })
-                .collect();
-            if countries
-                .iter()
-                .all(|row| known.contains(&(row.canonical_slot, row.id)))
-            {
-                super::country_groups::mark_unobserved(
-                    &mut out.identity_reads,
-                    frame.hour,
-                    frame.hour,
-                );
-            }
-            for (tag, lookup) in tagged {
-                let TaggedCountry::Found(row, slot) = lookup else {
-                    out.unresolved_countries += 1;
-                    continue;
-                };
-                let Ok(tag) = std::str::from_utf8(tag) else {
-                    out.unnamed += 1;
-                    continue;
-                };
-                let amount = counts
-                    .as_ref()
-                    .and_then(|counts| counts.rows.get(&slot))
-                    .and_then(|row| *row)
-                    .map(|row| i64::from(row.owned_state_count));
-                let territory = territory.then_some(amount);
-                if let Some(found) = out.countries.get_mut(tag) {
-                    found.observe(row, slot, frame.hour, measures, territory);
-                } else {
-                    let mut found = RecordedCountry::default();
-                    found.observe(row, slot, frame.hour, measures, territory);
-                    out.countries.insert(tag.to_owned(), found);
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    scan.observe(decoded);
                 }
             }
+            Ok(())
+        },
+    )?;
+    Ok(scan.finish())
+}
+
+/// A branch walk's histories, fed every frame that decodes and passes the
+/// campaign check, so another scan of the same frames can build them too.
+pub(crate) struct HistoryScan<'m> {
+    out: RecordedHistories,
+    measures: &'m [Measure],
+    names: HashMap<String, usize>,
+    countries: Vec<RecordedCountry>,
+    read: Option<CountryRead>,
+}
+
+/// What `tagged_countries` resolves from one set of country keys and links. The
+/// same keys and links allocation resolve the same rows, so later hours reuse it.
+struct CountryRead {
+    keys: CountryKeys,
+    links: ViewIdentity,
+    /// Each named holder's history, row position and slot.
+    holders: Vec<(usize, usize, u32)>,
+    /// Every row has a named identity: proof that an unlisted holder is absent.
+    complete: bool,
+    unresolved: usize,
+    unnamed: usize,
+}
+
+impl CountryRead {
+    fn new(
+        countries: &[CountryRow],
+        links: &[CountryLinkRow],
+        view: &SharedView,
+        names: &mut HashMap<String, usize>,
+        histories: &mut Vec<RecordedCountry>,
+    ) -> Self {
+        let tagged = tagged_countries(countries, links);
+        let mut read = Self {
+            keys: CountryKeys::read(countries),
+            links: view.identity(),
+            holders: Vec::new(),
+            complete: false,
+            unresolved: tagged
+                .values()
+                .filter(|lookup| !matches!(lookup, TaggedCountry::Found(..)))
+                .count(),
+            unnamed: 0,
+        };
+        let mut known = HashSet::new();
+        for (position, row) in countries.iter().enumerate() {
+            let Some(&TaggedCountry::Found(found, slot)) = tagged.get(row.tag.as_slice()) else {
+                continue;
+            };
+            if !std::ptr::eq(found, row) {
+                continue;
+            }
+            let Ok(tag) = std::str::from_utf8(&row.tag) else {
+                read.unnamed += 1;
+                continue;
+            };
+            if !tag.is_empty() {
+                known.insert((slot, row.id));
+            }
+            let history = *names.entry(tag.to_owned()).or_insert_with(|| {
+                histories.push(RecordedCountry::default());
+                histories.len() - 1
+            });
+            read.holders.push((history, position, slot));
+        }
+        read.complete = countries
+            .iter()
+            .all(|row| known.contains(&(row.canonical_slot, row.id)));
+        read
+    }
+}
+
+impl<'m> HistoryScan<'m> {
+    pub(crate) fn new(territory: bool, measures: &'m [Measure]) -> Self {
+        Self {
+            out: RecordedHistories {
+                measures: measures.iter().copied().collect(),
+                territory_loaded: territory,
+                ..Default::default()
+            },
+            measures,
+            names: HashMap::new(),
+            countries: Vec::new(),
+            read: None,
         }
     }
-    Ok(out)
+
+    pub(crate) fn observe(&mut self, frame: &DecodedFrame) {
+        let (Ok(countries), Ok(links)) = (
+            frame.complete::<tables::Countries>(),
+            frame.complete::<tables::CountryLinks>(),
+        ) else {
+            return;
+        };
+        let territory = self.out.territory_loaded;
+        let counts = territory
+            .then(|| {
+                frame
+                    .complete::<tables::CountryCounterInputs>()
+                    .ok()
+                    .map(|rows| unique_by_slot(rows, links, |row| row.country))
+            })
+            .flatten();
+        if let Some(rows) = &counts {
+            self.out.unreadable_territory += rows.unresolved_rows + rows.duplicate_rows;
+        }
+        // Hourly balances change Countries; its keys and the links decide the rows.
+        let view = &frame.tables[TableId::CountryLinks.index()];
+        if !self
+            .read
+            .as_ref()
+            .is_some_and(|read| read.links.is(view) && read.keys.same(countries))
+        {
+            self.read = Some(CountryRead::new(
+                countries,
+                links,
+                view,
+                &mut self.names,
+                &mut self.countries,
+            ));
+        }
+        let read = self.read.as_ref().expect("country read");
+        if read.complete {
+            super::country_groups::mark_unobserved(
+                &mut self.out.identity_reads,
+                frame.hour,
+                frame.hour,
+            );
+        }
+        self.out.unresolved_countries += read.unresolved;
+        self.out.unnamed += read.unnamed;
+        for &(history, position, slot) in &read.holders {
+            let amount = counts
+                .as_ref()
+                .and_then(|counts| counts.rows.get(&slot))
+                .and_then(|row| *row)
+                .map(|row| i64::from(row.owned_state_count));
+            self.countries[history].observe(
+                &countries[position],
+                slot,
+                frame.hour,
+                self.measures,
+                territory.then_some(amount),
+            );
+        }
+    }
+
+    pub(crate) fn finish(mut self) -> RecordedHistories {
+        self.out.countries = self
+            .names
+            .into_iter()
+            .map(|(tag, history)| (tag, std::mem::take(&mut self.countries[history])))
+            .collect();
+        self.out
+    }
 }
 
 fn append_fixed(
@@ -707,6 +855,38 @@ mod tests {
         let again =
             branch_histories(&opened, 1, true, &[Measure::PoliticalPower], &cancelled).unwrap();
         assert!(Arc::ptr_eq(&territory, &again));
+    }
+
+    #[test]
+    fn country_history_walk_of_one_branch_never_delays_another_branch() {
+        let opened = opened(&[
+            (1, vec![source(1, 100, Some(1))]),
+            (2, vec![source(2, 100, Some(2))]),
+        ]);
+        let gate = Arc::clone(
+            opened
+                .state::<HistoriesCache>()
+                .lock()
+                .unwrap()
+                .gates
+                .entry(1)
+                .or_default(),
+        );
+        let walking = gate.lock().unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let other = branch_histories(&opened, 2, false, &[], &AtomicBool::new(false));
+                sent.send(other.is_ok()).unwrap();
+            });
+            let answered = received.recv_timeout(std::time::Duration::from_secs(30));
+            drop(walking);
+            assert_eq!(
+                answered,
+                Ok(true),
+                "branch 2 answers during branch 1's walk"
+            );
+        });
     }
 
     #[test]

@@ -437,23 +437,32 @@ fn scan(
         TableId::DivisionLandInputs,
     ];
     let mut scan = Scan::new(tags);
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        check_cancel(cancelled)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            check_cancel(cancelled)?;
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                check_cancel(cancelled)?;
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                for frame in frames {
+                    check_cancel(cancelled)?;
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    scan.observe(decoded, defines)?;
+                }
             }
-            scan.observe(decoded, defines)?;
-        }
-    }
+            Ok(())
+        },
+    )?;
     Ok(scan)
 }
 
@@ -597,26 +606,34 @@ fn land_present(frame: &DecodedFrame) -> bool {
 
 fn has_inputs(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<bool> {
     let selected = [TableId::Campaign, TableId::DivisionLandInputs];
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        check_cancel(cancelled)?;
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for frame in frames {
-            check_cancel(cancelled)?;
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                check_cancel(cancelled)?;
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                for frame in frames {
+                    check_cancel(cancelled)?;
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    if land_present(decoded) {
+                        return Ok(true);
+                    }
+                }
             }
-            if land_present(decoded) {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
+            Ok(false)
+        },
+    )
 }
 
 impl Product for SupplyHealth {

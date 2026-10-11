@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { runAt } from '../../charts/series.ts';
 import { entryAt } from '../../dashboard/reads.ts';
 import { campaignToken } from '../../dashboard/chosen.ts';
@@ -5,6 +6,7 @@ import { contentKey, setToken } from '../../dashboard/options.ts';
 import type { BandStep, TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatAmount, formatFixed } from '../../charts/valueAxis.ts';
+import { gbNumber } from '../../charts/numberFormat.ts';
 import type { LineDetail, LineHistory, LineRun, LineStep, OrganisationName, OutputRun, ProductionLineDetailReply, ProductionLinesReply, ProductionLineBreakdownReply, ProductionModifierRun,
   VariantName } from '../../generated/dashboard';
 
@@ -167,7 +169,7 @@ export const organisationAt = (reply: ProductionLinesReply, id: string, hour: nu
 
 /** A line's name: the game's, else its equipment type's script key; where the
  * variant is not recorded, its id, so a line is never blank. */
-export const variantName = (variant: VariantName | null, id: string) => variant ? variant.name ?? variant.token : `Variant ${id}`;
+export const variantName = (variant: VariantName | null, id: string) => variant ? variant.name ?? 'Variant name unavailable' : `Variant ${id}`;
 
 /** Why a variant shows only its id, for its tooltip. */
 const UNNAMED = 'The variant’s name is not recorded at this time.';
@@ -267,7 +269,7 @@ export function outputTotal(output: OutputRun): bigint | null {
 export function totalText(output: OutputRun | null): string {
   if (!output) return 'Not recorded';
   const total = outputTotal(output);
-  return total == null ? 'Not exact' : total.toLocaleString('en-GB');
+  return total == null ? 'Not exact' : gbNumber.format(total);
 }
 
 /** What a total counts, for its tooltip. */
@@ -281,7 +283,7 @@ export function totalNote(output: OutputRun | null, day: (hour: number) => strin
 
 /** The organisation column: its name, else its script key; a dash for none. */
 export const organisationText = (organisation: OrganisationName | null, run: LineRun) =>
-  run.mio === '0' ? '—' : organisation ? organisation.nameUnknown ? 'Unknown owner' : organisation.name ?? organisation.token : 'Not recorded';
+  run.mio === '0' ? '—' : organisation ? organisation.nameUnknown ? 'Unknown owner' : contentTitle(organisation.name, organisation.token, 'Organisation name unavailable') : 'Not recorded';
 
 /** A tooltip in its forms, fullest first, for the kit's `fitTooltip`: all of it, then
  * with a count's parts summarised, so a line with many parts fits a short window. */
@@ -306,7 +308,7 @@ function countRows(reply: ProductionLinesReply, output: OutputRun | null, hour: 
   const byVariant = output ? variantParts(output) : [];
   const split = byVariant.length > 1 ? byVariant : [];
   const rows: TooltipRow[] = parts ? split.map(part => ({
-    label: variantName(variantAt(reply, part.variant, hour), part.variant), value: part.units == null ? 'Not exact' : part.units.toLocaleString('en-GB'), indent: true, short: true,
+    label: variantName(variantAt(reply, part.variant, hour), part.variant), value: part.units == null ? 'Not exact' : gbNumber.format(part.units), indent: true, short: true,
   })) : split.length ? [{ label: `Of ${split.length} variants`, tone: 'muted', indent: true }] : [];
   return [{ label, value: totalText(output), strong: true, divider: true, tone: output && total == null ? 'muted' : undefined }, ...rows];
 }

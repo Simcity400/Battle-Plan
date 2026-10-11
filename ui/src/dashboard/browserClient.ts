@@ -1,5 +1,12 @@
 import type { SourceReply } from '../generated/dashboard';
-import type { DashboardClient, DashboardSource, MapSettingsReply, ProductReply, ProductRequest, ReplayLibrary } from './client';
+import type { DashboardClient, DashboardSource, HistoryCacheReply, MapSettingsReply, ProductReply, ProductRequest, ReplayLibrary } from './client';
+import { replyLengths } from './products.ts';
+import { INTERACTIVE_PRODUCTS } from '../generated/dashboard.ts';
+import { BrowserRequestQueue } from './browserRequestQueue.ts';
+import type { BrowserRequestLane } from './browserRequestQueue';
+
+const requests = new BrowserRequestQueue();
+const interactiveProducts: ReadonlySet<string> = new Set(INTERACTIVE_PRODUCTS);
 
 function chooseRecording(): Promise<string | null> {
   return new Promise((resolve, reject) => {
@@ -12,20 +19,40 @@ function chooseRecording(): Promise<string | null> {
       if (!file) { resolve(null); return; }
       if (!(/\.(?:battleplan|hoi4replay)$/i.test(file.name))) { reject(new Error('Choose a .battleplan recording')); return; }
       if (file.size > 2 * 1024 * 1024 * 1024) { reject(new Error('Open recordings larger than 2 GB in the desktop app.')); return; }
-      void fetch('/api/recordings/import', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Recording-Name': encodeURIComponent(file.name) }, body: file })
-        .then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error ?? 'Cannot open recording'); resolve(data.path); })
+      void requests.run('history', async signal => {
+        const response = await fetch('/api/recordings/import', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Recording-Name': encodeURIComponent(file.name) }, body: file, signal });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error ?? 'Cannot open recording');
+        return data.path as string;
+      }).then(resolve)
         .catch(reject);
     }, { once: true });
     input.click();
   });
 }
 
-async function request<T>(body: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await fetch('/api/recordings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error ?? 'Cannot read recording');
-  return data;
+async function request<T>(body: { type: string; request?: ProductRequest; sourceId?: string; [key: string]: unknown }, signal?: AbortSignal,
+  releaseLate?: (value: T) => Promise<void>): Promise<T> {
+  const lane: BrowserRequestLane = body.type === 'release' ? 'control'
+    : body.type === 'product' && interactiveProducts.has(body.request!.product) ? 'interactive' : 'history';
+  return requests.run(lane, async active => {
+    const response = await fetch('/api/recordings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: active });
+    const text = await response.text();
+    const data = JSON.parse(text);
+    if (!response.ok) throw new Error(data.error ?? 'Cannot read recording');
+    if (data && typeof data === 'object') replyLengths.set(data, text.length);
+    return data;
+  }, { signal, sourceId: body.type === 'release' ? undefined : body.request?.sourceId ?? body.sourceId, onCancelledValue: releaseLate });
 }
+
+/** Recordings this page holds open. The bridge outlives the page, so a page that goes
+ * away (closed or reloaded) without unloading them releases them as it leaves.
+ * A back/forward-cache visit retains the page and its source handles and leases. */
+const leases = new Set<string>();
+if (typeof window !== 'undefined') addEventListener('pagehide', event => {
+  if (event.persisted) return;
+  for (const sourceId of leases) navigator.sendBeacon('/api/recordings', new Blob([JSON.stringify({ type: 'release', sourceId })], { type: 'application/json' }));
+});
 
 export const browserDashboardClient: DashboardClient = {
   available: true, nativeMaps: false,
@@ -43,8 +70,20 @@ export const browserDashboardClient: DashboardClient = {
     return reply;
   },
 
+  historyCache: (clear, signal) => request<HistoryCacheReply>({ type: 'historyCache', clear }, signal),
+
   async openSource(path, signal): Promise<DashboardSource> {
-    const source = await request<SourceReply>({ type: 'open', path }, signal);
+    const releaseLate = async (late: SourceReply) => {
+      leases.add(late.id);
+      await request({ type: 'release', sourceId: late.id });
+      leases.delete(late.id);
+    };
+    const source = await request<SourceReply>({ type: 'open', path }, signal, releaseLate);
+    if (signal.aborted) {
+      await releaseLate(source).catch(() => {});
+      throw new DOMException('Request cancelled', 'AbortError');
+    }
+    leases.add(source.id);
     return { id: source.id, path, revision: source.revision, metadata: { ...source.metadata, revision: source.revision } };
   },
 
@@ -52,7 +91,11 @@ export const browserDashboardClient: DashboardClient = {
     return request<ProductReply<T>>({ type: 'product', request: query }, signal);
   },
 
-  async releaseSource(sourceId) { await request({ type: 'release', sourceId }); },
+  async releaseSource(sourceId) {
+    requests.cancelSource(sourceId);
+    await request({ type: 'release', sourceId });
+    leases.delete(sourceId);
+  },
   async setMapViews() {},
   async onMapStates() { return () => {}; },
 };

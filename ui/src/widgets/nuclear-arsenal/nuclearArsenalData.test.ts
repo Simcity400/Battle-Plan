@@ -146,7 +146,7 @@ test('unsupported nuclear names retain their counted ordinal segment and exact t
   data.series[0].runs[0].counts.push({ ordinal: 2, value: 4 });
   data.series[0].runs[0].total = 9;
   const model = nuclearModel(validateNukesReply(data));
-  assert.deepEqual(model.parts.at(-1), { id: '2', label: 'Unknown type 2' });
+  assert.deepEqual(model.parts.at(-1), { id: '2', label: 'Nuclear weapon name unavailable' });
   const ranked = rankNukes(model, ['AAA'], 10, 10)[0];
   assert.equal(ranked.parts!.reduce((sum, part) => sum + part.value, 0), ranked.value);
   assert.equal(nuclearRuns(model, 'AAA', null, { firstHour: 10, lastHour: 11 }, 2)[0].value, 4);

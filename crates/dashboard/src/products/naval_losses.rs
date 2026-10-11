@@ -827,13 +827,6 @@ impl Product for NavalLosses {
                 )],
             },
         };
-        let histories = country_history::branch_histories(
-            source,
-            params.branch_id.parse().expect("validated branch"),
-            false,
-            &[],
-            cancelled,
-        )?;
         reply_with_histories(
             &scanned,
             params,
@@ -841,7 +834,7 @@ impl Product for NavalLosses {
             (retention.ships, retention.convoys),
             (&retention.ship_loss, &retention.convoy_loss),
             retention.warnings,
-            Some(&histories),
+            Some(&scanned.histories),
         )
     }
 }

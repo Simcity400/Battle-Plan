@@ -33,9 +33,7 @@
 //! terminal counters. War-wide totals cannot attribute them.
 use super::{
     LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, ReplyWarnings,
-    battles::{
-        self, BattleBound, BattleEnd, BattleMoment, BattleValue, BattleWarning, BattleWindow,
-    },
+    battles::{self, BattleBound, BattleEnd, BattleMoment, BattleWarning, BattleWindow},
 };
 use crate::{
     Source,
@@ -125,12 +123,42 @@ pub struct LandBattleLossRead {
     pub hour: i32,
     /// True only for the post-flush FinalizeCombat read, never inferred from absence.
     pub terminal: bool,
-    /// Attacker then defender; equipment totals and named variant values stay separate.
-    pub sides: [Vec<BattleValue>; 2],
-    /// Fixed5 equipment total then variants; empty for an unrecorded pool.
-    #[serde(rename = "equipmentRaw", skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub equipment_raw: Option<[Vec<String>; 2]>,
+    /// Attacker then defender, or why neither side's counters were read.
+    pub sides: LandLossSides,
+}
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(untagged)]
+pub enum LandLossSides {
+    Read([LandLossSide; 2]),
+    Unread(String),
+}
+/// One side's counters. Variants pair a reply label index with the exact signed
+/// fixed5 amount, in recorded order; the equipment total is their sum.
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(untagged)]
+pub enum LandLossSide {
+    /// Every variant: the side's first read in the reply, or its labels or order changed.
+    Variants {
+        manpower: LandManpower,
+        variants: Vec<(usize, String)>,
+    },
+    /// The positions whose amounts changed since the side's previous read in the reply.
+    Changed {
+        manpower: LandManpower,
+        changed: Vec<(usize, String)>,
+    },
+    /// Why the equipment pool is unknown.
+    Unknown {
+        manpower: LandManpower,
+        unknown: String,
+    },
+}
+/// Manpower lost as recorded, or why it is unknown.
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(untagged)]
+pub enum LandManpower {
+    Known(i32),
+    Unknown(String),
 }
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -174,9 +202,14 @@ impl ReplyWarnings for LandBattlesManifestReply {
 pub struct LandBattlesReply {
     pub window: usize,
     pub interval: BattleWindow,
+    /// Equipment loss labels, which the rows' reads refer to by index.
+    pub labels: Vec<String>,
     pub rows: Vec<LandBattleHistory>,
     pub observed: Vec<(i32, i32)>,
-    pub warnings: Vec<BattleWarning>,
+    /// Each warning reason once, for `warnings` to refer to by index.
+    pub reasons: Vec<String>,
+    /// [hour, reason, count] in hour then reason order.
+    pub warnings: Vec<(i32, usize, usize)>,
     pub content_warnings: Vec<String>,
 }
 impl ReplyWarnings for LandBattlesReply {
@@ -205,6 +238,8 @@ pub struct LandBattlesRankingParams {
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LandBattlesRankingReply {
+    /// Equipment loss labels, which the rows' reads refer to by index.
+    pub labels: Vec<String>,
     pub rows: Vec<LandBattleHistory>,
     pub census_hour: Option<i32>,
     pub effective_measure: String,
@@ -223,9 +258,23 @@ struct Episode {
     end: Option<(i32, BattleEnd)>,
     counter_base: i32,
     runs: Vec<LandBattleRun>,
-    losses: Vec<LandBattleLossRead>,
+    losses: Vec<losses::LossRead>,
     result: Option<LandBattleResultRead>,
     loss_inputs: Option<[losses::SideLossInputs; 2]>,
+}
+/// Keys numbered in first-use order, so a reply sends each text once.
+#[derive(Default)]
+struct Numbered<K>(HashMap<K, usize>);
+impl<K: Eq + std::hash::Hash> Numbered<K> {
+    fn index(&mut self, key: K) -> usize {
+        let next = self.0.len();
+        *self.0.entry(key).or_insert(next)
+    }
+    fn into_vec(self) -> Vec<K> {
+        let mut keys: Vec<_> = self.0.into_iter().collect();
+        keys.sort_unstable_by_key(|(_, index)| *index);
+        keys.into_iter().map(|(key, _)| key).collect()
+    }
 }
 impl Episode {
     fn history(
@@ -233,6 +282,7 @@ impl Episode {
         runs: Vec<LandBattleRun>,
         last: i32,
         prior_peak: Option<LandBattlePeak>,
+        labels: &mut Numbered<usize>,
     ) -> LandBattleHistory {
         let end = self.end.as_ref().filter(|(hour, _)| *hour <= last);
         LandBattleHistory {
@@ -242,17 +292,23 @@ impl Episode {
             end: end.map(|(_, end)| end.clone()),
             end_unknown_hour: end
                 .and_then(|(hour, end)| matches!(end, BattleEnd::Unknown { .. }).then_some(*hour)),
-            losses: self.loss_reads(runs[0].first_hour, last),
+            losses: self.loss_reads(runs[0].first_hour, last, labels),
             result: self.result.clone().filter(|result| result.hour <= last),
             counter_base: self.counter_base,
             prior_peak,
             runs,
         }
     }
-    fn loss_at(&self, hour: i32) -> Option<&LandBattleLossRead> {
+    fn loss_at(&self, hour: i32) -> Option<&losses::LossRead> {
         self.losses.iter().rev().find(|read| read.hour <= hour)
     }
-    fn loss_reads(&self, first: i32, last: i32) -> Vec<LandBattleLossRead> {
+    fn loss_reads(
+        &self,
+        first: i32,
+        last: i32,
+        labels: &mut Numbered<usize>,
+    ) -> Vec<LandBattleLossRead> {
+        let mut previous = [None, None];
         // Carry one prior supplying read, not the entire casualty history.
         self.loss_at(first)
             .into_iter()
@@ -261,23 +317,11 @@ impl Episode {
                     .iter()
                     .filter(|read| read.hour > first && read.hour <= last),
             )
-            .cloned()
+            .map(|read| read.wire(&mut previous, labels))
             .collect()
     }
     fn casualties_at(&self, hour: i32) -> Option<f64> {
-        let read = self.loss_at(hour)?;
-        let mut total = 0.0;
-        for side in &read.sides {
-            match side.iter().find(|value| match value {
-                BattleValue::Known { label, .. } | BattleValue::Unknown { label, .. } => {
-                    label == "Manpower lost"
-                }
-            })? {
-                BattleValue::Known { value, .. } if value.is_finite() => total += *value,
-                _ => return None,
-            }
-        }
-        total.is_finite().then_some(total)
+        self.loss_at(hour)?.casualties()
     }
     fn peak_before(&self, hour: i32) -> Option<LandBattlePeak> {
         self.runs
@@ -310,10 +354,17 @@ struct Census {
     variants: super::equipment::VariantCatalogue,
     catalogue: Option<Arc<crate::catalogue::Catalogue>>,
     content_warnings: Vec<String>,
+    labels: losses::Labels,
 }
 impl Census {
     fn warn(&mut self, hour: i32, reason: impl Into<String>) {
         *self.warnings.entry((hour, reason.into())).or_default() += 1;
+    }
+    fn reply_labels(&self, used: Numbered<usize>) -> Vec<String> {
+        used.into_vec()
+            .into_iter()
+            .map(|label| self.labels.values[label].clone())
+            .collect()
     }
     fn content_warnings(&self) -> Vec<String> {
         let mut warnings = self.content_warnings.clone();
@@ -508,16 +559,18 @@ impl Census {
         self.observe_results(frame, labels);
         Ok(())
     }
-    fn warnings_in(&self, first: i32, last: i32) -> Vec<BattleWarning> {
-        self.warnings
+    fn warnings_in(&self, first: i32, last: i32) -> (Vec<String>, Vec<(i32, usize, usize)>) {
+        let mut reasons = Numbered::default();
+        let warnings = self
+            .warnings
             .iter()
             .filter(|((hour, _), _)| *hour >= first && *hour <= last)
-            .map(|((hour, reason), count)| BattleWarning {
-                hour: *hour,
-                reason: reason.clone(),
-                count: *count,
-            })
-            .collect()
+            .map(|((hour, reason), count)| (*hour, reasons.index(reason.as_str()), *count))
+            .collect();
+        (
+            reasons.into_vec().into_iter().map(String::from).collect(),
+            warnings,
+        )
     }
     fn reply(
         &self,
@@ -528,6 +581,7 @@ impl Census {
             .get(params.window)
             .ok_or_else(|| crate::invalid("Battle window not in this recording"))?;
         let mut rows = Vec::new();
+        let mut labels = Numbered::default();
         let observed = self
             .observed
             .iter()
@@ -575,15 +629,19 @@ impl Census {
                         .first_hour
                         .checked_sub(1)
                         .and_then(|hour| episode.peak_before(hour)),
+                    &mut labels,
                 ),
             );
         }
+        let (reasons, warnings) = self.warnings_in(window.first_hour, window.last_hour);
         bounded(LandBattlesReply {
             window: params.window,
             interval: window.clone(),
+            labels: self.reply_labels(labels),
             rows,
             observed,
-            warnings: self.warnings_in(window.first_hour, window.last_hour),
+            reasons,
+            warnings,
             content_warnings: self.content_warnings(),
         })
     }
@@ -691,11 +749,17 @@ impl Census {
                 .then_with(|| a.2.id.cmp(&b.2.id))
         });
         // A huge user N saturates at usize::MAX, which cannot omit any Vec entry.
+        let mut labels = Numbered::default();
         let rows = ranked
             .into_iter()
             .take(params.top_n as usize)
             .map(|(_, _, episode, run, read, peak)| {
-                episode.history(vec![run.clipped(read, read)], params.last_hour, peak)
+                episode.history(
+                    vec![run.clipped(read, read)],
+                    params.last_hour,
+                    peak,
+                    &mut labels,
+                )
             })
             .collect();
         let census_hour = self
@@ -705,6 +769,7 @@ impl Census {
             .map(|(_, last)| (*last).min(params.last_hour))
             .max();
         bounded(LandBattlesRankingReply {
+            labels: self.reply_labels(labels),
             rows,
             census_hour,
             effective_measure: effective.into(),
@@ -745,25 +810,34 @@ fn scan(
         catalogue,
         ..Census::default()
     };
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        check_cancel(cancelled)?;
-        let mut decoder = FrameDecoder::for_tables(&CENSUS_TABLES);
-        let Ok(frames) = replay.read_block_selected(block, &CENSUS_TABLES) else {
-            census.gap(block.first_hour);
-            census.warn(block.first_hour, "Unread replay block; ending not recorded");
-            continue;
-        };
-        for frame in frames {
-            check_cancel(cancelled)?;
-            let Ok(decoded) = decoder.advance(&frame) else {
-                census.gap(frame.hour);
-                census.warn(frame.hour, "Unread replay frame; ending not recorded");
-                break;
-            };
-            validate_campaign(decoded, replay)?;
-            census.observe(decoded)?;
-        }
-    }
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &CENSUS_TABLES,
+        cancelled,
+        |blocks| {
+            for (block, frames) in blocks {
+                check_cancel(cancelled)?;
+                let mut decoder = FrameDecoder::for_tables(&CENSUS_TABLES);
+                let Ok(frames) = frames else {
+                    census.gap(block.first_hour);
+                    census.warn(block.first_hour, "Unread replay block; ending not recorded");
+                    continue;
+                };
+                for frame in frames {
+                    check_cancel(cancelled)?;
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        census.gap(frame.hour);
+                        census.warn(frame.hour, "Unread replay frame; ending not recorded");
+                        break;
+                    };
+                    validate_campaign(decoded, replay)?;
+                    census.observe(decoded)?;
+                }
+            }
+            Ok(())
+        },
+    )?;
     Ok(census)
 }
 fn recording_available(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<bool> {
@@ -773,42 +847,50 @@ fn recording_available(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> 
         TableId::LandCombatResults,
         TableId::LandEventCoverage,
     ];
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        check_cancel(cancelled)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            check_cancel(cancelled)?;
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                check_cancel(cancelled)?;
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                for frame in frames {
+                    check_cancel(cancelled)?;
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    // A complete empty read also proves that this recording has the battle census.
+                    if slot_read(&decoded.metrics, TableId::LandCombats, decoded.hour)
+                        && decoded.complete::<tables::LandCombats>().is_ok()
+                    {
+                        return Ok(true);
+                    }
+                    if slot_read(&decoded.metrics, TableId::LandCombatResults, decoded.hour)
+                        && decoded
+                            .complete::<tables::LandCombatResults>()
+                            .is_ok_and(|rows| !rows.is_empty())
+                        && decoded
+                            .complete::<tables::LandEventCoverage>()
+                            .is_ok_and(|rows| {
+                                rows.iter()
+                                    .any(|row| row.complete && row.to_hour == decoded.hour)
+                            })
+                    {
+                        return Ok(true);
+                    }
+                }
             }
-            // A complete empty read also proves that this recording has the battle census.
-            if slot_read(&decoded.metrics, TableId::LandCombats, decoded.hour)
-                && decoded.complete::<tables::LandCombats>().is_ok()
-            {
-                return Ok(true);
-            }
-            if slot_read(&decoded.metrics, TableId::LandCombatResults, decoded.hour)
-                && decoded
-                    .complete::<tables::LandCombatResults>()
-                    .is_ok_and(|rows| !rows.is_empty())
-                && decoded
-                    .complete::<tables::LandEventCoverage>()
-                    .is_ok_and(|rows| {
-                        rows.iter()
-                            .any(|row| row.complete && row.to_hour == decoded.hour)
-                    })
-            {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
+            Ok(false)
+        },
+    )
 }
 fn branch_id(source: &Source, branch: &str) -> io::Result<u64> {
     let branch = branch
@@ -914,6 +996,9 @@ impl Product for LandBattles {
             LandBattlesParams::decl(),
             LandBattlePeak::decl(),
             LandBattleRun::decl(),
+            LandManpower::decl(),
+            LandLossSide::decl(),
+            LandLossSides::decl(),
             LandBattleLossRead::decl(),
             LandBattleResultRead::decl(),
             LandBattleHistory::decl(),

@@ -5,6 +5,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use crate::{
@@ -107,6 +108,9 @@ pub struct Replay {
     pub controls: Vec<ControlRecord>,
     pub recovery_notes: Vec<RecoveryNote>,
     pub index: Vec<BlockIndex>,
+    /// Per block: every check of a whole read has passed, so a later read may stop
+    /// partway through it.
+    verified: Vec<AtomicBool>,
     header_end: usize,
     trailer_start: usize,
     partial_control: Option<usize>,
@@ -737,6 +741,7 @@ impl Replay {
             gaps,
             controls,
             recovery_notes,
+            verified: index.iter().map(|_| AtomicBool::new(false)).collect(),
             index,
             header_end,
             trailer_start,
@@ -759,6 +764,17 @@ impl Replay {
     }
 
     pub fn seek(&self, branch: BranchId, hour: Hour) -> io::Result<SeekResult> {
+        self.seek_selected(branch, hour, None)
+    }
+
+    /// [`Replay::seek`] reconstructing only `tables` (and the campaign identity every
+    /// frame is checked against), reading its block one frame at a time up to the hour.
+    pub fn seek_selected(
+        &self,
+        branch: BranchId,
+        hour: Hour,
+        tables: Option<&[TableId]>,
+    ) -> io::Result<SeekResult> {
         let gap = |reason| SeekResult::Gap {
             branch,
             hour,
@@ -772,32 +788,45 @@ impl Replay {
         }) else {
             return Ok(gap(self.gap_reason(branch, hour)));
         };
-        let frames = match self.read_block(index) {
-            Ok(frames) => frames,
-            Err(error) => return Ok(gap(format!("unreadable block: {error}"))),
-        };
-        let mut decoder = FrameDecoder::new();
-        for frame in frames {
+        let selected = tables.map(|tables| {
+            let mut selected = tables.to_vec();
+            if !selected.contains(&TableId::Campaign) {
+                selected.push(TableId::Campaign);
+            }
+            selected
+        });
+        let mut decoder = selected
+            .as_deref()
+            .map_or_else(FrameDecoder::new, FrameDecoder::for_tables);
+        let mut found = None;
+        let read = self.visit_block(index, selected.as_deref(), |frame| {
             if frame.hour > hour {
-                break;
+                return Ok(false);
             }
             let decoded = match decoder.advance(&frame) {
                 Ok(decoded) => decoded,
                 Err(error) => {
-                    return Ok(gap(format!(
+                    found = Some(gap(format!(
                         "invalid frame baseline at hour {}: {error}",
                         frame.hour
                     )));
+                    return Ok(false);
                 }
             };
             if let Err(error) = validate_campaign(decoded, &self.campaign_id) {
-                return Ok(gap(error.to_string()));
+                found = Some(gap(error.to_string()));
+                return Ok(false);
             }
             if frame.hour == hour {
-                return Ok(SeekResult::Frame(Box::new(decoded.clone())));
+                found = Some(SeekResult::Frame(Box::new(decoded.clone())));
+                return Ok(false);
             }
+            Ok(true)
+        });
+        if let Err(error) = read {
+            return Ok(gap(format!("unreadable block: {error}")));
         }
-        Ok(gap(self.gap_reason(branch, hour)))
+        Ok(found.unwrap_or_else(|| gap(self.gap_reason(branch, hour))))
     }
 
     fn gap_reason(&self, branch: BranchId, hour: Hour) -> String {
@@ -817,7 +846,7 @@ impl Replay {
 
     /// Decode one block for sequential playback, inspection, or history recovery.
     pub fn read_block(&self, index: &BlockIndex) -> io::Result<Vec<Frame>> {
-        self.read_block_inner(index, None, None)
+        self.read_block_inner(index, None)
     }
 
     /// [`Replay::read_block`], decoding the frame payloads on `parallel`'s
@@ -829,24 +858,157 @@ impl Replay {
         index: &BlockIndex,
         parallel: &Parallel<'_>,
     ) -> io::Result<Vec<Frame>> {
-        self.read_block_inner(index, None, Some(parallel))
+        self.read_block_inner(index, Some(parallel))
     }
 
     /// Preserve full wire validation but do not retain unrelated table payloads.
+    /// The block is streamed, so its raw bytes are never held whole.
     pub fn read_block_selected(
         &self,
         index: &BlockIndex,
         tables: &[crate::rows::TableId],
     ) -> io::Result<Vec<Frame>> {
-        self.read_block_inner(index, Some(tables), None)
+        let mut frames = Vec::new();
+        self.visit_block(index, Some(tables), |frame| {
+            frames.push(frame);
+            Ok(true)
+        })?;
+        Ok(frames)
     }
 
     fn read_block_inner(
         &self,
         index: &BlockIndex,
-        selected: Option<&[crate::rows::TableId]>,
         parallel: Option<&Parallel<'_>>,
     ) -> io::Result<Vec<Frame>> {
+        let mut inflated = self.inflate(index)?;
+        let mut raw = Vec::with_capacity(to_usize(index.raw_length)?);
+        inflated.read_to_end(&mut raw)?;
+        if raw.len() as u64 != index.raw_length {
+            return Err(invalid("block raw length mismatch"));
+        }
+        let mut decoder = Decoder::new(&raw);
+        let count = decoder.count(4)?;
+        if count == 0 {
+            return Err(invalid("empty block"));
+        }
+        // The payload boundaries first, then the payloads decoded (in parallel
+        // when asked), then every check in position order: the first error
+        // reported is the one a frame-by-frame reader would have met first.
+        let mut payloads = Vec::with_capacity(count);
+        let mut boundary_error = None;
+        for _ in 0..count {
+            let payload = decoder
+                .u32()
+                .and_then(|length| decoder.take(length as usize));
+            match payload {
+                Ok(payload) => payloads.push(payload),
+                Err(error) => {
+                    boundary_error = Some(error);
+                    break;
+                }
+            }
+        }
+        let decoded = decode_payloads(&payloads, parallel, self.format);
+        let mut frames = Vec::with_capacity(count);
+        let mut order = BlockOrder::new(index);
+        for frame in decoded {
+            let frame = frame?;
+            order.next(&frame)?;
+            frames.push(frame);
+        }
+        if let Some(error) = boundary_error {
+            return Err(error);
+        }
+        decoder.finish()?;
+        order.finish()?;
+        if let Some(position) = self.block_position(index) {
+            self.verified[position].store(true, Ordering::Release);
+        }
+        Ok(frames)
+    }
+
+    /// Each frame of a block in order, inflated and decoded one at a time with only
+    /// `selected` tables kept, until `visit` returns false: one payload is held at a
+    /// time however large the block. Every read of a block not yet verified decodes
+    /// and checks all of it, as [`Replay::read_block`] does, even after `visit` stops:
+    /// only a block that has passed every check may be left partway through.
+    pub fn visit_block(
+        &self,
+        index: &BlockIndex,
+        selected: Option<&[TableId]>,
+        visit: impl FnMut(Frame) -> io::Result<bool>,
+    ) -> io::Result<()> {
+        let mut raw = Inflated {
+            stream: self.inflate(index)?,
+            read: 0,
+        };
+        let result = self.visit_inflated(&mut raw, index, selected, visit);
+        // A whole read checks the length first, so a block of the wrong length says so.
+        result.map_err(|error| match io::copy(&mut raw.stream, &mut io::sink()) {
+            Err(inflate) => inflate,
+            Ok(rest) if raw.read + rest != index.raw_length => invalid("block raw length mismatch"),
+            Ok(_) => error,
+        })
+    }
+
+    fn visit_inflated(
+        &self,
+        raw: &mut Inflated<impl Read>,
+        index: &BlockIndex,
+        selected: Option<&[TableId]>,
+        mut visit: impl FnMut(Frame) -> io::Result<bool>,
+    ) -> io::Result<()> {
+        let mut word = [0; 4];
+        raw.fill(&mut word)?;
+        let count = u64::from(u32::from_le_bytes(word));
+        let mut remaining = index.raw_length.saturating_sub(4);
+        if count > remaining / 4 {
+            return Err(invalid_static(
+                "collection length exceeds remaining payload",
+            ));
+        }
+        if count == 0 {
+            return Err(invalid("empty block"));
+        }
+        let position = self.block_position(index);
+        let verified =
+            position.is_some_and(|position| self.verified[position].load(Ordering::Acquire));
+        let mut order = BlockOrder::new(index);
+        let mut payload = Vec::new();
+        let mut visiting = true;
+        for _ in 0..count {
+            raw.fill(&mut word)?;
+            let length = u64::from(u32::from_le_bytes(word));
+            remaining = remaining
+                .checked_sub(4 + length)
+                .ok_or_else(|| invalid_static("truncated field"))?;
+            payload.resize(to_usize(length)?, 0);
+            raw.fill(&mut payload)?;
+            let frame = decode_payload(&payload, selected, self.format)?;
+            order.next(&frame)?;
+            if visiting && !visit(frame)? {
+                if verified {
+                    return Ok(());
+                }
+                visiting = false;
+            }
+        }
+        if remaining != 0 {
+            return Err(invalid_static("trailing bytes"));
+        }
+        if raw.stream.read(&mut [0])? != 0 {
+            return Err(invalid("block raw length mismatch"));
+        }
+        order.finish()?;
+        if let Some(position) = position {
+            self.verified[position].store(true, Ordering::Release);
+        }
+        Ok(())
+    }
+
+    /// The block's zstd stream, at most one byte past its recorded raw length.
+    fn inflate(&self, index: &BlockIndex) -> io::Result<impl Read + '_> {
         if index.raw_length > MAX_BLOCK_RAW_BYTES as u64 {
             return Err(invalid("block exceeds raw size limit"));
         }
@@ -873,59 +1035,22 @@ impl Replay {
         }
         let mut decompressor = zstd::stream::read::Decoder::with_buffer(compressed)?.single_frame();
         decompressor.window_log_max(26)?;
-        let mut raw = Vec::with_capacity(to_usize(index.raw_length)?);
-        decompressor
-            .take(index.raw_length + 1)
-            .read_to_end(&mut raw)?;
-        if raw.len() as u64 != index.raw_length {
-            return Err(invalid("block raw length mismatch"));
-        }
-        let mut decoder = Decoder::new(&raw);
-        let count = decoder.count(4)?;
-        if count == 0 {
-            return Err(invalid("empty block"));
-        }
-        // The payload boundaries first, then the payloads decoded (in parallel
-        // when asked), then every check in position order: the first error
-        // reported is the one a frame-by-frame reader would have met first.
-        let mut payloads = Vec::with_capacity(count);
-        let mut boundary_error = None;
-        for _ in 0..count {
-            let payload = decoder
-                .u32()
-                .and_then(|length| decoder.take(length as usize));
-            match payload {
-                Ok(payload) => payloads.push(payload),
-                Err(error) => {
-                    boundary_error = Some(error);
-                    break;
-                }
-            }
-        }
-        let decoded = decode_payloads(&payloads, selected, parallel, self.format);
-        let mut frames = Vec::with_capacity(count);
-        let mut last = None;
-        for (position, frame) in decoded.into_iter().enumerate() {
-            let frame = frame?;
-            if frame.branch != index.branch
-                || frame.keyframe != (position == 0)
-                || last.is_some_and(|hour| frame.hour <= hour)
-            {
-                return Err(invalid(
-                    "block frame branch, keyframe, or hour ordering mismatch",
-                ));
-            }
-            last = Some(frame.hour);
-            frames.push(frame);
-        }
-        if let Some(error) = boundary_error {
-            return Err(error);
-        }
-        decoder.finish()?;
-        if frames[0].hour != index.first_hour || last != Some(index.last_hour) {
-            return Err(invalid("block index hour range mismatch"));
-        }
-        Ok(frames)
+        Ok(decompressor.take(index.raw_length + 1))
+    }
+
+    /// The block's place in the index. Opening checks that blocks follow one another
+    /// without gaps, so their offsets rise and one comparison finds each.
+    fn block_position(&self, index: &BlockIndex) -> Option<usize> {
+        self.index
+            .binary_search_by_key(&index.offset, |entry| entry.offset)
+            .ok()
+            .filter(|&position| self.index[position] == *index)
+    }
+
+    #[cfg(test)]
+    fn is_verified(&self, index: &BlockIndex) -> bool {
+        self.block_position(index)
+            .is_some_and(|position| self.verified[position].load(Ordering::Acquire))
     }
 
     pub fn write_atomic(&self, destination: &Path) -> io::Result<()> {
@@ -1566,19 +1691,83 @@ const PARALLEL_FRAMES: usize = 32;
 /// Each payload's frame, in payload order.
 fn decode_payloads(
     payloads: &[&[u8]],
-    selected: Option<&[crate::rows::TableId]>,
     parallel: Option<&Parallel<'_>>,
     format: FormatVersion,
 ) -> Vec<io::Result<Frame>> {
-    let decode = |payload: &&[u8]| -> io::Result<Frame> {
-        let mut frame_decoder = Decoder::new(payload);
-        let frame = Frame::decode_version(&mut frame_decoder, selected, format)?;
-        frame_decoder.finish()?;
-        Ok(frame)
-    };
+    let decode = |payload: &&[u8]| decode_payload(payload, None, format);
     match parallel {
         Some(parallel) => parallel_map(payloads, parallel, decode),
         None => payloads.iter().map(decode).collect(),
+    }
+}
+
+fn decode_payload(
+    payload: &[u8],
+    selected: Option<&[crate::rows::TableId]>,
+    format: FormatVersion,
+) -> io::Result<Frame> {
+    let mut decoder = Decoder::new(payload);
+    let frame = Frame::decode_version(&mut decoder, selected, format)?;
+    decoder.finish()?;
+    Ok(frame)
+}
+
+/// A block's inflated stream and how much of it has been read.
+struct Inflated<R> {
+    stream: R,
+    read: u64,
+}
+
+impl<R: Read> Inflated<R> {
+    /// A stream ending early is a block shorter than its index says.
+    fn fill(&mut self, bytes: &mut [u8]) -> io::Result<()> {
+        self.stream
+            .read_exact(bytes)
+            .map_err(|error| match error.kind() {
+                io::ErrorKind::UnexpectedEof => invalid("block raw length mismatch"),
+                _ => error,
+            })?;
+        self.read += bytes.len() as u64;
+        Ok(())
+    }
+}
+
+/// The order a block's frames keep: its branch, a keyframe first and only first,
+/// and rising hours from the index's first hour to its last.
+struct BlockOrder<'a> {
+    index: &'a BlockIndex,
+    first: Option<Hour>,
+    last: Option<Hour>,
+}
+
+impl<'a> BlockOrder<'a> {
+    fn new(index: &'a BlockIndex) -> Self {
+        Self {
+            index,
+            first: None,
+            last: None,
+        }
+    }
+
+    fn next(&mut self, frame: &Frame) -> io::Result<()> {
+        if frame.branch != self.index.branch
+            || frame.keyframe != self.last.is_none()
+            || self.last.is_some_and(|hour| frame.hour <= hour)
+        {
+            return Err(invalid(
+                "block frame branch, keyframe, or hour ordering mismatch",
+            ));
+        }
+        self.first.get_or_insert(frame.hour);
+        self.last = Some(frame.hour);
+        Ok(())
+    }
+
+    fn finish(self) -> io::Result<()> {
+        if self.first != Some(self.index.first_hour) || self.last != Some(self.index.last_hour) {
+            return Err(invalid("block index hour range mismatch"));
+        }
+        Ok(())
     }
 }
 

@@ -1817,6 +1817,30 @@ fn country_groups_faction_names_bound_tokens_follow_each_dictionary_read() {
 }
 
 #[test]
+fn country_groups_equal_dictionary_reads_share_one_token_index() {
+    let first = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![template_frame(100, "", Some((17, "demo")))],
+        )],
+    )
+    .unwrap();
+    let next = first
+        .append(&[continuation_records(
+            &first,
+            1,
+            vec![template_frame(101, "", Some((17, "demo")))],
+        )])
+        .unwrap();
+    let scan = super::scan_branch(&next, 1, &AtomicBool::new(false)).unwrap();
+    // The second block reads the dictionary again, which still dates the operands.
+    let names: Vec<_> = scan.factions[&5].names.iter().collect();
+    assert_eq!(names.len(), 2);
+    assert!(Arc::ptr_eq(&names[0].tokens, &names[1].tokens));
+}
+
+#[test]
 fn the_cached_group_scan_supplies_dated_names_rosters_and_country_read_spans_together() {
     use super::{CountryGroupParams, CountryGroups, cached_scan};
     use crate::{

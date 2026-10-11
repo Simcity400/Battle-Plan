@@ -164,6 +164,7 @@ struct Cache {
 impl Product for StockpileArtwork {
     const KEY: &'static str = "stockpile-artwork";
     const CONTENT_DEPENDENT: bool = true;
+    const INTERACTIVE: bool = true;
     type Params = StockpileArtworkParams;
     type Reply = StockpileArtworkReply;
 

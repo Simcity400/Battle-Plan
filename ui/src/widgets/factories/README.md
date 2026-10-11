@@ -15,6 +15,7 @@ Top 10 by default, manual countries/groups; Free after withheld, Built or Top ba
 ## Notable behaviour
 
 - Counts use native truncation and recorded factory groups. Content production flags define types; a mod’s factories share the engine group their flags select. Rocket sites are not recorded.
+- Building titles come from recorded content localisation, preserving authored empty text. Missing titles use unavailable wording; keys remain in diagnostics.
 - Built includes damage and hatches it; Free and Top bar already deduct damage. Signed negative counts and reversed deductions keep their signs. Missing countries are omitted, never zero.
 - The product ranks exact filtered counts; avoid a second ranking formula. Keep value runs separate from supplying-read and native identity runs.
 - Drills bind the clicked slot/id at its original date, retain that holder through tag changes and exclude later reuse. Missing identity/read provenance stays unknown. Picking holds; Follow resumes playback; Pin retains actor and branch-relative day.

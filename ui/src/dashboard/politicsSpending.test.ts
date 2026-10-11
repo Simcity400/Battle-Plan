@@ -354,6 +354,22 @@ test('mockup category chips hide chosen kinds and leave all-category totals unch
   assert.equal(categoryChoices([data], 'Political')[0].value, setToken('law/mod'));
 });
 
+test('authored empty and key-equal category titles remain valid across choices and spending views', () => {
+  for (const name of ['', 'law/mod']) {
+    const data = validatePoliticsSpending(reply({ spendCategories: [{ id: 'law/mod', name, identified: true }] }));
+    const [choice] = categoryChoices([data], 'Political');
+    assert.equal(choice.label, name);
+    assert.equal(choice.value, setToken('law/mod'));
+    const at = spendingAt([data], 'Political', 12);
+    assert.equal(at[0].category, name);
+    assert.equal(at[0].charge, 123456789012345678901n);
+    const [leaf] = spendingItems([data], 'Political', { from: null, hour: 12, end: 12 });
+    assert.equal(leaf.path[0].label, name);
+    assert.equal(spendingTotals(at, []).total, 123456789012345678901n);
+  }
+  assert.throws(() => validatePoliticsSpending(reply({ spendCategories: [{ id: 'law/mod', name: null as never, identified: true }] })), /malformed/);
+});
+
 test('a long mod category key stays selectable and filters rows without changing exact totals', () => {
   const category = 'mod_category_'.repeat(20);
   const data = reply({ spendCategories: [{ id: category, name: 'Long mod category', identified: true }], spending: [spend({ category })] });

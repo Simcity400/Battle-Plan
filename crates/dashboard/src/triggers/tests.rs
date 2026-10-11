@@ -2915,3 +2915,150 @@ fn roster_visibility_keeps_country_and_selected_character_without_changing_other
         );
     });
 }
+
+/// Leader visibility in two steps decides as the roster check: what decides
+/// it, read from the character's recorded template and the content alone
+/// (binary searched or indexed), then that in the owner's scope.
+#[test]
+fn leader_visibility_steps_decide_as_the_roster_check() {
+    use installed_content::characters::LeaderTemplate;
+    use replay::rows::{CharacterRow, UnitLeaderRow};
+    let path = "common/characters/mod.txt";
+    let mut frame = frame(&countries(), &[101]);
+    *frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(
+        [
+            (1, 901, 4, 0),
+            (2, 902, 8, 0),
+            (3, 903, 12, 0),
+            (4, 901, 4, 1),
+        ]
+        .into_iter()
+        .map(|(id, tag, line, generated)| CharacterRow {
+            id,
+            template_present: 1,
+            template_tag: tag,
+            template_file: path.as_bytes().to_vec(),
+            template_line: line,
+            template_generated: generated,
+            ..Default::default()
+        })
+        .collect(),
+    ));
+    let TableView::Complete(TableRows::LexicalTokens(tokens)) =
+        &mut *frame.tables[TableId::LexicalTokens.index()]
+    else {
+        panic!("tokens");
+    };
+    for (token, literal) in [
+        (901, "mod_commander"),
+        (902, "mod_plain"),
+        (903, "mod_advisor"),
+    ] {
+        tokens.push(LexicalTokenRow {
+            token,
+            literal: literal.as_bytes().to_vec(),
+        });
+    }
+    let template = |tag: &str, line, role| LeaderTemplate {
+        path: path.into(),
+        tag: tag.into(),
+        line: Some(line),
+        role: Ok(role),
+    };
+    // A role with `visible`, one without (its tag under the lexer fold) and
+    // a template without a role.
+    let roles = LeaderRoles::new(vec![
+        template("mod_commander", 4, Some(items("has_country_flag = x"))),
+        template("MOD_PLAIN", 8, Some(Vec::new())),
+        template("mod_advisor", 12, None),
+    ]);
+    let leader = |id, owner, visibility_choice| UnitLeaderRow {
+        id,
+        owner,
+        character_id: id,
+        visibility_choice,
+        template_visibility: 1,
+        ..Default::default()
+    };
+    let refused = |id, why: &str| {
+        (
+            leader(id, 101, 1),
+            LeaderVisibility::Decided(Eval::unknown(why)),
+            Eval::unknown(why),
+        )
+    };
+    let unlinked = "a UnitLeaders row's country 999 has no CountryLinks row";
+    with_world(&frame, "", Ok(&roles), |world| {
+        for (row, visibility, verdict) in [
+            (
+                leader(1, 101, 1),
+                LeaderVisibility::Conditioned(0),
+                Eval::True,
+            ),
+            (
+                leader(1, 102, 1),
+                LeaderVisibility::Conditioned(0),
+                Eval::False,
+            ),
+            (
+                leader(2, 101, 1),
+                LeaderVisibility::Unconditioned,
+                Eval::True,
+            ),
+            (
+                leader(2, 999, 1),
+                LeaderVisibility::Unconditioned,
+                Eval::unknown(unlinked),
+            ),
+            (
+                leader(3, 101, 0),
+                LeaderVisibility::Decided(Eval::True),
+                Eval::True,
+            ),
+            refused(
+                3,
+                "unit leader 3 has its own role choice, but its character's template has no unit leader role",
+            ),
+            refused(
+                4,
+                "unit leader 4's character template was made by generate_character, which is not read",
+            ),
+            refused(5, "unit leader 5's character 5 is not recorded"),
+        ] {
+            assert_eq!(world.decoded_leader_visibility(&row), visibility);
+            assert_eq!(world.leader_visibility(&row), visibility);
+            assert_eq!(
+                Evaluator::new(world, None).decide_leader_visibility(&row, visibility, true),
+                verdict
+            );
+            assert_eq!(
+                Evaluator::new(world, None).leader_roster_visible(&row),
+                verdict
+            );
+        }
+    });
+}
+
+#[test]
+fn hours_reading_one_lexer_table_share_its_folds() {
+    let first = frame(&[(100, 7, "GER", 0, "GER", "GER")], &[100]);
+    let mut next = first.clone();
+    next.hour = 2;
+    let names = TriggerNames::default();
+    let aliases = Arc::new(TagAliases::default());
+    let dlcs = BTreeSet::new();
+    let read = |frame| World::read(frame, ContentFacts::content_only(&dlcs, &names, &aliases));
+    let (earlier, later) = (read(&first), read(&next));
+    assert!(std::ptr::eq(
+        earlier.names().unwrap(),
+        later.names().unwrap()
+    ));
+    assert_eq!(later.token_of(b"X"), Ok(Some(900)));
+    // A table read again is folded again.
+    let mut reread = first.clone();
+    let _ = &mut *reread.tables[TableId::LexicalTokens.index()];
+    assert!(!std::ptr::eq(
+        read(&reread).names().unwrap(),
+        earlier.names().unwrap()
+    ));
+}

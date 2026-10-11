@@ -152,7 +152,7 @@ fn exact_recipient_history_preserves_zero_corrections_names_gaps_and_reset_lifet
         if hour == 1096 {
             window.continuity_start_hour = Some(1073);
         }
-        let mut read = read_of(&row, hour, hour == 1000, None);
+        let mut read = read_of(&row, hour, hour == 1000, None, &mut Default::default());
         read.last_hour = hour + 1;
         summary.reads.push(read);
         reads.insert(hour, BTreeMap::from([("GER".into(), row)]));

@@ -18,7 +18,7 @@ All countries by default, manual/groups, campaign/follow/pin/range; observed con
 - Filters match the raider’s native holder at observation hour, following aliases and excluding unrelated reuse. No player/AI gate.
 - Gaps leave current phase/preparation unknown while keeping explicit historical observations; outcomes persist after native removal. Between-read raids may be absent.
 - Preparation is labeled integer hours, without an invented percentage. Native target precedence and ended-target freezing live in Rust.
-- Content or eligible recorded types establish feature availability; country existence alone does not. Missing text/art/identities retain tokens/IDs and counted reasons.
+- Content or eligible recorded types establish feature availability; country existence alone does not. Missing text/art/identities retain counted reasons and keys in details; titles use localized or unavailable wording. Repeated localized titles use numbered choices.
 
 ## Files
 

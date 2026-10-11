@@ -62,7 +62,7 @@ export default function AgencyComparisonWidget({ widget, runtime, active, onDiag
   const names = useCountryNamesAt(runtime.client, track, sortingNames, active);
   const columns = useMemo<readonly TableColumn<AgencyRow>[]>(() => [
     { key: 'country', header: 'Country', label: 'Country', width: 'minmax(0, 2fr)',
-      value: row => names.get(nameKey(row.hour, row.tag)) ?? row.tag,
+      value: row => names.get(nameKey(row.hour, row.tag)) ?? 'Country name unavailable',
       render: row => <CountryCell {...labelAt(row.hour)(row.tag)} /> },
     { key: 'agency', header: 'Agency', label: 'Agency', renderMissing: true, width: 'minmax(0, 2fr)',
       value: row => row.value.name, render: row => <span title={row.value.name ?? 'Unknown'}>{row.value.name ?? 'Unknown'}</span> },

@@ -2,7 +2,7 @@ import { defaultTemplate, GRID_COLUMNS, MAX_WIDGETS, migrateWidget, WIDGET_CONTE
 import { parseStoredOptions } from './options.ts';
 import type { Breakpoint, CountryGroup, CountrySelection, DashboardTemplate, GridItem, GridLayouts, OffsetWindow, SourceRole, TrackSpec, WidgetSpec, WidgetTime } from './model';
 import { widgetDefinition } from './definitions.ts';
-import { MAX_ROLES, MAX_TRACKS } from './campaigns.ts';
+import type { PageId } from './pages.ts';
 
 const STORAGE_KEY = 'hoi4-replay.workspace-template.v1';
 const LIBRARY_KEY = 'hoi4-replay.workspace-layouts.v1';
@@ -16,7 +16,7 @@ type LayoutStorage = Pick<Storage, 'getItem' | 'setItem'>;
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value != null && !Array.isArray(value);
 const integer = (value: unknown, min = -4_294_967_296, max = 4_294_967_296): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max;
 const text = (value: unknown, max = 160): value is string => typeof value === 'string' && value.length > 0 && value.length <= max;
-const widgetTitle = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
+const widgetTitle = (value: unknown): value is string => typeof value === 'string';
 const id = (value: unknown): value is string => text(value, 80) && /^[a-zA-Z0-9_-]+$/.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value);
 /** Request tags are opaque nonempty strings without NUL; content decides which
  * tags exist. */
@@ -87,8 +87,8 @@ export function parseTemplate(input: unknown): DashboardTemplate | null {
 export function parseTemplateWithNotes(input: unknown): { template: DashboardTemplate; droppedTags: number } | null {
   let droppedTags = 0;
   if (!object(input) || input.version !== 1 || !text(input.name) || !['calendar', 'anchors'].includes(String(input.alignment))) return null;
-  if (!Array.isArray(input.roles) || !input.roles.length || input.roles.length > MAX_ROLES
-    || !Array.isArray(input.tracks) || !input.tracks.length || input.tracks.length > MAX_TRACKS
+  if (!Array.isArray(input.roles) || !input.roles.length
+    || !Array.isArray(input.tracks) || !input.tracks.length
     || !Array.isArray(input.widgets) || input.widgets.length > MAX_WIDGETS || !object(input.layouts)) return null;
   const roles: SourceRole[] = [];
   for (const role of input.roles) {
@@ -177,11 +177,14 @@ export function droppedTagWarning(count: number): string | null {
   return count ? `${count} country tag ${count === 1 ? 'entry was' : 'entries were'} left out of the saved layout because ${count === 1 ? 'it' : 'they'} could not be stored.` : null;
 }
 
-export function loadLayouts(storage?: LayoutStorage): { library: LayoutLibrary; warning: string | null; droppedTags: number } {
-  const fallback: LayoutLibrary = { version: 1, activeId: 'default', layouts: [{ id: 'default', template: { ...defaultTemplate(), name: 'Default layout' } }] };
+/** Overview keeps the original key, so layouts saved before pages existed stay on it. */
+const libraryKey = (page: PageId) => page === 'overview' ? LIBRARY_KEY : `${LIBRARY_KEY}.${page}`;
+
+export function loadLayouts(storage?: LayoutStorage, page: PageId = 'overview'): { library: LayoutLibrary; warning: string | null; droppedTags: number } {
+  const fallback: LayoutLibrary = { version: 1, activeId: 'default', layouts: [{ id: 'default', template: { ...defaultTemplate(page), name: 'Default layout' } }] };
   try {
     const target = storage ?? localStorage;
-    const raw = target.getItem(LIBRARY_KEY);
+    const raw = target.getItem(libraryKey(page));
     if (raw !== null) {
       if (raw.length > 4_000_000) throw new Error('Saved layouts are too large.');
       const parsed = parseLayoutLibraryWithNotes(JSON.parse(raw));
@@ -189,7 +192,7 @@ export function loadLayouts(storage?: LayoutStorage): { library: LayoutLibrary; 
       return { library: migrateDefaultName(parsed.library), warning: droppedTagWarning(parsed.droppedTags), droppedTags: parsed.droppedTags };
     }
     // Restore the previous single-layout format without overwriting it.
-    const legacy = target.getItem(STORAGE_KEY);
+    const legacy = page === 'overview' ? target.getItem(STORAGE_KEY) : null;
     if (legacy !== null) {
       if (legacy.length > 1_000_000) throw new Error('Saved layout is too large.');
       const parsed = parseLayoutLibraryWithNotes({ ...fallback, layouts: [{ id: 'default', template: JSON.parse(legacy) }] });
@@ -202,14 +205,23 @@ export function loadLayouts(storage?: LayoutStorage): { library: LayoutLibrary; 
   }
 }
 
-export function saveLayouts(library: LayoutLibrary, storage?: LayoutStorage): string | null {
+/** Forgets a page's saved layouts, so it next opens at its default arrangement. */
+export function clearLayouts(page: PageId, storage?: Pick<Storage, 'removeItem'>) {
+  try {
+    const target = storage ?? localStorage;
+    target.removeItem(libraryKey(page));
+    if (page === 'overview') target.removeItem(STORAGE_KEY);
+  } catch { /* Nothing saved can be removed; the defaults already apply. */ }
+}
+
+export function saveLayouts(library: LayoutLibrary, storage?: LayoutStorage, page: PageId = 'overview'): string | null {
   try {
     const parsed = parseLayoutLibraryWithNotes(library);
     if (!parsed) throw new Error('Invalid layouts');
     if (parsed.droppedTags) return `${parsed.droppedTags} country tag entries could not be saved. Your current workspace is still available.`;
     const raw = JSON.stringify(parsed.library);
     if (raw.length > 4_000_000) throw new Error('Saved layouts are too large.');
-    (storage ?? localStorage).setItem(LIBRARY_KEY, raw);
+    (storage ?? localStorage).setItem(libraryKey(page), raw);
     return null;
   } catch {
     return 'This layout could not be saved on this device. Your current workspace is still available.';

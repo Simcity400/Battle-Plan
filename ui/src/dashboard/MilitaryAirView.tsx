@@ -41,6 +41,13 @@ const NO_WARNINGS: string[] = [];
 const NO_FILTERS = { regions: new Set<number>(), causes: new Set<number>() };
 const airOperands = (reply: MilitaryAirReply): MilitaryAirReply => ({ ...reply, regions: [], buildings: [], warnings: [] });
 type Item = ButterflyItem & { row: LedgerRow };
+/** A native holder's item id, made once per series rather than each played hour. */
+const itemIds = new WeakMap<LedgerRow['series'], string>();
+const itemId = (row: LedgerRow) => {
+  let id = itemIds.get(row.series);
+  if (id === undefined) { id = JSON.stringify([row.tag, row.identity]); itemIds.set(row.series, id); }
+  return id;
+};
 
 /** Native event totals share playback, identities and charts across all three widgets. */
 export default function MilitaryAirView({ widget, runtime, active, countrySlot = null, onDiagnostics, family, fields, title }: WidgetProps & {
@@ -87,10 +94,18 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   const dates = useMemo(() => new Map(selected.rows.map(row => [row.tag, hour])), [selected.rows, hour]);
   const looks = useCountryLooks(runtime.client, track, air ? [] : tags, hour, active, segmentAt, dates, true);
   const colour = useCountryColours(tags, looks.color, tokens, looks);
-  const items = useMemo<Item[]>(() => selected.rows.map(row => ({ id: JSON.stringify([row.tag, row.identity]), label: looks.name(row.tag, hour), flag: looks.flag(row.tag, hour), color: colour(row.tag, hour),
+  const items = useMemo<Item[]>(() => selected.rows.map(row => ({ id: itemId(row), label: looks.name(row.tag, hour), flag: looks.flag(row.tag, hour), color: colour(row.tag, hour),
     countryFlag: { flag: looks.flag(row.tag, hour), flagReason: looks.flagReason(row.tag, hour), flagPending: looks.flagPending(row.tag, hour) },
     left: Number(row.taken) / ledgerScale(family), right: Number(row.dealt) / ledgerScale(family), leftText: ledgerFormat(row.taken, family), rightText: ledgerFormat(row.dealt, family),
     ratioText: row.complete ? formatRatio(row.dealt, row.taken) : 'Not known', segment: String(row.segment), row })), [selected.rows, looks, colour, hour, family]);
+  // Built only when their inputs change, so the race keeps its own memoised layers.
+  const shownValue = metric === 'dealt' ? 'dealt' : 'taken';
+  const ranked = useMemo(() => air ? selected.rows.map(row => ({ tag: row.tag, value: Number(row[shownValue]) / ledgerScale(family),
+    label: ledgerFormat(row[shownValue], family) + (options.ratio !== false ? ' · ' + (row.complete ? formatRatio(row.dealt, row.taken) : 'Not known') : ''),
+    stretch: JSON.stringify([row.identity, row.segment]) })) : [], [air, selected.rows, shownValue, family, options.ratio]);
+  const raceTags = useMemo(() => options.view === 'lines' ? [...new Set(lines.map(line => line.tag))] : tags, [options.view, lines, tags]);
+  const extentStart = widget.time.mode === 'range' ? from : track?.branch.firstHour ?? from;
+  const raceExtent = useMemo<[number, number]>(() => [extentStart, end], [extentStart, end]);
   const root = useRef<HTMLDivElement>(null);
   const airKey = JSON.stringify([track?.source.id, track?.branch.id, widget.countries, widget.time, from,
     options.regions, options.causes, options.measure, options.view, options.show]);
@@ -165,10 +180,9 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   const airMainState = selected.reason && !(options.view === 'lines' && lines.length) ? <WidgetState kind="unavailable" message={selected.reason} />
     : !rows.length && !(options.view === 'lines' && lines.length) ? <WidgetState kind="unavailable" message="Events or country identities were not recorded at this moment." /> : undefined;
   const content = air ? <CountryRaceView runtime={runtime} track={track} active={active && (!airOpen || options.drill === 'popout')} options={options} view={options.view === 'lines' ? 'lines' : 'race'}
-    extent={[widget.time.mode === 'range' ? from : track.branch.firstHour, end]} playhead={widget.time.mode === 'follow' || widget.time.mode === 'pin' ? hour : null}
-    moment={hour} slots={selected.rows.length} ranked={selected.rows.map(row => ({ tag: row.tag, value: Number(row[metric === 'dealt' ? 'dealt' : 'taken']) / ledgerScale(family),
-      label: ledgerFormat(row[metric === 'dealt' ? 'dealt' : 'taken'], family) + (options.ratio !== false ? ' · ' + (row.complete ? formatRatio(row.dealt, row.taken) : 'Not known') : ''), stretch: JSON.stringify([row.identity, row.segment]) }))}
-    countryTags={options.view === 'lines' ? [...new Set(lines.map(line => line.tag))] : tags} countryLookHours={dates} segmentAt={segmentAt} lines={lines}
+    extent={raceExtent} playhead={widget.time.mode === 'follow' || widget.time.mode === 'pin' ? hour : null}
+    moment={hour} slots={selected.rows.length} ranked={ranked}
+    countryTags={raceTags} countryLookHours={dates} segmentAt={segmentAt} lines={lines}
     label={title} empty="No selected country was recorded at this moment." formatValue={formatAxisValue}
     state={airMainState} onPick={openAir} pickOwner={airPickOwner} selectedHour={airOpen ? airAt : undefined} resetKey={airKey}
     lineTooltip={(at, hovered, labelAt, country) => index ? [militaryAirLineTooltip(index, from, Math.floor(at), hovered, labelAt, country)] : []}

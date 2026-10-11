@@ -381,18 +381,27 @@ fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan
         TableId::AirLossEvents,
         TableId::BuildingBombingDamage,
     ];
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        check_cancel(cancelled)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let frames = replay.read_block_selected(block, &selected)?;
-        for frame in frames {
-            check_cancel(cancelled)?;
-            let decoded = decoder.advance(&frame)?;
-            validate_campaign(decoded, replay)?;
-            air_frame(&mut scan.air, decoded)?;
-            bombing_frame(&mut scan.bombing, decoded)?;
-        }
-    }
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                check_cancel(cancelled)?;
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let frames = frames?;
+                for frame in frames {
+                    check_cancel(cancelled)?;
+                    let decoded = decoder.advance(&frame)?;
+                    validate_campaign(decoded, replay)?;
+                    air_frame(&mut scan.air, decoded)?;
+                    bombing_frame(&mut scan.bombing, decoded)?;
+                }
+            }
+            Ok(())
+        },
+    )?;
     Ok(scan)
 }
 

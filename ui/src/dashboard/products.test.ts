@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { forgetProducts, loadProduct, productKey } from './products.ts';
+import { forgetProducts, loadProduct, productKey, replyLengths } from './products.ts';
 import type { DashboardClient, ProductRequest } from './client';
 
 const request: ProductRequest = { sourceId: 's', revision: 'v', product: 'national-focus', params: { branchId: '1', tag: 'GER' } };
@@ -34,4 +34,20 @@ test('replies for another recording or product are rejected and payload validato
   assert.equal(first, second);
   assert.equal(productKey(request), productKey({ ...request, params: { branchId: '1', tag: 'GER' } }));
   assert.notEqual(productKey(request), productKey({ ...request, revision: 'v2' }));
+});
+
+test('the cache sizes a reply by the length its transport received, validated or not', async () => {
+  for (const validate of [undefined, (data: unknown) => data]) {
+    let calls = 0;
+    const client = { product: async (input: ProductRequest) => {
+      calls++;
+      const reply = { ...input, data: { small: true } };
+      // Received at the whole budget: once counted, it cannot be kept.
+      replyLengths.set(reply, 64 * 1024 * 1024);
+      return reply;
+    } } as unknown as DashboardClient;
+    await loadProduct(client, request, new AbortController().signal, validate);
+    await loadProduct(client, request, new AbortController().signal, validate);
+    assert.equal(calls, 2);
+  }
 });

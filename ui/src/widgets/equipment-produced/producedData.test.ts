@@ -234,7 +234,7 @@ test('a type an unresolved variant could belong to is unknown; the bar keeps the
   assert.equal(bar.label, '12');
   assert.deepEqual(bar.parts, [{ id: '1', color: '#b', value: 2 }, { id: 'unknown', color: '#u', value: 0, hatched: 10 }]);
   const [tooltip] = [...producedTooltips(model, 'GER', 'Germany', producedAt(model, 'GER', 40)!, 40, '2 Jan', bands)];
-  assert.deepEqual(tooltip.rows.map(row => [row.label, row.value]), [['mod_gun', '2'], ['Infantry Equipment', 'Not known'], ['Total', '12']]);
+  assert.deepEqual(tooltip.rows.map(row => [row.label, row.value]), [['Equipment type name unavailable', '2'], ['Infantry Equipment', 'Not known'], ['Total', '12']]);
 });
 
 test('by exact variant each country keeps its own largest variants in colour', () => {
@@ -309,7 +309,7 @@ test('a variant is named only from the read that recorded its name, and not wher
   assert.equal(keyLabel(domains, 0, 0), 'Air');
   assert.equal(keyLabel(domains, 1, 0), 'Type not resolved');
   const types = producedModel({ ...REPLY, keys: [key({ key: ':mod_gun' })], series: [] });
-  assert.equal(keyLabel(types, 0, 0), 'mod_gun');
+  assert.equal(keyLabel(types, 0, 0), 'Equipment type name unavailable');
 });
 
 test('the tooltip lists every group, most first, unknown last, with the total and when it was read', () => {
@@ -318,7 +318,7 @@ test('the tooltip lists every group, most first, unknown last, with the total an
   const [full, compact] = [...producedTooltips(model, 'GER', 'Germany', producedAt(model, 'GER', 40)!, 40, '2 Jan', bands)];
   assert.deepEqual(full.rows.map(row => [row.label, row.value]), [['Infantry Equipment', '10'], ['Fighter', '3'], ['Total', '13']]);
   assert.equal(full.subtitle, '2 Jan · Running total');
-  assert.match(full.note!, /^Counted since .*Read .*production is read once a day\.$/);
+  assert.match(full.note!, /^Counted since [^.]*\.$/);
   assert.equal(compact.rows.length, 3);
   const [unknown] = [...producedTooltips(model, 'GER', 'Germany', producedAt(model, 'GER', 60)!, 60, '3 Jan', bands)];
   assert.deepEqual(unknown.rows.map(row => [row.label, row.value]), [['Infantry Equipment', '15'], ['Fighter', 'Not known'], ['Total', 'Not known']]);
@@ -335,9 +335,9 @@ test('tags are opaque and types are listed as the recorded content names them, m
   assert.deepEqual(producedRequest('1', { tags: ['MOD TAG', 'D01'] }, 'total', 'type', [], false).tags, ['MOD TAG', 'D01']);
   // A mod's type by its own name; a type content does not resolve by its recorded token.
   assert.equal(typeLabel({ key: 'mod_small_arms', name: 'Mod Rifles' }), 'Mod Rifles');
-  assert.equal(typeLabel({ key: 'mod_small_arms', name: null }), 'mod_small_arms');
-  assert.equal(typeLabel({ key: ':destroyer_1', name: null }), 'destroyer_1');
-  assert.equal(typeLabel({ key: ':77', name: null }), '77');
+  assert.equal(typeLabel({ key: 'mod_small_arms', name: null }), 'Equipment type name unavailable');
+  assert.equal(typeLabel({ key: ':destroyer_1', name: null }), 'Equipment type name unavailable');
+  assert.equal(typeLabel({ key: ':77', name: null }), 'Equipment type name unavailable');
 });
 
 test('the request asks for the top N or the chosen countries, with the measure, grouping and types', () => {

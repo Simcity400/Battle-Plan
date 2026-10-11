@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { EspionageLogReply, EspionageOperation, EspionageOperationRun, EspionageOperationType } from '../../generated/dashboard';
 import { isOrderedSpans, isSpan, runAt, spansCovered } from '../../charts/series.ts';
 import type { LogRow } from '../../charts/log/logData';
@@ -80,7 +81,7 @@ export function validateEspionageLogReply(data: unknown): EspionageLogReply {
   }
   return reply;
 }
-export const operationName = (type: EspionageOperationType | undefined) => type?.name ?? (type?.key ? `Unknown operation type (${type.key})` : 'Operation type not recorded');
+export const operationName = (type: EspionageOperationType | undefined) => contentTitle(type?.name, type?.key, 'Operation name unavailable');
 export function operationChoices(reply: EspionageLogReply | undefined) {
   return (reply?.types ?? []).map(type => ({ value: setToken(type.key), label: operationName(type), icon: type.icon,
     unavailable: storableToken(setToken(type.key)) ? undefined : UNSTORABLE }))

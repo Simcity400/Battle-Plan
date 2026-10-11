@@ -7,30 +7,30 @@ import { newId } from '../ids';
 import { BUILT_IN_THEMES, themeColors } from './themes';
 import type { ThemeDefinition, ThemeMode } from './themes';
 import { parseThemeText, serializeTheme, uniqueThemeName } from './themeFile';
-import { LIMITS, MAX_CUSTOM_THEMES } from './settings';
-import type { AppearanceSettings as Settings, BackdropKind, ChartMotion, ColorScheme, CountryColours, MotionPreference } from './settings';
+import { CONTRAST_STEP, LIMITS, MAX_CUSTOM_THEMES } from './settings';
+import type { AppearanceSettings as Settings, BackdropKind, ChartMotion, ColorScheme, CountryColours, HeaderFlag, MotionPreference } from './settings';
 import { deleteBackdrop, importBackdrop, listBackdrops } from './backdrops';
 import type { BackdropImage } from './backdrops';
-import { FONT_PRESETS, fontAvailable, fontStack, installedFonts } from './fonts';
+import TypographySettings from './TypographySettings';
 import { ThemeSwatch, ThemeWireframe } from './ThemePreview';
 import { Segmented } from '../../components/Segmented';
 import type { Appearance } from './useAppearance';
 import type { ThemeDraft } from './ThemeEditor';
 
 /** A titled group of settings: the title sits above one card whose rows are divided. */
-export function SettingsBlock({ id, title, description, actions, children }: { id?: string; title: string; description?: string; actions?: ReactNode; children: ReactNode }) {
-  return <section className="settings-block" id={id} aria-label={title}>
+export function SettingsBlock({ id, title, description, actions, children, plain = false }: { id?: string; title: string; description?: string; actions?: ReactNode; children: ReactNode; plain?: boolean }) {
+  return <section className={`settings-block${plain ? ' settings-block-plain' : ''}`} id={id} aria-label={title}>
     <div className="settings-block-heading"><div><h3>{title}</h3>{description && <p>{description}</p>}</div>{actions && <div className="settings-block-actions">{actions}</div>}</div>
     <div className="settings-group">{children}</div>
   </section>;
 }
 
-function SliderRow({ id, label, hint, value, min, max, unit, onChange }: { id?: string; label: string; hint: string; value: number; min: number; max: number; unit: string; onChange: (value: number) => void }) {
+function SliderRow({ id, label, hint, value, min, max, step, unit, onChange }: { id?: string; label: string; hint: string; value: number; min: number; max: number; step?: number; unit: string; onChange: (value: number) => void }) {
   return <label className="settings-row" id={id}>
     <span className="settings-row-text"><strong>{label}</strong><small>{hint}</small></span>
-    <span className="settings-slider"><input type="range" className="slider" min={min} max={max} value={value} aria-label={label}
+    <span className="settings-slider"><output>{value}{unit}</output><input type="range" className="slider" min={min} max={max} step={step} value={value} aria-label={label}
       style={{ '--fill': `${(100 * (value - min)) / (max - min)}%` } as CSSProperties} onChange={event => onChange(Number(event.currentTarget.value))} />
-      <output>{value}{unit}</output></span>
+      </span>
   </label>;
 }
 
@@ -135,35 +135,9 @@ function BackdropLibrary({ selected, onSelect, onRemoved }: { selected: string |
   </>;
 }
 
-function FontPicker({ id, label, hint, value, placeholder, onChange, installed, onListFonts }: {
-  id?: string; label: string; hint: string; value: string; placeholder: string; onChange: (value: string) => void; installed: string[] | null; onListFonts: () => void;
-}) {
-  const listId = useId();
-  const [text, setText] = useState(value);
-  useEffect(() => setText(value), [value]);
-  useEffect(() => {
-    if (text.trim() === value) return;
-    const timer = setTimeout(() => onChange(text.trim()), 350);
-    return () => clearTimeout(timer);
-  }, [text, value, onChange]);
-  const available = !value || fontAvailable(value);
-  return <div className="settings-row font-row" id={id}>
-    <span className="settings-row-text"><strong>{label}</strong><small>{hint}</small></span>
-    <div className="font-picker">
-      <div className="font-input"><input list={listId} value={text} placeholder={placeholder} aria-label={label} onChange={event => setText(event.currentTarget.value)} spellCheck={false} />
-        {window.queryLocalFonts && <button type="button" className="icon-button small" aria-label="List installed fonts" data-tooltip="List installed fonts" onClick={onListFonts}><Icon name="search" /></button>}</div>
-      <datalist id={listId}>{[...FONT_PRESETS.map(preset => preset.family).filter(Boolean), ...(installed ?? [])].map(family => <option key={family} value={family} />)}</datalist>
-      <div className="font-chips">{FONT_PRESETS.map(preset => <button key={preset.label} type="button" className="font-chip" aria-pressed={value === preset.family} data-tooltip={preset.note}
-        style={{ fontFamily: fontStack(preset.family) }} onClick={() => { setText(preset.family); onChange(preset.family); }}>{preset.label}</button>)}</div>
-      {value && !available && <small className="font-missing"><Icon name="alert" />“{value}” isn’t installed on this computer, so the default font is used.</small>}
-    </div>
-  </div>;
-}
-
-export default function AppearanceSettings({ appearance, onEdit }: { appearance: Appearance; onEdit: (draft: ThemeDraft) => void }) {
+export default function AppearanceSettings({ appearance, onEdit, searchTarget }: { appearance: Appearance; searchTarget?: string; onEdit: (draft: ThemeDraft) => void }) {
   const { settings, resolved, update, notice } = appearance;
   const [message, setMessage] = useState<{ text: string; tone: 'positive' | 'warning' } | null>(null);
-  const [fonts, setFonts] = useState<string[] | null>(null);
   const themes = [...BUILT_IN_THEMES, ...settings.custom];
   const say = (text: string, tone: 'positive' | 'warning' = 'positive') => setMessage({ text, tone });
   const use = (theme: ThemeDefinition, modes: ThemeMode[]) => update(previous => {
@@ -194,12 +168,11 @@ export default function AppearanceSettings({ appearance, onEdit }: { appearance:
     say(`Deleted “${theme.name}”.`);
   };
   const setBackdrop = (change: Partial<Settings['backdrop']>) => update(previous => ({ ...previous, backdrop: { ...previous.backdrop, ...change } }));
-  const listFonts = () => { void installedFonts().then(list => { if (list) setFonts(list); else say('Installed fonts can’t be listed here. Type any installed font name instead.', 'warning'); }); };
   const schemeColors = (mode: ThemeMode) => themeColors(themes.find(theme => theme.id === settings.themes[mode]), mode);
   const current = themes.find(theme => theme.id === settings.themes[resolved.mode]) ?? BUILT_IN_THEMES[0];
 
   return <div className="appearance-settings">
-    <SettingsBlock id="appearance-scheme" title="Colour scheme">
+    <SettingsBlock id="appearance-scheme" title="Colour scheme" plain>
       <div className="settings-group-body">
         <div className="scheme-tiles" role="group" aria-label="Colour scheme">{([['system', 'System', 'monitor'], ['light', 'Light', 'sun'], ['dark', 'Dark', 'moon']] as [ColorScheme, string, IconName][]).map(([scheme, label, icon]) =>
           <button key={scheme} type="button" className="scheme-tile" aria-pressed={settings.scheme === scheme} onClick={() => update(previous => ({ ...previous, scheme }))}>
@@ -211,11 +184,11 @@ export default function AppearanceSettings({ appearance, onEdit }: { appearance:
       </div>
     </SettingsBlock>
 
-    <SettingsBlock id="appearance-themes" title="Themes"
+    <SettingsBlock id="appearance-themes" title="Themes" plain
       actions={<><ImportTheme disabled={settings.custom.length >= MAX_CUSTOM_THEMES} onImport={importTheme} />
         <button type="button" className="button small" disabled={settings.custom.length >= MAX_CUSTOM_THEMES} onClick={() => edit(current, true)}><Icon name="plus" />Create theme</button></>}>
       <div className="settings-group-body">
-        <p className="field-hint">Click a theme to use it everywhere, or a swatch to use it only in light or dark mode.</p>
+        <p className="field-hint">Choose a theme, or set light and dark modes separately with the swatches.</p>
         <div className="theme-grid">{themes.map(theme => <ThemeCard key={theme.id} theme={theme} settings={settings}
           onUse={() => use(theme, ['dark', 'light'])} onUseMode={mode => use(theme, [mode])} onDuplicate={() => edit(theme, true)}
           onEdit={theme.builtIn ? undefined : () => edit(theme, false)} onDelete={theme.builtIn ? undefined : () => remove(theme)} onMessage={say} />)}</div>
@@ -224,7 +197,7 @@ export default function AppearanceSettings({ appearance, onEdit }: { appearance:
     </SettingsBlock>
 
     <SettingsBlock id="appearance-backdrop" title="Backdrop">
-      <div className="settings-row"><span className="settings-row-text"><strong>Background</strong><small>What shows through the glass behind panels and the sidebar.</small></span>
+      <div className="settings-row"><span className="settings-row-text"><strong>Background</strong><small>The backdrop behind panels and the sidebar.</small></span>
         <Segmented<BackdropKind> label="Backdrop" value={settings.backdrop.kind} onChange={kind => setBackdrop({ kind })}
           options={[{ value: 'ambient', label: 'Ambient', icon: 'sparkle' }, { value: 'solid', label: 'Solid', icon: 'layers' }, { value: 'image', label: 'Image', icon: 'image' }]} /></div>
       {settings.backdrop.kind === 'image' && <>
@@ -238,37 +211,30 @@ export default function AppearanceSettings({ appearance, onEdit }: { appearance:
     </SettingsBlock>
 
     <SettingsBlock id="appearance-interface" title="Interface">
-      <SliderRow id="appearance-glass" label="Glass" hint="Panel opacity. At 100% panels are solid and the frosted blur is off." value={settings.glass} min={LIMITS.glass[0]} max={LIMITS.glass[1]} unit="%"
+      <SliderRow id="appearance-contrast" label="Contrast" hint="Soften text and borders. 100% uses the theme’s full contrast."
+        value={settings.contrast} min={LIMITS.contrast[0]} max={LIMITS.contrast[1]} step={CONTRAST_STEP} unit="%" onChange={contrast => update(previous => ({ ...previous, contrast }))} />
+      <SliderRow id="appearance-glass" label="Glass" hint="Panel opacity. 100% makes panels solid." value={settings.glass} min={LIMITS.glass[0]} max={LIMITS.glass[1]} unit="%"
         onChange={glass => update(previous => ({ ...previous, glass }))} />
       <SliderRow id="appearance-radius" label="Corner radius" hint="Rounding of panels, menus and controls." value={settings.radius} min={LIMITS.radius[0]} max={LIMITS.radius[1]} unit="px"
         onChange={radius => update(previous => ({ ...previous, radius }))} />
-      <div className="settings-row" id="appearance-motion"><span className="settings-row-text"><strong>Motion</strong><small>Animated transitions. System follows the Windows animation setting.</small></span>
+      <div className="settings-row" id="appearance-motion"><span className="settings-row-text"><strong>Motion</strong><small>Interface animations. System follows your device’s preference.</small></span>
         <Segmented<MotionPreference> label="Motion" value={settings.motion} onChange={motion => update(previous => ({ ...previous, motion }))}
           options={[{ value: 'system', label: 'System' }, { value: 'full', label: 'Full' }, { value: 'reduced', label: 'Reduced' }]} /></div>
+      <div className="settings-row" id="appearance-header-flag"><span className="settings-row-text"><strong>Top-bar flag</strong><small>Original game size or a larger, smoothed flag.</small></span>
+        <Segmented<HeaderFlag> label="Top-bar flag" value={settings.headerFlag} onChange={headerFlag => update(previous => ({ ...previous, headerFlag }))}
+          options={[{ value: 'native', label: 'Native' }, { value: 'large', label: 'Large' }]} /></div>
     </SettingsBlock>
 
     <SettingsBlock id="appearance-charts" title="Charts">
-      <div className="settings-row" id="appearance-chart-motion"><span className="settings-row-text"><strong>Chart motion</strong><small>How bars, lines and slices glide between recorded values during playback. Numbers are always exact.</small></span>
+      <div className="settings-row" id="appearance-chart-motion"><span className="settings-row-text"><strong>Chart motion</strong><small>How charts transition between values during playback.</small></span>
         <Segmented<ChartMotion> label="Chart motion" value={settings.charts.motion} onChange={motion => update(previous => ({ ...previous, charts: { ...previous.charts, motion } }))}
           options={[{ value: 'snappy', label: 'Snappy' }, { value: 'smooth', label: 'Smooth' }, { value: 'cinematic', label: 'Cinematic' }]} /></div>
-      <div className="settings-row" id="appearance-country-colours"><span className="settings-row-text"><strong>Country colours</strong><small>Raw uses each country's recorded map colour. Adjusted lightens or darkens colours to read on the theme and keeps similar countries apart; hues are kept.</small></span>
+      <div className="settings-row" id="appearance-country-colours"><span className="settings-row-text"><strong>Country colours</strong><small>Recorded map colours, or adjusted for readability on this theme.</small></span>
         <Segmented<CountryColours> label="Country colours" value={settings.charts.countryColours} onChange={countryColours => update(previous => ({ ...previous, charts: { ...previous.charts, countryColours } }))}
           options={[{ value: 'raw', label: 'Raw' }, { value: 'fixed', label: 'Adjusted' }]} /></div>
     </SettingsBlock>
 
-    <SettingsBlock id="appearance-typography" title="Typography">
-      <FontPicker id="appearance-interface-font" label="Interface font" hint="Text, labels and numbers. The system font is the default and Inter is bundled; any installed font can be named." value={settings.fonts.interface} placeholder="System font (default)"
-        installed={fonts} onListFonts={listFonts} onChange={family => update(previous => ({ ...previous, fonts: { ...previous.fonts, interface: family } }))} />
-      <FontPicker id="appearance-display-font" label="Display font" hint="Headings, country names and widget titles." value={settings.fonts.display} placeholder="Same as interface"
-        installed={fonts} onListFonts={listFonts} onChange={family => update(previous => ({ ...previous, fonts: { ...previous.fonts, display: family } }))} />
-      <div className="settings-group-body">
-        <div className="type-preview" aria-hidden="true">
-          <span className="type-preview-heading">German Reich</span>
-          <span>Research completed · Improved Machine Tools</span>
-          <span className="type-preview-numbers">12 Mar 1939 · 14:00 &nbsp; 0123456789 &nbsp; ≈ 86 d left</span>
-        </div>
-      </div>
-    </SettingsBlock>
+    <TypographySettings appearance={appearance} searchTarget={searchTarget} />
     {notice && <p className="settings-notice" role="alert">{notice}</p>}
   </div>;
 }

@@ -16,6 +16,7 @@ import { runAt } from '../charts/series';
 import { useCountryLabelsAt } from './countryFlagsAt';
 import DatedCountryChip from './DatedCountryChip';
 import { validatePlaceNamesReply } from './placeNamesData';
+import { contentTitle, contentTitleHint } from './contentTitles';
 import { LEDGER_GAP_NOTE, leafAmount, ledgerComplete, ledgerCountryAt, ledgerFormat, ledgerScale, militaryAirIndex } from './militaryAirLedger';
 
 const NO_FILTERS = { regions: new Set<number>(), causes: new Set<number>() };
@@ -53,9 +54,9 @@ export default function BombingBreakdown({ data, runtime, track, tag, identity, 
       const exact = leafAmount(leaf, from, hour), final = leafAmount(leaf, from, end);
       const building = leaf.buildingToken == null ? null : buildings.get(leaf.buildingToken);
       const state = leaf.state == null || leaf.state === 0 ? null : names.get(leaf.state);
-      const buildingLabel = building?.name ?? leaf.buildingToken ?? 'Building type not recorded';
+      const buildingLabel = contentTitle(building?.name, leaf.buildingToken, leaf.buildingToken == null ? 'Building type not recorded' : 'Building name unavailable');
       const stateLabel = leaf.state === 0 ? 'No containing state' : state?.name ?? 'State name not recorded';
-      const notes = [building?.missing, leaf.buildingToken == null ? 'The event read did not hold its building type spelling.' : null,
+      const notes = [contentTitleHint(leaf.buildingToken, building?.missing), leaf.buildingToken == null ? 'The event read did not hold its building type spelling.' : null,
         leaf.state === 0 ? 'The native province building has no containing state.' : state?.missing ?? (states.error ? states.error : states.data ? 'The dated state name is unavailable.' : 'Loading the dated state name.')].filter((note): note is string => !!note);
       return { path: [{ id: `building:${leaf.buildingToken ?? leaf.buildingId}`, label: buildingLabel }, { id: `state:${leaf.state}`, label: stateLabel }],
         value: Number(exact) / ledgerScale('bombing'), exact, final: Number(final) / ledgerScale('bombing'), present: exact !== 0n,

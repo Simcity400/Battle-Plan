@@ -1,7 +1,9 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { CountryRaceEntry } from '../../charts/race/countryRace';
 import { shownRuns } from '../../charts/race/lines.ts';
 import { isOrderedSpans, runAt, runIndexAt, stretchStarts } from '../../charts/series.ts';
 import type { Run, Span } from '../../charts/series';
+import { usNumber } from '../../charts/numberFormat.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
@@ -103,9 +105,9 @@ export function pinNuclearDrill(widget: WidgetSpec, track: Pick<BoundTrack, 'id'
 }
 
 export function nukeTypeName(type: CountryNukesReply['types'][number]): string {
-  return type.name ?? (type.token ? `Unknown name (${type.token})` : `Unknown type ${type.ordinal}`);
+  return contentTitle(type.name, type.token, 'Nuclear weapon name unavailable');
 }
-export const formatNukes = (value: number) => value.toLocaleString('en-US');
+export const formatNukes = (value: number) => usNumber.format(value);
 export function nuclearReadNote(model: NuclearModel, hour: number): string {
   const read = readAt(model.reply.readHours, hour);
   return `${read == null ? 'Read time unknown' : `Read ${formatDateTime(read)}`}. The game counter counts the stockpile. The recorded “ready” field counts queued drops after their delay and is outside this widget.`;

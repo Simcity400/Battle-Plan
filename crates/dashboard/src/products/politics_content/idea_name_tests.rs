@@ -145,10 +145,9 @@ fn an_idea_name_is_its_selected_key_alone() {
         "{:?}",
         content.catalogue.refusal_lines()
     );
-    // An override content lacks is its own bytes; the token's
-    // text does not stand in.
+    // A missing override stays unavailable; the token's text does not stand in.
     let (other, _) = content.idea_artwork("MOD_other", None, country);
-    assert_eq!(other.name.as_deref(), Some("MOD_other_override"));
+    assert_eq!(other.name, None);
     assert_eq!(other.description.as_deref(), Some("Override only"));
     let (plain, _) = content.idea_artwork("MOD_plain", None, country);
     assert_eq!(
@@ -174,7 +173,7 @@ fn an_idea_name_is_its_selected_key_alone() {
     );
     assert_eq!(
         line_name(&line("MOD_other"), &content, None, None, country).as_deref(),
-        Some("MOD_other_override")
+        None
     );
     assert_eq!(
         line_name(&line("MOD_plain"), &content, None, None, country).as_deref(),

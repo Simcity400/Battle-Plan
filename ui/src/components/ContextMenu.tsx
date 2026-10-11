@@ -15,7 +15,7 @@ export function useContextMenu(label: string) {
     returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setItems(next);
     popover.openAt({ left: x, right: x, top: y, bottom: y });
-  }, [popover]);
+  }, [popover.openAt]);
   const firstUsable = items.findIndex(item => !item.disabled);
   const menu = <Popover menu={popover} className="context-menu" aria-label={label}
     onToggle={event => {

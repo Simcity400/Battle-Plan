@@ -197,6 +197,41 @@ fn obsolete_war_content_versions_are_replaced_without_evicting_other_views() {
             .any(|entry| entry.view.as_deref() == Some("TWO"))
     );
     assert!(released.upgrade().is_none());
+    // A hit becomes the most recent; a new view evicts the least recently requested.
+    let reply = Arc::clone(&cache[0].reply);
+    drop(cache);
+    state
+        .lock()
+        .unwrap()
+        .extend((0..CACHED_REPLIES).map(|view| Cache {
+            branch: 1,
+            view: Some(format!("V{view}")),
+            identities: None,
+            catalogue: None,
+            reply: Arc::clone(&reply),
+        }));
+    for view in ["TWO", "THREE"] {
+        let params = WarsParams {
+            branch_id: "1".into(),
+            viewpoint_tag: Some(view.into()),
+        };
+        Wars::shared(&source, &params, None, &context, &AtomicBool::new(false)).unwrap();
+    }
+    let views: Vec<_> = state
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|entry| entry.view.clone())
+        .collect();
+    assert_eq!(
+        views,
+        [
+            Some("THREE".to_owned()),
+            Some("TWO".to_owned()),
+            None,
+            Some("V0".to_owned())
+        ]
+    );
 }
 
 #[test]
@@ -297,6 +332,11 @@ fn label_catalogue_resolves_only_changed_naming_inputs_and_their_subjects() {
         labels.observe(&daily, Some(&cat));
         assert_eq!(labels.resolutions, 3);
     }
+    // Hours agreeing on every naming operand keep none of their views, so a
+    // decoder can apply the next change in place.
+    let parties = &mut daily.tables[TableId::PoliticalParties.index()];
+    let held = std::mem::replace(parties, first.tables[TableId::Clock.index()].clone());
+    *parties = held.try_unwrap().expect("a naming view is held").into();
     let TableView::Complete(TableRows::Politics(rows)) =
         &mut *daily.tables[TableId::Politics.index()]
     else {
@@ -495,7 +535,7 @@ fn content_mod_override_native_key_fallback_and_missing_first_goal() {
         &hour,
         pair(1, 2),
         Some(&cat),
-        &naming::Inputs::read(&frame, Some(&cat)),
+        &naming::Inputs::read(&frame),
     );
     assert_eq!(name.text, "First versus Second");
     assert!(name.known);
@@ -527,7 +567,7 @@ fn content_mod_override_native_key_fallback_and_missing_first_goal() {
         &hour,
         pair(1, 2),
         Some(&cat),
-        &naming::Inputs::read(&frame, Some(&cat)),
+        &naming::Inputs::read(&frame),
     );
     assert_eq!(name.text, "Defender suffix");
     assert!(name.known);
@@ -551,7 +591,7 @@ fn content_mod_override_native_key_fallback_and_missing_first_goal() {
             &hour,
             pair(1, 2),
             Some(&cat),
-            &naming::Inputs::read(&frame, Some(&cat))
+            &naming::Inputs::read(&frame)
         )
         .text,
         "Defender suffix"
@@ -566,7 +606,7 @@ fn content_mod_override_native_key_fallback_and_missing_first_goal() {
         &hour,
         pair(1, 2),
         Some(&cat),
-        &naming::Inputs::read(&frame, Some(&cat)),
+        &naming::Inputs::read(&frame),
     );
     assert!(!name.known);
     assert_eq!(name.text, "Not recorded");
@@ -771,7 +811,7 @@ fn fallback_goal_name_preserves_plain_state_text_and_first_country_operands() {
         &hour,
         pair(1, 2),
         Some(&cat),
-        &naming::Inputs::read(&frame, Some(&cat)),
+        &naming::Inputs::read(&frame),
     );
     assert!(name.known, "{:?}", name.reason);
     assert_eq!(name.key.as_deref(), Some("MOD"));

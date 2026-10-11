@@ -64,7 +64,7 @@ export function validatePoliticsSpending(data: unknown): PoliticsLedgerReply {
     const categories = new Set<string>();
     for (const category of reply.spendCategories) {
       if (!object(category) || typeof category.id !== 'string' || !category.id || categories.has(category.id)
-        || typeof category.name !== 'string' || !category.name || typeof category.identified !== 'boolean') { ok = false; break; }
+        || typeof category.name !== 'string' || typeof category.identified !== 'boolean') { ok = false; break; }
       categories.add(category.id);
     }
     const ids = new Set<string>();

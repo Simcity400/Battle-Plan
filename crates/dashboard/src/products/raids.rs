@@ -893,33 +893,42 @@ fn scan(
     if !replay.branches.iter().any(|b| b.id == branch) {
         return Err(crate::invalid("Branch is not in this recording"));
     }
-    for block in replay.index.iter().filter(|b| b.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "Raids request cancelled",
-            ));
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Raids request cancelled",
-                ));
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|b| b.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "Raids request cancelled",
+                    ));
+                }
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "Raids request cancelled",
+                        ));
+                    }
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    scan.observe(decoded, content)?;
+                }
             }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            scan.observe(decoded, content)?;
-        }
-    }
+            Ok(())
+        },
+    )?;
     Ok(scan.finish())
 }
 
@@ -939,42 +948,50 @@ fn recording_available(
     cancelled: &AtomicBool,
 ) -> io::Result<Option<bool>> {
     let selected = [TableId::Campaign, TableId::RaidCountries, TableId::Raids];
-    for block in replay.index.iter().filter(|b| b.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "Raids availability cancelled",
-            ));
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Raids availability cancelled",
-                ));
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|b| b.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "Raids availability cancelled",
+                    ));
+                }
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "Raids availability cancelled",
+                        ));
+                    }
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    if decoded
+                        .complete::<tables::RaidCountries>()
+                        .is_ok_and(|parents| parents.iter().any(|r| !r.eligible_types.is_empty()))
+                        || decoded
+                            .complete::<tables::Raids>()
+                            .is_ok_and(|raids| !raids.is_empty())
+                    {
+                        return Ok(Some(true));
+                    }
+                }
             }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            if decoded
-                .complete::<tables::RaidCountries>()
-                .is_ok_and(|parents| parents.iter().any(|r| !r.eligible_types.is_empty()))
-                || decoded
-                    .complete::<tables::Raids>()
-                    .is_ok_and(|raids| !raids.is_empty())
-            {
-                return Ok(Some(true));
-            }
-        }
-    }
-    Ok(None)
+            Ok(None)
+        },
+    )
 }
 
 /// Borrow the history for complete-reply accounting before copying it. The

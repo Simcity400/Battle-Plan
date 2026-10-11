@@ -365,7 +365,6 @@ impl Content {
     fn iterations(&self, count: Option<i32>) -> Option<String> {
         // NUMBER is passed as Int32 (argument type 5).
         let count = count?;
-        self.catalogue.localisation.get(ITERATIONS_KEY)?;
         self.catalogue.localised_with_refusals(
             ITERATIONS_KEY,
             &[("NUMBER", Argument::Int32(count))],
@@ -694,7 +693,7 @@ impl Builder {
                     .and_then(|content| {
                         content.name(definition, token, tag, slot, frame, project.definition_id)
                     })
-                    .unwrap_or_else(|| token.clone()),
+                    .unwrap_or_else(|| "Project name unavailable".into()),
                 None => old.name.clone(),
             };
             if old.scientist == scientist
@@ -729,7 +728,7 @@ impl Builder {
             format!("Project definition {}", project.definition_id)
         });
         let mut info = ProjectPresentation {
-            name: token.clone(),
+            name: "Project name unavailable".into(),
             specialization: None,
             specialization_name: None,
             icon: None,
@@ -766,7 +765,7 @@ impl Builder {
                     .name(&definition, &token, tag, slot, frame, project.definition_id)
                     .unwrap_or_else(|| {
                         self.warn(format!("Project name {token} could not be resolved"));
-                        token.clone()
+                        "Project name unavailable".into()
                     });
                 info.specialization = definition.specialization.clone();
                 // Use the specialization token, not blueprint_image
@@ -819,7 +818,21 @@ impl Builder {
         id
     }
 
+    #[cfg(test)]
     fn observe(&mut self, frame: &DecodedFrame, tag: &str, content: Option<&mut Content>) {
+        let lexical = frame.tables[TableId::LexicalTokens.index()].identity();
+        self.observe_span(frame, &lexical, tag, content);
+    }
+
+    /// `lexical` names the recorded LexicalTokens read. A span's projected
+    /// frame holds only the tokens it reads; presentations follow each read.
+    fn observe_span(
+        &mut self,
+        frame: &DecodedFrame,
+        lexical: &ViewIdentity,
+        tag: &str,
+        content: Option<&mut Content>,
+    ) {
         let identity = frame
             .complete::<tables::Countries>()
             .ok()
@@ -829,6 +842,13 @@ impl Builder {
                     .found()
                     .map(|(country, slot)| ((slot, country.id), links))
             });
+        // Cached presentations follow each dictionary read once the country is
+        // identified; the world feed's compact builders present nothing.
+        if identity.is_some() && self.lexical_view.as_ref() != Some(lexical) {
+            self.content_ids.clear();
+            self.scoped_names.clear();
+            self.lexical_view = Some(lexical.clone());
+        }
         let projects = frame.complete::<tables::Projects>().ok();
         let histories = frame.complete::<tables::ProjectHistory>().ok();
         let rows = identity.map(|((slot, _), links)| {
@@ -877,16 +897,6 @@ impl Builder {
         }
         self.identity = Some((slot, country));
         self.campaign_start.get_or_insert(hour);
-        let lexical = &frame.tables[TableId::LexicalTokens.index()];
-        if !self
-            .lexical_view
-            .as_ref()
-            .is_some_and(|seen| seen.is(lexical))
-        {
-            self.content_ids.clear();
-            self.scoped_names.clear();
-            self.lexical_view = Some(lexical.identity());
-        }
         let person_tables = [
             TableId::ProjectPrograms,
             TableId::Characters,
@@ -1126,7 +1136,12 @@ fn project(
             frame.hour = hour;
             frame.metrics.table_ns[TableId::Projects.index()] =
                 u64::from(span.reads.binary_search(&hour).is_ok());
-            result.observe(&frame, &params.tag, content.as_deref_mut());
+            result.observe_span(
+                &frame,
+                &span.inputs.lexical,
+                &params.tag,
+                content.as_deref_mut(),
+            );
         }
     }
     let mut warnings = content.as_ref().map_or_else(Vec::new, |content| {
@@ -1951,6 +1966,12 @@ mod tests {
             scoped: Vec::new(),
             refusals: Mutex::default(),
         };
+        assert_eq!(
+            content.name_for("mod_name", None).as_deref(),
+            Some("Renamed by mod")
+        );
+        assert_eq!(content.name_for("missing_title", None), None);
+        assert_eq!(content.specialization_name("missing_kind", None), None);
         let mut sample = frame(100, true, 1);
         *sample.tables[TableId::LexicalTokens.index()] =
             TableView::Complete(TableRows::LexicalTokens(vec![

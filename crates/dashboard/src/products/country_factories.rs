@@ -450,109 +450,118 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Factories request cancelled");
     let mut result = ScannedFactories::default();
     let mut tracks: BTreeMap<String, Track> = BTreeMap::new();
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancel());
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancel());
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            let hour = frame.hour;
-            // An hour the tables cannot tell extends no track, so nothing continues
-            // across it: a run continues only from the hour before.
-            let (Ok(countries), Ok(links)) = (
-                decoded.complete::<tables::Countries>(),
-                decoded.complete::<tables::CountryLinks>(),
-            ) else {
-                continue;
-            };
-            let rows = decoded.complete::<tables::CountryFactories>().ok();
-            let read = slot_read(&decoded.metrics, TableId::CountryFactories, decoded.hour);
-            // Each row by the slot its link names; a slot two rows name is unknown.
-            let by_slot =
-                unique_by_slot(rows.filter(|_| read).into_iter().flatten(), links, |row| {
-                    row.country
-                });
-            result.unreadable += by_slot.unresolved_rows + by_slot.duplicate_rows;
-            for (tag, lookup) in tagged_countries(countries, links) {
-                let TaggedCountry::Found(country, slot) = lookup else {
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancel());
+                }
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
                     continue;
                 };
-                let Ok(name) = std::str::from_utf8(tag) else {
-                    result.unnamed += 1;
-                    continue;
-                };
-                if !tracks.contains_key(name) {
-                    tracks.insert(name.to_owned(), Track::default());
-                }
-                let track = tracks.get_mut(name).expect("inserted above");
-                let identity = (slot, country.id);
-                observe_identity(
-                    &mut track.segments,
-                    &mut track.last_identity,
-                    identity,
-                    hour,
-                );
-                // Factory availability must not change a known country identity.
-                if rows.is_none() {
-                    continue;
-                }
-                let continues = track
-                    .last
-                    .is_some_and(|(seen, at)| seen == identity && at.checked_add(1) == Some(hour));
-                if !read {
-                    // Carried: the last read still holds, only for the same identity.
-                    if continues && let Some(run) = track.runs.last_mut() {
-                        run.last_hour = hour;
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(cancel());
+                    }
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    let hour = frame.hour;
+                    // An hour the tables cannot tell extends no track, so nothing continues
+                    // across it: a run continues only from the hour before.
+                    let (Ok(countries), Ok(links)) = (
+                        decoded.complete::<tables::Countries>(),
+                        decoded.complete::<tables::CountryLinks>(),
+                    ) else {
+                        continue;
+                    };
+                    let rows = decoded.complete::<tables::CountryFactories>().ok();
+                    let read = slot_read(&decoded.metrics, TableId::CountryFactories, decoded.hour);
+                    // Each row by the slot its link names; a slot two rows name is unknown.
+                    let by_slot =
+                        unique_by_slot(rows.filter(|_| read).into_iter().flatten(), links, |row| {
+                            row.country
+                        });
+                    result.unreadable += by_slot.unresolved_rows + by_slot.duplicate_rows;
+                    for (tag, lookup) in tagged_countries(countries, links) {
+                        let TaggedCountry::Found(country, slot) = lookup else {
+                            continue;
+                        };
+                        let Ok(name) = std::str::from_utf8(tag) else {
+                            result.unnamed += 1;
+                            continue;
+                        };
+                        if !tracks.contains_key(name) {
+                            tracks.insert(name.to_owned(), Track::default());
+                        }
+                        let track = tracks.get_mut(name).expect("inserted above");
+                        let identity = (slot, country.id);
+                        observe_identity(
+                            &mut track.segments,
+                            &mut track.last_identity,
+                            identity,
+                            hour,
+                        );
+                        // Factory availability must not change a known country identity.
+                        if rows.is_none() {
+                            continue;
+                        }
+                        let continues = track.last.is_some_and(|(seen, at)| {
+                            seen == identity && at.checked_add(1) == Some(hour)
+                        });
+                        if !read {
+                            // Carried: the last read still holds, only for the same identity.
+                            if continues && let Some(run) = track.runs.last_mut() {
+                                run.last_hour = hour;
+                                track.last = Some((identity, hour));
+                                if let Some(previous) = track.reads.last() {
+                                    let supplying = if previous.hourly {
+                                        previous.last_hour
+                                    } else {
+                                        previous.read_hour
+                                    };
+                                    append_read(&mut track.reads, hour, supplying, false, true);
+                                }
+                            }
+                            continue;
+                        }
+                        let Some(Some(row)) = by_slot.rows.get(&slot) else {
+                            continue;
+                        };
+                        let Some((values, unexplained)) = values(row) else {
+                            result.unreadable += 1;
+                            continue;
+                        };
+                        for key in unexplained {
+                            *result.unexplained.entry(key).or_default() += 1;
+                        }
                         track.last = Some((identity, hour));
-                        if let Some(previous) = track.reads.last() {
-                            let supplying = if previous.hourly {
-                                previous.last_hour
-                            } else {
-                                previous.read_hour
-                            };
-                            append_read(&mut track.reads, hour, supplying, false, true);
+                        append_read(&mut track.reads, hour, hour, true, continues);
+                        match track.runs.last_mut() {
+                            Some(run) if continues && run.values == values => run.last_hour = hour,
+                            _ => {
+                                track.runs.push(FactoryRun {
+                                    first_hour: hour,
+                                    last_hour: hour,
+                                    starts_segment: !continues,
+                                    values,
+                                });
+                            }
                         }
                     }
-                    continue;
-                }
-                let Some(Some(row)) = by_slot.rows.get(&slot) else {
-                    continue;
-                };
-                let Some((values, unexplained)) = values(row) else {
-                    result.unreadable += 1;
-                    continue;
-                };
-                for key in unexplained {
-                    *result.unexplained.entry(key).or_default() += 1;
-                }
-                track.last = Some((identity, hour));
-                append_read(&mut track.reads, hour, hour, true, continues);
-                match track.runs.last_mut() {
-                    Some(run) if continues && run.values == values => run.last_hour = hour,
-                    _ => {
-                        track.runs.push(FactoryRun {
-                            first_hour: hour,
-                            last_hour: hour,
-                            starts_segment: !continues,
-                            values,
-                        });
-                    }
                 }
             }
-        }
-    }
+            Ok(())
+        },
+    )?;
     for (tag, track) in tracks {
         if !track.runs.is_empty() {
             result.segments.insert(tag.clone(), track.segments);
@@ -874,7 +883,7 @@ pub fn group_buildings(
                 })
                 .map(|token| FactoryBuilding {
                     token: token.clone(),
-                    name: localise(token).filter(|name| !name.is_empty()),
+                    name: localise(token),
                 })
                 .collect(),
         })
@@ -948,13 +957,7 @@ pub(crate) fn content_groups(catalogue: &Catalogue) -> (Vec<FactoryGroupInfo>, V
             // cached display name for the construction UI. A type without
             // localisation stays unnamed.
             catalogue.localisation.get(token)?;
-            let name = catalogue.localised(token, catalogue::View::Plain)?;
-            if name.is_empty() {
-                catalogue.refuse("factory building name is empty", token);
-                None
-            } else {
-                Some(name)
-            }
+            catalogue.localised(token, catalogue::View::Plain)
         });
     for building in groups.iter().flat_map(|group| &group.buildings) {
         if building.name.is_none() && catalogue.localisation.get(&building.token).is_none() {
@@ -962,7 +965,7 @@ pub(crate) fn content_groups(catalogue: &Catalogue) -> (Vec<FactoryGroupInfo>, V
                 crate::content_check::Kind::Content,
                 format!("building {}", building.token),
                 format!(
-                    "{}: no name in the recorded content; shown by its token.",
+                    "{}: no name in the recorded content; title is unavailable.",
                     building.token
                 ),
             ));
@@ -979,9 +982,8 @@ pub(crate) fn content_groups(catalogue: &Catalogue) -> (Vec<FactoryGroupInfo>, V
 /// The groups as the recorded content stack names them: every building type any
 /// layer declares with a group's flag (a mod's own factory types included, a
 /// vanilla one a mod removed left out), named through `localise`. What cannot be
-/// read is said in a warning and named visibly: a type with no name by its token, a
-/// group no building counts in by its flag, and the whole list by the flags when
-/// the building files cannot be read (such as an unsupported modifier block).
+/// read is said in a warning. Missing titles remain unavailable; definition keys
+/// and group flags stay separate for diagnostics and selection.
 fn describe_groups_with_findings(
     layers: &installed_content::ResolvedLayers,
     localise: impl Fn(&str) -> Option<String>,

@@ -2,6 +2,7 @@
 //! the host/viewer protocol and the native data service. No map assets are
 //! rendered here and no live game memory is read.
 
+pub mod blocks;
 pub mod catalogue;
 pub mod character_scope;
 pub mod config;
@@ -19,6 +20,7 @@ pub mod products;
 pub mod protocol;
 pub mod ranking;
 pub mod read_runs;
+pub mod reply_cache;
 pub mod scope;
 pub mod scripted_text;
 pub mod service;
@@ -75,6 +77,7 @@ pub fn typescript_contract() -> String {
         protocol::MapGraphics::decl(),
         protocol::CampaignMapSettings::decl(),
         map_settings::Reply::decl(),
+        transport::HistoryCacheReply::decl(),
         transport::SourceReply::decl(),
     ];
     for product in products::PRODUCTS {
@@ -148,6 +151,15 @@ pub fn typescript_contract() -> String {
         .join(", ");
     text.push_str(&format!(
         "/** Products whose replies depend on configured game content. */\nexport const CONTENT_PRODUCTS = [{content_products}] as const;\n"
+    ));
+    let interactive_products = products::PRODUCTS
+        .iter()
+        .filter(|product| product.interactive)
+        .map(|product| format!("{:?}", product.key))
+        .collect::<Vec<_>>()
+        .join(", ");
+    text.push_str(&format!(
+        "/** Products served separately from whole-branch history reads. */\nexport const INTERACTIVE_PRODUCTS = [{interactive_products}] as const;\n"
     ));
     text
 }

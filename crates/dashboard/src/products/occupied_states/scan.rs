@@ -1,5 +1,6 @@
 //! Daily occupation joins frozen at their read; hourly owner/name projection.
 use super::*;
+use crate::metadata::CountryKeys;
 use replay::frame::{FrameDecoder, ViewIdentity};
 use std::collections::{BTreeSet, HashSet};
 
@@ -8,7 +9,7 @@ type NameCache = HashMap<u32, (Vec<u8>, Vec<u8>, Result<String, String>)>;
 const HOURLY: [TableId; 3] = [TableId::States, TableId::Countries, TableId::CountryLinks];
 
 struct CountryInputs {
-    countries: Vec<(u32, u32, Vec<u8>)>,
+    countries: CountryKeys,
     links: Vec<CountryLinkRow>,
     views: [ViewIdentity; 2],
 }
@@ -20,7 +21,7 @@ pub(super) struct Scan<'a> {
     red_threshold: Option<i64>,
     strength_powers: Result<(i32, i32), String>,
     equipment: std::sync::OnceLock<Result<installed_content::equipment::Database, String>>,
-    pub(super) result: OccupiedStatesReply,
+    pub(super) result: OccupiedScan,
     refused: Refusals,
     names_cached: NameCache,
     positions: HashMap<u32, usize>,
@@ -37,14 +38,11 @@ pub(super) struct Scan<'a> {
 }
 
 impl<'a> Scan<'a> {
-    pub(super) fn new(branch: u64, cat: Option<&'a Catalogue>) -> Self {
-        let mut result = OccupiedStatesReply {
-            branch_id: branch.to_string(),
-            decimals: 5,
+    pub(super) fn new(cat: Option<&'a Catalogue>) -> Self {
+        let mut result = OccupiedScan {
             states: Vec::new(),
             observed: Vec::new(),
             laws: Vec::new(),
-            strength_missing: STRENGTH_MISSING.into(),
             warnings: Vec::new(),
         };
         let names = cat
@@ -310,8 +308,10 @@ impl<'a> Scan<'a> {
                 }
             }
         }
-        // Default eligibility shares one lazy world over this supplying read.
-        let law_text = std::sync::OnceLock::new();
+        // Default eligibility shares one lazy world over this supplying read, and
+        // each law's answer for one occupier and occupied country.
+        let law_world = std::sync::OnceLock::new();
+        let mut law_valid = HashMap::<(String, u32, u32), Result<bool, String>>::new();
         let mut assigned = HashMap::<StateKey, i32>::new();
         let mut unresolved_assigned = HashSet::new();
         for row in recorded_rows::<tables::StateAssignedManpower>(frame)? {
@@ -440,21 +440,21 @@ impl<'a> Scan<'a> {
                     if definition.visible.is_empty() && controller == occupied {
                         return Ok(true);
                     }
-                    let text = law_text
+                    let world = law_world
                         .get_or_init(|| {
                             let cat = self.cat.ok_or_else(|| {
                                 "Occupation law eligibility needs recorded content".to_owned()
                             })?;
-                            Ok::<_, String>(scripted_text::ScriptedText::new(
-                                frame,
-                                &cat.localisation,
-                                cat.scripted_content()?,
-                                0,
-                            ))
+                            cat.scripted_content()?.recorded_world(frame)
                         })
                         .as_ref()
                         .map_err(Clone::clone)?;
-                    occupation_law_valid(text.trigger_world()?, definition, controller, occupied)
+                    law_valid
+                        .entry((token.to_owned(), controller, occupied))
+                        .or_insert_with(|| {
+                            occupation_law_valid(world, definition, controller, occupied)
+                        })
+                        .clone()
                 },
             );
             if let Some(reason) = &law_missing {
@@ -532,13 +532,13 @@ impl<'a> Scan<'a> {
                 owner: tag(state.owner),
                 occupier: tag(state.controller),
                 occupied: tag(resistance.country),
-                resistance_raw: resistance.level.to_string(),
-                compliance_raw: resistance.compliance.to_string(),
-                resistance_speed_raw: resistance.speed.to_string(),
-                compliance_speed_raw: resistance.compliance_speed.to_string(),
-                garrison_strength_raw: strength.map(|value| value.to_string()),
+                resistance_raw: resistance.level,
+                compliance_raw: resistance.compliance,
+                resistance_speed_raw: resistance.speed,
+                compliance_speed_raw: resistance.compliance_speed,
+                garrison_strength_raw: strength,
                 required_manpower: garrison.map(|row| row.required_manpower),
-                garrison_required_raw: garrison.map(|row| row.garrison_required.to_string()),
+                garrison_required_raw: garrison.map(|row| row.garrison_required),
                 garrison_alert,
                 garrison_red: strength
                     .and_then(|value| self.red_threshold.map(|threshold| value < threshold)),
@@ -567,7 +567,7 @@ impl<'a> Scan<'a> {
             }
             let index = *self.positions.entry(state.id).or_insert_with(|| {
                 let index = self.result.states.len();
-                self.result.states.push(OccupiedSeries {
+                self.result.states.push(StateRuns {
                     state: state.id,
                     runs: Vec::new(),
                 });
@@ -658,14 +658,7 @@ impl<'a> Scan<'a> {
         let country_tables = [TableId::Countries, TableId::CountryLinks];
         let countries_changed = self.country_inputs.as_ref().is_none_or(|inputs| {
             let same_countries = inputs.views[0].is(&frame.tables[TableId::Countries.index()])
-                || inputs.countries.len() == countries.len()
-                    && inputs
-                        .countries
-                        .iter()
-                        .zip(countries)
-                        .all(|((id, slot, tag), row)| {
-                            *id == row.id && *slot == row.canonical_slot && *tag == row.tag
-                        });
+                || inputs.countries.same(countries);
             let same_links = inputs.views[1].is(&frame.tables[TableId::CountryLinks.index()])
                 || inputs.links == links;
             !same_countries || !same_links
@@ -674,10 +667,7 @@ impl<'a> Scan<'a> {
         if countries_changed {
             self.countries = Arc::new(country_index(countries, links, &mut self.country_refused));
             self.country_inputs = Some(CountryInputs {
-                countries: countries
-                    .iter()
-                    .map(|row| (row.id, row.canonical_slot, row.tag.clone()))
-                    .collect(),
+                countries: CountryKeys::read(countries),
                 links: links.to_vec(),
                 views,
             });
@@ -812,61 +802,72 @@ pub(in crate::products) fn scan_history(
         TableId::CountryCollaboration,
         TableId::LexicalTokens,
     ];
-    let mut scan = Scan::new(branch, cat);
-    // Runtime law bodies need the full supplying frame. Decode each block
-    // incrementally once rather than seeking its keyframe at every daily read.
-    let selected: &[TableId] = if scan.laws.as_ref().is_ok_and(|laws| {
+    let mut scan = Scan::new(cat);
+    // Runtime law bodies read the trigger kit. Decode each block incrementally
+    // once rather than seeking its keyframe at every daily read.
+    let mut selected = selected.to_vec();
+    if scan.laws.as_ref().is_ok_and(|laws| {
         laws.definitions
             .values()
             .any(|law| !law.visible.is_empty() || !law.available.is_empty())
     }) {
-        &TableId::ALL
-    } else {
-        &selected
-    };
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        let mut decoder = FrameDecoder::for_tables(selected);
-        let frames = match replay.read_block_selected(block, selected) {
-            Ok(frames) => frames,
-            Err(e) => {
-                scan.result.warnings.push(format!(
-                    "Occupied states block {} unavailable: {e}",
-                    block.first_hour
-                ));
-                scan.trend.unavailable(format!(
-                    "Occupation history block {} unavailable: {e}",
-                    block.first_hour
-                ));
-                scan.gap();
-                continue;
-            }
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Occupied states request cancelled",
-                ));
-            }
-            let decoded = match decoder.advance(&frame) {
-                Ok(decoded) => decoded,
-                Err(e) => {
-                    scan.result.warnings.push(format!(
-                        "Occupied states at {} unavailable: {e}",
-                        frame.hour
-                    ));
-                    scan.trend.unavailable(format!(
-                        "Occupation history at {} unavailable: {e}",
-                        frame.hour
-                    ));
-                    scan.gap();
-                    break;
-                }
-            };
-            validate_campaign(decoded, replay)?;
-            scan.push(decoded, frame.hour)?;
-        }
+        selected.extend_from_slice(crate::triggers::RECORDED_TABLES);
+        selected.sort_unstable();
+        selected.dedup();
     }
+    let selected = &selected[..];
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        selected,
+        cancelled,
+        |blocks| {
+            for (block, frames) in blocks {
+                let mut decoder = FrameDecoder::for_tables(selected);
+                let frames = match frames {
+                    Ok(frames) => frames,
+                    Err(e) => {
+                        scan.result.warnings.push(format!(
+                            "Occupied states block {} unavailable: {e}",
+                            block.first_hour
+                        ));
+                        scan.trend.unavailable(format!(
+                            "Occupation history block {} unavailable: {e}",
+                            block.first_hour
+                        ));
+                        scan.gap();
+                        continue;
+                    }
+                };
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "Occupied states request cancelled",
+                        ));
+                    }
+                    let decoded = match decoder.advance(&frame) {
+                        Ok(decoded) => decoded,
+                        Err(e) => {
+                            scan.result.warnings.push(format!(
+                                "Occupied states at {} unavailable: {e}",
+                                frame.hour
+                            ));
+                            scan.trend.unavailable(format!(
+                                "Occupation history at {} unavailable: {e}",
+                                frame.hour
+                            ));
+                            scan.gap();
+                            break;
+                        }
+                    };
+                    validate_campaign(decoded, replay)?;
+                    scan.push(decoded, frame.hour)?;
+                }
+            }
+            Ok(())
+        },
+    )?;
     Ok(scan.finish())
 }
 
@@ -935,7 +936,7 @@ mod tests {
                 },
             ]));
         frame.metrics.table_ns[TableId::StateResistance.index()] = 1;
-        let mut scan = Scan::new(1, None);
+        let mut scan = Scan::new(None);
         scan.push(&frame, 100).unwrap();
         assert!(scan.countries.identities.is_empty());
         assert!(scan.countries.names.is_empty());
@@ -982,7 +983,7 @@ mod tests {
                 ..Default::default()
             }]));
         frame.metrics.table_ns[TableId::StateResistance.index()] = 1;
-        let mut scan = Scan::new(1, None);
+        let mut scan = Scan::new(None);
         scan.push(&frame, 100).unwrap();
         let indexed = scan.countries.clone();
         frame.hour = 101;
@@ -1013,7 +1014,7 @@ mod tests {
         engine::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[]);
-        let mut scan = Scan::new(1, Some(&cat));
+        let mut scan = Scan::new(Some(&cat));
         let state = StateRow {
             id: 41,
             ..Default::default()

@@ -44,7 +44,7 @@ function fixture(tag: string, hour: number): Fixture {
   const project = { id: '1', kind: 'building', tag, building: 0, repair: false, state: 1, toState: null,
     province: null, routeProvinces: null, baseLevel: null, targetLevel: null, costRaw: '100', createdHour: hour - 1, firstRead: hour,
     runs: [{ firstHour: hour, lastHour: 159, factories: 1, remaining: 1, repairLevels: 0 }], earlierUnknown: false,
-    output: [], built: [], unaccounted: [], possible: [], added: [], end: null };
+    built: [], unaccounted: [], possible: [], added: [], end: null, firstRepairTick: null };
   const sunk = { sinkHour: hour - 1, knownAt: hour, name: 'Vessel', classIndex: 0, recordedNameIndex: null,
     victim: tag, attacker: null, victimAsOf: hour, attackerAsOf: null, placeIndex: 0, cause: 'hostile', attributionName: null, assistedKill: false };
   const ace = { id: '1', firstSeen: 90, runs: [{ ...interval, tag, name: 0, callsign: null,
@@ -54,8 +54,8 @@ function fixture(tag: string, hour: number): Fixture {
     outcomeName: null, launched: false, succeeded: false };
   return { actor: { tag, hour }, groups, groupLoads: [], rows: undefined, requests: [], replies: {
     'synthetic-manifest': { windows: [interval], available: true, unavailable: null, contentWarnings: [] },
-    'construction-log': { branchId: '1', costScale: 100000, reads: [hour], railwayReads: [], repairIcon: null, warnings: [],
-      types: [{ id: 1, token: 'mod/building', name: 'Building', icon: null }], states: [], projects: [project] },
+    'construction-log-manifest': { costScale: 100000, windows: [interval], recorded: true, repairIcon: null, warnings: [],
+      types: [{ id: 1, token: 'mod/building', name: 'Building', icon: null }] },
     'ships-sunk': { branchId: '1', available: true, ...interval, firstRead: hour, unread: [], warnings: [], places: ['Sea'], recordedNames: [],
       classes: [{ token: 1, key: 'mod/ship', name: 'Ship', icon: null }], rows: [sunk] },
     'air-aces': { branchId: '1', ...interval, available: true, unavailable: null, observed: [interval], readHours: [hour], warnings: [],
@@ -70,6 +70,7 @@ function fixture(tag: string, hour: number): Fixture {
     'division-log-totals': { created: 0, lost: 1, transferred: 0, warnings: [] },
   }, windows: {
     synthetic: { observed: [[90, 159]], warnings: [], contentWarnings: [] },
+    'construction-log': { window: 0, interval, outputReads: [], outputUnavailable: [], projects: [project], outputs: [], warnings: [] },
     'air-aces': { branchId: '1', window: 0, ...interval, warnings: [], texts: ['Ace'], aces: [ace] },
     'division-log': { window: 0, interval, contentWarnings: [], warnings: [], rows: [{ id: '1', division: '1', readHour: 159,
       hour: hour - 1, by: false, afterHour: null, kind: 'lost', status: 'division_destroyed', tag, countryHour: hour,

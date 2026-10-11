@@ -1345,10 +1345,25 @@ fn encode_replacements_typed<T: RowCodec>(
 }
 
 fn apply_typed<T: RowCodec>(
-    previous: Vec<T>,
+    mut previous: Vec<T>,
     changed: &[DeltaRow],
     deleted: &[u128],
 ) -> io::Result<Vec<T>> {
+    // Changes to rows already present keep the table's length and order: they apply
+    // in place, rather than moving every row of the table into a new one.
+    if deleted.is_empty() {
+        let at: Option<Vec<usize>> = changed
+            .iter()
+            .map(|delta| previous.binary_search_by_key(&delta.key, T::key).ok())
+            .collect();
+        if let Some(at) = at {
+            for (delta, at) in changed.iter().zip(at) {
+                let row = std::mem::take(&mut previous[at]);
+                previous[at] = delta.apply(Some(row))?;
+            }
+            return Ok(previous);
+        }
+    }
     let len = previous.len();
     merge_typed(previous, len, changed, deleted, Ok)
 }
@@ -1726,6 +1741,37 @@ pub fn decode_delta(
     previous_key: u128,
     decoder: &mut Decoder<'_>,
 ) -> io::Result<DeltaRow> {
+    let mut values = Vec::new();
+    let (key, mask, fields) = decode_delta_with(table, previous_key, decoder, |change| {
+        change.encode(&mut values)
+    })?;
+    #[cfg(test)]
+    delta_decode_ownership::record();
+    Ok(DeltaRow {
+        format: decoder.format,
+        key,
+        mask,
+        values,
+        recorded_fields: fields,
+    })
+}
+
+/// Validate the recorded delta fields without copying their borrowed values.
+/// Typed nested validation and baseline arithmetic remain reconstruction work.
+pub(crate) fn validate_delta_row(
+    table: TableId,
+    previous_key: u128,
+    decoder: &mut Decoder<'_>,
+) -> io::Result<u128> {
+    decode_delta_with(table, previous_key, decoder, |_| Ok(())).map(|(key, _, _)| key)
+}
+
+fn decode_delta_with<'a>(
+    table: TableId,
+    previous_key: u128,
+    decoder: &mut Decoder<'a>,
+    mut visit: impl FnMut(Change<'a>) -> io::Result<()>,
+) -> io::Result<(u128, u64, usize)> {
     let key = table.decode_key(previous_key, decoder)?;
     let mut mask_bytes = [0; 8];
     let fields = table.last_change().fields(table, decoder.format);
@@ -1735,19 +1781,43 @@ pub fn decode_delta(
     if mask == 0 || mask & !full_mask(fields) != 0 {
         return Err(invalid("invalid recorded delta mask"));
     }
-    let mut values = Vec::new();
     for (index, kind) in table.schema().iter().enumerate() {
         if mask & (1_u64 << index) != 0 {
-            kind.decode_change(decoder)?.encode(&mut values)?;
+            visit(kind.decode_change(decoder)?)?;
         }
     }
-    Ok(DeltaRow {
-        format: decoder.format,
-        key,
-        mask,
-        values,
-        recorded_fields: fields,
-    })
+    Ok((key, mask, fields))
+}
+
+#[cfg(test)]
+pub(crate) mod delta_decode_ownership {
+    use std::cell::Cell;
+
+    thread_local! {
+        static OWNED_ROWS: Cell<Option<usize>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn record() {
+        OWNED_ROWS.with(|count| {
+            if let Some(value) = count.get() {
+                count.set(Some(value + 1));
+            }
+        });
+    }
+
+    /// Observe just this thread and restore the previous observation on panic.
+    pub(crate) fn count<T>(read: impl FnOnce() -> T) -> (T, usize) {
+        struct Reset(Option<usize>);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                OWNED_ROWS.with(|count| count.set(self.0));
+            }
+        }
+        let _reset = Reset(OWNED_ROWS.with(|count| count.replace(Some(0))));
+        let result = read();
+        let count = OWNED_ROWS.with(|count| count.get().unwrap());
+        (result, count)
+    }
 }
 
 #[derive(Clone, Copy)]

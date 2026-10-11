@@ -6,6 +6,16 @@ use replay::{
 };
 use std::sync::{Arc, atomic::AtomicBool};
 
+/// A read as its reply shows it.
+pub(super) fn reply_read(
+    row: &replay::rows::CountryFuelRow,
+    hour: i32,
+    left_out: Option<super::DayLeftOut>,
+) -> super::FuelRead {
+    let read = super::read_of(row, hour, true, left_out, &mut Default::default());
+    super::FuelRead::from(&read)
+}
+
 #[test]
 fn day_keeps_receipts_and_other_in_their_recorded_native_units() {
     let row = replay::rows::CountryFuelRow {
@@ -17,7 +27,7 @@ fn day_keeps_receipts_and_other_in_their_recorded_native_units() {
         ring_other_raw: 1,
         ..Default::default()
     };
-    let day = super::read_of(&row, 1000, true, None).day.unwrap();
+    let day = reply_read(&row, 1000, None).day.unwrap();
     assert_eq!(
         day.received_raw,
         ["50001", "25000", "24999"].map(str::to_owned)
@@ -25,7 +35,7 @@ fn day_keeps_receipts_and_other_in_their_recorded_native_units() {
     assert_eq!(day.other_raw, "1");
     assert_eq!(day.burned_raw, "32769");
     assert!(
-        super::read_of(&row, 1000, true, Some(super::DayLeftOut::Overlaps))
+        reply_read(&row, 1000, Some(super::DayLeftOut::Overlaps))
             .day
             .is_none()
     );
@@ -235,7 +245,6 @@ fn fuel_reads_carry_until_the_next_keep_whole_days_once_and_never_cross_gaps() {
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
     let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
     let reads: Vec<_> = scanned
-        .reads
         .iter()
         .map(|read| {
             (
@@ -294,15 +303,15 @@ fn fuel_reads_carry_until_the_next_keep_whole_days_once_and_never_cross_gaps() {
         ]
     );
     assert_eq!(
-        scanned.reads[4]
+        scanned[4]
             .day
             .as_ref()
             .map(|day| (day.gained_raw.as_str(), day.burned_raw.as_str())),
         Some(("1000000", "65536"))
     );
-    assert_eq!(scanned.reads[4].capacity_raw, "655360000");
+    assert_eq!(scanned[4].capacity_raw, "655360000");
     // The latest hour's lend-lease fuel, which the day's gain does not include.
-    assert_eq!(scanned.reads[4].lend_lease_raw, "7");
+    assert_eq!(scanned[4].lend_lease_raw, "7");
 }
 
 #[test]
@@ -326,7 +335,7 @@ fn a_fuel_day_is_governed_by_all_24_samples_before_its_read() {
             .collect();
         let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
         let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
-        scanned.reads.last().unwrap().left_out
+        scanned.last().unwrap().left_out
     };
     assert_eq!(day_read_at_24(0, &[], &[]), None);
     // The sample 24 hours before a read (without a state) governs the first
@@ -370,7 +379,7 @@ fn a_fuel_day_is_not_known_where_the_links_cannot_tell_who_owns_what() {
             .collect();
         let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
         let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
-        scanned.reads.last().unwrap().left_out
+        scanned.last().unwrap().left_out
     };
     // Countries lists the tag but its links are gone: whose it is, and whether it
     // owned a state, is unknown, not "no state".
@@ -577,6 +586,9 @@ fn five_thousand_country_requests_share_one_decode_and_ownership_walk() {
     assert_eq!(after.countries.len(), count as usize);
     assert_eq!(after.decoded_frames, 25);
     assert_eq!(after.ownership_rows, 25 * count as usize);
+    // Every country's repeated refusal is one shared text.
+    let reason = |tag: &str| after.countries[tag].reads[0].awards_reason.clone().unwrap();
+    assert!(Arc::ptr_eq(&reason("C0001"), &reason("C5000")));
 }
 
 #[test]
@@ -597,7 +609,7 @@ fn a_new_tag_has_the_same_absent_sample_evidence_as_a_single_country_scan() {
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
     let scanned = super::scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
     assert_eq!(
-        scanned.reads.last().unwrap().left_out,
+        scanned.last().unwrap().left_out,
         Some(super::DayLeftOut::NotUpdated)
     );
 }
@@ -654,7 +666,7 @@ fn completed_award_totals_keep_twenty_four_i64_extremes_and_per_update_conversio
         entry.gains_raw = [i64::MAX, i64::MIN, 0, 0];
         entry.consumed_raw = i64::MIN;
     }
-    let day = super::read_of(&row, 1000, true, None).day.unwrap();
+    let day = reply_read(&row, 1000, None).day.unwrap();
     let totals = day.awards.unwrap();
     assert_eq!(day.gained_raw, "221360928884514619368");
     assert_eq!(day.burned_raw, (24_i128 * i128::from(i64::MIN)).to_string());
@@ -695,12 +707,7 @@ fn native_fuel_label_templates_expand_content_and_preserve_unrecorded_oil_operan
 #[test]
 fn applied_updates_override_prefilled_ring_and_stale_ownership_without_inventing_wings() {
     let row = award_row(1000);
-    let read = super::read_of(
-        &row,
-        1000,
-        true,
-        Some(super::DayLeftOut::OwnershipNotRecorded),
-    );
+    let read = reply_read(&row, 1000, Some(super::DayLeftOut::OwnershipNotRecorded));
     assert_eq!(read.left_out, None);
     let day = read.day.unwrap();
     assert_eq!(
@@ -775,7 +782,7 @@ fn attribution_requires_the_supplying_hour_and_native_country_identity() {
     window.hours.remove(7);
     assert!(super::awards_of(&row, 1000).is_err());
     row.awards = Recorded::NotRecorded;
-    let legacy = super::read_of(&row, 1000, true, None);
+    let legacy = reply_read(&row, 1000, None);
     assert_eq!(legacy.day.unwrap().gained_raw, "999");
     assert!(legacy.awards_reason.unwrap().contains("not recorded"));
 }

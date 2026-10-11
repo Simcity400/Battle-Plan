@@ -2,11 +2,11 @@
 .peace-deals .log-scroll { padding: 0 12px 12px; }
 .peace-deal { margin-bottom: 10px; border-radius: var(--r-md); padding: 10px 12px; background: color-mix(in srgb, var(--text) 4%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border) 70%, transparent); }
 .peace-heading { display: flex; align-items: baseline; gap: 8px; }
-.peace-heading b { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
-.peace-heading small { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
+.peace-heading b { flex: 1; min-width: 0; font-size: 0.8125rem; font-weight: 600; overflow-wrap: anywhere; }
+.peace-heading small { color: var(--muted); font-size: 0.6875rem; font-variant-numeric: tabular-nums; text-align: right; }
 .peace-muted { color: var(--muted); }
 .peace-heading b.peace-muted { font-weight: 400; }
-.peace-sides { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 6px; margin: 6px 0 8px; font-size: 11px; color: var(--muted); }
+.peace-sides { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 6px; margin: 6px 0 8px; font-size: 0.6875rem; color: var(--muted); }
 .peace-side { min-width: 0; }
 .peace-countries { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; }
 .peace-countries .peace-country { white-space: nowrap; }
@@ -14,20 +14,20 @@
 .peace-country { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
 .peace-flag { display: inline-flex; width: 18px; height: 12px; flex: none; border-radius: 1px; overflow: hidden; object-fit: cover; }
 .peace-sides .peace-flag { width: 21px; height: 14px; }
-.peace-actions { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: 4px 10px; align-items: start; font-size: 12px; }
+.peace-actions { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: 4px 10px; align-items: start; font-size: 0.75rem; }
 .peace-action { display: contents; }
 .peace-action-label { display: flex; align-items: center; gap: 6px; max-width: 14em; overflow-wrap: anywhere; }
 .peace-action-label em { font-style: normal; color: var(--muted); }
-.peace-chips { position: relative; display: flex; align-items: start; gap: 4px; min-width: 0; font-size: 11px; }
-.peace-chip { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--text) 8%, transparent); font-size: 11px; }
+.peace-chips { position: relative; display: flex; align-items: start; gap: 4px; min-width: 0; font-size: 0.6875rem; }
+.peace-chip { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--text) 8%, transparent); font-size: 0.6875rem; }
 .peace-chip > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .peace-more { color: var(--muted); cursor: help; }
-.peace-derived { display: inline-block; margin-top: 6px; color: var(--muted); font-size: 10px; cursor: help; }
-.peace-observation, .peace-capture-unavailable { margin-top: 5px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
-.peace-gap { padding: 8px 12px 12px; color: var(--muted); font-size: 11px; }
-.peace-none { padding: 8px 12px; color: var(--muted); font-size: 12px; }
+.peace-derived { display: inline-block; margin-top: 6px; color: var(--muted); font-size: 0.625rem; cursor: help; }
+.peace-observation, .peace-capture-unavailable { margin-top: 5px; color: var(--muted); font-size: 0.6875rem; overflow-wrap: anywhere; }
+.peace-gap { padding: 8px 12px 12px; color: var(--muted); font-size: 0.6875rem; }
+.peace-none { padding: 8px 12px; color: var(--muted); font-size: 0.75rem; }
 .peace-deals .log.is-compact .peace-deal { margin-bottom: 6px; padding: 6px 8px; }
-.peace-deals .log.is-compact .peace-heading b { font-size: 12px; }
+.peace-deals .log.is-compact .peace-heading b { font-size: 0.75rem; }
 .peace-deals .log.is-compact .peace-sides { gap: 4px; margin: 4px 0 6px; }
-.peace-deals .log.is-compact .peace-actions { gap: 3px 8px; font-size: 11px; }
+.peace-deals .log.is-compact .peace-actions { gap: 3px 8px; font-size: 0.6875rem; }
 .peace-deals .log.is-compact .peace-gap { padding: 6px 8px 8px; }

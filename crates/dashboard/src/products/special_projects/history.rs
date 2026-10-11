@@ -4,7 +4,7 @@ use crate::metadata::{check_cancel, tagged_countries, validate_campaign};
 use replay::{
     container::Replay,
     frame::{FrameDecoder, Metrics, SharedView, TableView},
-    rows::{CountryRow, TableRows},
+    rows::{CountryRow, RowCodec, TableRows, TableSchema},
 };
 use std::collections::BTreeSet;
 
@@ -62,23 +62,91 @@ impl Actors {
     }
 }
 
+/// The complete table's rows at `keys`, in key order; None when it is incomplete.
+fn rows_at<T: TableSchema>(
+    frame: &DecodedFrame,
+    keys: impl IntoIterator<Item = u32>,
+) -> Option<Vec<T::Row>> {
+    let rows = frame.complete::<T>().ok()?;
+    let keys: BTreeSet<_> = keys.into_iter().map(u128::from).collect();
+    Some(
+        keys.iter()
+            .filter_map(|key| rows.binary_search_by_key(key, |row| row.key()).ok())
+            .map(|index| rows[index].clone())
+            .collect(),
+    )
+}
+
+/// The projected rows, or Unavailable: the projection reads neither the rows
+/// nor the reason of an incomplete table.
+fn projected<T: TableSchema>(rows: Option<Vec<T::Row>>) -> SharedView {
+    rows.map_or_else(
+        || TableView::Unavailable {
+            reason: "Not recorded completely".into(),
+        },
+        |rows| TableView::Complete(T::wrap(rows)),
+    )
+    .into()
+}
+
 pub(super) struct Inputs {
     views: [SharedView; TABLES.len()],
+    /// The recorded LexicalTokens read, which renews cached presentations.
+    pub lexical: ViewIdentity,
     actors: Arc<Actors>,
 }
 impl Inputs {
-    fn new(frame: &DecodedFrame, actors: Arc<Actors>) -> Self {
+    fn new(frame: &DecodedFrame, actors: Arc<Actors>, previous: Option<&Self>) -> Self {
+        // Builder::person reads each program a project references, that program's
+        // scientist, the character's portrait holder and script token;
+        // Builder::presentation each definition's token. Only those rows are kept,
+        // so no span holds a recorded roster or dictionary.
+        let projects = frame.complete::<tables::Projects>().unwrap_or_default();
+        let programs = rows_at::<tables::ProjectPrograms>(
+            frame,
+            projects
+                .iter()
+                .filter(|project| {
+                    project.program_reference as u32 == engine::nproject_cprogram::REFERENCE_TYPE
+                })
+                .map(|project| (project.program_reference >> 32) as u32),
+        );
+        let scientists: Vec<_> = programs
+            .iter()
+            .flatten()
+            .filter(|program| program.scientist as u32 == engine::ccharacter::REFERENCE_TYPE)
+            .map(|program| (program.scientist >> 32) as u32)
+            .collect();
+        let characters = rows_at::<tables::Characters>(frame, scientists.iter().copied());
+        let portraits = rows_at::<tables::CharacterPortraits>(frame, scientists);
+        let definitions = projects.iter().map(|project| project.definition_id);
+        let names = characters
+            .iter()
+            .flatten()
+            .filter_map(|character| u32::try_from(character.name_token_id).ok());
+        let lexical = rows_at::<tables::LexicalTokens>(frame, definitions.chain(names));
+        // In TABLES order.
+        let mut views = [
+            frame.tables[TableId::Projects.index()].clone(),
+            projected::<tables::ProjectPrograms>(programs),
+            frame.tables[TableId::ProjectHistory.index()].clone(),
+            projected::<tables::Characters>(characters),
+            projected::<tables::CharacterPortraits>(portraits),
+            projected::<tables::LexicalTokens>(lexical),
+        ];
+        // Equal rows keep the previous span's allocation, not another copy.
+        if let Some(previous) = previous {
+            for (view, seen) in views.iter_mut().zip(&previous.views) {
+                if *view == *seen {
+                    *view = seen.clone();
+                }
+            }
+        }
         Self {
-            views: TABLES.map(|table| frame.tables[table.index()].clone()),
+            views,
+            lexical: frame.tables[TableId::LexicalTokens.index()].identity(),
             actors,
         }
-    }
-    fn same(&self, frame: &DecodedFrame, actors: &Arc<Actors>) -> bool {
-        Arc::ptr_eq(&self.actors, actors)
-            && TABLES
-                .iter()
-                .zip(&self.views)
-                .all(|(table, seen)| SharedView::ptr_eq(seen, &frame.tables[table.index()]))
     }
     pub(super) fn unresolved_actors(&self) -> usize {
         self.actors.unresolved
@@ -158,6 +226,8 @@ pub(super) struct BranchScan {
     blocks: usize,
     actors: Option<Arc<Actors>>,
     actor_views: Option<[ViewIdentity; 2]>,
+    /// The last span's recorded tables; a span ends where one is replaced.
+    views: Option<[ViewIdentity; TABLES.len()]>,
 }
 impl BranchScan {
     #[cfg(test)]
@@ -183,9 +253,14 @@ impl BranchScan {
         }
         let actors = Arc::clone(self.actors.as_ref().expect("actor index observed"));
         let read = slot_read(&frame.metrics, TableId::Projects, frame.hour);
+        let recorded = TABLES.map(|table| &frame.tables[table.index()]);
         if let Some(span) = self.spans.last_mut()
             && span.last_hour.checked_add(1) == Some(frame.hour)
-            && span.inputs.same(frame, &actors)
+            && Arc::ptr_eq(&span.inputs.actors, &actors)
+            && self
+                .views
+                .as_ref()
+                .is_some_and(|views| views.iter().zip(recorded).all(|(seen, view)| seen.is(view)))
         {
             span.last_hour = frame.hour;
             if read {
@@ -193,7 +268,9 @@ impl BranchScan {
             }
             return;
         }
-        let inputs = Arc::new(Inputs::new(frame, actors));
+        let previous = self.spans.last().map(|span| &*span.inputs);
+        let inputs = Arc::new(Inputs::new(frame, actors, previous));
+        self.views = Some(recorded.map(SharedView::identity));
         self.spans.push(Span {
             first_hour: frame.hour,
             last_hour: frame.hour,
@@ -214,29 +291,37 @@ impl BranchScan {
             .map(|block| block.first_hour)
             .min();
         let mut decoded_blocks = 0;
-        for block in replay
-            .index
-            .iter()
-            .skip(self.blocks)
-            .filter(|block| block.branch == branch)
-        {
-            check_cancel(cancelled)?;
-            decoded_blocks += 1;
-            let mut decoder = FrameDecoder::for_tables(&SELECTED);
-            let Ok(frames) = replay.read_block_selected(block, &SELECTED) else {
-                continue;
-            };
-            for frame in frames {
-                check_cancel(cancelled)?;
-                let Ok(frame) = decoder.advance(&frame) else {
-                    break;
-                };
-                if validate_campaign(frame, replay).is_err() {
-                    break;
+        crate::blocks::scan_blocks(
+            replay,
+            replay
+                .index
+                .iter()
+                .skip(self.blocks)
+                .filter(|block| block.branch == branch),
+            &SELECTED,
+            cancelled,
+            |blocks| {
+                for (_, frames) in blocks {
+                    check_cancel(cancelled)?;
+                    decoded_blocks += 1;
+                    let mut decoder = FrameDecoder::for_tables(&SELECTED);
+                    let Ok(frames) = frames else {
+                        continue;
+                    };
+                    for frame in frames {
+                        check_cancel(cancelled)?;
+                        let Ok(frame) = decoder.advance(&frame) else {
+                            break;
+                        };
+                        if validate_campaign(frame, replay).is_err() {
+                            break;
+                        }
+                        self.observe(frame);
+                    }
                 }
-                self.observe(frame);
-            }
-        }
+                Ok(())
+            },
+        )?;
         self.blocks = replay.index.len();
         Ok(decoded_blocks)
     }
@@ -386,151 +471,169 @@ pub(super) fn scoped_names(
     let mut keys = BTreeMap::<(u32, String), Option<String>>::new();
     let mut lexical_view: Option<ViewIdentity> = None;
     let mut at = 0;
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        check_cancel(cancelled)?;
-        #[cfg(test)]
-        {
-            names.decoded_blocks += 1;
-        }
-        let mut decoder = FrameDecoder::new();
-        let Ok(frames) = replay.read_block_selected(block, &TableId::ALL) else {
-            continue;
-        };
-        for frame in frames {
-            check_cancel(cancelled)?;
-            let Ok(frame) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(frame, replay).is_err() {
-                break;
-            }
-            while at < scan.spans.len() && scan.spans[at].last_hour < frame.hour {
-                at += 1;
-            }
-            let Some(span) = scan
-                .spans
-                .get(at)
-                .filter(|span| span.first_hour <= frame.hour)
-            else {
-                continue;
-            };
-            let Ok(countries) = frame.complete::<tables::Countries>() else {
-                continue;
-            };
-            let projects = frame.complete::<tables::Projects>().ok();
-            let tokens = frame.complete::<tables::LexicalTokens>().ok();
-            let lexical = &frame.tables[TableId::LexicalTokens.index()];
-            if lexical_view.as_ref().is_none_or(|seen| !seen.is(lexical)) {
-                keys.clear();
-                lexical_view = Some(lexical.identity());
-            }
-            for (tag, &(id, slot)) in &span.inputs.actors.tags {
-                let Ok(index) = countries.binary_search_by_key(&id, |country| country.id) else {
+    // Scripted names and their triggers read the trigger kit.
+    let mut selected = SELECTED.to_vec();
+    selected.extend_from_slice(crate::triggers::RECORDED_TABLES);
+    selected.sort_unstable();
+    selected.dedup();
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                check_cancel(cancelled)?;
+                #[cfg(test)]
+                {
+                    names.decoded_blocks += 1;
+                }
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
                     continue;
                 };
-                let country = &countries[index];
-                let identity = (slot, country.id);
-                let actor = actors.entry(tag.clone()).or_default();
-                if actor.last.is_none_or(|(old, hour)| {
-                    old != identity || hour.checked_add(1) != Some(frame.hour)
-                }) {
-                    actor.admitted = false;
-                }
-                if actor.identity.is_some_and(|old| old != identity) {
-                    actor.open.clear();
-                }
-                actor.identity = Some(identity);
-                actor.last = Some((identity, frame.hour));
-                let Some(projects) = projects else {
-                    actor.admitted = false;
-                    continue;
-                };
-                if span.reads.binary_search(&frame.hour).is_ok() {
-                    actor.admitted = true;
-                }
-                if !actor.admitted {
-                    continue;
-                }
-                let Some(links) = span.inputs.actors.links.get(&slot) else {
-                    continue;
-                };
-                let mut next = BTreeSet::new();
-                for project in owned_rows(projects, links, slot, |row| row.owner) {
-                    let key = (project.local_id, project.definition_id);
-                    if !visible(project, actor.open.contains(&key)) {
-                        continue;
+                for frame in frames {
+                    check_cancel(cancelled)?;
+                    let Ok(frame) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(frame, replay).is_err() {
+                        break;
                     }
-                    next.insert(key);
-                    let Ok(tag) = std::str::from_utf8(tag) else {
+                    while at < scan.spans.len() && scan.spans[at].last_hour < frame.hour {
+                        at += 1;
+                    }
+                    let Some(span) = scan
+                        .spans
+                        .get(at)
+                        .filter(|span| span.first_hour <= frame.hour)
+                    else {
                         continue;
                     };
-                    // Resolve each definition/country key once per lexical view;
-                    // only reached scoped names evaluate the complete World.
-                    let key = keys
-                        .entry((project.definition_id, tag.to_owned()))
-                        .or_insert_with(|| {
-                            let tokens = tokens?;
-                            let token = tokens
-                                .binary_search_by_key(&project.definition_id, |row| row.token)
-                                .ok()
-                                .and_then(|index| {
-                                    std::str::from_utf8(&tokens[index].literal).ok()
-                                })?;
-                            let definition = content.definitions.projects.get(token)?;
-                            if content.definitions.unsettled.is_some()
-                                || definition.refusal.is_some()
-                            {
-                                return None;
-                            }
-                            let key = country_key(
-                                &content.catalogue,
-                                tag,
-                                project_name_key(definition, token),
-                            );
-                            needs_scope(&content.catalogue.localisation, &key).then_some(key)
-                        });
-                    let Some(key) = key else {
+                    let Ok(countries) = frame.complete::<tables::Countries>() else {
                         continue;
                     };
-                    let value = match content.catalogue.scripted_content() {
-                        Ok(scripted) => {
-                            let context = crate::scripted_text::ScriptedText::new(
-                                frame,
-                                &content.catalogue.localisation,
-                                scripted,
-                                slot,
-                            );
-                            let (text, mut findings) = catalogue::localised_in_details(
-                                &content.catalogue.localisation,
-                                key,
-                                &[],
-                                &context,
-                            );
-                            let text = text.map_err(|finding| findings.push(*finding)).ok();
-                            Name {
-                                text,
-                                warnings: findings
-                                    .into_iter()
-                                    .map(|finding| {
-                                        format!("{}: {}", finding.subject, finding.message)
-                                    })
-                                    .collect(),
-                            }
+                    let projects = frame.complete::<tables::Projects>().ok();
+                    let tokens = frame.complete::<tables::LexicalTokens>().ok();
+                    let lexical = &frame.tables[TableId::LexicalTokens.index()];
+                    if lexical_view.as_ref().is_none_or(|seen| !seen.is(lexical)) {
+                        keys.clear();
+                        lexical_view = Some(lexical.identity());
+                    }
+                    for (tag, &(id, slot)) in &span.inputs.actors.tags {
+                        let Ok(index) = countries.binary_search_by_key(&id, |country| country.id)
+                        else {
+                            continue;
+                        };
+                        let country = &countries[index];
+                        let identity = (slot, country.id);
+                        let actor = actors.entry(tag.clone()).or_default();
+                        if actor.last.is_none_or(|(old, hour)| {
+                            old != identity || hour.checked_add(1) != Some(frame.hour)
+                        }) {
+                            actor.admitted = false;
                         }
-                        Err(reason) => Name {
-                            text: None,
-                            warnings: vec![format!("Project name {key}: {reason}")],
-                        },
-                    };
-                    names.observe(
-                        (tag.to_owned(), slot, project.definition_id),
-                        frame.hour,
-                        value,
-                    );
+                        if actor.identity.is_some_and(|old| old != identity) {
+                            actor.open.clear();
+                        }
+                        actor.identity = Some(identity);
+                        actor.last = Some((identity, frame.hour));
+                        let Some(projects) = projects else {
+                            actor.admitted = false;
+                            continue;
+                        };
+                        if span.reads.binary_search(&frame.hour).is_ok() {
+                            actor.admitted = true;
+                        }
+                        if !actor.admitted {
+                            continue;
+                        }
+                        let Some(links) = span.inputs.actors.links.get(&slot) else {
+                            continue;
+                        };
+                        let mut next = BTreeSet::new();
+                        for project in owned_rows(projects, links, slot, |row| row.owner) {
+                            let key = (project.local_id, project.definition_id);
+                            if !visible(project, actor.open.contains(&key)) {
+                                continue;
+                            }
+                            next.insert(key);
+                            let Ok(tag) = std::str::from_utf8(tag) else {
+                                continue;
+                            };
+                            // Resolve each definition/country key once per lexical view;
+                            // only reached scoped names evaluate the complete World.
+                            let key = keys
+                                .entry((project.definition_id, tag.to_owned()))
+                                .or_insert_with(|| {
+                                    let tokens = tokens?;
+                                    let token = tokens
+                                        .binary_search_by_key(&project.definition_id, |row| {
+                                            row.token
+                                        })
+                                        .ok()
+                                        .and_then(|index| {
+                                            std::str::from_utf8(&tokens[index].literal).ok()
+                                        })?;
+                                    let definition = content.definitions.projects.get(token)?;
+                                    if content.definitions.unsettled.is_some()
+                                        || definition.refusal.is_some()
+                                    {
+                                        return None;
+                                    }
+                                    let key = country_key(
+                                        &content.catalogue,
+                                        tag,
+                                        project_name_key(definition, token),
+                                    );
+                                    needs_scope(&content.catalogue.localisation, &key)
+                                        .then_some(key)
+                                });
+                            let Some(key) = key else {
+                                continue;
+                            };
+                            let value = match content.catalogue.scripted_content() {
+                                Ok(scripted) => {
+                                    let context = crate::scripted_text::ScriptedText::new(
+                                        frame,
+                                        &content.catalogue.localisation,
+                                        scripted,
+                                        slot,
+                                    );
+                                    let (text, mut findings) = catalogue::localised_in_details(
+                                        &content.catalogue.localisation,
+                                        key,
+                                        &[],
+                                        &context,
+                                    );
+                                    let text = text.map_err(|finding| findings.push(*finding)).ok();
+                                    Name {
+                                        text,
+                                        warnings: findings
+                                            .into_iter()
+                                            .map(|finding| {
+                                                format!("{}: {}", finding.subject, finding.message)
+                                            })
+                                            .collect(),
+                                    }
+                                }
+                                Err(reason) => Name {
+                                    text: None,
+                                    warnings: vec![format!("Project name {key}: {reason}")],
+                                },
+                            };
+                            names.observe(
+                                (tag.to_owned(), slot, project.definition_id),
+                                frame.hour,
+                                value,
+                            );
+                        }
+                        actor.open = next;
+                    }
                 }
-                actor.open = next;
             }
-        }
-    }
+            Ok(())
+        },
+    )?;
     Ok(names)
 }

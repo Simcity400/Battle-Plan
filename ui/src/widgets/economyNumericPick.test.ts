@@ -53,7 +53,7 @@ test('economy and shared race picks keep their mounted numeric owner through con
   };
   const memoModules = ['/widgets/fuel/FuelWidget.tsx', '/widgets/resource-balance/ResourceBalanceWidget.tsx',
     '/widgets/resource-balance/useResourceBalance.ts', '/charts/race/CountryRaceView.tsx', '/charts/drill/BreakdownChart.tsx',
-    '/dashboard/comparisonCountries.ts', '/dashboard/CountryComparisons.tsx'];
+    '/dashboard/comparisonCountries.ts', '/dashboard/CountryComparisons.tsx', '/dashboard/useDiagnostics.ts'];
   const replacements: Record<string, string> = {
     '/dashboard/model.ts': `export const resolveWindow = (widget, track) => widget.time.mode === 'pin'
       ? { firstHour: track.branch.firstHour + widget.time.windows[track.id].firstOffset,
@@ -113,7 +113,7 @@ test('economy and shared race picks keep their mounted numeric owner through con
           source = source.replace(/\buseMemo\(/g, `globalThis.__economyMemo(${JSON.stringify(module)}, `);
           // Capture a panel's diagnostics directly; SSR does not rerender its parent's notes state.
           if (module.endsWith('CountryComparisons.tsx')) source = source.replace('onDiagnostics={handlers.get(tag)!}', 'onDiagnostics={props.onDiagnostics}');
-          if (module.endsWith('Widget.tsx')) source = source.replace(/\buseEffect\(/g,
+          if (module.endsWith('Widget.tsx') || module.endsWith('useDiagnostics.ts')) source = source.replace(/\buseEffect\(/g,
             '((effect) => globalThis.__economyNumeric.effects.push(effect))(');
           return source;
         }

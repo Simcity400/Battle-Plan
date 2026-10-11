@@ -1,7 +1,9 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { runAt } from '../../charts/series.ts';
 import type { Span } from '../../charts/series';
 import type { TooltipRow } from '../../charts/tooltip';
 import { formatAmount, rescale, rescaleSum } from '../../charts/valueAxis.ts';
+import { usNumber } from '../../charts/numberFormat.ts';
 import type { CountryGroupReply, HourSpan, PartialSpan, ResourceInfo, TradeFlowsReply } from '../../generated/dashboard';
 import { countryIdentityKey } from '../../dashboard/countryIdentity.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
@@ -393,7 +395,7 @@ export function partialHours(partial: readonly PartialSpan[], from: number, to: 
 export function coverageNote(reply: Pick<TradeFlowsReply, 'known' | 'partial'>, measure: Measure, from: number, hour: number): string | undefined {
   if (measure === 'current') {
     const left = leftOutAt(reply.partial, hour);
-    return left ? `${left.toLocaleString('en-US')} ${left === 1 ? 'deal' : 'deals'} at this read could not be attributed (a seller, buyer or resource the recording does not name) and ${left === 1 ? 'is' : 'are'} not shown.` : undefined;
+    return left ? `${usNumber.format(left)} ${left === 1 ? 'deal' : 'deals'} at this read could not be attributed (a seller, buyer or resource the recording does not name) and ${left === 1 ? 'is' : 'are'} not shown.` : undefined;
   }
   const partial = partialHours(reply.partial, from, hour);
   return [unknownNote(reply.known, from, hour),
@@ -584,13 +586,13 @@ export function resourceColours(resources: readonly ResourceInfo[], order: Reado
 }
 
 /** A resource's name: content's, else its token; a repeated declaration numbered. */
-export const resourceName = (item: Pick<ResourceInfo, 'name' | 'token' | 'ordinal'>) => `${item.name ?? item.token}${item.ordinal > 1 ? ` (${item.ordinal})` : ''}`;
+export const resourceName = (item: Pick<ResourceInfo, 'name' | 'token' | 'ordinal'>) => `${contentTitle(item.name, item.token, 'Resource name unavailable')}${item.ordinal > 1 ? ` (${item.ordinal})` : ''}`;
 
 
 /** Days as the game counts them, to a tenth where a day is not whole. */
 export const formatDays = (hours: number) => {
   const days = Math.round(hours / 2.4) / 10;
-  return `${days.toLocaleString('en-US')} ${days === 1 ? 'day' : 'days'}`;
+  return `${usNumber.format(days)} ${days === 1 ? 'day' : 'days'}`;
 };
 
 /** The rows saying what flows carried: at an hour for the current amount, else over
@@ -601,9 +603,9 @@ export function measureRows(flows: readonly Flow[], measure: Measure, from: numb
     const terms = termsAt(flows, hour);
     return [
       { label: 'Per day', value: formatAmount(terms.raw, decimals), strong: true },
-      { label: 'Civilian factories paid', value: terms.factories.toLocaleString('en-US') },
-      { label: 'Convoys used', value: terms.convoysRequired > 0 ? `${terms.convoysAssigned.toLocaleString('en-US')} of ${terms.convoysRequired.toLocaleString('en-US')}` : 'None needed' },
-      ...(terms.deals > 1 ? [{ label: 'Deals', value: terms.deals.toLocaleString('en-US') }] : []),
+      { label: 'Civilian factories paid', value: usNumber.format(terms.factories) },
+      { label: 'Convoys used', value: terms.convoysRequired > 0 ? `${usNumber.format(terms.convoysAssigned)} of ${usNumber.format(terms.convoysRequired)}` : 'None needed' },
+      ...(terms.deals > 1 ? [{ label: 'Deals', value: usNumber.format(terms.deals) }] : []),
     ];
   }
   // Each flow's averages over its own days traded, summed, as the ribbon is sized:
@@ -644,7 +646,7 @@ export function measureRows(flows: readonly Flow[], measure: Measure, from: numb
     measure === 'total'
       ? { label: 'Traded', value: formatAmount(rescale(amountHours, 24, 0), decimals), strong: true }
       : { label: 'Average per day', value: formatAmount(perDay, decimals), strong: true },
-    traded > 1 ? { label: 'Trades', value: traded.toLocaleString('en-US') } : { label: 'Days traded', value: formatDays(hours) },
+    traded > 1 ? { label: 'Trades', value: usNumber.format(traded) } : { label: 'Days traded', value: formatDays(hours) },
     { label: 'Civilian factories paid, on average', value: tenths(factories, any.factories) },
     { label: 'Convoys used, on average', value: any.required ? `${tenths(assigned, any.assigned)} of ${tenths(required, true)}` : 'None needed' },
   ];

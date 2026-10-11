@@ -13,6 +13,10 @@ use std::{
     sync::Arc,
 };
 
+/// The data service as the viewer hosts it (see the viewer's `main.rs`).
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }

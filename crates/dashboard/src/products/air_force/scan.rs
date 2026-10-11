@@ -662,130 +662,162 @@ pub(super) fn scan_with_decode(
     let mut census = Census::default();
     let mut variant_tokens: BTreeMap<u64, String> = BTreeMap::new();
     let mut definitions_complete = false;
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        decoding(true);
-        let frames = replay.read_block_selected(block, &selected);
-        decoding(false);
-        let Ok(frames) = frames else {
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Air force request cancelled",
-                ));
-            }
-            decoding(true);
-            let decoded = decoder.advance(&frame);
-            decoding(false);
-            let Ok(decoded) = decoded else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            let hour = decoded.hour;
-            let continuous = last_projection
-                .as_ref()
-                .is_some_and(|(last, _)| last.checked_add(1) == Some(hour));
-            let complete = decoded.complete::<tables::VariantDefinitions>().is_ok();
-            let check_names = !continuous
-                || complete != definitions_complete
-                || slot_read(&decoded.metrics, TableId::VariantDefinitions, hour);
-            definitions_complete = complete;
-            variants.observe(decoded);
-            let names_changed = if check_names {
-                let current: BTreeMap<_, _> = variants
-                    .versions
-                    .iter()
-                    .filter_map(|(&id, _)| variants.current(id).map(|raw| (id, raw.token.clone())))
-                    .collect();
-                let changed = variant_tokens != current;
-                variant_tokens = current;
-                changed
-            } else {
-                false
-            };
-            let projection: Vec<_> = [
-                TableId::Countries,
-                TableId::CountryLinks,
-                TableId::AirWings,
-                TableId::WingEquipment,
-                TableId::VariantDefinitions,
-                TableId::LexicalTokens,
-            ]
-            .iter()
-            .map(|table| decoded.tables[table.index()].identity())
-            .collect();
-            let unchanged = last_projection
-                .as_ref()
-                .is_some_and(|(last_hour, previous)| {
-                    last_hour.checked_add(1) == Some(hour)
-                        && !slot_read(&decoded.metrics, TableId::VariantDefinitions, hour)
-                        && previous
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            // Waiting for the next block is its decoding.
+            loop {
+                decoding(true);
+                let next = blocks.next();
+                decoding(false);
+                let Some((_, frames)) = next else {
+                    break;
+                };
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "Air force request cancelled",
+                        ));
+                    }
+                    decoding(true);
+                    let decoded = decoder.advance(&frame);
+                    decoding(false);
+                    let Ok(decoded) = decoded else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    let hour = decoded.hour;
+                    let continuous = last_projection
+                        .as_ref()
+                        .is_some_and(|(last, _)| last.checked_add(1) == Some(hour));
+                    let complete = decoded.complete::<tables::VariantDefinitions>().is_ok();
+                    let check_names = !continuous
+                        || complete != definitions_complete
+                        || slot_read(&decoded.metrics, TableId::VariantDefinitions, hour);
+                    definitions_complete = complete;
+                    variants.observe(decoded);
+                    let names_changed = if check_names {
+                        let current: BTreeMap<_, _> = variants
+                            .versions
                             .iter()
-                            .zip(&projection)
-                            .all(|(old, current)| old == current)
-                });
-            let rebuild = !continuous || names_changed;
-            last_projection = Some((hour, projection));
-            if unchanged && histories.through.is_some() {
-                // Identical authenticated tables confirm another recorded hour.
-                histories.through = Some(hour);
-                continue;
-            }
-            let Ok(countries_changed) = countries.update(decoded) else {
-                histories.flush();
-                census.ready = false;
-                continue;
-            };
-            let complete = census.update(
-                Inputs {
-                    decoded,
-                    frame: &frame,
-                    variants: &variants,
-                    countries: &countries,
-                    rebuild: rebuild || countries_changed,
-                },
-                &mut result,
-                &mut counts_pool,
-                cancelled,
-            )?;
-            let sparse_history = continuous
-                && !countries_changed
-                && histories.through.is_some()
-                && previous_complete == [true; 2]
-                && complete == [true; 2];
-            if !sparse_history {
-                histories.flush();
-                // Balance-only country reads retain this native slot/tag join.
-                histories.countries(&countries);
-            }
-            for tag in &histories.undisplayable {
-                *result.undisplayable_tags.entry(tag.clone()).or_default() += 1;
-            }
-            if sparse_history {
-                let affected: Vec<_> = census
-                    .dirty
+                            .filter_map(|(&id, _)| {
+                                variants.current(id).map(|raw| (id, raw.token.clone()))
+                            })
+                            .collect();
+                        let changed = variant_tokens != current;
+                        variant_tokens = current;
+                        changed
+                    } else {
+                        false
+                    };
+                    let projection: Vec<_> = [
+                        TableId::Countries,
+                        TableId::CountryLinks,
+                        TableId::AirWings,
+                        TableId::WingEquipment,
+                        TableId::VariantDefinitions,
+                        TableId::LexicalTokens,
+                    ]
                     .iter()
-                    .filter_map(|slot| histories.slots.get(slot))
-                    .flatten()
-                    .copied()
+                    .map(|table| decoded.tables[table.index()].identity())
                     .collect();
-                for active in affected {
-                    histories.observe(active, hour, complete, &mut census, &mut counts_pool)?;
-                }
-            } else {
-                for active in 0..histories.active.len() {
-                    histories.observe(active, hour, complete, &mut census, &mut counts_pool)?;
+                    let unchanged =
+                        last_projection
+                            .as_ref()
+                            .is_some_and(|(last_hour, previous)| {
+                                last_hour.checked_add(1) == Some(hour)
+                                    && !slot_read(
+                                        &decoded.metrics,
+                                        TableId::VariantDefinitions,
+                                        hour,
+                                    )
+                                    && previous
+                                        .iter()
+                                        .zip(&projection)
+                                        .all(|(old, current)| old == current)
+                            });
+                    let rebuild = !continuous || names_changed;
+                    last_projection = Some((hour, projection));
+                    if unchanged && histories.through.is_some() {
+                        // Identical authenticated tables confirm another recorded hour.
+                        histories.through = Some(hour);
+                        continue;
+                    }
+                    let Ok(countries_changed) = countries.update(decoded) else {
+                        histories.flush();
+                        census.ready = false;
+                        continue;
+                    };
+                    let complete = census.update(
+                        Inputs {
+                            decoded,
+                            frame: &frame,
+                            variants: &variants,
+                            countries: &countries,
+                            rebuild: rebuild || countries_changed,
+                        },
+                        &mut result,
+                        &mut counts_pool,
+                        cancelled,
+                    )?;
+                    let sparse_history = continuous
+                        && !countries_changed
+                        && histories.through.is_some()
+                        && previous_complete == [true; 2]
+                        && complete == [true; 2];
+                    if !sparse_history {
+                        histories.flush();
+                        // Balance-only country reads retain this native slot/tag join.
+                        histories.countries(&countries);
+                    }
+                    for tag in &histories.undisplayable {
+                        *result.undisplayable_tags.entry(tag.clone()).or_default() += 1;
+                    }
+                    if sparse_history {
+                        let affected: Vec<_> = census
+                            .dirty
+                            .iter()
+                            .filter_map(|slot| histories.slots.get(slot))
+                            .flatten()
+                            .copied()
+                            .collect();
+                        for active in affected {
+                            histories.observe(
+                                active,
+                                hour,
+                                complete,
+                                &mut census,
+                                &mut counts_pool,
+                            )?;
+                        }
+                    } else {
+                        for active in 0..histories.active.len() {
+                            histories.observe(
+                                active,
+                                hour,
+                                complete,
+                                &mut census,
+                                &mut counts_pool,
+                            )?;
+                        }
+                    }
+                    previous_complete = complete;
+                    histories.through = Some(hour);
                 }
             }
-            previous_complete = complete;
-            histories.through = Some(hour);
-        }
-    }
+            Ok(())
+        },
+    )?;
     histories.flush();
     #[cfg(test)]
     {

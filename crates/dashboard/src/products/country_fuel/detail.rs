@@ -68,57 +68,67 @@ fn scan_reads(
     ];
     let replay = source.replay_ref();
     let mut reads = Reads::new();
-    for block in replay.index.iter().filter(|block| {
-        block.branch == branch
-            && hours
-                .range(block.first_hour..=block.last_hour)
-                .next()
-                .is_some()
-    }) {
-        crate::metadata::check_cancel(cancelled)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            crate::metadata::check_cancel(cancelled)?;
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            if !hours.contains(&frame.hour)
-                || !slot_read(&decoded.metrics, TableId::CountryFuel, frame.hour)
-            {
-                continue;
-            }
-            let (Ok(countries), Ok(links), Ok(rows)) = (
-                decoded.complete::<tables::Countries>(),
-                decoded.complete::<tables::CountryLinks>(),
-                decoded.complete::<tables::CountryFuel>(),
-            ) else {
-                continue;
-            };
-            let mut by_slot = BTreeMap::new();
-            for row in rows {
-                if let Some(slot) = link_slot(links, row.country) {
-                    by_slot.entry(slot).or_insert(row);
-                }
-            }
-            let mut tagged_rows = BTreeMap::new();
-            for (tag, lookup) in tagged_countries(countries, links) {
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| {
+            block.branch == branch
+                && hours
+                    .range(block.first_hour..=block.last_hour)
+                    .next()
+                    .is_some()
+        }),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
                 crate::metadata::check_cancel(cancelled)?;
-                if let Ok(tag) = std::str::from_utf8(tag)
-                    && let Some((_, slot)) = lookup.found()
-                    && let Some(row) = by_slot.get(&slot)
-                {
-                    tagged_rows.insert(tag.to_owned(), replay::rows::RowCodec::try_clone(*row)?);
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                for frame in frames {
+                    crate::metadata::check_cancel(cancelled)?;
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    if !hours.contains(&frame.hour)
+                        || !slot_read(&decoded.metrics, TableId::CountryFuel, frame.hour)
+                    {
+                        continue;
+                    }
+                    let (Ok(countries), Ok(links), Ok(rows)) = (
+                        decoded.complete::<tables::Countries>(),
+                        decoded.complete::<tables::CountryLinks>(),
+                        decoded.complete::<tables::CountryFuel>(),
+                    ) else {
+                        continue;
+                    };
+                    let mut by_slot = BTreeMap::new();
+                    for row in rows {
+                        if let Some(slot) = link_slot(links, row.country) {
+                            by_slot.entry(slot).or_insert(row);
+                        }
+                    }
+                    let mut tagged_rows = BTreeMap::new();
+                    for (tag, lookup) in tagged_countries(countries, links) {
+                        crate::metadata::check_cancel(cancelled)?;
+                        if let Ok(tag) = std::str::from_utf8(tag)
+                            && let Some((_, slot)) = lookup.found()
+                            && let Some(row) = by_slot.get(&slot)
+                        {
+                            tagged_rows
+                                .insert(tag.to_owned(), replay::rows::RowCodec::try_clone(*row)?);
+                        }
+                    }
+                    reads.insert(frame.hour, tagged_rows);
                 }
             }
-            reads.insert(frame.hour, tagged_rows);
-        }
-    }
+            Ok(())
+        },
+    )?;
     Ok(reads)
 }
 
@@ -268,7 +278,7 @@ fn history_runs(
             });
             previous_known = false;
         }
-        let value = if read.country != params.country
+        let value = if read.country.to_string() != params.country
             || read.country_instance != Some(params.country_instance)
         {
             Err("Fuel read belongs to another or unrecorded native country identity".into())
@@ -278,10 +288,10 @@ fn history_runs(
                     .into(),
             )
         } else if read.day.is_none() {
-            Err(read
-                .awards_reason
-                .clone()
-                .unwrap_or_else(|| format!("Fuel day left out: {:?}", read.left_out)))
+            Err(read.awards_reason.as_deref().map_or_else(
+                || format!("Fuel day left out: {:?}", read.left_out),
+                str::to_owned,
+            ))
         } else if let Some(row) = reads.get(&read.first_hour).and_then(|rows| {
             let mut matching = aliases.iter().filter_map(|tag| rows.get(*tag)).filter(|row| row.country.to_string() == params.country
                 && matches!(row.country_instance, replay::rows::Recorded::Value(Some(instance)) if instance == params.country_instance));
@@ -390,7 +400,7 @@ impl Product for CountryFuelAwardHistory {
                 .iter()
                 .flat_map(|tag| summary.countries[*tag].reads.iter())
                 .filter(|read| {
-                    read.country == params.country
+                    read.country.to_string() == params.country
                         && read.country_instance == Some(params.country_instance)
                 })
                 .cloned()

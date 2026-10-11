@@ -34,13 +34,12 @@ export const domainName = (key: string) => (DOMAINS as readonly string[]).includ
  * `entryAt`); before the first there is none, so no later name is backfilled, and
  * where its names stopped being known (a gap, a due read that did not land) none
  * holds either. Its name, else `fallback` (not named yet, not known then, not named
- * by content, or no definition recorded), such as its equipment token or handle. */
+ * by content, or no definition recorded), such as a descriptive variant handle. */
 export function variantNameAt(names: readonly StockVariantName[], hour: number, fallback: string): string {
   const entry = entryAt(names, hour);
-  return (entry?.known ? entry.name : null) || fallback;
+  return (entry?.known ? entry.name : null) ?? fallback;
 }
 
-/** The name of a type key content does not resolve: its recorded token (keys of
- * unresolved types start with `UNRESOLVED_MARK`, so they never collide with an
- * archetype; the products warn about a content key that does). */
-export const unresolvedTypeName = (key: string) => key.startsWith(UNRESOLVED_MARK) ? key.slice(UNRESOLVED_MARK.length) : key;
+/** An unresolved type keeps its key for identity and diagnostics, with an
+ * explicit unavailable title in the interface. */
+export const unresolvedTypeName = (_key: string) => 'Equipment type name unavailable';

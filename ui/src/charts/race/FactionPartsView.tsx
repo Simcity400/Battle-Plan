@@ -85,7 +85,7 @@ export default function FactionPartsView({ model, runtime, track, hour, followin
     if (raw == null) unknown++;
     const witness = factionPartWitness(part, hour);
     const country = witness ? labelAt(witness.hour)(witness.tag) : undefined;
-    const name = country?.name ?? part.witnesses[0]?.tag ?? 'Not identified';
+    const name = country?.name ?? 'Country name unavailable';
     const tag = witness?.tag ?? part.witnesses[0]?.tag;
     return { id: part.id, label: `${name}${tag && name !== tag ? ` (${tag})` : ''}`, countryFlag: country ?? {},
       value: raw == null ? null : Number(raw), raw,

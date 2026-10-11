@@ -241,200 +241,216 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
     let mut last_hour: Option<i32> = None;
     // Whether the last read is carried to the previous hour.
     let mut open = false;
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancel());
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            open = false;
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancel());
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                open = false;
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                open = false;
-                break;
-            }
-            let hour = frame.hour;
-            let continues = last_hour.and_then(|last| last.checked_add(1)) == Some(hour);
-            last_hour = Some(hour);
-            open &= continues;
-            // Identities are remembered from every hour that records them, with or
-            // without the tension tables: a country seen only then still names its
-            // slot and links at a later read.
-            let identity = decoded
-                .complete::<tables::Countries>()
-                .ok()
-                .zip(decoded.complete::<tables::CountryLinks>().ok());
-            if let Some((countries, links)) = identity {
-                known.extend(slot_tags(countries, links));
-                known_links.extend(links.iter().map(|link| (link.id, link.canonical_slot)));
-            }
-            let tables = identity
-                .map(|(_, links)| links)
-                .zip(decoded.complete::<tables::WorldTension>().ok())
-                .zip(decoded.complete::<tables::ThreatCountryAggregates>().ok());
-            let Some(((links, tension), aggregates)) = tables else {
-                open = false;
-                continue;
-            };
-            if !slot_read(&decoded.metrics, TableId::WorldTension, hour) {
-                if open && let Some(read) = result.reads.last_mut() {
-                    read.last_hour = hour;
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancel());
                 }
-                continue;
-            }
-            let Some(tension) = tension.first() else {
-                open = false;
-                continue;
-            };
-            let index = result.reads.len();
-            let starts_segment = !open;
-            open = true;
-            let mut sum = 0_i64;
-            let mut unnamed = 0_i64;
-            for row in aggregates.iter().filter(|row| row.total_raw != 0) {
-                sum = sum.checked_add(row.total_raw).ok_or_else(|| {
-                    io::Error::other("World tension contribution sum exceeds signed 64-bit range")
-                })?;
-                let Some(tag) = known.get(&row.country_slot) else {
-                    unnamed = unnamed.checked_add(row.total_raw).ok_or_else(|| {
-                        io::Error::other(
-                            "World tension unnamed contribution sum exceeds signed 64-bit range",
-                        )
-                    })?;
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    open = false;
                     continue;
                 };
-                let at = *by_country
-                    .entry((row.country_slot, tag.clone()))
-                    .or_insert_with(|| {
-                        building.push(Building {
-                            tag: tag.clone(),
-                            slot: row.country_slot,
-                            runs: Vec::new(),
-                        });
-                        building.len() - 1
-                    });
-                let runs = &mut building[at].runs;
-                match runs.last_mut() {
-                    Some(run)
-                        if !starts_segment && run.1 + 1 == index && run.2 == row.total_raw =>
-                    {
-                        run.1 = index;
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(cancel());
                     }
-                    // One identity, so only a gap breaks its line.
-                    _ => runs.push((index, index, row.total_raw, starts_segment)),
-                }
-            }
-            result.reads.push(TensionRead {
-                first_hour: hour,
-                last_hour: hour,
-                starts_segment,
-                tension_raw: tension.total_raw.to_string(),
-                sum_raw: sum.to_string(),
-                unnamed_raw: unnamed.to_string(),
-            });
-            // World tension stores the clamped and scaled sum.
-            let capped = sum.clamp(0, cworld_threat::CLAMP_CEILING) / cworld_threat::SCALAR_DIVISOR;
-            if capped != tension.total_raw {
-                result.tension_mismatches += 1;
-            }
-            let sources = match &*decoded.tables[TableId::ThreatSources.index()] {
-                TableView::Complete(rows) => rows
-                    .rows::<tables::ThreatSources>()
-                    .map(|rows| (rows, true)),
-                TableView::Truncated { rows, .. } => rows
-                    .rows::<tables::ThreatSources>()
-                    .map(|rows| (rows, false)),
-                TableView::Unavailable { .. } => None,
-            };
-            let whole = sources.is_some_and(|(rows, complete)| {
-                complete && usize::try_from(tension.source_count).ok() == Some(rows.len())
-            });
-            if !whole {
-                result.partial_sources += 1;
-            } else if let Some((rows, _)) = sources {
-                let current: i64 = rows.iter().try_fold(0_i64, |sum, row| {
-                    sum.checked_add(row.current_raw).ok_or_else(|| {
-                        io::Error::other("World tension source sum exceeds signed 64-bit range")
-                    })
-                })?;
-                if current != sum {
-                    result.aggregate_mismatches += 1;
-                }
-            }
-            // Sources equal in all four, counted in stored order.
-            let mut seen: HashMap<SourceIdentity, u32> = HashMap::new();
-            for row in sources.map(|(rows, _)| rows).unwrap_or_default() {
-                let slot = link_slot(links, row.country)
-                    .or_else(|| known_links.get(&row.country).copied());
-                let place = seen
-                    .entry((
-                        row.country,
-                        row.second_country,
-                        row.date,
-                        row.reason.as_slice(),
-                    ))
-                    .or_default();
-                let key = (
-                    row.country,
-                    row.second_country,
-                    row.date,
-                    row.reason.clone(),
-                    *place,
-                );
-                *place += 1;
-                let added = row.final_raw.to_string();
-                let tag = slot.and_then(|slot| known.get(&slot).cloned());
-                match events.get(&key) {
-                    Some(&at) => {
-                        let event = &mut result.events[at];
-                        event.last_read = hour;
-                        // A country first read unnamed takes its name once it is recorded.
-                        if event.tag.is_none() {
-                            event.tag = tag;
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        open = false;
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        open = false;
+                        break;
+                    }
+                    let hour = frame.hour;
+                    let continues = last_hour.and_then(|last| last.checked_add(1)) == Some(hour);
+                    last_hour = Some(hour);
+                    open &= continues;
+                    // Identities are remembered from every hour that records them, with or
+                    // without the tension tables: a country seen only then still names its
+                    // slot and links at a later read.
+                    let identity = decoded
+                        .complete::<tables::Countries>()
+                        .ok()
+                        .zip(decoded.complete::<tables::CountryLinks>().ok());
+                    if let Some((countries, links)) = identity {
+                        known.extend(slot_tags(countries, links));
+                        known_links.extend(links.iter().map(|link| (link.id, link.canonical_slot)));
+                    }
+                    let tables = identity
+                        .map(|(_, links)| links)
+                        .zip(decoded.complete::<tables::WorldTension>().ok())
+                        .zip(decoded.complete::<tables::ThreatCountryAggregates>().ok());
+                    let Some(((links, tension), aggregates)) = tables else {
+                        open = false;
+                        continue;
+                    };
+                    if !slot_read(&decoded.metrics, TableId::WorldTension, hour) {
+                        if open && let Some(read) = result.reads.last_mut() {
+                            read.last_hour = hour;
                         }
-                        if event
-                            .added
-                            .last()
-                            .is_none_or(|last| last.added_raw != added)
-                        {
-                            event.added.push(TensionAdded {
-                                hour,
-                                added_raw: added,
+                        continue;
+                    }
+                    let Some(tension) = tension.first() else {
+                        open = false;
+                        continue;
+                    };
+                    let index = result.reads.len();
+                    let starts_segment = !open;
+                    open = true;
+                    let mut sum = 0_i64;
+                    let mut unnamed = 0_i64;
+                    for row in aggregates.iter().filter(|row| row.total_raw != 0) {
+                        sum = sum.checked_add(row.total_raw).ok_or_else(|| {
+                            io::Error::other(
+                                "World tension contribution sum exceeds signed 64-bit range",
+                            )
+                        })?;
+                        let Some(tag) = known.get(&row.country_slot) else {
+                            unnamed = unnamed.checked_add(row.total_raw).ok_or_else(|| {
+                            io::Error::other(
+                                "World tension unnamed contribution sum exceeds signed 64-bit range",
+                            )
+                        })?;
+                            continue;
+                        };
+                        let at = *by_country
+                            .entry((row.country_slot, tag.clone()))
+                            .or_insert_with(|| {
+                                building.push(Building {
+                                    tag: tag.clone(),
+                                    slot: row.country_slot,
+                                    runs: Vec::new(),
+                                });
+                                building.len() - 1
                             });
+                        let runs = &mut building[at].runs;
+                        match runs.last_mut() {
+                            Some(run)
+                                if !starts_segment
+                                    && run.1 + 1 == index
+                                    && run.2 == row.total_raw =>
+                            {
+                                run.1 = index;
+                            }
+                            // One identity, so only a gap breaks its line.
+                            _ => runs.push((index, index, row.total_raw, starts_segment)),
                         }
                     }
-                    None => {
-                        events.insert(key, result.events.len());
-                        result.events.push(TensionEvent {
-                            hour: row.date,
-                            tag,
-                            reason: display_text(&row.reason).map_err(|reason| {
-                                io::Error::other(format!(
-                                    "The recorded threat reason at hour {} {reason}",
-                                    row.date
-                                ))
-                            })?,
-                            added: vec![TensionAdded {
-                                hour,
-                                added_raw: added,
-                            }],
-                            first_read: hour,
-                            last_read: hour,
-                        });
+                    result.reads.push(TensionRead {
+                        first_hour: hour,
+                        last_hour: hour,
+                        starts_segment,
+                        tension_raw: tension.total_raw.to_string(),
+                        sum_raw: sum.to_string(),
+                        unnamed_raw: unnamed.to_string(),
+                    });
+                    // World tension stores the clamped and scaled sum.
+                    let capped =
+                        sum.clamp(0, cworld_threat::CLAMP_CEILING) / cworld_threat::SCALAR_DIVISOR;
+                    if capped != tension.total_raw {
+                        result.tension_mismatches += 1;
+                    }
+                    let sources = match &*decoded.tables[TableId::ThreatSources.index()] {
+                        TableView::Complete(rows) => rows
+                            .rows::<tables::ThreatSources>()
+                            .map(|rows| (rows, true)),
+                        TableView::Truncated { rows, .. } => rows
+                            .rows::<tables::ThreatSources>()
+                            .map(|rows| (rows, false)),
+                        TableView::Unavailable { .. } => None,
+                    };
+                    let whole = sources.is_some_and(|(rows, complete)| {
+                        complete && usize::try_from(tension.source_count).ok() == Some(rows.len())
+                    });
+                    if !whole {
+                        result.partial_sources += 1;
+                    } else if let Some((rows, _)) = sources {
+                        let current: i64 = rows.iter().try_fold(0_i64, |sum, row| {
+                            sum.checked_add(row.current_raw).ok_or_else(|| {
+                                io::Error::other(
+                                    "World tension source sum exceeds signed 64-bit range",
+                                )
+                            })
+                        })?;
+                        if current != sum {
+                            result.aggregate_mismatches += 1;
+                        }
+                    }
+                    // Sources equal in all four, counted in stored order.
+                    let mut seen: HashMap<SourceIdentity, u32> = HashMap::new();
+                    for row in sources.map(|(rows, _)| rows).unwrap_or_default() {
+                        let slot = link_slot(links, row.country)
+                            .or_else(|| known_links.get(&row.country).copied());
+                        let place = seen
+                            .entry((
+                                row.country,
+                                row.second_country,
+                                row.date,
+                                row.reason.as_slice(),
+                            ))
+                            .or_default();
+                        let key = (
+                            row.country,
+                            row.second_country,
+                            row.date,
+                            row.reason.clone(),
+                            *place,
+                        );
+                        *place += 1;
+                        let added = row.final_raw.to_string();
+                        let tag = slot.and_then(|slot| known.get(&slot).cloned());
+                        match events.get(&key) {
+                            Some(&at) => {
+                                let event = &mut result.events[at];
+                                event.last_read = hour;
+                                // A country first read unnamed takes its name once it is recorded.
+                                if event.tag.is_none() {
+                                    event.tag = tag;
+                                }
+                                if event
+                                    .added
+                                    .last()
+                                    .is_none_or(|last| last.added_raw != added)
+                                {
+                                    event.added.push(TensionAdded {
+                                        hour,
+                                        added_raw: added,
+                                    });
+                                }
+                            }
+                            None => {
+                                events.insert(key, result.events.len());
+                                result.events.push(TensionEvent {
+                                    hour: row.date,
+                                    tag,
+                                    reason: display_text(&row.reason).map_err(|reason| {
+                                        io::Error::other(format!(
+                                            "The recorded threat reason at hour {} {reason}",
+                                            row.date
+                                        ))
+                                    })?,
+                                    added: vec![TensionAdded {
+                                        hour,
+                                        added_raw: added,
+                                    }],
+                                    first_read: hour,
+                                    last_read: hour,
+                                });
+                            }
+                        }
                     }
                 }
             }
-        }
-    }
+            Ok(())
+        },
+    )?;
     let reads = &result.reads;
     let mut countries: Vec<_> = building
         .into_iter()

@@ -6,6 +6,8 @@ import { countryFlagUnavailable } from '../components/countryFlagPresentation.ts
 
 export interface TooltipRow {
   label: string;
+  /** Internal content identity, available on hover without becoming the label. */
+  lookupKey?: string;
   value?: string;
   /** A colour square identifying the series. */
   swatch?: string;

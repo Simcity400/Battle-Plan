@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { Coverage, LossCause, LossDesign, LossLeaf, LossName, LossPoint, LossSource, LossesReply, UnknownSpan } from '../../generated/dashboard';
 import type { SunburstItem, SunburstNode, SunburstTotal } from '../../charts/sunburst/layout';
 import type { LegendItem } from '../../charts/Legend';
@@ -5,6 +6,7 @@ import type { ChartTokens } from '../../charts/tokens';
 import { mix } from '../../shell/appearance/color.ts';
 import type { TooltipRow } from '../../charts/tooltip';
 import { formatAmount } from '../../charts/valueAxis.ts';
+import { usNumber } from '../../charts/numberFormat.ts';
 import { unresolvedTypeName } from '../../dashboard/equipment.ts';
 import { entryAt } from '../../dashboard/reads.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
@@ -103,7 +105,7 @@ function weightAt(leaf: LossLeaf, hour: number, from?: number | null): number {
   return entryAt(steps, hour)?.value ?? 0;
 }
 
-export const causeName = (cause: LossCause) => cause.name.text ?? cause.name.template ?? cause.name.key ?? `Unnamed cause (${sourceKey(cause.source)})`;
+export const causeName = (cause: LossCause) => contentTitle(cause.name.text ?? cause.name.template, cause.name.key, 'Cause name unavailable');
 export const typeName = (design: LossDesign | undefined) => design?.archetypeName
   ?? (design?.archetype != null ? unresolvedTypeName(design.archetype) : 'Equipment type not known');
 
@@ -213,7 +215,7 @@ export function destructionLegend(reply: LossesReply, window: LossWindow, tokens
       label: reason === null ? 'Recorded' : `Unknown: ${reason}` }];
   }
   const counts = destructionCoverageHours(reply, window.first, window.hour);
-  const hours = (count: number) => `${count.toLocaleString('en-US')} ${count === 1 ? 'hour' : 'hours'}`;
+  const hours = (count: number) => `${usNumber.format(count)} ${count === 1 ? 'hour' : 'hours'}`;
   return [counts.recorded ? { id: 'recorded', color: tokens.positive, label: `Recorded: ${hours(counts.recorded)}` } : null,
     counts.unknown ? { id: 'unknown', color: neutral, label: `Unknown: ${hours(counts.unknown)} — ${counts.reasons.join(' ')}` } : null]
     .filter((item): item is NonNullable<typeof item> => item !== null);
@@ -225,10 +227,10 @@ export function coverageLegend(reply: LossesReply, window: LossWindow, tokens: P
   const colours = { logged: tokens.positive, partial: tokens.warning, notLogged: tokens.error, unknown: neutral };
   const labels = { logged: 'Logged', partial: 'Partial', notLogged: 'Not logged', unknown: 'Unknown' };
   if (window.campaign) return Object.entries(coverageHours(reply, window.first, window.hour)).filter(([, hours]) => hours > 0)
-    .map(([state, hours]) => ({ id: state, color: colours[state as LandState], label: `${labels[state as LandState]}: ${hours.toLocaleString('en-US')} ${hours === 1 ? 'hour' : 'hours'}` }));
+    .map(([state, hours]) => ({ id: state, color: colours[state as LandState], label: `${labels[state as LandState]}: ${usNumber.format(hours)} ${hours === 1 ? 'hour' : 'hours'}` }));
   const coverage = coverageAt(reply, window.hour);
   const state = stateOf(coverage);
-  const label = typeof coverage === 'object' ? `Partial: ${coverage.partial.ungrouped.toLocaleString('en-US')} ${coverage.partial.ungrouped === 1 ? 'division' : 'divisions'} outside armies`
+  const label = typeof coverage === 'object' ? `Partial: ${usNumber.format(coverage.partial.ungrouped)} ${coverage.partial.ungrouped === 1 ? 'division' : 'divisions'} outside armies`
     : coverage === 'pruneUnobserved' ? 'Unknown: retention was not observed' : labels[state];
   return [{ id: state, color: colours[state], label }];
 }

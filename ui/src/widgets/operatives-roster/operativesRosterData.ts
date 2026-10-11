@@ -4,7 +4,6 @@ import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { countryIdentityKey, validCountryIdentityRuns } from '../../dashboard/countryIdentity.ts';
 import { formatDateTime, isEngineHour } from '../../dashboard/calendar.ts';
 import { i32Value, nullableValue, orderedHourSpans as ordered, pngDataValue, raw64Value as raw, recordValue as object, textValue as text, tokenValue as token } from '../../dashboard/payload.ts';
-import { readNote } from '../../dashboard/reads.ts';
 import type { OperativeRosterReply } from '../../generated/dashboard';
 
 type Country = OperativeRosterReply['countries'][number];
@@ -184,8 +183,7 @@ export function operativeTooltip(reply: OperativeRosterReply, row: OperativeRow,
     { label: 'Present', value: `by ${formatDateTime(row.entry.joinedHour)}` },
     ...(row.departed && row.entry.departedHour !== null ? [{ label: row.entry.departedReason ?? 'Left (reason not recorded)', value: `by ${formatDateTime(row.entry.departedHour)}` }] : []),
   ];
-  const notes = [readNote(row.readHour, shownHour, 'operative rosters are read once a day.'),
-    ...[value.nameMissing, value.portraitMissing, value.experienceMissing, value.assignmentMissing, value.assignmentIconMissing]
+  const notes = [...[value.nameMissing, value.portraitMissing, value.experienceMissing, value.assignmentMissing, value.assignmentIconMissing]
       .map(index => index === null ? null : reply.reasons[index])];
   if (row.departed) notes.push(`Last operative details read ${formatDateTime(row.readHour)}; country identities last observed ${formatDateTime(labelHour)}. Departure cause is only shown when recorded.`);
   return { title: operativeName(value), icon: value.portrait === null ? undefined : reply.artwork[value.portrait], rows, note: notes.filter(Boolean).join(' ') || undefined };

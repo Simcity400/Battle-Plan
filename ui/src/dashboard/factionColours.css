@@ -8,4 +8,4 @@
 .faction-swatch input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
 .faction-name { flex: 1; min-width: 0; height: var(--control-h-sm); }
 .faction-colours-sets { display: flex; gap: var(--space-3); }
-.faction-colours-sets > :is(input, select) { flex: 1; min-width: 0; height: var(--control-h-sm); }
+.faction-colours-sets > input { flex: 1; min-width: 0; height: var(--control-h-sm); }

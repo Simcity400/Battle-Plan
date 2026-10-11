@@ -119,7 +119,7 @@ test('held collaboration refuses another holder\'s looks while keeping its exact
     const row = tip.rows.find(row => row.label.startsWith('Country collaboration:'))!;
     assert.equal(row.value, '12.5%'); assert.equal(row.countryFlag?.flag, undefined);
     assert.match(row.countryFlag!.flagReason!, /identity/);
-    assert.equal(row.label, `Country collaboration: ${item.tag ?? 'Unidentified country'}`);
+    assert.equal(row.label, 'Country collaboration: Country name unavailable');
     assert.equal(tip.rows.find(row => row.label === 'Collaboration read')!.value, formatDateTime(100));
     assert.match(tip.rows.find(row => row.label === 'Country identity')!.value!, /identity/);
   }

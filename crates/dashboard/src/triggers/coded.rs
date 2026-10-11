@@ -11,7 +11,7 @@ use super::{
     eval::Evaluator,
     operands::{compare, trigger_boolean},
     variables::Value,
-    world::{NULL_STATE, PartyLeader, RecordedTemplate, recorded_template, table},
+    world::{LeaderVisibility, NULL_STATE, PartyLeader, RecordedTemplate, table},
 };
 use crate::state_resources::ONE;
 
@@ -897,7 +897,7 @@ impl Evaluator<'_, '_> {
         if let Err(why) = self.core() {
             return Eval::unknown(format!("{name}: {why}"));
         }
-        let lists = match world.neighbor_states {
+        let lists = match world.neighbor_states() {
             Ok(lists) => lists,
             Err(reason) => {
                 return Eval::unknown(format!("{name}: {reason}"));
@@ -950,30 +950,15 @@ impl Evaluator<'_, '_> {
     /// legacy leader creation store a role, so an effect's `visible` is never
     /// read. The predicate is the template role's `visible` conjunction.
     pub(crate) fn leader_visible(&self, row: &UnitLeaderRow) -> Eval {
-        self.leader_visible_in(row, false)
+        self.decide_leader_visibility(row, self.world().leader_visibility(row), false)
     }
 
     /// Roster traversal keeps the country when setting the character.
     /// Its captured-role gate is applied by the roster caller before this lookup.
+    /// The roster caches the first step itself; tests compare against this.
+    #[cfg(test)]
     pub(crate) fn leader_roster_visible(&self, row: &UnitLeaderRow) -> Eval {
-        self.leader_visible_in(row, true)
-    }
-
-    fn leader_visible_in(&self, row: &UnitLeaderRow, roster: bool) -> Eval {
-        if row.visibility_choice == 0 && row.template_visibility == 0 {
-            return Eval::True;
-        }
-        let template =
-            self.world()
-                .character(row.character_id)
-                .and_then(|character| match character {
-                    Some(character) => recorded_template(character),
-                    None => Err(format!(
-                        "unit leader {}'s character {} is not recorded",
-                        row.id, row.character_id
-                    )),
-                });
-        self.leader_visible_from_in(row, template, roster)
+        self.decide_leader_visibility(row, self.world().leader_visibility(row), true)
     }
 
     /// [`Self::leader_visible`] once the character's template is known: the
@@ -984,40 +969,31 @@ impl Evaluator<'_, '_> {
         row: &UnitLeaderRow,
         template: Result<Option<RecordedTemplate>, String>,
     ) -> Eval {
-        self.leader_visible_from_in(row, template, false)
+        let world = self.world();
+        let visibility = world.template_visibility(row, template, |token| world.token(token));
+        self.decide_leader_visibility(row, visibility, false)
     }
 
-    fn leader_visible_from_in(
+    /// A leader's [`LeaderVisibility`] decided in its owner's scope: the
+    /// second step of [`Self::leader_visible`], or with `roster` of
+    /// [`Self::leader_roster_visible`].
+    pub(crate) fn decide_leader_visibility(
         &self,
         row: &UnitLeaderRow,
-        template: Result<Option<RecordedTemplate>, String>,
+        visibility: LeaderVisibility,
         roster: bool,
     ) -> Eval {
         let world = self.world();
-        let role = match template.and_then(|template| world.template_role(row, template)) {
-            Ok(role) => role,
-            Err(reason) => return Eval::unknown(reason),
-        };
-        let Some(role) = role else {
-            // A stored role choice needs a template role, so a template without one did not
-            // build this leader.
-            return if row.visibility_choice == 0 {
-                Eval::True
-            } else {
-                Eval::unknown(format!(
-                    "unit leader {} has its own role choice, but its character's template has no unit leader role",
-                    row.id
-                ))
-            };
+        let visible: &[Item] = match visibility {
+            LeaderVisibility::Decided(value) => return value,
+            LeaderVisibility::Unconditioned => &[],
+            LeaderVisibility::Conditioned(index) => world.role_visible(index),
         };
         let Some(slot) = world.slot(row.owner) else {
-            return Eval::unknown(format!(
-                "a UnitLeaders row's country {} has no CountryLinks row",
-                row.owner
-            ));
+            return Eval::unknown(world.unlinked("UnitLeaders", row.owner));
         };
         let frame = format!("unit leader {}'s role", row.id).into_bytes();
-        if let Some(why) = self.enter_frame(&frame) {
+        if let Some(why) = self.enter_frame(frame) {
             return Eval::unknown(why);
         }
         let scope = if roster {
@@ -1028,7 +1004,7 @@ impl Evaluator<'_, '_> {
         } else {
             Scope::Country(slot)
         };
-        let value = self.evaluate(role, Scopes::of(scope));
+        let value = self.evaluate(visible, Scopes::of(scope));
         self.leave_frame();
         value
     }

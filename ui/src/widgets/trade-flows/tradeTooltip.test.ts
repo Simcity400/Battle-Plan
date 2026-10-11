@@ -67,7 +67,7 @@ test('node tooltips share dated labels and bound their sorted country requests',
       assert.equal(tip.title, 'Other countries');
       assert.equal(tip.countryFlag, undefined, 'an aggregate keeps its flagless header');
       assert.ok(tip.subtitle?.startsWith(reverse ? 'Buys · ' : 'Sells · '));
-      assert.deepEqual(tip.rows.slice(0, 2).map(row => [row.label, row.value, row.swatch]), [['R7', '55', 'colour:7'], ['R3', '2', 'colour:3']]);
+      assert.deepEqual(tip.rows.slice(0, 2).map(row => [row.label, row.value, row.swatch]), [['Resource name unavailable', '55', 'colour:7'], ['Resource name unavailable', '2', 'colour:3']]);
       assert.equal(tip.rows[2].value, '57');
       assert.equal(tip.rows[3].label, `Seller 01 at ${tipHour}`);
       assert.equal(tip.rows[3].countryFlag?.flag, `flag:Seller 01:${tipHour}`);
@@ -117,6 +117,6 @@ test('retired and current holders sharing a tag use their separate supplying dat
     labelAt: () => { throw new Error('An unresolved holder has no native country flag read.'); },
     ask: wanted => assert.deepEqual(wanted, []),
   });
-  assert.equal(missing.title, unresolved.identity);
+  assert.equal(missing.title, 'Country name unavailable');
   assert.equal(missing.countryFlag, undefined);
 });

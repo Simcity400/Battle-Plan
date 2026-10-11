@@ -12,7 +12,7 @@ use installed_content::{ResolveOptions, content::ResolvedContent, flags::FlagSet
 use replay::{
     container::{Replay, SeekResult},
     frame::DecodedFrame,
-    rows::tables,
+    rows::{TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -106,6 +106,7 @@ pub struct CountryFlagReply {
 impl Product for CountryFlags {
     const KEY: &'static str = "country-flags";
     const CONTENT_DEPENDENT: bool = true;
+    const INTERACTIVE: bool = true;
     type Params = CountryFlagParams;
     type Reply = CountryFlagReply;
 
@@ -139,8 +140,8 @@ impl Product for CountryFlags {
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
         let content = context.content()?;
-        let state = source.state::<FlagState>();
-        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+        let shared = source.state::<FlagState>();
+        let mut state = shared.lock().unwrap_or_else(|error| error.into_inner());
         match state
             .contexts
             .iter()
@@ -154,12 +155,15 @@ impl Product for CountryFlags {
             None => {
                 let resolved = source.content(&content.options)?;
                 // The cells are content facts: kept across hours, reread with new content.
-                let cells = match state
+                let cells = state
                     .contexts
                     .iter()
                     .find(|cached| Arc::ptr_eq(&cached.content, &resolved))
-                {
-                    Some(cached) => cached.cells,
+                    .map(|cached| cached.cells);
+                // Other hours' requests use the cache while this one reads the recording.
+                drop(state);
+                let cells = match cells {
+                    Some(cells) => cells,
                     None => flag_cells(&resolved.layers)?,
                 };
                 let loaded = FlagContext::load(
@@ -171,6 +175,7 @@ impl Product for CountryFlags {
                     params,
                     cancelled,
                 )?;
+                state = shared.lock().unwrap_or_else(|error| error.into_inner());
                 state.contexts.insert(0, loaded);
                 state.contexts.truncate(RECENT_HOURS);
             }
@@ -252,7 +257,7 @@ impl ShieldStyle {
         })?;
         let mut warnings = Vec::new();
         let name = installed_content::gui::native::window_button_sprite(
-            &catalogue.guis,
+            catalogue.guis()?,
             TOP_BAR,
             PLAYER_FLAG,
             &mut warnings,
@@ -567,6 +572,15 @@ pub fn ruling_groups(
 }
 
 /// Flag asset candidates per country at one hour, shared with the combat UI.
+/// The tables [`choices`] reads, its ruling groups included.
+const CHOICE_TABLES: [TableId; 5] = [
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::CountryAppearance,
+    TableId::Politics,
+    TableId::PoliticalParties,
+];
+
 pub fn choices(frame: &DecodedFrame) -> io::Result<Vec<FlagChoice>> {
     let links: BTreeMap<_, _> = recorded_rows::<tables::CountryLinks>(frame)?
         .iter()
@@ -668,7 +682,7 @@ impl FlagContext {
         if cancelled.load(Ordering::Acquire) {
             return Err(invalid("Flag request cancelled"));
         }
-        let frame = match replay.seek(branch, request.hour)? {
+        let frame = match replay.seek_selected(branch, request.hour, Some(&CHOICE_TABLES))? {
             SeekResult::Frame(frame) => frame,
             SeekResult::Gap { reason, .. } => {
                 return Err(invalid(format!(
@@ -1007,6 +1021,19 @@ mod tests {
             }]));
         assert_eq!(
             choices(&frame).unwrap()[0].candidates,
+            ["COS_group", "COS", "ORI_group", "ORI"]
+        );
+        // A flag read reconstructs only CHOICE_TABLES: they hold everything choices reads.
+        let mut selected = frame.clone();
+        for table in TableId::ALL {
+            if !CHOICE_TABLES.contains(&table) {
+                *selected.tables[table.index()] = TableView::Unavailable {
+                    reason: "not selected".into(),
+                };
+            }
+        }
+        assert_eq!(
+            choices(&selected).unwrap()[0].candidates,
             ["COS_group", "COS", "ORI_group", "ORI"]
         );
         *frame.tables[TableId::PoliticalParties.index()] =

@@ -1,3 +1,4 @@
+import { contentTitle } from './contentTitles.ts';
 import type { BuildingInfo, SpendingGap, StateName } from '../generated/dashboard';
 import type { StateAt, StateLabel } from './stateNamesData';
 
@@ -7,7 +8,6 @@ import type { StateAt, StateLabel } from './stateNamesData';
  * product needs. */
 
 /** How often the queue is read, for a carried value's note. */
-export const CONSTRUCTION_CADENCE = 'the construction queue is read once a day.';
 
 const int = (value: unknown) => Number.isSafeInteger(value);
 
@@ -21,7 +21,7 @@ export const isStateName = (state: StateName) => typeof state === 'object' && st
 
 /** A type's name as the game gives it, else its script name, else its recorded id. */
 export function typeName(type: BuildingInfo | undefined): string {
-  return type?.name ?? type?.token ?? (type ? `Building type ${type.id}` : 'Unknown building');
+  return contentTitle(type?.name, type?.token, 'Building name unavailable');
 }
 
 export type StateNameAt = (hour: number, state: number) => StateLabel;

@@ -429,110 +429,130 @@ pub(super) fn scan_with_decode(
     let mut countries = Countries::default();
     let mut census = Census::default();
     let empty = Arc::new(BTreeMap::new());
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        check_cancel(cancelled)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        decoding(true);
-        let frames = replay.read_block_selected(block, &selected);
-        decoding(false);
-        let Ok(frames) = frames else {
-            continue;
-        };
-        for frame in frames {
-            check_cancel(cancelled)?;
-            decoding(true);
-            let decoded = decoder.advance(&frame);
-            decoding(false);
-            let Ok(decoded) = decoded else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            let Ok(changed) = countries.update(decoded) else {
-                result.unread += 1;
-                census.ready = false;
-                continue;
-            };
-            let exact =
-                census.update(decoded, &frame, &countries, changed, &mut result, cancelled)?;
-            for (tag, identity) in &countries.tags {
-                let Ok(tag) = std::str::from_utf8(tag) else {
-                    *result.undisplayable_tags.entry(tag.to_vec()).or_default() += 1;
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            // Waiting for the next block is its decoding.
+            loop {
+                check_cancel(cancelled)?;
+                decoding(true);
+                let next = blocks.next();
+                decoding(false);
+                let Some((_, frames)) = next else {
+                    break;
+                };
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
                     continue;
                 };
-                if !tracks.contains_key(tag) {
-                    tracks.insert(tag.to_owned(), Track::default());
-                }
-                let track = tracks.get_mut(tag).expect("observed country tag");
-                let Some(identity) = *identity else {
-                    continue;
-                };
-                observe_identity(
-                    &mut track.segments,
-                    &mut track.last_identity,
-                    identity,
-                    frame.hour,
-                );
-                let identity_continuous = track.last.is_some_and(|(seen, at)| {
-                    seen == identity && at.checked_add(1) == Some(frame.hour)
-                });
-                for (owner, exact) in exact.into_iter().enumerate() {
-                    let summary = census.totals[owner]
-                        .entry(identity.0)
-                        .or_default()
-                        .summary(&empty);
-                    if census.ready {
-                        result.refused_strength[owner] += usize::from(summary.refused);
-                        result.maximum_overflows[owner] += usize::from(summary.maximum_overflow);
+                for frame in frames {
+                    check_cancel(cancelled)?;
+                    decoding(true);
+                    let decoded = decoder.advance(&frame);
+                    decoding(false);
+                    let Ok(decoded) = decoded else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
                     }
-                    for (runs, total, classes, reference_total) in [
-                        (
-                            &mut track.runs[owner],
-                            exact.then_some(summary.count),
-                            summary.classes,
-                            None,
-                        ),
-                        (
-                            &mut track.strength_runs[owner],
-                            exact.then_some(summary.hp).flatten(),
-                            summary.hp_classes,
-                            exact.then_some(summary.maximum).flatten(),
-                        ),
-                    ] {
-                        let starts_segment = !(identity_continuous
-                            && total.is_some()
-                            && runs.last().is_some_and(|run| run.total.is_some()));
-                        let classes = if total.is_some() {
-                            classes
-                        } else {
-                            Arc::clone(&empty)
+                    let Ok(changed) = countries.update(decoded) else {
+                        result.unread += 1;
+                        census.ready = false;
+                        continue;
+                    };
+                    let exact = census.update(
+                        decoded,
+                        &frame,
+                        &countries,
+                        changed,
+                        &mut result,
+                        cancelled,
+                    )?;
+                    for (tag, identity) in &countries.tags {
+                        let Ok(tag) = std::str::from_utf8(tag) else {
+                            *result.undisplayable_tags.entry(tag.to_vec()).or_default() += 1;
+                            continue;
                         };
-                        match runs.last_mut() {
-                            Some(run)
-                                if identity_continuous
-                                    && run.last_hour.checked_add(1) == Some(frame.hour)
-                                    && run.total == total
-                                    && run.classes == classes
-                                    && run.reference_total == reference_total =>
-                            {
-                                run.last_hour = frame.hour;
-                            }
-                            _ => runs.push(RawNavyRun {
-                                first_hour: frame.hour,
-                                last_hour: frame.hour,
-                                starts_segment,
-                                total,
-                                classes,
-                                reference_total,
-                            }),
+                        if !tracks.contains_key(tag) {
+                            tracks.insert(tag.to_owned(), Track::default());
                         }
+                        let track = tracks.get_mut(tag).expect("observed country tag");
+                        let Some(identity) = *identity else {
+                            continue;
+                        };
+                        observe_identity(
+                            &mut track.segments,
+                            &mut track.last_identity,
+                            identity,
+                            frame.hour,
+                        );
+                        let identity_continuous = track.last.is_some_and(|(seen, at)| {
+                            seen == identity && at.checked_add(1) == Some(frame.hour)
+                        });
+                        for (owner, exact) in exact.into_iter().enumerate() {
+                            let summary = census.totals[owner]
+                                .entry(identity.0)
+                                .or_default()
+                                .summary(&empty);
+                            if census.ready {
+                                result.refused_strength[owner] += usize::from(summary.refused);
+                                result.maximum_overflows[owner] +=
+                                    usize::from(summary.maximum_overflow);
+                            }
+                            for (runs, total, classes, reference_total) in [
+                                (
+                                    &mut track.runs[owner],
+                                    exact.then_some(summary.count),
+                                    summary.classes,
+                                    None,
+                                ),
+                                (
+                                    &mut track.strength_runs[owner],
+                                    exact.then_some(summary.hp).flatten(),
+                                    summary.hp_classes,
+                                    exact.then_some(summary.maximum).flatten(),
+                                ),
+                            ] {
+                                let starts_segment = !(identity_continuous
+                                    && total.is_some()
+                                    && runs.last().is_some_and(|run| run.total.is_some()));
+                                let classes = if total.is_some() {
+                                    classes
+                                } else {
+                                    Arc::clone(&empty)
+                                };
+                                match runs.last_mut() {
+                                    Some(run)
+                                        if identity_continuous
+                                            && run.last_hour.checked_add(1) == Some(frame.hour)
+                                            && run.total == total
+                                            && run.classes == classes
+                                            && run.reference_total == reference_total =>
+                                    {
+                                        run.last_hour = frame.hour;
+                                    }
+                                    _ => runs.push(RawNavyRun {
+                                        first_hour: frame.hour,
+                                        last_hour: frame.hour,
+                                        starts_segment,
+                                        total,
+                                        classes,
+                                        reference_total,
+                                    }),
+                                }
+                            }
+                        }
+                        track.last = Some((identity, frame.hour));
                     }
                 }
-                track.last = Some((identity, frame.hour));
             }
-        }
-    }
+            Ok(())
+        },
+    )?;
     for (tag, track) in tracks {
         result.segments.insert(tag.clone(), track.segments);
         for (owner, runs) in track.runs.into_iter().enumerate() {

@@ -1,5 +1,5 @@
-//! The native data service: one owner of opened recordings, a small loader
-//! pool that answers product requests, and a bounded response pump.
+//! The native data service: one owner of opened recordings, two small loader
+//! pools that answer product requests, and a bounded response pump.
 //!
 //! Opening files and answering products never depends on a visible window.
 //! Only compact JSON replies cross the desktop control pipe.
@@ -30,10 +30,18 @@ use jobs::{LoadJob, MapSettingsJob, OpenJob, Sources};
 use pump::{Signal, run_pump};
 
 const MAX_PENDING: usize = 64;
-const MAX_SOURCE_LEASES: usize = 64;
 const MAX_SERIALIZED_BYTES: usize = MAX_REPLY_BYTES * 2;
 const MAX_CANCELLED: usize = MAX_PENDING * 2;
 const LOADER_THREADS: usize = 3;
+/// Threads for `Product::INTERACTIVE` reads, apart from the scans above.
+const INTERACTIVE_THREADS: usize = 2;
+
+/// Where jobs wait: whole-recording work, and hover or label reads and the
+/// history cache's size beside it.
+struct Lanes {
+    history: Sender<LoadJob>,
+    interactive: Sender<LoadJob>,
+}
 
 type VisualCatalogue = (PathBuf, PathBuf, Vec<installed_content::content::visual::VisualMod>);
 
@@ -44,7 +52,7 @@ struct Inner {
     visual_catalogue: Mutex<Option<VisualCatalogue>>,
     sources: Mutex<Sources>,
     pending: Mutex<Pending>,
-    loader: Mutex<Option<Sender<LoadJob>>>,
+    loader: Mutex<Option<Lanes>>,
     signal: Arc<Signal>,
     closed: AtomicBool,
 }
@@ -65,8 +73,8 @@ impl Drop for ThreadExit {
 
 impl Service {
     pub fn new(emit: Arc<dyn Fn(DataEvent) -> bool + Send + Sync>) -> io::Result<Arc<Self>> {
-        let (loader, jobs) = mpsc::channel::<LoadJob>();
-        let jobs = Arc::new(Mutex::new(jobs));
+        let (history, history_jobs) = mpsc::channel::<LoadJob>();
+        let (interactive, interactive_jobs) = mpsc::channel::<LoadJob>();
         let inner = Arc::new(Inner {
             lease_namespace: uuid::Uuid::new_v4(),
             map_settings: Mutex::new(map_settings::Store::open()),
@@ -74,23 +82,32 @@ impl Service {
             visual_catalogue: Mutex::new(None),
             sources: Mutex::new(Sources::default()),
             pending: Mutex::new(Pending::default()),
-            loader: Mutex::new(Some(loader)),
+            loader: Mutex::new(Some(Lanes {
+                history,
+                interactive,
+            })),
             signal: Arc::new(Signal::default()),
             closed: AtomicBool::new(false),
         });
         let mut threads = Vec::new();
         let spawn_result = (|| -> io::Result<()> {
-            for index in 0..LOADER_THREADS {
-                let load_inner = Arc::clone(&inner);
-                let jobs = Arc::clone(&jobs);
-                threads.push(
-                    thread::Builder::new()
-                        .name(format!("dashboard loader {index}"))
-                        .spawn(move || {
-                            let _exit = ThreadExit(Arc::clone(&load_inner));
-                            load_inner.run_loader(&jobs);
-                        })?,
-                );
+            for (lane, jobs, count) in [
+                ("loader", history_jobs, LOADER_THREADS),
+                ("interactive", interactive_jobs, INTERACTIVE_THREADS),
+            ] {
+                let jobs = Arc::new(Mutex::new(jobs));
+                for index in 0..count {
+                    let load_inner = Arc::clone(&inner);
+                    let jobs = Arc::clone(&jobs);
+                    threads.push(
+                        thread::Builder::new()
+                            .name(format!("dashboard {lane} {index}"))
+                            .spawn(move || {
+                                let _exit = ThreadExit(Arc::clone(&load_inner));
+                                load_inner.run_loader(&jobs);
+                            })?,
+                    );
+                }
             }
             let pump_inner = Arc::clone(&inner);
             threads.push(
@@ -213,6 +230,17 @@ impl Service {
         }
     }
 
+    fn configured_content(&self, request: &Arc<Request>) -> Option<ContentOptions> {
+        let content = self.inner.content();
+        if content.is_none() {
+            self.inner.error(
+                Arc::clone(request),
+                "Choose the game and user folders in Settings first".into(),
+            );
+        }
+        content
+    }
+
     pub fn dispatch(&self, command: DataCommand) {
         if self.inner.closed.load(Ordering::Acquire) {
             return;
@@ -253,11 +281,7 @@ impl Service {
                     };
                     Some(source)
                 };
-                let Some(content) = self.inner.content() else {
-                    self.inner.error(
-                        request,
-                        "Choose the game and user folders in Settings first".into(),
-                    );
+                let Some(content) = self.configured_content(&request) else {
                     return;
                 };
                 let job = MapSettingsJob {
@@ -269,6 +293,20 @@ impl Service {
                     options: content.options,
                 };
                 self.inner.submit(request, LoadJob::MapSettings(job));
+            }
+            DataCommand::HistoryCache { id, clear } => {
+                let Some(request) = self.inner.begin(id) else {
+                    return;
+                };
+                let Some(content) = self.configured_content(&request) else {
+                    return;
+                };
+                let job = LoadJob::HistoryCache {
+                    request: Arc::clone(&request),
+                    clear,
+                    options: content.options,
+                };
+                self.inner.submit(request, job);
             }
             DataCommand::Open { id, path, revision } => {
                 let Some(request) = self.inner.begin(id) else {

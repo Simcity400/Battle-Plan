@@ -709,45 +709,48 @@ pub fn scan(
         .collect();
     gaps.sort_unstable_by_key(|gap| gap.first_hour);
     let mut gap = 0;
-    for block in blocks {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancel());
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
+    crate::blocks::scan_blocks(replay, blocks, &selected, cancelled, |blocks| {
+        for (_, frames) in blocks {
             if cancelled.load(Ordering::Acquire) {
                 return Err(cancel());
             }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
+            let mut decoder = FrameDecoder::for_tables(&selected);
+            let Ok(frames) = frames else {
+                continue;
             };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
+            for frame in frames {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancel());
+                }
+                let Ok(decoded) = decoder.advance(&frame) else {
+                    break;
+                };
+                if validate_campaign(decoded, replay).is_err() {
+                    break;
+                }
+                // Failed blocks/frames leave the cursor here. The next readable
+                // hour (or branch end) marks the entire missing interval once.
+                if i64::from(decoded.hour) < next {
+                    continue;
+                }
+                while gap < gaps.len() && gaps[gap].last_hour < decoded.hour {
+                    gap += 1;
+                }
+                if gaps
+                    .get(gap)
+                    .is_some_and(|gap| gap.first_hour <= decoded.hour)
+                {
+                    continue;
+                }
+                if next < i64::from(decoded.hour) {
+                    scanned.missing(next as i32, decoded.hour - 1, land_source);
+                }
+                observe(&mut scanned, &mut state, decoded, tag)?;
+                next = i64::from(decoded.hour) + 1;
             }
-            // Failed blocks/frames leave the cursor here. The next readable
-            // hour (or branch end) marks the entire missing interval once.
-            if i64::from(decoded.hour) < next {
-                continue;
-            }
-            while gap < gaps.len() && gaps[gap].last_hour < decoded.hour {
-                gap += 1;
-            }
-            if gaps
-                .get(gap)
-                .is_some_and(|gap| gap.first_hour <= decoded.hour)
-            {
-                continue;
-            }
-            if next < i64::from(decoded.hour) {
-                scanned.missing(next as i32, decoded.hour - 1, land_source);
-            }
-            observe(&mut scanned, &mut state, decoded, tag)?;
-            next = i64::from(decoded.hour) + 1;
         }
-    }
+        Ok(())
+    })?;
     if next <= i64::from(last) {
         scanned.missing(next as i32, last, land_source);
     }
@@ -1413,7 +1416,7 @@ pub(crate) fn check_content(
 ) -> io::Result<Vec<crate::content_check::Finding>> {
     use crate::content_check::{Finding, Kind};
     let mut warnings = Vec::new();
-    let keys = InterfaceKeys::read(&catalogue.guis, &mut warnings);
+    let keys = InterfaceKeys::read(catalogue.guis()?, &mut warnings);
     let mut findings: Vec<_> = warnings
         .into_iter()
         .map(|message| Finding::new(Kind::Warning, "equipment loss interface", message))
@@ -1898,9 +1901,17 @@ impl Product for EquipmentLosses {
                     })
                     .ok()
             });
-        let keys = catalogue
-            .as_ref()
-            .map(|catalogue| InterfaceKeys::read(&catalogue.guis, &mut warnings));
+        let keys = catalogue.as_ref().and_then(|catalogue| {
+            catalogue
+                .guis()
+                .map(|guis| InterfaceKeys::read(guis, &mut warnings))
+                .map_err(|error| {
+                    warnings.push(format!(
+                        "Equipment loss interface names are unavailable: {error}"
+                    ))
+                })
+                .ok()
+        });
         if let Some(catalogue) = &catalogue {
             warnings.extend(catalogue.verification.iter().cloned());
         }

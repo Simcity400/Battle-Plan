@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { Select } from '../../components/Select';
+import { SettingLabel } from './SettingLabel';
 import type { ReactNode } from 'react';
 import { ChipSet } from '../../components/ChipSet';
 import ContentSetPicker from '../../components/ContentSetPicker';
@@ -6,6 +8,7 @@ import { Segmented } from '../../components/Segmented';
 import { contentSet, storableToken, toggleContentSet, UNSTORABLE, validOption } from '../options';
 import type { OptionField, OptionValue } from '../options';
 import type { OptionChoices } from '../definitions';
+import { contentTitleHint } from '../contentTitles';
 
 /** Short choice lists are a segmented row; longer ones a drop-down. */
 const SEGMENTED_MAX = 4;
@@ -22,7 +25,7 @@ export function OptionFields({ fields, values, choices, onChange }: {
 function OptionRow({ field, value, choices, onChange }: {
   field: OptionField; value: OptionValue; choices?: OptionChoices[string]; onChange: (value: OptionValue) => void;
 }) {
-  const caption = <span>{field.label}{field.hint && <small>{field.hint}</small>}</span>;
+  const caption = <SettingLabel label={field.label} hint={field.hint} />;
   switch (field.kind) {
     case 'toggle':
       return <label className="setting-row">{caption}
@@ -31,20 +34,14 @@ function OptionRow({ field, value, choices, onChange }: {
       return field.choices.length <= SEGMENTED_MAX
         ? <div className="setting-row setting-row-stacked">{caption}
           <Segmented label={field.label} value={String(value)} options={field.choices} onChange={onChange} /></div>
-        : <label className="setting-row">{caption}
-          <select value={String(value)} onChange={event => onChange(event.currentTarget.value)}>
-            {field.choices.map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
-          </select></label>;
+        : <div className="setting-row">{caption}<Select label={field.label} value={String(value)} options={field.choices} onChange={onChange} /></div>;
     case 'content-choice': {
       // A saved choice this campaign lacks stays selectable, so opening the panel never changes it.
       const listed = choices ?? [];
       const kept = typeof value === 'string' && value && !listed.some(choice => choice.value === value)
-        ? [{ value, label: `${value} (not in this campaign)` }] : [];
-      return <label className="setting-row">{caption}
-        <select value={String(value)} onChange={event => onChange(event.currentTarget.value)}>
-          <option value="">{field.automatic}</option>
-          {[...listed, ...kept].map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
-        </select></label>;
+        ? [{ value, label: 'Saved choice unavailable', reason: contentTitleHint(value, 'Not in this campaign.') }] : [];
+      return <div className="setting-row">{caption}
+        <Select label={field.label} value={String(value)} options={[{ value: '', label: field.automatic }, ...listed, ...kept]} onChange={onChange} /></div>;
     }
     case 'content-set': {
       const chosen = contentSet(value);
@@ -54,10 +51,10 @@ function OptionRow({ field, value, choices, onChange }: {
       </div>;
       // Saved tokens this campaign lacks stay listed, so opening the panel never changes them.
       const listed = choices ?? [];
-      const kept = chosen.filter(token => !listed.some(choice => choice.value === token)).map(token => ({ value: token, label: `${token} (not in this campaign)` }));
+      const kept = chosen.filter(token => !listed.some(choice => choice.value === token)).map(token => ({ value: token, label: 'Saved choice unavailable', hint: contentTitleHint(token, 'Not in this campaign.') }));
       const chips = [...listed, ...kept].map(chip => ({ ...chip, unavailable: storableToken(chip.value) ? undefined : UNSTORABLE }));
       return <div className="setting-row setting-row-stacked">
-        <span>{field.label}<small>{chosen.length ? field.hint : `${field.automatic}${field.hint ? ` · ${field.hint}` : ''}`}</small></span>
+        <SettingLabel label={field.label} hint={chosen.length ? field.hint : `${field.automatic}${field.hint ? ` · ${field.hint}` : ''}`} />
         <ChipSet label={field.label} chips={chips} selected={chosen} max={Number.MAX_SAFE_INTEGER}
           onToggle={token => { const next = toggleContentSet(value, token, Number.MAX_SAFE_INTEGER); if (next != null) onChange(next); }} />
       </div>;

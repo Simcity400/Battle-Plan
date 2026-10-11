@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { SettingLabel } from './SettingLabel';
 import type { ReactNode } from 'react';
 import { Icon } from '../../components/Icons';
 import CampaignPicker from '../CampaignPicker';
@@ -20,7 +21,7 @@ import './settings.css';
  * change is a view preference and saves at once (`onChange(widget, true)`). */
 export function WidgetSettings(props: {
   widget: WidgetSpec; template: DashboardTemplate; runtime: WidgetRuntime;
-  onChange: (widget: WidgetSpec, view?: boolean) => void; onReset?: () => void;
+  onChange: (widget: WidgetSpec, view?: boolean) => void;
 }) {
   const use = widgetDefinition(props.widget.kind)?.useOptionChoices;
   // Content choices come from a hook; it runs in its own component so the panel's hooks never change.
@@ -35,9 +36,9 @@ function WithChoices({ use, widget, runtime, children }: {
   return <>{children(use(widget, runtime))}</>;
 }
 
-function SettingsBody({ widget, template, runtime, onChange, onReset, choices }: {
+function SettingsBody({ widget, template, runtime, onChange, choices }: {
   widget: WidgetSpec; template: DashboardTemplate; runtime: WidgetRuntime;
-  onChange: (widget: WidgetSpec, view?: boolean) => void; onReset?: () => void; choices?: OptionChoices;
+  onChange: (widget: WidgetSpec, view?: boolean) => void; choices?: OptionChoices;
 }) {
   const definition = widgetDefinition(widget.kind);
   const values = resolveOptions(definition?.options, widget.options);
@@ -51,7 +52,7 @@ function SettingsBody({ widget, template, runtime, onChange, onReset, choices }:
     const label = (choice: OptionValue) => choices?.[key]?.find(item => item.value === choice)?.label;
     const field = definition?.options?.find(item => item.key === key);
     const named = field?.kind === 'content-choice' && field.titleChoice !== false && [definition?.title, label(values[key])].includes(widget.title);
-    const title = named ? label(value) || definition?.title || widget.title : widget.title;
+    const title = named ? label(value) ?? definition?.title ?? widget.title : widget.title;
     save({ ...widget, options, title });
   };
   const fields = (section: OptionSection) => <OptionFields fields={sectionFields(definition?.options, section, values, widget.countries)} values={values}
@@ -65,13 +66,11 @@ function SettingsBody({ widget, template, runtime, onChange, onReset, choices }:
         modes={definition.timeModes} onChange={time => save({ ...widget, time })} />}{fields('time')}</>;
       case 'size': return <SizeStepper widget={widget} onChange={save} />;
       case 'options': case 'axes': case 'interaction': return fields(section);
-      case 'reset': return <div className="setting-row"><span>Restore defaults<small>Title, campaign, countries, time, size and options</small></span>
-        <button type="button" className="button small" onClick={onReset}><Icon name="refresh" />Reset</button></div>;
     }
   };
   return <div className="widget-settings-content">
     <TitleField widget={widget} onChange={save} />
-    {settingsSections(definition, values, !!onReset).map(section => <section key={section} className="settings-section" aria-label={SECTION_TITLES[section]}>
+    {settingsSections(definition, values).map(section => <section key={section} className="settings-section" aria-label={SECTION_TITLES[section]}>
       <h3>{SECTION_TITLES[section]}</h3>{body(section)}
     </section>)}
   </div>;
@@ -98,7 +97,7 @@ function SizeStepper({ widget, onChange }: { widget: WidgetSpec; onChange: (widg
     const next = WIDGET_CONTENT_SCALES[Math.min(WIDGET_CONTENT_SCALES.length - 1, Math.max(0, (index < 0 ? WIDGET_CONTENT_SCALES.length - 1 : index) + direction))];
     if (next !== scale) onChange({ ...widget, contentScale: next });
   };
-  return <div className="setting-row"><span>Zoom<small>Text, icons and charts inside this widget</small></span>
+  return <div className="setting-row"><SettingLabel label="Zoom" hint="Text, icons and charts inside this widget" />
     <div className="size-stepper" role="group" aria-label="Widget size">
       <button type="button" className="icon-button small" aria-label="Smaller" disabled={scale <= WIDGET_CONTENT_SCALES[0]} onClick={() => step(-1)}><Icon name="minus" /></button>
       <button type="button" className="size-stepper-value" aria-label={`Size ${scale}%, reset to 100%`} data-tooltip="Reset to 100%" onClick={() => onChange({ ...widget, contentScale: 100 })}>{scale}%</button>

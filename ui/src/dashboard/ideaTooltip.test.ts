@@ -64,14 +64,14 @@ test('an idea lists its effects in key order, hides what the game hides, and mar
     // Ascending index: political_power_gain (0x25), stability_factor (0x8d), min_export (0xe0).
     ['Political Power Gain:', '+0.20', 'positive'],
     ['Resources to Market:', '0%', 'neutral'],
-    ['mod_key:', '0.3', 'muted'],
+    ['Modifier name unavailable:', '0.3', 'muted'],
     ['Something happens', null, null],
     ['Against Poland:', null, null],
     ['Stability:', '+50.00%', 'positive'],
     ['Something happens', null, null],
     ['Industry:', '+10%', 'positive'],
     ['Small Airframe:', null, null],
-    ['build_cost_ic:', '-0.05', 'muted'],
+    ['Equipment modifier name unavailable:', '-0.05', 'muted'],
   ]);
   assert.ok(note);
 });
@@ -81,7 +81,7 @@ test('traits come first, and a trait content does not define says so', () => {
     { token: 'captain_of_industry', known: true, unknown: null, name: 'Captain of Industry', lines: [line('political_power_gain', 0.1)], targeted: [], equipment: [], tooltips: [] },
     { token: 'mystery', known: false, unknown: null, name: null, lines: [], targeted: [], equipment: [], tooltips: [] },
   ], effects: [line('stability_factor', 0.02)] }), sources);
-  assert.deepEqual(rows.map(row => row.label), ['Captain of Industry', 'Political Power Gain:', 'mystery', 'Effects', 'Stability:']);
+  assert.deepEqual(rows.map(row => row.label), ['Captain of Industry', 'Political Power Gain:', 'Trait name unavailable', 'Effects', 'Stability:']);
   assert.ok(rows[0].strong && rows[0].divider);
 });
 
@@ -91,20 +91,20 @@ test('a trait keeps its targeted modifiers apart and shows its equipment bonuses
     equipment: [{ target: 'small_plane_airframe', instant: false, lines: [line('armor_value', 0.05)], tooltips: [] }] }] }), sources);
   assert.deepEqual(rows.map(row => [row.label, row.value ?? null]), [
     ['Designer', null], ['Against Poland:', null], ['Stability:', '+10.00%'], ['Against AAA:', null], ['Stability:', '+20.00%'],
-    ['Small Airframe:', null], ['armor_value:', '0.05'],
+    ['Small Airframe:', null], ['Equipment modifier name unavailable:', '0.05'],
   ]);
 });
 
-test('a line the game shows at zero stays, under its key when it has no name', () => {
+test('a line the game shows at zero stays, with an unavailable label and its key on hover when it has no name', () => {
   const unnamed = ideaTooltipSources({ modifiers: [{ ...EXPORT, label: null }], texts: [] }, tag => tag);
   const { rows, note } = ideaEffectRows(idea({ effects: [line('min_export', 0)] }), unnamed);
-  assert.deepEqual(rows.map(row => [row.label, row.value]), [['min_export:', '0%']]);
+  assert.deepEqual(rows.map(row => [row.label, row.value]), [['Modifier name unavailable:', '0%']]);
   assert.ok(note);
 });
 
 test('an authored zero without a format stays, and targets are named as they were when taken on', () => {
   const { rows } = ideaEffectRows(idea({ effects: [line('mod_key', 0)] }), sources);
-  assert.deepEqual(rows.map(row => [row.label, row.value]), [['mod_key:', '0']]);
+  assert.deepEqual(rows.map(row => [row.label, row.value]), [['Modifier name unavailable:', '0']]);
   // Unformatted, the engine's exact value: 0.099999999999999999 reads as 0.09999.
   const exactRow = ideaEffectRows(idea({ effects: [{ key: 'mod_key', fixed5: '9999', hidden: false }] }), sources);
   assert.equal(exactRow.rows[0].value, '0.09999');
@@ -120,7 +120,7 @@ test('a long tooltip shows its first rows and counts the rest; its text keeps th
   assert.equal(tip.rows.length, 8);
   assert.equal(tip.rows[7].label, '43 more effects');
   const text = tooltipText(ideaTooltip({ title: 'Idea' }, many, sources, 'A description.', [], undefined, undefined, Infinity));
-  assert.ok(text.includes('mod_49: 1') && text.includes('A description.'));
+  assert.ok(text.includes('Modifier name unavailable: 1') && text.includes('A description.'));
 });
 
 test('script values keep five decimals of the authored text, truncated', () => {
@@ -140,7 +140,8 @@ test('the row budget fits the window, and the spoken text keeps the note', () =>
 
 test('the row budget counts wrapped labels, and the exact authored value wins', () => {
   const long = idea({ effects: Array.from({ length: 10 }, (_, index) => line(`a_very_long_modifier_key_that_wraps_twice_${index}_over_the_width`, 1)) });
-  const tip = ideaTooltip({ title: 'Idea' }, long, sources, null, [], undefined, undefined, 13);
+  const labelled = ideaTooltipSources({ modifiers: long.effects.map((line, index) => ({ ...POWER, key: line.key, index, label: line.key })), texts: [] }, tag => tag);
+  const tip = ideaTooltip({ title: 'Idea' }, long, labelled, null, [], undefined, undefined, 13);
   // Each label and value takes three lines (the first four, with its divider):
   // three fit the eleven lines left beside the count, the rest are counted.
   assert.equal(tip.rows.length, 4);
@@ -149,10 +150,10 @@ test('the row budget counts wrapped labels, and the exact authored value wins', 
   assert.equal(exact.rows[0].value, '+9.99%');
 });
 
-test('a unit whose text is missing is shown as its key and marked', () => {
+test('a unit whose text is missing is marked unavailable while the value remains visible', () => {
   const noUnitText = ideaTooltipSources({ modifiers: [{ ...EXPERIENCE, postfix: null, postfixKey: 'MOD_DAILY' }], texts: [] }, tag => tag);
   const { rows, note } = ideaEffectRows(idea({ effects: [line('experience_gain_army', 0.1)] }), noUnitText);
-  assert.deepEqual(rows.map(row => [row.value, row.tone]), [['+0.10 [MOD_DAILY]', 'muted']]);
+  assert.deepEqual(rows.map(row => [row.value, row.tone]), [['+0.10 [unit unavailable]', 'muted']]);
   assert.ok(note);
 });
 

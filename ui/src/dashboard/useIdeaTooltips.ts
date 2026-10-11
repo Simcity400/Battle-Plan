@@ -29,11 +29,11 @@ export function useIdeaTooltips(data: Pick<IdeaHistoryReply, 'ideas' | 'artwork'
   const names = useCountryNamesAt(client, track, requested, active, Infinity, attempt);
   return useMemo(() => {
     if (!data || !track) return null;
-    const metadataName = fallbackName ?? ((tag: string) => track.source.metadata.countries.find(country => country.tag === tag)?.name ?? tag);
+    const metadataName = fallbackName ?? ((tag: string) => track.source.metadata.countries.find(country => country.tag === tag)?.name ?? 'Country name unavailable');
     const nameAt = (tag: string, hour: number) => {
       const key = nameKey(hour, tag);
       const found = names.get(key);
-      if (found) return found;
+      if (typeof found === 'string') return found;
       // Asked for only while the widget is shown, after this render: the tooltip shows
       // the fallback until the name arrives. One still missing (its read failed) is
       // asked again when shown again, at most every RETRY_MS.

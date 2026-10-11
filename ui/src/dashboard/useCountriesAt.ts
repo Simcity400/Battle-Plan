@@ -22,7 +22,7 @@ export const STYLES: FactSpec<CountryStyle> = {
   params: (branchId, hour, tags) => ({ branchId, hour, tags }),
   extract: data => new Map((data as CountryStyleReply).styles.map(style => [style.tag, style] as const)),
 };
-export const FLAGS = flagReadSpec('medium');
+export const FLAGS = flagReadSpec('shield');
 
 /** A country as a lane names it: its name and flag. */
 export type CountryAt = CountryLabel;
@@ -36,7 +36,7 @@ export type CountryAt = CountryLabel;
  * gave replaces it, and a part it did not give is not known, never an older value.
  * Looks are held within one recorded stretch and identity bound (`lookPlan`): an hour in a gap reads
  * nothing, and a moment past a gap starts afresh. A name not known falls back to the
- * opaque tag (or the optional pending/missing wording); a flag not known shows none. `revision`
+ * loading/unavailable wording; a flag not known shows none. `revision`
  * changes as reads arrive, for a chart to redraw. Flag status describes the current
  * read independently of any URL held while it loads. `nameTags` may include every
  * lane being sorted by name; flag requests still use only `tags`. `segmentAt` gives
@@ -58,7 +58,8 @@ export function useCountriesAt(client: DashboardClient, track: Pick<BoundTrack, 
   const tagSets = useMemo(() => ({ flags: new Set(JSON.parse(tagsKey) as string[]), names: new Set(JSON.parse(nameTagsKey) as string[]) }), [tagsKey, nameTagsKey]);
   const allTags = useMemo(() => [...new Set([...tagSets.flags, ...tagSets.names])].sort(), [tagSets]);
   const plan = useMemo(() => lookPlan(track?.branch, allTags, shownHour, segmentAt, undefined, true), [track?.branch, allTags, shownHour, segmentAt]);
-  const heldTags = JSON.stringify([...new Set([...held.looks.keys(), ...allTags])].sort());
+  // Held looks are replaced, never changed in place, so the map's identity stands for its countries.
+  const heldTags = useMemo(() => JSON.stringify([...new Set([...held.looks.keys(), ...allTags])].sort()), [held.looks, allTags]);
   // Retained leaving rows are guarded too, without asking for their artwork.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const segments = useMemo(() => new Map(lookPlan(track?.branch, JSON.parse(heldTags) as string[], moment, segmentAt, undefined, true).samples.map(sample => [sample.tag, sample.stretch])),
@@ -87,9 +88,9 @@ export function useCountriesAt(client: DashboardClient, track: Pick<BoundTrack, 
         const sampleHour = sampleHours.get(tag);
         const style = sampleHour === undefined ? undefined : styles.get(nameKey(sampleHour, tag));
         const heldName = looks.get(tag)?.name;
-        const pending = { name: heldName ?? (sampleHour === undefined ? wording?.missing : wording?.pending) ?? tag,
+        const pending = { name: heldName ?? (sampleHour === undefined ? wording?.missing ?? 'Country name unavailable' : wording?.pending ?? 'Loading name…'),
           known: heldName != null ? true : sampleHour === undefined ? false : undefined, nameFailed: false };
-        return { ...countryReadName(style, pending, wording?.missing ?? tag), ...metadata, flag: looks.get(tag)?.flag ?? undefined,
+        return { ...countryReadName(style, pending, wording?.missing ?? 'Country name unavailable'), ...metadata, flag: looks.get(tag)?.flag ?? undefined,
           flagPending: flagTags.has(tag) && metadata.flagPending };
       },
       revision: styles.size + flags.size * 1000 + looks.size * 1_000_000,

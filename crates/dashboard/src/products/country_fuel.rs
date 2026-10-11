@@ -167,7 +167,31 @@ pub struct FuelAwards {
     pub recipients: Vec<FuelAwardPart>,
 }
 
-fn awards_of(row: &CountryFuelRow, hour: i32) -> Result<FuelAwardTotals, String> {
+/// [`FuelAwardTotals`] as exact integers; only replies format them.
+#[derive(Clone, Debug)]
+struct AwardSums {
+    gains: [i128; 4],
+    own_gain: i128,
+    own_gain_quantity: i128,
+    transfers: [i128; 4],
+    consumed: i128,
+    received: [i128; 3],
+}
+
+impl From<&AwardSums> for FuelAwardTotals {
+    fn from(sums: &AwardSums) -> Self {
+        Self {
+            gains_raw: sums.gains.map(|n| n.to_string()),
+            own_gain_raw: sums.own_gain.to_string(),
+            own_gain_quantity_raw: sums.own_gain_quantity.to_string(),
+            transfers_raw: sums.transfers.map(|n| n.to_string()),
+            consumed_raw: sums.consumed.to_string(),
+            received_raw: sums.received.map(|n| n.to_string()),
+        }
+    }
+}
+
+fn awards_of(row: &CountryFuelRow, hour: i32) -> Result<AwardSums, String> {
     let replay::rows::Recorded::Value(window) = &row.awards else {
         return Err("Applied fuel source and recipient history not recorded".into());
     };
@@ -213,13 +237,13 @@ fn awards_of(row: &CountryFuelRow, hour: i32) -> Result<FuelAwardTotals, String>
         consumed += i128::from(entry.consumed_raw);
         own_quantity += i128::from(engine::fuel_awards::quantity(entry.own_gain_raw));
     }
-    Ok(FuelAwardTotals {
-        gains_raw: gains.map(|n| n.to_string()),
-        own_gain_raw: own.to_string(),
-        own_gain_quantity_raw: own_quantity.to_string(),
-        transfers_raw: transfers.map(|n| n.to_string()),
-        consumed_raw: consumed.to_string(),
-        received_raw: received.map(|n| n.to_string()),
+    Ok(AwardSums {
+        gains,
+        own_gain: own,
+        own_gain_quantity: own_quantity,
+        transfers,
+        consumed,
+        received,
     })
 }
 
@@ -411,6 +435,93 @@ pub struct FuelRead {
     pub awards_reason: Option<String>,
 }
 
+/// A [`FuelRead`] as exact integers; only replies format them.
+#[derive(Clone, Debug)]
+struct RawRead {
+    country: u32,
+    country_instance: Option<u32>,
+    continuity_start_hour: Option<i32>,
+    first_hour: i32,
+    last_hour: i32,
+    starts_segment: bool,
+    fuel: i64,
+    capacity: i64,
+    lend_lease: i64,
+    day: Option<RawDay>,
+    left_out: Option<DayLeftOut>,
+    awards_reason: Option<Arc<str>>,
+}
+
+/// A [`FuelDay`]: the ring sums, or the applied updates that supersede them.
+#[derive(Clone, Debug)]
+enum RawDay {
+    Ring {
+        gained: i64,
+        burned: i64,
+        received: [i64; 3],
+        other: i64,
+    },
+    Awards(Box<AwardSums>),
+}
+
+impl From<&RawRead> for FuelRead {
+    fn from(read: &RawRead) -> Self {
+        let day = read.day.as_ref().map(|day| match day {
+            RawDay::Ring {
+                gained,
+                burned,
+                received,
+                other,
+            } => FuelDay {
+                gained_raw: gained.to_string(),
+                burned_raw: burned.to_string(),
+                received_raw: received.map(|raw| raw.to_string()),
+                other_raw: other.to_string(),
+                awards: None,
+            },
+            RawDay::Awards(sums) => {
+                let awards = FuelAwardTotals::from(&**sums);
+                FuelDay {
+                    gained_raw: awards.own_gain_raw.clone(),
+                    burned_raw: awards.consumed_raw.clone(),
+                    received_raw: awards.received_raw.clone(),
+                    other_raw: awards.transfers_raw[3].clone(),
+                    awards: Some(awards),
+                }
+            }
+        });
+        Self {
+            country: read.country.to_string(),
+            country_instance: read.country_instance,
+            continuity_start_hour: read.continuity_start_hour,
+            first_hour: read.first_hour,
+            last_hour: read.last_hour,
+            starts_segment: read.starts_segment,
+            fuel_raw: read.fuel.to_string(),
+            capacity_raw: read.capacity.to_string(),
+            lend_lease_raw: read.lend_lease.to_string(),
+            day,
+            left_out: read.left_out,
+            awards_reason: read.awards_reason.as_deref().map(str::to_owned),
+        }
+    }
+}
+
+/// Each distinct refusal text once, shared by every read that repeats it.
+#[derive(Default)]
+struct Reasons(BTreeSet<Arc<str>>);
+
+impl Reasons {
+    fn intern(&mut self, reason: &str) -> Arc<str> {
+        if let Some(shared) = self.0.get(reason) {
+            return Arc::clone(shared);
+        }
+        let shared = Arc::<str>::from(reason);
+        self.0.insert(Arc::clone(&shared));
+        shared
+    }
+}
+
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FuelReply {
@@ -492,7 +603,7 @@ impl Product for CountryFuelAwards {
         };
         let reads = detail::basis_reads(source, country.branch(), params.hour, cancelled)?;
         let row = detail::authenticated(&reads, params)?;
-        let totals = awards_of(row, params.hour).map_err(crate::invalid)?;
+        let totals = FuelAwardTotals::from(&awards_of(row, params.hour).map_err(crate::invalid)?);
         let catalogue = std::sync::OnceLock::new();
         let recipients = recipients_of(row, cancelled, |bytes| {
             if bytes.is_empty() {
@@ -550,9 +661,9 @@ impl Product for CountryFuelAwards {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct ScannedFuel {
-    pub reads: Vec<FuelRead>,
-    pub consumption: Vec<demand::FuelConsumptionRead>,
+struct ScannedFuel {
+    reads: Vec<RawRead>,
+    consumption: Vec<demand::RawConsumption>,
 }
 
 impl ScannedFuel {
@@ -625,9 +736,10 @@ fn read_of(
     hour: i32,
     starts_segment: bool,
     left_out: Option<DayLeftOut>,
-) -> FuelRead {
+    reasons: &mut Reasons,
+) -> RawRead {
     let awards = awards_of(row, hour);
-    let awards_reason = awards.as_ref().err().cloned();
+    let awards_reason = awards.as_ref().err().map(|reason| reasons.intern(reason));
     // Authenticated completed updates are stronger evidence than the legacy
     // preceding-sample ownership check, which cannot see intervening commands.
     let left_out = if awards.is_ok() && left_out != Some(DayLeftOut::Overlaps) {
@@ -636,28 +748,20 @@ fn read_of(
         left_out
     };
     let day = left_out.is_none().then(|| match awards {
-        Ok(awards) => FuelDay {
-            gained_raw: awards.own_gain_raw.clone(),
-            burned_raw: awards.consumed_raw.clone(),
-            received_raw: awards.received_raw.clone(),
-            other_raw: awards.transfers_raw[3].clone(),
-            awards: Some(awards),
-        },
-        Err(_) => FuelDay {
-            gained_raw: row.ring_gain_raw.to_string(),
-            burned_raw: row.ring_consumed_raw.to_string(),
-            received_raw: [
+        Ok(awards) => RawDay::Awards(Box::new(awards)),
+        Err(_) => RawDay::Ring {
+            gained: row.ring_gain_raw,
+            burned: row.ring_consumed_raw,
+            received: [
                 row.ring_received_0_raw,
                 row.ring_received_1_raw,
                 row.ring_received_2_raw,
-            ]
-            .map(|raw| raw.to_string()),
-            other_raw: row.ring_other_raw.to_string(),
-            awards: None,
+            ],
+            other: row.ring_other_raw,
         },
     });
-    FuelRead {
-        country: row.country.to_string(),
+    RawRead {
+        country: row.country,
         country_instance: match row.country_instance {
             replay::rows::Recorded::Value(value) => value,
             _ => None,
@@ -669,9 +773,9 @@ fn read_of(
         first_hour: hour,
         last_hour: hour,
         starts_segment,
-        fuel_raw: row.current_raw.to_string(),
-        capacity_raw: row.maximum_raw.to_string(),
-        lend_lease_raw: row.lend_lease_gain_raw.to_string(),
+        fuel: row.current_raw,
+        capacity: row.maximum_raw,
+        lend_lease: row.lend_lease_gain_raw,
         day,
         left_out,
         awards_reason,
@@ -724,187 +828,202 @@ fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Resu
     // A newly encountered tag was absent at previous complete samples; missing
     // tables still cannot tell. Seed its governing day with that exact evidence.
     let mut prior: VecDeque<(i32, Holding)> = VecDeque::new();
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancel());
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancel());
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            #[cfg(test)]
-            {
-                result.decoded_frames += 1;
-            }
-            let hour = frame.hour;
-            let tables = decoded
-                .complete::<tables::Countries>()
-                .ok()
-                .zip(decoded.complete::<tables::CountryLinks>().ok());
-            let tagged = tables.map(|(countries, links)| tagged_countries(countries, links));
-            let owners = tables.zip(decoded.complete::<tables::States>().ok()).map(
-                |((_, links), states)| {
-                    let mut slots = BTreeSet::new();
-                    let mut unresolved = false;
-                    for state in states {
-                        #[cfg(test)]
+    let mut reasons = Reasons::default();
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancel());
+                }
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(cancel());
+                    }
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    #[cfg(test)]
+                    {
+                        result.decoded_frames += 1;
+                    }
+                    let hour = frame.hour;
+                    let tables = decoded
+                        .complete::<tables::Countries>()
+                        .ok()
+                        .zip(decoded.complete::<tables::CountryLinks>().ok());
+                    let tagged =
+                        tables.map(|(countries, links)| tagged_countries(countries, links));
+                    let owners = tables.zip(decoded.complete::<tables::States>().ok()).map(
+                        |((_, links), states)| {
+                            let mut slots = BTreeSet::new();
+                            let mut unresolved = false;
+                            for state in states {
+                                #[cfg(test)]
+                                {
+                                    result.ownership_rows += 1;
+                                }
+                                match link_slot(links, state.owner) {
+                                    Some(slot) => {
+                                        slots.insert(slot);
+                                    }
+                                    None => unresolved = true,
+                                }
+                            }
+                            (slots, unresolved)
+                        },
+                    );
+                    while prior
+                        .front()
+                        .is_some_and(|(seen, _)| hour.saturating_sub(*seen) > DAY_HOURS)
+                    {
+                        prior.pop_front();
+                    }
+                    if let Some(tagged) = &tagged {
+                        for (tag, lookup) in tagged {
+                            match std::str::from_utf8(tag) {
+                                Ok(tag) => {
+                                    countries.entry(tag.to_owned()).or_insert_with(|| {
+                                        CountryScan {
+                                            recent: prior.clone(),
+                                            ..Default::default()
+                                        }
+                                    });
+                                }
+                                Err(_) => {
+                                    if let Some((country, _)) = lookup.found() {
+                                        result.unnamed.insert(country.id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let fuel = decoded.complete::<tables::CountryFuel>().ok();
+                    let read = slot_read(&decoded.metrics, TableId::CountryFuel, hour);
+                    let mut by_slot = BTreeMap::new();
+                    if read
+                        && let Some((_, links)) = tables
+                        && let Some(rows) = fuel
+                    {
+                        for row in rows {
+                            if let Some(slot) = link_slot(links, row.country) {
+                                by_slot.entry(slot).or_insert(row);
+                            }
+                        }
+                    }
+                    for (tag, country) in &mut countries {
+                        let lookup = tagged.as_ref().map(|tagged| {
+                            tagged
+                                .get(tag.as_bytes())
+                                .copied()
+                                .unwrap_or(TaggedCountry::Absent)
+                        });
+                        let identity = lookup
+                            .and_then(TaggedCountry::found)
+                            .map(|(country, slot)| (slot, country.id));
+                        let seen = lookup
+                            .zip(owners.as_ref())
+                            .and_then(|(lookup, owners)| holding(lookup, owners));
+                        while country
+                            .recent
+                            .front()
+                            .is_some_and(|(seen, _)| hour.saturating_sub(*seen) > DAY_HOURS)
                         {
-                            result.ownership_rows += 1;
+                            country.recent.pop_front();
                         }
-                        match link_slot(links, state.owner) {
-                            Some(slot) => {
-                                slots.insert(slot);
+                        country.recent.push_back((hour, seen));
+                        let continuous = country.track.step(identity, hour);
+                        country.open &= continuous;
+                        country.demand_open &= continuous;
+                        let Some(identity) = identity.filter(|_| fuel.is_some()) else {
+                            country.open = false;
+                            country.demand_open = false;
+                            continue;
+                        };
+                        if !read {
+                            if country.open
+                                && let Some(read) = country.result.reads.last_mut()
+                            {
+                                read.last_hour = hour;
                             }
-                            None => unresolved = true,
-                        }
-                    }
-                    (slots, unresolved)
-                },
-            );
-            while prior
-                .front()
-                .is_some_and(|(seen, _)| hour.saturating_sub(*seen) > DAY_HOURS)
-            {
-                prior.pop_front();
-            }
-            if let Some(tagged) = &tagged {
-                for (tag, lookup) in tagged {
-                    match std::str::from_utf8(tag) {
-                        Ok(tag) => {
-                            countries
-                                .entry(tag.to_owned())
-                                .or_insert_with(|| CountryScan {
-                                    recent: prior.clone(),
-                                    ..Default::default()
-                                });
-                        }
-                        Err(_) => {
-                            if let Some((country, _)) = lookup.found() {
-                                result.unnamed.insert(country.id);
+                            if country.demand_open
+                                && let Some(read) = country.result.consumption.last_mut()
+                            {
+                                read.last_hour = hour;
                             }
+                            continue;
                         }
+                        let Some(row) = by_slot.get(&identity.0) else {
+                            country.open = false;
+                            country.demand_open = false;
+                            continue;
+                        };
+                        let instance = match row.country_instance {
+                            replay::rows::Recorded::Value(value) => value,
+                            _ => None,
+                        };
+                        let continuity = match &row.awards {
+                            replay::rows::Recorded::Value(window) => window.continuity_start_hour,
+                            _ => None,
+                        };
+                        if country.instance != instance {
+                            country.demand_open = false;
+                        }
+                        if country.instance != instance || country.continuity != continuity {
+                            country.open = false;
+                        }
+                        country.instance = instance;
+                        country.continuity = continuity;
+                        let left_out = day_left_out(&country.recent, hour, identity);
+                        country.result.reads.push(read_of(
+                            row,
+                            hour,
+                            !country.open,
+                            left_out,
+                            &mut reasons,
+                        ));
+                        let segment = if country.demand_open {
+                            country
+                                .result
+                                .consumption
+                                .last()
+                                .map(|read| read.segment_start_hour)
+                                .unwrap_or(hour)
+                        } else {
+                            hour
+                        };
+                        country.result.consumption.push(demand::summary_of(
+                            row,
+                            hour,
+                            segment,
+                            !country.demand_open,
+                            &mut reasons,
+                        ));
+                        country.demand_open = true;
+                        country.open = true;
                     }
+                    prior.push_back((hour, owners.as_ref().map(|_| (None, false))));
                 }
             }
-            let fuel = decoded.complete::<tables::CountryFuel>().ok();
-            let read = slot_read(&decoded.metrics, TableId::CountryFuel, hour);
-            let mut by_slot = BTreeMap::new();
-            if read
-                && let Some((_, links)) = tables
-                && let Some(rows) = fuel
-            {
-                for row in rows {
-                    if let Some(slot) = link_slot(links, row.country) {
-                        by_slot.entry(slot).or_insert(row);
-                    }
-                }
-            }
-            for (tag, country) in &mut countries {
-                let lookup = tagged.as_ref().map(|tagged| {
-                    tagged
-                        .get(tag.as_bytes())
-                        .copied()
-                        .unwrap_or(TaggedCountry::Absent)
-                });
-                let identity = lookup
-                    .and_then(TaggedCountry::found)
-                    .map(|(country, slot)| (slot, country.id));
-                let seen = lookup
-                    .zip(owners.as_ref())
-                    .and_then(|(lookup, owners)| holding(lookup, owners));
-                while country
-                    .recent
-                    .front()
-                    .is_some_and(|(seen, _)| hour.saturating_sub(*seen) > DAY_HOURS)
-                {
-                    country.recent.pop_front();
-                }
-                country.recent.push_back((hour, seen));
-                let continuous = country.track.step(identity, hour);
-                country.open &= continuous;
-                country.demand_open &= continuous;
-                let Some(identity) = identity.filter(|_| fuel.is_some()) else {
-                    country.open = false;
-                    country.demand_open = false;
-                    continue;
-                };
-                if !read {
-                    if country.open
-                        && let Some(read) = country.result.reads.last_mut()
-                    {
-                        read.last_hour = hour;
-                    }
-                    if country.demand_open
-                        && let Some(read) = country.result.consumption.last_mut()
-                    {
-                        read.last_hour = hour;
-                    }
-                    continue;
-                }
-                let Some(row) = by_slot.get(&identity.0) else {
-                    country.open = false;
-                    country.demand_open = false;
-                    continue;
-                };
-                let instance = match row.country_instance {
-                    replay::rows::Recorded::Value(value) => value,
-                    _ => None,
-                };
-                let continuity = match &row.awards {
-                    replay::rows::Recorded::Value(window) => window.continuity_start_hour,
-                    _ => None,
-                };
-                if country.instance != instance {
-                    country.demand_open = false;
-                }
-                if country.instance != instance || country.continuity != continuity {
-                    country.open = false;
-                }
-                country.instance = instance;
-                country.continuity = continuity;
-                let left_out = day_left_out(&country.recent, hour, identity);
-                country
-                    .result
-                    .reads
-                    .push(read_of(row, hour, !country.open, left_out));
-                let segment = if country.demand_open {
-                    country
-                        .result
-                        .consumption
-                        .last()
-                        .map(|read| read.segment_start_hour)
-                        .unwrap_or(hour)
-                } else {
-                    hour
-                };
-                country.result.consumption.push(demand::summary_of(
-                    row,
-                    hour,
-                    segment,
-                    !country.demand_open,
-                ));
-                country.demand_open = true;
-                country.open = true;
-            }
-            prior.push_back((hour, owners.as_ref().map(|_| (None, false))));
-        }
-    }
+            Ok(())
+        },
+    )?;
     for (tag, mut country) in countries {
         for read in &country.result.reads {
             if let Some(instance) = read.country_instance {
                 result
                     .actor_aliases
-                    .entry((read.country.clone(), instance))
+                    .entry((read.country.to_string(), instance))
                     .or_default()
                     .insert(tag.clone());
             }
@@ -915,18 +1034,19 @@ fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Resu
     Ok(result)
 }
 
-/// A source-only single-country projection of the shared branch scan.
+/// A source-only single-country projection of the shared branch scan, as its
+/// reply shows it.
 #[cfg(test)]
 pub fn scan(
     replay: &Replay,
     branch: u64,
     tag: &str,
     cancelled: &AtomicBool,
-) -> io::Result<ScannedFuel> {
+) -> io::Result<Vec<FuelRead>> {
     Ok(scan_branch(replay, branch, cancelled)?
         .countries
         .get(tag)
-        .map(|country| country.as_ref().clone())
+        .map(|country| country.reads.iter().map(FuelRead::from).collect())
         .unwrap_or_default())
 }
 
@@ -934,8 +1054,8 @@ pub fn scan(
 /// table's daily slot come first, then the others, each in hour order; a day is
 /// kept when its read is at least [`DAY_HOURS`] from every read kept before it,
 /// which every slot read is. Days already left out never hold another back.
-fn keep_days(reads: &mut [FuelRead]) {
-    let in_slot = |read: &FuelRead| cadence::is_refresh(TableId::CountryFuel, read.first_hour);
+fn keep_days(reads: &mut [RawRead]) {
+    let in_slot = |read: &RawRead| cadence::is_refresh(TableId::CountryFuel, read.first_hour);
     let mut kept = BTreeSet::new();
     let (slot, other): (Vec<_>, Vec<_>) = reads
         .iter_mut()
@@ -1101,7 +1221,7 @@ impl Product for CountryFuel {
             gain_labels,
             transfer_labels,
             detail_hours: detail::DETAIL_HOURS,
-            reads: scanned.reads.clone(),
+            reads: scanned.reads.iter().map(FuelRead::from).collect(),
             warnings,
         })
     }

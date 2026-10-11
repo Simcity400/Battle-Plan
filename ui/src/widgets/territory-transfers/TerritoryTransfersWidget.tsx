@@ -8,6 +8,7 @@ import type { FlowHit, FlowLink } from '../../charts/flow/FlowDiagram';
 import { countryFlowColours, countryFlowNodes, flowOtherColour } from '../../charts/flow/countries';
 import type { SummedNode } from '../../charts/flow/sum';
 import { jumpItem } from '../../charts/jump';
+import { usNumber } from '../../charts/numberFormat';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
@@ -103,7 +104,7 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
     return sample ? nodeLabels.labelAt(sample.hour)(sample.tag) : { name: 'Country identity not recorded', flagPending: false };
   }, [nodeCountries, nodeLabels]);
   const nodeName = useCallback((node: SummedNode) => node.tag != null ? look(node.tag).name
-    : `${node.members.length.toLocaleString('en-US')} other ${node.side === 'source' ? 'givers' : 'takers'}`, [look]);
+    : `${usNumber.format(node.members.length)} other ${node.side === 'source' ? 'givers' : 'takers'}`, [look]);
   const otherColour = flowOtherColour(tokens);
   const { nodes, links } = useMemo(() => {
     const countryNodes = countryFlowNodes(diagram.nodes, look, tokens, nodeName,
@@ -156,7 +157,7 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
     [conference, shown, track?.branch.firstHour, moment]);
   const from = Math.max(rangeFrom, gapFrom);
   const gaps = useMemo(() => data ? transferGapCount(data, from, until) : 0, [data, from, until]);
-  const gapNote = gaps ? `${gaps.toLocaleString('en-US')} ${gaps === 1 ? 'span was' : 'spans were'} not recorded; totals include only recorded transfer outcomes.` : null;
+  const gapNote = gaps ? `${usNumber.format(gaps)} ${gaps === 1 ? 'span was' : 'spans were'} not recorded; totals include only recorded transfer outcomes.` : null;
   const vpNote = victoryPointNote(diagram);
   const captureNote = conference ? peaceCaptureLabel(conference) : null;
   const observationNote = conference ? peaceObservationLabel(conference) : null;
@@ -181,7 +182,7 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
     for (const part of parts) for (const state of part.states) { first = Math.min(first, state.dates.afterHour); last = Math.max(last, state.dates.afterHour); }
     const hours = Number.isFinite(last) ? [...new Set([last, first])] : [conference ? peaceDealHour(conference) : moment];
     menu.open(x, y, hours.map(hour => jumpItem(runtime, track.id, hour)));
-  }, [track, runtime, linkById, linksByNode, shown, conference, moment, menu]);
+  }, [track, runtime, linkById, linksByNode, shown, conference, moment, menu.open]);
 
   const playhead = track ? Math.floor(runtime.clock.getHour() + track.axisOffset) : null;
   const selectedIds = showParts ? storedSelection?.ids ?? null : drillIds;
@@ -231,7 +232,7 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
   if (moment < track.branch.firstHour || moment > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the campaign’s recorded branch." />;
   if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
   if (!data || !transfers) return <WidgetState kind="loading" label="Loading territory transfers…" />;
-  if (showParts && missingSelection) return <WidgetState kind="unavailable" message={`${missingSelection.toLocaleString('en-US')} selected transfer links are not recorded in this scope.`} />;
+  if (showParts && missingSelection) return <WidgetState kind="unavailable" message={`${usNumber.format(missingSelection)} selected transfer links are not recorded in this scope.`} />;
   if (scope === 'conference' && !conference) return <WidgetState kind="empty" message={selectedToken ? 'This conference is outside the selected recorded interval.' : 'No peace conferences yet.'} />;
   const message = capacity == null || diagram.links.length ? null : measure === 'victoryPoints' && diagram.missingVictoryPoints ? 'The links’ victory points were not recorded.'
     : shown.length && measure === 'victoryPoints' ? 'The recorded victory points have no positive ribbon width.'

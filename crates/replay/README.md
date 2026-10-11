@@ -38,7 +38,7 @@ Preserve these distinctions through inspection, analytics and save joins. Siblin
 
 A witnessed native world invalidation splits branch continuity even when stored clock and load timestamp values agree. The collector supplies this fact to `BranchTracker`; the existing branch controls preserve it without replacing native clock values.
 
-`FrameDecoder::for_tables` fixes its selection for its lifetime; omitted tables are unavailable. `Replay::read_block_selected` validates all updates before discarding unselected ones. Both keep ordinary baseline/recovery rules. `Replay::read_block_parallel` preserves sequential frames/first error and requires caller-owned spare workers; collector and recorder read sequentially.
+`FrameDecoder::for_tables` fixes its selection for its lifetime; omitted tables are unavailable. `Replay::read_block_selected` validates every update's wire grammar before discarding unselected ones. Compatible omitted deltas borrow field values and retain only keys for ordering/overlap checks; retained deltas own their values. Snapshots retain typed row validation, while delta nested validation and baseline arithmetic remain reconstruction work. `Replay::visit_block` (and through it `read_block_selected` and `seek_selected`) inflates and decodes one frame at a time and may stop early; a block is checksum-verified by inflating it to its end once, after which reads stop at their hour. Both keep ordinary baseline/recovery rules. `Replay::read_block_parallel` preserves sequential frames/first error and requires caller-owned spare workers; collector and recorder read sequentially.
 
 ## Row contracts
 

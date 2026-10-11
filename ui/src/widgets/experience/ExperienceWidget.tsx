@@ -180,7 +180,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
     })), extent);
     return countries.flatMap(country => [...(country.membership
       ? membershipChanges(country.membership.map(run => ({ ...run, tag: country.tag })), extent[0], extent[1], resolved.unobserved).map(change => ({
-        hour: change.hour, glyph: change.change === 'joined' ? '+' : '−', label: `${country.tag} ${change.change}`, color: country.color })) : []),
+        hour: change.hour, glyph: change.change === 'joined' ? '+' : '−', label: `Country ${change.change}`, color: country.color })) : []),
     ...(capitulations.get(country.tag) ?? []).map(badge => ({ ...badge, color: country.color }))]);
   }, [countries, groups.data, extent[0], extent[1], resolved.unobserved]);
 
@@ -208,7 +208,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
       <LineSwatch dash={branchDash(branch)} />{BRANCH_LABELS[branch]}
     </span>)}</p>}
     <div className="experience-chart">
-      <TimeChart label={`Experience of ${headCountries.map(country => country.identityKnown ? country.name : country.tag).join(', ')}`} extent={extent} playhead={playhead}
+      <TimeChart label={`Experience of ${headCountries.map(country => country.identityKnown ? country.name : 'Country name unavailable').join(', ')}`} extent={extent} playhead={playhead}
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays) * 24}
         hoursPerSecond={hoursPerSecond} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }} fitValues={shown => shown}

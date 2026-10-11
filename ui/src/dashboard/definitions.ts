@@ -115,7 +115,7 @@ export interface WidgetPickerItemsProps {
   onAdd: (kind: string, initial?: Pick<WidgetSpec, 'title' | 'options'>) => void;
 }
 
-export type WidgetCountryChipProps = Pick<WidgetProps, 'widget' | 'runtime'> & {
+export type WidgetCountryChipProps = Pick<WidgetProps, 'widget' | 'runtime' | 'active'> & {
   onSlot: (element: HTMLSpanElement | null) => void;
 };
 

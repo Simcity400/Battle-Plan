@@ -16,8 +16,8 @@ export default function WidgetSettingsMenu({ widget, template, runtime, onApply,
     <button ref={trigger} className="dash-icon-button" type="button" aria-label={`Configure ${widget.title}`} data-tooltip="Widget settings"
       popoverTarget={id} aria-haspopup="dialog" aria-expanded={open}><Icon name="settings" /></button>
     <Popover menu={menu} id={id} className="widget-settings-menu" aria-label={`${widget.title} settings`}>
-      <PopoverHeading title="Widget settings" menu={menu} onDelete={onRemove} />
-      {open && <WidgetSettings widget={widget} template={template} runtime={runtime} onChange={onApply} onReset={onReset} />}
+      <PopoverHeading title="Widget settings" menu={menu} onDelete={onRemove} onReset={onReset} />
+      {open && <WidgetSettings widget={widget} template={template} runtime={runtime} onChange={onApply} />}
       {open && diagnostics.length > 0 && <details className="widget-advanced"><summary>Data diagnostics ({diagnostics.length})</summary>
         <div>{diagnostics.map((message, index) => <p key={index}>{message}</p>)}</div></details>}
     </Popover>

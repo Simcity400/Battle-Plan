@@ -4,6 +4,10 @@ import { moveIndex, revealRow, visibleRange } from '../components/countryList';
 import { movingRowClass, useRowMotion } from './useRowMotion';
 import type { MovingRow } from './rowMotion';
 
+/** An unchanged viewport keeps its state, so measuring and scrolling never re-render for nothing. */
+const viewAt = (top: number, height: number) => (before: { top: number; height: number }) =>
+  before.top === top && before.height === height ? before : { top, height };
+
 /** Moving rows with bounded DOM and keyboard access to every row. Motion retains
  * the full order; only the viewport and overscan render or request artwork. */
 export default function WindowedRows<T>({ items, rowHeight: preferredHeight, fit = false, minRowHeight = 20, padding = 0, label, className, onVisibleRows, empty, children }: {
@@ -31,7 +35,7 @@ export default function WindowedRows<T>({ items, rowHeight: preferredHeight, fit
   useLayoutEffect(() => {
     const element = root.current;
     if (!element) return;
-    const measure = () => setView({ top: element.scrollTop, height: element.clientHeight });
+    const measure = () => setView(viewAt(element.scrollTop, element.clientHeight));
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);
@@ -43,7 +47,7 @@ export default function WindowedRows<T>({ items, rowHeight: preferredHeight, fit
     if (target) { target.focus(); setFocus(null); }
   }, [focus, range.start, range.end]);
   return <div ref={root} className={`windowed-rows ${className ?? ''}`} role="list" aria-label={label}
-    onScroll={event => { setView({ top: event.currentTarget.scrollTop, height: event.currentTarget.clientHeight }); }}>
+    onScroll={event => { setView(viewAt(event.currentTarget.scrollTop, event.currentTarget.clientHeight)); }}>
     {!moving.length && empty}
     <div className="windowed-rows-body" style={{ height: padding * 2 + count * rowHeight }}>
       {visible.map(row => <div key={row.key}
@@ -55,7 +59,7 @@ export default function WindowedRows<T>({ items, rowHeight: preferredHeight, fit
           if (next == null || !root.current) return;
           event.preventDefault();
           root.current.scrollTop = padding + revealRow(next, Math.max(0, root.current.scrollTop - padding), view.height, rowHeight);
-          setView({ top: root.current.scrollTop, height: root.current.clientHeight });
+          setView(viewAt(root.current.scrollTop, root.current.clientHeight));
           setFocus(next);
         }}>{children(row)}</div>)}
     </div>

@@ -114,6 +114,22 @@ export function oklchToRgb(color: Oklch): Rgb {
   return { r, g, b };
 }
 
+/** Interpolates in OKLab, as CSS `color-mix(in oklab, …)` does. */
+export function mixOklab(from: Rgb, to: Rgb, amount: number): Rgb {
+  const t = clamp(amount);
+  const lab = (color: Rgb) => { const { l, c, h } = rgbToOklch(color); const angle = (h * Math.PI) / 180; return [l, c * Math.cos(angle), c * Math.sin(angle)]; };
+  const [l1, a1, b1] = lab(from), [l2, a2, b2] = lab(to);
+  const [l, a, b] = [l1 + (l2 - l1) * t, a1 + (a2 - a1) * t, b1 + (b2 - b1) * t];
+  const hue = (Math.atan2(b, a) * 180) / Math.PI;
+  return oklchToRgb({ l, c: Math.hypot(a, b), h: hue < 0 ? hue + 360 : hue });
+}
+
+/** #rrggbb when opaque, otherwise #rrggbbaa. */
+export function toHexAlpha(color: Rgb, alpha: number): string {
+  const opacity = Math.round(clamp(alpha) * 255);
+  return opacity === 255 ? toHex(color) : `${toHex(color)}${opacity.toString(16).padStart(2, '0')}`;
+}
+
 export function oklchHex(color: Oklch): string {
   return toHex(oklchToRgb(color));
 }

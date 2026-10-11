@@ -12,6 +12,7 @@ import type { TooltipRow } from '../../charts/tooltip';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
+import { contentTitleHint } from '../../dashboard/contentTitles';
 import { useCountryLooks } from '../../dashboard/countryLooks';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { groupRuns, groupUnobserved, worldFilter } from '../../dashboard/groups';
@@ -156,7 +157,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const segmentAt = useCallback((tag: string, hour: number) => runAt(identityHistories.get(tag) ?? [], hour)?.firstHour ?? null, [identityHistories]);
   const looks = useCountryLooks(runtime.client, track, laneTags.filter((tag): tag is string => tag !== null), head, active, segmentAt);
   const metadataNames = useMemo(() => new Map(track?.source.metadata.countries.map(country => [country.tag, country.name])), [track?.source]);
-  const metadataName = (tag: string) => metadataNames.get(tag) ?? tag;
+  const metadataName = (tag: string) => metadataNames.get(tag) ?? 'Country name unavailable';
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const hover = useHoverLabels(runtime.client, track, active, useMemo(() => (tag: string) => ({ name: metadataName(tag) }), [metadataNames]));
 
@@ -223,7 +224,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
         const overlordTag = run?.overlord == null || identities.keyAt(run.overlord, hour) === null ? null : run.overlord;
         hover.ask(hour, [...(tag === null ? [] : [tag]), ...(overlordTag === null ? [] : [overlordTag])]);
         const named = hover.labelAt(hour);
-        const label = tag === null ? { name: subject?.tag ?? lane.id, flagReason: 'Native country identity not recorded at this hour.' } : named(tag);
+        const label = tag === null ? { name: 'Country name unavailable', flagReason: 'Native country identity not recorded at this hour.' } : named(tag);
         const name = label.name;
         if (!subject || !run) {
           return { title: `${name} · ${dayLabel(hour)}`, countryFlag: label, rows: [{ label: 'Autonomy', value: tag === null ? 'Native country identity not recorded' : absentAt(data, hour, unobserved).text, tone: 'muted' }] };
@@ -239,7 +240,8 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
           { label: 'Moves down below', value: `${formatScore(data, run.lowerRaw)}${run.lowest ? ' · no lower level' : ''}` },
           { label: 'Moves up at', value: `${formatScore(data, run.upperRaw)}${run.highest ? ' · no higher level' : ''}` },
         ];
-        return { title: `${name} · ${dayLabel(hour)}`, countryFlag: label, rows };
+        return { title: `${name} · ${dayLabel(hour)}`, countryFlag: label, rows,
+          note: contentTitleHint(data.levels[run.level]?.id) };
       }}
       onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
     {menu.menu}

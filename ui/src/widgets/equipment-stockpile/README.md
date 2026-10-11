@@ -18,6 +18,7 @@ Countries, campaign/follow/pin/range; type/variant/arm grouping, included types,
 - Derive need from the availability operand at the balance write; never use current supply values. Older ordinary types retain their stock-minus-balance derivation; missing special-type availability stays unknown.
 - Balance, stock and weekly output keep separate reads/coverage. Gaps/holder changes end carries. Unsupported rates or unresolved nonzero/unknown classifications leave affected sums unknown.
 - Designs use read-dated names and campaign/design witnesses for saved choices. Type art uses the native best-candidate rule, not largest stock; missing operands/art keep placeholders and reasons.
+- Equipment titles preserve authored empty text and titles equal to their keys. A present empty country-specific title owns the name; missing localisation remains unavailable.
 - Drills use balance-write contributions and wrapping/residual parts. Signed/zero rows remain selectable. Picking holds; Follow uses the clock. Pin saves the original native holder, semantic equipment and time. Aliases exclude tag reuse; headers use the body date. Missing origins leave neutral headers/unavailable bodies.
 - Keep numeric pick ownership through content-only refresh and mount only visible comparison panels and neighbours.
 

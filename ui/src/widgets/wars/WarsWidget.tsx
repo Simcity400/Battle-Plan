@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
-import { CountryFlagUrl } from '../../components/CountryFlag';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import { laneRequests } from '../../charts/timeline/laneRequests';
@@ -15,6 +14,7 @@ import { useCountryFactsRead } from '../../dashboard/countryNamesAt';
 import { useFactionColours } from '../../dashboard/FactionColours';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
+import { selectedTags } from '../../dashboard/countrySelection';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -45,10 +45,9 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 1;
   const at = Math.floor(playhead ?? last);
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
-  const pickedTag = widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : null;
-  const viewpointTag = options.viewpoint === 'country' ? pickedTag : null;
-  const needsPick = options.viewpoint === 'country' && !pickedTag;
-  const product = useProduct(runtime.client, track && !needsPick ? { sourceId: track.source.id, revision: track.source.revision, product: 'wars',
+  // The viewpoint is the widget's country: the dashboard's unless one is picked.
+  const viewpointTag = selectedTags(widget.countries, track)[0] ?? null;
+  const product = useProduct(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'wars',
     params: { branchId: track.branch.id, viewpointTag } } : null, active, validateWarsReply);
   const data = product.data;
   const groups = useCountryGroups(runtime, track, active);
@@ -125,7 +124,6 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its wars." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
   if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the campaign’s recorded branch." />;
-  if (needsPick) return <WidgetState kind="empty" message="Choose a country in Countries settings." />;
   const state = warsReplyState(data, product.error);
   if (state === 'error') return <WidgetState kind="error" message={product.error!} onRetry={product.retry} />;
   if (state === 'unavailable') return <WidgetState kind="unavailable" />;
@@ -169,9 +167,7 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   };
   const seenAs = viewpoint ? countries(viewpoint) : null;
   const summary = viewpointSummary(seenAs);
-  const knownViewpoint = seenAs?.known === true;
   return <div className="timeline-scroll">
-    <p className="chart-description">{seenAs && knownViewpoint ? <>Wars as <CountryFlagUrl className="country-flag" url={seenAs.flag} reason={seenAs.flagReason} pending={seenAs.flagPending} />{seenAs.name} sees them</> : summary}</p>
     {!lanes.length ? <WidgetState kind="empty" message={data.unobserved.some(gap => gap.firstHour <= at && at <= gap.lastHour) ? 'Not recorded.' : 'No wars yet.'} />
       : <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}:${viewpointTag ?? ''}`} label="Wars timeline"
         extent={extent} playhead={playhead} labelHour={at} lanes={lanes} emptyLabel="Not recorded"

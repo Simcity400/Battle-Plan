@@ -47,8 +47,13 @@ export default function HeatChart(props: HeatChartProps) {
   const pointerY = useRef(top);
   useLayoutEffect(() => {
     const element = surface.current!;
-    const measure = () => setViewport(previous => ({ ...previous, width: element.clientWidth,
-      height: element.clientHeight || previous.height, scroll: element.scrollTop }));
+    const measure = () => {
+      const width = element.clientWidth, measured = element.clientHeight, scrolled = element.scrollTop;
+      setViewport(previous => {
+        const height = measured || previous.height;
+        return previous.width === width && previous.height === height && previous.scroll === scrolled ? previous : { width, height, scroll: scrolled };
+      });
+    };
     const observer = new ResizeObserver(measure);
     observer.observe(element); measure();
     return () => observer.disconnect();
@@ -63,7 +68,10 @@ export default function HeatChart(props: HeatChartProps) {
     setLabelWidth(fitLabelWidth(labels, label => widths.get(label)!, 0,
       viewport.width * 0.45, VALUE_LABEL_GAP * 2));
   }, [labels, tokens.font, tokens.fontSize.small, viewport.width]);
-  const scroll = () => setViewport(previous => ({ ...previous, scroll: surface.current!.scrollTop }));
+  const scroll = () => {
+    const scrolled = surface.current!.scrollTop;
+    setViewport(previous => previous.scroll === scrolled ? previous : { ...previous, scroll: scrolled });
+  };
   const keyDown = (event: KeyboardEvent) => {
     if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     if (!keyboard.current) selected.current = heatRowAt(pointerY.current, window, top, props.rows.length);

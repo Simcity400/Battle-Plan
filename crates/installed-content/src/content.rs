@@ -147,7 +147,7 @@ pub enum LayerSource {
 /// index, `replace_path` and lookup keeps these bytes; text is only a view of them.
 pub type LayerPath = Vec<u8>;
 
-/// Shared successful uncovered reads, queried when a consumer reports diagnostics.
+/// Shared uncovered dependencies, queried when a consumer reports diagnostics.
 /// Without an explicit reporting opt-in, ordinary reads remain strict.
 #[derive(Clone, Debug)]
 pub struct UncoveredReads {
@@ -236,7 +236,7 @@ pub struct ResolvedLayers {
     /// verification the scan applies ([`ResolvedLayers::verify_passed`], and the hit layer's own
     /// lookup for an archive hit): it never skips an archive's.
     uncovered_memo: std::sync::Arc<std::sync::Mutex<UncoveredMemo>>,
-    /// Successful `read`/`read_path` reads outside this recording's policy.
+    /// Ordinary successful uncovered reads and explicit uncovered attempts.
     /// `None` keeps readers strict until their reporting boundary opts in.
     uncovered_reads: std::sync::Arc<std::sync::Mutex<Option<BTreeSet<LayerPath>>>>,
     shader_warnings: std::sync::Arc<std::sync::Mutex<BTreeSet<String>>>,
@@ -250,6 +250,26 @@ pub struct ResolvedLayers {
     /// Faction definitions and read failures shared by every naming consumer. A
     /// transient I/O failure also stays cached until the layer roster changes.
     faction_templates: Memo<Result<std::sync::Arc<crate::faction_templates::Catalog>, String>>,
+    derived: std::sync::Arc<std::sync::Mutex<Derived>>,
+}
+
+#[derive(Default)]
+struct Derived {
+    roster: Vec<String>,
+    values: std::collections::HashMap<
+        std::any::TypeId,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    >,
+}
+
+impl std::fmt::Debug for Derived {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Derived")
+            .field("roster", &self.roster)
+            .field("entries", &self.values.len())
+            .finish()
+    }
 }
 
 type Memo<T> = std::sync::Arc<std::sync::Mutex<Option<(Vec<String>, std::sync::Arc<T>)>>>;
@@ -1004,6 +1024,27 @@ fn not_found(relative: &[u8]) -> io::Error {
 }
 
 impl ResolvedLayers {
+    /// Consumer caches belong to this resolved stack and are shared by its clones.
+    /// A changed mount roster starts fresh; successful reads retain their diagnostics.
+    pub fn derived<T: Default + Send + Sync + 'static>(&self) -> std::sync::Arc<T> {
+        let roster: Vec<_> = self.layers.iter().map(|layer| layer.id.clone()).collect();
+        let mut derived = self
+            .derived
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if derived.roster != roster {
+            derived.roster = roster;
+            derived.values.clear();
+        }
+        std::sync::Arc::clone(
+            derived
+                .values
+                .entry(std::any::TypeId::of::<T>())
+                .or_insert_with(|| std::sync::Arc::new(T::default())),
+        )
+        .downcast::<T>()
+        .expect("cache type owns its entry")
+    }
     /// Whether this recording's coverage policy hashes a text path.
     pub fn covered(&self, path: &str) -> bool {
         self.covered_path(path.as_bytes())
@@ -1464,7 +1505,7 @@ impl ResolvedLayers {
 
     /// Opt into ordinary uncovered reads and retain this handle at the reporting
     /// boundary. Layer clones and lazy readers contribute to the same live set.
-    /// Explicit `read_uncovered` consumers keep their asset-specific notes.
+    /// Explicit `read_uncovered` attempts also retain missing candidates.
     #[must_use]
     pub fn report_uncovered_reads(&self) -> UncoveredReads {
         self.uncovered_reads
@@ -1564,6 +1605,15 @@ impl ResolvedLayers {
         let Some(relative) = sanitize(relative) else {
             return Err(not_found(relative));
         };
+        if !self.covered_path(&relative)
+            && let Some(paths) = self
+                .uncovered_reads
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_mut()
+        {
+            paths.insert(relative.clone());
+        }
         if let Some(bytes) = visual::read(&self.visual, &relative)? {
             return Ok(bytes);
         }
@@ -1989,6 +2039,8 @@ struct CachedHash {
 #[derive(Default, Deserialize, Serialize)]
 struct HashCache {
     entries: BTreeMap<String, CachedHash>,
+    #[serde(skip)]
+    dirty: bool,
 }
 
 impl HashCache {
@@ -2000,7 +2052,15 @@ impl HashCache {
     }
 
     fn insert(&mut self, key: String, stamp: Stamp, hash: [u8; 32]) {
+        if self
+            .entries
+            .get(&key)
+            .is_some_and(|entry| entry.stamp == stamp && entry.hash == hash)
+        {
+            return;
+        }
         self.entries.insert(key, CachedHash { stamp, hash });
+        self.dirty = true;
     }
 
     fn file(&mut self, path: &Path, stats: &mut HashStats) -> io::Result<[u8; 32]> {
@@ -2396,7 +2456,10 @@ fn gather_selected(
     let mut cache: HashCache = fs::read(&cache_path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default();
+        .unwrap_or_else(|| HashCache {
+            dirty: true,
+            ..HashCache::default()
+        });
     let result = (|| {
         let mut stats = HashStats::default();
         if let Some(identity) = recorded {
@@ -2443,6 +2506,7 @@ fn gather_selected(
             descriptor_roster: Default::default(),
             key_names: Default::default(),
             faction_templates: Default::default(),
+            derived: Default::default(),
             visual: Vec::new(),
         };
         let mut order_notes = Vec::new();
@@ -2689,8 +2753,11 @@ fn gather_selected(
         })
     })();
     // Preserve successfully hashed files even when a later descriptor is bad.
-    // The cache is disposable and can be rebuilt after an interrupted write.
-    fs::write(cache_path, serde_json::to_vec(&cache)?)?;
+    // A valid, unchanged cache needs no serialization or write. Missing or
+    // unreadable caches are rebuilt and remain disposable after interruptions.
+    if cache.dirty {
+        fs::write(cache_path, serde_json::to_vec(&cache)?)?;
+    }
     result.map(|mut content: GatheredContent| {
         content.stats.elapsed_ms = started.elapsed().as_millis();
         content
@@ -2699,3 +2766,6 @@ fn gather_selected(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod hash_cache_tests;

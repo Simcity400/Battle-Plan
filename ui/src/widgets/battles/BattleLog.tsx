@@ -17,6 +17,8 @@ import type { BattleCountryLabel, BattleLabels, BattleLossFormatter, BattleMeasu
 import BattleSides from './BattleSides';
 import './battles.css';
 
+const rowKey = (row: BattleRow) => row.id;
+
 export interface BattleLogProps<T extends BattleRow> {
   rows: readonly T[];
   label: string;
@@ -88,7 +90,7 @@ export default function BattleLog<T extends BattleRow>({ rows, label, labels, co
     { key: 'winner', header: labels.winner, label: labels.winner, value: row => 'unknown' in row.winner ? null : battleWinner(row), width: 'max-content',
       renderMissing: true, render: row => <span title={battleWinner(row)}>{'unknown' in row.winner ? '—' : battleWinner(row)}</span> },
   ], [labels, measures, country, label, compactSides, view, live, formatLoss, description]);
-  if (view === 'biggest') return <div className="battle-view"><Table label={label} rows={rows} columns={columns} rowKey={row => row.id}
+  if (view === 'biggest') return <div className="battle-view"><Table label={label} rows={rows} columns={columns} rowKey={rowKey}
     sort={sort} setOption={setOption} cellBars={cellBars} rank rankMarkers={rankMarkers} density={log.density}
     menu={menu} tooltip={row => fitTooltip([tooltip(row)], viewportHeight)} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} /></div>;
   return <div className="battle-view"><LogList anchorRows rows={logs} label={label} density={log.density} months={log.months} animate={live && log.animate}

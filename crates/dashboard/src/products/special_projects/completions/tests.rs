@@ -5,6 +5,34 @@ use replay::{
     rows::{CountryLinkRow, CountryRow, LexicalTokenRow, TableRows},
 };
 
+#[test]
+fn completion_presentation_scans_only_blocks_with_pending_hours() {
+    for completed in [false, true] {
+        let mut last = frame(200, true);
+        if completed {
+            complete(&mut last, Some(200));
+        }
+        let first = records(1, vec![frame(100, true)]);
+        let prefix = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&first)).unwrap();
+        let later = crate::test_fixtures::continuation_records(&prefix, 1, vec![last]);
+        let replay = Replay::from_records(CAMPAIGN.into(), &[first, later]).unwrap();
+        assert_eq!(replay.index.len(), 2);
+        let cancelled = AtomicBool::new(false);
+        let scan = history::BranchScan::scan(&replay, 1, &cancelled).unwrap();
+        crate::blocks::SCANNED_BLOCKS.with_borrow_mut(Vec::clear);
+        let feed = scan_completions(&replay, &scan, 1, None, &cancelled).unwrap();
+        assert_eq!(feed.events.len(), usize::from(completed));
+        crate::blocks::SCANNED_BLOCKS.with_borrow(|blocks| {
+            let expected = if completed {
+                vec![replay.index[1].offset]
+            } else {
+                vec![]
+            };
+            assert_eq!(*blocks, expected);
+        });
+    }
+}
+
 fn completions(
     replay: &Replay,
     branch: u64,

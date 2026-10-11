@@ -72,11 +72,11 @@ test('the reply is validated and groups follow the game’s order, logistics-onl
   assert.deepEqual(stockGroups(REPLY, 'domain', 110).map(group => [group.key, group.label, group.types.length]), [['land', 'Land', 4], ['air', 'Air', 0]]);
   // Variants have no balance of their own and take the name recorded at the hour.
   const variants = stockGroups(REPLY, 'variant', 110);
-  assert.deepEqual(variants.map(group => group.label).slice(0, 3), ['infantry_equipment_1', 'Panzer I Ausf. A', 'Panzer II']);
+  assert.deepEqual(variants.map(group => group.label).slice(0, 3), ['Variant 1326', 'Panzer I Ausf. A', 'Panzer II']);
   assert.ok(variants.every(group => group.types.length === 0));
   assert.equal(variantName(REPLY.variants[2], 125), 'Panzer II Ausf. F');
   // Before its first recorded name, a variant is named by its token, never backfilled.
-  assert.equal(variantName(REPLY.variants[1], 50), 'light_tank_chassis_1');
+  assert.equal(variantName(REPLY.variants[1], 50), `Variant ${REPLY.variants[1].id}`);
   assert.deepEqual(stockGroups(REPLY, 'type', 110, ['anti_tank_equipment']).map(group => group.key), ['anti_tank_equipment']);
 });
 
@@ -235,13 +235,13 @@ test('an arm counts every type of it for its need, whatever order the record lis
   }
 });
 
-test('a variant name is the entry that applies at the hour, then the token or handle', () => {
+test('a variant name is the entry that applies at the hour, then a descriptive variant handle', () => {
   const named = (names: Parameters<typeof variant>[5], token = 'tank_1') => variant('5', token, 'light_tank_chassis', [], [], names);
   // A later name never leaks into hours before it.
-  assert.equal(variantName(named([{ firstHour: 0, name: null, known: true }, { firstHour: 10, name: 'B', known: true }]), 5), 'tank_1');
+  assert.equal(variantName(named([{ firstHour: 0, name: null, known: true }, { firstHour: 10, name: 'B', known: true }]), 5), 'Variant 5');
   assert.equal(variantName(named([{ firstHour: 0, name: null, known: true }, { firstHour: 10, name: 'B', known: true }]), 12), 'B');
   // A later unnamed entry does not keep the obsolete earlier name.
-  assert.equal(variantName(named([{ firstHour: 0, name: 'A', known: true }, { firstHour: 10, name: null, known: true }, { firstHour: 20, name: 'C', known: true }]), 15), 'tank_1');
+  assert.equal(variantName(named([{ firstHour: 0, name: 'A', known: true }, { firstHour: 10, name: null, known: true }, { firstHour: 20, name: 'C', known: true }]), 15), 'Variant 5');
   assert.equal(variantName(named([{ firstHour: 0, name: 'A', known: true }, { firstHour: 10, name: null, known: true }, { firstHour: 20, name: 'C', known: true }]), 5), 'A');
   assert.equal(variantName(named([{ firstHour: 0, name: null, known: true }], ''), 5), 'Variant 5');
 });
@@ -416,8 +416,8 @@ test('a modded campaign’s types, arms and default lines come from its own data
   const groups = stockGroups(modded, 'type', 110);
   assert.deepEqual(groups.map(group => group.key), ['mod_walker_equipment', 'mod_hovertank_chassis', 'mod_airship_equipment']);
   // A type content does not name falls back visibly to its key, a variant to its token.
-  assert.equal(typeName(modded, 'mod_walker_equipment'), 'mod_walker_equipment');
-  assert.equal(variantName(modded.variants[0], 110), 'mod_walker_equipment_1');
+  assert.equal(typeName(modded, 'mod_walker_equipment'), 'Equipment type name unavailable');
+  assert.equal(variantName(modded.variants[0], 110), 'Variant 1');
   assert.deepEqual(stockGroups(modded, 'domain', 110).map(group => [group.key, group.variants.length]), [['land', 2], ['air', 1]]);
   assert.deepEqual(automaticGroups(modded, groups, 'type'), ['mod_walker_equipment', 'mod_hovertank_chassis', 'mod_airship_equipment']);
 });
@@ -450,7 +450,7 @@ test('a variant\u2019s name is not known from a boundary until the next read', (
   const renamed = variant('5', 'tank_1', 'light_tank_chassis', [], [], [{ firstHour: 0, name: 'Old name', known: true },
     { firstHour: 10, name: null, known: false }, { firstHour: 20, name: 'New name', known: true }]);
   assert.equal(variantName(renamed, 5), 'Old name');
-  assert.equal(variantName(renamed, 15), 'tank_1');
+  assert.equal(variantName(renamed, 15), 'Variant 5');
   assert.equal(variantName(renamed, 25), 'New name');
 });
 
@@ -502,7 +502,7 @@ test('every group key a setting stores is storable, unresolved types and their a
   }
   assert.ok(stockGroups(reply, 'type', 110).some(group => group.key === ':mod_gun'));
   assert.ok(stockGroups(reply, 'domain', 110).some(group => group.key === 'unresolved'));
-  assert.equal(typeName(reply, ':mod_gun'), 'mod_gun');
+  assert.equal(typeName(reply, ':mod_gun'), 'Equipment type name unavailable');
   // Included by its key, an unresolved type limits the rows like any other.
   const included = stockGroups(reply, 'type', 110, [':mod_gun']);
   assert.deepEqual(included.map(group => group.key), [':mod_gun']);

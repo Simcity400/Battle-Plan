@@ -27,7 +27,7 @@ fn group_info(
         || Err("game content is unavailable".into()),
         |units| units.group(name.as_bytes()),
     );
-    let (key, label, warning) = match group {
+    let (key, label, mut warning) = match group {
         Ok(Some(group)) => {
             let identity = match installed_content::tokens::Token::c_str(group.as_bytes()) {
                 installed_content::tokens::Token::Name(name) => {
@@ -45,27 +45,32 @@ fn group_info(
             Some(format!("{name}: unknown unit group: {why}")),
         ),
     };
-    // The group-localisation key is unproven. Resolved groups display the
-    // authored token, not a guessed lookup key.
-    let label = if key.starts_with("unknown:") {
-        let localised = catalogue.map(|catalogue| {
-            crate::catalogue::localised(
-                &catalogue.localisation,
-                label,
-                crate::catalogue::View::Plain,
-            )
-        });
-        match localised {
-            Some(Ok(label)) => label,
-            _ => label.to_owned(),
-        }
+    // The authored group remains the identity. Presentation resolves that
+    // exact content key, without inventing category prefixes or suffixes.
+    let localised = if label.is_empty() {
+        Some(Ok(String::new()))
     } else {
-        label.to_owned()
+        catalogue
+            .filter(|catalogue| catalogue.localisation.get(label).is_some())
+            .map(|catalogue| {
+                crate::catalogue::localised(
+                    &catalogue.localisation,
+                    label,
+                    crate::catalogue::View::Plain,
+                )
+            })
     };
-    let label = if key.starts_with("unknown:") {
-        format!("{label} (unknown-group)")
-    } else {
-        label
+    let label = match localised {
+        Some(Ok(label)) => label,
+        result => {
+            let reason = result
+                .and_then(Result::err)
+                .unwrap_or_else(|| "localized title is absent from the recorded language".into());
+            if warning.is_none() {
+                warning = Some(format!("{key}: {reason}"));
+            }
+            "Unit group name unavailable".into()
+        }
     };
     (key.clone(), ArmyType { key, name: label }, warning)
 }
@@ -255,8 +260,8 @@ mod tests {
             "group:mod_group"
         );
         let resolved = group_info(Some(&units), None, "foot");
-        assert_eq!(resolved.1.name, "mod_group");
-        assert_eq!(resolved.2, None);
+        assert_eq!(resolved.1.name, "Unit group name unavailable");
+        assert!(resolved.2.is_some());
         let default = group_info(Some(&units), None, "orphan");
         assert_eq!(default.0, "group:");
         assert_eq!(default.1.name, "");
@@ -268,13 +273,43 @@ mod tests {
     }
 
     #[test]
-    fn army_size_content_accepts_native_default_groups_without_claiming_army_reach() {
+    fn army_group_titles_resolve_the_content_key_and_preserve_defined_empty() {
         engine::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
-            "common/units/mod.txt",
-            "sub_units={foot={group=mod_group} ungrouped={} air={} naval={}}",
+            "localisation/groups_l_english.yml",
+            "\u{feff}l_english:\n mod_group:0 \"Mod battalions\"\n empty_group:0 \"\"\n",
         )]);
+        let mut units = SubUnits::default();
+        units.read(b"sub_units={foot={group=mod_group} support={group=empty_group} missing={group=missing_group}}", "synthetic");
+        let named = group_info(Some(&units), Some(&catalogue), "foot");
+        assert_eq!(named.0, "group:mod_group");
+        assert_eq!(named.1.name, "Mod battalions");
+        assert!(named.2.is_none());
+        assert_eq!(
+            group_info(Some(&units), Some(&catalogue), "support").1.name,
+            ""
+        );
+        let missing = group_info(Some(&units), Some(&catalogue), "missing");
+        assert_eq!(missing.0, "group:missing_group");
+        assert_eq!(missing.1.name, "Unit group name unavailable");
+        assert!(missing.2.is_some());
+    }
+
+    #[test]
+    fn army_size_content_accepts_native_default_groups_without_claiming_army_reach() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+            (
+                "common/units/mod.txt",
+                "sub_units={foot={group=mod_group} ungrouped={} air={} naval={}}",
+            ),
+            (
+                "localisation/groups_l_english.yml",
+                "\u{feff}l_english:\n mod_group:0 \"Authored group\"\n",
+            ),
+        ]);
         assert!(check_content(&catalogue).unwrap().is_empty());
     }
 }

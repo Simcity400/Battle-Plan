@@ -140,10 +140,58 @@ fn identity((slot, id): Identity) -> String {
     format!("{slot}:{id}")
 }
 
+/// A breakdown run as cached; `reply` writes it out for the wars it was grouped by.
+struct Run {
+    first_hour: i32,
+    last_hour: i32,
+    read_hour: i32,
+    hourly: bool,
+    grouping_hour: i32,
+    grouping_hourly: bool,
+    enemy_hour: i32,
+    enemy_hourly: bool,
+    value: i64,
+    /// The war's index in the grouping reply.
+    war: Option<usize>,
+    /// Without a war: whether the native view places the relation in several.
+    ambiguous: bool,
+    incomplete: bool,
+}
+impl Run {
+    fn reply(&self, hours: HourSpan, wars: &WarsReply) -> CasualtyBreakdownRun {
+        CasualtyBreakdownRun {
+            first_hour: hours.first_hour,
+            last_hour: hours.last_hour,
+            read_hour: self.read_hour,
+            hourly: self.hourly,
+            grouping_hour: self.grouping_hour,
+            grouping_hourly: self.grouping_hourly,
+            enemy_hour: self.enemy_hour,
+            enemy_hourly: self.enemy_hourly,
+            value: self.value.to_string(),
+            war_id: self.war.map(|index| wars.wars[index].id.clone()),
+            reason: self.war.is_none().then(|| {
+                if self.ambiguous {
+                    "The native view places this relation in multiple war episodes.".into()
+                } else {
+                    "The native war grouping was not recorded for this relation observation.".into()
+                }
+            }),
+            incomplete: self.incomplete,
+        }
+    }
+}
+/// A series as cached: its wire fields without runs, and its runs.
+struct Series {
+    head: CasualtyBreakdownSeries,
+    runs: Vec<Run>,
+}
 struct Projection {
     countries: Vec<CasualtyBreakdownCountryRun>,
-    series: Vec<CasualtyBreakdownSeries>,
+    series: Vec<Series>,
 }
+/// Projections kept for the most recently requested countries.
+const CACHED_PROJECTIONS: usize = 4;
 struct Cache {
     branch: u64,
     tag: String,
@@ -165,7 +213,7 @@ fn project(
     // Holder spans use hourly native lifetime reads, including a country's
     // first relation and losses against an enemy that no longer exists.
     let mut changes = BTreeMap::<i64, Vec<(Identity, bool, i32)>>::new();
-    for ((_, _, first, second, _), reads) in &values.pairs.runs {
+    for ((_, _, first, second, _), reads) in values.pairs.runs() {
         check_cancel(cancelled)?;
         let (country, take_first) = if selected_identities.contains(first) {
             (*first, true)
@@ -233,7 +281,7 @@ fn project(
         }
     }
     let mut holders = HashMap::<Identity, Vec<HourSpan>>::new();
-    for (_, _, first, second, _) in values.pairs.runs.keys() {
+    for ((_, _, first, second, _), _) in values.pairs.runs() {
         let country = if selected_identities.contains(first) {
             *first
         } else if selected_identities.contains(second) {
@@ -256,8 +304,8 @@ fn project(
     }
     let selected: HashSet<_> = values
         .pairs
-        .runs
-        .keys()
+        .runs()
+        .map(|(key, _)| key)
         .filter(|(_, _, first, second, _)| {
             selected_identities.contains(first) || selected_identities.contains(second)
         })
@@ -276,7 +324,7 @@ fn project(
             }
         }
     }
-    for ((a, b, first, second, start), reads) in &values.pairs.runs {
+    for ((a, b, first, second, start), reads) in values.pairs.runs() {
         check_cancel(cancelled)?;
         let (country, enemy, take_first) = if selected_identities.contains(first) {
             (*first, b, true)
@@ -320,13 +368,7 @@ fn project(
                     } else {
                         span.last_hour
                     };
-                    let war_id = group
-                        .and_then(|run| run.war)
-                        .map(|index| wars.wars[index].id.clone());
-                    let reason = war_id.is_none().then(|| if group.is_some_and(|run| run.ambiguous) {
-                        "The native view places this relation in multiple war episodes.".into()
-                    } else { "The native war grouping was not recorded for this relation observation.".into() });
-                    runs.push(CasualtyBreakdownRun {
+                    runs.push(Run {
                         first_hour: first,
                         last_hour: last,
                         read_hour: if read.hourly { first } else { read.read_hour },
@@ -347,10 +389,9 @@ fn project(
                             read.first_taken
                         } else {
                             read.second_taken
-                        }
-                        .to_string(),
-                        war_id,
-                        reason,
+                        },
+                        war: group.and_then(|run| run.war),
+                        ambiguous: group.is_some_and(|run| run.ambiguous),
                         incomplete: read.incomplete,
                     });
                     let Some(next) = last.checked_add(1) else {
@@ -361,12 +402,15 @@ fn project(
             }
         }
         if !runs.is_empty() {
-            reply.series.push(CasualtyBreakdownSeries {
-                id: serde_json::to_string(&(first, second, start, a.as_ref(), b.as_ref()))
-                    .map_err(io::Error::other)?,
-                country_identity: identity(country),
-                enemy_tag: enemy.to_string(),
-                enemy_identity: identity(if take_first { *second } else { *first }),
+            reply.series.push(Series {
+                head: CasualtyBreakdownSeries {
+                    id: serde_json::to_string(&(first, second, start, a.as_ref(), b.as_ref()))
+                        .map_err(io::Error::other)?,
+                    country_identity: identity(country),
+                    enemy_tag: enemy.to_string(),
+                    enemy_identity: identity(if take_first { *second } else { *first }),
+                    runs: Vec::new(),
+                },
                 runs,
             });
         }
@@ -441,25 +485,29 @@ impl Product for CasualtyBreakdown {
             .ok_or_else(|| io::Error::other("Unknown casualty window"))?;
         let state = source.state::<Vec<Cache>>();
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-        let projection = if let Some(hit) = state.iter().find(|c| {
+        let entry = match state.iter().position(|c| {
             c.branch == branch
                 && c.tag == p.tag
                 && Arc::ptr_eq(&c.wars, &wars)
                 && Arc::ptr_eq(&c.values, &values)
         }) {
-            hit.projection.clone()
-        } else {
-            let projection = Arc::new(project(&values, &wars, &p.tag, cancelled)?);
-            state.retain(|c| c.branch != branch || c.tag != p.tag);
-            state.push(Cache {
-                branch,
-                tag: p.tag.clone(),
-                wars: wars.clone(),
-                values: values.clone(),
-                projection: projection.clone(),
-            });
-            projection
+            Some(hit) => state.remove(hit),
+            None => {
+                let projection = Arc::new(project(&values, &wars, &p.tag, cancelled)?);
+                state.retain(|c| c.branch != branch || c.tag != p.tag);
+                Cache {
+                    branch,
+                    tag: p.tag.clone(),
+                    wars: wars.clone(),
+                    values: values.clone(),
+                    projection,
+                }
+            }
         };
+        // The most recently requested first.
+        state.insert(0, entry);
+        state.truncate(CACHED_PROJECTIONS);
+        let projection = state[0].projection.clone();
         drop(state);
         reply.observed = values
             .observed
@@ -490,21 +538,17 @@ impl Product for CasualtyBreakdown {
                 .take_while(|run| run.first_hour <= span.last_hour)
                 .filter_map(|run| {
                     clipped(span, run.first_hour, run.last_hour).map(|hours| {
-                        if let Some(id) = &run.war_id {
-                            used_wars.insert(id.clone());
+                        if let Some(index) = run.war {
+                            used_wars.insert(&wars.wars[index].id);
                         }
-                        CasualtyBreakdownRun {
-                            first_hour: hours.first_hour,
-                            last_hour: hours.last_hour,
-                            ..run.clone()
-                        }
+                        run.reply(hours, &wars)
                     })
                 })
                 .collect();
             if !runs.is_empty() {
                 reply.series.push(CasualtyBreakdownSeries {
                     runs,
-                    ..series.clone()
+                    ..series.head.clone()
                 });
             }
         }
@@ -588,14 +632,14 @@ mod tests {
             series
                 .runs
                 .iter()
-                .any(|run| run.first_hour == 101 && run.value == "13")
+                .any(|run| run.first_hour == 101 && run.value == 13)
         }));
         let alias = project(&values, &wars, "renamed", &AtomicBool::new(false)).unwrap();
         assert!(alias.series.iter().any(|series| {
             series
                 .runs
                 .iter()
-                .any(|run| run.first_hour == 100 && run.value == "12")
+                .any(|run| run.first_hour == 100 && run.value == 12)
         }));
         assert_eq!(alias.countries.last().unwrap().identity, "1:11");
         assert_eq!(
@@ -626,9 +670,8 @@ mod tests {
         histories.observe(&scan);
         assert!(
             histories
-                .runs
-                .keys()
-                .all(|(a, b, _, _, _)| a.as_ref() != "peaceful" && b.as_ref() != "peaceful")
+                .runs()
+                .all(|((a, b, _, _, _), _)| a.as_ref() != "peaceful" && b.as_ref() != "peaceful")
         );
         let mut values = scan.finish(&AtomicBool::new(false)).unwrap();
         values.pairs = histories;
@@ -657,8 +700,8 @@ mod tests {
             (101, 101)
         );
         assert_eq!(reply.series.len(), 1);
-        assert_eq!(reply.series[0].runs[0].value, "12");
-        assert_eq!(reply.series[0].country_identity, "1:10");
+        assert_eq!(reply.series[0].runs[0].value, 12);
+        assert_eq!(reply.series[0].head.country_identity, "1:10");
     }
     #[test]
     fn obsolete_projection_versions_are_replaced_for_the_same_branch_and_tag() {
@@ -731,6 +774,25 @@ mod tests {
         CasualtyBreakdown::load(&source, &params, &context, &cancelled).unwrap();
         assert_eq!(state.lock().unwrap().len(), 1);
         assert!(obsolete.upgrade().is_none());
+        // A hit becomes the most recent; the least recently requested go.
+        {
+            let mut cache = state.lock().unwrap();
+            let others: Vec<_> = (0..CACHED_PROJECTIONS)
+                .map(|other| Cache {
+                    branch: 1,
+                    tag: format!("other {other}"),
+                    wars: cache[0].wars.clone(),
+                    values: cache[0].values.clone(),
+                    projection: cache[0].projection.clone(),
+                })
+                .collect();
+            cache.extend(others);
+            cache.rotate_left(1);
+        }
+        CasualtyBreakdown::load(&source, &params, &context, &cancelled).unwrap();
+        let cache = state.lock().unwrap();
+        assert_eq!(cache.len(), CACHED_PROJECTIONS);
+        assert_eq!(cache[0].tag, "selected");
     }
     #[test]
     fn a_first_relation_updates_breakdown_and_country_summary_at_the_same_hour() {
@@ -766,7 +828,7 @@ mod tests {
         assert_eq!(values.country_at("selected", 101).unwrap().read_hour, 101);
         assert_eq!(reply.countries[0].first_hour, 101);
         assert_eq!(reply.series[0].runs[0].first_hour, 101);
-        assert_eq!(reply.series[0].runs[0].value, "4");
+        assert_eq!(reply.series[0].runs[0].value, 4);
     }
     #[test]
     fn breakdown_preserves_signed_lifetimes_for_five_thousand_synthetic_countries() {
@@ -804,8 +866,8 @@ mod tests {
             reply
                 .series
                 .iter()
-                .map(|row| row.runs[0].value.parse::<i128>().unwrap())
-                .sum::<i128>(),
+                .map(|row| row.runs[0].value)
+                .sum::<i64>(),
             4995
         );
         assert_eq!(values.country_at("synthetic 0", 100).unwrap().taken, 4995);
@@ -813,7 +875,7 @@ mod tests {
             reply
                 .series
                 .iter()
-                .all(|row| row.runs[0].war_id.is_none() && row.runs[0].reason.is_some())
+                .all(|row| row.runs[0].war.is_none() && !row.runs[0].ambiguous)
         );
     }
 }

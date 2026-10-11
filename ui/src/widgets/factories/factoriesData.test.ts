@@ -115,8 +115,8 @@ test('counts over time merge equal neighbours but keep gaps and new lines', () =
 
 test('types come from the content: named by their buildings, chosen by group, all when none are chosen', () => {
   const model = factoryModel(REPLY);
-  assert.equal(groupName(REPLY.groups[2]), 'Civilian Factory · mod_works');
-  assert.equal(groupName(REPLY.groups[1]), 'naval_production');
+  assert.equal(groupName(REPLY.groups[2]), 'Civilian Factory · Building name unavailable');
+  assert.equal(groupName(REPLY.groups[1]), 'Factory group name unavailable');
   assert.deepEqual(chosenGroups(model, ['civilian']), ['civilian']);
   assert.deepEqual(chosenGroups(model, []), GROUPS);
   assert.deepEqual(chosenGroups(model, ['not_a_group']), GROUPS);
@@ -133,8 +133,8 @@ test('a modded content stack: its own factory types appear, removed ones vanish 
   ];
   assert.deepEqual(typeChoices(modded), [
     { value: 'military', label: 'Arms Plant · Tank Works' },
-    { value: 'naval', label: 'naval_production' },
-    { value: 'civilian', label: 'Civilian Factory · workshop' },
+    { value: 'naval', label: 'Factory group name unavailable' },
+    { value: 'civilian', label: 'Civilian Factory · Building name unavailable' },
   ]);
   assert.deepEqual(typeChoices(undefined), []);
   // Dynamic, spaced and odd tags are opaque: asked for and ranked as they are.
@@ -155,11 +155,11 @@ test('the tooltip gives the game’s breakdown, then only what is not zero, then
   assert.equal(full.subtitle, '1 Jan 1936 · Free after withheld');
   const labels = (rows: typeof full.rows) => rows.map(row => `${row.label} ${row.value}`);
   assert.deepEqual(labels(compact.rows), [
-    'Civilian Factory · mod_works 22', 'Total 40', 'Owned 30', 'From occupation +8', 'Trade exports +3', 'Damaged −3',
+    'Civilian Factory · Building name unavailable 22', 'Total 40', 'Owned 30', 'From occupation +8', 'Trade exports +3', 'Damaged −3',
     'Consumer Goods −5', 'Trade imports −4', 'National Projects −2', 'License imports −1', 'Market Contracts −1', 'Given to other countries −2',
   ]);
   assert.ok(full.rows.length > compact.rows.length);
-  assert.deepEqual(labels(counts.rows), ['Civilian Factory · mod_works 22']);
+  assert.deepEqual(labels(counts.rows), ['Civilian Factory · Building name unavailable 22']);
   assert.equal(formatCount(-1234), '−1,234');
   // A deduction is shown as what it does to the count: a recorded damaged total of −1
   // adds one, so it reads +1, never "−-1".

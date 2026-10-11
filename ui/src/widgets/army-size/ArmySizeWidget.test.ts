@@ -62,7 +62,7 @@ test('actual Army keeps dated flags, full inventories and focusable chart return
     renderToStaticMarkup(createElement(Widget, props));
     const view = host.__armyFlagView!;
     assert.equal(host.__armyMarkerDemand, true, 'manual time views request the existing capitulation history');
-    assert.deepEqual(view.badges, [{ hour: 40, glyph: '\u00d7', label: 'opaque actor capitulated', capitulationTag: 'opaque actor' }]);
+    assert.deepEqual(view.badges, [{ hour: 40, glyph: '\u00d7', label: 'Country capitulated', capitulationTag: 'opaque actor' }]);
     assert.deepEqual(view.lines[0].runs.map(run => [run.firstHour, run.lastHour, run.value]), [[0, 100, 3]], 'the selected series continues after capitulation');
     const reads: [number, string][] = [];
     for (const flag of [{ flagPending: true }, { flagPending: false, flagReason: 'Supplying flag read refused' }, { flag: 'synthetic flag' }]) {

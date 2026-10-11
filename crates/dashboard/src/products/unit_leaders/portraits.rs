@@ -139,6 +139,7 @@ fn missing_hour(params: &UnitLeaderPortraitsParams) -> Vec<UnitLeaderPortrait> {
 impl Product for UnitLeaderPortraits {
     const KEY: &'static str = "unit-leader-portraits";
     const CONTENT_DEPENDENT: bool = true;
+    const INTERACTIVE: bool = true;
     type Params = UnitLeaderPortraitsParams;
     type Reply = UnitLeaderPortraitsReply;
 

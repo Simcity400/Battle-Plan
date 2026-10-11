@@ -89,6 +89,11 @@ impl LexicalNames {
         SharedView::ptr_eq(&self.table, table)
     }
 
+    /// Whether `table` holds this dictionary's rows, from whichever read.
+    pub(crate) fn holds(&self, table: &SharedView) -> bool {
+        self.table == *table
+    }
+
     pub(crate) fn token_of(&self, name: &[u8]) -> Result<Option<u32>, String> {
         let names = self
             .names

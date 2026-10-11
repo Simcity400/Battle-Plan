@@ -2,7 +2,6 @@ import type { CountryGroupReply, OperativePlacementReply, PlacementPeriod } from
 import type { CountrySelection } from '../../dashboard/model';
 import { countryMatch, worldFilter } from '../../dashboard/groups.ts';
 import { readAt } from '../../dashboard/reads.ts';
-import { formatDateTime } from '../../dashboard/calendar.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import type { CountryFlagLook } from '../../components/CountryFlag';
@@ -161,17 +160,16 @@ export function placementChordMemo() {
 }
 
 export function placementTooltip(hit: ChordHit, chord: PlacementChord): TooltipContent | null {
-  const note = `Read ${formatDateTime(chord.read)}; operative placements are read once a day.`;
   const title = (n: PlacementAt) => `${chord.labels(n.owner).name} has ${n.count} ${n.count === 1 ? 'operative' : 'operatives'} in ${chord.labels(n.target).name}`;
   const names = (n: PlacementAt) => n.operatives.map(o => ({ label: o.unnamed ? 'Unnamed operative' : o.name ?? `Name not recorded (operative ${o.id})` }));
   if (hit.kind === 'flow') {
     const members = chord.flows.get(hit.id)?.map(id => chord.placements.get(id)!);
     if (!members?.length) return null;
-    if (members.length === 1) return { title: title(members[0]), rows: names(members[0]), note };
+    if (members.length === 1) return { title: title(members[0]), rows: names(members[0]) };
     return { title: 'Operative placements', rows: [
       ...members.flatMap(n => [{ label: title(n), strong: true }, ...names(n)]),
       { label: 'Total operatives', value: members.reduce((sum, n) => sum + BigInt(n.count), 0n).toString(), strong: true },
-    ], note };
+    ] };
   }
   const memberIds = chord.nodes.get(hit.id);
   if (!memberIds) return null;
@@ -180,5 +178,5 @@ export function placementTooltip(hit: ChordHit, chord: PlacementChord): TooltipC
   for (const tag of tags) { const total = chord.totals.get(tag)!; outgoing += total.outgoing; incoming += total.incoming; }
   return { title: hit.id === OTHER_ID ? 'Other countries' : chord.labels(tags[0]).name,
     rows: [{ label: 'Operatives sent', value: outgoing.toString() }, { label: 'Operatives received', value: incoming.toString() },
-      ...(hit.id === OTHER_ID ? tags.map(tag => ({ label: chord.labels(tag).name, countryFlag: chord.labels(tag), tone: 'muted' as const })) : [])], note };
+      ...(hit.id === OTHER_ID ? tags.map(tag => ({ label: chord.labels(tag).name, countryFlag: chord.labels(tag), tone: 'muted' as const })) : [])] };
 }

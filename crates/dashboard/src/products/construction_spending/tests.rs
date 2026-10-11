@@ -83,7 +83,7 @@ fn construction_spending_keeps_signed_repair_and_deleted_final_output_without_re
         ]
     );
     assert!(repair.unknown.is_empty());
-    assert_eq!(log.projects[0].output.len(), 2);
+    assert_eq!(log.outputs[0].len(), 2);
     // The exact final spend cannot establish completion: no healthy rise exists.
     assert_ne!(
         log.projects[0].end.as_ref().unwrap().kind,
@@ -165,7 +165,7 @@ fn construction_output_refuses_missing_and_linked_attribution_then_accepts_a_sam
         new.unknown.last().unwrap().reason,
         SpendingGap::LinkedOutput
     );
-    assert!(log.projects[0].output[0].construction_raw.is_none());
+    assert!(log.outputs[0][0].construction_raw.is_none());
     assert_eq!(log.output_unknown[0].until, Some(124));
 }
 
@@ -343,7 +343,7 @@ fn construction_spending_groups_a_mod_building_type_named_from_the_mod_layer() {
     let view = ContentView {
         layers: &layers,
         sprites: &sprites,
-        guis: &guis,
+        guis: Ok(&guis),
         gui_decode: &gui_decode,
         localise: &localise,
     };

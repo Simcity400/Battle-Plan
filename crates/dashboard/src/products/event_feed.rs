@@ -999,84 +999,93 @@ fn focus_completion_rows(
     }
     needed.insert(TableId::Campaign);
     let needed: Vec<_> = needed.into_iter().collect();
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        check_cancel(cancelled)?;
-        let frames = match replay.read_block_selected(block, &needed) {
-            Ok(frames) => frames,
-            Err(reason) => {
-                builder.sampled_unavailable(
-                    "completionRead",
-                    "Completion observations",
-                    reason.to_string(),
-                    1,
-                );
-                continue;
-            }
-        };
-        let mut decoder = FrameDecoder::for_tables(&needed);
-        for frame in frames {
-            check_cancel(cancelled)?;
-            let decoded = match decoder.advance(&frame) {
-                Ok(decoded) => decoded,
-                Err(reason) => {
-                    builder.sampled_unavailable(
-                        "completionRead",
-                        "Completion observations",
-                        reason.to_string(),
-                        1,
-                    );
-                    break;
-                }
-            };
-            if let Err(reason) = crate::metadata::validate_campaign(decoded, replay) {
-                builder.sampled_unavailable(
-                    "completionRead",
-                    "Completion observations",
-                    reason.to_string(),
-                    1,
-                );
-                break;
-            }
-            let events = focus.observe(decoded);
-            let requests: Vec<_> = events
-                .iter()
-                .map(|event| (event.token.as_str(), event.tag.as_str()))
-                .collect();
-            let presented = if requests.is_empty() {
-                Vec::new()
-            } else {
-                focus_art
-                    .as_mut()
-                    .map(|art| art.focuses_at(&requests, decoded))
-                    .unwrap_or_default()
-            };
-            for (index, event) in events.iter().enumerate() {
-                let mut item = plain_item(Some(event.token.clone()), None, None, None);
-                if let Some((art, refusal)) = presented.get(index) {
-                    item.name = art.name.clone();
-                    item.icon = art.icon.clone();
-                    item.description = art.description.clone();
-                    if let Some(reason) = refusal {
-                        builder.unavailable(
-                            "focusPresentation",
-                            "Focus presentation",
-                            format!("Focus {}: {reason}", event.token),
-                            Some(1),
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &needed,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                check_cancel(cancelled)?;
+                let frames = match frames {
+                    Ok(frames) => frames,
+                    Err(reason) => {
+                        builder.sampled_unavailable(
+                            "completionRead",
+                            "Completion observations",
+                            reason.to_string(),
+                            1,
+                        );
+                        continue;
+                    }
+                };
+                let mut decoder = FrameDecoder::for_tables(&needed);
+                for frame in frames {
+                    check_cancel(cancelled)?;
+                    let decoded = match decoder.advance(&frame) {
+                        Ok(decoded) => decoded,
+                        Err(reason) => {
+                            builder.sampled_unavailable(
+                                "completionRead",
+                                "Completion observations",
+                                reason.to_string(),
+                                1,
+                            );
+                            break;
+                        }
+                    };
+                    if let Err(reason) = crate::metadata::validate_campaign(decoded, replay) {
+                        builder.sampled_unavailable(
+                            "completionRead",
+                            "Completion observations",
+                            reason.to_string(),
+                            1,
+                        );
+                        break;
+                    }
+                    let events = focus.observe(decoded);
+                    let requests: Vec<_> = events
+                        .iter()
+                        .map(|event| (event.token.as_str(), event.tag.as_str()))
+                        .collect();
+                    let presented = if requests.is_empty() {
+                        Vec::new()
+                    } else {
+                        focus_art
+                            .as_mut()
+                            .map(|art| art.focuses_at(&requests, decoded))
+                            .unwrap_or_default()
+                    };
+                    for (index, event) in events.iter().enumerate() {
+                        let mut item = plain_item(Some(event.token.clone()), None, None, None);
+                        if let Some((art, refusal)) = presented.get(index) {
+                            item.name = art.name.clone();
+                            item.icon = art.icon.clone();
+                            item.description = art.description.clone();
+                            if let Some(reason) = refusal {
+                                builder.unavailable(
+                                    "focusPresentation",
+                                    "Focus presentation",
+                                    format!("Focus {}: {reason}", event.token),
+                                    Some(1),
+                                );
+                            }
+                        }
+                        let item = builder.item(item)?;
+                        // Completed-focus entries retain ordinal/token, no date.
+                        builder.row(
+                            EventFeedKind::FocusCompleted,
+                            RowDate::by(event.hour),
+                            vec![event.tag.clone()],
+                            Some(item),
+                            None,
                         );
                     }
                 }
-                let item = builder.item(item)?;
-                // Completed-focus entries retain ordinal/token, no date.
-                builder.row(
-                    EventFeedKind::FocusCompleted,
-                    RowDate::by(event.hour),
-                    vec![event.tag.clone()],
-                    Some(item),
-                    None,
-                );
             }
-        }
-    }
+            Ok(())
+        },
+    )?;
     if !focus.observed {
         builder.unavailable(
             "focusCompleted",

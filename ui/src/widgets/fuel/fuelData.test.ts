@@ -42,7 +42,7 @@ const REPLY: FuelReply = {
 const COLORS = { fuel: 'blue', capacity: 'grey', gained: 'azure', burned: 'orange' };
 const forms = (hour: number) => {
   const view = fuelView(REPLY, 0, 5000);
-  return fuelTooltips(REPLY, view.reads, view.readHours, hour, `Hour ${hour}`, COLORS);
+  return fuelTooltips(REPLY, view.reads, hour, `Hour ${hour}`, COLORS);
 };
 const tip = (hour: number) => forms(hour)[0];
 
@@ -140,7 +140,7 @@ test('the tooltip lists the tank, then the day before its read, and dates a carr
   assert.deepEqual(day.rows.map(row => [row.label, row.value]), [
     ['Fuel', '10'], ['Capacity', '20'], ['Full', '50%'], ['Gained (own production)', '+3.5'], ['Burned', '−1.25'], ['Net', '+2.25']]);
   assert.equal(day.rows[5].tone, 'positive');
-  assert.match(day.note!, /^Read .*; fuel is read once a day\. Gained and burned in the 24 hours before the read; lend-lease fuel received is not included\.$/);
+  assert.match(day.note!, /^Gained and burned in the 24 hours before the read; lend-lease fuel received is not included\.$/);
   // Without lend-lease at the read nothing more is said; with it, its last hour is named, never a day's total.
   assert.doesNotMatch(day.note!, /arriving/);
   assert.match(tip(1065).note!, /Lend-lease fuel was arriving at the read \(\+1\.5 in its last hour\); its daily total was not recorded\./);
@@ -219,7 +219,7 @@ test('source histories keep actual source keys and signed rows across legacy/ref
 
 test('actual daily lend-lease tooltip replaces only the legacy last-hour claim and keeps the compact own net', () => {
   const source = actual(), reply = { ...REPLY, reads: [source] };
-  const full = fuelTooltips(reply, reply.reads, [100], 123, 'Day', COLORS);
+  const full = fuelTooltips(reply, reply.reads, 123, 'Day', COLORS);
   assert.ok(full[0].rows.some(row => row.label === 'Lend-lease received (separate)' && row.value === '+0.24'));
   assert.equal(full[1].rows[1].label, 'Net');
   assert.ok(!full[0].note!.includes('last hour'));

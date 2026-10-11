@@ -1,4 +1,5 @@
 import { createContext, useContext, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { Select } from '../../components/Select';
 import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { ChipSet } from '../../components/ChipSet';
@@ -234,8 +235,8 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
         if (drill.follow) pinned.time = { mode: 'follow' };
         runtime.addWidgetBelow(widget.id, pinned);
       } : undefined}>
-      <label>Resource <select value={picked?.id ?? ''} onChange={event => setResourceId(Number(event.target.value))}>
-        {data.resources.map(resource => <option key={resource.id} value={resource.id}>{resourceName(resource)}</option>)}</select></label>
+      <div className="select-row">Resource <Select label="Resource" value={String(picked?.id ?? '')} onChange={value => setResourceId(Number(value))}
+        options={data.resources.map(resource => ({ value: String(resource.id), label: resourceName(resource) }))} /></div>
       {detail}
     </DrillHost>}
     {menu.menu}
@@ -402,12 +403,11 @@ function OverTime({ data, numbers, within, tokens, viewport, options, runtime, t
     })} />
     <p className="chart-line-key"><i aria-hidden="true" />Solid: supply · <i className="is-dashed" aria-hidden="true" />dashed: demand, per day
       {overflow && ` · every further ${tokens.categories.length} lines repeat the colours with their own dashes`}</p>
-    {selection && <label>Choose a drawn resource on {dayLabel(selection.hour)} <select autoFocus value="" onChange={event => {
-      const resource = chosenInfo.find(resource => String(resource.id) === event.target.value);
+    {selection && <div className="select-row">Choose a drawn resource on {dayLabel(selection.hour)} <Select autoFocus label="Drawn resource" value="" onChange={id => {
+      const resource = chosenInfo.find(resource => String(resource.id) === id);
       if (resource && selection.ids.includes(String(resource.id))) { onPick(resource, selection.hour); setSelection(null); }
-    }}><option value="" disabled>Choose resource…</option>
-      {chosenInfo.filter(resource => selection.ids.includes(String(resource.id))).map(resource =>
-        <option key={resource.id} value={resource.id}>{resourceName(resource)}</option>)}</select></label>}
+    }} options={[{ value: '', label: 'Choose resource…', disabled: true },
+      ...chosenInfo.filter(resource => selection.ids.includes(String(resource.id))).map(resource => ({ value: String(resource.id), label: resourceName(resource) }))]} /></div>}
     {/* The tooltip closes when the pointer leaves: its partners' names and flags are released. */}
     <div className="resource-chart" onPointerLeave={() => onPartners(null)}>
       <TimeChart label={`Resource supply and demand: ${lines.map(line => resourceName(line.resource)).join(', ')}`} extent={extent} playhead={playhead}

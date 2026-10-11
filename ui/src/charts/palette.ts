@@ -19,11 +19,18 @@ export const CATEGORY_LIMIT = CATEGORICAL.dark.length;
 /** Graphical objects need 3:1 against their background (WCAG 1.4.11). */
 export const MARK_CONTRAST = 3;
 
-/** The categorical palette for a surface colour. */
+/** The categorical palette for a surface colour, solved once per surface and shared
+ * by every caller, which must not change it. */
+const palettes = new Map<string, string[]>();
 export function categoricalPalette(surface: string): string[] {
-  const background = parseColor(surface) ?? { r: 0, g: 0, b: 0 };
-  const dark = isDark(background);
-  return CATEGORICAL[dark ? 'dark' : 'light'].map(hex => toHex(readable(parseColor(hex)!, background, dark)));
+  let palette = palettes.get(surface);
+  if (!palette) {
+    const background = parseColor(surface) ?? { r: 0, g: 0, b: 0 };
+    const dark = isDark(background);
+    palette = CATEGORICAL[dark ? 'dark' : 'light'].map(hex => toHex(readable(parseColor(hex)!, background, dark)));
+    palettes.set(surface, palette);
+  }
+  return palette;
 }
 
 function readable(color: Rgb, background: Rgb, darkSurface: boolean): Rgb {

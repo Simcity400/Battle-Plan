@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
 import ChordChart from '../../charts/chord/ChordChart';
@@ -22,6 +22,7 @@ import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { formatDateTime } from '../../dashboard/calendar';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
+import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryFactsAt } from '../../dashboard/countryNamesAt';
 import { STYLES } from '../../dashboard/useCountriesAt';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -32,8 +33,10 @@ import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { CasualtyPairsReply } from '../../generated/dashboard';
-import { casualtyPairsAt, casualtyPairWindows, pairAmount, validateCasualtyPairs } from './casualtyPairsData';
+import { viewChange, viewWindows } from '../casualties-breakdown/casualtiesBreakdownData';
+import { casualtyPairsAt, casualtyPairWindows, exactCount, pairAmount, validateCasualtyPairs } from './casualtyPairsData';
 import type { PairFlow } from './casualtyPairsData';
 import { casualtyChord, chordPairs, pairTooltip } from './casualtyChord';
 import type { CasualtyChord } from './casualtyChord';
@@ -41,7 +44,37 @@ import { casualtyPairIds, pairHistory, pinPairs, readPairSelection } from './cas
 import { definition, DETAIL } from './definition';
 import './casualtyPairs.css';
 
-const NO_WARNINGS: string[] = [];
+const SORT = { column: 'value', direction: 'descending' } as const;
+const pairKey = (flow: PairFlow) => flow.id;
+// Columns that name no country keep their accessors: arriving labels never re-sort by them.
+const AMOUNT: TableColumn<PairFlow> = { key: 'value', header: 'Casualties', label: 'Casualties', numeric: true, width: 'max-content',
+  value: flow => flow.value, render: pairAmount };
+const READ: TableColumn<PairFlow> = { key: 'read', header: 'Read', label: 'Read', value: flow => flow.readHour, render: flow => formatDateTime(flow.readHour) };
+
+/** The selected pairs' exact signed rows. Built only once the breakdown mounts,
+ * and again only when the rows, their labels or colours change. */
+const PairRows = memo(function PairRows({ rows, label, hour, colors, columns, speed, height, onPick, runtime, trackId }: {
+  rows: readonly PairFlow[]; label: CountryLabel; hour: number; colors: ReadonlyMap<string, string>;
+  columns: readonly TableColumn<PairFlow>[]; speed: number; height: number; onPick: (hour: number) => void;
+  runtime: WidgetProps['runtime']; trackId: string;
+}) {
+  const subtotal = rows.some(row => row.incomplete);
+  const parts = useMemo(() => {
+    const positive = rows.reduce((sum, row) => sum + (row.value > 0n ? row.value : 0n), 0n);
+    return rows.map(flow => ({ id: flow.id, label: `${label(flow.from).name} → ${label(flow.to).name}`,
+      countryFlag: label(flow.from), raw: flow.value, value: Number(flow.value), text: pairAmount(flow), color: colors.get(flow.id),
+      shareText: flow.value > 0n && positive > 0n ? `${Number(flow.value * 1000n / positive) / 10}%` : '—' }));
+  }, [rows, label, colors]);
+  const total = useMemo(() => exactCount(rows.reduce((sum, row) => sum + row.value, 0n)), [rows]);
+  const menu = useCallback((flow: PairFlow) => [{ label: 'Show this read', run: () => onPick(flow.readHour) }, jumpItem(runtime, trackId, flow.readHour)],
+    [onPick, runtime, trackId]);
+  const tooltip = useCallback((flow: PairFlow) => fitTooltip([pairTooltip([flow], label, hour)], height), [label, hour, height]);
+  return <><DrillParts parts={parts} format={exactCount} virtual positiveBars showShares={!subtotal}
+    totalRow={{ label: subtotal ? 'Recorded subtotal' : 'Signed total', value: total }} />
+    <div className="casualty-pair-table"><Table label="Recorded casualty pairs" rows={rows} columns={columns} rowKey={pairKey}
+      sort={SORT} hoursPerSecond={speed} cellBars={false} rankMarkers={false} menu={menu} tooltip={tooltip} /></div></>;
+});
+
 export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   const playback = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
@@ -65,8 +98,8 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
   const detailHour = (open ? drillHour(effectiveDrill, clockHour) : hour) ?? hour;
   const outside = !!track && (hour < track.branch.firstHour || hour > track.branch.lastHour);
   const detailOutside = !!track && (detailHour < track.branch.firstHour || detailHour > track.branch.lastHour);
-  const pickDay = (at: number) => dispatch(drill.breakdown ? { type: 'pick', hour: at }
-    : { type: 'open', breakdown: DETAIL.id, hour: at, playing: false, playhead: null });
+  const pickDay = useCallback((at: number) => dispatch(drill.breakdown ? { type: 'pick', hour: at }
+    : { type: 'open', breakdown: DETAIL.id, hour: at, playing: false, playhead: null }), [drill.breakdown]);
   const follow = () => dispatch(drill.breakdown ? { type: 'follow' }
     : { type: 'open', breakdown: DETAIL.id, hour: detailHour, playing: true, playhead: clockHour });
   const savedSelection = useMemo(() => track ? readPairSelection(options.pairSelection, track) : null, [options.pairSelection, track]);
@@ -81,8 +114,8 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
   const manifest = useProduct<CasualtyPairsReply>(runtime.client, request, active, validateCasualtyPairs);
   const currentWindows = casualtyPairWindows(manifest.data, hour, widget.time.mode === 'follow');
   const detailWindows = open ? casualtyPairWindows(manifest.data, detailHour, effectiveDrill.follow) : [];
-  const chartWindows = open ? manifest.data?.windows.flatMap((span, index) => !chartRange
-    || span.firstHour <= chartRange[1] && chartRange[0] <= span.lastHour ? [index] : []) ?? [] : [];
+  const chartWindows = open && manifest.data ? viewWindows(manifest.data.windows, chartRange) : [];
+  const onChartView = useCallback((range: readonly [number, number]) => setChartRange(viewChange(manifest.data?.windows ?? [], range)), [manifest.data]);
   const wanted = [...new Set([...currentWindows, ...detailWindows, ...chartWindows])].sort((a, b) => a - b);
   const between = options.between === 'between';
   const identity = track && selection.ready ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, selection.tags, between]) : null;
@@ -139,7 +172,7 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
     options.mostCountries, labelAt, color, hour, tokens.muted, identity, between]);
   const stack = useMemo(() => pairHistory(chartReplies, selectedIds), [chartReplies, selected]); // eslint-disable-line react-hooks/exhaustive-deps
   const colors = useMemo(() => selectedIds.map((_id, index) => tokens.categories[index % tokens.categories.length]), [selectedIds, tokens.categories]);
-  const colorById = new Map(selectedIds.map((id, index) => [id, colors[index]]));
+  const colorById = useMemo(() => new Map(selectedIds.map((id, index) => [id, colors[index]])), [selectedIds, colors]);
   const layers = useMemo<ChartLayer[]>(() => [{
     draw: (ctx, frame, theme, state) => {
       const until = Math.min(frame.x[1], state.playhead ?? frame.x[1]);
@@ -161,15 +194,12 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
       render: flow => <CountryCell {...detailLabel(flow.from)} /> },
     { key: 'to', header: 'Taken by', label: 'Taken by', value: flow => detailLabel(flow.to).name,
       render: flow => <CountryCell {...detailLabel(flow.to)} /> },
-    { key: 'value', header: 'Casualties', label: 'Casualties', numeric: true, width: 'max-content',
-      value: flow => flow.value, render: pairAmount },
-    { key: 'read', header: 'Read', label: 'Read', value: flow => flow.readHour, render: flow => formatDateTime(flow.readHour) },
+    AMOUNT, READ,
   ], [detailLabel]);
   useEffect(() => { dispatch({ type: 'close' }); setDetail(null); setChartRange(null); }, [runtime.client, identity, widget.time, options.show, options.pairSelection]);
-  useEffect(() => {
-    onDiagnostics([...new Set([...(manifest.data?.warnings ?? []), ...[...histories.data.values()].flatMap(reply => reply.warnings), ...(groups.data?.warnings ?? [])])]);
-    return () => onDiagnostics(NO_WARNINGS);
-  }, [manifest.data, histories.data, groups.data, onDiagnostics]);
+  const diagnostics = useMemo(() => [...new Set([...(manifest.data?.warnings ?? []),
+    ...[...histories.data.values()].flatMap(reply => reply.warnings), ...(groups.data?.warnings ?? [])])], [manifest.data, histories.data, groups.data]);
+  useDiagnostics(onDiagnostics, diagnostics);
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see casualties between countries." />;
   if (!window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign." />;
   if (manifest.error) return <WidgetState kind="error" message={manifest.error} onRetry={manifest.retry} />;
@@ -178,12 +208,6 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
   if (selection.reason) return <WidgetState kind="empty" message={selection.reason} />;
   if (!manifest.data || needsGroups && !groups.data) return <WidgetState kind="loading" label="Loading casualty pairs…" />;
   if (pinned && options.pairSelection && !savedSelection) return <WidgetState kind="unavailable" message="This saved pair selection belongs to another campaign or branch. Select pairs again in the chord." />;
-  const table = <Table label="Recorded casualty pairs" rows={rows} columns={columns} rowKey={flow => flow.id}
-    sort={{ column: 'value', direction: 'descending' }} hoursPerSecond={speed} cellBars={false} rankMarkers={false}
-    menu={flow => [{ label: 'Show this read', run: () => pickDay(flow.readHour) }, jumpItem(runtime, track.id, flow.readHour)]}
-    tooltip={flow => fitTooltip([pairTooltip([flow], detailLabel, detailHour)], height)} />;
-  const positive = rows.reduce((sum, row) => sum + (row.value > 0n ? row.value : 0n), 0n);
-  const subtotal = rows.some(row => row.incomplete);
   const body = <div className="casualty-pair-details">
     {pinned && <p className="chart-line-key">{formatDateTime(detailHour)} {!effectiveDrill.follow
       && <button type="button" className="button small" onClick={follow}>Follow playback</button>}</p>}
@@ -193,17 +217,13 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
         : !detailData.observed.some(span => span.firstHour <= detailHour && detailHour <= span.lastHour)
           ? <p className="drill-empty">Casualty pairs were not recorded at {formatDateTime(detailHour)}.</p>
           : !rows.length ? <p className="drill-empty">No selected native pair lifetimes were recorded at {formatDateTime(detailHour)}.</p>
-            : <><DrillParts parts={rows.map(flow => ({ id: flow.id, label: `${detailLabel(flow.from).name} → ${detailLabel(flow.to).name}`,
-              countryFlag: detailLabel(flow.from), raw: flow.value, value: Number(flow.value), text: pairAmount(flow), color: colorById.get(flow.id),
-              shareText: flow.value > 0n && positive > 0n ? `${Number(flow.value * 1000n / positive) / 10}%` : '—' }))}
-              format={value => value.toLocaleString('en-US')} virtual positiveBars showShares={!subtotal}
-              totalRow={{ label: subtotal ? 'Recorded subtotal' : 'Signed total', value: rows.reduce((sum, row) => sum + row.value, 0n).toLocaleString('en-US') }} />
-              <div className="casualty-pair-table">{table}</div></>}
+            : <PairRows rows={rows} label={detailLabel} hour={detailHour} colors={colorById} columns={columns} speed={speed}
+              height={height} onPick={pickDay} runtime={runtime} trackId={track.id} />}
     <div className="casualty-pair-history"><TimeChart label="Positive recorded casualties by directed pair over time"
       extent={[track.branch.firstHour, track.branch.lastHour]} branchStart={track.branch.firstHour}
       playhead={effectiveDrill.follow ? clockHour : null} playback="cursor" hoursPerSecond={speed}
       axes={{ xFrom: null, xTo: null, yMin: 0, yMax: null, log: false }} layers={layers}
-      keyHours={stack.hours} active={active && open} revision={stack} pickOwner={pickOwner} onViewChange={setChartRange}
+      keyHours={stack.hours} active={active && open} revision={stack} pickOwner={pickOwner} onViewChange={onChartView}
       onPick={pickDay} overlay={(ctx, frame, theme) => drawPlayhead(ctx, frame, theme, detailHour)}
       onContextMenu={(at, x, y) => menu.open(x, y, [{ label: 'Show this day', run: () => pickDay(at) }, jumpItem(runtime, track.id, Math.floor(at))])}
       tooltip={at => {
@@ -212,7 +232,7 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
         const flows = reply ? casualtyPairsAt(reply, at).flows.filter(flow => selected.has(flow.id)) : [];
         return { title: formatDateTime(Math.floor(at)), rows: [{ label: flows.some(flow => flow.incomplete) ? 'Recorded subtotal' : 'Signed total',
           value: reply?.observed.some(span => span.firstHour <= at && at <= span.lastHour)
-            ? flows.length ? flows.reduce((sum, flow) => sum + flow.value, 0n).toLocaleString('en-US') : 'No selected pair lifetimes'
+            ? flows.length ? exactCount(flows.reduce((sum, flow) => sum + flow.value, 0n)) : 'No selected pair lifetimes'
             : reply ? 'Not recorded' : 'Loading…' }], note: 'Click to select this moment’s exact signed rows.' };
       }} /></div>
     {chartWindows.some(index => !histories.data.has(index) && !histories.errors.has(index)) && <p className="drill-empty">Loading history in the visible time range…</p>}

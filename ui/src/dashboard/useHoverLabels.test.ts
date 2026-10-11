@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hoverRevision } from './useHoverLabels.ts';
+import { heldRead, hoverRevision } from './useHoverLabels.ts';
 import { FAILED_FACT } from './countryFacts.ts';
 import type { HoverRead } from './useHoverLabels';
 
@@ -40,4 +40,15 @@ test('a tooltip revision changes with the question and with every answer, whatev
   // Nothing asked: an empty revision, and the same answers give the same revision.
   assert.equal(hoverRevision(null, read), '');
   assert.equal(hoverRevision({ hour: 100, tags: ['A'] }, read), a);
+});
+
+test('a hovered hour still being read shows its sampled look, part by part, never a failed or empty one', () => {
+  const sample: HoverRead = { style: { name: 'Sampled', color: [1, 2, 3] }, flag: { url: 'data:sampled' } };
+  const going: HoverRead = { style: undefined, flag: undefined };
+  assert.deepEqual(heldRead(going, sample), sample);
+  const exact: HoverRead = { style: { name: 'Exact', color: null }, flag: undefined };
+  assert.deepEqual(heldRead(exact, sample), { style: exact.style, flag: sample.flag });
+  assert.deepEqual(heldRead({ style: null, flag: FAILED_FACT }, sample), { style: null, flag: FAILED_FACT }, 'a completed read wins');
+  assert.deepEqual(heldRead(going, { style: FAILED_FACT, flag: { reason: 'No flag file' } }), going);
+  assert.deepEqual(heldRead(going, { style: null, flag: null }), going);
 });

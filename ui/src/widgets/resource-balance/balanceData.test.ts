@@ -263,7 +263,7 @@ test('a repeated token is another resource: numbered, and chosen with its token'
     resources: [...REPLY.resources, { id: 9, token: 'steel', ordinal: 2, name: 'Steel', icon: null }],
     series: [...REPLY.series, { id: 9, runs: [pools(100, 130, { producedRaw: 7 })] }] };
   assert.equal(validateResourceBalanceReply(repeated), repeated);
-  assert.deepEqual(repeated.resources.map(resourceName), ['Steel', 'rubber', 'Steel (2)']);
+  assert.deepEqual(repeated.resources.map(resourceName), ['Steel', 'Resource name unavailable', 'Steel (2)']);
   assert.deepEqual(chosenLines(repeated, ['steel']).map(item => item.id), [5, 9]);
   assert.deepEqual(chosenLines(repeated, ['rubber', 'steel']).map(item => item.id), [7, 5, 9]);
 });

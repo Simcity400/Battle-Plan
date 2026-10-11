@@ -131,9 +131,9 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
 
   // A tooltip names its countries as recorded at the hour hovered, asking only for those.
   const metadataNames = useMemo(() => new Map(track?.source.metadata.countries.map(country => [country.tag, country.name])), [track?.source]);
-  const metadataName = (tag: string) => metadataNames.get(tag) ?? tag;
+  const metadataName = (tag: string) => metadataNames.get(tag) ?? 'Country name unavailable';
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const hover = useHoverLabels(runtime.client, track, active, useMemo(() => (tag: string) => ({ name: metadataName(tag) }), [metadataNames]));
+  const hover = useHoverLabels(runtime.client, track, active, useMemo(() => (tag: string) => ({ name: metadataName(tag) }), [metadataNames]), undefined, segmentAt);
 
   const menu = useContextMenu('Chart actions');
   useEffect(() => {
@@ -245,8 +245,6 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
     rows.push(...eventRows(here, hour, true));
     const notes = [
       ...(hoveredFilter?.reason ? [hoveredFilter.reason] : []),
-      ...(read.firstHour < hour ? [`Read ${formatDateTime(read.firstHour)}; world tension is read once a day.`] : []),
-      ...(share ? ['The layers are each country’s share of world tension; the values listed are what each contributes.'] : []),
     ];
     return fitTooltip([{ title: dayLabel(hour), rows, note: notes.join(' ') || undefined }], viewport, { more: hidden => `${hidden} more ${hidden === 1 ? 'row' : 'rows'}: a taller window shows them` });
   };

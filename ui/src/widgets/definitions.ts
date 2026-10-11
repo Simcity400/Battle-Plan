@@ -44,7 +44,6 @@ import { definition as navalLosses } from './naval-losses/definition.ts';
 import { definition as occupiedStates } from './occupied-states/definition.ts';
 import { definition as occupationTrend } from './occupation-trend/definition.ts';
 import { definition as peaceDeals } from './peace-deals/definition.ts';
-import { definition as placeholder } from './placeholder/definition.ts';
 import { definition as politicalPower } from './political-power/definition.ts';
 import { definition as politicalPowerSpending } from './political-power-spending/definition.ts';
 import { definition as politicalPowerSpendingBreakdown } from './political-power-spending-breakdown/definition.ts';
@@ -71,6 +70,6 @@ import { definition as worldTension } from './world-tension/definition.ts';
 import { definition as operativesRoster } from './operatives-roster/definition.ts';
 import { definition as whoSpiesOnWhom } from './who-spies-on-whom/definition.ts';
 
-export const widgetMetas = [map, nationalFocus, research, politicalPower, politicalPowerSpending, politicalPowerSpendingBreakdown, commandPower, commandPowerSpending, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, equipmentStockpile, fuel, productionLines, factories, territory, territoryBreakdown, equipmentLosses, equipmentProduced, productionSpending, occupiedStates, occupationTrend, airForceSize, navySize, airRegion, airTimeline, airKillsLosses, bombingDamage, bombingDamageBreakdown, experience, factions, factionStrength, subjects, tradeFlows, peaceDeals, territoryTransfers, wars, worldTension, autonomy, constructionLog, constructionSpending, specialProjects, nuclearArsenal, navalLosses, shipsSunk, raidLog, raidTally, decryption, espionageLog, agencyComparison, operativesRoster, whoSpiesOnWhom, scoreboard, gameScore, casualties, casualtiesBetween, casualtiesBreakdown, generals, generalCareer, aces, armySize, supplyHealth, divisionLog, landBattles, navalBattles, eventFeed, placeholder] as const;
+export const widgetMetas = [map, nationalFocus, research, politicalPower, politicalPowerSpending, politicalPowerSpendingBreakdown, commandPower, commandPowerSpending, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, equipmentStockpile, fuel, productionLines, factories, territory, territoryBreakdown, equipmentLosses, equipmentProduced, productionSpending, occupiedStates, occupationTrend, airForceSize, navySize, airRegion, airTimeline, airKillsLosses, bombingDamage, bombingDamageBreakdown, experience, factions, factionStrength, subjects, tradeFlows, peaceDeals, territoryTransfers, wars, worldTension, autonomy, constructionLog, constructionSpending, specialProjects, nuclearArsenal, navalLosses, shipsSunk, raidLog, raidTally, decryption, espionageLog, agencyComparison, operativesRoster, whoSpiesOnWhom, scoreboard, gameScore, casualties, casualtiesBetween, casualtiesBreakdown, generals, generalCareer, aces, armySize, supplyHealth, divisionLog, landBattles, navalBattles, eventFeed] as const;
 
 registerWidgets(widgetMetas);

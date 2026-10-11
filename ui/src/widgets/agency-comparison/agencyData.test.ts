@@ -63,7 +63,7 @@ test('agency upgrade identity retains its branch and a recorded level sum hides 
   validateAgencyComparisonReply(reply);
   const tooltip = agencyTooltip({ key: 'CUSTOM', tag: 'CUSTOM', hour: 10, value: agency, operativeRosterCount: null, operativeReadHour: null }, 'Country', reply.upgradesUnrecorded);
   assert.equal(tooltip.rows.some(row => row.label === reply.upgradesUnrecorded), false);
-  assert.equal(tooltip.rows.find(row => row.label === 'Unknown upgrade (mod_branch/mod_upgrade)')?.value, 'Level 2');
+  assert.equal(tooltip.rows.find(row => row.label === 'Upgrade name unavailable')?.value, 'Level 2');
   assert.equal(tooltip.rows.some(row => row.label === 'Agency-upgrade read'), true);
   const malformed = structuredClone(reply) as unknown as { series: { entries: { value: { upgrades: { items: { branchToken?: string }[] } } }[] }[] };
   delete malformed.series[0].entries[0].value.upgrades.items[0].branchToken;

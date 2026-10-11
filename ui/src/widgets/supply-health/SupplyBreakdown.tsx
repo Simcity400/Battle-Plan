@@ -6,6 +6,7 @@ import WidgetState from '../../components/WidgetState';
 import DrillParts from '../../charts/drill/DrillParts';
 import StackedShareChart from '../../charts/StackedShareChart';
 import { drawPlayhead } from '../../charts/draw';
+import { usNumber } from '../../charts/numberFormat';
 import { clipToSpans, runAt } from '../../charts/series';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { fitTooltip } from '../../charts/tooltip';
@@ -82,9 +83,9 @@ export default function SupplyBreakdown({ runtime, track, active, options, count
     {pinned && <p className="drill-day">{formatDateTime(hour)} {track !== undefined && !following
       && <button type="button" className="button small" onClick={onFollow}>Follow playback</button>}</p>}
     <DrillParts parts={at ? STATES.map((state, index) => ({ id: state, label: STATE_LABELS[state], value: at[state],
-      color: colors[index], text: at[state].toLocaleString('en-US'), shareText: formatShare(at[state], total!) })) : []}
-      format={value => value.toLocaleString('en-US')} total={total ?? undefined}
-      totalRow={{ label: 'Divisions', value: total === null ? 'Not known' : total.toLocaleString('en-US') }} />
+      color: colors[index], text: usNumber.format(at[state]), shareText: formatShare(at[state], total!) })) : []}
+      format={value => usNumber.format(value)} total={total ?? undefined}
+      totalRow={{ label: 'Divisions', value: total === null ? 'Not known' : usNumber.format(total) }} />
     <p className="drill-empty">{at ? total === 0 ? 'No divisions: shares are undefined.'
       : 'Counts exact; shares round once to two decimals. Low received supply can still be covered by grace. No supply is native very-low frame 3, not necessarily zero received supply.'
       : 'No complete supply observation for this country at this hour. Classification and its denominator are not known.'}</p>

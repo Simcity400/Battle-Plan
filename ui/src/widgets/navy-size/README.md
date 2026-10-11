@@ -10,7 +10,7 @@
 
 - Current HP uses exact recorded fixed-point amounts. Maximum HP is independently known or unknown; it never replaces current HP. Axis entries in HP convert to raw units. Missing/overflowing HP affects that measure while ship counts remain available.
 - Roster and logical ownership are distinct native links. Expeditionary ownership identifies the sender and makes no host claim. Ships outside the recorded roster, including other convoy/stockpile inventory, are excluded.
-- Classes and roles resolve dated authored sub-unit definitions through recorded content. Unresolved classes stay visible parts; role names use content localisation where established, otherwise the raw keyword. No vanilla class list is assumed.
+- Classes and roles resolve dated authored sub-unit definitions through recorded content. Unresolved classes stay visible parts; names use content localisation or unavailable wording. Internal keys remain in diagnostics. No vanilla class list is assumed.
 - Complete present empty rosters prove zero; absent countries/missing inputs stay unknown and gaps break history. Shared easing creates no new measurements.
 - The shared drill keeps the selected native holder's full history after it leaves top N or renames. Pins save that holder and its origin hour; reused tags, missing identities and conflicting aliases cannot replace it. Current and maximum HP retain independent availability.
 - Local date picks and Follow update the pinned header at the body date. Follow uses the track-aligned playback clock independently of the parent time mode, with full-branch detail bounds. Part rows select their history; All parts restores the stack.

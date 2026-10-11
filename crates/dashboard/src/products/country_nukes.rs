@@ -149,158 +149,169 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
     ];
     let mut scanned = ScannedNukes::default();
     let mut tracks = BTreeMap::<String, Track>::new();
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancelled_error());
-        }
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancelled_error());
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            if scanned.tokens.len() < 2
-                && let Ok(lexical) = decoded.complete::<tables::LexicalTokens>()
-            {
-                for ordinal in 0..=1 {
-                    if scanned.tokens.contains_key(&ordinal) {
-                        continue;
-                    }
-                    let token = name_token(ordinal).expect("native mapping");
-                    if let Ok(index) = lexical.binary_search_by_key(&token, |row| row.token)
-                        && let Ok(text) = std::str::from_utf8(&lexical[index].literal)
-                    {
-                        scanned.tokens.insert(ordinal, text.to_owned());
-                    }
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancelled_error());
                 }
-            }
-            let rows = decoded.complete::<tables::Nukes>().ok();
-            let read = slot_read(&decoded.metrics, TableId::Nukes, decoded.hour);
-            if read && rows.is_some() {
-                scanned.read_hours.push(frame.hour);
-            }
-            let (Ok(countries), Ok(links)) = (
-                decoded.complete::<tables::Countries>(),
-                decoded.complete::<tables::CountryLinks>(),
-            ) else {
-                continue;
-            };
-            let mut by_slot = HashMap::<u32, BTreeMap<u32, Option<i32>>>::new();
-            let mut resolved_read = true;
-            if read {
-                for row in rows.into_iter().flatten() {
-                    scanned.types.insert(row.nuke_type);
-                    if name_token(row.nuke_type).is_none() {
-                        *scanned.refused.entry(row.nuke_type).or_default() += 1;
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(cancelled_error());
                     }
-                    let Some(slot) = link_slot(links, row.country) else {
-                        resolved_read = false;
-                        scanned.unreadable += 1;
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    if scanned.tokens.len() < 2
+                        && let Ok(lexical) = decoded.complete::<tables::LexicalTokens>()
+                    {
+                        for ordinal in 0..=1 {
+                            if scanned.tokens.contains_key(&ordinal) {
+                                continue;
+                            }
+                            let token = name_token(ordinal).expect("native mapping");
+                            if let Ok(index) = lexical.binary_search_by_key(&token, |row| row.token)
+                                && let Ok(text) = std::str::from_utf8(&lexical[index].literal)
+                            {
+                                scanned.tokens.insert(ordinal, text.to_owned());
+                            }
+                        }
+                    }
+                    let rows = decoded.complete::<tables::Nukes>().ok();
+                    let read = slot_read(&decoded.metrics, TableId::Nukes, decoded.hour);
+                    if read && rows.is_some() {
+                        scanned.read_hours.push(frame.hour);
+                    }
+                    let (Ok(countries), Ok(links)) = (
+                        decoded.complete::<tables::Countries>(),
+                        decoded.complete::<tables::CountryLinks>(),
+                    ) else {
                         continue;
                     };
-                    let values = by_slot.entry(slot).or_default();
-                    match values.entry(row.nuke_type) {
-                        std::collections::btree_map::Entry::Vacant(entry) => {
-                            entry.insert(Some(displayed_amount(row.amount_raw)));
+                    let mut by_slot = HashMap::<u32, BTreeMap<u32, Option<i32>>>::new();
+                    let mut resolved_read = true;
+                    if read {
+                        for row in rows.into_iter().flatten() {
+                            scanned.types.insert(row.nuke_type);
+                            if name_token(row.nuke_type).is_none() {
+                                *scanned.refused.entry(row.nuke_type).or_default() += 1;
+                            }
+                            let Some(slot) = link_slot(links, row.country) else {
+                                resolved_read = false;
+                                scanned.unreadable += 1;
+                                continue;
+                            };
+                            let values = by_slot.entry(slot).or_default();
+                            match values.entry(row.nuke_type) {
+                                std::collections::btree_map::Entry::Vacant(entry) => {
+                                    entry.insert(Some(displayed_amount(row.amount_raw)));
+                                }
+                                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                                    entry.insert(None);
+                                    scanned.unreadable += 1;
+                                }
+                            }
                         }
-                        std::collections::btree_map::Entry::Occupied(mut entry) => {
-                            entry.insert(None);
+                    }
+                    let mut empty_read = read && rows.is_some() && resolved_read;
+                    for (tag, lookup) in tagged_countries(countries, links) {
+                        let TaggedCountry::Found(country, slot) = lookup else {
+                            empty_read = false;
+                            continue;
+                        };
+                        let Ok(tag) = std::str::from_utf8(tag) else {
+                            empty_read = false;
                             scanned.unreadable += 1;
+                            continue;
+                        };
+                        if !tracks.contains_key(tag) {
+                            tracks.insert(tag.to_owned(), Track::default());
+                        }
+                        let track = tracks.get_mut(tag).expect("inserted above");
+                        let identity = (slot, country.id);
+                        observe_identity(
+                            &mut track.segments,
+                            &mut track.last_identity,
+                            identity,
+                            frame.hour,
+                        );
+                        if rows.is_none() {
+                            continue;
+                        }
+                        let continues = track.last.is_some_and(|(seen, hour)| {
+                            seen == identity && hour.checked_add(1) == Some(frame.hour)
+                        });
+                        if !read {
+                            if continues && let Some(run) = track.runs.last_mut() {
+                                run.last_hour = frame.hour;
+                                track.last = Some((identity, frame.hour));
+                            }
+                            continue;
+                        }
+                        let Some(values) = by_slot.get(&slot) else {
+                            continue;
+                        };
+                        if values.values().any(Option::is_none) {
+                            empty_read = false;
+                            continue;
+                        }
+                        let counts: Vec<_> = values
+                            .iter()
+                            .map(|(&ordinal, value)| NukeCount {
+                                ordinal,
+                                value: value.expect("unique row"),
+                            })
+                            .collect();
+                        // The stockpile sums every array entry without testing its type.
+                        // The recorded type equals its ordinal: only a missing entry inside
+                        // this recorded prefix makes the total unknown.
+                        let total = values
+                            .keys()
+                            .enumerate()
+                            .all(|(index, ordinal)| usize::try_from(*ordinal) == Ok(index))
+                            .then(|| {
+                                counts
+                                    .iter()
+                                    .fold(0i32, |total, count| total.wrapping_add(count.value))
+                            });
+                        empty_read &= total == Some(0);
+                        track.last = Some((identity, frame.hour));
+                        match track.runs.last_mut() {
+                            Some(run)
+                                if continues && run.counts == counts && run.total == total =>
+                            {
+                                run.last_hour = frame.hour;
+                            }
+                            _ => {
+                                track.runs.push(NukeRun {
+                                    first_hour: frame.hour,
+                                    last_hour: frame.hour,
+                                    starts_segment: !continues,
+                                    counts,
+                                    total,
+                                });
+                            }
                         }
                     }
-                }
-            }
-            let mut empty_read = read && rows.is_some() && resolved_read;
-            for (tag, lookup) in tagged_countries(countries, links) {
-                let TaggedCountry::Found(country, slot) = lookup else {
-                    empty_read = false;
-                    continue;
-                };
-                let Ok(tag) = std::str::from_utf8(tag) else {
-                    empty_read = false;
-                    scanned.unreadable += 1;
-                    continue;
-                };
-                if !tracks.contains_key(tag) {
-                    tracks.insert(tag.to_owned(), Track::default());
-                }
-                let track = tracks.get_mut(tag).expect("inserted above");
-                let identity = (slot, country.id);
-                observe_identity(
-                    &mut track.segments,
-                    &mut track.last_identity,
-                    identity,
-                    frame.hour,
-                );
-                if rows.is_none() {
-                    continue;
-                }
-                let continues = track.last.is_some_and(|(seen, hour)| {
-                    seen == identity && hour.checked_add(1) == Some(frame.hour)
-                });
-                if !read {
-                    if continues && let Some(run) = track.runs.last_mut() {
-                        run.last_hour = frame.hour;
-                        track.last = Some((identity, frame.hour));
-                    }
-                    continue;
-                }
-                let Some(values) = by_slot.get(&slot) else {
-                    continue;
-                };
-                if values.values().any(Option::is_none) {
-                    empty_read = false;
-                    continue;
-                }
-                let counts: Vec<_> = values
-                    .iter()
-                    .map(|(&ordinal, value)| NukeCount {
-                        ordinal,
-                        value: value.expect("unique row"),
-                    })
-                    .collect();
-                // The stockpile sums every array entry without testing its type.
-                // The recorded type equals its ordinal: only a missing entry inside
-                // this recorded prefix makes the total unknown.
-                let total = values
-                    .keys()
-                    .enumerate()
-                    .all(|(index, ordinal)| usize::try_from(*ordinal) == Ok(index))
-                    .then(|| {
-                        counts
-                            .iter()
-                            .fold(0i32, |total, count| total.wrapping_add(count.value))
-                    });
-                empty_read &= total == Some(0);
-                track.last = Some((identity, frame.hour));
-                match track.runs.last_mut() {
-                    Some(run) if continues && run.counts == counts && run.total == total => {
-                        run.last_hour = frame.hour;
-                    }
-                    _ => {
-                        track.runs.push(NukeRun {
-                            first_hour: frame.hour,
-                            last_hour: frame.hour,
-                            starts_segment: !continues,
-                            counts,
-                            total,
-                        });
+                    if empty_read {
+                        scanned.empty_read_hours.push(frame.hour);
                     }
                 }
             }
-            if empty_read {
-                scanned.empty_read_hours.push(frame.hour);
-            }
-        }
-    }
+            Ok(())
+        },
+    )?;
     // Stockpile totals use this country's own array count; independent countries
     // can have different counts. A complete contiguous prefix proves that array,
     // even when another country records more types.

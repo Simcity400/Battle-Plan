@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { commitRows, EMPTY_HISTORY, shownRows } from '../rowMotion.ts';
-import { barFraction, barMaximum, groupedRows, nextSort, rankChanges, rowOffsets, scrollToShow, shownMotion, sortRows, visibleRange } from './logic.ts';
+import { barFraction, barMaximum, groupedRows, nextSort, rankChanges, measuredRowOffsets, rowOffsets, scrollToShow, shownMotion, sortRows, visibleRange } from './logic.ts';
 import { sortKey, tableSortOf, tableSortOptions, TABLE_OPTIONS } from './options.ts';
 import { resolveOptions, setOption } from '../../dashboard/options.ts';
 
@@ -166,4 +166,20 @@ test('dated faction changes move existing country keys through the shared row mo
   const changed = items([{ ...rows[0], group: rows[1].group }, rows[1]]);
   assert.deepEqual(changed.map(row => row.key), ['native-country-a', 'native-country-b']);
   assert.ok(shownRows(history, changed, 100, 450).every(row => row.phase === 'staying'));
+});
+
+test('wrapped-row geometry follows measured identities across reorder and supports 5000 rows', () => {
+  const heights = new Map([['a', 92], ['b', 34], ['c', 175]]);
+  assert.deepEqual(measuredRowOffsets(['a', 'b', 'c', 'new'], heights, 34, 26), [26, 118, 152, 327, 361]);
+  const reordered = measuredRowOffsets(['c', 'a', 'b'], heights, 34, 26);
+  assert.deepEqual(reordered, [26, 201, 293, 327]);
+  assert.equal(scrollToShow(reordered, 1, 0, 150, 26), 143);
+  const keys = Array.from({ length: 5000 }, (_, i) => String(i));
+  const measured = new Map(keys.map((key, i) => [key, i % 2 ? 70 : 34]));
+  const offsets = measuredRowOffsets(keys, measured, 34, 26);
+  assert.equal(offsets.length, 5001);
+  assert.equal(offsets[5000], 260026);
+  const [start, end] = visibleRange(offsets, offsets[4900], 500);
+  assert.ok(start <= 4900 && end > 4900 && end - start < 30);
+  assert.deepEqual(measuredRowOffsets(['a', 'unknown'], new Map([['a', 4]]), 34), [0, 34, 68]);
 });

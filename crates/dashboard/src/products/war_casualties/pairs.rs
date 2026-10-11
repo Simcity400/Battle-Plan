@@ -69,31 +69,62 @@ pub(super) struct PairRead {
     pub(super) second_live: bool,
     pub(super) first_tag_hour: i32,
     pub(super) second_tag_hour: i32,
-    pub(super) first_taken: i128,
-    pub(super) second_taken: i128,
+    /// One native lifetime's recorded counters.
+    pub(super) first_taken: i64,
+    pub(super) second_taken: i64,
     pub(super) incomplete: bool,
 }
+/// Distinct lifetimes' summed counters over consecutive hours.
+struct PairTotal {
+    first_hour: i32,
+    last_hour: i32,
+    read_hour: i32,
+    hourly: bool,
+    first_taken: i128,
+    second_taken: i128,
+    incomplete: bool,
+}
+/// The tags of a pair's current key and its index in `reads`.
+type CurrentKey = (Arc<str>, Arc<str>, usize);
 #[derive(Default)]
 pub(super) struct PairHistory {
-    pub(super) runs: BTreeMap<Key, Vec<PairRead>>,
-    last_tags: HashMap<usize, (Arc<str>, i32)>,
+    /// Each key's index in `reads`.
+    keys: BTreeMap<Key, usize>,
+    reads: Vec<Vec<PairRead>>,
+    /// By `HeldPair::ordinal`, looked up again only when an endpoint's tag changes.
+    current: Vec<Option<CurrentKey>>,
+    /// By country index: the last tag it held and the last hour it was live.
+    last_tags: Vec<Option<(Arc<str>, i32)>>,
+    live: Vec<bool>,
 }
 impl PairHistory {
+    /// Every native lifetime's runs, in key order.
+    pub(super) fn runs(&self) -> impl Iterator<Item = (&Key, &[PairRead])> {
+        self.keys
+            .iter()
+            .map(|(key, &index)| (key, self.reads[index].as_slice()))
+    }
+    /// Releases growth capacity once the branch is scanned.
+    pub(super) fn shrink_to_fit(&mut self) {
+        for runs in &mut self.reads {
+            runs.shrink_to_fit();
+        }
+    }
     pub(super) fn observe(&mut self, scan: &Scan) {
         let (Some(hour), Some(read_hour)) = (scan.hour, scan.last_read) else {
             return;
         };
-        let tags: HashMap<_, _> = scan.live.iter().map(|(tag, &index)| (index, tag)).collect();
-        for (&index, tag) in &tags {
-            let last = self
-                .last_tags
-                .entry(index)
-                .or_insert_with(|| (Arc::from((*tag).as_str()), hour));
-            if last.0.as_ref() != (*tag).as_str() {
-                last.0 = Arc::from((*tag).as_str());
+        self.live.clear();
+        self.live.resize(scan.identities.len(), false);
+        self.last_tags.resize(scan.identities.len(), None);
+        for (tag, &index) in &scan.live {
+            self.live[index] = true;
+            match &mut self.last_tags[index] {
+                Some((last, at)) if **last == **tag => *at = hour,
+                last => *last = Some((Arc::from(tag.as_str()), hour)),
             }
-            last.1 = hour;
         }
+        self.current.resize(scan.pairs.len(), None);
         for (&(first, second, start), pair) in &scan.pairs {
             // Canonical identity order also joins reversed native relations.
             let ((first, second), values) = if scan.identities[first] < scan.identities[second] {
@@ -101,22 +132,39 @@ impl PairHistory {
             } else {
                 ((second, first), [pair.values[1], pair.values[0]])
             };
-            let key = (
-                self.last_tags[&first].0.clone(),
-                self.last_tags[&second].0.clone(),
-                scan.identities[first],
-                scan.identities[second],
-                start,
-            );
-            let first_live = tags.contains_key(&first);
-            let second_live = tags.contains_key(&second);
-            let first_tag_hour = self.last_tags[&first].1;
-            let second_tag_hour = self.last_tags[&second].1;
-            let [first_taken, second_taken] = values.map(i128::from);
+            let (first_tag, first_tag_hour) =
+                self.last_tags[first].as_ref().expect("endpoint seen live");
+            let (second_tag, second_tag_hour) =
+                self.last_tags[second].as_ref().expect("endpoint seen live");
+            let index = match &mut self.current[pair.ordinal] {
+                Some((a, b, index)) if Arc::ptr_eq(a, first_tag) && Arc::ptr_eq(b, second_tag) => {
+                    *index
+                }
+                current => {
+                    let reads = &mut self.reads;
+                    let key = (
+                        first_tag.clone(),
+                        second_tag.clone(),
+                        scan.identities[first],
+                        scan.identities[second],
+                        start,
+                    );
+                    let index = *self.keys.entry(key).or_insert_with(|| {
+                        reads.push(Vec::new());
+                        reads.len() - 1
+                    });
+                    *current = Some((first_tag.clone(), second_tag.clone(), index));
+                    index
+                }
+            };
+            let first_live = self.live[first];
+            let second_live = self.live[second];
+            let (first_tag_hour, second_tag_hour) = (*first_tag_hour, *second_tag_hour);
+            let [first_taken, second_taken] = values;
             let incomplete = scan.countries[first].at_least || scan.countries[second].at_least;
             let hourly = read_hour == hour;
             let relation_hourly = pair.hour == hour;
-            let runs = self.runs.entry(key).or_default();
+            let runs = &mut self.reads[index];
             if let Some(last) = runs.last_mut()
                 && last.last_hour.checked_add(1) == Some(hour)
                 && last.first_taken == first_taken
@@ -155,7 +203,7 @@ impl PairHistory {
 
 /// Distinct native lifetimes add only in the pair projection. The same retained
 /// runs also feed the war breakdown; neither consumer rescans the recording.
-fn summed_runs(histories: &[&[PairRead]], within: Option<&HourSpan>) -> Vec<PairRead> {
+fn summed_runs(histories: &[&[PairRead]], within: Option<&HourSpan>) -> Vec<PairTotal> {
     let mut changes: BTreeMap<i64, Vec<(usize, Option<&PairRead>)>> = BTreeMap::new();
     for (index, runs) in histories.iter().enumerate() {
         let first = within.map_or(0, |span| {
@@ -185,7 +233,7 @@ fn summed_runs(histories: &[&[PairRead]], within: Option<&HourSpan>) -> Vec<Pair
     let mut active = BTreeMap::new();
     let mut totals = [0_i128; 2];
     let mut incomplete = 0_usize;
-    let mut reply: Vec<PairRead> = Vec::new();
+    let mut reply: Vec<PairTotal> = Vec::new();
     let mut changes = changes.into_iter().peekable();
     while let Some((first, events)) = changes.next() {
         // End a run before starting its consecutive replacement.
@@ -196,14 +244,14 @@ fn summed_runs(histories: &[&[PairRead]], within: Option<&HourSpan>) -> Vec<Pair
         {
             if let Some(old) = active.remove(index) {
                 let old: &PairRead = old;
-                totals[0] -= old.first_taken;
-                totals[1] -= old.second_taken;
+                totals[0] -= i128::from(old.first_taken);
+                totals[1] -= i128::from(old.second_taken);
                 incomplete -= usize::from(old.incomplete);
             }
             if let Some(next) = next {
                 active.insert(*index, *next);
-                totals[0] += next.first_taken;
-                totals[1] += next.second_taken;
+                totals[0] += i128::from(next.first_taken);
+                totals[1] += i128::from(next.second_taken);
                 incomplete += usize::from(next.incomplete);
             }
         }
@@ -225,16 +273,10 @@ fn summed_runs(histories: &[&[PairRead]], within: Option<&HourSpan>) -> Vec<Pair
         {
             old.last_hour = last;
         } else {
-            reply.push(PairRead {
+            reply.push(PairTotal {
                 first_hour: first,
                 last_hour: last,
                 read_hour,
-                relation_read_hour: read.relation_read_hour,
-                relation_hourly: read.relation_hourly,
-                first_live: true,
-                second_live: true,
-                first_tag_hour: first,
-                second_tag_hour: first,
                 hourly: read.hourly,
                 first_taken: totals[0],
                 second_taken: totals[1],
@@ -303,26 +345,35 @@ impl Product for CasualtyPairs {
         };
         // The capability request doesn't require a whole-branch pair scan.
         let Some(window) = params.window else {
-            for block in replay.index.iter().filter(|block| block.branch == branch) {
-                let mut decoder = FrameDecoder::for_tables(&SCAN_TABLES);
-                if let Ok(frames) = replay.read_block_selected(block, &SCAN_TABLES) {
-                    let mut builder = ScanFrames::new(&replay, branch);
-                    for frame in frames {
-                        check_cancel(cancelled)?;
-                        let Ok(decoded) = decoder.advance(&frame) else {
-                            break;
-                        };
-                        builder.frame(decoded, &replay);
-                        if !builder.scan.observed.is_empty() {
-                            reply.available = true;
+            crate::blocks::scan_blocks(
+                &replay,
+                replay.index.iter().filter(|block| block.branch == branch),
+                &SCAN_TABLES,
+                cancelled,
+                |blocks| {
+                    for (_, frames) in blocks {
+                        let mut decoder = FrameDecoder::for_tables(&SCAN_TABLES);
+                        if let Ok(frames) = frames {
+                            let mut builder = ScanFrames::new(&replay, branch);
+                            for frame in frames {
+                                check_cancel(cancelled)?;
+                                let Ok(decoded) = decoder.advance(&frame) else {
+                                    break;
+                                };
+                                builder.frame(decoded, &replay);
+                                if !builder.scan.observed.is_empty() {
+                                    reply.available = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if reply.available {
                             break;
                         }
                     }
-                }
-                if reply.available {
-                    break;
-                }
-            }
+                    Ok(())
+                },
+            )?;
             check_reply_bytes(json_bytes(&reply)?)?;
             return Ok(reply);
         };
@@ -348,7 +399,7 @@ impl Product for CasualtyPairs {
         // Manual country picks follow their native identities through renames.
         let selected = cached.selected_identities(&params.tags);
         let mut pairs: BTreeMap<_, Vec<&[PairRead]>> = BTreeMap::new();
-        for ((first, second, a, b, _), runs) in &cached.pairs.runs {
+        for ((first, second, a, b, _), runs) in cached.pairs.runs() {
             check_cancel(cancelled)?;
             if !params.tags.is_empty() {
                 let matches = [selected.contains(a), selected.contains(b)];
@@ -397,9 +448,9 @@ impl Product for CasualtyPairs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn pair_runs(history: &PairHistory) -> Vec<PairRead> {
+    fn pair_runs(history: &PairHistory) -> Vec<PairTotal> {
         summed_runs(
-            &history.runs.values().map(Vec::as_slice).collect::<Vec<_>>(),
+            &history.runs().map(|(_, runs)| runs).collect::<Vec<_>>(),
             None,
         )
     }
@@ -562,7 +613,7 @@ mod tests {
         scan.begin_hour(101, &live, true, true);
         scan.end_hour(true);
         history.observe(&scan);
-        let old = history.runs.values().next().unwrap().last().unwrap();
+        let old = history.runs().next().unwrap().1.last().unwrap();
         assert!(!old.second_live);
         assert_eq!(
             (old.second_tag_hour, old.relation_read_hour, old.first_taken),
@@ -577,7 +628,7 @@ mod tests {
         scan.begin_hour(102, &live, true, true);
         scan.end_hour(true);
         history.observe(&scan);
-        let old = history.runs.values().next().unwrap().last().unwrap();
+        let old = history.runs().next().unwrap().1.last().unwrap();
         assert!(!old.second_live);
         assert_eq!(old.second_tag_hour, 100);
     }

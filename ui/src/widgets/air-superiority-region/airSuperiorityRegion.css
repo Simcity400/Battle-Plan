@@ -6,13 +6,11 @@
 .air-region-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .air-region-wings { color: var(--muted); font-size: var(--type-xs); text-align: right; min-width: 48px; }
 .air-region-bar { height: 16px; border-radius: 4px; overflow: hidden; display: flex; align-items: stretch; }
-.air-region-segment { flex-shrink: 0; container-type: inline-size; position: relative; box-sizing: border-box; transition: width var(--air-glide) var(--ease); overflow: hidden; }
+.air-region-segment { flex-shrink: 0; position: relative; box-sizing: border-box; transition: width var(--air-glide) var(--ease); overflow: hidden; }
 .air-region-segment b { font-size: var(--type-xs); line-height: 16px; padding-inline: 5px; font-weight: 600; white-space: nowrap; }
-@container (max-width: 34px) { .air-region-segment b { display: none; } }
 .air-region-state { font-size: var(--type-xs); color: var(--muted); margin: auto; }
 .air-regions[data-glide='false'] .air-region-segment { transition: none; }
 :root[data-motion='reduced'] .air-region-segment { transition: none; }
 @media (prefers-reduced-motion: reduce) { .air-region-segment { transition: none; } }
 
-.air-region-seam { display: none; position: absolute; inset: 0 0 0 auto; width: 1.5px; background: var(--surface); }
-@container (width > 3px) { .air-region-segment:not(:last-child) .air-region-seam { display: block; } }
+.air-region-seam { position: absolute; inset: 0 0 0 auto; width: 1.5px; background: var(--surface); }

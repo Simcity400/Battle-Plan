@@ -227,14 +227,16 @@ test('splitting at an overlord tag change keeps a gap break only on the original
   assert.deepEqual(lane.progress.map(run => run.breakBefore), [true, false]);
 });
 
-test('levels are named by the game, else by their recorded id', () => {
-  assert.deepEqual(REPLY.levels.map(levelName), ['Serf State', 'mod_vassal', 'Ally']);
+test('levels show localized titles and keep missing, empty and key-equal names distinct', () => {
+  assert.deepEqual(REPLY.levels.map(levelName), ['Serf State', 'Level name unavailable', 'Ally']);
   assert.equal(levelName(undefined), 'Unknown level');
+  assert.equal(levelName({ id: 'synthetic', name: '', defined: true }), '');
+  assert.equal(levelName({ id: 'synthetic', name: 'synthetic', defined: true }), 'synthetic');
 });
 
 test('a lane bands each level for the whole span it applied, marks each change and never joins across a gap', () => {
   const lane = subjectLane(REPLY.subjects[0], REPLY.levels);
-  assert.deepEqual(lane.spans.map(span => [span.firstHour, span.lastHour, span.label]), [[100, 120, 'Serf State'], [121, 130, 'mod_vassal'], [140, 150, 'Serf State']]);
+  assert.deepEqual(lane.spans.map(span => [span.firstHour, span.lastHour, span.label]), [[100, 120, 'Serf State'], [121, 130, 'Level name unavailable'], [140, 150, 'Serf State']]);
   assert.deepEqual([...lane.spanLevels.values()], [0, 1, 0]);
   assert.deepEqual(lane.changes, [121]);
   assert.deepEqual(lane.stretches, [{ firstHour: 100, lastHour: 130 }, { firstHour: 140, lastHour: 150 }]);

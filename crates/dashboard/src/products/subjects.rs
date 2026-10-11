@@ -373,197 +373,212 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
         .find(|start| start.id == branch)
         .map(|start| branch_bounds(replay, start));
     let mut previous_hour: Option<i32> = bounds.and_then(|(first, _)| first.checked_sub(1));
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancel());
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            unreadable_blocks += 1;
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancel());
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                stopped += 1;
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                stopped += 1;
-                break;
-            }
-            let hour = frame.hour;
-            let first_observed = *first_observed.get_or_insert(hour);
-            if let Some(previous) = previous_hour
-                && hour > previous + 1
-            {
-                mark_unobserved(&mut unobserved, previous + 1, hour - 1);
-                continuous_since = None;
-            }
-            previous_hour = Some(hour);
-            let Ok(rebuilt) = tags.update(decoded) else {
-                incomplete += 1;
-                mark_unobserved(&mut unobserved, hour, hour);
-                continuous_since = None;
-                previous_complete = None;
-                continue;
-            };
-            if rebuilt {
-                identities_changed = true;
-                identities = decoded
-                    .complete::<tables::Countries>()?
-                    .iter()
-                    .map(|country| (country.canonical_slot, country.id))
-                    .collect();
-                identity_since.retain(|slot, (id, _)| identities.get(slot) == Some(id));
-                for (&slot, &id) in &identities {
-                    identity_since.entry(slot).or_insert((id, hour));
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancel());
                 }
-                named_since.retain(|raw, (tag, _)| tags.get(*raw) == Some(tag));
-                for (raw, tag) in tags.iter() {
-                    named_since
-                        .entry(*raw)
-                        .or_insert_with(|| (tag.clone(), hour));
-                }
-            }
-            let Ok(rows) = decoded.complete::<tables::Subjects>() else {
-                incomplete += 1;
-                mark_unobserved(&mut unobserved, hour, hour);
-                continuous_since = None;
-                previous_complete = None;
-                continue;
-            };
-            observed = true;
-            let links = decoded.complete::<tables::CountryLinks>()?;
-            let since = *continuous_since.get_or_insert(hour);
-            // Each subject's current level this hour, by tag; none when the table is not
-            // complete. A subject the rows give two levels has no known level.
-            let levels: Option<HashMap<&String, Option<&[u8]>>> =
-                decoded.complete::<tables::Autonomy>().ok().map(|autonomy| {
-                    let mut levels: HashMap<&String, Option<&[u8]>> = HashMap::new();
-                    for row in autonomy.iter() {
-                        let Some(tag) = tags.get(row.subject) else {
-                            continue;
-                        };
-                        let level = levels.entry(tag).or_insert(Some(row.state.as_slice()));
-                        if *level != Some(row.state.as_slice()) {
-                            conflicting.insert(tag.clone());
-                            *level = None;
-                        }
-                    }
-                    levels
-                });
-            let mut named_all = true;
-            for row in rows.iter().filter(|row| active(row, hour)) {
-                let (Some(overlord), Some(subject)) =
-                    (tags.get(row.overlord), tags.get(row.subject))
-                else {
-                    for raw in [row.overlord, row.subject] {
-                        if tags.get(raw).is_none() {
-                            unmapped.insert(raw);
-                        }
-                    }
-                    named_all = false;
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    unreadable_blocks += 1;
                     continue;
                 };
-                // A level whose recorded id is not text (or is empty) is refused, and counted.
-                let level = match levels
-                    .as_ref()
-                    .and_then(|levels| levels.get(subject).copied().flatten())
-                {
-                    Some(bytes) => match std::str::from_utf8(bytes) {
-                        Ok(token) if !token.is_empty() => Some(token.to_owned()),
-                        _ => {
-                            unreadable += 1;
-                            None
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(cancel());
+                    }
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        stopped += 1;
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        stopped += 1;
+                        break;
+                    }
+                    let hour = frame.hour;
+                    let first_observed = *first_observed.get_or_insert(hour);
+                    if let Some(previous) = previous_hour
+                        && hour > previous + 1
+                    {
+                        mark_unobserved(&mut unobserved, previous + 1, hour - 1);
+                        continuous_since = None;
+                    }
+                    previous_hour = Some(hour);
+                    let Ok(rebuilt) = tags.update(decoded) else {
+                        incomplete += 1;
+                        mark_unobserved(&mut unobserved, hour, hour);
+                        continuous_since = None;
+                        previous_complete = None;
+                        continue;
+                    };
+                    if rebuilt {
+                        identities_changed = true;
+                        identities = decoded
+                            .complete::<tables::Countries>()?
+                            .iter()
+                            .map(|country| (country.canonical_slot, country.id))
+                            .collect();
+                        identity_since.retain(|slot, (id, _)| identities.get(slot) == Some(id));
+                        for (&slot, &id) in &identities {
+                            identity_since.entry(slot).or_insert((id, hour));
                         }
-                    },
-                    None => None,
-                };
-                if level.is_none() {
-                    unleveled += 1;
-                }
-                let key = (overlord.clone(), subject.clone(), row.start_hour);
-                let started = extend(&mut open, &mut runs, key.clone(), hour, || SubjectRun {
-                    overlord: overlord.clone(),
-                    subject: subject.clone(),
-                    start_hour: row.start_hour,
-                    first_hour: hour,
-                    last_hour: hour,
-                    steps: Vec::new(),
-                });
-                if started {
-                    let identity_key = [row.overlord, row.subject].map(|raw| {
-                        crate::metadata::link_slot(links, raw)
-                            .and_then(|slot| identities.get(&slot).map(|id| (slot, *id)))
-                    });
-                    let identity_key = identity_key[0]
-                        .zip(identity_key[1])
-                        .map(|(overlord, subject)| (overlord, subject, row.start_hour));
-                    let new_identity =
-                        identity_key.is_some_and(|identity| seen_starts.insert(identity));
-                    if new_identity && row.start_hour > first_observed {
-                        // Relations serialize start_date; names are exact only while both raw
-                        // links keep their tags. A start at or before the first observed frame is
-                        // an initial snapshot, even if first published later.
-                        let date_named =
-                            [row.overlord, row.subject].into_iter().all(|raw| {
-                                named_since
-                                    .get(&raw)
-                                    .is_some_and(|(_, from)| since.max(*from) <= row.start_hour)
-                            }) && identity_key.is_some_and(|(overlord, subject, _)| {
-                                [overlord, subject].into_iter().all(|(slot, id)| {
-                                    identity_since.get(&slot).is_some_and(|(seen, from)| {
-                                        *seen == id && *from <= row.start_hour
-                                    })
-                                })
-                            });
-                        let exact = date_named && row.start_hour <= hour;
-                        let witnessed = previous_complete
-                            .is_some_and(|previous: i32| previous.checked_add(1) == Some(hour))
-                            && identity_key.is_some_and(|(overlord, subject, _)| {
-                                [overlord, subject]
-                                    .into_iter()
-                                    .all(|(slot, id)| previous_identities.get(&slot) == Some(&id))
-                            });
-                        if exact || witnessed {
-                            starts.push(SubjectStart {
-                                subject: subject.clone(),
-                                overlord: overlord.clone(),
-                                hour: if exact { row.start_hour } else { hour },
-                                read_hour: hour,
-                                exact,
-                            });
+                        named_since.retain(|raw, (tag, _)| tags.get(*raw) == Some(tag));
+                        for (raw, tag) in tags.iter() {
+                            named_since
+                                .entry(*raw)
+                                .or_insert_with(|| (tag.clone(), hour));
                         }
                     }
-                }
-                let run = &mut runs[open[&key]];
-                match run.steps.last_mut() {
-                    Some(step) if step.last_hour == hour => {}
-                    Some(step) if step.level == level && step.last_hour + 1 == hour && !started => {
-                        step.last_hour = hour;
-                    }
-                    _ => {
-                        run.steps.push(LevelStep {
-                            first_hour: hour,
-                            last_hour: hour,
-                            level,
+                    let Ok(rows) = decoded.complete::<tables::Subjects>() else {
+                        incomplete += 1;
+                        mark_unobserved(&mut unobserved, hour, hour);
+                        continuous_since = None;
+                        previous_complete = None;
+                        continue;
+                    };
+                    observed = true;
+                    let links = decoded.complete::<tables::CountryLinks>()?;
+                    let since = *continuous_since.get_or_insert(hour);
+                    // Each subject's current level this hour, by tag; none when the table is not
+                    // complete. A subject the rows give two levels has no known level.
+                    let levels: Option<HashMap<&String, Option<&[u8]>>> =
+                        decoded.complete::<tables::Autonomy>().ok().map(|autonomy| {
+                            let mut levels: HashMap<&String, Option<&[u8]>> = HashMap::new();
+                            for row in autonomy.iter() {
+                                let Some(tag) = tags.get(row.subject) else {
+                                    continue;
+                                };
+                                let level = levels.entry(tag).or_insert(Some(row.state.as_slice()));
+                                if *level != Some(row.state.as_slice()) {
+                                    conflicting.insert(tag.clone());
+                                    *level = None;
+                                }
+                            }
+                            levels
                         });
+                    let mut named_all = true;
+                    for row in rows.iter().filter(|row| active(row, hour)) {
+                        let (Some(overlord), Some(subject)) =
+                            (tags.get(row.overlord), tags.get(row.subject))
+                        else {
+                            for raw in [row.overlord, row.subject] {
+                                if tags.get(raw).is_none() {
+                                    unmapped.insert(raw);
+                                }
+                            }
+                            named_all = false;
+                            continue;
+                        };
+                        // A level whose recorded id is not text (or is empty) is refused, and counted.
+                        let level = match levels
+                            .as_ref()
+                            .and_then(|levels| levels.get(subject).copied().flatten())
+                        {
+                            Some(bytes) => match std::str::from_utf8(bytes) {
+                                Ok(token) if !token.is_empty() => Some(token.to_owned()),
+                                _ => {
+                                    unreadable += 1;
+                                    None
+                                }
+                            },
+                            None => None,
+                        };
+                        if level.is_none() {
+                            unleveled += 1;
+                        }
+                        let key = (overlord.clone(), subject.clone(), row.start_hour);
+                        let started =
+                            extend(&mut open, &mut runs, key.clone(), hour, || SubjectRun {
+                                overlord: overlord.clone(),
+                                subject: subject.clone(),
+                                start_hour: row.start_hour,
+                                first_hour: hour,
+                                last_hour: hour,
+                                steps: Vec::new(),
+                            });
+                        if started {
+                            let identity_key = [row.overlord, row.subject].map(|raw| {
+                                crate::metadata::link_slot(links, raw)
+                                    .and_then(|slot| identities.get(&slot).map(|id| (slot, *id)))
+                            });
+                            let identity_key = identity_key[0]
+                                .zip(identity_key[1])
+                                .map(|(overlord, subject)| (overlord, subject, row.start_hour));
+                            let new_identity =
+                                identity_key.is_some_and(|identity| seen_starts.insert(identity));
+                            if new_identity && row.start_hour > first_observed {
+                                // Relations serialize start_date; names are exact only while both raw
+                                // links keep their tags. A start at or before the first observed frame is
+                                // an initial snapshot, even if first published later.
+                                let date_named =
+                                    [row.overlord, row.subject].into_iter().all(|raw| {
+                                        named_since.get(&raw).is_some_and(|(_, from)| {
+                                            since.max(*from) <= row.start_hour
+                                        })
+                                    }) && identity_key.is_some_and(|(overlord, subject, _)| {
+                                        [overlord, subject].into_iter().all(|(slot, id)| {
+                                            identity_since.get(&slot).is_some_and(|(seen, from)| {
+                                                *seen == id && *from <= row.start_hour
+                                            })
+                                        })
+                                    });
+                                let exact = date_named && row.start_hour <= hour;
+                                let witnessed =
+                                    previous_complete.is_some_and(|previous: i32| {
+                                        previous.checked_add(1) == Some(hour)
+                                    }) && identity_key.is_some_and(|(overlord, subject, _)| {
+                                        [overlord, subject].into_iter().all(|(slot, id)| {
+                                            previous_identities.get(&slot) == Some(&id)
+                                        })
+                                    });
+                                if exact || witnessed {
+                                    starts.push(SubjectStart {
+                                        subject: subject.clone(),
+                                        overlord: overlord.clone(),
+                                        hour: if exact { row.start_hour } else { hour },
+                                        read_hour: hour,
+                                        exact,
+                                    });
+                                }
+                            }
+                        }
+                        let run = &mut runs[open[&key]];
+                        match run.steps.last_mut() {
+                            Some(step) if step.last_hour == hour => {}
+                            Some(step)
+                                if step.level == level
+                                    && step.last_hour + 1 == hour
+                                    && !started =>
+                            {
+                                step.last_hour = hour;
+                            }
+                            _ => {
+                                run.steps.push(LevelStep {
+                                    first_hour: hour,
+                                    last_hour: hour,
+                                    level,
+                                });
+                            }
+                        }
+                    }
+                    if !named_all {
+                        mark_unobserved(&mut unobserved, hour, hour);
+                    }
+                    previous_complete = named_all.then_some(hour);
+                    if identities_changed {
+                        previous_identities.clone_from(&identities);
+                        identities_changed = false;
                     }
                 }
             }
-            if !named_all {
-                mark_unobserved(&mut unobserved, hour, hour);
-            }
-            previous_complete = named_all.then_some(hour);
-            if identities_changed {
-                previous_identities.clone_from(&identities);
-                identities_changed = false;
-            }
-        }
-    }
+            Ok(())
+        },
+    )?;
     if let (Some((first, last)), previous) = (bounds, previous_hour) {
         let from = previous.map_or(first, |previous| previous.saturating_add(1));
         if from <= last {

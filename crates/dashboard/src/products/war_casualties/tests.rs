@@ -1405,6 +1405,59 @@ fn loaded_content(source: &Source) -> (LoadContext, TestFolder) {
     )
 }
 #[test]
+fn casualty_titles_preserve_empty_and_key_equal_localisations() {
+    for (authored, expected) in [
+        (Some(""), ""),
+        (Some("   "), "   "),
+        (Some(UNKNOWN_LABEL), UNKNOWN_LABEL),
+        (None, "Unknown attacker"),
+    ] {
+        let source = opened(research_replay(vec![casualty_frame(100, Some((10, 0)), 0)]));
+        let text = authored.map_or_else(
+            || "\u{feff}l_english:\n".to_owned(),
+            |label| format!("\u{feff}l_english:\n {UNKNOWN_LABEL}:0 \"{label}\"\n"),
+        );
+        let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[(
+            "localisation/english/casualties_l_english.yml",
+            &text,
+        )]);
+        let options = super::super::ContentOptions {
+            options: installed_content::ResolveOptions {
+                game_dir: folder.0.clone(),
+                user_dir: folder.0.clone(),
+                cache_dir: folder.0.join("cache"),
+            },
+            allow_unverified: true,
+        };
+        crate::catalogue::set_test_catalogue(&source, &options, Arc::new(catalogue));
+        let reply = WarCasualties::load(
+            &source,
+            &params(1),
+            &LoadContext {
+                content: Some(options),
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(reply.unknown_label, expected);
+        assert!(reply.series.iter().all(|series| {
+            series
+                .labels
+                .iter()
+                .all(|label| label == "Country name unavailable")
+        }));
+    }
+    let without_content = reply(vec![casualty_frame(100, Some((10, 0)), 0)], &params(1));
+    assert_eq!(without_content.unknown_label, "Unknown attacker");
+    assert!(
+        without_content
+            .series
+            .iter()
+            .all(|series| series.labels == ["Country name unavailable"])
+    );
+}
+
+#[test]
 fn changing_selections_reuses_one_branch_scan_with_content_loaded() {
     let source = opened(research_replay((0..35).map(scale_frame).collect()));
     let (context, _content_folder) = loaded_content(&source);
@@ -1424,7 +1477,8 @@ fn changing_selections_reuses_one_branch_scan_with_content_loaded() {
         &cached,
         &scanned_branch(&source, 1, &AtomicBool::new(false)).unwrap()
     ));
-    assert_eq!(cached.names.len(), 1);
+    // Unchanged naming operands are kept once per tag.
+    assert_eq!(cached.names.len(), 5000);
     assert!(!cached.has_gap());
 }
 
@@ -1595,7 +1649,7 @@ fn war_casualties_nine_year_benchmark() {
             .collect(),
     );
     eprintln!(
-        "casualties nine-year content-loaded: {hours} hours, 5000 countries; p50 {p50:.3} ms/hour, p95 {p95:.3} ms/hour, total {elapsed_seconds:.3} s; top30 {reply_bytes} bytes; retained cache {cache_bytes} bytes; conservative peak upper estimate {peak_bytes} bytes (owned capacities, shared naming tables counted per snapshot; excludes replay/content/decoder scratch); naming snapshots {}",
+        "casualties nine-year content-loaded: {hours} hours, 5000 countries; p50 {p50:.3} ms/hour, p95 {p95:.3} ms/hour, total {elapsed_seconds:.3} s; top30 {reply_bytes} bytes; retained cache {cache_bytes} bytes; conservative peak upper estimate {peak_bytes} bytes (owned capacities; excludes replay/content/decoder scratch and the newest naming snapshot); naming entries {}",
         cached.names.len()
     );
     eprintln!(
@@ -1638,79 +1692,16 @@ fn benchmark_label_bytes(labels: &CampaignLabels) -> usize {
         .sum()
 }
 
-fn benchmark_names_bytes(names: &Vec<DecodedFrame>) -> usize {
-    fn rows_bytes<T>(rows: &Vec<T>) -> usize {
-        rows.capacity() * std::mem::size_of::<T>()
-    }
-    names.capacity() * std::mem::size_of::<DecodedFrame>()
+fn benchmark_names_bytes(names: &Vec<(String, NameInputs)>) -> usize {
+    // Debug text over-counts the operands' private strings.
+    names.capacity() * std::mem::size_of::<(String, NameInputs)>()
         + names
             .iter()
-            .map(|frame| {
-                frame
-                    .tables
-                    .iter()
-                    .map(|table| {
-                        let header =
-                            std::mem::size_of::<TableView>() + 2 * std::mem::size_of::<usize>();
-                        let rows = match &**table {
-                            TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows,
-                            TableView::Unavailable { reason } => return header + reason.capacity(),
-                        };
-                        header
-                            + match rows {
-                                TableRows::Countries(rows) => {
-                                    rows_bytes(rows)
-                                        + rows.iter().map(|row| row.tag.capacity()).sum::<usize>()
-                                }
-                                TableRows::CountryLinks(rows) => rows_bytes(rows),
-                                TableRows::CountryAppearance(rows) => {
-                                    rows_bytes(rows)
-                                        + rows
-                                            .iter()
-                                            .map(|row| {
-                                                row.cosmetic_tag.capacity()
-                                                    + row.name_tag.capacity()
-                                                    + row.leader_ideology.capacity()
-                                                    + row.graphical_culture.capacity()
-                                                    + row.old_name.as_ref().map_or(0, Vec::capacity)
-                                                    + row
-                                                        .old_adjective
-                                                        .as_ref()
-                                                        .map_or(0, Vec::capacity)
-                                                    + row
-                                                        .old_definite_name
-                                                        .as_ref()
-                                                        .map_or(0, Vec::capacity)
-                                            })
-                                            .sum::<usize>()
-                                }
-                                TableRows::Politics(rows) => rows_bytes(rows),
-                                TableRows::PoliticalParties(rows) => {
-                                    rows_bytes(rows)
-                                        + rows
-                                            .iter()
-                                            .map(|row| {
-                                                row.token.capacity()
-                                                    + row.name.capacity()
-                                                    + row.long_name.capacity()
-                                            })
-                                            .sum::<usize>()
-                                }
-                                TableRows::Autonomy(rows) => {
-                                    rows_bytes(rows)
-                                        + rows
-                                            .iter()
-                                            .map(|row| {
-                                                row.state.capacity()
-                                                    + row.previous.as_ref().map_or(0, Vec::capacity)
-                                                    + row.next.as_ref().map_or(0, Vec::capacity)
-                                            })
-                                            .sum::<usize>()
-                                }
-                                _ => 0,
-                            }
-                    })
-                    .sum::<usize>()
+            .map(|(tag, inputs)| {
+                tag.capacity()
+                    + inputs.capacity()
+                        * std::mem::size_of::<(u32, Option<Result<Operands, String>>)>()
+                    + format!("{inputs:?}").len()
             })
             .sum::<usize>()
 }
@@ -1747,6 +1738,12 @@ fn benchmark_builder_bytes(builder: &ScanFrames) -> usize {
         + builder.seen.capacity() * (std::mem::size_of::<(usize, usize, i32)>() + 16)
         + builder.endpoints.capacity() * std::mem::size_of::<(usize, usize)>()
         + builder.relation_keys.capacity() * std::mem::size_of::<(u32, u32, i32)>()
+        + builder.name_entries.capacity() * (std::mem::size_of::<(String, usize)>() + 16)
+        + builder
+            .name_entries
+            .keys()
+            .map(String::capacity)
+            .sum::<usize>()
         + builder.census.as_ref().map_or(0, |(countries, _)| {
             countries.capacity() * std::mem::size_of::<(u32, u32, Vec<u8>)>()
                 + countries

@@ -669,12 +669,17 @@ fn response_budget_refuses_before_large_history_or_art_is_cloned() {
             .to_string()
             .contains("complete-response budget")
     );
-    let raw = PoliticsLedgerReply {
-        warnings: vec![icon],
-        ..Default::default()
-    };
     let mut scan = Scanned::default();
-    scan.countries.insert("C1".into(), raw);
+    scan.country("C1")
+        .spending_coverage
+        .push(LedgerSpendCoverage {
+            read_hour: 0,
+            since_hour: None,
+            through_hour: None,
+            political: false,
+            command: false,
+            reason: Some(icon),
+        });
     assert!(
         present(&scan, 1, "C1", None, &AtomicBool::new(false))
             .unwrap_err()
@@ -995,9 +1000,10 @@ fn bounded_observation_over_three_months_with_hourly_leader_experience() {
         put(&mut current, TableRows::CountryPowerChanges(rows));
         observe_all(&current, &mut scan, None).unwrap();
     }
-    assert_eq!(scan.event_facts.len(), 90);
     assert_eq!(scan.countries["C1"].mutations.len(), 90);
     assert!(scan.naming.len() <= 180);
+    let first = scan.naming.values().next().unwrap();
+    assert!(scan.naming.values().all(|name| Arc::ptr_eq(name, first)));
     assert_eq!(scan.countries["C1"].spending_coverage.len(), 1);
 }
 
@@ -1077,19 +1083,20 @@ fn unmatched_daily_cost_invalidates_only_its_read_in_a_merged_interval() {
         .get_mut("C1")
         .unwrap()
         .daily_costs
-        .push(LedgerDailyCost {
-            country: 1,
-            instance: 1,
-            epoch: "1".into(),
-            day_hour: 25,
+        .push(DailyCost {
+            row: CountryPowerDailyCostRow {
+                country: 1,
+                instance: 1,
+                epoch: 1,
+                day_hour: 25,
+                pp_sequence: 100,
+                cost_raw: 1,
+                cause: PowerCause::DailyGain,
+                ..Default::default()
+            },
             read_hour: 25,
             covered: true,
-            pp_sequence: "100".into(),
-            ordinal: 0,
-            component: "PoliticalPowerCostModifier".into(),
-            amount_raw: "1".into(),
-            cause: "DailyGain".into(),
-            item: (&PowerIdentity::default()).into(),
+            facts: EventFacts::default(),
         });
     let reply = present_fixture(&scan);
     assert_eq!(
@@ -1141,6 +1148,29 @@ fn complete_countries_absence_is_zero_and_missing_countries_remains_a_gap() {
             (26, 26, false, false),
             (27, 27, true, true)
         ]
+    );
+}
+
+#[test]
+fn previous_read_is_retained_whole_only_at_a_dated_hour() {
+    let mut scan = Scanned {
+        dated: Some(BTreeSet::from([25])),
+        ..Default::default()
+    };
+    observe_all(&frame(24, 1), &mut scan, None).unwrap();
+    let previous = scan.previous.as_ref().unwrap();
+    assert!(previous.complete::<tables::Countries>().is_ok());
+    assert!(
+        previous
+            .complete::<tables::PoliticsCaptureCoverage>()
+            .is_err()
+    );
+    observe_all(&frame(25, 1), &mut scan, None).unwrap();
+    let previous = scan.previous.as_ref().unwrap();
+    assert!(
+        previous
+            .complete::<tables::PoliticsCaptureCoverage>()
+            .is_ok()
     );
 }
 

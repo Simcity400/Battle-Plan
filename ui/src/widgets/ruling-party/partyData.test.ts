@@ -23,7 +23,7 @@ const REPLY: PartyHistoryReply = {
 test('bands follow content order and colours; unknown ideologies use the palette after them', () => {
   const list = bands(REPLY, ['#111111', '#222222']);
   assert.deepEqual(list.map(band => [band.token, band.name, band.color]), [
-    ['democratic', 'Democratic', 'rgb(0 0 255)'], ['fascism', 'Fascist', 'rgb(150 75 0)'], ['mod_ideology', 'mod_ideology', '#111111'],
+    ['democratic', 'Democratic', 'rgb(0 0 255)'], ['fascism', 'Fascist', 'rgb(150 75 0)'], ['mod_ideology', 'Ideology name unavailable', '#111111'],
   ]);
 });
 
@@ -89,7 +89,7 @@ test('the leader is named as recorded, and every gap in what is known is said', 
   assert.deepEqual([at(103).name, at(104).name, at(105).name], ['Leader not recorded', 'Leader not identified', 'No leader']);
   assert.equal(at(104).ideology, 'Nazism');
   // An unnamed character and an ideology content does not name say so, rather than guessing.
-  assert.deepEqual([at(106).name, at(106).known, at(106).ideology], ['Leader’s name not known', false, 'mod_type']);
+  assert.deepEqual([at(106).name, at(106).known, at(106).ideology], ['Leader’s name not known', false, 'Ideology name unavailable']);
   // A new character is a change of leader; a rename, a gap or an unidentified leader is not.
   const successions = { ...reply, leaders: [...reply.leaders, { ideology: 'nazism', person: 3, firstHour: 107, lastHour: 107, startsSegment: false }],
     people: [...reply.people, { character: { id: 8, token: 'GER_karl_donitz', name: 'GER_karl_donitz' }, name: 'Karl Dönitz', portrait: null, portraitMissing: null }] };

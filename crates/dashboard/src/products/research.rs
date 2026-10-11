@@ -21,7 +21,7 @@ use replay::{
 };
 use serde::Serialize;
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, HashSet, VecDeque},
     io,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -829,9 +829,7 @@ fn research_branch_selected(
         replay::rows::TableId::Campaign,
         replay::rows::TableId::Countries,
         replay::rows::TableId::CountryLinks,
-        replay::rows::TableId::ResearchSlots,
         replay::rows::TableId::ResearchTechnologies,
-        replay::rows::TableId::TechnologyDefinitions,
         replay::rows::TableId::ResearchInputs,
         replay::rows::TableId::ResearchAppliedBonuses,
         replay::rows::TableId::ResearchModifiers,
@@ -842,123 +840,148 @@ fn research_branch_selected(
     // including missing hours. A read after it cannot continue one before it.
     let mut last_bad: Option<i32> = None;
     let mut last_frame: Option<i32> = None;
-    for block in replay.index.iter().filter(|b| b.branch == branch) {
-        check_cancel(cancelled)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            check_cancel(cancelled)?;
-            if last_frame.is_some_and(|previous| previous.checked_add(1) != Some(frame.hour)) {
-                last_bad = Some(frame.hour.saturating_sub(1));
-            }
-            last_frame = Some(frame.hour);
-            let Ok(decoded) = decoder.advance(&frame) else {
-                last_bad = Some(frame.hour);
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                last_bad = Some(frame.hour);
-                break;
-            }
-            let (Ok(rows), Ok(links), Ok(inputs)) = (
-                decoded.complete::<tables::Countries>(),
-                decoded.complete::<tables::CountryLinks>(),
-                decoded.complete::<tables::ResearchInputs>(),
-            ) else {
-                last_bad = Some(frame.hour);
-                continue;
-            };
-            let inventory = decoded.complete::<tables::ResearchTechnologies>().ok();
-            let bonuses = decoded.complete::<tables::ResearchAppliedBonuses>().ok();
-            let modifier_rows = decoded.complete::<tables::ResearchModifiers>().ok();
-            // Every sliced row's read hour; without it no read is observable.
-            let Ok(reads) = decoded.complete::<tables::SliceReads>() else {
-                last_bad = Some(frame.hour);
-                continue;
-            };
-            let read_hour = |table, owner| replay::sliced::read_hour(reads, table, owner);
-            // Each country joins only the input rows of its own linked IDs, so
-            // a row whose country has no link is ignored; it never hides the
-            // reads of linked countries in the same frame.
-            for country in rows {
-                // Compare the tag before any per-country work.
-                if selected_tag.is_some_and(|selected| selected.as_bytes() != country.tag) {
-                    continue;
-                }
-                let Ok(canonical) = crate::metadata::mapped_slot(country, links) else {
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|b| b.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                check_cancel(cancelled)?;
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
                     continue;
                 };
-                let Ok(tag) = std::str::from_utf8(&country.tag) else {
-                    continue;
-                };
-                if tag.is_empty() || tag.len() > 512 {
-                    continue;
+                for frame in frames {
+                    check_cancel(cancelled)?;
+                    if last_frame
+                        .is_some_and(|previous| previous.checked_add(1) != Some(frame.hour))
+                    {
+                        last_bad = Some(frame.hour.saturating_sub(1));
+                    }
+                    last_frame = Some(frame.hour);
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        last_bad = Some(frame.hour);
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        last_bad = Some(frame.hour);
+                        break;
+                    }
+                    let (Ok(rows), Ok(links), Ok(inputs)) = (
+                        decoded.complete::<tables::Countries>(),
+                        decoded.complete::<tables::CountryLinks>(),
+                        decoded.complete::<tables::ResearchInputs>(),
+                    ) else {
+                        last_bad = Some(frame.hour);
+                        continue;
+                    };
+                    let inventory = decoded.complete::<tables::ResearchTechnologies>().ok();
+                    let bonuses = decoded.complete::<tables::ResearchAppliedBonuses>().ok();
+                    let modifier_rows = decoded.complete::<tables::ResearchModifiers>().ok();
+                    // Every sliced row's read hour; without it no read is observable.
+                    let Ok(reads) = decoded.complete::<tables::SliceReads>() else {
+                        last_bad = Some(frame.hour);
+                        continue;
+                    };
+                    let read_hour = |table, owner| replay::sliced::read_hour(reads, table, owner);
+                    // A country is observed only when its inputs were read this hour (the
+                    // check below), so find those first rather than joining every country.
+                    let inputs_table = replay::rows::TableId::ResearchInputs.index() as u32;
+                    let slots_read: HashSet<u32> = reads
+                        .iter()
+                        .filter(|row| row.table == inputs_table && row.sample_hour == frame.hour)
+                        .filter_map(|row| crate::metadata::link_slot(links, row.owner))
+                        .collect();
+                    // Each country joins only the input rows of its own linked IDs, so
+                    // a row whose country has no link is ignored; it never hides the
+                    // reads of linked countries in the same frame.
+                    for country in rows {
+                        // Compare the tag before any per-country work.
+                        if selected_tag.is_some_and(|selected| selected.as_bytes() != country.tag) {
+                            continue;
+                        }
+                        let Ok(canonical) = crate::metadata::mapped_slot(country, links) else {
+                            continue;
+                        };
+                        if !slots_read.contains(&canonical) {
+                            continue;
+                        }
+                        let Ok(tag) = std::str::from_utf8(&country.tag) else {
+                            continue;
+                        };
+                        if tag.is_empty() || tag.len() > 512 {
+                            continue;
+                        }
+                        let ids: Vec<_> = links
+                            .iter()
+                            .filter(|link| link.canonical_slot == canonical)
+                            .map(|link| link.id)
+                            .collect();
+                        let inputs: Vec<_> = inputs
+                            .iter()
+                            .filter(|input| ids.contains(&input.country))
+                            .collect();
+                        // Rows keep the hour they were read at. Observe a read only in
+                        // the frame of its own hour; carried rows add nothing.
+                        use replay::rows::TableId;
+                        let Some(read) = inputs
+                            .first()
+                            .and_then(|input| read_hour(TableId::ResearchInputs, input.country))
+                        else {
+                            continue;
+                        };
+                        if read != frame.hour
+                            || inputs.iter().any(|input| {
+                                read_hour(TableId::ResearchInputs, input.country) != Some(read)
+                            })
+                        {
+                            continue;
+                        }
+                        let state = countries.entry(tag.to_owned()).or_default();
+                        if state.last_read.is_some_and(|last| read <= last) {
+                            continue;
+                        }
+                        // Continuous with the previous read only when no recorded hour
+                        // between them was unobservable and no scheduled read of this
+                        // owner was missed (each owner is read at least once a day).
+                        state.read_after = state.last_read.filter(|&last| {
+                            last_bad.is_none_or(|bad| bad <= last)
+                                && i64::from(read) - i64::from(last)
+                                    <= i64::from(replay::cadence::STAGGER_PERIOD)
+                        });
+                        // Bonuses and modifiers join only when they come from the same read.
+                        let bonuses = bonuses.filter(|rows| {
+                            rows.iter()
+                                .filter(|row| ids.contains(&row.country))
+                                .all(|row| {
+                                    read_hour(TableId::ResearchAppliedBonuses, row.country)
+                                        == Some(read)
+                                })
+                        });
+                        let modifier_rows = modifier_rows.filter(|rows| {
+                            rows.iter()
+                                .filter(|row| ids.contains(&row.country))
+                                .all(|row| {
+                                    read_hour(TableId::ResearchModifiers, row.country) == Some(read)
+                                })
+                        });
+                        state.observe_inputs(
+                            (country.id, canonical),
+                            read,
+                            &inputs,
+                            inventory,
+                            bonuses,
+                            modifier_rows,
+                        );
+                        state.last_read = Some(read);
+                    }
+                    check_budget(&countries)?;
                 }
-                let ids: Vec<_> = links
-                    .iter()
-                    .filter(|link| link.canonical_slot == canonical)
-                    .map(|link| link.id)
-                    .collect();
-                let inputs: Vec<_> = inputs
-                    .iter()
-                    .filter(|input| ids.contains(&input.country))
-                    .collect();
-                // Rows keep the hour they were read at. Observe a read only in
-                // the frame of its own hour; carried rows add nothing.
-                use replay::rows::TableId;
-                let Some(read) = inputs
-                    .first()
-                    .and_then(|input| read_hour(TableId::ResearchInputs, input.country))
-                else {
-                    continue;
-                };
-                if read != frame.hour
-                    || inputs.iter().any(|input| {
-                        read_hour(TableId::ResearchInputs, input.country) != Some(read)
-                    })
-                {
-                    continue;
-                }
-                let state = countries.entry(tag.to_owned()).or_default();
-                if state.last_read.is_some_and(|last| read <= last) {
-                    continue;
-                }
-                // Continuous with the previous read only when no recorded hour
-                // between them was unobservable and no scheduled read of this
-                // owner was missed (each owner is read at least once a day).
-                state.read_after = state.last_read.filter(|&last| {
-                    last_bad.is_none_or(|bad| bad <= last)
-                        && i64::from(read) - i64::from(last)
-                            <= i64::from(replay::cadence::STAGGER_PERIOD)
-                });
-                // Bonuses and modifiers join only when they come from the same read.
-                let bonuses = bonuses.filter(|rows| {
-                    rows.iter()
-                        .filter(|row| ids.contains(&row.country))
-                        .all(|row| {
-                            read_hour(TableId::ResearchAppliedBonuses, row.country) == Some(read)
-                        })
-                });
-                let modifier_rows = modifier_rows.filter(|rows| {
-                    rows.iter()
-                        .filter(|row| ids.contains(&row.country))
-                        .all(|row| read_hour(TableId::ResearchModifiers, row.country) == Some(read))
-                });
-                state.observe_inputs(
-                    (country.id, canonical),
-                    read,
-                    &inputs,
-                    inventory,
-                    bonuses,
-                    modifier_rows,
-                );
-                state.last_read = Some(read);
             }
-            check_budget(&countries)?;
-        }
-    }
+            Ok(())
+        },
+    )?;
     Ok(countries
         .into_iter()
         .map(|(tag, mut country)| {
@@ -1026,7 +1049,7 @@ impl Product for Research {
                     .chain(s.states.iter().filter_map(|state| state.token.as_deref()))
             })
             .collect();
-        let (artwork, mut warnings) = art.catalogue(tokens, cancelled)?;
+        let (artwork, mut warnings) = art.text_catalogue(tokens, cancelled)?;
         for slot in &mut history.slots {
             for state in &mut slot.states {
                 if let Some(modifiers) = state.details.as_mut().and_then(|d| d.modifiers.as_mut()) {

@@ -53,8 +53,9 @@ fn mutation(hour: i32) -> LedgerMutation {
     }
 }
 #[test]
-fn hourly_changing_leaders_over_three_months_retain_only_event_facts() {
-    let mut scan = Scanned::default();
+fn hourly_changing_leaders_over_three_months_share_one_event_fact() {
+    let mut shared = Shared::default();
+    let mut facts = Vec::new();
     let mut current = frame(0);
     set(
         &mut current,
@@ -79,30 +80,28 @@ fn hourly_changing_leaders_over_three_months_retain_only_event_facts() {
             leader.experience = i64::from(hour);
         }
         set(&mut current, TableRows::UnitLeaders(leaders.clone()));
-        let row = mutation(hour - hour.rem_euclid(24));
-        store_facts(
-            &mut scan,
-            &row,
-            Some(&current),
-            PowerCause::LeaderPromotion,
-            None,
-        );
+        if hour % 24 == 0 {
+            facts.push(event_facts(
+                &mut shared,
+                &mutation(hour),
+                Some(&current),
+                PowerCause::LeaderPromotion,
+                None,
+            ));
+        }
     }
-    assert_eq!(scan.event_facts.len(), 90);
-    let first = scan
-        .event_facts
-        .get(&item_text_id(&mutation(0)))
-        .unwrap()
-        .character
-        .as_ref()
-        .unwrap();
+    let first = facts[0].character.as_ref().unwrap();
     assert_eq!(first.id, 93);
     assert_eq!(first.saved_name, "Recorded name");
     assert_eq!(first.leader_category, Some(0));
+    assert!(
+        facts
+            .iter()
+            .all(|fact| Arc::ptr_eq(fact.character.as_ref().unwrap(), first))
+    );
 }
 #[test]
 fn late_events_keep_recorded_key_without_borrowing_character_or_lexer() {
-    let mut scan = Scanned::default();
     let mut current = frame(2);
     set(
         &mut current,
@@ -115,14 +114,13 @@ fn late_events_keep_recorded_key_without_borrowing_character_or_lexer() {
     let mut row = mutation(1);
     row.item.character = Some(93);
     row.item.key = b"recorded_key".to_vec();
-    store_facts(
-        &mut scan,
+    let facts = event_facts(
+        &mut Shared::default(),
         &row,
         Some(&current),
         PowerCause::LeaderPromotion,
         None,
     );
-    let facts = &scan.event_facts[&item_text_id(&row)];
     assert_eq!(facts.token.as_deref(), Some("recorded_key"));
     assert!(facts.character.is_none());
 }
@@ -172,37 +170,29 @@ fn component_snapshots_use_recorded_modifier_and_organisation_identity() {
             canonical_slot: 1,
         }]),
     );
-    let mut scan = Scanned::default();
+    let mut shared = Shared::default();
     let mut row = mutation(24);
-    store_facts(
-        &mut scan,
+    let facts = event_facts(
+        &mut shared,
         &row,
         Some(&current),
         PowerCause::DailyGain,
         Some(PowerDailyCostKind::PoliticalPowerCostModifier),
     );
     assert_eq!(
-        scan.event_facts[&item_text_id(&row)]
-            .modifier
-            .as_ref()
-            .unwrap()
-            .name_key,
+        facts.modifier.as_ref().unwrap().name_key,
         b"modded_daily_cost_title"
     );
-    row.sequence = "25".into();
     row.item.object_kind = "Organisation".into();
     row.item.object_reference = Some("123".into());
-    store_facts(
-        &mut scan,
+    let facts = event_facts(
+        &mut shared,
         &row,
         Some(&current),
         PowerCause::DailyGain,
         Some(PowerDailyCostKind::MioResearch),
     );
-    let organisation = scan.event_facts[&item_text_id(&row)]
-        .organisation
-        .as_ref()
-        .unwrap();
+    let organisation = facts.organisation.as_ref().unwrap();
     assert_eq!(organisation.token, "modded_organisation");
     assert_eq!(organisation.name_key, "modded_organisation_name");
     assert_eq!(organisation.owner_tag.as_deref(), Some("AAA"));

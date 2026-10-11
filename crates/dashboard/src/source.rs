@@ -121,6 +121,15 @@ impl Source {
         }
     }
 
+    /// Whether content outside the recorded coverage has been read for this source.
+    pub(crate) fn reads_uncovered(&self) -> bool {
+        self.content
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .is_some_and(|(_, _, reads)| reads.warning().is_some())
+    }
+
     /// Resolves the catalogue's names in the user's game language at each
     /// country's observed hour; without content they stay tags, with a warning.
     pub fn name_countries(&self, content: Option<&ContentOptions>) {
@@ -148,7 +157,12 @@ impl Source {
                     let at = (country.observed_branch_id.clone(), country.observed_hour);
                     let frame = frames.entry(at).or_insert_with(|| {
                         let branch = country.observed_branch_id.parse().ok()?;
-                        match self.replay.seek(branch, country.observed_hour).ok()? {
+                        let tables = Some(&installed_content::country_names::TABLES[..]);
+                        match self
+                            .replay
+                            .seek_selected(branch, country.observed_hour, tables)
+                            .ok()?
+                        {
                             SeekResult::Frame(frame) => {
                                 Some(CountryNames::read(&frame, &localisation))
                             }

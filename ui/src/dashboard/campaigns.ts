@@ -3,15 +3,9 @@ import type { DashboardTemplate, WidgetSpec } from './model';
 /** Session identities are stable across layout changes; paths never enter templates. */
 export interface Campaign { id: string; path: string; label: string; loading?: boolean }
 
-export const MAX_ROLES = 12;
-export const MAX_TRACKS = 32;
-
-/** Pending opens reserve capacity, but never become saved layout slots. */
+/** The layout's slots no campaign fills, pending opens included; another campaign always gets a new slot. */
 export function campaignSlots(template: DashboardTemplate, campaigns: readonly Campaign[]) {
-  const reserved = includeCampaigns(template, campaigns.map(campaign => ({ ...campaign, loading: false })));
-  const empty = template.roles.filter(role => !campaigns.some(campaign => campaign.id === role.id)
-    && (template.tracks.some(track => track.roleId === role.id) || reserved.tracks.length < MAX_TRACKS));
-  return { empty, canAdd: reserved.roles.length < MAX_ROLES && reserved.tracks.length < MAX_TRACKS };
+  return { empty: template.roles.filter(role => !campaigns.some(campaign => campaign.id === role.id)) };
 }
 
 export function includeCampaigns(template: DashboardTemplate, campaigns: readonly Campaign[]): DashboardTemplate {

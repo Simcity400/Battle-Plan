@@ -305,195 +305,203 @@ pub(super) fn scan(
     let mut existence = BTreeMap::<u32, (u32, String, i32, i32)>::new();
     let mut guarantees = BTreeSet::new();
 
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        check_cancel(cancelled)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            since = None;
-            out.refuse(
-                "diplomacyBlock",
-                "Diplomacy",
-                "Selected diplomacy blocks could not be read.",
-            )?;
-            continue;
-        };
-        for frame in frames {
-            check_cancel(cancelled)?;
-            let Ok(decoded) = decoder.advance(&frame) else {
-                since = None;
-                out.refuse(
-                    "diplomacyFrame",
-                    "Diplomacy",
-                    "Selected diplomacy frames could not be decoded.",
-                )?;
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                since = None;
-                out.refuse(
-                    "diplomacyCampaign",
-                    "Diplomacy",
-                    "Selected diplomacy frames do not name this campaign.",
-                )?;
-                break;
-            }
-            let hour = frame.hour;
-            let first_observed = *first_observed.get_or_insert(hour);
-            if previous_hour.is_some_and(|previous| previous.checked_add(1) != Some(hour)) {
-                since = None;
-            }
-            previous_hour = Some(hour);
-            let Ok(rebuilt) = tags.update(decoded) else {
-                since = None;
-                out.refuse(
-                    "diplomacyIdentity",
-                    "Diplomacy",
-                    "Country identities are unresolved.",
-                )?;
-                continue;
-            };
-            if rebuilt {
-                named_since.retain(|raw, (tag, _)| tags.get(*raw) == Some(tag));
-                for (raw, tag) in tags.iter() {
-                    named_since
-                        .entry(*raw)
-                        .or_insert_with(|| (tag.clone(), hour));
-                }
-            }
-            let continuous = *since.get_or_insert(hour);
-            // Countries includes every non-null canonical country slot, with no
-            // owned-state filter. A country with no states can therefore remain
-            // recorded after annexation; presence is not existence.
-            // CountryCounterInputs supplies the unfiltered owned-state roster count.
-            // A positive-to-zero transition means ceased to exist by this supplying
-            // read; the cause and exact transition hour are absent.
-            if slot_read(&decoded.metrics, TableId::CountryCounterInputs, hour) {
-                if let Ok(rows) = decoded.complete::<tables::CountryCounterInputs>() {
-                    out.observed.insert(TableId::CountryCounterInputs);
-                    let countries = decoded.complete::<tables::Countries>()?;
-
-                    for row in rows {
-                        let slot = countries
-                            .binary_search_by_key(&row.country, |country| country.id)
-                            .ok()
-                            .map(|index| countries[index].canonical_slot);
-                        let (Some(tag), Some(slot)) = (tags.get(row.country), slot) else {
-                            out.refuse("existenceIdentity", "Country existence", "Owned-state-count observations have unresolved or changed country identities; the disappeared countries are not established.")?;
-                            continue;
-                        };
-                        if row.owned_state_count < 0 {
-                            out.refuse(
-                                "existenceCount",
-                                "Country existence",
-                                "Countries have negative recorded owned-state counts.",
-                            )?;
-                            existence.remove(&slot);
-                            continue;
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                check_cancel(cancelled)?;
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    since = None;
+                    out.refuse(
+                        "diplomacyBlock",
+                        "Diplomacy",
+                        "Selected diplomacy blocks could not be read.",
+                    )?;
+                    continue;
+                };
+                for frame in frames {
+                    check_cancel(cancelled)?;
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        since = None;
+                        out.refuse(
+                            "diplomacyFrame",
+                            "Diplomacy",
+                            "Selected diplomacy frames could not be decoded.",
+                        )?;
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        since = None;
+                        out.refuse(
+                            "diplomacyCampaign",
+                            "Diplomacy",
+                            "Selected diplomacy frames do not name this campaign.",
+                        )?;
+                        break;
+                    }
+                    let hour = frame.hour;
+                    let first_observed = *first_observed.get_or_insert(hour);
+                    if previous_hour.is_some_and(|previous| previous.checked_add(1) != Some(hour)) {
+                        since = None;
+                    }
+                    previous_hour = Some(hour);
+                    let Ok(rebuilt) = tags.update(decoded) else {
+                        since = None;
+                        out.refuse(
+                            "diplomacyIdentity",
+                            "Diplomacy",
+                            "Country identities are unresolved.",
+                        )?;
+                        continue;
+                    };
+                    if rebuilt {
+                        named_since.retain(|raw, (tag, _)| tags.get(*raw) == Some(tag));
+                        for (raw, tag) in tags.iter() {
+                            named_since
+                                .entry(*raw)
+                                .or_insert_with(|| (tag.clone(), hour));
                         }
-                        if let Some((id, old_tag, count, read_hour)) = existence.get(&slot)
-                            && *count > 0
-                            && row.owned_state_count == 0
-                        {
-                            if *id == row.country && old_tag == tag {
+                    }
+                    let continuous = *since.get_or_insert(hour);
+                    // Countries includes every non-null canonical country slot, with no
+                    // owned-state filter. A country with no states can therefore remain
+                    // recorded after annexation; presence is not existence.
+                    // CountryCounterInputs supplies the unfiltered owned-state roster count.
+                    // A positive-to-zero transition means ceased to exist by this supplying
+                    // read; the cause and exact transition hour are absent.
+                    if slot_read(&decoded.metrics, TableId::CountryCounterInputs, hour) {
+                        if let Ok(rows) = decoded.complete::<tables::CountryCounterInputs>() {
+                            out.observed.insert(TableId::CountryCounterInputs);
+                            let countries = decoded.complete::<tables::Countries>()?;
+
+                            for row in rows {
+                                let slot = countries
+                                    .binary_search_by_key(&row.country, |country| country.id)
+                                    .ok()
+                                    .map(|index| countries[index].canonical_slot);
+                                let (Some(tag), Some(slot)) = (tags.get(row.country), slot) else {
+                                    out.refuse("existenceIdentity", "Country existence", "Owned-state-count observations have unresolved or changed country identities; the disappeared countries are not established.")?;
+                                    continue;
+                                };
+                                if row.owned_state_count < 0 {
+                                    out.refuse(
+                                        "existenceCount",
+                                        "Country existence",
+                                        "Countries have negative recorded owned-state counts.",
+                                    )?;
+                                    existence.remove(&slot);
+                                    continue;
+                                }
+                                if let Some((id, old_tag, count, read_hour)) = existence.get(&slot)
+                                    && *count > 0
+                                    && row.owned_state_count == 0
+                                {
+                                    if *id == row.country && old_tag == tag {
+                                        out.moments.push(GroupMoment {
+                                            kind: "ceasedToExist",
+                                            hour,
+                                            read_hour: hour,
+                                            name_hour: *read_hour,
+                                            exact: false,
+                                            tags: vec![tag.clone()],
+                                            faction: None,
+                                        });
+                                    } else {
+                                        out.refuse("existenceIdentity", "Country existence", "Owned-state-count observations have unresolved or changed country identities; the disappeared countries are not established.")?;
+                                    }
+                                }
+                                match existence.get_mut(&slot) {
+                                    Some((id, old_tag, count, read_hour))
+                                        if *id == row.country
+                                            && old_tag.as_str() == tag.as_str() =>
+                                    {
+                                        *count = row.owned_state_count;
+                                        *read_hour = hour;
+                                    }
+                                    _ => {
+                                        existence.insert(
+                                            slot,
+                                            (row.country, tag.clone(), row.owned_state_count, hour),
+                                        );
+                                    }
+                                }
+                            }
+                        } else {
+                            out.refuse("existenceRead", "Country existence", "Owned-state-count reads are incomplete; transitions through them are unknown.")?;
+                        }
+                    }
+                    // Guarantee effects pass scope first and target second; relation
+                    // initialization retains that direction. The owner-slice can come from
+                    // either status vector and never reverses it. The relation stores
+                    // first/second and start_date.
+                    if let (Ok(rows), Ok(reads)) = (
+                        decoded.complete::<tables::RelationTuples>(),
+                        decoded.complete::<tables::SliceReads>(),
+                    ) {
+                        let table = TableId::RelationTuples.index() as u32;
+                        let first = reads.partition_point(|read| read.table < table);
+                        let last = reads.partition_point(|read| read.table <= table);
+                        for read in reads[first..last].iter().filter(|read| {
+                            read.sample_hour == hour && tags.get(read.owner).is_some()
+                        }) {
+                            out.observed.insert(TableId::RelationTuples);
+                            // RelationTuples is ordered by owner, target, type and
+                            // ordinal. Carried owners require no row traversal.
+                            let first = rows.partition_point(|row| row.owner_country < read.owner);
+                            let last = rows.partition_point(|row| row.owner_country <= read.owner);
+                            for row in rows[first..last].iter().filter(|row| {
+                                row.type_id == engine::cguarantee_relation::TYPE && row.cancel == 0
+                            }) {
+                                // An initial history-file relation is a snapshot, never an
+                                // event, including a relation published after the first frame.
+                                if row.start_hour <= first_observed || row.start_hour > hour {
+                                    continue;
+                                }
+                                if !guarantees.insert((
+                                    row.first_country,
+                                    row.second_country,
+                                    row.start_hour,
+                                )) {
+                                    continue;
+                                }
+                                let (Some(first), Some(second)) =
+                                    (tags.get(row.first_country), tags.get(row.second_country))
+                                else {
+                                    out.refuse(
+                                    "guaranteeIdentity",
+                                    "Guarantees",
+                                    "Guarantees have unresolved countries at their first recorded read.",
+                                )?;
+                                    continue;
+                                };
+                                let exact = [row.first_country, row.second_country]
+                                    .into_iter()
+                                    .all(|raw| {
+                                        named_since.get(&raw).is_some_and(|(_, from)| {
+                                            continuous.max(*from) <= row.start_hour
+                                        })
+                                    });
                                 out.moments.push(GroupMoment {
-                                    kind: "ceasedToExist",
-                                    hour,
+                                    kind: "guaranteeGranted",
+                                    hour: if exact { row.start_hour } else { hour },
                                     read_hour: hour,
-                                    name_hour: *read_hour,
-                                    exact: false,
-                                    tags: vec![tag.clone()],
+                                    name_hour: if exact { row.start_hour } else { hour },
+                                    exact,
+                                    tags: vec![first.clone(), second.clone()],
                                     faction: None,
                                 });
-                            } else {
-                                out.refuse("existenceIdentity", "Country existence", "Owned-state-count observations have unresolved or changed country identities; the disappeared countries are not established.")?;
-                            }
-                        }
-                        match existence.get_mut(&slot) {
-                            Some((id, old_tag, count, read_hour))
-                                if *id == row.country && old_tag.as_str() == tag.as_str() =>
-                            {
-                                *count = row.owned_state_count;
-                                *read_hour = hour;
-                            }
-                            _ => {
-                                existence.insert(
-                                    slot,
-                                    (row.country, tag.clone(), row.owned_state_count, hour),
-                                );
                             }
                         }
                     }
-                } else {
-                    out.refuse("existenceRead", "Country existence", "Owned-state-count reads are incomplete; transitions through them are unknown.")?;
                 }
             }
-            // Guarantee effects pass scope first and target second; relation
-            // initialization retains that direction. The owner-slice can come from
-            // either status vector and never reverses it. The relation stores
-            // first/second and start_date.
-            if let (Ok(rows), Ok(reads)) = (
-                decoded.complete::<tables::RelationTuples>(),
-                decoded.complete::<tables::SliceReads>(),
-            ) {
-                let table = TableId::RelationTuples.index() as u32;
-                let first = reads.partition_point(|read| read.table < table);
-                let last = reads.partition_point(|read| read.table <= table);
-                for read in reads[first..last]
-                    .iter()
-                    .filter(|read| read.sample_hour == hour && tags.get(read.owner).is_some())
-                {
-                    out.observed.insert(TableId::RelationTuples);
-                    // RelationTuples is ordered by owner, target, type and
-                    // ordinal. Carried owners require no row traversal.
-                    let first = rows.partition_point(|row| row.owner_country < read.owner);
-                    let last = rows.partition_point(|row| row.owner_country <= read.owner);
-                    for row in rows[first..last].iter().filter(|row| {
-                        row.type_id == engine::cguarantee_relation::TYPE && row.cancel == 0
-                    }) {
-                        // An initial history-file relation is a snapshot, never an
-                        // event, including a relation published after the first frame.
-                        if row.start_hour <= first_observed || row.start_hour > hour {
-                            continue;
-                        }
-                        if !guarantees.insert((
-                            row.first_country,
-                            row.second_country,
-                            row.start_hour,
-                        )) {
-                            continue;
-                        }
-                        let (Some(first), Some(second)) =
-                            (tags.get(row.first_country), tags.get(row.second_country))
-                        else {
-                            out.refuse(
-                                "guaranteeIdentity",
-                                "Guarantees",
-                                "Guarantees have unresolved countries at their first recorded read.",
-                            )?;
-                            continue;
-                        };
-                        let exact =
-                            [row.first_country, row.second_country]
-                                .into_iter()
-                                .all(|raw| {
-                                    named_since.get(&raw).is_some_and(|(_, from)| {
-                                        continuous.max(*from) <= row.start_hour
-                                    })
-                                });
-                        out.moments.push(GroupMoment {
-                            kind: "guaranteeGranted",
-                            hour: if exact { row.start_hour } else { hour },
-                            read_hour: hour,
-                            name_hour: if exact { row.start_hour } else { hour },
-                            exact,
-                            tags: vec![first.clone(), second.clone()],
-                            faction: None,
-                        });
-                    }
-                }
-            }
-        }
-    }
+            Ok(())
+        },
+    )?;
     Ok(out)
 }
 

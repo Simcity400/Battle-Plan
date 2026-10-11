@@ -18,8 +18,6 @@ pub const MAX_REPLY_BYTES: usize = 32 * 1024 * 1024;
 /// the request may be tried again. The desktop host refuses past the same
 /// admission budget with a message starting with it.
 pub const CAPACITY_REACHED: &str = "Dashboard request capacity reached";
-/// Every source binding is taken: the request may be tried again once one is released.
-pub const TOO_MANY_SOURCES: &str = "Too many open dashboard source bindings";
 /// The browser adapter has no room until one of its pending requests finishes.
 pub const BROWSER_BRIDGE_BUSY: &str = "The recording bridge is busy";
 /// The desktop host's pipe to the native service is full (by count or bytes): the
@@ -30,9 +28,8 @@ pub const MAP_CONTROLS_BUSY: &str = "Map controls are busy";
 /// Every refusal for want of room that a host or the service may give, by its name in
 /// the frontend's contract. A producer's message starts with one of these, and each
 /// producer builds its message from the constant, never from its own text.
-pub const TRANSIENT_ERROR_NAMES: [(&str, &str); 5] = [
+pub const TRANSIENT_ERROR_NAMES: [(&str, &str); 4] = [
     ("CAPACITY_REACHED", CAPACITY_REACHED),
-    ("TOO_MANY_SOURCES", TOO_MANY_SOURCES),
     ("BROWSER_BRIDGE_BUSY", BROWSER_BRIDGE_BUSY),
     ("NATIVE_QUEUE_FULL", NATIVE_QUEUE_FULL),
     ("MAP_CONTROLS_BUSY", MAP_CONTROLS_BUSY),
@@ -123,6 +120,11 @@ pub enum DataCommand {
         revision: String,
         settings: Option<crate::protocol::CampaignMapSettings>,
     },
+    /// The [`crate::reply_cache`] folder's size, after clearing it when asked.
+    HistoryCache {
+        id: String,
+        clear: bool,
+    },
     Open {
         id: String,
         path: String,
@@ -146,6 +148,7 @@ impl DataCommand {
         match self {
             Self::Open { id, .. }
             | Self::MapSettings { id, .. }
+            | Self::HistoryCache { id, .. }
             | Self::Product { id, .. }
             | Self::Cancel { id } => Some(id),
             Self::Release { .. } => None,
@@ -178,6 +181,15 @@ pub struct SourceReply {
     pub path: String,
     pub revision: String,
     pub metadata: ReplayMetadata,
+}
+
+/// Bytes the history cache holds, and its size limit.
+#[derive(Serialize, TS)]
+pub struct HistoryCacheReply {
+    #[ts(type = "number")]
+    pub bytes: u64,
+    #[ts(type = "number")]
+    pub limit: u64,
 }
 
 /// Keeps only one serialized result plus the current small transport fragment.
@@ -421,6 +433,20 @@ mod tests {
     }
 
     #[test]
+    fn history_cache_commands_say_whether_to_clear() {
+        let command: DataCommand =
+            serde_json::from_str(r#"{"type":"historyCache","id":"h","clear":true}"#).unwrap();
+        assert!(matches!(
+            command,
+            DataCommand::HistoryCache { clear: true, .. }
+        ));
+        assert_eq!(command.request_id(), Some("h"));
+        assert!(
+            serde_json::from_str::<DataCommand>(r#"{"type":"historyCache","id":"h"}"#).is_err()
+        );
+    }
+
+    #[test]
     fn product_requests_carry_opaque_params_and_validate_identity() {
         let command: DataCommand = serde_json::from_str(
             r#"{"type":"product","id":"p1","request":{"sourceId":"lease-1","revision":"r","product":"national-focus","params":{"branchId":"1","tag":"GER"}}}"#,
@@ -514,7 +540,7 @@ mod tests {
     fn the_contract_names_the_refusals_a_reader_may_try_again() {
         use crate::transport::{
             BROWSER_BRIDGE_BUSY, CAPACITY_REACHED, MAP_CONTROLS_BUSY, NATIVE_QUEUE_FULL,
-            TOO_MANY_SOURCES, TRANSIENT_ERROR_NAMES, TRANSIENT_ERRORS, transient_error,
+            TRANSIENT_ERROR_NAMES, TRANSIENT_ERRORS, transient_error,
         };
         let contract = crate::typescript_contract();
         // Each refusal is exported by name, and the list is made of those names.
@@ -522,13 +548,12 @@ mod tests {
             assert!(contract.contains(&format!("export const {name} = {message:?};")));
         }
         assert!(contract.contains(
-            "export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;"
+            "export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;"
         ));
         assert_eq!(
             TRANSIENT_ERRORS,
             [
                 CAPACITY_REACHED,
-                TOO_MANY_SOURCES,
                 BROWSER_BRIDGE_BUSY,
                 NATIVE_QUEUE_FULL,
                 MAP_CONTROLS_BUSY

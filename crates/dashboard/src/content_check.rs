@@ -428,7 +428,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         national_focus::NationalFocus::KEY | focus_artwork::FocusArtwork::KEY => {
             artwork_check(content, artwork::Kind::Focus, findings)
         }
-        research::Research::KEY => {
+        research::Research::KEY | technology_artwork::TechnologyArtwork::KEY => {
             artwork_check(content, artwork::Kind::Technology, findings)
         }
         country_flags::CountryFlags::KEY => {
@@ -478,7 +478,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             take(catalogue, "subject level names", findings);
             Ok("Every authored autonomy level checked; active relations and current levels require a recording.".into())
         }
-        occupied_states::OccupiedStates::KEY => {
+        occupied_states::OccupiedStates::KEY | occupied_states::OccupiedStatesManifest::KEY => {
             let catalogue = content.catalogue()?;
             let laws = installed_content::occupation_laws::read(&content.resolved.layers)
                 .map_err(|why| why.to_string())?;
@@ -523,6 +523,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             Ok("Every authored autonomy level named and ordered through autonomy preparation; subject relations, scores and move limits require recorded Autonomy and Subjects rows.".into())
         }
         construction_log::ConstructionLog::KEY
+        | construction_log::ConstructionLogManifest::KEY
         | construction_spending::ConstructionSpending::KEY => {
             let prepared = content
                 .construction
@@ -867,7 +868,7 @@ fn construction_check(content: &Content) -> Result<(Vec<Finding>, Vec<Finding>),
         &products::construction_log::ContentView {
             layers: &catalogue.content.layers,
             sprites: &catalogue.sprites,
-            guis: &catalogue.guis,
+            guis: catalogue.guis().map_err(|error| error.to_string()),
             gui_decode: &catalogue.gui_decode,
             localise: &localise,
         },
@@ -922,7 +923,7 @@ fn artwork_check(
     }
     Ok(match kind {
         products::artwork::Kind::Focus => format!(
-            "{total} declared items checked; {without_description} missing description localisation keys (the key is shown)."
+            "{total} declared items checked; {without_description} missing description localisation keys (descriptions are unavailable)."
         ),
         products::artwork::Kind::Technology => {
             format!("{total} declared technologies checked (text and icons).")

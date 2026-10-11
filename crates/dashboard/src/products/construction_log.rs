@@ -124,8 +124,20 @@
 //! read that differs, a gap or a read that failed. A read is an hour scheduled by
 //! the table's cadence or whose frame timed a walk of any table of its slot
 //! (`metadata::slot_read`).
+//!
+//! # Windows
+//!
+//! The log is sent a window at a time, one per replay block of the branch, so no
+//! reply grows with the campaign. A window lists every project with a row date in
+//! it (its creation, a level's or its ending's date, as the widget dates its row),
+//! and the output runs its tooltips read at its hours. An output read is held until
+//! the next, so each project's reads are coded as runs its tooltip shows alike; a
+//! run's last read and the window's reads date it. A line whose row is no longer
+//! published (its final output lost) is read at every later read until the branch
+//! ends: its reason is then the table's at each read, so that run never splits and
+//! no later window carries it.
 
-use super::{LoadContext, Product};
+use super::{BranchParams, LoadContext, Product, battles::BattleWindow};
 mod output;
 use crate::{
     Source,
@@ -153,6 +165,7 @@ use std::{
 use ts_rs::TS;
 
 pub struct ConstructionLog;
+pub struct ConstructionLogManifest;
 
 /// Longest side of a returned building icon.
 const ICON_EDGE: u32 = 48;
@@ -169,6 +182,8 @@ const LINE_REPAIR: &str = "repair";
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConstructionLogParams {
     pub branch_id: String,
+    /// Index into [`ConstructionLogManifestReply::windows`].
+    pub window: usize,
 }
 
 impl ConstructionLogParams {
@@ -264,7 +279,7 @@ pub struct ConstructionProject {
     pub kind: ProjectKind,
     /// The queue owner's tag at the project's first read.
     pub tag: String,
-    /// Index into [`ConstructionLogReply::types`].
+    /// Index into [`ConstructionLogManifestReply::types`].
     pub building: u32,
     /// It had levels to repair at its first read. What it does over time is per
     /// stretch: a run with `repair_levels` above zero repairs, one without builds
@@ -317,8 +332,53 @@ pub struct ConstructionProject {
     pub added: Vec<LevelsBuilt>,
     /// Null while it is in the queue at the branch's last read.
     pub end: Option<ProjectEnd>,
-    /// Factory output observed since the recording began, dated by its publication.
-    pub output: Vec<ConstructionOutputRead>,
+    /// The first output read counting a repair advance (natural or by factories).
+    pub first_repair_tick: Option<i32>,
+}
+
+/// Consecutive output reads of a project, from the read `from` to the read `to`,
+/// that its tooltip shows alike.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ConstructionOutputRun {
+    pub from: i32,
+    pub to: i32,
+    /// Fixed5 factory output since observation began; null when attribution is unknown.
+    pub construction_raw: Option<String>,
+    pub repair_raw: Option<String>,
+    pub reason: Option<SpendingGap>,
+    /// Output before observation began is not recorded.
+    pub before_observation: bool,
+    /// No row was published: the reason is the table's at each read (it was
+    /// unavailable), else the line's final output is missing.
+    pub absent: bool,
+}
+
+impl ConstructionOutputRun {
+    fn shown_as(&self, other: &Self) -> bool {
+        (
+            &self.construction_raw,
+            &self.repair_raw,
+            self.reason,
+            self.before_observation,
+            self.absent,
+        ) == (
+            &other.construction_raw,
+            &other.repair_raw,
+            other.reason,
+            other.before_observation,
+            other.absent,
+        )
+    }
+}
+
+/// A project's output runs a window holds, by its handle.
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectOutput {
+    pub id: String,
+    /// In hour order.
+    pub runs: Vec<ConstructionOutputRun>,
 }
 
 /// A building type the projects name, with its name and icon from content.
@@ -343,21 +403,35 @@ pub struct StateName {
 
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct ConstructionLogReply {
-    pub branch_id: String,
+pub struct ConstructionLogManifestReply {
     /// Units per factory output point of `cost_raw`.
     pub cost_scale: u32,
-    /// Hours the building queue was read, ascending.
-    pub reads: Vec<i32>,
-    /// Hours the railway queue was read, ascending.
-    pub railway_reads: Vec<i32>,
+    /// The branch's blocks: the log's windows, in hour order.
+    pub windows: Vec<BattleWindow>,
+    /// Either construction queue was read in the branch.
+    pub recorded: bool,
     pub types: Vec<BuildingInfo>,
     /// The construction queue's repair marker.
     pub repair_icon: Option<String>,
-    /// Names of the states the projects name, by state id.
-    pub states: Vec<StateName>,
-    /// In order of first read, then handle.
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ConstructionLogReply {
+    pub window: usize,
+    pub interval: BattleWindow,
+    /// Hours the output table was read from the last read before the window to
+    /// the next window, ascending.
+    pub output_reads: Vec<i32>,
+    /// Those reads at which the table was unavailable, and why.
+    pub output_unavailable: Vec<(i32, SpendingGap)>,
+    /// Every project with a row date in the window, in the scan's order: by first
+    /// read, building lines before railway lines, then by handle.
     pub projects: Vec<ConstructionProject>,
+    /// For every project changing output in the window, its runs read there; for
+    /// every project listed, its last run too, held from then on.
+    pub outputs: Vec<ProjectOutput>,
     pub warnings: Vec<String>,
 }
 
@@ -655,6 +729,11 @@ impl Family {
 #[derive(Clone, Debug, Default)]
 pub struct ScannedLog {
     pub projects: Vec<ConstructionProject>,
+    /// Each project's factory output observed since the recording began, dated by
+    /// its publication: at every output read from its first until its line's last.
+    pub outputs: Vec<Vec<ConstructionOutputRead>>,
+    /// Hours the output table was read, each with why it was unavailable then.
+    pub(crate) output_reads: Vec<(i32, Option<SpendingGap>)>,
     /// Lost output or output whose line never had a census owner.
     pub(crate) output_unknown: Vec<OutputUnknown>,
     pub unowned_lines: usize,
@@ -1187,7 +1266,7 @@ fn read_buildings(
             possible: Vec::new(),
             added: Vec::new(),
             end: None,
-            output: Vec::new(),
+            first_repair_tick: None,
         };
         let mut line = Open {
             project: scan.log.projects.len(),
@@ -1205,6 +1284,7 @@ fn read_buildings(
             row.repair_levels,
         );
         scan.log.projects.push(project);
+        scan.log.outputs.push(Vec::new());
         scan.buildings.watch.watch(key, states, provinces);
         scan.buildings.open.insert(row.id, line);
     }
@@ -1305,7 +1385,7 @@ fn read_railways(
             possible: Vec::new(),
             added: Vec::new(),
             end: None,
-            output: Vec::new(),
+            first_repair_tick: None,
         };
         let mut line = Open {
             project: scan.log.projects.len(),
@@ -1323,6 +1403,7 @@ fn read_railways(
             0,
         );
         scan.log.projects.push(project);
+        scan.log.outputs.push(Vec::new());
         for key in keys {
             scan.railways.watch.watch(key, states, provinces);
         }
@@ -1371,68 +1452,81 @@ fn scan_with_reads(
         output: OutputScan::default(),
     };
     let mut last: Option<i32> = None;
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancel());
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancel());
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            let hour = frame.hour;
-            scan.observe_dictionary(&decoded.tables[TableId::LexicalTokens.index()]);
-            // An hour the recording lacks breaks every run and loses every watched building.
-            if last.and_then(|last| last.checked_add(1)) != Some(hour) {
-                if let Some(missing) = last.and_then(|last| last.checked_add(1)) {
-                    scan.output.gap(&mut scan.log, missing);
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancel());
                 }
-                scan.changes.lose();
-                for family in [&mut scan.buildings, &mut scan.railways] {
-                    family.watch.lose();
-                    for line in family.open.values_mut() {
-                        line.carried = false;
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(cancel());
+                    }
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    let hour = frame.hour;
+                    scan.observe_dictionary(&decoded.tables[TableId::LexicalTokens.index()]);
+                    // An hour the recording lacks breaks every run and loses every watched building.
+                    if last.and_then(|last| last.checked_add(1)) != Some(hour) {
+                        if let Some(missing) = last.and_then(|last| last.checked_add(1)) {
+                            scan.output.gap(&mut scan.log, missing);
+                        }
+                        scan.changes.lose();
+                        for family in [&mut scan.buildings, &mut scan.railways] {
+                            family.watch.lose();
+                            for line in family.open.values_mut() {
+                                line.carried = false;
+                            }
+                        }
+                    }
+                    last = Some(hour);
+                    let states = decoded.complete::<tables::StateBuildings>().ok();
+                    let provinces = decoded.complete::<tables::ProvinceBuildings>().ok();
+                    scan.changes.observe(hour, states, provinces);
+                    scan.buildings.watch.observe(hour, states, provinces);
+                    scan.railways.watch.observe(hour, states, provinces);
+                    let read = read_queue(decoded, TableId::BuildingConstruction);
+                    match (read, decoded.complete::<tables::BuildingConstruction>()) {
+                        (true, Ok(rows)) => {
+                            read_buildings(&mut scan, decoded, rows, states, provinces)
+                        }
+                        // A read that failed: its values are unknown, so nothing is carried,
+                        // until another successful queue read.
+                        (true, Err(_)) => scan.buildings.open.values_mut().for_each(|line| {
+                            line.carried = false;
+                        }),
+                        (false, _) => carry(&mut scan.log.projects, &scan.buildings.open, hour),
+                    }
+                    let read = read_queue(decoded, TableId::RailwayConstruction);
+                    match (read, decoded.complete::<tables::RailwayConstruction>()) {
+                        (true, Ok(rows)) => {
+                            read_railways(&mut scan, decoded, rows, states, provinces)
+                        }
+                        (true, Err(_)) => scan.railways.open.values_mut().for_each(|line| {
+                            line.carried = false;
+                        }),
+                        (false, _) => carry(&mut scan.log.projects, &scan.railways.open, hour),
+                    }
+                    if read_queue(decoded, TableId::ConstructionLineOutput) {
+                        scan.output.observe(&mut scan.log, decoded);
                     }
                 }
             }
-            last = Some(hour);
-            let states = decoded.complete::<tables::StateBuildings>().ok();
-            let provinces = decoded.complete::<tables::ProvinceBuildings>().ok();
-            scan.changes.observe(hour, states, provinces);
-            scan.buildings.watch.observe(hour, states, provinces);
-            scan.railways.watch.observe(hour, states, provinces);
-            let read = read_queue(decoded, TableId::BuildingConstruction);
-            match (read, decoded.complete::<tables::BuildingConstruction>()) {
-                (true, Ok(rows)) => read_buildings(&mut scan, decoded, rows, states, provinces),
-                // A read that failed: its values are unknown, so nothing is carried,
-                // until another successful queue read.
-                (true, Err(_)) => scan.buildings.open.values_mut().for_each(|line| {
-                    line.carried = false;
-                }),
-                (false, _) => carry(&mut scan.log.projects, &scan.buildings.open, hour),
-            }
-            let read = read_queue(decoded, TableId::RailwayConstruction);
-            match (read, decoded.complete::<tables::RailwayConstruction>()) {
-                (true, Ok(rows)) => read_railways(&mut scan, decoded, rows, states, provinces),
-                (true, Err(_)) => scan.railways.open.values_mut().for_each(|line| {
-                    line.carried = false;
-                }),
-                (false, _) => carry(&mut scan.log.projects, &scan.railways.open, hour),
-            }
-            if read_queue(decoded, TableId::ConstructionLineOutput) {
-                scan.output.observe(&mut scan.log, decoded);
-            }
-        }
-    }
+            Ok(())
+        },
+    )?;
     scan.log.unresolved = scan.unresolved.len();
     scan.log.reads = scan.buildings.reads;
     scan.log.railway_reads = scan.railways.reads;
@@ -1491,7 +1585,7 @@ impl Named {
 pub struct ContentView<'a> {
     pub layers: &'a ResolvedLayers,
     pub sprites: &'a SpriteSet,
-    pub guis: &'a native::Guis,
+    pub guis: Result<&'a native::Guis, String>,
     pub gui_decode: &'a Result<installed_content::image::native::Decode, String>,
     pub localise: &'a dyn Fn(&str) -> Option<String>,
 }
@@ -1507,6 +1601,8 @@ fn line_sprite(content: &ContentView<'_>, element: &str) -> io::Result<LineSprit
     // The GUI registry's later definition wins.
     let entry = content
         .guis
+        .as_ref()
+        .map_err(crate::invalid)?
         .template(LINE_ENTRY)
         .filter(|entry| entry.kind == native::Kind::Container)
         .ok_or_else(|| crate::invalid(format!("no .gui file declares {LINE_ENTRY}")))?;
@@ -1669,7 +1765,7 @@ fn named_inventory(
                 });
         // A building's name is its own key in the localisation.
         let key = declaration.map_or(token.as_str(), |building| building.name.as_str());
-        let name = (content.localise)(key).filter(|name| !name.is_empty());
+        let name = (content.localise)(key);
         if name.is_none() {
             unnamed.push(token.clone());
         }
@@ -1718,19 +1814,19 @@ fn named_inventory(
     counted(
         &mut warnings,
         Fallback,
-        "building types are not in the recorded lexical dictionary and show by their number",
+        "building types are not in the recorded lexical dictionary; their titles are unavailable",
         &undictionaried,
     );
     counted(
         &mut warnings,
         Fallback,
-        "building types are not declared in the recorded content's buildings, so they show by their script name without an icon",
+        "building types are not declared in the recorded content's buildings; their icons are unavailable",
         &undeclared,
     );
     counted(
         &mut warnings,
         Fallback,
-        "building types have no name in the recorded localisation and show by their script name",
+        "building types have no name in the recorded localisation; their titles are unavailable",
         &unnamed,
     );
     counted(
@@ -1812,8 +1908,7 @@ fn named_inventory(
             .and_then(|definitions| definitions.get(id))
             // A key whose reading cannot be followed names nothing.
             .and_then(|state| state.name_key.as_deref().ok())
-            .and_then(|key| (content.localise)(key))
-            .filter(|name| !name.is_empty());
+            .and_then(|key| (content.localise)(key));
         if definitions.is_some() && name.is_none() {
             unnamed_states.push(id.to_string());
         }
@@ -1822,7 +1917,7 @@ fn named_inventory(
     counted(
         &mut warnings,
         Fallback,
-        "states have no name in the recorded content and show by their number",
+        "states have no name in the recorded content; their titles are unavailable",
         &unnamed_states,
     );
     Ok(Named {
@@ -1975,7 +2070,7 @@ pub(crate) fn content_names(
                     let view = ContentView {
                         layers: &catalogue.content.layers,
                         sprites: &catalogue.sprites,
-                        guis: &catalogue.guis,
+                        guis: catalogue.guis().map_err(|error| error.to_string()),
                         gui_decode: &catalogue.gui_decode,
                         localise: &localise,
                     };
@@ -2054,9 +2149,9 @@ pub(crate) fn scan_warnings(log: &ScannedLog, warnings: &mut Vec<String>) {
     let unknown: BTreeSet<_> = log
         .projects
         .iter()
-        .flat_map(|project| {
-            project
-                .output
+        .zip(&log.outputs)
+        .flat_map(|(project, output)| {
+            output
                 .iter()
                 .filter_map(|read| read.reason.map(|reason| (reason, &project.id)))
         })
@@ -2075,9 +2170,240 @@ pub(crate) fn scan_warnings(log: &ScannedLog, warnings: &mut Vec<String>) {
     }
 }
 
+/// The branch's replay blocks: the log's windows, in hour order.
+fn windows(replay: &Replay, branch: u64) -> Vec<BattleWindow> {
+    replay
+        .index
+        .iter()
+        .filter(|block| block.branch == branch)
+        .map(|block| BattleWindow {
+            first_hour: block.first_hour,
+            last_hour: block.last_hour,
+        })
+        .collect()
+}
+
+/// The window an hour falls in: the last starting at or before it (an hour before
+/// the first falls in the first).
+fn window_at(windows: &[BattleWindow], hour: i32) -> usize {
+    windows
+        .partition_point(|window| window.first_hour <= hour)
+        .saturating_sub(1)
+}
+
+/// Every date a project's row can carry, as the widget dates it by its latest
+/// change or by its start: a level's rise (else the read that showed it), its
+/// ending's outcome (else its read) and its creation.
+fn row_dates(project: &ConstructionProject) -> impl Iterator<Item = i32> + '_ {
+    [&project.built, &project.unaccounted, &project.possible]
+        .into_iter()
+        .flatten()
+        .map(|levels| levels.hour.unwrap_or(levels.known_at))
+        .chain(
+            project
+                .end
+                .as_ref()
+                .map(|end| end.hour.unwrap_or(end.known_at)),
+        )
+        .chain([project.created_hour])
+}
+
+/// A project's output reads as runs its tooltip shows alike.
+fn output_runs(reads: &[ConstructionOutputRead]) -> Vec<ConstructionOutputRun> {
+    let mut runs: Vec<ConstructionOutputRun> = Vec::new();
+    for read in reads {
+        // Without a row, the reason is the table's at the read unless the line's
+        // observation restarted (`OutputScan::observe`).
+        let absent =
+            read.since_hour.is_none() && read.reason != Some(SpendingGap::ObservationRestart);
+        let run = ConstructionOutputRun {
+            from: read.known_at,
+            to: read.known_at,
+            construction_raw: read.construction_raw.clone(),
+            repair_raw: read.repair_raw.clone(),
+            reason: read.reason.filter(|_| !absent),
+            before_observation: read.since_hour.is_some() && !read.observed_since_creation,
+            absent,
+        };
+        match runs.last_mut() {
+            Some(last) if last.shown_as(&run) => last.to = run.to,
+            _ => runs.push(run),
+        }
+    }
+    runs
+}
+
+/// A branch's log cut into its windows, coded once rather than for each window.
+struct Cut {
+    log: Arc<ScannedLog>,
+    windows: Vec<BattleWindow>,
+    /// Per window, the projects with a row date in it, ascending.
+    members: Vec<Vec<usize>>,
+    /// Per window, the projects with an output run before their last read there,
+    /// ascending.
+    changing: Vec<Vec<usize>>,
+    /// Per project, its output runs.
+    runs: Vec<Vec<ConstructionOutputRun>>,
+}
+
+impl Cut {
+    fn new(log: Arc<ScannedLog>, windows: Vec<BattleWindow>) -> Self {
+        let mut members = vec![Vec::new(); windows.len()];
+        let mut changing = vec![Vec::new(); windows.len()];
+        let runs: Vec<_> = log
+            .outputs
+            .iter()
+            .map(Vec::as_slice)
+            .map(output_runs)
+            .collect();
+        if !windows.is_empty() {
+            let at = |hour| window_at(&windows, hour);
+            for (index, project) in log.projects.iter().enumerate() {
+                let mut dated: BTreeSet<usize> = row_dates(project).map(at).collect();
+                // A line created after the read that first lists it shows from that
+                // read dated later: every window between holds it.
+                dated.extend(at(project.first_read)..=at(project.created_hour));
+                for window in dated {
+                    members[window].push(index);
+                }
+                // A run is read from its first read until the next run's.
+                if let [first, .., last] = runs[index].as_slice() {
+                    for window in &mut changing[at(first.from)..=at(last.from - 1)] {
+                        window.push(index);
+                    }
+                }
+            }
+        }
+        Self {
+            log,
+            windows,
+            members,
+            changing,
+            runs,
+        }
+    }
+
+    fn reply(&self, window: usize) -> ConstructionLogReply {
+        let interval = self.windows[window].clone();
+        let first = interval.first_hour;
+        let next = self.windows.get(window + 1).map(|next| next.first_hour);
+        let before_next = |hour: i32| next.is_none_or(|next| hour < next);
+        let members = &self.members[window];
+        let listed: BTreeSet<usize> = members
+            .iter()
+            .chain(&self.changing[window])
+            .copied()
+            .collect();
+        let outputs = listed
+            .into_iter()
+            .filter_map(|index| {
+                let runs = &self.runs[index];
+                let (last, earlier) = runs.split_last()?;
+                let mut held: Vec<ConstructionOutputRun> = earlier
+                    .iter()
+                    .zip(&runs[1..])
+                    .filter(|(run, then)| before_next(run.from) && then.from > first)
+                    .map(|(run, _)| run.clone())
+                    .collect();
+                if members.binary_search(&index).is_ok() {
+                    held.push(last.clone());
+                }
+                (!held.is_empty()).then(|| ProjectOutput {
+                    id: self.log.projects[index].id.clone(),
+                    runs: held,
+                })
+            })
+            .collect();
+        let reads = &self.log.output_reads;
+        let start = reads
+            .partition_point(|(hour, _)| *hour < first)
+            .saturating_sub(1);
+        let reads = &reads[start..reads.partition_point(|(hour, _)| before_next(*hour))];
+        ConstructionLogReply {
+            window,
+            interval,
+            output_reads: reads.iter().map(|(hour, _)| *hour).collect(),
+            output_unavailable: reads
+                .iter()
+                .filter_map(|(hour, gap)| gap.map(|gap| (*hour, gap)))
+                .collect(),
+            projects: members
+                .iter()
+                .map(|&index| self.log.projects[index].clone())
+                .collect(),
+            outputs,
+            warnings: Vec::new(),
+        }
+    }
+}
+
+/// The branches' cut logs.
+#[derive(Default)]
+struct Cuts {
+    branches: Vec<(u64, Arc<Cut>)>,
+}
+
+/// A branch's log cut into its windows, cached per source. Its lock is held
+/// through a cold cut, so the windows a widget asks for at once share it.
+fn cut(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Result<Arc<Cut>> {
+    let state = source.state::<Cuts>();
+    let mut cuts = state.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some((_, cut)) = cuts.branches.iter().find(|(cached, _)| *cached == branch) {
+        return Ok(Arc::clone(cut));
+    }
+    let cut = Arc::new(Cut::new(
+        scanned(source, branch, cancelled)?,
+        windows(source.replay_ref(), branch),
+    ));
+    cuts.branches.push((branch, Arc::clone(&cut)));
+    if cuts.branches.len() > CACHED_BRANCHES {
+        cuts.branches.remove(0);
+    }
+    Ok(cut)
+}
+
+impl Product for ConstructionLogManifest {
+    const KEY: &'static str = "construction-log-manifest";
+    const CONTENT_DEPENDENT: bool = true;
+    type Params = BranchParams;
+    type Reply = ConstructionLogManifestReply;
+
+    fn types() -> Vec<String> {
+        vec![ConstructionLogManifestReply::decl()]
+    }
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        params.validate()
+    }
+
+    fn load(
+        source: &Source,
+        params: &Self::Params,
+        context: &LoadContext,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self::Reply> {
+        let branch = params.branch();
+        let log = scanned(source, branch, cancelled)?;
+        let mut warnings = Vec::new();
+        // Without the game folders the log still lists every project, by its type's token.
+        let names = content_names(source, context, branch, &log, cancelled, &mut warnings)?;
+        scan_warnings(&log, &mut warnings);
+        let reply = ConstructionLogManifestReply {
+            cost_scale: COST_SCALE,
+            windows: windows(source.replay_ref(), branch),
+            recorded: !(log.reads.is_empty() && log.railway_reads.is_empty()),
+            types: names.types,
+            repair_icon: names.repair_icon,
+            warnings,
+        };
+        super::check_reply_budget(&reply)?;
+        Ok(reply)
+    }
+}
+
 impl Product for ConstructionLog {
     const KEY: &'static str = "construction-log";
-    const CONTENT_DEPENDENT: bool = true;
+    const CONTENT_DEPENDENT: bool = false;
     type Params = ConstructionLogParams;
     type Reply = ConstructionLogReply;
 
@@ -2090,9 +2416,10 @@ impl Product for ConstructionLog {
             ProjectEnd::decl(),
             LevelsBuilt::decl(),
             ProjectRun::decl(),
-            ConstructionOutputRead::decl(),
             SpendingGap::decl(),
             ConstructionProject::decl(),
+            ConstructionOutputRun::decl(),
+            ProjectOutput::decl(),
             BuildingInfo::decl(),
             StateName::decl(),
             ConstructionLogReply::decl(),
@@ -2110,26 +2437,16 @@ impl Product for ConstructionLog {
     fn load(
         source: &Source,
         params: &Self::Params,
-        context: &LoadContext,
+        _: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
-        let branch = params.branch()?;
-        let log = scanned(source, branch, cancelled)?;
-        let mut warnings = Vec::new();
-        // Without the game folders the log still lists every project, by token and state id.
-        let names = content_names(source, context, branch, &log, cancelled, &mut warnings)?;
-        scan_warnings(&log, &mut warnings);
-        Ok(ConstructionLogReply {
-            branch_id: params.branch_id.clone(),
-            cost_scale: COST_SCALE,
-            reads: log.reads.clone(),
-            railway_reads: log.railway_reads.clone(),
-            states: names.states(&project_states(&log)),
-            types: names.types,
-            repair_icon: names.repair_icon,
-            projects: log.projects.clone(),
-            warnings,
-        })
+        let cut = cut(source, params.branch()?, cancelled)?;
+        if params.window >= cut.windows.len() {
+            return Err(crate::invalid("Construction log window not in recording"));
+        }
+        let reply = cut.reply(params.window);
+        super::check_reply_budget(&reply)?;
+        Ok(reply)
     }
 }
 

@@ -518,6 +518,57 @@ fn sinkings_cache_retains_the_last_two_branches_and_rebuilds_an_evicted_branch()
 }
 
 #[test]
+fn sinkings_scan_supplies_the_branch_country_histories_without_another_walk() {
+    let first = 60_800_000;
+    let mut renamed = frame(first + 1, 2);
+    *renamed.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+        CountryRow {
+            id: 1,
+            canonical_slot: 1,
+            tag: b"renamed".to_vec(),
+            ..Default::default()
+        },
+        CountryRow {
+            id: 2,
+            canonical_slot: 2,
+            tag: b"mod country 0002".to_vec(),
+            ..Default::default()
+        },
+    ]));
+    let restored = frame(first + 2, 2);
+    let replay = replay_of(vec![
+        frame(first, 2),
+        renamed,
+        restored,
+        frame(first + 6, 2),
+    ]);
+    let flag = AtomicBool::new(false);
+    let walked = country_history::scan_histories(&replay, 1, false, &[], &flag).unwrap();
+    let source = Source::from_replay(
+        crate::source::SourceKey {
+            source_id: "shared-histories".into(),
+            revision: "1".into(),
+        },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &flag,
+    )
+    .unwrap();
+    let scanned = cached(&source, 1, &flag).unwrap();
+    let kept = country_history::branch_histories(&source, 1, false, &[], &flag).unwrap();
+    assert!(Arc::ptr_eq(&scanned.histories, &kept));
+    let identities = |histories: &RecordedHistories| {
+        histories
+            .countries
+            .iter()
+            .map(|(tag, country)| (tag.clone(), country.identities.to_vec()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(identities(&kept), identities(&walked));
+    assert_eq!(kept.identity_reads, walked.identity_reads);
+}
+
+#[test]
 fn sinkings_real_decoder_dates_fresh_reads_and_country_identity_at_event_hour() {
     let first = 60_800_000;
     let mut initial = frame(first, 2);

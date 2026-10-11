@@ -4,6 +4,7 @@ import type { LabelAt } from '../../charts/race/lines';
 import { shownRuns } from '../../charts/race/lines.ts';
 import { clipToSpans, isOrderedSpans, runAt, runIndexAt, stretchStarts } from '../../charts/series.ts';
 import type { Span } from '../../charts/series';
+import { usNumber } from '../../charts/numberFormat.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import type { CountryPickerRead } from '../../components/CountryPicker';
 import { formatDateTime } from '../../dashboard/calendar.ts';
@@ -59,7 +60,7 @@ export function navalDrillActors(model: NavalModel, tags: readonly string[], hou
     return navalSegmentAt(model, tag, hour) !== null && run !== null && navalValue(run, kind) !== null;
   });
 }
-export const formatNavalCount = (value: number) => value.toLocaleString('en-US');
+export const formatNavalCount = (value: number) => usNumber.format(value);
 export const navalKindLabel = (kind: NavalKind) => kind === 'ships' ? 'Ships' : kind === 'convoys' ? 'Convoys' : 'Ships and convoys';
 
 /** A missing selected part makes the whole unknown; a known zero remains zero. */

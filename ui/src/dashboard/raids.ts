@@ -1,3 +1,4 @@
+import { contentTitle } from './contentTitles.ts';
 import type { RaidEpisode, RaidPreparationRun, RaidRun, RaidsReply, RaidTypeInfo } from '../generated/dashboard';
 import { drawableIcon } from './artwork.ts';
 import { isOrderedSpans } from '../charts/series.ts';
@@ -41,12 +42,17 @@ export function validateRaidsReply(value: unknown): RaidsReply {
 export function raidType(types: readonly RaidTypeInfo[], run: RaidRun): RaidTypeInfo | null {
   return types.find(type => type.token === run.type) ?? null;
 }
-export function raidTypeName(type: RaidTypeInfo | null): string { return type?.name ?? (type ? `Unknown name (${type.token})` : 'Raid type not known'); }
-/** A content key keeps equally localised type names distinguishable in filters. */
+export function raidTypeName(type: RaidTypeInfo | null): string { return contentTitle(type?.name, type?.token, 'Raid name unavailable'); }
+/** Repeated localized titles keep distinct choices without exposing script keys. */
 export function raidTypeChoices(types: readonly RaidTypeInfo[]): { token: string; label: string }[] {
   const counts = new Map<string, number>();
   for (const type of types) { const name = raidTypeName(type); counts.set(name, (counts.get(name) ?? 0) + 1); }
-  return types.map(type => { const name = raidTypeName(type); return { token: type.token, label: counts.get(name)! > 1 ? `${name} (${type.token})` : name }; });
+  const ordinals = new Map<string, number>();
+  return types.map(type => {
+    const name = raidTypeName(type), ordinal = (ordinals.get(name) ?? 0) + 1;
+    ordinals.set(name, ordinal);
+    return { token: type.token, label: counts.get(name)! > 1 ? `${name} (${ordinal})` : name };
+  });
 }
 export function raidIcon(data: RaidsReply, run: RaidRun): string | null {
   return run.icon === null ? null : data.artwork.find(art => art.key === run.icon)?.image ?? null;

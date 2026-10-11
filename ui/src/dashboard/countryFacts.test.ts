@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { HourStore, nameKey, planRequests, readFacts, wantedHours } from './countryFacts.ts';
+import { factsKey, HourStore, nameKey, planRequests, readFacts, wantedHours } from './countryFacts.ts';
 import type { FactSpec } from './countryFacts';
 import { loadProduct } from './products.ts';
 import type { DashboardClient, ProductRequest } from './client';
@@ -43,6 +43,22 @@ test('requests skip answered countries, keep the earliest hours and split large 
   const wanted = [{ hour: 10, tag: 'GER' }, { hour: 10, tag: 'ITA' }, { hour: 30, tag: 'A' }, { hour: 30, tag: 'B' }, { hour: 30, tag: 'C' }, { hour: 20, tag: 'SOV' }];
   assert.deepEqual(planRequests(store, wanted, 8, 2), [[10, ['ITA']], [20, ['SOV']], [30, ['A', 'B']], [30, ['C']]]);
   assert.deepEqual(planRequests(store, wanted, 2, 64), [[10, ['ITA']], [20, ['SOV']]]);
+});
+
+test('artwork list order loads the first rows before earlier dated entries without omitting any requested token', () => {
+  const store = new HourStore<string>(8);
+  const wanted = [{ hour: 30, tag: 'Z' }, { hour: 30, tag: 'B' }, { hour: 30, tag: 'A' },
+    { hour: 10, tag: 'old completion' }, { hour: 30, tag: 'Z' }];
+  assert.deepEqual(planRequests(store, wanted, Infinity, 2, 'wanted'),
+    [[30, ['Z', 'B']], [30, ['A']], [10, ['old completion']]]);
+  store.record(30, ['Z'], found([['Z', 'visible title']]));
+  assert.deepEqual(planRequests(store, wanted, Infinity, 2, 'wanted'),
+    [[30, ['B', 'A']], [10, ['old completion']]]);
+  // Priority does not change which hours a bounded caller admits.
+  assert.deepEqual(planRequests(store, wanted, 1, 2, 'wanted'), [[10, ['old completion']]]);
+  const reversed = [...wanted].reverse();
+  assert.equal(factsKey('track', wanted), factsKey('track', reversed));
+  assert.notEqual(factsKey('track', wanted, 'wanted'), factsKey('track', reversed, 'wanted'));
 });
 
 test('wanting more hours than the cap keeps them all, so requests stop once each is answered', () => {

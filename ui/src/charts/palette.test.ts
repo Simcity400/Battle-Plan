@@ -52,6 +52,7 @@ test('the categorical palette reads on every built-in theme surface, in both mod
       const surface = themeColors(theme, mode).surface;
       const palette = categoricalPalette(surface);
       assert.equal(palette.length, CATEGORY_LIMIT);
+      assert.equal(categoricalPalette(surface), palette, 'each surface is solved once');
       for (const color of palette) assert.ok(contrast(parseColor(color)!, parseColor(surface)!) >= MARK_CONTRAST - 0.05, `${theme.id}/${mode} ${color} on ${surface}`);
     }
   }

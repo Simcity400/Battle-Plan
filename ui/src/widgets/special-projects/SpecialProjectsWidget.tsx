@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { useEffect, useId, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -16,14 +17,13 @@ import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProducts } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { SpecialProjectsReply } from '../../generated/dashboard';
 import IterationRow from './IterationRow';
 import { OPTIONS, VIEWS } from './definition';
 import { historyCard, historyTooltip, liveCards, observedAt, projectCountries, projectCountryHour, projectDate, projectHeading, projectHistoryExtent, projectLanes, projectTooltip, scientistName, validateSpecialProjectsReply } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
 import './specialProjects.css';
-
-const NO_WARNINGS: string[] = [];
 
 export default function SpecialProjectsWidget({ widget, runtime, active, headerSlot, setOption, onDiagnostics }: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
@@ -53,10 +53,8 @@ export default function SpecialProjectsWidget({ widget, runtime, active, headerS
   }) ?? [];
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && view === 'history' && tags.length > 1);
   const menu = useContextMenu('Project actions');
-  useEffect(() => {
-    onDiagnostics([...(data?.flatMap(reply => reply.warnings) ?? []), ...(groups.data?.warnings ?? [])]);
-    return () => onDiagnostics(NO_WARNINGS);
-  }, [data, groups.data, onDiagnostics]);
+  const diagnostics = useMemo(() => [...(data?.flatMap(reply => reply.warnings) ?? []), ...(groups.data?.warnings ?? [])], [data, groups.data]);
+  useDiagnostics(onDiagnostics, diagnostics);
   useEffect(() => () => hideTooltip(owner), [owner, view, at]);
   const lanes = useMemo(() => view !== 'history' ? [] : data?.flatMap((reply, country) => {
     const membership = resolved.memberships.get(reply.tag) ?? [];
@@ -94,7 +92,7 @@ export default function SpecialProjectsWidget({ widget, runtime, active, headerS
     else body = <div className="special-project-grid">{cards.map(card => {
       const { project, run, info } = card;
       const scientist = reply.people[info.scientist];
-      const tip = projectTooltip(reply, card, at);
+      const tip = projectTooltip(reply, card);
       const show = (x: number, y: number) => showTooltip(owner, fitTooltip([tip], viewport), x, y);
       return <div className={`special-project-card${run.state === 'completed' ? ' is-complete' : ''}`} key={project.id} tabIndex={0} role="group" aria-label={tooltipText(tip)}
         onPointerMove={event => show(event.clientX, event.clientY)} onPointerLeave={() => hideTooltip(owner)}
@@ -103,7 +101,7 @@ export default function SpecialProjectsWidget({ widget, runtime, active, headerS
         onKeyDown={event => { if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey || event.key === 'Enter') { event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); openMenu(card, box.left, box.bottom); } }}>
         <div className="blueprint-tile">{info.icon ? <img src={info.icon} alt="" /> : <span aria-label={info.iconMissing ?? 'Project icon not recorded'}>?</span>}</div>
         <div className="special-project-detail"><b>{info.name}</b>
-          <small>{`${info.specializationName ?? info.specialization ?? 'Unknown type'} project · `}{run.completion ? `completed ${projectDate(run.completion)}` : `${run.state === 'paused' ? 'paused · ' : run.state === 'unknown' ? 'state not recorded · ' : ''}${run.progress}%`}</small>
+          <small>{`${contentTitle(info.specializationName, info.specialization, 'Type name unavailable')} project · `}{run.completion ? `completed ${projectDate(run.completion)}` : `${run.state === 'paused' ? 'paused · ' : run.state === 'unknown' ? 'state not recorded · ' : ''}${run.progress}%`}</small>
           <ProgressMeter value={run.progress / 100} state={run.state === 'completed' ? 'done' : run.state === 'running' ? 'live' : 'idle'} label="Project progress" />
           <IterationRow text={run.iterations === null ? null : reply.iterationTexts[run.iterations] ?? null} recorded={run.iterations !== null} />
           <div className="special-project-scientist">{scientist.portrait ? <img src={scientist.portrait} alt="" /> : <span className="special-project-portrait" aria-label={scientist.missing ?? 'Portrait not recorded'}>?</span>}<span>{scientistName(reply, info)}</span></div>

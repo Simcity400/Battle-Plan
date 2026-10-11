@@ -58,7 +58,7 @@ impl Evaluator<'_, '_> {
             };
         }
         let frame = format!("tag alias {name}").into_bytes();
-        if let Some(why) = self.enter_frame(&frame) {
+        if let Some(why) = self.enter_frame(frame) {
             return Err(why);
         }
         // The frame holds through the fallback too, so a self or mutual

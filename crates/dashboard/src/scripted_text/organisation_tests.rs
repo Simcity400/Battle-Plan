@@ -27,7 +27,9 @@ fn organisation_name_uses_event_read_override_owner_scope_and_exact_missing_key(
         reason: "token read refused".into(),
     };
     let show = |frame: &DecodedFrame| {
-        ScriptedText::new(frame, &catalogue.localisation, content, 2).organisation_name(reference)
+        let text = ScriptedText::new(frame, &catalogue.localisation, content, 2);
+        let (template, scopes) = text.organisation_template(reference)?;
+        text.expand_in(&template, &scopes)
     };
     assert_eq!(show(&frame), Ok("Owner GER".into()));
     let change_name = |frame: &mut DecodedFrame, name: &[u8]| {
@@ -38,9 +40,18 @@ fn organisation_name_uses_event_read_override_owner_scope_and_exact_missing_key(
         };
         rows[0].name = name.to_vec();
     };
+    // The template is scripted, so its expansion depends on the scopes; a plain one
+    // is already the name, whatever the root.
+    let template = |frame: &DecodedFrame, root| {
+        ScriptedText::new(frame, &catalogue.localisation, content, root)
+            .organisation_template(reference)
+            .map(|(template, _)| template)
+    };
+    assert_eq!(template(&frame, 2), Ok("Owner [From.GetTag]".into()));
     change_name(&mut frame, b"mod_missing");
     // Localisation copies a missing key; it does not select a later name.
     assert_eq!(show(&frame), Ok("mod_missing".into()));
+    assert_eq!(template(&frame, 0), show(&frame));
     change_name(&mut frame, b"");
     assert!(show(&frame).unwrap_err().contains("token read refused"));
     *frame.tables[TableId::LexicalTokens.index()] =

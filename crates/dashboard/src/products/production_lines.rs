@@ -648,532 +648,556 @@ fn scan_holder(
     // The last hour an output read was due, read or not.
     let mut last_output_due: Option<i32> = None;
     let mut last_modifier_country: Option<Arc<replay::rows::CountryProductionModifiersRow>> = None;
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancel());
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        // Hours the recording holds but this scan cannot read: an output read may lie
-        // in them, so they are marked, never skipped silently.
-        let lost = |result: &mut ScannedLines, first: i32, last: i32| {
-            result.unreadable_stretches += 1;
-            mark_span(&mut result.unread_output, first.min(last), last);
-        };
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            lost(&mut result, block.first_hour, block.last_hour);
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancel());
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                lost(&mut result, frame.hour, block.last_hour);
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                lost(&mut result, frame.hour, block.last_hour);
-                break;
-            }
-            let hour = frame.hour;
-            let tables = decoded
-                .complete::<tables::Countries>()
-                .ok()
-                .zip(decoded.complete::<tables::CountryLinks>().ok());
-            let country = tables.map(|(countries, links)| {
-                let selected_tag = match holder {
-                    None => Some(tag),
-                    Some((slot, id)) => countries
-                        .iter()
-                        .find(|country| country.canonical_slot == slot && country.id == id)
-                        .and_then(|country| std::str::from_utf8(&country.tag).ok()),
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (block, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancel());
+                }
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                // Hours the recording holds but this scan cannot read: an output read may lie
+                // in them, so they are marked, never skipped silently.
+                let lost = |result: &mut ScannedLines, first: i32, last: i32| {
+                    result.unreadable_stretches += 1;
+                    mark_span(&mut result.unread_output, first.min(last), last);
                 };
-                selected_tag.map_or(TaggedCountry::Absent, |tag| {
-                    tagged_country(countries, links, tag)
-                })
-            });
-            let identity = country
-                .and_then(|country| country.found().map(|(country, slot)| (slot, country.id)));
-            let continues = identity.is_some_and(|identity| {
-                last.is_some_and(|(seen, at)| seen == identity && at.checked_add(1) == Some(hour))
-            });
-            last = identity.map(|identity| (identity, hour));
-            // A due output read this country's lines could not be read at (its tables,
-            // its census or the output incomplete): lines made and ended since the one
-            // before published their only rows here, so they may be missing. A country
-            // that does not exist then has no lines to miss.
-            if slot_read(
-                &decoded.metrics,
-                TableId::ProductionLineOutput,
-                decoded.hour,
-            ) {
-                let read = match country {
-                    Some(TaggedCountry::Absent) => true,
-                    Some(TaggedCountry::Found(..)) => {
-                        slot_read(&decoded.metrics, TableId::ProductionLines, decoded.hour)
-                            && decoded.complete::<tables::ProductionLines>().is_ok()
-                            && decoded.complete::<tables::ProductionLineOutput>().is_ok()
-                    }
-                    Some(TaggedCountry::Unresolved) | None => false,
-                };
-                if !read {
-                    result.unread_output_reads += 1;
-                    let first = last_output_due
-                        .and_then(|due| due.checked_add(1))
-                        .unwrap_or(hour);
-                    mark_span(&mut result.unread_output, first.min(hour), hour);
-                }
-                last_output_due = Some(hour);
-            }
-            let lexical = decoded.complete::<tables::LexicalTokens>().ok();
-            // Variant names, shared with every equipment product (`VariantCatalogue`);
-            // each variant's latest definition row, for its icon.
-            result.variants.observe(decoded);
-            if slot_read(&decoded.metrics, TableId::VariantDefinitions, decoded.hour)
-                && let Ok(rows) = decoded.complete::<tables::VariantDefinitions>()
-            {
-                // Icons to look up again at this read: a used variant whose definition
-                // changed (a new icon entry, creator or origin), and a pending one the
-                // catalogue now knows.
-                let mut refresh: BTreeSet<u64> = BTreeSet::new();
-                for definition in rows {
-                    let changed = definitions
-                        .insert(definition.id, definition.clone())
-                        .is_some_and(|before| before != *definition);
-                    if changed && result.icons.contains_key(&definition.id) {
-                        refresh.insert(definition.id);
-                    }
-                }
-                refresh.extend(
-                    pending
-                        .iter()
-                        .copied()
-                        .filter(|id| definitions.contains_key(id)),
-                );
-                refresh.retain(|id| result.variants.current(*id).is_some());
-                if let (Some(content), Some(lexical), false) = (icons, lexical, refresh.is_empty())
-                {
-                    let state = IconHour::read(decoded, content);
-                    for id in refresh {
-                        pending.remove(&id);
-                        let definition = &definitions[&id];
-                        let icon = match &state {
-                            Err(error) => Err(error.to_string()),
-                            Ok(state) => variant_icon(
-                                content,
-                                state,
-                                definition,
-                                &equipment::variant_token(definition, lexical),
-                            ),
-                        };
-                        version(result.icons.entry(id).or_default(), (hour, icon), |a, b| {
-                            a.1 == b.1
-                        });
-                    }
-                }
-            }
-            let rows = decoded.complete::<tables::ProductionLines>().ok();
-            if carried && (!continues || rows.is_none()) {
-                // The recording broke: what was carried is not known past here.
-                broken = std::mem::take(&mut open);
-                broken_identity = last_read_identity;
-                carried = false;
-                output_open = false;
-                organisations_open = false;
-            }
-            let (Some(identity), Some((countries, links)), Some(rows)) = (identity, tables, rows)
-            else {
-                continue;
-            };
-            let slot = identity.0;
-            if !slot_read(&decoded.metrics, TableId::ProductionLines, decoded.hour) {
-                // Carried: the last read still holds, but only after a read of this identity.
-                if carried {
-                    mark(&mut result.line_hours, hour);
-                    // Output is carried only while its table stays readable: once a
-                    // tick went unobserved it is unavailable for the rest of the branch.
-                    output_open &= decoded.complete::<tables::ProductionLineOutput>().is_ok();
-                    organisations_open &= decoded
-                        .complete::<tables::IndustrialOrganisations>()
-                        .is_ok();
-                    if organisations_open {
-                        mark(&mut result.organisation_hours, hour);
-                    }
-                    let modifiers_carried = decoded
-                        .complete::<tables::CountryProductionModifiers>()
-                        .is_ok()
-                        && decoded
-                            .complete::<tables::ProductionLineModifiers>()
-                            .is_ok();
-                    for line in open.values() {
-                        let history = &mut result.lines[line.index];
-                        if modifiers_carried
-                            && let Some(modifiers) = result
-                                .modifiers
-                                .get_mut(&history.key)
-                                .and_then(|runs| runs.last_mut())
-                            && modifiers.last_hour.checked_add(1) == Some(hour)
-                        {
-                            modifiers.last_hour = hour;
-                        }
-                        if let Some(run) = history.runs.last_mut()
-                            && run.last_hour.checked_add(1) == Some(hour)
-                        {
-                            run.last_hour = hour;
-                        }
-                        if output_open
-                            && let Some(output) = history.output.last_mut()
-                            && output.last_hour.checked_add(1) == Some(hour)
-                        {
-                            output.last_hour = hour;
-                        }
-                    }
-                    if output_open {
-                        mark(&mut result.output_hours, hour);
-                    }
-                }
-                continue;
-            }
-            result.reads.push(hour);
-            mark(&mut result.line_hours, hour);
-            let previous_read = last_census;
-            last_census = Some(hour);
-            if broken_identity != Some(identity) {
-                broken.clear();
-            }
-            last_read_identity = Some(identity);
-            let mut still = BTreeMap::new();
-            // A row whose producer link does not resolve is this country's when it is
-            // one of its current lines (a native handle names one line object);
-            // otherwise whose it is is not known. Either way it is counted.
-            let ours = |country: u32, handle: u64| match link_slot(links, country) {
-                Some(linked) => linked == slot,
-                None => open.contains_key(&handle) || broken.contains_key(&handle),
-            };
-            result.unlinked_rows += rows
-                .iter()
-                .filter(|row| link_slot(links, row.country).is_none())
-                .count();
-            let mine: Vec<&ProductionLineRow> = rows
-                .iter()
-                .filter(|row| ours(row.country, row.handle))
-                .collect();
-            let naming_tags = Tags::new(
-                countries,
-                links,
-                decoded.complete::<tables::CountryAppearance>().ok(),
-            );
-            let modifier_inputs =
-                (slot_read(&decoded.metrics, TableId::CountryProductionModifiers, hour)
-                    && slot_read(&decoded.metrics, TableId::ProductionLineModifiers, hour))
-                .then(|| {
-                    decoded
-                        .complete::<tables::CountryProductionModifiers>()
-                        .ok()
-                        .zip(decoded.complete::<tables::ProductionLineModifiers>().ok())
-                })
-                .flatten();
-            let modifier_inputs = modifier_inputs.filter(|_| {
-                match replay::fixed_layout::validate_recording(
-                    decoded,
-                    replay::fixed_layout::PRODUCTION_MODIFIERS,
-                ) {
-                    Ok(()) => true,
-                    Err(reason) => {
-                        *result.modifier_layout_refusals.entry(reason).or_default() += 1;
-                        false
-                    }
-                }
-            });
-            let naming_organisations = decoded.complete::<tables::IndustrialOrganisations>().ok();
-            let modifier_country = modifier_inputs
-                .and_then(|(countries, _)| {
-                    countries
-                        .binary_search_by_key(&identity.1, |country| country.country)
-                        .ok()
-                        .map(|index| &countries[index])
-                })
-                .map(|country| {
-                    if last_modifier_country.as_deref() != Some(country) {
-                        last_modifier_country = Some(Arc::new(country.clone()));
-                    }
-                    Arc::clone(
-                        last_modifier_country
-                            .as_ref()
-                            .expect("recorded modifier country"),
-                    )
-                });
-            for row in &mine {
-                let Some(kind) = LineKind::of(row.kind) else {
-                    result.unknown_kinds += 1;
+                let Ok(frames) = frames else {
+                    lost(&mut result, block.first_hour, block.last_hour);
                     continue;
                 };
-                let (index, starts_segment) = if let Some(line) = open.remove(&row.handle) {
-                    (line.index, false)
-                } else if let Some(line) = broken.remove(&row.handle) {
-                    (line.index, true)
-                } else {
-                    let appearance = appearances.entry(row.handle).or_default();
-                    *appearance += 1;
-                    result.lines.push(ScannedLine {
-                        key: format!("{}#{appearance}", row.handle),
-                        handle: row.handle,
-                        kind: Some(kind),
-                        runs: Vec::new(),
-                        output: Vec::new(),
-                        final_output: None,
-                        ended_by: None,
-                        before_recording: first_read,
-                        between_reads: None,
-                        variants: Vec::new(),
-                    });
-                    (result.lines.len() - 1, true)
-                };
-                latest.insert(row.handle, index);
-                let values = RawRun {
-                    first_hour: hour,
-                    last_hour: hour,
-                    starts_segment,
-                    variant: row.variant,
-                    mio: row.mio,
-                    active_factories: row.active_factories,
-                    requested_factories: row.requested_factories,
-                    max_factories: row.max_factories,
-                    cost_raw: row.cost_raw,
-                    speed_raw: row.speed_raw,
-                    efficiency_raw: row.efficiency_raw,
-                    priority: row.priority,
-                    amount: row.amount,
-                };
-                let line = &mut result.lines[index];
-                if let Some((_, lines)) = modifier_inputs
-                    && let Some(country) = modifier_country
-                        .as_ref()
-                        .filter(|country| country.country == row.country)
-                    && let Ok(position) = lines.binary_search_by_key(&row.handle, |line| line.line)
-                {
-                    let operands = &lines[position];
-                    if (
-                        operands.country,
-                        operands.variant,
-                        operands.organisation,
-                        operands.kind,
-                        operands.active_factories,
-                    ) == (
-                        row.country,
-                        row.variant,
-                        row.mio,
-                        row.kind,
-                        row.active_factories,
-                    ) {
-                        let catalogue = icons.and_then(|icons| icons.catalogue.as_deref());
-                        let organisation = naming_organisations.and_then(|rows| {
-                            rows.binary_search_by_key(&row.mio, |organisation| {
-                                organisation.organisation
-                            })
-                            .ok()
-                            .map(|index| &rows[index])
-                        });
-                        let organisation_name =
-                            organisation
-                                .zip(lexical)
-                                .and_then(|(organisation, lexical)| {
-                                    let raw =
-                                        raw_organisation(organisation, hour, &naming_tags, lexical);
-                                    organisation_name(
-                                        &raw,
-                                        catalogue.map(|catalogue| catalogue as &dyn Texts),
-                                    )
-                                });
-                        result.modifiers.entry(line.key.clone()).or_default().push(
-                            breakdown::RawModifierRun {
-                                first_hour: hour,
-                                last_hour: hour,
-                                country: Arc::clone(country),
-                                line: operands.clone(),
-                                run: values,
-                                organisation: organisation_name,
-                                localisation: catalogue
-                                    .map(|catalogue| Arc::clone(&catalogue.localisation)),
-                                recorded_language: Arc::clone(&recorded_modifier_language),
-                            },
-                        );
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(cancel());
                     }
-                }
-                match line.runs.last_mut() {
-                    Some(run)
-                        if !starts_segment
-                            && run.last_hour.checked_add(1) == Some(hour)
-                            && same_values(run, &values) =>
-                    {
-                        run.last_hour = hour
-                    }
-                    _ => {
-                        line.runs.push(values);
-                    }
-                }
-                still.insert(row.handle, Open { index });
-            }
-            // Lines this read no longer lists ended since the one before.
-            for line in open.values().chain(broken.values()) {
-                result.lines[line.index].ended_by = Some(hour);
-            }
-            broken.clear();
-            open = still;
-            carried = true;
-            first_read = false;
-            // The output counted up to this read, by line.
-            output_open = false;
-            let mut produced_between: BTreeSet<u64> = BTreeSet::new();
-            if let Ok(output) = decoded.complete::<tables::ProductionLineOutput>() {
-                output_open = true;
-                mark(&mut result.output_hours, hour);
-                // An output row whose producer link does not resolve is this country's
-                // when it names one of its lines; its count is then not exact, since
-                // whose it is rests on the handle alone.
-                let mut by_line: BTreeMap<u64, Vec<(&ProductionLineOutputRow, bool)>> =
-                    BTreeMap::new();
-                for row in output {
-                    let linked = link_slot(links, row.country);
-                    if linked.is_none() {
-                        result.unlinked_rows += 1;
-                    }
-                    let mine = match linked {
-                        Some(linked) => linked == slot,
-                        None => latest.contains_key(&row.line),
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        lost(&mut result, frame.hour, block.last_hour);
+                        break;
                     };
-                    if !mine {
+                    if validate_campaign(decoded, replay).is_err() {
+                        lost(&mut result, frame.hour, block.last_hour);
+                        break;
+                    }
+                    let hour = frame.hour;
+                    let tables = decoded
+                        .complete::<tables::Countries>()
+                        .ok()
+                        .zip(decoded.complete::<tables::CountryLinks>().ok());
+                    let country = tables.map(|(countries, links)| {
+                        let selected_tag = match holder {
+                            None => Some(tag),
+                            Some((slot, id)) => countries
+                                .iter()
+                                .find(|country| country.canonical_slot == slot && country.id == id)
+                                .and_then(|country| std::str::from_utf8(&country.tag).ok()),
+                        };
+                        selected_tag.map_or(TaggedCountry::Absent, |tag| {
+                            tagged_country(countries, links, tag)
+                        })
+                    });
+                    let identity = country.and_then(|country| {
+                        country.found().map(|(country, slot)| (slot, country.id))
+                    });
+                    let continues = identity.is_some_and(|identity| {
+                        last.is_some_and(|(seen, at)| {
+                            seen == identity && at.checked_add(1) == Some(hour)
+                        })
+                    });
+                    last = identity.map(|identity| (identity, hour));
+                    // A due output read this country's lines could not be read at (its tables,
+                    // its census or the output incomplete): lines made and ended since the one
+                    // before published their only rows here, so they may be missing. A country
+                    // that does not exist then has no lines to miss.
+                    if slot_read(
+                        &decoded.metrics,
+                        TableId::ProductionLineOutput,
+                        decoded.hour,
+                    ) {
+                        let read = match country {
+                            Some(TaggedCountry::Absent) => true,
+                            Some(TaggedCountry::Found(..)) => {
+                                slot_read(&decoded.metrics, TableId::ProductionLines, decoded.hour)
+                                    && decoded.complete::<tables::ProductionLines>().is_ok()
+                                    && decoded.complete::<tables::ProductionLineOutput>().is_ok()
+                            }
+                            Some(TaggedCountry::Unresolved) | None => false,
+                        };
+                        if !read {
+                            result.unread_output_reads += 1;
+                            let first = last_output_due
+                                .and_then(|due| due.checked_add(1))
+                                .unwrap_or(hour);
+                            mark_span(&mut result.unread_output, first.min(hour), hour);
+                        }
+                        last_output_due = Some(hour);
+                    }
+                    let lexical = decoded.complete::<tables::LexicalTokens>().ok();
+                    // Variant names, shared with every equipment product (`VariantCatalogue`);
+                    // each variant's latest definition row, for its icon.
+                    result.variants.observe(decoded);
+                    if slot_read(&decoded.metrics, TableId::VariantDefinitions, decoded.hour)
+                        && let Ok(rows) = decoded.complete::<tables::VariantDefinitions>()
+                    {
+                        // Icons to look up again at this read: a used variant whose definition
+                        // changed (a new icon entry, creator or origin), and a pending one the
+                        // catalogue now knows.
+                        let mut refresh: BTreeSet<u64> = BTreeSet::new();
+                        for definition in rows {
+                            let changed = definitions
+                                .insert(definition.id, definition.clone())
+                                .is_some_and(|before| before != *definition);
+                            if changed && result.icons.contains_key(&definition.id) {
+                                refresh.insert(definition.id);
+                            }
+                        }
+                        refresh.extend(
+                            pending
+                                .iter()
+                                .copied()
+                                .filter(|id| definitions.contains_key(id)),
+                        );
+                        refresh.retain(|id| result.variants.current(*id).is_some());
+                        if let (Some(content), Some(lexical), false) =
+                            (icons, lexical, refresh.is_empty())
+                        {
+                            let state = IconHour::read(decoded, content);
+                            for id in refresh {
+                                pending.remove(&id);
+                                let definition = &definitions[&id];
+                                let icon = match &state {
+                                    Err(error) => Err(error.to_string()),
+                                    Ok(state) => variant_icon(
+                                        content,
+                                        state,
+                                        definition,
+                                        &equipment::variant_token(definition, lexical),
+                                    ),
+                                };
+                                version(
+                                    result.icons.entry(id).or_default(),
+                                    (hour, icon),
+                                    |a, b| a.1 == b.1,
+                                );
+                            }
+                        }
+                    }
+                    let rows = decoded.complete::<tables::ProductionLines>().ok();
+                    if carried && (!continues || rows.is_none()) {
+                        // The recording broke: what was carried is not known past here.
+                        broken = std::mem::take(&mut open);
+                        broken_identity = last_read_identity;
+                        carried = false;
+                        output_open = false;
+                        organisations_open = false;
+                    }
+                    let (Some(identity), Some((countries, links)), Some(rows)) =
+                        (identity, tables, rows)
+                    else {
+                        continue;
+                    };
+                    let slot = identity.0;
+                    if !slot_read(&decoded.metrics, TableId::ProductionLines, decoded.hour) {
+                        // Carried: the last read still holds, but only after a read of this identity.
+                        if carried {
+                            mark(&mut result.line_hours, hour);
+                            // Output is carried only while its table stays readable: once a
+                            // tick went unobserved it is unavailable for the rest of the branch.
+                            output_open &=
+                                decoded.complete::<tables::ProductionLineOutput>().is_ok();
+                            organisations_open &= decoded
+                                .complete::<tables::IndustrialOrganisations>()
+                                .is_ok();
+                            if organisations_open {
+                                mark(&mut result.organisation_hours, hour);
+                            }
+                            let modifiers_carried = decoded
+                                .complete::<tables::CountryProductionModifiers>()
+                                .is_ok()
+                                && decoded
+                                    .complete::<tables::ProductionLineModifiers>()
+                                    .is_ok();
+                            for line in open.values() {
+                                let history = &mut result.lines[line.index];
+                                if modifiers_carried
+                                    && let Some(modifiers) = result
+                                        .modifiers
+                                        .get_mut(&history.key)
+                                        .and_then(|runs| runs.last_mut())
+                                    && modifiers.last_hour.checked_add(1) == Some(hour)
+                                {
+                                    modifiers.last_hour = hour;
+                                }
+                                if let Some(run) = history.runs.last_mut()
+                                    && run.last_hour.checked_add(1) == Some(hour)
+                                {
+                                    run.last_hour = hour;
+                                }
+                                if output_open
+                                    && let Some(output) = history.output.last_mut()
+                                    && output.last_hour.checked_add(1) == Some(hour)
+                                {
+                                    output.last_hour = hour;
+                                }
+                            }
+                            if output_open {
+                                mark(&mut result.output_hours, hour);
+                            }
+                        }
                         continue;
                     }
-                    by_line
-                        .entry(row.line)
-                        .or_default()
-                        .push((row, linked.is_some()));
-                    // A variant a line made only between two censuses is named and pictured too.
-                    produced_between.insert(row.variant);
-                }
-                for (handle, rows) in by_line {
-                    let index = match latest.get(&handle) {
-                        Some(&index) => index,
-                        // A line no census listed was made and deleted since the last
-                        // one: its final rows name its variant and producer, so it is
-                        // shown between the two censuses with what it made.
-                        None if rows.iter().all(|(row, _)| row.ended) => {
-                            // Made after the census before only when one was complete and
-                            // the line was observed since its creation; otherwise it ran
-                            // before the observation began, from an unknown hour.
-                            let whole_life =
-                                rows.iter().all(|(row, _)| row.observed_since_creation);
-                            let since = rows
-                                .iter()
-                                .map(|(row, _)| row.since_hour)
-                                .min()
-                                .unwrap_or(hour);
-                            let (first_hour, before) = match previous_read {
-                                Some(read) if whole_life => (read + 1, false),
-                                _ => (since.min(hour), true),
-                            };
-                            let appearance = appearances.entry(handle).or_default();
+                    result.reads.push(hour);
+                    mark(&mut result.line_hours, hour);
+                    let previous_read = last_census;
+                    last_census = Some(hour);
+                    if broken_identity != Some(identity) {
+                        broken.clear();
+                    }
+                    last_read_identity = Some(identity);
+                    let mut still = BTreeMap::new();
+                    // A row whose producer link does not resolve is this country's when it is
+                    // one of its current lines (a native handle names one line object);
+                    // otherwise whose it is is not known. Either way it is counted.
+                    let ours = |country: u32, handle: u64| match link_slot(links, country) {
+                        Some(linked) => linked == slot,
+                        None => open.contains_key(&handle) || broken.contains_key(&handle),
+                    };
+                    result.unlinked_rows += rows
+                        .iter()
+                        .filter(|row| link_slot(links, row.country).is_none())
+                        .count();
+                    let mine: Vec<&ProductionLineRow> = rows
+                        .iter()
+                        .filter(|row| ours(row.country, row.handle))
+                        .collect();
+                    let naming_tags = Tags::new(
+                        countries,
+                        links,
+                        decoded.complete::<tables::CountryAppearance>().ok(),
+                    );
+                    let modifier_inputs =
+                        (slot_read(&decoded.metrics, TableId::CountryProductionModifiers, hour)
+                            && slot_read(&decoded.metrics, TableId::ProductionLineModifiers, hour))
+                        .then(|| {
+                            decoded
+                                .complete::<tables::CountryProductionModifiers>()
+                                .ok()
+                                .zip(decoded.complete::<tables::ProductionLineModifiers>().ok())
+                        })
+                        .flatten();
+                    let modifier_inputs =
+                        modifier_inputs.filter(|_| match replay::fixed_layout::validate_recording(
+                            decoded,
+                            replay::fixed_layout::PRODUCTION_MODIFIERS,
+                        ) {
+                            Ok(()) => true,
+                            Err(reason) => {
+                                *result.modifier_layout_refusals.entry(reason).or_default() += 1;
+                                false
+                            }
+                        });
+                    let naming_organisations =
+                        decoded.complete::<tables::IndustrialOrganisations>().ok();
+                    let modifier_country = modifier_inputs
+                        .and_then(|(countries, _)| {
+                            countries
+                                .binary_search_by_key(&identity.1, |country| country.country)
+                                .ok()
+                                .map(|index| &countries[index])
+                        })
+                        .map(|country| {
+                            if last_modifier_country.as_deref() != Some(country) {
+                                last_modifier_country = Some(Arc::new(country.clone()));
+                            }
+                            Arc::clone(
+                                last_modifier_country
+                                    .as_ref()
+                                    .expect("recorded modifier country"),
+                            )
+                        });
+                    for row in &mine {
+                        let Some(kind) = LineKind::of(row.kind) else {
+                            result.unknown_kinds += 1;
+                            continue;
+                        };
+                        let (index, starts_segment) = if let Some(line) = open.remove(&row.handle) {
+                            (line.index, false)
+                        } else if let Some(line) = broken.remove(&row.handle) {
+                            (line.index, true)
+                        } else {
+                            let appearance = appearances.entry(row.handle).or_default();
                             *appearance += 1;
                             result.lines.push(ScannedLine {
-                                key: format!("{handle}#{appearance}"),
-                                handle,
-                                kind: None,
+                                key: format!("{}#{appearance}", row.handle),
+                                handle: row.handle,
+                                kind: Some(kind),
                                 runs: Vec::new(),
                                 output: Vec::new(),
                                 final_output: None,
-                                ended_by: Some(hour),
-                                before_recording: before,
-                                between_reads: Some(super::country_groups::HourSpan {
-                                    first_hour,
-                                    last_hour: hour,
-                                }),
-                                variants: rows.iter().map(|(row, _)| row.variant).collect(),
+                                ended_by: None,
+                                before_recording: first_read,
+                                between_reads: None,
+                                variants: Vec::new(),
                             });
-                            let index = result.lines.len() - 1;
-                            latest.insert(handle, index);
-                            produced_between.extend(rows.iter().map(|(row, _)| row.variant));
-                            index
+                            (result.lines.len() - 1, true)
+                        };
+                        latest.insert(row.handle, index);
+                        let values = RawRun {
+                            first_hour: hour,
+                            last_hour: hour,
+                            starts_segment,
+                            variant: row.variant,
+                            mio: row.mio,
+                            active_factories: row.active_factories,
+                            requested_factories: row.requested_factories,
+                            max_factories: row.max_factories,
+                            cost_raw: row.cost_raw,
+                            speed_raw: row.speed_raw,
+                            efficiency_raw: row.efficiency_raw,
+                            priority: row.priority,
+                            amount: row.amount,
+                        };
+                        let line = &mut result.lines[index];
+                        if let Some((_, lines)) = modifier_inputs
+                            && let Some(country) = modifier_country
+                                .as_ref()
+                                .filter(|country| country.country == row.country)
+                            && let Ok(position) =
+                                lines.binary_search_by_key(&row.handle, |line| line.line)
+                        {
+                            let operands = &lines[position];
+                            if (
+                                operands.country,
+                                operands.variant,
+                                operands.organisation,
+                                operands.kind,
+                                operands.active_factories,
+                            ) == (
+                                row.country,
+                                row.variant,
+                                row.mio,
+                                row.kind,
+                                row.active_factories,
+                            ) {
+                                let catalogue = icons.and_then(|icons| icons.catalogue.as_deref());
+                                let organisation = naming_organisations.and_then(|rows| {
+                                    rows.binary_search_by_key(&row.mio, |organisation| {
+                                        organisation.organisation
+                                    })
+                                    .ok()
+                                    .map(|index| &rows[index])
+                                });
+                                let organisation_name = organisation.zip(lexical).and_then(
+                                    |(organisation, lexical)| {
+                                        let raw = raw_organisation(
+                                            organisation,
+                                            hour,
+                                            &naming_tags,
+                                            lexical,
+                                        );
+                                        organisation_name(
+                                            &raw,
+                                            catalogue.map(|catalogue| catalogue as &dyn Texts),
+                                        )
+                                    },
+                                );
+                                result.modifiers.entry(line.key.clone()).or_default().push(
+                                    breakdown::RawModifierRun {
+                                        first_hour: hour,
+                                        last_hour: hour,
+                                        country: Arc::clone(country),
+                                        line: operands.clone(),
+                                        run: values,
+                                        organisation: organisation_name,
+                                        localisation: catalogue
+                                            .map(|catalogue| Arc::clone(&catalogue.localisation)),
+                                        recorded_language: Arc::clone(&recorded_modifier_language),
+                                    },
+                                );
+                            }
                         }
-                        None => {
-                            result.unlisted_output += 1;
-                            continue;
+                        match line.runs.last_mut() {
+                            Some(run)
+                                if !starts_segment
+                                    && run.last_hour.checked_add(1) == Some(hour)
+                                    && same_values(run, &values) =>
+                            {
+                                run.last_hour = hour
+                            }
+                            _ => {
+                                line.runs.push(values);
+                            }
                         }
-                    };
-                    let run = output_of(&rows, hour);
-                    let line = &mut result.lines[index];
-                    if rows.iter().any(|(row, _)| row.ended) || !open.contains_key(&handle) {
-                        line.final_output = Some(run);
-                    } else {
-                        line.output.push(run);
+                        still.insert(row.handle, Open { index });
+                    }
+                    // Lines this read no longer lists ended since the one before.
+                    for line in open.values().chain(broken.values()) {
+                        result.lines[line.index].ended_by = Some(hour);
+                    }
+                    broken.clear();
+                    open = still;
+                    carried = true;
+                    first_read = false;
+                    // The output counted up to this read, by line.
+                    output_open = false;
+                    let mut produced_between: BTreeSet<u64> = BTreeSet::new();
+                    if let Ok(output) = decoded.complete::<tables::ProductionLineOutput>() {
+                        output_open = true;
+                        mark(&mut result.output_hours, hour);
+                        // An output row whose producer link does not resolve is this country's
+                        // when it names one of its lines; its count is then not exact, since
+                        // whose it is rests on the handle alone.
+                        let mut by_line: BTreeMap<u64, Vec<(&ProductionLineOutputRow, bool)>> =
+                            BTreeMap::new();
+                        for row in output {
+                            let linked = link_slot(links, row.country);
+                            if linked.is_none() {
+                                result.unlinked_rows += 1;
+                            }
+                            let mine = match linked {
+                                Some(linked) => linked == slot,
+                                None => latest.contains_key(&row.line),
+                            };
+                            if !mine {
+                                continue;
+                            }
+                            by_line
+                                .entry(row.line)
+                                .or_default()
+                                .push((row, linked.is_some()));
+                            // A variant a line made only between two censuses is named and pictured too.
+                            produced_between.insert(row.variant);
+                        }
+                        for (handle, rows) in by_line {
+                            let index = match latest.get(&handle) {
+                                Some(&index) => index,
+                                // A line no census listed was made and deleted since the last
+                                // one: its final rows name its variant and producer, so it is
+                                // shown between the two censuses with what it made.
+                                None if rows.iter().all(|(row, _)| row.ended) => {
+                                    // Made after the census before only when one was complete and
+                                    // the line was observed since its creation; otherwise it ran
+                                    // before the observation began, from an unknown hour.
+                                    let whole_life =
+                                        rows.iter().all(|(row, _)| row.observed_since_creation);
+                                    let since = rows
+                                        .iter()
+                                        .map(|(row, _)| row.since_hour)
+                                        .min()
+                                        .unwrap_or(hour);
+                                    let (first_hour, before) = match previous_read {
+                                        Some(read) if whole_life => (read + 1, false),
+                                        _ => (since.min(hour), true),
+                                    };
+                                    let appearance = appearances.entry(handle).or_default();
+                                    *appearance += 1;
+                                    result.lines.push(ScannedLine {
+                                        key: format!("{handle}#{appearance}"),
+                                        handle,
+                                        kind: None,
+                                        runs: Vec::new(),
+                                        output: Vec::new(),
+                                        final_output: None,
+                                        ended_by: Some(hour),
+                                        before_recording: before,
+                                        between_reads: Some(super::country_groups::HourSpan {
+                                            first_hour,
+                                            last_hour: hour,
+                                        }),
+                                        variants: rows.iter().map(|(row, _)| row.variant).collect(),
+                                    });
+                                    let index = result.lines.len() - 1;
+                                    latest.insert(handle, index);
+                                    produced_between
+                                        .extend(rows.iter().map(|(row, _)| row.variant));
+                                    index
+                                }
+                                None => {
+                                    result.unlisted_output += 1;
+                                    continue;
+                                }
+                            };
+                            let run = output_of(&rows, hour);
+                            let line = &mut result.lines[index];
+                            if rows.iter().any(|(row, _)| row.ended) || !open.contains_key(&handle)
+                            {
+                                line.final_output = Some(run);
+                            } else {
+                                line.output.push(run);
+                            }
+                        }
+                    }
+                    // Organisations the lines name, and the produced variants' icons at this hour.
+                    organisations_open = false;
+                    if let (Ok(organisations), Some(lexical)) = (
+                        decoded.complete::<tables::IndustrialOrganisations>(),
+                        lexical,
+                    ) {
+                        organisations_open = true;
+                        mark(&mut result.organisation_hours, hour);
+                        let named: BTreeSet<u64> = mine
+                            .iter()
+                            .map(|row| row.mio)
+                            .filter(|mio| *mio != 0)
+                            .collect();
+                        for row in organisations
+                            .iter()
+                            .filter(|row| named.contains(&row.organisation))
+                        {
+                            version(
+                                result.organisations.entry(row.organisation).or_default(),
+                                raw_organisation(row, hour, &naming_tags, lexical),
+                                |a, b| {
+                                    RawOrganisation {
+                                        first_hour: 0,
+                                        ..a.clone()
+                                    } == RawOrganisation {
+                                        first_hour: 0,
+                                        ..b.clone()
+                                    }
+                                },
+                            );
+                        }
+                    }
+                    if let (Some(content), Some(lexical)) = (icons, lexical) {
+                        let produced: BTreeSet<u64> = mine
+                            .iter()
+                            .map(|row| row.variant)
+                            .chain(produced_between)
+                            .collect();
+                        let state = IconHour::read(decoded, content);
+                        for id in produced {
+                            let icon = match (&state, definitions.get(&id)) {
+                                (Err(error), _) => Err(error.to_string()),
+                                (Ok(_), None) => {
+                                    pending.insert(id);
+                                    Err("the variant's definition is not recorded yet".to_owned())
+                                }
+                                // A definition carried from before a gap may have changed since.
+                                (Ok(_), Some(_)) if result.variants.current(id).is_none() => {
+                                    pending.insert(id);
+                                    Err("the variant's definition is not recorded at this time"
+                                        .to_owned())
+                                }
+                                (Ok(state), Some(definition)) => variant_icon(
+                                    content,
+                                    state,
+                                    definition,
+                                    &equipment::variant_token(definition, lexical),
+                                ),
+                            };
+                            version(result.icons.entry(id).or_default(), (hour, icon), |a, b| {
+                                a.1 == b.1
+                            });
+                        }
                     }
                 }
             }
-            // Organisations the lines name, and the produced variants' icons at this hour.
-            organisations_open = false;
-            if let (Ok(organisations), Some(lexical)) = (
-                decoded.complete::<tables::IndustrialOrganisations>(),
-                lexical,
-            ) {
-                organisations_open = true;
-                mark(&mut result.organisation_hours, hour);
-                let named: BTreeSet<u64> = mine
-                    .iter()
-                    .map(|row| row.mio)
-                    .filter(|mio| *mio != 0)
-                    .collect();
-                for row in organisations
-                    .iter()
-                    .filter(|row| named.contains(&row.organisation))
-                {
-                    version(
-                        result.organisations.entry(row.organisation).or_default(),
-                        raw_organisation(row, hour, &naming_tags, lexical),
-                        |a, b| {
-                            RawOrganisation {
-                                first_hour: 0,
-                                ..a.clone()
-                            } == RawOrganisation {
-                                first_hour: 0,
-                                ..b.clone()
-                            }
-                        },
-                    );
-                }
-            }
-            if let (Some(content), Some(lexical)) = (icons, lexical) {
-                let produced: BTreeSet<u64> = mine
-                    .iter()
-                    .map(|row| row.variant)
-                    .chain(produced_between)
-                    .collect();
-                let state = IconHour::read(decoded, content);
-                for id in produced {
-                    let icon = match (&state, definitions.get(&id)) {
-                        (Err(error), _) => Err(error.to_string()),
-                        (Ok(_), None) => {
-                            pending.insert(id);
-                            Err("the variant's definition is not recorded yet".to_owned())
-                        }
-                        // A definition carried from before a gap may have changed since.
-                        (Ok(_), Some(_)) if result.variants.current(id).is_none() => {
-                            pending.insert(id);
-                            Err("the variant's definition is not recorded at this time".to_owned())
-                        }
-                        (Ok(state), Some(definition)) => variant_icon(
-                            content,
-                            state,
-                            definition,
-                            &equipment::variant_token(definition, lexical),
-                        ),
-                    };
-                    version(result.icons.entry(id).or_default(), (hour, icon), |a, b| {
-                        a.1 == b.1
-                    });
-                }
-            }
-        }
-    }
+            Ok(())
+        },
+    )?;
     Ok(result)
 }
 

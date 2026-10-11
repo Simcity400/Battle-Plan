@@ -30,6 +30,11 @@ function wire(data: UnitLeadersData) {
   return { ...data, leaders: data.leaders.map(l => ({ ...l, runs: l.runs.map(r => [r.firstHour, r.lastHour, r.value.person, r.value.role, r.value.skill, r.value.components, r.value.traits]),
     traitGains: l.traitGains.map(g => [g.hour, g.token, g.date === 'heldBefore' ? 0 : g.date === 'gained' ? 1 : 2]) })) };
 }
+/** The first leader as a leaderboard sends it: visible hours instead of battle records. */
+function asLeaderboard(data: UnitLeadersData, hours: Pick<UnitLeadersData['leaders'][number], 'foughtHours' | 'wonHours' | 'lostHours'>) {
+  for (const key of ['battleStarts', 'battleStartReadHours', 'unknownBattleStarts', 'battleWon', 'battleResultHours', 'battleResultReadHours'] as const) delete data.leaders[0][key];
+  Object.assign(data.leaders[0], hours);
+}
 
 test('battle delta spans the full signed32 hour range exactly', () => {
   const data = fixture(); const leader = data.leaders[0];
@@ -124,6 +129,11 @@ test('compact runs and interned traits validate and expand once; malformed paral
     (d: UnitLeadersData) => { d.leaders[0].battleStarts = [101, -1]; d.leaders[0].battleStartReadHours = decodedStarts(d.leaders[0].battleStarts); },
     (d: UnitLeadersData) => { d.leaders[0].unknownBattleStarts = [0]; },
     (d: UnitLeadersData) => { d.leaders[0].battleWon = [true]; },
+    (d: UnitLeadersData) => { d.leaders[0].foughtHours = [101]; },
+    (d: UnitLeadersData) => asLeaderboard(d, { foughtHours: [101, -1] }),
+    (d: UnitLeadersData) => asLeaderboard(d, { foughtHours: [99] }),
+    (d: UnitLeadersData) => asLeaderboard(d, { foughtHours: [101], wonHours: [101] }),
+    (d: UnitLeadersData) => asLeaderboard(d, { foughtHours: [102], wonHours: [101], lostHours: [] }),
   ]) { const bad = fixture(); mutate(bad); assert.throws(() => validateUnitLeadersReply(wire(bad)), /malformed/); }
   const bad = wire(data); bad.leaders[0].runs[0].push(4); assert.throws(() => validateUnitLeadersReply(bad), /malformed/);
 });
@@ -145,6 +155,27 @@ test('new arrivals are exact after complete reads; unrelated unresolved owners n
   assert.equal(leaderAt(data, leader, 106)?.fought, 2);
   data.observed[0].landBattles = false;
   assert.equal(battleHistoryComplete(data, 1, 106), false);
+});
+
+test('leaderboard visible hours give the career records’ rows, counts and tooltips at every hour', () => {
+  const career = fixture(); const leader = career.leaders[0];
+  leader.runs[0].lastHour = 130; career.observed[0].lastHour = 130;
+  // An unknown start, shared hours, delayed reads, an undecided battle and results read before or after their participation.
+  Object.assign(leader, { battleStarts: [98, 4, 0, 3, 5, 0], battleStartReadHours: [100, 102, 106, 105, 110, 111], unknownBattleStarts: [0],
+    battleWon: [true, false, true, true, false, null], battleResultHours: [101, 103, 103, 105, 120, null], battleResultReadHours: [104, 103, 104, 108, 125, null] });
+  const board = structuredClone(career);
+  asLeaderboard(board, { foughtHours: [100, 2, 3, 1, 4, 1], wonHours: [104, 2, 2], lostHours: [103, 22] });
+  for (const results of [true, false]) {
+    if (!results) for (const data of [career, board]) for (const key of ['battleWon', 'battleResultHours', 'battleResultReadHours', 'wonHours', 'lostHours'] as const) delete data.leaders[0][key];
+    const [records, counts] = [career, board].map(data => validateUnitLeadersReply(wire(data)));
+    for (let hour = 99; hour <= 131; hour++) {
+      const [expected, actual] = [records, counts].map(reply => leadersAt(reply, hour, null, 'all')
+        .map(row => ({ ...row, career: null, tooltip: leaderTooltip(reply, row, { name: 'Country' }) })));
+      assert.deepEqual(actual, expected, `hour ${hour}`);
+    }
+    assert.deepEqual(battleTotals(counts.leaders[0], 125), results ? { fought: 6, won: 3, lost: 2, unresolved: 1, winRate: 60 }
+      : { fought: 6, won: null, lost: null, unresolved: 6, winRate: null });
+  }
 });
 
 test('dated joined results exclude unresolved battles from the win rate', () => {
@@ -284,9 +315,9 @@ test('a known empty leader name survives leaderboard, career tooltip and picker 
   assert.equal(leaderName(row), '');
   assert.equal(leaderTooltip(data, row, { name: 'Country' }).title, '');
   assert.equal(leaderChoices(data, () => 'Country')[0].label, ' · Country');
-  person.name = null; assert.equal(leaderName(row), 'mod_character');
-  person.token = ''; assert.equal(leaderName(row), '');
-  person.token = null; assert.equal(leaderName(row), 'Character 9');
+  person.name = null; assert.equal(leaderName(row), 'Character name unavailable');
+  person.token = ''; assert.equal(leaderName(row), 'Character name unavailable');
+  person.token = null; assert.equal(leaderName(row), 'Character name unavailable');
 });
 
 

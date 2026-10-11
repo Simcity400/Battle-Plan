@@ -256,344 +256,369 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
     {
         result.spending_taint(0, gap.first_hour, ProductionSpendingUnknown::RecordingGap);
     }
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancel());
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        // A block or frame that cannot be read may have held a publication.
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            result.taint(observation, block.first_hour);
-            for track in result.tags.values_mut() {
-                track.last = None;
-            }
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancel());
-            }
-            let decoded = match decoder.advance(&frame) {
-                Ok(decoded) if validate_campaign(decoded, replay).is_ok() => decoded,
-                _ => {
-                    result.taint(observation, frame.hour);
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (block, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancel());
+                }
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                // A block or frame that cannot be read may have held a publication.
+                let Ok(frames) = frames else {
+                    result.taint(observation, block.first_hour);
                     for track in result.tags.values_mut() {
                         track.last = None;
                     }
-                    break;
-                }
-            };
-            let hour = frame.hour;
-            // Rocket rows retain every country/design total; they do not depend
-            // on a registered line or on the equipment census being readable.
-            result.rocket.observe(decoded)?;
-            if let Some(last) = last_frame
-                && last.checked_add(1) != Some(hour)
-            {
-                result.spending_taint(
-                    observation,
-                    last.saturating_add(1),
-                    ProductionSpendingUnknown::RecordingGap,
-                );
-            }
-            last_frame = Some(hour);
-            result.variants.observe(decoded);
-            let read = slot_read(
-                &decoded.metrics,
-                TableId::ProductionLineOutput,
-                decoded.hour,
-            );
-            if read && let Ok(lines) = decoded.complete::<tables::ProductionLines>() {
-                for line in lines {
-                    kinds.insert(line.handle, line.kind);
-                }
-            }
-            // An hour the tables cannot tell extends nothing, so nothing continues across it.
-            let (Ok(countries), Ok(links), Ok(output)) = (
-                decoded.complete::<tables::Countries>(),
-                decoded.complete::<tables::CountryLinks>(),
-                decoded.complete::<tables::ProductionLineOutput>(),
-            ) else {
-                if read {
-                    // The publication this read held, if any, is not ingested: whatever
-                    // lines ended in it are lost, for a producer that cannot be told.
-                    result.taint(observation, hour);
-                    if decoded.complete::<tables::ProductionLines>().is_ok() {
-                        result.unread += 1;
-                    }
-                    if result.unread_reason.is_none()
-                        && let TableView::Unavailable { reason } =
-                            &*decoded.tables[TableId::ProductionLineOutput.index()]
-                    {
-                        result.unread_reason = Some(reason.clone());
-                    }
-                }
-                for track in result.tags.values_mut() {
-                    track.last = None;
-                }
-                continue;
-            };
-            let tagged: Vec<(String, Identity)> = tagged_countries(countries, links)
-                .into_iter()
-                .filter_map(|(tag, lookup)| {
-                    let TaggedCountry::Found(country, slot) = lookup else {
-                        return None;
-                    };
-                    match std::str::from_utf8(tag) {
-                        Ok(tag) => Some((tag.to_owned(), (slot, country.id, observation))),
-                        Err(_) => {
-                            result.unnamed += 1;
-                            None
-                        }
-                    }
-                })
-                .collect();
-            if !read {
-                // Carried: the last read still holds, only for the same identity.
-                let present: HashMap<&str, Identity> = tagged
-                    .iter()
-                    .map(|(tag, identity)| (tag.as_str(), *identity))
-                    .collect();
-                for (tag, track) in &mut result.tags {
-                    let continues = present.get(tag.as_str()).copied().filter(|identity| {
-                        track.last.is_some_and(|(seen, at)| {
-                            seen == *identity && at.checked_add(1) == Some(hour)
-                        })
-                    });
-                    track.last = continues.map(|identity| (identity, hour));
-                    if continues.is_some()
-                        && let Some(last) = track.last_hours.last_mut()
-                    {
-                        *last = hour;
-                    }
-                }
-                continue;
-            }
-            result.reads.push(hour);
-            // A new observation restarts every count; totals never cross it.
-            if let Some(since) = output.iter().map(|row| row.since_hour).min() {
-                match result.observations.last() {
-                    None => result.observations.push(since),
-                    Some(current) if *current != since => {
-                        result.observations.push(since);
-                        observation += 1;
-                        rows.clear();
-                        live.clear();
-                        totals.clear();
-                        cost_totals.clear();
-                        seen_production.clear();
-                    }
-                    Some(_) => {}
-                }
-            }
-            // Explicit suffix values also authenticate provisional source
-            // fixtures; empty publications require the introduction ledger.
-            spending_recorded |= output
-                .iter()
-                .any(|row| !matches!(row.spent_raw, Recorded::NotRecorded));
-            if !spending_recorded {
-                result.spending_taint(observation, hour, ProductionSpendingUnknown::NotRecorded);
-            }
-            let observed: Vec<(String, Identity)> = tagged
-                .into_iter()
-                .map(|(tag, (slot, id, _))| (tag, (slot, id, observation)))
-                .collect();
-            let by_slot: HashMap<u32, Identity> = observed
-                .iter()
-                .map(|(_, identity)| (identity.0, *identity))
-                .collect();
-            let mut presence_unknown = false;
-            let census_complete = if let Ok(lines) = decoded.complete::<tables::ProductionLines>() {
-                for line in lines {
-                    if let Some(identity) =
-                        link_slot(links, line.country).and_then(|slot| by_slot.get(&slot))
-                    {
-                        seen_production.insert(*identity);
-                    } else {
-                        presence_unknown = true;
-                    }
-                }
-                true
-            } else {
-                false
-            };
-            let mut seen = HashSet::with_capacity(output.len());
-            for row in output {
-                let key = (row.line, row.ordinal);
-                seen.insert(key);
-                let refit = match kinds.get(&row.line) {
-                    Some(kind) => *kind == engine::cequipment_production_line::KIND_SHIP_REFIT,
-                    None => {
-                        unlisted.insert(row.line);
-                        false
-                    }
-                };
-                let producer = link_slot(links, row.country)
-                    .and_then(|slot| by_slot.get(&slot))
-                    .copied();
-                let state = rows.entry(key).or_insert_with(|| {
-                    if producer.is_none() {
-                        result.unattributed += 1;
-                    }
-                    RowState {
-                        identity: producer,
-                        entry: (row.variant, refit),
-                        units: 0,
-                        exact: true,
-                        ended: false,
-                        spent_raw: 0,
-                    }
-                });
-                // A producer the links could not tell before may be told now, while
-                // nothing was delivered yet; units of a producer never told are lost to
-                // some country that cannot be named, so no total is known after them.
-                if state.identity.is_none() && state.units == 0 && state.exact {
-                    state.identity = producer;
-                }
-                if let Some(identity) = state.identity {
-                    seen_production.insert(identity);
-                } else {
-                    presence_unknown = true;
-                }
-                if state.identity.is_none() && (row.units != 0 || !row.exact) {
-                    result.taint(observation, hour);
-                }
-                if state.identity.is_none() && !matches!(row.spent_raw, Recorded::Value(Some(0))) {
-                    result.spending_taint(
-                        observation,
-                        hour,
-                        ProductionSpendingUnknown::SpendingUnavailable,
-                    );
-                }
-                // Not exact once: a tick is left out of every later count.
-                let exact = state.exact && row.exact;
-                if state.exact && !exact {
-                    result.inexact += 1;
-                }
-                // The observer authenticates the applied input's tuple. Census
-                // cost, delivered units and their exactness do not reprice it.
-                let (delta, spending_reason) = match row.spent_raw {
-                    Recorded::Value(Some(value)) => {
-                        (i128::from(value) - i128::from(state.spent_raw), None)
-                    }
-                    Recorded::Value(None) => {
-                        (0, Some(ProductionSpendingUnknown::SpendingUnavailable))
-                    }
-                    Recorded::NotRecorded => (0, Some(ProductionSpendingUnknown::NotRecorded)),
-                };
-                apply_cost(
-                    &mut cost_totals,
-                    &mut cost_version,
-                    state,
-                    delta,
-                    spending_reason,
-                )?;
-                if let Recorded::Value(Some(value)) = row.spent_raw {
-                    state.spent_raw = value;
-                }
-                apply(&mut totals, &mut version, state, row.units, exact);
-                state.units = row.units;
-                state.exact = exact;
-                state.ended |= row.ended;
-            }
-            // A row gone without its ended publication lost its final count.
-            for key in live.iter().filter(|key| !seen.contains(*key)) {
-                if let Some(state) = rows.get_mut(key) {
-                    result.lost += usize::from(state.exact);
-                    let units = state.units;
-                    apply_cost(
-                        &mut cost_totals,
-                        &mut cost_version,
-                        state,
-                        0,
-                        Some(ProductionSpendingUnknown::LostOutput),
-                    )?;
-                    apply(&mut totals, &mut version, state, units, false);
-                    state.exact = false;
-                }
-            }
-            live = seen
-                .into_iter()
-                .filter(|key| rows.get(key).is_some_and(|state| !state.ended))
-                .collect();
-            // Each tag's sample: its country's totals at this read.
-            let present: HashSet<&str> = observed.iter().map(|(tag, _)| tag.as_str()).collect();
-            for track in result
-                .tags
-                .iter_mut()
-                .filter(|(tag, _)| !present.contains(tag.as_str()))
-                .map(|(_, track)| track)
-            {
-                track.last = None;
-            }
-            for (tag, identity) in observed {
-                let track = result.tags.entry(tag).or_default();
-                let starts = !track
-                    .last
-                    .is_some_and(|(seen, at)| seen == identity && at.checked_add(1) == Some(hour));
-                let sample = u32::try_from(track.hours.len()).map_err(|_| {
-                    io::Error::other("The production sample index exceeds its integer range")
-                })?;
-                track.hours.push(hour);
-                track.last_hours.push(hour);
-                track.starts.push(starts);
-                track.identities.push(identity);
-                track.presence.push(if seen_production.contains(&identity) {
-                    Some(true)
-                } else if census_complete && !presence_unknown {
-                    Some(false)
-                } else {
-                    None
-                });
-                track.last = Some((identity, hour));
-                let (cost_changed, cost_entries) = cost_totals
-                    .get(&identity)
-                    .map_or((0, None), |(changed, entries)| (*changed, Some(entries)));
-                if track.cost_taken != Some((identity, cost_changed)) {
-                    track.cost_taken = Some((identity, cost_changed));
-                    let empty = BTreeMap::new();
-                    let entries = cost_entries.unwrap_or(&empty);
-                    let keys: BTreeSet<Entry> = entries
-                        .keys()
-                        .chain(track.cost_current.keys())
-                        .copied()
-                        .collect();
-                    for entry in keys {
-                        let now = entries.get(&entry).copied().unwrap_or_default();
-                        if track.cost_current.get(&entry).copied().unwrap_or_default() != now {
-                            track
-                                .cost_changes
-                                .entry(entry)
-                                .or_default()
-                                .push((sample, now));
-                        }
-                    }
-                    track.cost_current = entries.clone();
-                }
-                let (changed, entries) = totals
-                    .get(&identity)
-                    .map_or((0, None), |(changed, entries)| (*changed, Some(entries)));
-                if track.taken == Some((identity, changed)) {
                     continue;
-                }
-                track.taken = Some((identity, changed));
-                let empty = BTreeMap::new();
-                let entries = entries.unwrap_or(&empty);
-                let keys: BTreeSet<Entry> = entries
-                    .keys()
-                    .chain(track.current.keys())
-                    .copied()
-                    .collect();
-                for entry in keys {
-                    let now = entries.get(&entry).copied().unwrap_or_default();
-                    if track.current.get(&entry).copied().unwrap_or_default() != now {
-                        track.changes.entry(entry).or_default().push((sample, now));
+                };
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(cancel());
+                    }
+                    let decoded = match decoder.advance(&frame) {
+                        Ok(decoded) if validate_campaign(decoded, replay).is_ok() => decoded,
+                        _ => {
+                            result.taint(observation, frame.hour);
+                            for track in result.tags.values_mut() {
+                                track.last = None;
+                            }
+                            break;
+                        }
+                    };
+                    let hour = frame.hour;
+                    // Rocket rows retain every country/design total; they do not depend
+                    // on a registered line or on the equipment census being readable.
+                    result.rocket.observe(decoded)?;
+                    if let Some(last) = last_frame
+                        && last.checked_add(1) != Some(hour)
+                    {
+                        result.spending_taint(
+                            observation,
+                            last.saturating_add(1),
+                            ProductionSpendingUnknown::RecordingGap,
+                        );
+                    }
+                    last_frame = Some(hour);
+                    result.variants.observe(decoded);
+                    let read = slot_read(
+                        &decoded.metrics,
+                        TableId::ProductionLineOutput,
+                        decoded.hour,
+                    );
+                    if read && let Ok(lines) = decoded.complete::<tables::ProductionLines>() {
+                        for line in lines {
+                            kinds.insert(line.handle, line.kind);
+                        }
+                    }
+                    // An hour the tables cannot tell extends nothing, so nothing continues across it.
+                    let (Ok(countries), Ok(links), Ok(output)) = (
+                        decoded.complete::<tables::Countries>(),
+                        decoded.complete::<tables::CountryLinks>(),
+                        decoded.complete::<tables::ProductionLineOutput>(),
+                    ) else {
+                        if read {
+                            // The publication this read held, if any, is not ingested: whatever
+                            // lines ended in it are lost, for a producer that cannot be told.
+                            result.taint(observation, hour);
+                            if decoded.complete::<tables::ProductionLines>().is_ok() {
+                                result.unread += 1;
+                            }
+                            if result.unread_reason.is_none()
+                                && let TableView::Unavailable { reason } =
+                                    &*decoded.tables[TableId::ProductionLineOutput.index()]
+                            {
+                                result.unread_reason = Some(reason.clone());
+                            }
+                        }
+                        for track in result.tags.values_mut() {
+                            track.last = None;
+                        }
+                        continue;
+                    };
+                    let tagged: Vec<(String, Identity)> = tagged_countries(countries, links)
+                        .into_iter()
+                        .filter_map(|(tag, lookup)| {
+                            let TaggedCountry::Found(country, slot) = lookup else {
+                                return None;
+                            };
+                            match std::str::from_utf8(tag) {
+                                Ok(tag) => Some((tag.to_owned(), (slot, country.id, observation))),
+                                Err(_) => {
+                                    result.unnamed += 1;
+                                    None
+                                }
+                            }
+                        })
+                        .collect();
+                    if !read {
+                        // Carried: the last read still holds, only for the same identity.
+                        let present: HashMap<&str, Identity> = tagged
+                            .iter()
+                            .map(|(tag, identity)| (tag.as_str(), *identity))
+                            .collect();
+                        for (tag, track) in &mut result.tags {
+                            let continues = present.get(tag.as_str()).copied().filter(|identity| {
+                                track.last.is_some_and(|(seen, at)| {
+                                    seen == *identity && at.checked_add(1) == Some(hour)
+                                })
+                            });
+                            track.last = continues.map(|identity| (identity, hour));
+                            if continues.is_some()
+                                && let Some(last) = track.last_hours.last_mut()
+                            {
+                                *last = hour;
+                            }
+                        }
+                        continue;
+                    }
+                    result.reads.push(hour);
+                    // A new observation restarts every count; totals never cross it.
+                    if let Some(since) = output.iter().map(|row| row.since_hour).min() {
+                        match result.observations.last() {
+                            None => result.observations.push(since),
+                            Some(current) if *current != since => {
+                                result.observations.push(since);
+                                observation += 1;
+                                rows.clear();
+                                live.clear();
+                                totals.clear();
+                                cost_totals.clear();
+                                seen_production.clear();
+                            }
+                            Some(_) => {}
+                        }
+                    }
+                    // Explicit suffix values also authenticate provisional source
+                    // fixtures; empty publications require the introduction ledger.
+                    spending_recorded |= output
+                        .iter()
+                        .any(|row| !matches!(row.spent_raw, Recorded::NotRecorded));
+                    if !spending_recorded {
+                        result.spending_taint(
+                            observation,
+                            hour,
+                            ProductionSpendingUnknown::NotRecorded,
+                        );
+                    }
+                    let observed: Vec<(String, Identity)> = tagged
+                        .into_iter()
+                        .map(|(tag, (slot, id, _))| (tag, (slot, id, observation)))
+                        .collect();
+                    let by_slot: HashMap<u32, Identity> = observed
+                        .iter()
+                        .map(|(_, identity)| (identity.0, *identity))
+                        .collect();
+                    let mut presence_unknown = false;
+                    let census_complete =
+                        if let Ok(lines) = decoded.complete::<tables::ProductionLines>() {
+                            for line in lines {
+                                if let Some(identity) = link_slot(links, line.country)
+                                    .and_then(|slot| by_slot.get(&slot))
+                                {
+                                    seen_production.insert(*identity);
+                                } else {
+                                    presence_unknown = true;
+                                }
+                            }
+                            true
+                        } else {
+                            false
+                        };
+                    let mut seen = HashSet::with_capacity(output.len());
+                    for row in output {
+                        let key = (row.line, row.ordinal);
+                        seen.insert(key);
+                        let refit = match kinds.get(&row.line) {
+                            Some(kind) => {
+                                *kind == engine::cequipment_production_line::KIND_SHIP_REFIT
+                            }
+                            None => {
+                                unlisted.insert(row.line);
+                                false
+                            }
+                        };
+                        let producer = link_slot(links, row.country)
+                            .and_then(|slot| by_slot.get(&slot))
+                            .copied();
+                        let state = rows.entry(key).or_insert_with(|| {
+                            if producer.is_none() {
+                                result.unattributed += 1;
+                            }
+                            RowState {
+                                identity: producer,
+                                entry: (row.variant, refit),
+                                units: 0,
+                                exact: true,
+                                ended: false,
+                                spent_raw: 0,
+                            }
+                        });
+                        // A producer the links could not tell before may be told now, while
+                        // nothing was delivered yet; units of a producer never told are lost to
+                        // some country that cannot be named, so no total is known after them.
+                        if state.identity.is_none() && state.units == 0 && state.exact {
+                            state.identity = producer;
+                        }
+                        if let Some(identity) = state.identity {
+                            seen_production.insert(identity);
+                        } else {
+                            presence_unknown = true;
+                        }
+                        if state.identity.is_none() && (row.units != 0 || !row.exact) {
+                            result.taint(observation, hour);
+                        }
+                        if state.identity.is_none()
+                            && !matches!(row.spent_raw, Recorded::Value(Some(0)))
+                        {
+                            result.spending_taint(
+                                observation,
+                                hour,
+                                ProductionSpendingUnknown::SpendingUnavailable,
+                            );
+                        }
+                        // Not exact once: a tick is left out of every later count.
+                        let exact = state.exact && row.exact;
+                        if state.exact && !exact {
+                            result.inexact += 1;
+                        }
+                        // The observer authenticates the applied input's tuple. Census
+                        // cost, delivered units and their exactness do not reprice it.
+                        let (delta, spending_reason) = match row.spent_raw {
+                            Recorded::Value(Some(value)) => {
+                                (i128::from(value) - i128::from(state.spent_raw), None)
+                            }
+                            Recorded::Value(None) => {
+                                (0, Some(ProductionSpendingUnknown::SpendingUnavailable))
+                            }
+                            Recorded::NotRecorded => {
+                                (0, Some(ProductionSpendingUnknown::NotRecorded))
+                            }
+                        };
+                        apply_cost(
+                            &mut cost_totals,
+                            &mut cost_version,
+                            state,
+                            delta,
+                            spending_reason,
+                        )?;
+                        if let Recorded::Value(Some(value)) = row.spent_raw {
+                            state.spent_raw = value;
+                        }
+                        apply(&mut totals, &mut version, state, row.units, exact);
+                        state.units = row.units;
+                        state.exact = exact;
+                        state.ended |= row.ended;
+                    }
+                    // A row gone without its ended publication lost its final count.
+                    for key in live.iter().filter(|key| !seen.contains(*key)) {
+                        if let Some(state) = rows.get_mut(key) {
+                            result.lost += usize::from(state.exact);
+                            let units = state.units;
+                            apply_cost(
+                                &mut cost_totals,
+                                &mut cost_version,
+                                state,
+                                0,
+                                Some(ProductionSpendingUnknown::LostOutput),
+                            )?;
+                            apply(&mut totals, &mut version, state, units, false);
+                            state.exact = false;
+                        }
+                    }
+                    live = seen
+                        .into_iter()
+                        .filter(|key| rows.get(key).is_some_and(|state| !state.ended))
+                        .collect();
+                    // Each tag's sample: its country's totals at this read.
+                    let present: HashSet<&str> =
+                        observed.iter().map(|(tag, _)| tag.as_str()).collect();
+                    for track in result
+                        .tags
+                        .iter_mut()
+                        .filter(|(tag, _)| !present.contains(tag.as_str()))
+                        .map(|(_, track)| track)
+                    {
+                        track.last = None;
+                    }
+                    for (tag, identity) in observed {
+                        let track = result.tags.entry(tag).or_default();
+                        let starts = !track.last.is_some_and(|(seen, at)| {
+                            seen == identity && at.checked_add(1) == Some(hour)
+                        });
+                        let sample = u32::try_from(track.hours.len()).map_err(|_| {
+                            io::Error::other(
+                                "The production sample index exceeds its integer range",
+                            )
+                        })?;
+                        track.hours.push(hour);
+                        track.last_hours.push(hour);
+                        track.starts.push(starts);
+                        track.identities.push(identity);
+                        track.presence.push(if seen_production.contains(&identity) {
+                            Some(true)
+                        } else if census_complete && !presence_unknown {
+                            Some(false)
+                        } else {
+                            None
+                        });
+                        track.last = Some((identity, hour));
+                        let (cost_changed, cost_entries) = cost_totals
+                            .get(&identity)
+                            .map_or((0, None), |(changed, entries)| (*changed, Some(entries)));
+                        if track.cost_taken != Some((identity, cost_changed)) {
+                            track.cost_taken = Some((identity, cost_changed));
+                            let empty = BTreeMap::new();
+                            let entries = cost_entries.unwrap_or(&empty);
+                            let keys: BTreeSet<Entry> = entries
+                                .keys()
+                                .chain(track.cost_current.keys())
+                                .copied()
+                                .collect();
+                            for entry in keys {
+                                let now = entries.get(&entry).copied().unwrap_or_default();
+                                if track.cost_current.get(&entry).copied().unwrap_or_default()
+                                    != now
+                                {
+                                    track
+                                        .cost_changes
+                                        .entry(entry)
+                                        .or_default()
+                                        .push((sample, now));
+                                }
+                            }
+                            track.cost_current = entries.clone();
+                        }
+                        let (changed, entries) = totals
+                            .get(&identity)
+                            .map_or((0, None), |(changed, entries)| (*changed, Some(entries)));
+                        if track.taken == Some((identity, changed)) {
+                            continue;
+                        }
+                        track.taken = Some((identity, changed));
+                        let empty = BTreeMap::new();
+                        let entries = entries.unwrap_or(&empty);
+                        let keys: BTreeSet<Entry> = entries
+                            .keys()
+                            .chain(track.current.keys())
+                            .copied()
+                            .collect();
+                        for entry in keys {
+                            let now = entries.get(&entry).copied().unwrap_or_default();
+                            if track.current.get(&entry).copied().unwrap_or_default() != now {
+                                track.changes.entry(entry).or_default().push((sample, now));
+                            }
+                        }
+                        track.current = entries.clone();
                     }
                 }
-                track.current = entries.clone();
             }
-        }
-    }
+            Ok(())
+        },
+    )?;
     result.unlisted = unlisted
         .iter()
         .filter(|line| !kinds.contains_key(*line))
@@ -627,7 +652,6 @@ impl Named<'_> {
         self.texts
             .filter(|_| !key.starts_with(equipment::UNRESOLVED_MARK))
             .and_then(|texts| texts.text(key))
-            .filter(|name| !name.is_empty())
     }
 }
 

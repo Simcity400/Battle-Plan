@@ -4,6 +4,7 @@ import { object, unsigned32 } from '../../dashboard/validation.ts';
 import { clipToSpans, isOrderedSpans } from '../../charts/series.ts';
 import type { ShareRun } from '../../charts/share';
 import { formatFixed, rescale } from '../../charts/valueAxis.ts';
+import { usNumber } from '../../charts/numberFormat.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 
 const text = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
@@ -47,7 +48,7 @@ export function supplyTooltip(date: string, name: string, countryFlag: TooltipCo
     note: 'No divisions: shares are undefined.' };
   return { title: `${date} · ${name}`, countryFlag,
     rows: [...STATES].reverse().map(state => ({ label: STATE_LABELS[state], swatch: colors[STATES.indexOf(state)],
-      value: `${formatShare(run[state], total)} · ${run[state].toLocaleString('en-US')} ${run[state] === 1 ? 'division' : 'divisions'}` })),
+      value: `${formatShare(run[state], total)} · ${usNumber.format(run[state])} ${run[state] === 1 ? 'division' : 'divisions'}` })),
     note: 'Shares rounded to two decimals; counts exact. In supply includes low received supply still covered by grace. No supply means native very-low frame 3, not necessarily zero received supply.' };
 }
 

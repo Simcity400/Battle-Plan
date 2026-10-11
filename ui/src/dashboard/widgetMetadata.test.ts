@@ -10,11 +10,11 @@ test('widget metadata preserves world controls and content-choice title policies
   // Only UI leaves are replaced; metadata, frame, settings and picker decisions are production code.
   const fixtures: Record<string, string> = {
     '/components/Popover.tsx': `export const usePopover = () => ({ trigger: null, open: true, close() {} });
-      export const Popover = ({ children }) => children;`,
+      export const Popover = ({ children }) => children; export const PopoverBody = ({ children }) => children();`,
     '/dashboard/products.ts': 'export const useProduct = () => ({});',
     '/dashboard/CountryChip.tsx': 'export default () => "COUNTRY_CHIP";',
     '/dashboard/WidgetSettingsMenu.tsx': 'export default () => null;',
-    '/dashboard/widgets.tsx': 'export const WidgetBody = () => null;',
+    '/dashboard/widgets.tsx': 'export const WidgetBody = () => "WIDGET_BODY";',
     '/dashboard/CampaignPicker.tsx': 'export default () => "CAMPAIGN_PICKER";',
     '/dashboard/settings/CountriesSection.tsx': 'export const CountriesSection = () => "COUNTRIES_SETTINGS";',
     '/dashboard/settings/TimeSection.tsx': 'export const TimeSection = () => "TIME_SETTINGS";',
@@ -66,6 +66,13 @@ test('widget metadata preserves world controls and content-choice title policies
     assert.match(grid(), /World history: follow playback/);
     template.widgets = [country];
     assert.match(grid(), /COUNTRY_CHIP/);
+    // In a browser the body waits for its turn to mount, behind the loading state widgets show.
+    Object.defineProperty(globalThis, 'IntersectionObserver', { configurable: true, value: class {} });
+    try {
+      const waiting = grid();
+      assert.match(waiting, /aria-label="Loading Country history…"/); assert.doesNotMatch(waiting, /WIDGET_BODY/);
+    } finally { Reflect.deleteProperty(globalThis, 'IntersectionObserver'); }
+    assert.match(grid(), /WIDGET_BODY/, 'server rendering mounts the body at once');
     const picker = renderToStaticMarkup(createElement(Picker, { runtime, disabled: false, onAdd() {}, onOpen() {} }));
     assert.match(picker, /<strong>World history<\/strong><small>Diplomacy · Recorded world outcomes\.<\/small>/);
     assert.match(picker, /<strong>Country history<\/strong><small>Recorded world outcomes\.<\/small>/);
@@ -92,7 +99,7 @@ test('widget metadata preserves world controls and content-choice title policies
     const armyWidget = createWidget(army.kind, 'main', 'army');
     for (const title of ['Army size', 'My army', 'Number of divisions']) {
       const markup = settingsFor({ ...armyWidget, title, options: { measure: 'divisions' } });
-      assert.match(markup, /value="battalions"/);
+      assert.match(markup, /<span class="menu-item-label">Battalions<\/span>/);
       const next = chooseMeasure('battalions');
       assert.equal(next.widget.title, title);
       assert.equal(next.widget.options?.measure, 'battalions');
@@ -100,7 +107,10 @@ test('widget metadata preserves world controls and content-choice title policies
     }
     available = { measures: ['divisions'] };
     const saveCount = saves.length;
-    assert.match(settingsFor({ ...armyWidget, options: { measure: 'battalions' } }), /battalions \(not in this campaign\)/);
+    const missingMeasure = settingsFor({ ...armyWidget, options: { measure: 'battalions' } });
+    assert.match(missingMeasure, />Saved choice unavailable</);
+    assert.match(missingMeasure, /Key: battalions/);
+    assert.doesNotMatch(missingMeasure, />battalions \(not in this campaign\)</);
     assert.equal(saves.length, saveCount, 'opening another recording retains the unavailable saved measure');
     available = { measures: ['divisions', 'battalions'] };
     const measure = army.options.find((field: { key: string }) => field.key === 'measure');
@@ -121,12 +131,12 @@ test('widget metadata preserves world controls and content-choice title policies
     const timeline = createWidget(ideas.kind, 'main', 'ideas');
     for (const title of [ideas.title, 'Visible council', 'My council']) {
       const markup = settingsFor({ ...timeline, title, options: { category: 'mod_visible' } });
-      assert.match(markup, /<option value="mod_empty"><\/option>/, 'the recorded empty category label remains empty');
+      assert.match(markup, /<span class="menu-item-label"><\/span>/, 'the recorded empty category label remains empty');
       const fields = optionFields.shownFields.find((row: { fields: { key: string }[] }) => row.fields.some(field => field.key === 'category'));
       assert.ok(fields, 'the actual category dropdown was rendered');
       fields.onChange('category', 'mod_empty');
       const next = saves.at(-1)!;
-      assert.equal(next.widget.title, title === 'My council' ? title : ideas.title);
+      assert.equal(next.widget.title, title === 'My council' ? title : '');
       assert.equal(next.widget.options?.category, 'mod_empty');
       assert.equal(next.view, true);
       let stored = '';
@@ -139,5 +149,10 @@ test('widget metadata preserves world controls and content-choice title policies
       assert.equal(restored.layouts[0].template.widgets[0].title, next.widget.title);
       assert.equal(restored.layouts[0].template.widgets[0].options?.category, 'mod_empty');
     }
+    settingsFor({ ...timeline, title: '', options: { category: 'mod_empty' } });
+    const emptyCategoryFields = optionFields.shownFields.find((row: { fields: { key: string }[] }) => row.fields.some(field => field.key === 'category'));
+    assert.ok(emptyCategoryFields);
+    emptyCategoryFields.onChange('category', 'mod_visible');
+    assert.equal(saves.at(-1)!.widget.title, 'Visible council', 'an empty authored title still follows its selected content choice');
   } finally { await vite.close(); }
 });

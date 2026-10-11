@@ -407,8 +407,8 @@ pub struct Catalogue {
     /// Shared with country naming (`content::localisation`): parsed once per source.
     pub localisation: Arc<Localisation>,
     pub sprites: SpriteSet,
-    /// Shared native template registry, read once with this content catalogue.
-    pub guis: installed_content::gui::native::Guis,
+    /// Shared native templates, loaded only when a consumer needs GUI declarations.
+    guis: OnceLock<Result<installed_content::gui::native::Guis, String>>,
     /// The current client's texture decode settings, used by native GUI artwork.
     pub gui_decode: Result<installed_content::image::native::Decode, String>,
     /// Notes from verifying the recording, such as unverified content allowed by the user.
@@ -432,6 +432,18 @@ pub struct Catalogue {
 }
 
 impl Catalogue {
+    /// Load the complete native registry once, retaining its template order and
+    /// post-load pass. A failure refuses GUI-dependent fields; text stays usable.
+    pub(crate) fn guis(&self) -> io::Result<&installed_content::gui::native::Guis> {
+        self.guis
+            .get_or_init(|| {
+                installed_content::gui::native::read_layers(&self.content.layers)
+                    .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map_err(invalid)
+    }
+
     pub(crate) fn war_names(&self) -> Result<&installed_content::wargoals::Names, String> {
         self.war_names
             .get_or_init(|| {
@@ -489,7 +501,6 @@ impl Catalogue {
         gui_decode: Result<installed_content::image::native::Decode, String>,
     ) -> io::Result<Self> {
         let sprites = installed_content::gfx::read(&content.layers)?;
-        let guis = installed_content::gui::native::read_layers(&content.layers)?;
         for (label, count) in [
             ("logged localisation diagnostics", localisation.logged.len()),
             ("refused localisation forms", localisation.refused.len()),
@@ -512,7 +523,7 @@ impl Catalogue {
             content,
             localisation,
             sprites,
-            guis,
+            guis: OnceLock::new(),
             gui_decode,
             verification,
             warnings,
@@ -548,6 +559,9 @@ impl Catalogue {
         key: &str,
         scripted: &crate::scripted_text::ScriptedText<'_>,
     ) -> Option<String> {
+        if !self.has_presentation_key(key) {
+            return None;
+        }
         let (text, findings) = localised_in_details(&self.localisation, key, &[], scripted);
         for finding in findings {
             self.note(finding);
@@ -591,6 +605,19 @@ impl Catalogue {
         country_kind: Kind,
         refusals: Option<&Mutex<Refusals>>,
     ) -> Option<String> {
+        if !self.has_presentation_key(key) {
+            if let Some(refusals) = refusals {
+                let key = key.split('\0').next().unwrap_or_default();
+                refusals
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .note(
+                        format!("localisation {key} is missing; title is unavailable"),
+                        key,
+                    );
+            }
+            return None;
+        }
         let (text, findings) =
             localised_with_reason(&self.localisation, key, arguments, view, country_kind);
         for finding in findings {
@@ -608,7 +635,23 @@ impl Catalogue {
         .ok()
     }
 
-    /// [`Catalogue::localised_with`] with no arguments.
+    /// Keep missing presentation keys distinct from authored empty strings.
+    pub(crate) fn has_presentation_key(&self, key: &str) -> bool {
+        let key = key.split('\0').next().unwrap_or_default();
+        if key.is_empty() || self.localisation.get(key).is_some() {
+            return true;
+        }
+        self.note(Finding::new(
+            Kind::Content,
+            key,
+            format!("localisation {key} is missing; title is unavailable"),
+        ));
+        false
+    }
+
+    /// [`Catalogue::localised_with`] with no arguments. Presentation preserves
+    /// absent versus defined empty text; the underlying native localizer retains
+    /// its own missing-key behavior.
     pub fn localised(&self, key: &str, view: View) -> Option<String> {
         self.localised_with(key, &[], view)
     }
@@ -882,6 +925,81 @@ pub fn sprite_frame_png(
     frame: u32,
     max_edge: u32,
 ) -> io::Result<String> {
+    let cache = layers.derived::<SpriteImages>();
+    let key = format!(
+        "{:?}/{:?}/{:?}/{frame}/{max_edge}",
+        sprite.name, sprite.facts, decode
+    );
+    cache.get(key, || {
+        render_sprite_frame_png(layers, sprite, decode, frame, max_edge)
+    })
+}
+
+#[derive(Default)]
+struct ImageEntry {
+    result: OnceLock<Result<String, String>>,
+    charged: std::sync::atomic::AtomicBool,
+}
+
+#[derive(Default)]
+struct SpriteImageEntries {
+    entries: BTreeMap<String, Arc<ImageEntry>>,
+    bytes: usize,
+}
+
+#[derive(Default)]
+struct SpriteImages {
+    entries: Mutex<SpriteImageEntries>,
+}
+
+impl SpriteImages {
+    fn get(&self, key: String, render: impl FnOnce() -> io::Result<String>) -> io::Result<String> {
+        let slot = {
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            Arc::clone(entries.entries.entry(key.clone()).or_default())
+        };
+        let result = slot
+            .result
+            .get_or_init(|| render().map_err(|error| error.to_string()))
+            .clone();
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if entries
+            .entries
+            .get(&key)
+            .is_some_and(|entry| Arc::ptr_eq(entry, &slot))
+            && !slot
+                .charged
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            entries.bytes += key.len()
+                + match &result {
+                    Ok(image) => image.len(),
+                    Err(reason) => reason.len(),
+                };
+        }
+        if entries.bytes > crate::products::artwork::MAX_RETAINED_ARTWORK_BYTES {
+            entries
+                .entries
+                .retain(|_, entry| entry.result.get().is_none());
+            entries.bytes = 0;
+        }
+        result.map_err(invalid)
+    }
+}
+
+fn render_sprite_frame_png(
+    layers: &ResolvedLayers,
+    sprite: &installed_content::gfx::SpriteType,
+    decode: Decode,
+    frame: u32,
+    max_edge: u32,
+) -> io::Result<String> {
     use installed_content::gui::native::sprites::SpriteKind;
     let (plain, animated) = match &sprite.facts.kind {
         SpriteKind::Plain(plain) => (plain, None),
@@ -972,6 +1090,61 @@ pub(crate) mod texture_tests;
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn presentation_titles_distinguish_missing_empty_and_authored_key_text() {
+        let (catalogue, _folder) = folder_catalogue(&[(
+            "localisation/titles_l_english.yml",
+            "\u{feff}l_english:\n NAMED:0 \"Authored title\"\n EMPTY:0 \"\"\n SAME:0 \"SAME\"\n",
+        )]);
+        assert_eq!(
+            catalogue.localised("NAMED", View::Plain).as_deref(),
+            Some("Authored title")
+        );
+        assert_eq!(
+            catalogue.localised("EMPTY", View::Plain).as_deref(),
+            Some("")
+        );
+        assert_eq!(
+            catalogue.localised("SAME", View::Plain).as_deref(),
+            Some("SAME")
+        );
+        assert_eq!(catalogue.localised("MISSING", View::Plain), None);
+        assert_eq!(catalogue.localised("", View::Plain).as_deref(), Some(""));
+        assert_eq!(
+            catalogue.localised("NAMED\0suffix", View::Plain).as_deref(),
+            Some("Authored title")
+        );
+        assert_eq!(
+            localised(&catalogue.localisation, "MISSING", View::Plain).unwrap(),
+            "MISSING"
+        );
+    }
+
+    #[test]
+    fn missing_titles_name_their_refusal_in_the_callers_reply() {
+        let (catalogue, _folder) = folder_catalogue(&[]);
+        let refusals = Mutex::new(Refusals::default());
+        let before = catalogue.refusal_lines();
+        for _ in 0..2 {
+            assert_eq!(
+                catalogue.localised_with_refusals(
+                    "mod_ideology\0suffix",
+                    &[],
+                    View::Plain,
+                    &refusals,
+                ),
+                None
+            );
+        }
+        let expected = "localisation mod_ideology is missing; title is unavailable";
+        let caller = refusals.lock().unwrap().counted_diagnostic_lines("titles");
+        assert_eq!(caller.len(), 1);
+        assert!(caller[0].0.contains(expected));
+        assert_eq!(caller[0].1, 1);
+        // The reply owns the reason; the shared catalogue does not grow with each missing key.
+        assert_eq!(catalogue.refusal_lines(), before);
+    }
 
     #[test]
     fn saved_name_bytes_follow_native_nul_and_preserve_empty_authored_text() {
@@ -1202,7 +1375,6 @@ pub(crate) mod tests {
     pub(crate) fn layers_catalogue(layers: ResolvedLayers) -> Catalogue {
         let localisation = installed_content::localisation::read(&layers, "english").unwrap();
         let sprites = installed_content::gfx::read(&layers).unwrap();
-        let guis = installed_content::gui::native::read_layers(&layers).unwrap();
         Catalogue {
             content: Arc::new(ResolvedContent {
                 layers,
@@ -1210,7 +1382,7 @@ pub(crate) mod tests {
             }),
             localisation: Arc::new(localisation),
             sprites,
-            guis,
+            guis: OnceLock::new(),
             gui_decode: Ok(Default::default()),
             verification: Vec::new(),
             warnings: Vec::new(),
@@ -1221,6 +1393,84 @@ pub(crate) mod tests {
             war_names: OnceLock::new(),
             state_content: Arc::new(OnceLock::new()),
         }
+    }
+
+    #[test]
+    fn refused_gui_reads_keep_focus_and_resource_titles_and_retry_on_a_fresh_stack() {
+        use crate::products::{artwork, resources};
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        use std::sync::atomic::AtomicBool;
+
+        let gui_path = "interface/synthetic.gui";
+        let (_, folder) = folder_catalogue(&[
+            (
+                gui_path,
+                "guiTypes={containerWindowType={name=synthetic_window}}",
+            ),
+            (
+                "common/national_focus/synthetic.txt",
+                "focus_tree={focus={id=synthetic_focus text=synthetic_title}}",
+            ),
+            (
+                "localisation/synthetic_l_english.yml",
+                "\u{feff}l_english:\n synthetic_title:0 \"Localized focus\"\n synthetic_title_desc:0 \"Localized description\"\n PRODUCTION_MATERIALS_SYNTHETIC:0 \"Localized resource\"\n",
+            ),
+        ]);
+        let layers = ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+        std::fs::remove_file(folder.0.join(gui_path)).unwrap();
+        // A reached GUI read will fail, but constructing a text catalogue must not read it.
+        let catalogue = Arc::new(Catalogue::of_layers(layers, "english").unwrap());
+        assert!(catalogue.guis.get().is_none());
+        let focus = artwork::Context::load(Arc::clone(&catalogue), artwork::Kind::Focus).unwrap();
+        let (titles, _) = focus
+            .text_catalogue(BTreeSet::from(["synthetic_focus"]), &AtomicBool::new(false))
+            .unwrap();
+        assert_eq!(titles[0].name.as_deref(), Some("Localized focus"));
+        assert_eq!(
+            titles[0].description.as_deref(),
+            Some("Localized description")
+        );
+        assert!(catalogue.guis.get().is_none());
+
+        let refused = catalogue.guis().unwrap_err().to_string();
+        assert!(refused.contains(gui_path), "{refused}");
+        assert_eq!(
+            artwork::nuke_icon(&catalogue).unwrap_err().to_string(),
+            refused
+        );
+        let mut cached = BTreeMap::new();
+        let mut warnings = Vec::new();
+        resources::resource_content(
+            &resources::ContentView::of(&catalogue),
+            &[("synthetic".into(), 1)],
+            &mut cached,
+            &mut warnings,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(
+            cached[&("synthetic".into(), 1)].name.as_deref(),
+            Some("Localized resource")
+        );
+        assert!(cached[&("synthetic".into(), 1)].icon.is_none());
+        assert!(
+            warnings.iter().any(|warning| warning.contains(gui_path)),
+            "{warnings:?}"
+        );
+
+        std::fs::write(
+            folder.0.join(gui_path),
+            "guiTypes={containerWindowType={name=replacement_window}}",
+        )
+        .unwrap();
+        assert_eq!(catalogue.guis().unwrap_err().to_string(), refused);
+        let fresh_layers = ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+        let fresh = Catalogue::of_layers(fresh_layers, "english").unwrap();
+        let first = fresh.guis().unwrap();
+        assert!(first.template("replacement_window").is_some());
+        assert!(first.template("synthetic_window").is_none());
+        assert!(std::ptr::eq(first, fresh.guis().unwrap()));
     }
 
     #[test]

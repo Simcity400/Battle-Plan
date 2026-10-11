@@ -3,6 +3,7 @@ import type { Run, Span } from '../../charts/series';
 import { inSpans } from '../../charts/timeline/layout.ts';
 import type { TimelineSpan } from '../../charts/timeline/layout';
 import { formatFixed } from '../../charts/valueAxis.ts';
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { CountryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import type { AutonomyLevel, AutonomyReply, AutonomyRun, AutonomySubject } from '../../generated/dashboard';
 
@@ -40,8 +41,9 @@ export function validateAutonomyReply(data: unknown): AutonomyReply {
   return reply;
 }
 
-/** A level's name: the game's, else its recorded id, so a level is never unnamed. */
-export const levelName = (level: AutonomyLevel | undefined) => level ? level.name ?? level.id : 'Unknown level';
+/** An unavailable localized name stays distinct from a recorded level key. */
+export const levelName = (level: AutonomyLevel | undefined) => level
+  ? contentTitle(level.name, level.id, 'Level name unavailable') : 'Unknown level';
 
 /** Where a subject's score sits between its move-down (0) and move-up (1) scores;
  * null when the two are equal, as then there is no span to sit in. Past either

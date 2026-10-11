@@ -1,15 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { resolveWindow } from '../../dashboard/model';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
+import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
+import { useTechnologyArtwork } from './useTechnologyArtwork';
 import type { ResearchEntry, ResearchReply, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
 import ResearchExplanation from './ResearchExplanation';
 import { researchNumber } from './researchBreakdown';
 import { researchJourney } from './researchJourney';
-import { researchAt, researchColumns, researchProgressAt, researchRequest, researchStateAt, researchView, validateResearchReply } from './researchData';
+import { researchAt, researchArtworkTokens, researchColumns, researchProgressAt, researchRequest, researchStateAt, researchView, validateResearchReply } from './researchData';
 import '../national-focus/nationalFocus.css';
 import ListSkeleton from '../../components/Skeleton';
 import { Icon } from '../../components/Icons';
@@ -30,9 +33,9 @@ function ResearchCard({ history, slots, slot, entry, art, jump }: {
 }) {
   const [open, setOpen] = useState(false);
   return <li {...jump}><details className="focus-details research-details" onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary className="focus-row research-row" aria-label={`${art?.name ?? entry.token}, slot ${slot.index + 1}, show details`}>
+    <summary className="focus-row research-row" aria-label={`${contentTitle(art?.name, entry.token, 'Technology name unavailable')}, slot ${slot.index + 1}, show details`}>
       <span className="focus-art">{art?.icon ? <img src={art.icon} alt="" width="66" height="64" /> : <span className="focus-missing-art" aria-label="Game artwork unavailable">&#9671;</span>}</span>
-      <span className="focus-label"><strong title={art?.name ?? entry.token}>{art?.name ?? entry.token}</strong></span>
+      <span className="focus-label"><strong data-tooltip={contentTitleHint(entry.token)}>{contentTitle(art?.name, entry.token, 'Technology name unavailable')}</strong></span>
       <Icon name="chevron-down" className="focus-chevron" aria-hidden="true" />
     </summary>
     {open && <ResearchExplanation history={history} slots={slots} slot={slot} entry={entry} description={art?.description} />}
@@ -49,11 +52,11 @@ function CurrentResearch({ history, slots, slot, entry, current, art, hour, live
   const [open, setOpen] = useState(false);
   const progress = researchProgressAt(slot, entry.firstObservedHour, hour);
   const left = current.details?.remainingDays ?? null;
-  const name = art?.name ?? entry.token;
+  const name = contentTitle(art?.name, entry.token, 'Technology name unavailable');
   return <details className="research-now-details" onToggle={event => setOpen(event.currentTarget.open)} {...jump}>
     <summary className="focus-now research-now" aria-label={`${name}, researching in slot ${slot.index + 1}, show details`}>
       <ResearchArt art={art} />
-      <span className="focus-now-text"><strong title={name}>{name}</strong>
+      <span className="focus-now-text"><strong data-tooltip={contentTitleHint(entry.token)}>{name}</strong>
         <span className="focus-now-status" data-tooltip={left !== null ? 'The game’s estimate at this hour’s research speed' : undefined}>{live && <span className="live-dot" />}
           {left !== null ? `${left} ${left === 1 ? 'day' : 'days'} left` : progress !== null ? `${Math.round(progress * 100)}% complete` : 'Researching'}</span></span>
       <Icon name="chevron-down" className="focus-chevron" aria-hidden="true" />
@@ -85,10 +88,13 @@ export default function ResearchWidget({ widget, runtime, active, onDiagnostics 
   const moment = live || widget.time.mode === 'pin';
   const request = track && tag ? researchRequest(track.source.id, track.source.revision, { branchId: track.branch.id, tag }) : null;
   const { data, error, retry } = useProduct<ResearchReply>(runtime.client, request, active, validateResearchReply);
-  useEffect(() => { onDiagnostics(data?.warnings ?? NO_WARNINGS); return () => onDiagnostics(NO_WARNINGS); }, [data, onDiagnostics]);
-  const artwork = useMemo(() => new Map(data?.artwork.map(a => [a.token, a])), [data]);
   const slots = useMemo(() => data && hour != null ? researchAt(data.history, hour) : null, [data, hour]);
   const columns = useMemo(() => slots && researchColumns(researchView(slots)), [slots]);
+  const imageTokens = useMemo(() => researchArtworkTokens(slots, hour, moment), [slots, hour, moment]);
+  const images = useTechnologyArtwork(runtime.client, track, imageTokens, active && !!data);
+  const diagnostics = useMemo(() => [...new Set([...(data?.warnings ?? NO_WARNINGS), ...images.warnings])], [data, images.warnings]);
+  useDiagnostics(onDiagnostics, diagnostics);
+  const artwork = useMemo(() => new Map(data?.artwork.map(art => [art.token, { ...art, icon: images.artwork.get(art.token)?.icon ?? art.icon }])), [data, images.artwork]);
   if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <div className="dash-empty" role="status">This time is outside the country’s recorded branch.</div>;
   if (error) return <div className="dash-empty" role="alert"><p>{error}</p><button className="button small" onClick={retry}>Retry</button></div>;

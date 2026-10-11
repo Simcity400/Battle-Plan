@@ -24,6 +24,7 @@ import { useProduct } from '../../dashboard/products';
 import { useProductWindows, useWindowDisplay } from '../../dashboard/productWindows';
 import { usePlaybackSpeed } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { AirAcePortrait, AirAcesManifestReply, AirAcesWindowReply } from '../../generated/dashboard';
 import { DEFAULT_SORT, OPTIONS, SORT_CHOICES } from './definition';
 import { aceJump, aceName, aceNameValue, aceCallsign, aceRows, aceStatus, aceTooltip, aircraftName, validateAces, validateAcesWindow, validatePortraits, wingName } from './acesData';
@@ -98,7 +99,8 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
       render: row => <small className="aces-status">{aceStatus(row)}</small> },
   ], [portraits, labelAt]);
   const tooltip = useCallback((row: AceRow) => fitTooltip([aceTooltip(row, tag => labelAt(row.hour)(tag).name, portraits.get(nameKey(row.hour, row.key))?.missing ?? undefined)], viewport), [labelAt, portraits, viewport]);
-  useEffect(() => { onDiagnostics(data ? [...data.warnings, ...(detail?.warnings ?? WARNINGS)] : WARNINGS); return () => onDiagnostics(WARNINGS); }, [data, detail, onDiagnostics]);
+  const diagnostics = useMemo(() => data ? [...data.warnings, ...(detail?.warnings ?? WARNINGS)] : WARNINGS, [data, detail]);
+  useDiagnostics(onDiagnostics, diagnostics);
   if (!track) return <WidgetState kind="empty" icon="star" message="Load a campaign to see its aces." />;
   if (!window) return <WidgetState kind="unavailable" message="The chosen moment is outside this campaign branch." />;
   if (loaded.error) return <WidgetState kind="error" message={loaded.error} onRetry={loaded.retry} />;

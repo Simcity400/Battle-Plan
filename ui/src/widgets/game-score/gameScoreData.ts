@@ -13,7 +13,7 @@ import type { Sort, TableGroup } from '../../charts/table/logic';
 import { fixed5At, validateFixed5Runs } from '../../dashboard/fixed5Runs.ts';
 import type { NativeFixed5Run, GameScoreReply, GameScoreIdentity, GameScoreMissing } from '../../generated/dashboard';
 import { formatDateTime } from '../../dashboard/calendar.ts';
-import { readAt, readNote } from '../../dashboard/reads.ts';
+import { readAt } from '../../dashboard/reads.ts';
 import { int, object, unsigned32 } from '../../dashboard/validation.ts';
 
 export const SCORE_PARTS = ['total', 'army', 'navy', 'air', 'industry', 'land'] as const;
@@ -131,7 +131,7 @@ export function gameScoreCountryKnown(value: GameScoreIdentity | null | undefine
 type ScoreFlagAt = (tag: string, hour: number) => FlagRead | null | undefined | typeof FAILED_FACT;
 export function gameScoreCountryCell(row: ScoreRow, flagAt: ScoreFlagAt) {
   if (!gameScoreCountryKnown(row.identity)) return null;
-  return { name: row.identity.name ?? row.tag, ...flagReadMetadata(flagAt(row.tag, row.hour)) };
+  return { name: row.identity.name ?? 'Country name unavailable', ...flagReadMetadata(flagAt(row.tag, row.hour)) };
 }
 /** Product-owned race looks use one exact read; names can resolve another dated tooltip. */
 export function gameScoreLooks(model: GameScoreModel | null, moment: number, flagAt: ScoreFlagAt) {
@@ -144,7 +144,7 @@ export function gameScoreLooks(model: GameScoreModel | null, moment: number, fla
   return {
     name: (tag: string, atHour = hour) => {
       const at = Math.floor(atHour);
-      return (at === hour ? identities.get(tag) : gameScoreIdentityAt(model, tag, at))?.name ?? tag;
+      return (at === hour ? identities.get(tag) : gameScoreIdentityAt(model, tag, at))?.name ?? 'Country name unavailable';
     },
     color: (tag: string) => identities.get(tag)?.color ?? null,
     flag: (tag: string) => countryFlag(tag)?.flag,
@@ -231,9 +231,9 @@ export function gameScoreRace(rows: readonly ScoreRow[], split: boolean): Countr
 function cellDate(value: ScoreCell): string | null {
   return value.contentEvaluated ? 'Content-evaluated; no recorded read date.' : value.readHour === null ? null : `Read ${formatDateTime(value.readHour)}`;
 }
-function cellRows(label: string, value: ScoreCell, hour: number, digits = 0, strong = false): TooltipRow[] {
+function cellRows(label: string, value: ScoreCell, digits = 0, strong = false): TooltipRow[] {
   const date = cellDate(value);
-  const note = value.reason ?? readNote(value.readHour, hour, 'game scores follow their recorded hourly reads.');
+  const note = value.reason;
   return [{ label, value: formatScore(value.raw, digits), strong },
     ...(value.raw === null ? [] : [{ label: `Raw fixed5: ${value.raw}`, tone: 'muted' as const }]),
     ...(date ? [{ label: date, tone: 'muted' as const }] : []), ...(note ? [{ label: note, tone: 'muted' as const }] : [])];
@@ -243,11 +243,11 @@ export function gameScoreTooltip(reply: GameScoreReply, row: ScoreRow, split = f
   const faction = row.identity.faction;
   const factionName = gameScoreFaction(row).label;
   const inset = split ? scoreInsetReason(row) ?? 'Army, Navy and Air shares are scaled to fit Total; amounts below remain exact.' : null;
-  return { title: row.identity.name ?? row.tag, subtitle: `${formatDateTime(row.hour)} · score at this hour`,
+  return { title: row.identity.name ?? 'Country name unavailable', subtitle: `${formatDateTime(row.hour)} · score at this hour`,
     rows: [{ label: gameScoreLabel(labels, 'faction'), value: factionName },
-      ...SCORE_PARTS.flatMap(part => cellRows(gameScoreLabel(labels, part), row.cells[part], row.hour, 0, part === 'total')),
+      ...SCORE_PARTS.flatMap(part => cellRows(gameScoreLabel(labels, part), row.cells[part], 0, part === 'total')),
       { label: gameScoreLabel(labels, 'multiplier'), value: formatScore(row.multipliers.total.raw, 5), divider: true },
-      ...SCORE_PARTS.flatMap(part => cellRows(`${gameScoreLabel(labels, part)} multiplier`, row.multipliers[part], row.hour, 5, part === 'total')),
+      ...SCORE_PARTS.flatMap(part => cellRows(`${gameScoreLabel(labels, part)} multiplier`, row.multipliers[part], 5, part === 'total')),
       ...[row.identity.nameMissing, row.identity.colorMissing, row.identity.factionMissing, faction?.nameMissing]
         .flatMap(reason => reason ? [{ label: reason.reason, tone: 'muted' as const }] : []),
       ...(inset ? [{ label: inset, tone: 'muted' as const }] : [])] };

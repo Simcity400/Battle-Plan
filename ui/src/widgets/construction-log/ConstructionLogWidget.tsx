@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import { ChipSet } from '../../components/ChipSet';
 import { Icon } from '../../components/Icons';
@@ -17,14 +17,14 @@ import { resolveWindow } from '../../dashboard/model';
 import { contentSet, resolveOptions, storableToken, toggleContentSet, UNSTORABLE } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
 import { OPTIONS } from './definition';
-import { buildingChoices, describeRow, factoriesShown, jumpHours, levelsLabel, logRows, placeLabel, projectTooltip, projectType, statusLabel, typeName } from './constructionData';
+import { buildingChoices, describeRow, factoriesShown, jumpHours, levelsLabel, logComplete, logRows, placeLabel, projectTooltip, projectType, statusLabel, typeName } from './constructionData';
 import type { ProjectAt } from './constructionData';
 import { useConstructionLog } from './useConstructionLog';
 import './constructionLog.css';
 
-const NO_WARNINGS: string[] = [];
 const NO_ROWS: readonly LogRow<ProjectAt>[] = [];
 /** The cells after a row's date: artwork, the sentence, its status and its factories. */
 const COLUMNS = '24px minmax(0, 1fr) auto 3.4em';
@@ -34,16 +34,19 @@ const COLUMNS = '24px minmax(0, 1fr) auto 3.4em';
  * started and finished and the factories on it. With Live on it follows playback, and
  * a project enters at the top as its reads show it start, build a level or end. */
 export default function ConstructionLogWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const live = widget.time.mode === 'follow';
+  usePlaybackHour(runtime.clock, active && live);
   const options = resolveOptions(OPTIONS, widget.options);
-  const log = logSettings(options);
-  const { track, data, error, retry } = useConstructionLog(widget, runtime, active);
+  const settings = logSettings(options);
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const filtered = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && filtered);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
-  const hour = window?.lastHour;
+  const target = window?.lastHour ?? null;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
-  const inBranch = hour != null && track != null && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
+  const inBranch = target != null && track != null && target >= track.branch.firstHour && target <= track.branch.lastHour;
+  // The hour shown is the target's once its window is held.
+  const { manifest, log, hour, error, retry, onDrawn } = useConstructionLog(runtime, track, active, inBranch ? target : null, live);
   // Tags stay an array end to end: a mod's tag may hold any character, spaces included.
   const tags = selectedTags(widget.countries, track);
   const tagsKey = JSON.stringify(tags);
@@ -54,46 +57,47 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   const types = typeof options.types === 'string' ? options.types : '';
   const projects = options.projects === 'new' || options.projects === 'repair' ? options.projects : 'all';
   const order = options.order === 'start' ? 'start' : 'change';
-  const rows = useMemo(() => data && hour != null && match.ready
-    ? logRows(data, hour, { types: contentSet(types), projects, country: match.matches, from }, order) : NO_ROWS,
-  [data, hour, match, types, projects, from, order]);
+  const rows = useMemo(() => log && hour != null && match.ready
+    ? logRows(log, hour, { types: contentSet(types), projects, country: match.matches, from }, order) : NO_ROWS,
+  [log, hour, match, types, projects, from, order]);
   // Countries are named and flagged as recorded when each drawn row was first read.
   const [visible, setVisible] = useState<readonly LogRow<ProjectAt>[]>(NO_ROWS);
-  const namingActive = active && inBranch && data != null && match.ready;
+  const onVisible = useCallback((drawn: readonly LogRow<ProjectAt>[]) => { setVisible(drawn); onDrawn(rows, drawn, from); }, [rows, onDrawn, from]);
+  const namingActive = active && inBranch && log != null && match.ready;
   const wanted = useMemo(() => namingActive
     ? logCountryRequests(visible, row => ({ hour: row.item.project.firstRead, tags: [row.item.project.tag] })) : [], [visible, namingActive]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, namingActive);
   const country = useCallback((at: ProjectAt) => labelAt(at.project.firstRead)(at.project.tag), [labelAt]);
-  const wantedStates = useMemo(() => stateNameRequests(visible.map(row => row.item.project), namingActive ? hour ?? null : null), [visible, hour, namingActive]);
+  const wantedStates = useMemo(() => stateNameRequests(visible.map(row => row.item.project), namingActive ? hour : null), [visible, hour, namingActive]);
   const stateAt = useStateNamesAt(runtime.client, track, wantedStates, namingActive);
   const chips = useMemo(() => {
-    return buildingChoices(data).map(choice => ({ ...choice, unavailable: storableToken(choice.value) ? undefined : UNSTORABLE }));
-  }, [data]);
-  useEffect(() => {
-    onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
-    return () => onDiagnostics(NO_WARNINGS);
-  }, [data, onDiagnostics]);
+    return buildingChoices(manifest).map(choice => ({ ...choice, unavailable: storableToken(choice.value) ? undefined : UNSTORABLE }));
+  }, [manifest]);
+  const warnings = useMemo(() => [...new Set([...manifest?.warnings ?? [], ...[...log?.windows.values() ?? []].flatMap(reply => reply.warnings)])],
+    [manifest, log]);
+  useDiagnostics(onDiagnostics, warnings);
 
   if (!track) return <WidgetState kind="empty" icon="hammer" message="Load a campaign to see its construction." />;
   if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
   if (filtered && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
-  if (!data || !match.ready) return <WidgetState kind="loading" label="Loading the construction log…" />;
+  if (!manifest || !match.ready) return <WidgetState kind="loading" label="Loading the construction log…" />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (!data.reads.length && !data.railwayReads.length) return <WidgetState kind="unavailable" message="The construction queue was not recorded in this campaign branch." />;
-  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the campaign’s recorded branch." />;
+  if (!manifest.recorded) return <WidgetState kind="unavailable" message="The construction queue was not recorded in this campaign branch." />;
+  if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the campaign’s recorded branch." />;
+  if (!log || hour == null) return <WidgetState kind="loading" label="Loading the construction log…" />;
 
   const chosen = contentSet(types);
   const toggle = (token: string) => { const next = toggleContentSet(types, token, Number.MAX_SAFE_INTEGER); if (next != null) setOption?.('types', next); };
   const renderRow = (row: LogRow<ProjectAt>) => {
     const at = row.item;
-    const type = projectType(data, at.project);
+    const type = projectType(log, at.project);
     const label = country(at);
     const levels = levelsLabel(at);
     const factories = factoriesShown(at);
     return <>
       <span className={`log-art${type?.icon ? '' : ' is-missing'}`} aria-hidden="true">
         {type?.icon ? <img src={type.icon} alt="" /> : '?'}
-        {(at.repairing || (at.status !== 'building' && at.status !== 'unread' && at.kind === 'repair')) && data.repairIcon && <img className="log-art-overlay" src={data.repairIcon} alt="" />}
+        {(at.repairing || (at.status !== 'building' && at.status !== 'unread' && at.kind === 'repair')) && manifest.repairIcon && <img className="log-art-overlay" src={manifest.repairIcon} alt="" />}
       </span>
       <span className="log-text">
         <CountryFlagUrl className="log-flag" url={label.flag} reason={label.flagReason} pending={label.flagPending} /><b>{label.name}</b>
@@ -107,18 +111,19 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
     </>;
   };
   const menu = (row: LogRow<ProjectAt>) => jumpHours(row.item, hour).map(at => jumpItem(runtime, track.id, at));
-  const empty = chosen.length || projects !== 'all' || from != null
+  // Older rows may still be on their way while earlier windows load.
+  const empty = !logComplete(log, from) ? 'Loading earlier construction…' : chosen.length || projects !== 'all' || from != null
     ? 'No construction matches these settings yet.' : widget.countries.kind === 'all' ? 'No construction yet.' : 'No construction by these countries yet.';
   return <div className="log-widget construction-log">
-    {log.chips && chips.length > 1 && <div className="log-chips">
+    {settings.chips && chips.length > 1 && <div className="log-chips">
       <ChipSet label="Building types" max={Number.MAX_SAFE_INTEGER} selected={chosen.length ? chosen : ['']}
         chips={[{ value: '', label: 'All types' }, ...chips]}
         onToggle={value => { if (value === '') { if (chosen.length) setOption?.('types', ''); } else toggle(value); }} />
     </div>}
-    <LogList rows={rows} label="Construction projects" density={log.density} months={log.months}
-      animate={log.animate && widget.time.mode === 'follow'} columns={COLUMNS} renderRow={renderRow}
-      describe={row => describeRow(data, row, country(row.item).name, hour, stateAt)}
-      tooltip={row => projectTooltip(data, row.item, hour, country(row.item).name, stateAt)}
-      menu={menu} empty={empty} onVisible={setVisible} />
+    <LogList rows={rows} label="Construction projects" density={settings.density} months={settings.months}
+      animate={settings.animate && live} columns={COLUMNS} renderRow={renderRow}
+      describe={row => describeRow(log, row, country(row.item).name, hour, stateAt)}
+      tooltip={row => projectTooltip(log, row.item, hour, country(row.item).name, stateAt)}
+      menu={menu} empty={empty} onVisible={onVisible} />
   </div>;
 }

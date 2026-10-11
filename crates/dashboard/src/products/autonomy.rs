@@ -186,134 +186,144 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
     let mut by_tag: HashMap<String, usize> = HashMap::new();
     // Each subject's identity (slot) and sample at the last hour it was recorded.
     let mut last: Vec<Option<(i32, u32, Sample)>> = Vec::new();
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancel());
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancel());
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            let hour = frame.hour;
-            let tables = decoded
-                .complete::<tables::Countries>()
-                .ok()
-                .zip(decoded.complete::<tables::CountryLinks>().ok())
-                .zip(decoded.complete::<tables::Autonomy>().ok())
-                .zip(decoded.complete::<tables::Subjects>().ok());
-            // An hour without the tables is not recorded: every run ends before it.
-            let Some((((countries, links), autonomy), relations)) = tables else {
-                continue;
-            };
-            mark(&mut result.recorded, hour);
-            let tags: HashMap<u32, &[u8]> = countries
-                .iter()
-                .filter_map(|row| {
-                    mapped_slot(row, links)
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancel());
+                }
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(cancel());
+                    }
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    let hour = frame.hour;
+                    let tables = decoded
+                        .complete::<tables::Countries>()
                         .ok()
-                        .map(|slot| (slot, row.tag.as_slice()))
-                })
-                .collect();
-            let mut overlords: HashMap<u32, (u32, i64)> = HashMap::new();
-            let mut shared = BTreeSet::new();
-            // A row naming a country the recording does not: this hour is known only in part.
-            let mut unidentified = false;
-            for relation in relations {
-                let (Some(overlord), Some(subject)) = (
-                    link_slot(links, relation.overlord),
-                    link_slot(links, relation.subject),
-                ) else {
-                    unidentified = true;
-                    continue;
-                };
-                unidentified |= !tags.contains_key(&overlord) || !tags.contains_key(&subject);
-                if overlords
-                    .insert(subject, (overlord, relation.autonomy_ratio))
-                    .is_some()
-                {
-                    shared.insert(subject);
+                        .zip(decoded.complete::<tables::CountryLinks>().ok())
+                        .zip(decoded.complete::<tables::Autonomy>().ok())
+                        .zip(decoded.complete::<tables::Subjects>().ok());
+                    // An hour without the tables is not recorded: every run ends before it.
+                    let Some((((countries, links), autonomy), relations)) = tables else {
+                        continue;
+                    };
+                    mark(&mut result.recorded, hour);
+                    let tags: HashMap<u32, &[u8]> = countries
+                        .iter()
+                        .filter_map(|row| {
+                            mapped_slot(row, links)
+                                .ok()
+                                .map(|slot| (slot, row.tag.as_slice()))
+                        })
+                        .collect();
+                    let mut overlords: HashMap<u32, (u32, i64)> = HashMap::new();
+                    let mut shared = BTreeSet::new();
+                    // A row naming a country the recording does not: this hour is known only in part.
+                    let mut unidentified = false;
+                    for relation in relations {
+                        let (Some(overlord), Some(subject)) = (
+                            link_slot(links, relation.overlord),
+                            link_slot(links, relation.subject),
+                        ) else {
+                            unidentified = true;
+                            continue;
+                        };
+                        unidentified |=
+                            !tags.contains_key(&overlord) || !tags.contains_key(&subject);
+                        if overlords
+                            .insert(subject, (overlord, relation.autonomy_ratio))
+                            .is_some()
+                        {
+                            shared.insert(subject);
+                        }
+                    }
+                    result.shared_subjects += shared.len();
+                    for row in autonomy {
+                        let Some((slot, tag)) = link_slot(links, row.subject)
+                            .and_then(|slot| tags.get(&slot).map(|tag| (slot, tag)))
+                        else {
+                            unidentified = true;
+                            continue;
+                        };
+                        let tag = String::from_utf8_lossy(tag).into_owned();
+                        let level = *levels.entry(row.state.clone()).or_insert_with(|| {
+                            result
+                                .levels
+                                .push(String::from_utf8_lossy(&row.state).into_owned());
+                            result.lowest_lower.push(row.lower_score);
+                            result.levels.len() - 1
+                        });
+                        let lowest = &mut result.lowest_lower[level];
+                        *lowest = (*lowest).min(row.lower_score);
+                        let relation = overlords.get(&slot).filter(|_| !shared.contains(&slot));
+                        let sample = Sample {
+                            overlord: relation.and_then(|(overlord, _)| {
+                                tags.get(overlord)
+                                    .map(|tag| String::from_utf8_lossy(tag).into_owned())
+                            }),
+                            level,
+                            score: row.score,
+                            lower: row.lower_score,
+                            upper: row.upper_score,
+                            lowest: row.previous.is_none(),
+                            highest: row.next.is_none(),
+                            ratio: relation.map(|(_, ratio)| *ratio),
+                        };
+                        let at = *by_tag.entry(tag.clone()).or_insert_with(|| {
+                            result.subjects.push((tag.clone(), Vec::new()));
+                            last.push(None);
+                            result.subjects.len() - 1
+                        });
+                        let previous = last[at].take();
+                        let continues = previous.as_ref().is_some_and(|(seen, seen_slot, _)| {
+                            seen.checked_add(1) == Some(hour) && *seen_slot == slot
+                        });
+                        let subject_runs = &mut result.subjects[at].1;
+                        let same = continues
+                            && previous
+                                .as_ref()
+                                .is_some_and(|(_, _, seen)| *seen == sample);
+                        if same && let Some(run) = subject_runs.last_mut() {
+                            run.last_hour = hour;
+                        } else {
+                            subject_runs.push(AutonomyRun {
+                                first_hour: hour,
+                                last_hour: hour,
+                                starts_segment: !continues,
+                                overlord: sample.overlord.clone(),
+                                level: level as u32,
+                                score_raw: sample.score.to_string(),
+                                lower_raw: sample.lower.to_string(),
+                                upper_raw: sample.upper.to_string(),
+                                lowest: sample.lowest,
+                                highest: sample.highest,
+                                ratio_raw: sample.ratio.map(|ratio| ratio.to_string()),
+                            });
+                        }
+                        last[at] = Some((hour, slot, sample));
+                    }
+                    if unidentified {
+                        mark(&mut result.unidentified, hour);
+                    }
                 }
             }
-            result.shared_subjects += shared.len();
-            for row in autonomy {
-                let Some((slot, tag)) = link_slot(links, row.subject)
-                    .and_then(|slot| tags.get(&slot).map(|tag| (slot, tag)))
-                else {
-                    unidentified = true;
-                    continue;
-                };
-                let tag = String::from_utf8_lossy(tag).into_owned();
-                let level = *levels.entry(row.state.clone()).or_insert_with(|| {
-                    result
-                        .levels
-                        .push(String::from_utf8_lossy(&row.state).into_owned());
-                    result.lowest_lower.push(row.lower_score);
-                    result.levels.len() - 1
-                });
-                let lowest = &mut result.lowest_lower[level];
-                *lowest = (*lowest).min(row.lower_score);
-                let relation = overlords.get(&slot).filter(|_| !shared.contains(&slot));
-                let sample = Sample {
-                    overlord: relation.and_then(|(overlord, _)| {
-                        tags.get(overlord)
-                            .map(|tag| String::from_utf8_lossy(tag).into_owned())
-                    }),
-                    level,
-                    score: row.score,
-                    lower: row.lower_score,
-                    upper: row.upper_score,
-                    lowest: row.previous.is_none(),
-                    highest: row.next.is_none(),
-                    ratio: relation.map(|(_, ratio)| *ratio),
-                };
-                let at = *by_tag.entry(tag.clone()).or_insert_with(|| {
-                    result.subjects.push((tag.clone(), Vec::new()));
-                    last.push(None);
-                    result.subjects.len() - 1
-                });
-                let previous = last[at].take();
-                let continues = previous.as_ref().is_some_and(|(seen, seen_slot, _)| {
-                    seen.checked_add(1) == Some(hour) && *seen_slot == slot
-                });
-                let subject_runs = &mut result.subjects[at].1;
-                let same = continues
-                    && previous
-                        .as_ref()
-                        .is_some_and(|(_, _, seen)| *seen == sample);
-                if same && let Some(run) = subject_runs.last_mut() {
-                    run.last_hour = hour;
-                } else {
-                    subject_runs.push(AutonomyRun {
-                        first_hour: hour,
-                        last_hour: hour,
-                        starts_segment: !continues,
-                        overlord: sample.overlord.clone(),
-                        level: level as u32,
-                        score_raw: sample.score.to_string(),
-                        lower_raw: sample.lower.to_string(),
-                        upper_raw: sample.upper.to_string(),
-                        lowest: sample.lowest,
-                        highest: sample.highest,
-                        ratio_raw: sample.ratio.map(|ratio| ratio.to_string()),
-                    });
-                }
-                last[at] = Some((hour, slot, sample));
-            }
-            if unidentified {
-                mark(&mut result.unidentified, hour);
-            }
-        }
-    }
+            Ok(())
+        },
+    )?;
     Ok(result)
 }
 

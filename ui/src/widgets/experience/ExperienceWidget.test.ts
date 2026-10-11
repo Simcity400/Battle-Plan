@@ -89,7 +89,7 @@ test('actual Experience keeps holder aliases, dated reached events and one end p
     const tip = state.chart!.tooltip!(15, {} as PlotFrame, [])!;
     assert.deepEqual(tip.rows.map(row => row.label), ['Army', 'Navy', 'Air']);
     assert.deepEqual(state.names, [{ tag: 'B', hour: 15 }]);
-    assert.equal(state.chart!.badges?.filter(badge => badge.label === 'B capitulated').length, 1);
+    assert.equal(state.chart!.badges?.filter(badge => badge.capitulationTag === 'B').length, 1);
     const capitulation = state.chart!.badges!.find(badge => badge.capitulationTag === 'B')!;
     const generic = { hour: 15, glyph: '+', label: 'joined' };
     state.tip = { hour: 17, events: [capitulation, generic] };

@@ -13,6 +13,29 @@ fn types(text: &[u8]) -> Database {
 }
 
 #[test]
+fn stockpile_type_titles_preserve_empty_and_key_equal_localisations() {
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
+        "localisation/english/equipment_l_english.yml",
+        "\u{feff}l_english:\n empty_type:0 \"\"\n same_type:0 \"same_type\"\n",
+    )]);
+    let catalogue = crate::catalogue::Catalogue::of_layers_for_check(
+        catalogue.content.layers.clone(),
+        "english",
+    )
+    .unwrap();
+    assert_eq!(type_name(&catalogue, "empty_type"), Some(String::new()));
+    assert_eq!(
+        type_name(&catalogue, "same_type").as_deref(),
+        Some("same_type")
+    );
+    assert_eq!(type_name(&catalogue, "missing_type"), None);
+    let findings = catalogue.take_findings();
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].subject, "missing_type");
+    assert_eq!(findings[0].message, "equipment type title is unavailable");
+}
+
+#[test]
 fn native_equipment_redefinitions_and_diagnostics_are_kept() {
     engine::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -567,6 +590,11 @@ fn the_stockpile_replies_without_content_by_variant_and_says_when_it_has_no_logi
         "{:?}",
         reply.warnings
     );
+    // The cached scan keeps only the variants its reply lists, not variant 30.
+    let cache = source.state::<Cache>();
+    let cache = cache.lock().unwrap();
+    let versions = &cache.entries[0].1.scanned.variants.versions;
+    assert!(versions.keys().eq(&[10, 20]));
 }
 
 #[test]

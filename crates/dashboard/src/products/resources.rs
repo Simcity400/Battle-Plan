@@ -131,8 +131,8 @@ pub(crate) struct ContentView<'a> {
     pub layers: &'a ResolvedLayers,
     pub sprites: &'a SpriteSet,
     pub localisation: &'a Localisation,
-    /// The game's GUI registry and texture decode settings, as the catalogue loaded them.
-    pub guis: &'a installed_content::gui::native::Guis,
+    /// The GUI registry or its named read failure; resource names are independent.
+    pub guis: Result<&'a installed_content::gui::native::Guis, String>,
     pub gui_decode: &'a Result<installed_content::image::native::Decode, String>,
 }
 
@@ -142,7 +142,7 @@ impl<'a> ContentView<'a> {
             layers: &catalogue.content.layers,
             sprites: &catalogue.sprites,
             localisation: &catalogue.localisation,
-            guis: &catalogue.guis,
+            guis: catalogue.guis().map_err(|error| error.to_string()),
             gui_decode: &catalogue.gui_decode,
         }
     }
@@ -159,7 +159,7 @@ struct Icons {
 fn icons(view: &ContentView) -> io::Result<(Icons, Vec<String>)> {
     let mut warnings = Vec::new();
     let name = installed_content::gui::native::window_button_sprite(
-        view.guis,
+        view.guis.as_ref().map_err(crate::invalid)?,
         RESOURCE_ROW,
         RESOURCE_ICON,
         &mut warnings,
@@ -523,7 +523,7 @@ mod tests {
             layers,
             sprites: &sprites,
             localisation: &localisation,
-            guis: &guis,
+            guis: Ok(&guis),
             gui_decode: &Ok(Default::default()),
         };
         let wanted: Vec<(String, u32)> = ["oil", "steel", "unobtainium"]
@@ -654,7 +654,6 @@ mod tests {
             ),
             ("gfx/icon.dds", "invalid DDS"),
         ]);
-        catalogue.guis = installed_content::gui::native::read_layers(&catalogue.content.layers).unwrap();
         for decode in [
             Err("settings.txt is unavailable".into()),
             Ok(Default::default()),

@@ -580,15 +580,15 @@ impl<'e, 'a> Evaluator<'e, 'a> {
 
     /// Enters a frame of the evaluation stack, or why the game would
     /// recurse without end through it.
-    pub(super) fn enter_frame(&self, frame: &[u8]) -> Option<String> {
+    pub(super) fn enter_frame(&self, frame: Vec<u8>) -> Option<String> {
         let mut stack = self.stack.borrow_mut();
-        if stack.iter().any(|entry| entry.as_slice() == frame) {
+        if stack.contains(&frame) {
             return Some(format!(
                 "{} is evaluated inside itself, and the game guards no depth",
-                String::from_utf8_lossy(frame)
+                String::from_utf8_lossy(&frame)
             ));
         }
-        stack.push(frame.to_vec());
+        stack.push(frame);
         None
     }
 

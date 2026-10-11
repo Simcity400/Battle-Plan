@@ -8,7 +8,7 @@
 
 **Notable behaviour:**
 
-- Levels are ordered/named through recorded content, with recorded IDs and threshold-based ordering when definitions are unavailable. Palette colours follow level order and can repeat. Scores beyond thresholds draw at the edge; tooltips retain exact amounts. The relation's autonomy ratio is not interpreted.
+- Levels are ordered/named through recorded content, with threshold-based ordering when definitions are unavailable. Missing localized titles show Level name unavailable; recorded keys remain available in hover details. Palette colours follow level order and can repeat. Scores beyond thresholds draw at the edge; tooltips retain exact amounts. The relation's autonomy ratio is not interpreted.
 - A known complete absence says **Not a subject here**. Missing tables, unknown native endpoints or unrecorded membership cannot prove absence. Unknown overlords retain known subject values but cannot pass an overlord filter.
 - Manual tags select their native holders and aliases without selecting unrelated alias holders. Hourly groups clip at each endpoint's membership date; End/Ever choices keep their own counted dates.
 - Gaps break bands, scores and thresholds. Level-change dots require adjacent recorded hours. Names/flags stay within native holder and readable spans; missing facts retain their reasons. Playheads outside the branch are unavailable.

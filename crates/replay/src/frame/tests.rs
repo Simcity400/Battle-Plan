@@ -38,6 +38,7 @@ fn selected_reconstruction_matches_full_decoder_through_baseline_loss() {
         crate::rows::TableId::Campaign,
     ];
     let mut projected = super::FrameDecoder::for_tables(&selected);
+    let mut omitted: Option<super::SharedView> = None;
     for hour in 0..8 {
         let mut frame = encoder.encode(source(1, hour), hour == 6).unwrap();
         if hour == 2 {
@@ -51,10 +52,11 @@ fn selected_reconstruction_matches_full_decoder_through_baseline_loss() {
         for table in selected {
             assert_eq!(actual.tables[table.index()], expected.tables[table.index()]);
         }
-        assert!(matches!(
-            *actual.tables[crate::rows::TableId::Clock.index()],
-            super::TableView::Unavailable { .. }
-        ));
+        let clock = &actual.tables[crate::rows::TableId::Clock.index()];
+        assert!(matches!(**clock, super::TableView::Unavailable { .. }));
+        // Every hour shares one view for an omitted table.
+        assert!(omitted.is_none_or(|previous| super::SharedView::ptr_eq(&previous, clock)));
+        omitted = Some(clock.clone());
     }
     let mut invalid = encoder.encode(source(1, 8), true).unwrap();
     invalid.tables[crate::rows::TableId::Clock.index()] =
@@ -70,6 +72,497 @@ use crate::rows::{
     CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow, FactionMemberRow, FactionRow,
     ProvinceRow, RowCodec, StateRow, WarRelationRow, tables,
 };
+
+fn selected_delta_test_wire(
+    table: TableId,
+    status: u8,
+    payload: &[u8],
+    format: crate::format::FormatVersion,
+    keyframe: bool,
+) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&1_u64.to_le_bytes());
+    bytes.extend_from_slice(&1_i32.to_le_bytes());
+    bytes.push(u8::from(keyframe));
+    bytes.extend_from_slice(&0_u64.to_le_bytes());
+    for recorded in TableId::ALL {
+        if recorded.last_change().present(format.version()) {
+            bytes.extend_from_slice(&u64::from(recorded == table).to_le_bytes());
+        }
+    }
+    bytes.extend_from_slice(&0_u64.to_le_bytes());
+    bytes.extend_from_slice(&0_u64.to_le_bytes());
+    for recorded in TableId::ALL {
+        if !recorded.last_change().present(format.version()) {
+            continue;
+        }
+        if recorded == table {
+            bytes.push(status);
+            bytes.extend_from_slice(payload);
+        } else {
+            bytes.push(4);
+            crate::codec::put_string(&mut bytes, "synthetic unavailable").unwrap();
+        }
+    }
+    bytes
+}
+
+fn selected_delta_test_row(
+    table: TableId,
+    format: crate::format::FormatVersion,
+    key_difference: u128,
+    mask: u64,
+    fields: &[u8],
+) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    crate::codec::put_varint(&mut bytes, key_difference);
+    let width = table
+        .last_change()
+        .fields(table, format.version())
+        .div_ceil(8);
+    bytes.extend_from_slice(&mask.to_le_bytes()[..width]);
+    bytes.extend_from_slice(fields);
+    bytes
+}
+
+fn selected_delta_test_payload(changed: &[Vec<u8>], deleted_differences: &[u128]) -> Vec<u8> {
+    let mut bytes = 0_i32.to_le_bytes().to_vec();
+    put_count(&mut bytes, changed.len()).unwrap();
+    for row in changed {
+        bytes.extend_from_slice(row);
+    }
+    put_count(&mut bytes, deleted_differences.len()).unwrap();
+    for &difference in deleted_differences {
+        crate::codec::put_varint(&mut bytes, difference);
+    }
+    bytes
+}
+
+fn selected_delta_test_error(
+    table: TableId,
+    payload: &[u8],
+    format: crate::format::FormatVersion,
+    keyframe: bool,
+    expected: &str,
+) {
+    let bytes = selected_delta_test_wire(table, 1, payload, format, keyframe);
+    let mut observed = Vec::new();
+    for selected in [None, Some(&[table][..]), Some(&[][..])] {
+        let mut input = Decoder::new(&bytes);
+        let error = Frame::decode_version(&mut input, selected, format).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            expected,
+            "{table:?}, selected={selected:?}"
+        );
+        observed.push((error.kind(), error.to_string(), input.remaining()));
+    }
+    assert_eq!(observed[0], observed[1]);
+    assert_eq!(
+        observed[0], observed[2],
+        "unselected reads retain error precedence and consumption"
+    );
+}
+
+#[test]
+fn unselected_delta_validation_preserves_field_errors_and_first_error_precedence() {
+    let format = crate::format::FormatVersion::CURRENT;
+    let country = TableId::Countries;
+    let row = |mask, values: &[u8]| selected_delta_test_row(country, format, 1, mask, values);
+    let mut oversized = Vec::new();
+    crate::codec::put_varint(&mut oversized, 1_u128 << 34);
+    let mut overflow = vec![0xff; 18];
+    overflow.push(4);
+    let mut overwide_key = Vec::new();
+    crate::codec::put_varint(&mut overwide_key, u128::from(u32::MAX) + 1);
+    overwide_key.extend_from_slice(&row(1, &[0])[1..]);
+    let mut noncanonical_key = vec![0x81, 0];
+    noncanonical_key.extend_from_slice(&row(1, &[0])[1..]);
+    let mut overflowing_key = overflow.clone();
+    overflowing_key.extend_from_slice(&row(1, &[0])[1..]);
+    for (rows, deleted, error) in [
+        (vec![row(0, &[])], vec![], "invalid recorded delta mask"),
+        (
+            vec![row(1_u64 << 15, &[])],
+            vec![],
+            "invalid recorded delta mask",
+        ),
+        (
+            vec![noncanonical_key],
+            vec![],
+            "noncanonical overlong varint",
+        ),
+        (vec![overflowing_key], vec![], "varint exceeds u128"),
+        (vec![overwide_key], vec![], "row key exceeds native width"),
+        (
+            vec![row(1, &[0x80, 0])],
+            vec![],
+            "noncanonical overlong varint",
+        ),
+        (vec![row(1, &overflow)], vec![], "varint exceeds u128"),
+        (
+            vec![row(1, &oversized)],
+            vec![],
+            "numeric difference exceeds native field range",
+        ),
+        (
+            vec![row(1 << 2, &[2])],
+            vec![],
+            "invalid optional integer tag",
+        ),
+        (
+            vec![row(1 << 1, &u32::MAX.to_le_bytes())],
+            vec![],
+            "truncated field",
+        ),
+        (
+            vec![
+                row(1, &[0]),
+                selected_delta_test_row(country, format, 0, 1, &[0]),
+            ],
+            vec![],
+            "delta keys must be unique and ascending",
+        ),
+        (
+            vec![],
+            vec![1, 0],
+            "delta keys must be unique and ascending",
+        ),
+        (
+            vec![row(1, &[0])],
+            vec![1],
+            "delta both changes and deletes a key",
+        ),
+        (
+            vec![
+                selected_delta_test_row(country, format, u128::from(u32::MAX), 1, &[0]),
+                row(1, &[0]),
+            ],
+            vec![],
+            "row key exceeds native width",
+        ),
+    ] {
+        let payload = selected_delta_test_payload(&rows, &deleted);
+        for keyframe in [false, true] {
+            selected_delta_test_error(country, &payload, format, keyframe, error);
+        }
+    }
+    // A later field error must still win over an earlier duplicate key.
+    let payload = selected_delta_test_payload(
+        &[
+            row(1, &[0]),
+            selected_delta_test_row(country, format, 0, 1 << 2, &[2]),
+        ],
+        &[],
+    );
+    selected_delta_test_error(
+        country,
+        &payload,
+        format,
+        true,
+        "invalid optional integer tag",
+    );
+    let payload = selected_delta_test_payload(&[row(1, &[0])], &[]);
+    selected_delta_test_error(
+        country,
+        &payload,
+        format,
+        true,
+        "keyframe contains a dependent or partial table",
+    );
+    for (table, mask, error) in [
+        (
+            TableId::LandCombats,
+            1 << 3,
+            "collection length exceeds remaining payload",
+        ),
+        (
+            TableId::ArmyOrders,
+            1 << 4,
+            "collection length exceeds remaining payload",
+        ),
+        (TableId::Provinces, 1 << 7, "truncated field"),
+    ] {
+        let payload = selected_delta_test_payload(
+            &[selected_delta_test_row(
+                table,
+                format,
+                1,
+                mask,
+                &u32::MAX.to_le_bytes(),
+            )],
+            &[],
+        );
+        selected_delta_test_error(table, &payload, format, false, error);
+    }
+    let singleton = TableId::Clock;
+    let zero = selected_delta_test_row(singleton, format, 0, 1, &[0]);
+    let payload = selected_delta_test_payload(&[zero.clone(), zero], &[]);
+    selected_delta_test_error(
+        singleton,
+        &payload,
+        format,
+        false,
+        "singleton table cannot contain multiple rows",
+    );
+    let payload = selected_delta_test_payload(
+        &[selected_delta_test_row(singleton, format, 1, 1, &[0])],
+        &[],
+    );
+    selected_delta_test_error(
+        singleton,
+        &payload,
+        format,
+        false,
+        "row key exceeds native width",
+    );
+    let wide = TableId::AirTheatreMembers;
+    assert_eq!(wide.key_bits(), 128);
+    let payload = selected_delta_test_payload(
+        &[
+            selected_delta_test_row(wide, format, u128::MAX, 1, &[0]),
+            selected_delta_test_row(wide, format, 1, 1, &[0]),
+        ],
+        &[],
+    );
+    selected_delta_test_error(wide, &payload, format, false, "row key addition overflow");
+    let payload = selected_delta_test_payload(&[], &[u128::MAX, 1]);
+    selected_delta_test_error(wide, &payload, format, false, "row key addition overflow");
+}
+
+#[test]
+fn unselected_delta_rows_preserve_every_truncated_prefix_error() {
+    let format = crate::format::FormatVersion::CURRENT;
+    for (table, mask, fields) in [
+        (TableId::Countries, 1, vec![0x80, 1]),
+        (TableId::Countries, 1 << 2, vec![1, 0x80, 1]),
+        (TableId::Countries, 1 << 1, vec![3, 0, 0, 0, 1, 2, 3]),
+        (
+            TableId::LandCombats,
+            1 << 3,
+            vec![1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8],
+        ),
+        (TableId::ArmyOrders, 1 << 4, vec![1, 0, 0, 0, 1, 2, 3, 4]),
+        (TableId::Fleets, 1 << 2, vec![1, 0, 0, 0, 255]),
+    ] {
+        let bytes = selected_delta_test_row(table, format, 1, mask, &fields);
+        for length in 0..bytes.len() {
+            let mut owned = Decoder::new(&bytes[..length]);
+            let mut borrowed = Decoder::new(&bytes[..length]);
+            let a = rows::decode_delta(table, 0, &mut owned).unwrap_err();
+            let b = rows::validate_delta_row(table, 0, &mut borrowed).unwrap_err();
+            assert_eq!(
+                (a.kind(), a.to_string(), owned.remaining()),
+                (b.kind(), b.to_string(), borrowed.remaining()),
+                "{table:?}, prefix={length}"
+            );
+        }
+        let mut owned = Decoder::new(&bytes);
+        let mut borrowed = Decoder::new(&bytes);
+        assert_eq!(
+            rows::decode_delta(table, 0, &mut owned).unwrap().key,
+            rows::validate_delta_row(table, 0, &mut borrowed).unwrap()
+        );
+        owned.finish().unwrap();
+        borrowed.finish().unwrap();
+    }
+}
+
+#[test]
+fn unselected_deltas_keep_historical_masks_and_wire_only_opaque_validation() {
+    use crate::format::FormatVersion;
+    let mut widths =
+        std::collections::BTreeMap::<TableId, std::collections::BTreeSet<usize>>::new();
+    for version in crate::rows::compatibility::PROVEN_FROM..=crate::FORMAT_VERSION {
+        let Ok(format) = FormatVersion::read(version) else {
+            continue;
+        };
+        for table in [
+            TableId::Clock,
+            TableId::Countries,
+            TableId::Provinces,
+            TableId::AirWings,
+        ] {
+            if format.table_refusal(table).is_some() {
+                continue;
+            }
+            let fields = table.last_change().fields(table, version);
+            widths.entry(table).or_default().insert(fields.div_ceil(8));
+            let payload = selected_delta_test_payload(
+                &[selected_delta_test_row(table, format, 0, 1, &[0])],
+                &[],
+            );
+            let bytes = selected_delta_test_wire(table, 1, &payload, format, false);
+            for selected in [None, Some(&[table][..]), Some(&[][..])] {
+                let mut input = Decoder::new(&bytes);
+                let frame = Frame::decode_version(&mut input, selected, format).unwrap();
+                input.finish().unwrap();
+                if selected.is_none_or(|selection| selection.contains(&table)) {
+                    let TableUpdate::Delta { changed, .. } = &frame.tables[table.index()] else {
+                        panic!()
+                    };
+                    assert_eq!(changed[0].format, version);
+                    assert_eq!(changed[0].recorded_fields, fields);
+                } else {
+                    assert!(matches!(
+                        frame.tables[table.index()],
+                        TableUpdate::Unavailable { .. }
+                    ));
+                }
+            }
+            if fields < fields.div_ceil(8) * 8 {
+                let payload = selected_delta_test_payload(
+                    &[selected_delta_test_row(
+                        table,
+                        format,
+                        0,
+                        1_u64 << fields,
+                        &[0],
+                    )],
+                    &[],
+                );
+                selected_delta_test_error(
+                    table,
+                    &payload,
+                    format,
+                    false,
+                    "invalid recorded delta mask",
+                );
+            }
+        }
+    }
+    assert!(
+        widths.values().any(|versions| versions.len() > 1),
+        "the fixture must exercise a historical mask-width change"
+    );
+
+    let table = TableId::Fleets;
+    let format = FormatVersion::CURRENT;
+    let mut invalid_nested_name = Vec::new();
+    crate::codec::put_bytes(&mut invalid_nested_name, &[255]).unwrap();
+    let payload = selected_delta_test_payload(
+        &[selected_delta_test_row(
+            table,
+            format,
+            1,
+            1 << 2,
+            &invalid_nested_name,
+        )],
+        &[],
+    );
+    let bytes = selected_delta_test_wire(table, 1, &payload, format, false);
+    let mut retained = None;
+    for selected in [None, Some(&[table][..]), Some(&[][..])] {
+        let mut input = Decoder::new(&bytes);
+        let frame = Frame::decode_version(&mut input, selected, format).unwrap();
+        input.finish().unwrap();
+        if selected.is_none() {
+            retained = Some(frame);
+        }
+    }
+    let mut first = source(1, 0);
+    first.tables[table.index()] =
+        TableView::Complete(TableRows::Fleets(vec![crate::rows::FleetRow {
+            id: 1,
+            ..Default::default()
+        }]))
+        .into();
+    let baseline = FrameEncoder::new().encode(first, true).unwrap();
+    let mut decoder = FrameDecoder::new();
+    decoder.apply(&baseline).unwrap();
+    let reconstructed = decoder.apply(&retained.unwrap()).unwrap();
+    assert!(
+        matches!(
+            &*reconstructed.tables[table.index()],
+            TableView::Unavailable { .. }
+        ),
+        "typed nested validation still occurs during reconstruction"
+    );
+
+    // Snapshots still validate typed nested bytes even when omitted.
+    let mut snapshot = 1_u32.to_le_bytes().to_vec();
+    crate::codec::put_varint(&mut snapshot, 1);
+    snapshot.extend_from_slice(&0_u32.to_le_bytes());
+    snapshot.extend_from_slice(&0_u32.to_le_bytes());
+    snapshot.extend_from_slice(&invalid_nested_name);
+    snapshot.push(0);
+    let bytes = selected_delta_test_wire(table, 0, &snapshot, format, false);
+    for selected in [None, Some(&[][..])] {
+        assert!(Frame::decode_version(&mut Decoder::new(&bytes), selected, format).is_err());
+    }
+}
+
+#[test]
+fn unselected_five_thousand_country_deltas_never_own_discarded_values() {
+    let table = TableId::Countries;
+    let mut first = source(1, 0);
+    let TableView::Complete(TableRows::Countries(template)) = &*first.tables[table.index()] else {
+        panic!()
+    };
+    let template = template[0].clone();
+    first.tables[table.index()] = TableView::Complete(TableRows::Countries(
+        (0..5_000)
+            .map(|id| CountryRow {
+                id,
+                canonical_slot: id + 1,
+                ..template.clone()
+            })
+            .collect(),
+    ))
+    .into();
+    let mut second = first.clone();
+    second.hour = 1;
+    if let TableView::Complete(TableRows::Clock(rows)) = &mut *second.tables[TableId::Clock.index()]
+    {
+        rows[0].hour = 1;
+    }
+    if let TableView::Complete(TableRows::Countries(rows)) = &mut *second.tables[table.index()] {
+        for row in rows {
+            row.command_power_raw += 1;
+        }
+    }
+    let mut encoder = FrameEncoder::new();
+    let baseline = encoder.encode(first, true).unwrap();
+    let frame = encoder.encode(second, false).unwrap();
+    let TableUpdate::Delta { changed, .. } = &frame.tables[table.index()] else {
+        panic!("fixture must encode deltas")
+    };
+    assert_eq!(changed.len(), 5_000);
+    let mut bytes = Vec::new();
+    frame.encode(&mut bytes).unwrap();
+    let (full, full_owned) =
+        rows::delta_decode_ownership::count(|| Frame::decode(&mut Decoder::new(&bytes)).unwrap());
+    let selected = [table];
+    let (projected, selected_owned) = rows::delta_decode_ownership::count(|| {
+        Frame::decode_selected(&mut Decoder::new(&bytes), Some(&selected)).unwrap()
+    });
+    let (omitted, omitted_owned) = rows::delta_decode_ownership::count(|| {
+        Frame::decode_selected(&mut Decoder::new(&bytes), Some(&[])).unwrap()
+    });
+    assert!(full_owned >= 5_000);
+    assert_eq!(selected_owned, 5_000);
+    assert_eq!(
+        omitted_owned, 0,
+        "unselected fields must stay borrowed instead of allocating DeltaRow values"
+    );
+    assert_eq!(projected.tables[table.index()], full.tables[table.index()]);
+    assert!(matches!(
+        omitted.tables[table.index()],
+        TableUpdate::Unavailable { .. }
+    ));
+    let mut full_decoder = FrameDecoder::new();
+    let mut selected_decoder = FrameDecoder::for_tables(&selected);
+    full_decoder.apply(&baseline).unwrap();
+    selected_decoder.apply(&baseline).unwrap();
+    let expected = full_decoder.apply(&full).unwrap();
+    let actual = selected_decoder.apply(&projected).unwrap();
+    assert_eq!(actual.tables[table.index()], expected.tables[table.index()]);
+    assert_eq!(actual.tables[table.index()].sampled_at(), Some(1));
+    assert_eq!(
+        actual.tables[table.index()].sampled_at(),
+        expected.tables[table.index()].sampled_at()
+    );
+}
 
 const FACTION_ID: u64 = 0xfedc_ba98_0000_004d;
 
@@ -2459,4 +2952,29 @@ fn checked_table_clones_preserve_recorded_fields() {
         };
         assert_eq!(rows.try_clone().unwrap(), *rows);
     }
+}
+
+#[test]
+fn an_update_of_present_rows_applies_in_place() {
+    use crate::rows::{CountryLinkRow, RowCodec};
+    let rows: Vec<_> = (1..=3)
+        .map(|id| CountryLinkRow {
+            id,
+            canonical_slot: id,
+        })
+        .collect();
+    let changed = CountryLinkRow {
+        canonical_slot: 9,
+        ..rows[1].clone()
+    };
+    let delta = changed.delta(Some(&rows[1])).unwrap().unwrap();
+    let table = rows.as_ptr();
+    let TableRows::CountryLinks(updated) = TableRows::CountryLinks(rows)
+        .apply_delta(&[delta], &[])
+        .unwrap()
+    else {
+        panic!("country links");
+    };
+    assert_eq!(updated.as_ptr(), table, "the table is not rebuilt");
+    assert_eq!(updated[1], changed);
 }

@@ -1,4 +1,5 @@
-import { Popover, usePopover } from './Popover';
+import { Popover, PopoverBody, usePopover } from './Popover';
+import { Select } from './Select';
 import { useId, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { Icon } from './Icons';
@@ -136,60 +137,59 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
           setFocusedDay(initial.day);
         }
       }}>
-      <div className="calendar-navigation">
-        <button type="button" className="calendar-arrow" aria-label="Previous month" disabled={viewMonth <= firstMonth}
-          onClick={() => showMonth(viewMonth - 1)}><Icon name="chevron-left" /></button>
-        <label className="sr-only" htmlFor={`${id}-month`}>Month</label>
-        <select id={`${id}-month`} value={view.month} onChange={(event) => showMonth(view.year * 12 + Number(event.currentTarget.value) - 1)}>
-          {monthNames.map((name, index) => <option key={name} value={index + 1}
-            disabled={view.year * 12 + index < firstMonth || view.year * 12 + index > lastMonth}>{name}</option>)}
-        </select>
-        <label className="sr-only" htmlFor={`${id}-year`}>Year</label>
-        <input id={`${id}-year`} className="calendar-year" type="number" step="1" min={minimum?.year} max={maximum?.year}
-          value={yearInput} onChange={(event) => setYearInput(event.currentTarget.value)} onBlur={() => commitYear()}
-          onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commitYear(true); } }} />
-        <button type="button" className="calendar-arrow" aria-label="Next month" disabled={viewMonth >= lastMonth}
-          onClick={() => showMonth(viewMonth + 1)}><Icon name="chevron-right" /></button>
-      </div>
-      <p className="sr-only" aria-live="polite">{monthNames[view.month - 1]} {view.year}</p>
-      <p id={`${id}-keys`} className="sr-only">Use arrow keys to move between days. Page Up and Page Down change the month; hold Shift to change the year.</p>
-      {/* This is the game's fixed-length calendar. Weekday names would imply
-          a Gregorian leap-year calendar that these recordings do not use. */}
-      <div className="calendar-grid" role="grid" aria-label={`${monthNames[view.month - 1]} ${view.year}`}
-        aria-describedby={`${id}-keys`}>
-        {Array.from({ length: Math.ceil(daysInMonth / 7) }, (_, row) => <div className="calendar-week" role="row" key={row}>
-          {Array.from({ length: 7 }, (_, column) => {
-            const day = row * 7 + column + 1;
-            if (day > daysInMonth) return <div role="gridcell" key={column} />;
-            const start = monthStart + (day - 1) * 24;
-            const isSelected = selected != null && monthIndex(selected) === viewMonth && selected.day === day;
-            const isDisabled = start > max || start + 23 < min;
-            const inRange = rangeFirst != null && rangeLast != null && start <= rangeLast && start + 23 >= rangeFirst;
-            return <div role="gridcell" aria-selected={isSelected} key={column}>
-              <button type="button" data-day={day} className={`calendar-day${inRange ? ' in-range' : ''}`}
-                aria-label={`${day} ${monthNames[view.month - 1]} ${view.year}`} disabled={isDisabled}
-                tabIndex={day === activeDay ? 0 : -1} onFocus={() => setFocusedDay(day)}
-                onKeyDown={(event) => moveFocus(event, day)} onClick={() => chooseDay(day)}>{day}</button>
-            </div>;
-          })}
-        </div>)}
-      </div>
-      <div className="calendar-time">
-        <label htmlFor={`${id}-time`}><Icon name="clock" /><span>Time<span className="sr-only"> · Game time, hourly</span></span></label>
-        <select id={`${id}-time`} value={selected?.hour ?? 1} disabled={!selected}
-          onChange={(event) => choose(selectedDayStart + Number(event.currentTarget.value) - 1)}>
-          {Array.from({ length: 24 }, (_, index) => <option key={index} value={index + 1}
-            disabled={selectedDayStart + index < min || selectedDayStart + index > max}>{formatTime(index + 1)}</option>)}
-        </select>
-      </div>
-      <div className="calendar-footer">
-        <div className="calendar-shortcuts">
-          <button type="button" className="text-button" data-tooltip="Select the first available date" onClick={() => choose(Math.max(min, HOUR_EPOCH))}>First date</button>
-          <button type="button" className="text-button" data-tooltip="Select the last available date" onClick={() => choose(max)}>Last date</button>
+      <PopoverBody open={open}>{() => <>
+        <div className="calendar-navigation">
+          <button type="button" className="calendar-arrow" aria-label="Previous month" disabled={viewMonth <= firstMonth}
+            onClick={() => showMonth(viewMonth - 1)}><Icon name="chevron-left" /></button>
+          <Select label="Month" value={String(view.month)} onChange={value => showMonth(view.year * 12 + Number(value) - 1)}
+            options={monthNames.map((name, index) => ({ value: String(index + 1), label: name,
+              disabled: view.year * 12 + index < firstMonth || view.year * 12 + index > lastMonth }))} />
+          <label className="sr-only" htmlFor={`${id}-year`}>Year</label>
+          <input id={`${id}-year`} className="calendar-year" type="number" step="1" min={minimum?.year} max={maximum?.year}
+            value={yearInput} onChange={(event) => setYearInput(event.currentTarget.value)} onBlur={() => commitYear()}
+            onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commitYear(true); } }} />
+          <button type="button" className="calendar-arrow" aria-label="Next month" disabled={viewMonth >= lastMonth}
+            onClick={() => showMonth(viewMonth + 1)}><Icon name="chevron-right" /></button>
         </div>
-        <button type="button" className="button primary small" onClick={menu.close}>Done</button>
-      </div>
-      <span className="sr-only" aria-live="polite">{value != null ? formatDateTime(value) : 'Choose a date'}</span>
+        <p className="sr-only" aria-live="polite">{monthNames[view.month - 1]} {view.year}</p>
+        <p id={`${id}-keys`} className="sr-only">Use arrow keys to move between days. Page Up and Page Down change the month; hold Shift to change the year.</p>
+        {/* This is the game's fixed-length calendar. Weekday names would imply
+            a Gregorian leap-year calendar that these recordings do not use. */}
+        <div className="calendar-grid" role="grid" aria-label={`${monthNames[view.month - 1]} ${view.year}`}
+          aria-describedby={`${id}-keys`}>
+          {Array.from({ length: Math.ceil(daysInMonth / 7) }, (_, row) => <div className="calendar-week" role="row" key={row}>
+            {Array.from({ length: 7 }, (_, column) => {
+              const day = row * 7 + column + 1;
+              if (day > daysInMonth) return <div role="gridcell" key={column} />;
+              const start = monthStart + (day - 1) * 24;
+              const isSelected = selected != null && monthIndex(selected) === viewMonth && selected.day === day;
+              const isDisabled = start > max || start + 23 < min;
+              const inRange = rangeFirst != null && rangeLast != null && start <= rangeLast && start + 23 >= rangeFirst;
+              return <div role="gridcell" aria-selected={isSelected} key={column}>
+                <button type="button" data-day={day} className={`calendar-day${inRange ? ' in-range' : ''}`}
+                  aria-label={`${day} ${monthNames[view.month - 1]} ${view.year}`} disabled={isDisabled}
+                  tabIndex={day === activeDay ? 0 : -1} onFocus={() => setFocusedDay(day)}
+                  onKeyDown={(event) => moveFocus(event, day)} onClick={() => chooseDay(day)}>{day}</button>
+              </div>;
+            })}
+          </div>)}
+        </div>
+        <div className="calendar-time">
+          <label htmlFor={`${id}-time`}><Icon name="clock" /><span>Time<span className="sr-only"> · Game time, hourly</span></span></label>
+          <Select id={`${id}-time`} label="Time" value={String(selected?.hour ?? 1)} disabled={!selected}
+            onChange={value => choose(selectedDayStart + Number(value) - 1)}
+            options={Array.from({ length: 24 }, (_, index) => ({ value: String(index + 1), label: formatTime(index + 1),
+              disabled: selectedDayStart + index < min || selectedDayStart + index > max }))} />
+        </div>
+        <div className="calendar-footer">
+          <div className="calendar-shortcuts">
+            <button type="button" className="text-button" data-tooltip="Select the first available date" onClick={() => choose(Math.max(min, HOUR_EPOCH))}>First date</button>
+            <button type="button" className="text-button" data-tooltip="Select the last available date" onClick={() => choose(max)}>Last date</button>
+          </div>
+          <button type="button" className="button primary small" onClick={menu.close}>Done</button>
+        </div>
+        <span className="sr-only" aria-live="polite">{value != null ? formatDateTime(value) : 'Choose a date'}</span>
+      </>}</PopoverBody>
     </Popover>
   </div>;
 }

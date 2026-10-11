@@ -7,6 +7,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+blake3.workspace = true
 replay.workspace = true
 installed-content.workspace = true
 engine.workspace = true
@@ -17,6 +18,9 @@ base64 = "0.22.1"
 png.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 rfd.workspace = true
+sha2.workspace = true
+mimalloc.workspace = true
+zstd = "0.13"
 shader-pipeline = { path = "../shader-pipeline" }
 
 [[bin]]
@@ -31,4 +35,3 @@ path = "src/bin/dashboard-bridge.rs"
 # Folder layers, so tests load localisation files as the game content does.
 installed-content = { workspace = true, features = ["test-support"] }
 crc32fast = "1"
-zstd = "0.13"

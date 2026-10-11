@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { EventBadge } from '../../charts/badges';
 import type { Artwork, CountryGroupReply, FactionGroup, FocusReply, HourSpan, IdeaHistoryReply, PartyHistoryReply } from '../../generated/dashboard';
 import { factionNameAt, UNNAMED_FACTION } from '../../dashboard/factionNames.ts';
@@ -30,6 +31,8 @@ export interface MarkerSources {
   ideas?: IdeaHistoryReply;
   parties?: PartyHistoryReply;
   focus?: FocusReply;
+  /** Scoped titles resolved at each completion's recorded observation hour. */
+  focusName?: (token: string, hour: number) => string | null | undefined;
 }
 
 const inSpans = (spans: readonly HourSpan[], hour: number) => spans.some(span => span.firstHour <= hour && hour <= span.lastHour);
@@ -135,23 +138,23 @@ export function stabilityMarkers(sources: MarkerSources, kinds: ReadonlySet<Mark
       // the same character in the same seat.
       if (endings.has(holding(span, span.firstHour))) continue;
       // Ideas are read at intervals, so the hour is the first read that saw the change: a bound.
-      if (infos.get(span.token)?.law === true || laws.has(span.token)) push('government', span.firstHour, `Law: ${names.get(span.token)?.name ?? span.token} (taken on by then)`);
+      if (infos.get(span.token)?.law === true || laws.has(span.token)) push('government', span.firstHour, `Law: ${contentTitle(names.get(span.token)?.name, span.token, 'Idea name unavailable')} (taken on by then)`);
       else if (slot && seats.has(slot)) {
         // A holder the recording could not identify stays unidentified.
         const name = span.character ? holders.get(holder(span.token, span.character.id, span.character.token, span.character.name)) ?? 'holder not recorded'
-          : names.get(span.token)?.name ?? span.token;
+          : contentTitle(names.get(span.token)?.name, span.token, 'Idea name unavailable');
         push('government', span.firstHour, `Advisor: ${name} (appointed by then)`);
       }
     }
   }
   if (sources.parties) {
-    for (const badge of partyBadges(sources.parties, token => sources.parties!.ideologies.find(item => item.token === token)?.name ?? token)) {
+    for (const badge of partyBadges(sources.parties, token => contentTitle(sources.parties!.ideologies.find(item => item.token === token)?.name, token, 'Ideology name unavailable'))) {
       if (badge.glyph !== '✓') push('government', badge.hour, badge.label);
     }
   }
   const focus = sources.focus;
   if (focus) {
-    const names = new Map(focus.artwork.map(item => [item.token, item.name]));
+    const names = new Map((focus.staticText ?? []).map(item => [item.token, item.name]));
     // Each completion once, by occurrence (a repeatable focus completed twice, even
     // seen at the same hour, is two events). The hour is the first read that saw it
     // completed, and reads are not hourly, so it is always a bound, never exact.
@@ -161,8 +164,8 @@ export function stabilityMarkers(sources: MarkerSources, kinds: ReadonlySet<Mark
         const occurrence = `${entry.token}#${entry.ordinal}#${entry.completedByHour}`;
         if (entry.completedByHour == null || seen.has(occurrence)) continue;
         seen.add(occurrence);
-        const name = names.get(entry.token) ?? entry.token;
-        push('focus', entry.completedByHour, `Focus: ${name} (completed by then)`);
+        const hour = entry.completedByHour;
+        push('focus', hour, () => `Focus: ${contentTitle(sources.focusName?.(entry.token, hour) ?? names.get(entry.token), entry.token, 'Focus name unavailable')} (completed by then)`);
       }
     }
   }

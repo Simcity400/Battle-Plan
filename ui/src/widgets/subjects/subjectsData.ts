@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { CountryFlagLook } from '../../components/CountryFlag';
 import type { BandStep, TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
 import { isSpan } from '../../charts/series.ts';
@@ -169,7 +170,7 @@ export function levelColours(levels: readonly SubjectLevel[], palette: readonly 
 
 /** A level's name as shown: the game's, else its id, so a missing name is never blank. */
 export const levelName = (levels: ReadonlyMap<string, SubjectLevel>, token: string | null) =>
-  token == null ? 'Level not recorded' : levels.get(token)?.name ?? token;
+  token == null ? 'Level not recorded' : contentTitle(levels.get(token)?.name, token, 'Autonomy level name unavailable');
 
 /** The level a run's subject held at an hour; undefined outside the run. */
 export function levelAt(run: SubjectRun, hour: number): string | null | undefined {

@@ -426,7 +426,7 @@ test('missing and loading viewpoints have honest subtitles and availability uses
   assert.equal(warsReplyState(null, 'Not in this recording: corrupt frame'), 'error');
 });
 
-test('actual Wars summary and participant hover preserve completed native UI-word and empty names', async () => {
+test('actual Wars participant hover preserves completed native UI-word and empty names', async () => {
   const host = globalThis as typeof globalThis & { __warsFixture?: unknown; __warsName?: { name: string; known: boolean; flag?: string; flagReason?: string; flagPending?: boolean }; __warsTips?: TooltipContent[]; __warsMissing?: string; __warsAsked?: string[] };
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__warsFixture });',
@@ -453,23 +453,10 @@ test('actual Wars summary and participant hover preserve completed native UI-wor
     const track = { id: 'track', source: { id: 'source', revision: '1' }, branch: { id: 'branch', firstHour: 0, lastHour: 39, gaps: [] }, axisOffset: 0 };
     for (const name of ['Loading…', 'Not recorded', '', 'Named country']) {
       host.__warsName = { name, known: true };
-      const html = renderToStaticMarkup(createElement(WarsWidget, { widget: { trackIds: ['track'], countries: { kind: 'all' }, time: { mode: 'campaign' }, options: { view: 'countries' } },
+      renderToStaticMarkup(createElement(WarsWidget, { widget: { trackIds: ['track'], countries: { kind: 'all' }, time: { mode: 'campaign' }, options: { view: 'countries' } },
         runtime: { client: {}, tracks: [track], clock: { getHour: () => 39 } }, active: true, onDiagnostics() {} } as unknown as WidgetProps));
-      assert.ok(html.replace(/<[^>]*>/g, '').includes(`Wars as ${name} sees them`));
       assert.ok(host.__warsTips!.length > 0);
       for (const content of host.__warsTips!) { assert.equal(content.title, name); assert.equal(content.description, undefined); }
-    }
-    for (const [flag, expected] of [
-      [{ flag: 'dated-viewpoint-flag.png' }, null],
-      [{ flagPending: true }, 'Flag loading'],
-      [{ flagPending: false, flagReason: 'The native custom flag is unavailable.' }, 'Flag not available: The native custom flag is unavailable.'],
-    ] as const) {
-      host.__warsName = { name: 'Known viewpoint', known: true, ...flag };
-      const html = renderToStaticMarkup(createElement(WarsWidget, { widget: { trackIds: ['track'], countries: { kind: 'all' }, time: { mode: 'campaign' }, options: { view: 'countries' } },
-        runtime: { client: {}, tracks: [track], clock: { getHour: () => 39 } }, active: true, onDiagnostics() {} } as unknown as WidgetProps));
-      assert.ok(html.replace(/<[^>]*>/g, '').includes('Wars as Known viewpoint sees them'));
-      if (expected === null) assert.ok(html.includes('src="dated-viewpoint-flag.png"'));
-      else assert.ok(html.includes(`aria-label="${expected}"`));
     }
     host.__warsMissing = 'One side';
     host.__warsAsked = [];

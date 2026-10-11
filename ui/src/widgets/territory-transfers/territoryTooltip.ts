@@ -1,5 +1,6 @@
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import type { SummedLink, SummedNode } from '../../charts/flow/sum';
+import { usNumber } from '../../charts/numberFormat.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { nameKey } from '../../dashboard/countryFacts.ts';
@@ -45,7 +46,7 @@ function occurrenceRows(state: TransferOccurrence, options: TooltipOptions): Too
     { label: 'Taker', value: taker.name, countryFlag: taker, indent: true },
     { label: 'Victory points', value: state.victoryPointsPending ? state.victoryPointsReadHour == null ? 'Read hour not recorded'
       : `Not recorded at the playhead; read ${formatDateTime(state.victoryPointsReadHour)}` : state.victoryPoints == null ? 'Not recorded'
-      : `${BigInt(state.victoryPoints).toLocaleString('en-US')}${state.victoryPointsReadHour == null ? '; read hour not recorded' : `; read ${formatDateTime(state.victoryPointsReadHour)}`}`, indent: true },
+      : `${usNumber.format(BigInt(state.victoryPoints))}${state.victoryPointsReadHour == null ? '; read hour not recorded' : `; read ${formatDateTime(state.victoryPointsReadHour)}`}`, indent: true },
   ];
 }
 

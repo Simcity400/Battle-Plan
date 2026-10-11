@@ -1,6 +1,7 @@
 //! Territory totals from complete, freshly read States and Provinces tables.
-//! Each unchanged table read reuses its totals. A failed or unrecorded read supplies
-//! no totals, including for countries that held zero territory at the last read.
+//! A read whose measured fields are unchanged reuses its totals. A failed or
+//! unrecorded read supplies no totals, including for countries that held zero
+//! territory at the last read.
 use super::{
     LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
     country_groups::{HourSpan, record_hour},
@@ -20,8 +21,8 @@ use crate::{
 use installed_content::province_area::ProvinceAreas;
 use replay::{
     container::Replay,
-    frame::{DecodedFrame, FrameDecoder, SharedView},
-    rows::{TableId, tables},
+    frame::{DecodedFrame, FrameDecoder, ViewIdentity},
+    rows::{CountryRow, ProvinceRow, StateRow, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -134,7 +135,7 @@ pub struct Scan {
 }
 
 struct Lineage {
-    views: (SharedView, SharedView),
+    reads: CountryReads,
     raw_slots: HashMap<u32, usize>,
     entries: Vec<(Arc<str>, (u32, u32), usize)>,
     present: Vec<Arc<str>>,
@@ -148,10 +149,102 @@ struct Builder {
     previous: Vec<[Option<i64>; 8]>,
     current: Vec<[Option<i64>; 8]>,
     previous_hour: Option<i32>,
-    totals_cache: Option<TotalsCache>,
+    /// The last land reads and, under the current lineage, their totals.
+    reads: LandReads,
+    totals: Option<Totals>,
     #[cfg(test)]
     aggregations: usize,
     incomplete: bool,
+}
+
+/// What a holder lineage reads of the country tables: each row's id, canonical
+/// slot and tag, in order, and the links by identity, which holds none of their
+/// rows. Countries change hourly in their balances alone.
+pub(crate) struct CountryReads {
+    links: ViewIdentity,
+    countries: Vec<(u32, u32, Vec<u8>)>,
+}
+
+impl CountryReads {
+    pub(crate) fn new(frame: &DecodedFrame, countries: &[CountryRow]) -> Self {
+        Self {
+            links: frame.tables[TableId::CountryLinks.index()].identity(),
+            countries: countries
+                .iter()
+                .map(|country| (country.id, country.canonical_slot, country.tag.clone()))
+                .collect(),
+        }
+    }
+
+    pub(crate) fn matches(&self, frame: &DecodedFrame, countries: &[CountryRow]) -> bool {
+        self.links.is(&frame.tables[TableId::CountryLinks.index()])
+            && self.countries.len() == countries.len()
+            && self
+                .countries
+                .iter()
+                .zip(countries)
+                .all(|((id, slot, tag), country)| {
+                    *id == country.id && *slot == country.canonical_slot && *tag == country.tag
+                })
+    }
+}
+
+/// What territory measures read of a fresh States and Provinces read: each state's
+/// id and holders, and each province's id, holders and victory points. Their
+/// other fields change hourly.
+#[derive(Default)]
+pub(crate) struct LandReads {
+    states: Option<Vec<[u32; 3]>>,
+    provinces: Option<Vec<([u32; 3], i32)>>,
+}
+
+impl LandReads {
+    /// Keeps this hour's reads, answering whether they equal the last ones.
+    pub(crate) fn update(
+        &mut self,
+        states: Option<&[StateRow]>,
+        provinces: Option<&[ProvinceRow]>,
+    ) -> bool {
+        let states = keep(&mut self.states, states, |state| {
+            [state.id, state.controller, state.owner]
+        });
+        let provinces = keep(&mut self.provinces, provinces, |province| {
+            (
+                [province.id, province.controller, province.owner],
+                province.victory_points,
+            )
+        });
+        states && provinces
+    }
+}
+
+fn keep<R, T: Copy + PartialEq>(
+    kept: &mut Option<Vec<T>>,
+    rows: Option<&[R]>,
+    read: impl Fn(&R) -> T,
+) -> bool {
+    let same = match (&*kept, rows) {
+        (Some(kept), Some(rows)) => kept.iter().copied().eq(rows.iter().map(&read)),
+        (kept, rows) => kept.is_none() && rows.is_none(),
+    };
+    if !same {
+        *kept = rows.map(|rows| rows.iter().map(&read).collect());
+    }
+    same
+}
+
+/// This hour's complete States and Provinces when freshly read; a failed or
+/// unrecorded read supplies none.
+pub(crate) fn fresh_tables(frame: &DecodedFrame) -> (Option<&[StateRow]>, Option<&[ProvinceRow]>) {
+    let fresh = |table| slot_read(&frame.metrics, table, frame.hour);
+    (
+        fresh(TableId::States)
+            .then(|| frame.complete::<tables::States>().ok())
+            .flatten(),
+        fresh(TableId::Provinces)
+            .then(|| frame.complete::<tables::Provinces>().ok())
+            .flatten(),
+    )
 }
 
 /// A non-null unresolved holder could belong to any country, so its rule is
@@ -161,12 +254,6 @@ struct Totals {
     missing_area: bool,
     world: [Option<i64>; 8],
     overflowed: usize,
-}
-
-struct TotalsCache {
-    views: (SharedView, SharedView),
-    fresh: (bool, bool),
-    totals: Totals,
 }
 
 /// The same exact province weights serve totals and geographic breakdowns.
@@ -188,12 +275,7 @@ fn totals(
     slot_count: usize,
     result: &mut Vec<[Option<i64>; 8]>,
 ) -> Totals {
-    let states = slot_read(&frame.metrics, TableId::States, frame.hour)
-        .then(|| frame.complete::<tables::States>().ok())
-        .flatten();
-    let provinces = slot_read(&frame.metrics, TableId::Provinces, frame.hour)
-        .then(|| frame.complete::<tables::Provinces>().ok())
-        .flatten();
+    let (states, provinces) = fresh_tables(frame);
     let mut available = [
         states.is_some(),
         provinces.is_some(),
@@ -301,13 +383,10 @@ fn observe(
         builder.previous_hour = None;
         return Ok(());
     };
-    let views = (
-        frame.tables[TableId::Countries.index()].clone(),
-        frame.tables[TableId::CountryLinks.index()].clone(),
-    );
-    let same = builder.lineage.as_ref().is_some_and(|index| {
-        SharedView::ptr_eq(&index.views.0, &views.0) && SharedView::ptr_eq(&index.views.1, &views.1)
-    });
+    let same = builder
+        .lineage
+        .as_ref()
+        .is_some_and(|index| index.reads.matches(frame, countries));
     if !same {
         let slots = link_slots(links);
         let mut entries = Vec::new();
@@ -364,7 +443,7 @@ fn observe(
             .collect();
         let slot_count = dense_slots.len();
         builder.lineage = Some(Lineage {
-            views,
+            reads: CountryReads::new(frame, countries),
             raw_slots,
             entries,
             present,
@@ -380,22 +459,11 @@ fn observe(
             frame.hour,
         );
     }
-    let views = (
-        frame.tables[TableId::States.index()].clone(),
-        frame.tables[TableId::Provinces.index()].clone(),
-    );
-    let fresh = (
-        slot_read(&frame.metrics, TableId::States, frame.hour),
-        slot_read(&frame.metrics, TableId::Provinces, frame.hour),
-    );
-    let cached = builder.totals_cache.as_ref().filter(|cache| {
-        same && cache.fresh == fresh
-            && SharedView::ptr_eq(&cache.views.0, &views.0)
-            && SharedView::ptr_eq(&cache.views.1, &views.1)
-    });
-    let totals = if let Some(cache) = cached {
+    let (states, provinces) = fresh_tables(frame);
+    let same_reads = builder.reads.update(states, provinces);
+    let totals = if let Some(totals) = builder.totals.filter(|_| same && same_reads) {
         builder.current.clone_from(&builder.previous);
-        cache.totals
+        totals
     } else {
         #[cfg(test)]
         {
@@ -408,11 +476,7 @@ fn observe(
             index.slot_count,
             &mut builder.current,
         );
-        builder.totals_cache = Some(TotalsCache {
-            views,
-            fresh,
-            totals,
-        });
+        builder.totals = Some(totals);
         totals
     };
     scan.overflowed = scan.overflowed.saturating_add(totals.overflowed);
@@ -519,12 +583,14 @@ fn observe(
     Ok(())
 }
 
-pub fn scan(
+/// Each readable hour of a branch's territory tables, in order. Returns how many
+/// blocks or hours could not be read; an unreadable hour ends its block.
+fn walk(
     replay: &Replay,
     branch: u64,
-    areas: Option<&ProvinceAreas>,
     cancelled: &AtomicBool,
-) -> io::Result<Scan> {
+    mut visit: impl FnMut(&DecodedFrame) -> io::Result<()>,
+) -> io::Result<usize> {
     let selected = [
         TableId::Campaign,
         TableId::Countries,
@@ -532,29 +598,87 @@ pub fn scan(
         TableId::States,
         TableId::Provinces,
     ];
+    let mut failed = 0;
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                check_cancel(cancelled)?;
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    failed += 1;
+                    continue;
+                };
+                for frame in frames {
+                    check_cancel(cancelled)?;
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        failed += 1;
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        failed += 1;
+                        break;
+                    }
+                    visit(decoded)?;
+                }
+            }
+            Ok(())
+        },
+    )?;
+    Ok(failed)
+}
+
+pub fn scan(
+    replay: &Replay,
+    branch: u64,
+    areas: Option<&ProvinceAreas>,
+    cancelled: &AtomicBool,
+) -> io::Result<Scan> {
+    scan_with(replay, branch, areas, cancelled, |_| Ok(()))
+}
+
+/// The scan, also handing each hour to another consumer of the same tables.
+fn scan_with(
+    replay: &Replay,
+    branch: u64,
+    areas: Option<&ProvinceAreas>,
+    cancelled: &AtomicBool,
+    mut also: impl FnMut(&DecodedFrame) -> io::Result<()>,
+) -> io::Result<Scan> {
     let mut result = Scan::default();
     let mut builder = Builder::default();
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        check_cancel(cancelled)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            result.incomplete += 1;
-            continue;
-        };
-        for frame in frames {
-            check_cancel(cancelled)?;
-            let Ok(decoded) = decoder.advance(&frame) else {
-                result.incomplete += 1;
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                result.incomplete += 1;
-                break;
-            }
-            observe(&mut result, decoded, areas, &mut builder)?;
-        }
-    }
+    let failed = walk(replay, branch, cancelled, |frame| {
+        also(frame)?;
+        observe(&mut result, frame, areas, &mut builder)
+    })?;
+    result.incomplete += failed;
     Ok(result)
+}
+
+/// Hands each readable hour of a branch's territory tables to a geographic
+/// consumer, building this branch's cached scan in the same pass if none is.
+pub(crate) fn walk_branch(
+    source: &Source,
+    branch: u64,
+    areas: Option<&ProvinceAreas>,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+    mut visit: impl FnMut(&DecodedFrame) -> io::Result<()>,
+) -> io::Result<()> {
+    let replay = source.replay();
+    let key = scan_key(areas, context);
+    let mut shared = false;
+    cached_scan(&source.state::<Cache>(), branch, key, || {
+        shared = true;
+        scan_with(&replay, branch, areas, cancelled, &mut visit)
+    })?;
+    if !shared {
+        walk(&replay, branch, cancelled, visit)?;
+    }
+    Ok(())
 }
 
 /// Merge dated absence with recorded measures without allocating zero histories.
@@ -832,11 +956,14 @@ fn load_scan(
     context: &LoadContext,
     cancelled: &AtomicBool,
 ) -> io::Result<Arc<Scan>> {
-    // Refused content is never confused with a previous successful map read.
-    let key = areas.and(content::content_key(context.content.as_ref()));
-    cached_scan(state, branch, key, || {
+    cached_scan(state, branch, scan_key(areas, context), || {
         scan(&source.replay(), branch, areas, cancelled)
     })
+}
+
+fn scan_key(areas: Option<&ProvinceAreas>, context: &LoadContext) -> Option<ContentKey> {
+    // Refused content is never confused with a previous successful map read.
+    areas.and(content::content_key(context.content.as_ref()))
 }
 
 fn scan_warning(scanned: &Scan, warnings: &mut Vec<String>) {

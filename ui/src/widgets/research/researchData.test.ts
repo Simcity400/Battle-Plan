@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { researchAt, researchColumns, researchProgressAt, researchRateAt, researchRequest, researchStateAt, validateResearchReply } from './researchData.ts';
+import { researchAt, researchArtworkTokens, researchColumns, researchProgressAt, researchRateAt, researchRequest, researchStateAt, validateResearchReply } from './researchData.ts';
 import { loadProduct } from '../../dashboard/products.ts';
 import type { ResearchEntry, ResearchHistory, ResearchReply } from '../../generated/dashboard';
 import type { DashboardClient, ProductRequest } from '../../dashboard/client';
@@ -25,6 +25,25 @@ test('research slots stay sequential; only the new column receives a time-based 
   assert.equal(columns[2].slot.entries[1].token, 'G');
   // Completion dates differ: these second entries still use consecutive rows.
   assert.notEqual(columns[0].slot.entries[0].endedByHour, columns[1].slot.entries[0].endedByHour);
+});
+
+test('research image selection follows displayed assignments and all completed rows without future or switched cards', () => {
+  const samples: ResearchHistory = { coverage: [{ firstHour: 100, lastHour: 400 }], slots: [
+    { index: 0, availability: [{ firstHour: 100, lastHour: 400 }], progress: [], entries: [
+      entry('older', 100, 120), entry('switched', 120, 140, 'switched'),
+      entry('zz_current', 140, 240, 'switched'), entry('a_future', 240, 300),
+    ], states: [{ firstHour: 140, lastHour: 239, token: 'zz_current', entryFirstObservedHour: 140,
+      speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0' }] },
+    { index: 1, availability: [{ firstHour: 200, lastHour: 400 }], progress: [], states: [], entries: [entry('hidden_slot', 200, 250)] },
+  ] };
+  const at = researchAt(samples, 150)!;
+  assert.deepEqual(researchArtworkTokens(at, 150, true), ['zz_current', 'older']);
+  assert.deepEqual(researchArtworkTokens(at, 150, false), ['older'], 'whole-campaign cards omit unfinished assignments');
+  assert.deepEqual(researchArtworkTokens(researchAt(samples, 400), 400, true), ['older', 'a_future', 'hidden_slot']);
+  assert.deepEqual(researchArtworkTokens(null, 150, true), []);
+  const many = Array.from({ length: 5000 }, (_, i) => entry(`tech${i}`, 100 + i * 2, 102 + i * 2));
+  const slot = { ...samples.slots[0], availability: [{ firstHour: 100, lastHour: 11000 }], states: [], entries: many };
+  assert.deepEqual(researchArtworkTokens([slot], 11000, false), many.map(item => item.token));
 });
 
 test('research progress is the recorded sample over its base cost, and absent outside samples', () => {
@@ -156,4 +175,17 @@ test('modifier changes survive history compression and rewind hides later values
   assert.equal(researchStateAt(slot, 200)?.details?.modifiers?.totalBonusRaw, '25000');
   const bad = structuredClone(data); bad.history.slots[0].states[0].details.modifiers.components[0].raw = 'NaN';
   assert.throws(() => validateResearchReply(bad));
+});
+
+
+test('text-only research validation retains every one of 5000 technology titles', () => {
+  const data: ResearchReply = { ...reply, artwork: Array.from({ length: 5000 }, (_, i) => ({
+    token: `mod_technology_${i}`, name: i === 0 ? '' : `Technology ${i}`, description: null, baseDurationDays: null, icon: null,
+  })), warnings: ['Synthetic content refusal reason'] };
+  assert.equal(validateResearchReply(data), data);
+  assert.equal(data.artwork.length, 5000);
+  assert.equal(data.artwork[0].name, '');
+  assert.equal(data.artwork[4999].name, 'Technology 4999');
+  assert.deepEqual(data.history.coverage, history.coverage);
+  assert.deepEqual(data.warnings, ['Synthetic content refusal reason']);
 });

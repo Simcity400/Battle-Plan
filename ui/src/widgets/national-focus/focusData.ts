@@ -96,7 +96,8 @@ export function validateFocusReply(input: unknown): FocusReply {
       return ok;
     })
     // Authored duration metadata has no token count cap.
-    && reply.artwork.every(artworkEntry);
+    && reply.artwork.every(artworkEntry)
+    && (reply.staticText === undefined || Array.isArray(reply.staticText) && reply.staticText.every(item => artworkEntry(item) && item.icon === null));
   if (!valid) throw new Error('Focus history does not match this country and recording.');
   keepDrawableIcons(reply.artwork);
   return reply;

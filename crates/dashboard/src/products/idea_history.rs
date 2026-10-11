@@ -23,7 +23,7 @@ use crate::{
     Artwork, Source,
     catalogue::View,
     metadata::{
-        TaggedCountry, branch_bounds, link_slot, tagged_countries, tagged_country,
+        CountryKeys, TaggedCountry, branch_bounds, link_slot, tagged_countries, tagged_country,
         validate_campaign,
     },
     products::country_groups::HourSpan,
@@ -599,198 +599,214 @@ fn scan_selected(
     let mut unreadable = 0_u32;
     let mut observed = false;
     let mut refused = RefusedRows::new();
-    let mut previous_frame: Option<(i32, [ViewIdentity; 6])> = None;
+    let mut previous_frame: Option<(i32, [ViewIdentity; 6], CountryKeys)> = None;
     let bounds = replay
         .branches
         .iter()
         .find(|start| start.id == branch)
         .map(|start| branch_bounds(replay, start));
     let mut previous_hour = bounds.and_then(|(first, _)| first.checked_sub(1));
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancel());
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            unreadable += 1;
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancel());
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                unreadable += 1;
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                unreadable += 1;
-                break;
-            }
-            let hour = frame.hour;
-            if let Some(previous) = previous_hour
-                && previous.checked_add(1).is_some_and(|next| next < hour)
-            {
-                mark(&mut unobserved, previous + 1, hour - 1);
-            }
-            previous_hour = Some(hour);
-            let (Ok(countries), Ok(links), Ok(ideas), Ok(advisors)) = (
-                decoded.complete::<tables::Countries>(),
-                decoded.complete::<tables::CountryLinks>(),
-                decoded.complete::<tables::ActiveIdeas>(),
-                decoded.complete::<tables::HiredAdvisors>(),
-            ) else {
-                mark(&mut unobserved, hour, hour);
-                continue;
-            };
-            observed = true;
-            if let Some(tag) = requested {
-                if !states.contains_key(tag) {
-                    states.insert(tag.to_owned(), CountryScan::default());
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancel());
                 }
-                let state = states.get_mut(tag).expect("selected country inserted");
-                let (country, slot) = match tagged_country(countries, links, tag) {
-                    TaggedCountry::Found(country, slot) => (country, slot),
-                    TaggedCountry::Absent => continue,
-                    TaggedCountry::Unresolved => {
-                        mark(&mut state.result.unobserved, hour, hour);
-                        continue;
-                    }
-                };
-                let owned_ideas: Vec<_> = ideas
-                    .iter()
-                    .filter(|row| link_slot(links, row.country) == Some(slot))
-                    .collect();
-                let owned_advisors: Vec<_> = advisors
-                    .iter()
-                    .filter(|row| link_slot(links, row.country) == Some(slot))
-                    .collect();
-                let appearance = decoded
-                    .complete::<tables::CountryAppearance>()
-                    .ok()
-                    .and_then(|rows| rows.iter().find(|row| row.country == country.id));
-                state.observe(
-                    decoded,
-                    CountryRead {
-                        country,
-                        slot,
-                        ideas: Some(&owned_ideas),
-                        advisors: Some(&owned_advisors),
-                        appearance,
-                    },
-                    false,
-                    &mut refused,
-                );
-                continue;
-            }
-            if previous_frame.as_ref().is_some_and(|(previous, views)| {
-                previous.checked_add(1) == Some(hour)
-                    && views
-                        .iter()
-                        .zip(HOLDING_VIEWS)
-                        .all(|(view, table)| view.is(&decoded.tables[table.index()]))
-            }) {
-                for state in states.values_mut() {
-                    if state.unresolved_now {
-                        mark(&mut state.result.unobserved, hour, hour);
-                    } else {
-                        state.extend(hour);
-                    }
-                }
-                previous_frame.as_mut().expect("unchanged frame exists").0 = hour;
-                continue;
-            }
-            previous_frame = Some((
-                hour,
-                HOLDING_VIEWS.map(|table| decoded.tables[table.index()].identity()),
-            ));
-            for country in countries {
-                if std::str::from_utf8(&country.tag).is_err() {
-                    refused
-                        .entry("Countries tag is not UTF-8; idea holder cannot be identified.")
-                        .or_default()
-                        .insert((country.id, country.canonical_slot, country.tag.clone()));
-                }
-            }
-            let found = tagged_countries(countries, links);
-            let holders: BTreeSet<_> = found
-                .iter()
-                .filter_map(|(tag, holder)| {
-                    std::str::from_utf8(tag)
-                        .ok()
-                        .and_then(|_| holder.found().map(|(_, slot)| slot))
-                })
-                .collect();
-            let mut ideas_by_slot: BTreeMap<u32, Vec<_>> = BTreeMap::new();
-            for row in ideas {
-                if let Some(slot) = link_slot(links, row.country) {
-                    if holders.contains(&slot) {
-                        ideas_by_slot.entry(slot).or_default().push(row);
-                    } else {
-                        refused.entry("ActiveIdeas owner has no resolved Countries holder; holding cannot be attributed.")
-                            .or_default().insert((row.country, row.ordinal, row.token.clone()));
-                    }
-                } else {
-                    refused.entry("ActiveIdeas owner is unresolved through CountryLinks; holding cannot be attributed.")
-                        .or_default().insert((row.country, row.ordinal, row.token.clone()));
-                }
-            }
-            let mut advisors_by_slot: BTreeMap<u32, Vec<_>> = BTreeMap::new();
-            for row in advisors {
-                if let Some(slot) = link_slot(links, row.country) {
-                    if holders.contains(&slot) {
-                        advisors_by_slot.entry(slot).or_default().push(row);
-                    } else {
-                        refused.entry("HiredAdvisors owner has no resolved Countries holder; appointment cannot be attributed.")
-                            .or_default().insert((row.country, row.ordinal, row.idea.clone()));
-                    }
-                } else {
-                    refused.entry("HiredAdvisors owner is unresolved through CountryLinks; appointment cannot be attributed.")
-                        .or_default().insert((row.country, row.ordinal, row.idea.clone()));
-                }
-            }
-            let appearances: BTreeMap<_, _> = decoded
-                .complete::<tables::CountryAppearance>()
-                .ok()
-                .into_iter()
-                .flatten()
-                .map(|row| (row.country, row))
-                .collect();
-            for state in states.values_mut() {
-                state.unresolved_now = false;
-            }
-            for (tag, found) in found {
-                let Ok(tag) = std::str::from_utf8(tag) else {
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    unreadable += 1;
                     continue;
                 };
-                if !states.contains_key(tag) {
-                    states.insert(tag.to_owned(), CountryScan::default());
-                }
-                let state = states.get_mut(tag).expect("feed country inserted");
-                let (country, slot) = match found {
-                    TaggedCountry::Found(country, slot) => (country, slot),
-                    TaggedCountry::Absent => continue,
-                    TaggedCountry::Unresolved => {
-                        state.unresolved_now = true;
-                        mark(&mut state.result.unobserved, hour, hour);
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(cancel());
+                    }
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        unreadable += 1;
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        unreadable += 1;
+                        break;
+                    }
+                    let hour = frame.hour;
+                    if let Some(previous) = previous_hour
+                        && previous.checked_add(1).is_some_and(|next| next < hour)
+                    {
+                        mark(&mut unobserved, previous + 1, hour - 1);
+                    }
+                    previous_hour = Some(hour);
+                    let (Ok(countries), Ok(links), Ok(ideas), Ok(advisors)) = (
+                        decoded.complete::<tables::Countries>(),
+                        decoded.complete::<tables::CountryLinks>(),
+                        decoded.complete::<tables::ActiveIdeas>(),
+                        decoded.complete::<tables::HiredAdvisors>(),
+                    ) else {
+                        mark(&mut unobserved, hour, hour);
+                        continue;
+                    };
+                    observed = true;
+                    if let Some(tag) = requested {
+                        if !states.contains_key(tag) {
+                            states.insert(tag.to_owned(), CountryScan::default());
+                        }
+                        let state = states.get_mut(tag).expect("selected country inserted");
+                        let (country, slot) = match tagged_country(countries, links, tag) {
+                            TaggedCountry::Found(country, slot) => (country, slot),
+                            TaggedCountry::Absent => continue,
+                            TaggedCountry::Unresolved => {
+                                mark(&mut state.result.unobserved, hour, hour);
+                                continue;
+                            }
+                        };
+                        let owned_ideas: Vec<_> = ideas
+                            .iter()
+                            .filter(|row| link_slot(links, row.country) == Some(slot))
+                            .collect();
+                        let owned_advisors: Vec<_> = advisors
+                            .iter()
+                            .filter(|row| link_slot(links, row.country) == Some(slot))
+                            .collect();
+                        let appearance = decoded
+                            .complete::<tables::CountryAppearance>()
+                            .ok()
+                            .and_then(|rows| rows.iter().find(|row| row.country == country.id));
+                        state.observe(
+                            decoded,
+                            CountryRead {
+                                country,
+                                slot,
+                                ideas: Some(&owned_ideas),
+                                advisors: Some(&owned_advisors),
+                                appearance,
+                            },
+                            false,
+                            &mut refused,
+                        );
                         continue;
                     }
-                };
-                state.observe(
-                    decoded,
-                    CountryRead {
-                        country,
-                        slot,
-                        ideas: ideas_by_slot.get(&slot),
-                        advisors: advisors_by_slot.get(&slot),
-                        appearance: appearances.get(&country.id).copied(),
-                    },
-                    true,
-                    &mut refused,
-                );
+                    // Hourly balances change Countries; holders read only its keys.
+                    if previous_frame
+                        .as_ref()
+                        .is_some_and(|(previous, views, keys)| {
+                            previous.checked_add(1) == Some(hour)
+                                && views.iter().zip(HOLDING_VIEWS).all(|(view, table)| {
+                                    view.is(&decoded.tables[table.index()])
+                                        || table == TableId::Countries && keys.same(countries)
+                                })
+                        })
+                    {
+                        for state in states.values_mut() {
+                            if state.unresolved_now {
+                                mark(&mut state.result.unobserved, hour, hour);
+                            } else {
+                                state.extend(hour);
+                            }
+                        }
+                        previous_frame.as_mut().expect("unchanged frame exists").0 = hour;
+                        continue;
+                    }
+                    previous_frame = Some((
+                        hour,
+                        HOLDING_VIEWS.map(|table| decoded.tables[table.index()].identity()),
+                        CountryKeys::read(countries),
+                    ));
+                    for country in countries {
+                        if std::str::from_utf8(&country.tag).is_err() {
+                            refused
+                                .entry(
+                                    "Countries tag is not UTF-8; idea holder cannot be identified.",
+                                )
+                                .or_default()
+                                .insert((country.id, country.canonical_slot, country.tag.clone()));
+                        }
+                    }
+                    let found = tagged_countries(countries, links);
+                    let holders: BTreeSet<_> = found
+                        .iter()
+                        .filter_map(|(tag, holder)| {
+                            std::str::from_utf8(tag)
+                                .ok()
+                                .and_then(|_| holder.found().map(|(_, slot)| slot))
+                        })
+                        .collect();
+                    let mut ideas_by_slot: BTreeMap<u32, Vec<_>> = BTreeMap::new();
+                    for row in ideas {
+                        if let Some(slot) = link_slot(links, row.country) {
+                            if holders.contains(&slot) {
+                                ideas_by_slot.entry(slot).or_default().push(row);
+                            } else {
+                                refused.entry("ActiveIdeas owner has no resolved Countries holder; holding cannot be attributed.")
+                                .or_default().insert((row.country, row.ordinal, row.token.clone()));
+                            }
+                        } else {
+                            refused.entry("ActiveIdeas owner is unresolved through CountryLinks; holding cannot be attributed.")
+                            .or_default().insert((row.country, row.ordinal, row.token.clone()));
+                        }
+                    }
+                    let mut advisors_by_slot: BTreeMap<u32, Vec<_>> = BTreeMap::new();
+                    for row in advisors {
+                        if let Some(slot) = link_slot(links, row.country) {
+                            if holders.contains(&slot) {
+                                advisors_by_slot.entry(slot).or_default().push(row);
+                            } else {
+                                refused.entry("HiredAdvisors owner has no resolved Countries holder; appointment cannot be attributed.")
+                                .or_default().insert((row.country, row.ordinal, row.idea.clone()));
+                            }
+                        } else {
+                            refused.entry("HiredAdvisors owner is unresolved through CountryLinks; appointment cannot be attributed.")
+                            .or_default().insert((row.country, row.ordinal, row.idea.clone()));
+                        }
+                    }
+                    let appearances: BTreeMap<_, _> = decoded
+                        .complete::<tables::CountryAppearance>()
+                        .ok()
+                        .into_iter()
+                        .flatten()
+                        .map(|row| (row.country, row))
+                        .collect();
+                    for state in states.values_mut() {
+                        state.unresolved_now = false;
+                    }
+                    for (tag, found) in found {
+                        let Ok(tag) = std::str::from_utf8(tag) else {
+                            continue;
+                        };
+                        if !states.contains_key(tag) {
+                            states.insert(tag.to_owned(), CountryScan::default());
+                        }
+                        let state = states.get_mut(tag).expect("feed country inserted");
+                        let (country, slot) = match found {
+                            TaggedCountry::Found(country, slot) => (country, slot),
+                            TaggedCountry::Absent => continue,
+                            TaggedCountry::Unresolved => {
+                                state.unresolved_now = true;
+                                mark(&mut state.result.unobserved, hour, hour);
+                                continue;
+                            }
+                        };
+                        state.observe(
+                            decoded,
+                            CountryRead {
+                                country,
+                                slot,
+                                ideas: ideas_by_slot.get(&slot),
+                                advisors: advisors_by_slot.get(&slot),
+                                appearance: appearances.get(&country.id).copied(),
+                            },
+                            true,
+                            &mut refused,
+                        );
+                    }
+                }
             }
-        }
-    }
+            Ok(())
+        },
+    )?;
     if let (Some((first, last)), previous) = (bounds, previous_hour) {
         let from = previous.map_or(first, |previous| previous.saturating_add(1));
         if from <= last {

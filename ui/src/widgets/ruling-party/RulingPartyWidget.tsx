@@ -1,3 +1,4 @@
+import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles.ts';
 import { useEffect, useMemo, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
@@ -56,15 +57,15 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   // Built once per reply; each frame only slices and thins it.
   const stack = useMemo(() => data ? buildStack(list, data.decimals) : null, [data, list]);
   const names = useMemo(() => {
-    const names = new Map((data?.ideologies ?? []).map(ideology => [ideology.token, ideology.name ?? ideology.token]));
+    const names = new Map((data?.ideologies ?? []).map(ideology => [ideology.token, contentTitle(ideology.name, ideology.token, 'Ideology name unavailable')]));
     for (const band of list) names.set(band.token, band.name);
     return names;
   }, [data, list]);
   const badges = useMemo(() => {
     if (!data) return [];
     const native = visibleGovernmentChanges(governments.data?.governments ?? [], detailsThrough);
-    const all = partyBadges(data, token => names.get(token) ?? token, options.leaders === true, native);
-    return options.changes ? [...all, ...governmentBadges(native, token => names.get(token) ?? token, detailsThrough)].sort((a, b) => a.hour - b.hour)
+    const all = partyBadges(data, token => names.get(token) ?? 'Ideology name unavailable', options.leaders === true, native);
+    return options.changes ? [...all, ...governmentBadges(native, token => names.get(token) ?? 'Ideology name unavailable', detailsThrough)].sort((a, b) => a.hour - b.hour)
       : all.filter(badge => badge.glyph === '♔');
   }, [data, names, options.changes, options.leaders, governments.data, detailsThrough]);
   const menu = useContextMenu('Chart actions');
@@ -96,7 +97,8 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const ruling = rulingAt(data, Math.floor(head));
   const rulingBand = list.find(band => band.token === ruling);
   const rulingRaw = rulingBand ? rawAt(rulingBand.series, Math.floor(head)) : null;
-  const leader = leaderShown(data, leaderAt(data, Math.floor(head)));
+  const leaderRun = leaderAt(data, Math.floor(head));
+  const leader = leaderShown(data, leaderRun);
   // Portrait ringed in the ruling ideology's colour (grey when not
   // known), the leader's name, then ideology · party · share.
   // The party as the game names it ("NSDAP"); left out when that is not known.
@@ -109,7 +111,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
     </span>
     <div className="ruling-party-leader-text">
       <strong className={leader.known ? undefined : 'is-notice'}>{leader.name}</strong>
-      {detail && <span>{detail}</span>}
+      {detail && <span data-tooltip={contentTitleHint(leaderRun?.ideology)}>{detail}</span>}
     </div>
   </div>;
   // A recorded leader still shows when no party popularity was recorded.
@@ -140,7 +142,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
             .sort((a, b) => Number(b.raw ?? -1) - Number(a.raw ?? -1))
             .map(({ band, raw }) => ({ label: band.token === rulingAt(data, hour) ? `${band.name} (ruling)` : band.name, swatch: band.color,
               value: raw == null ? 'Not recorded' : formatPopularity(raw, data.decimals), tone: raw == null ? 'muted' as const : undefined })));
-          if (options.changes) rows.push(...governmentRows(governments.data?.governments ?? [], hour, detailsThrough, token => names.get(token) ?? token));
+          if (options.changes) rows.push(...governmentRows(governments.data?.governments ?? [], hour, detailsThrough, token => names.get(token) ?? 'Ideology name unavailable'));
           rows.push(...badgeRows(hovered));
           return { title: dayLabel(hour), rows };
         }}

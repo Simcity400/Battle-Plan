@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import BreakdownChart from '../../charts/drill/BreakdownChart';
 import type { BreakdownSeries } from '../../charts/drill/BreakdownChart';
@@ -20,6 +20,17 @@ import { fuelRecipientBasis, fuelRecipientForReply, sameFuelActor, selectFuelRec
 import type { FuelRecipientSelection } from './fuelDrill';
 
 type HistoryChart = Omit<Parameters<typeof BreakdownChart>[0], 'series' | 'axes' | 'label'>;
+
+/** A detail history chart's drawn range, kept while it reaches the same detail
+ * windows, so zoom and playback easing re-render only when it reaches another. */
+export function useDetailView(start: number, end: number, detailHours: number) {
+  const [visible, setVisible] = useState<readonly [number, number]>([start, end]);
+  const onViewChange = useCallback((x: readonly [number, number]) => setVisible(before => {
+    const block = (hour: number) => Math.floor(hour / detailHours);
+    return block(before[0]) === block(x[0]) && block(before[1]) === block(x[1]) ? before : x;
+  }), [detailHours]);
+  return [visible, onViewChange] as const;
+}
 
 export default function FuelBreakdown({ reply, history, actorSpans, identitySpans, measure, hour, tokens, within, runtime, track, selection: retainedSelection, onSelection, ...chart }: {
   reply: FuelReply; measure: 'gain' | 'burn'; hour: number | null; tokens: ReturnType<typeof useChartTokens>;
@@ -144,7 +155,7 @@ function FuelRecipientHistory({ runtime, track, reply, selection, part, hour, wi
 } & HistoryChart) {
   const end = Math.max(chart.extent[0], Math.min(chart.extent[1], hour ?? chart.extent[1]));
   const start = Math.max(chart.extent[0], end - reply.detailHours + 1);
-  const [visible, setVisible] = useState<readonly [number, number]>([start, end]);
+  const [visible, onViewChange] = useDetailView(start, end, reply.detailHours);
   const from = Math.max(chart.extent[0], visible[0]), to = Math.min(chart.extent[1], visible[1]);
   const wanted: number[] = [];
   for (let window = Math.floor(from / reply.detailHours); window <= Math.floor(to / reply.detailHours); window++) wanted.push(window);
@@ -182,7 +193,7 @@ function FuelRecipientHistory({ runtime, track, reply, selection, part, hour, wi
     {[...windows.errors.values()].map((reason, i) => <WidgetState key={i} kind="error" message={reason} onRetry={windows.retry} />)}
     {[...windows.data.values()].flatMap(detail => detail.warnings).map((note, i) => <p key={i} className="drill-empty">{note}</p>)}
     <BreakdownChart {...chart} within={within} series={series} keyHours={runs.map(row => row.firstHour)} selectedHour={hour}
-      onViewChange={range => setVisible(previous => previous[0] === range[0] && previous[1] === range[1] ? previous : range)}
+      onViewChange={onViewChange}
       label={`${part.recordedName ?? 'Native recipient'}: actual fuel receipts over time`}
       axes={{ xFrom: start - chart.branchStart, xTo: end - chart.branchStart, yMin: null, yMax: null, log: false }} />
   </>;

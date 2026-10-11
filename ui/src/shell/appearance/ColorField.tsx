@@ -9,8 +9,8 @@ declare global { interface Window { EyeDropper?: new () => { open(): Promise<{ s
 
 const clamp = (value: number) => Math.min(1, Math.max(0, value));
 
-/** Saturation/value area, hue slider, hex input and an optional eyedropper. */
-function ColorPicker({ value, onChange, swatches }: { value: string; onChange: (value: string) => void; swatches: readonly string[] }) {
+/** Saturation/value area, hue slider and optional swatches. */
+export function ColorPicker({ value, onChange, swatches }: { value: string; onChange: (value: string) => void; swatches: readonly string[] }) {
   const [hsv, setHsv] = useState<Hsv>(() => rgbToHsv(parseColor(value) ?? { r: 0, g: 0, b: 0 }));
   const last = useRef(value);
   useEffect(() => {

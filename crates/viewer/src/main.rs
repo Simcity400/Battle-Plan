@@ -28,6 +28,11 @@ const TEST_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(120)
 
 use dashboard::Config;
 
+/// The system heap slows sharply once the embedded data service holds
+/// gigabytes of scans; every product and render allocation runs faster on this.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use map::{camera::Camera, frame::DayNight, political};
 // names
 use map::{

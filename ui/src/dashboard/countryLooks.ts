@@ -59,12 +59,12 @@ const STYLES: FactSpec<CountryStyle & { warnings?: readonly string[] }> = {
     return new Map(reply.styles.map(style => [style.tag, { ...style, warnings: reply.warnings }] as const));
   },
 };
-const FLAGS = flagReadSpec('small');
+const FLAGS = flagReadSpec('shield');
 
 export interface CountryLooks {
   /** Native diagnostics from current completed style reads. */
   warnings?: readonly string[];
-  /** The name at the sample hour, else the opaque tag. */
+  /** The localized name at the sample hour, else an unavailable-name label. */
   name: (tag: string, hour?: number) => string;
   /** The recorded map colour as sRGB bytes, or null when not known. */
   color: (tag: string, hour?: number) => [number, number, number] | null;
@@ -91,13 +91,12 @@ export function useCountryLooks(client: DashboardClient, track: Pick<BoundTrack,
   const content = useContentRevision(client);
   const moment = Math.floor(hour);
   // The set of countries, not their order: a race re-ranking asks for nothing new.
-  const set = [...new Set(tags)].sort();
-  const tagKey = JSON.stringify(set);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const plan = useMemo(() => lookPlan(track?.branch, set, moment, segmentAt, hours, exact), [tagKey, track?.branch, moment, segmentAt, hours, exact]);
+  const tagKey = useMemo(() => JSON.stringify([...new Set(tags)].sort()), [tags]);
+  const set = useMemo(() => JSON.parse(tagKey) as string[], [tagKey]);
+  const plan = useMemo(() => lookPlan(track?.branch, set, moment, segmentAt, hours, exact), [set, track?.branch, moment, segmentAt, hours, exact]);
   const { samples, wanted } = plan;
   const styles = useCountryFactsRead(client, track, wanted, active, STYLES, plan.maxHours);
-  const flagKey = flagTags === undefined ? null : JSON.stringify([...new Set(flagTags)].sort());
+  const flagKey = useMemo(() => flagTags === undefined ? null : JSON.stringify([...new Set(flagTags)].sort()), [flagTags]);
   const flagWanted = useMemo(() => {
     if (flagKey === null) return wanted;
     const visible = new Set(JSON.parse(flagKey) as string[]);
@@ -112,7 +111,8 @@ export function useCountryLooks(client: DashboardClient, track: Pick<BoundTrack,
   // Rows fading out of a race still use their look. Retain them only while their
   // identity is known to be unchanged, without requesting countries no longer shown.
   // Memoised, so a render with nothing new keeps the looks object and the chart's layers.
-  const heldTags = JSON.stringify([...new Set([...held.looks.keys(), ...set])].sort());
+  // Held looks are replaced, never changed in place, so the map's identity stands for its countries.
+  const heldTags = useMemo(() => JSON.stringify([...new Set([...held.looks.keys(), ...set])].sort()), [held.looks, set]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const segments = useMemo(() => new Map(lookPlan(track?.branch, JSON.parse(heldTags) as string[], moment, segmentAt, hours, exact).samples.map(item => [item.tag, item.stretch])),
     [heldTags, track?.branch, moment, segmentAt, hours, exact]);
@@ -138,7 +138,7 @@ export function useCountryLooks(client: DashboardClient, track: Pick<BoundTrack,
     const warningReplies = new Set([...styles.values()].flatMap(style => style && style !== FAILED_FACT && style.warnings ? [style.warnings] : []));
     return {
       warnings: [...new Set([...warningReplies].flat())],
-      name: (tag, at) => look(tag, at)?.name ?? tag,
+      name: (tag, at) => look(tag, at)?.name ?? 'Country name unavailable',
       color: (tag, at) => look(tag, at)?.color ?? null,
       flag: (tag, at) => look(tag, at)?.flag ?? undefined,
       flagPending: (tag, at) => { const key = flagKeyAt(tag, at); return key !== undefined && flagReadMetadata(flags.get(key)).flagPending; },

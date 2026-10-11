@@ -47,7 +47,8 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
   };
   const context = { setTransform() {}, clearRect() {}, save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {},
     closePath() {}, fill() {}, stroke() {}, arc() {}, fillText() {} };
-  const element = { clientWidth: 500, clientHeight: 240, width: 500, height: 240, style: {},
+  let layoutReads = 0;
+  const element = { get clientWidth() { layoutReads++; return 500; }, clientHeight: 240, width: 500, height: 240, style: {}, focus() {}, setPointerCapture() {},
     getContext: () => context, getBoundingClientRect: () => ({ left: 0, top: 0, width: 500, height: 240 }),
     addEventListener: (type: string, callback: (event: unknown) => void) => listeners.set(type, callback),
     removeEventListener: (type: string) => listeners.delete(type) };
@@ -103,6 +104,8 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     const key = (canvas: Canvas, name: string) => canvas.onKeyDown({ key: name, preventDefault() {} });
     let canvas = render(); draw(); pointer(); draw();
     assert.deepEqual(seen.at(-1), ['A', 37]); assert.equal(described.at(-1), 37);
+    const reads = layoutReads; draw(); draw();
+    assert.equal(layoutReads, reads, 'frames reuse the canvas size measured until it resizes');
     const refreshedAt = seen.length;
     props.onHover = observe('B'); canvas = render(); draw();
     assert.deepEqual(seen.at(-1), ['B', 37]);
@@ -171,6 +174,21 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     props.onHover = observe('E'); canvas = render(); draw(); assert.deepEqual(seen.at(-1), ['E', 37]);
     props.onHover = undefined; canvas = render(); assert.deepEqual(seen.at(-1), ['E', null], 'normal removal clears its consumer');
     props.onHover = observe('F'); canvas = render(); draw(); assert.deepEqual(seen.at(-1), ['F', 37]);
+    // A click picks at once, with no wait for a double-click; its second press never picks again.
+    const picked: number[] = [];
+    props.onPick = hour => { picked.push(hour); }; canvas = render(); draw();
+    const press = (detail: number) => {
+      const at = { clientX: frame!.toX(50), clientY: frame!.plotTop + 10, button: 0, pointerId: 1, detail, preventDefault() {} };
+      listeners.get('pointerdown')!(at); listeners.get('pointerup')!(at);
+    };
+    press(1); assert.deepEqual(picked, [37]);
+    press(2); assert.deepEqual(picked, [37]);
+    // The drawn range reaches its consumer only when it, or the consumer, changes.
+    const views: unknown[] = [];
+    props.onViewChange = x => { views.push(x); }; canvas = render(); draw(); draw(); canvas = render(); draw();
+    assert.deepEqual([...views], [[0, 100]]);
+    props.onViewChange = x => { views.push(x); }; canvas = render(); draw(); draw();
+    assert.deepEqual(views, [[0, 100], [0, 100]]);
     fixture.unmount(); assert.deepEqual(seen.at(-1), ['F', null]);
   } finally {
     fixture.unmount(); await vite.close(); delete host.__timeChartObserver;

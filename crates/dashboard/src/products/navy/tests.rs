@@ -661,12 +661,7 @@ fn navy_selected_parts_use_layered_mod_classes_and_native_role_masks() {
     )
     .unwrap();
     assert_eq!(roles.parts.len(), 2);
-    assert!(
-        roles
-            .parts
-            .iter()
-            .any(|part| part.name.as_deref() == Some("capital_ship / carrier"))
-    );
+    assert!(roles.parts.iter().all(|part| part.name.is_none()));
     let missing = project(&scanned, &request);
     assert!(missing.parts.iter().all(|part| part.unresolved));
     assert_eq!(

@@ -13,6 +13,7 @@ import TimeChart from '../charts/TimeChart';
 import type { ChartLayer } from '../charts/TimeChart';
 import { useChartTokens } from '../charts/useChartTokens';
 import { formatDateTime } from './calendar';
+import { contentTitle } from './contentTitles';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack } from './model';
 import { usePlaybackSpeed } from './playback';
@@ -41,7 +42,7 @@ export default function BombingDrill({ data, runtime, track, tag, identity, from
       const key = leaf.buildingToken ?? String(leaf.buildingId), leaves = groups.get(key) ?? [];
       leaves.push(leaf); groups.set(key, leaves);
     }
-    const named = new Map(data.buildings.map(item => [item.id, item.name ?? item.id]));
+    const named = new Map(data.buildings.map(item => [item.id, contentTitle(item.name, item.id, 'Building name unavailable')]));
     const groupsByFinal = [...groups].map(([key, leaves]) => ({ key, leaves, final: leaves.reduce((sum, leaf) => sum + leafAmount(leaf, from, end), 0n) }))
       .sort((a, b) => a.final === b.final ? a.key < b.key ? -1 : a.key > b.key ? 1 : 0 : a.final > b.final ? -1 : 1);
     const styles = lineStyles(groupsByFinal.map(({ key }, preferred) => ({ key, preferred })), tokens.categories);

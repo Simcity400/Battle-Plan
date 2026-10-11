@@ -63,6 +63,9 @@ export interface LogListProps<T> {
 }
 
 const EMPTY_ROWS: readonly LogRow<never>[] = [];
+/** An unchanged viewport keeps its state, so re-placing the rows never re-renders for nothing. */
+const viewAt = (top: number, height: number, width: number) => (before: { top: number; height: number; width: number }) =>
+  before.top === top && before.height === height && before.width === width ? before : { top, height, width };
 
 /** A log: HTML rows newest first, each with its date,
  * that flash in as playback reaches them and glide when their order changes
@@ -126,7 +129,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
     scroller.scrollTop = physicalScroll(space, top);
     scrollPosition.current = { logical: top, physical: scroller.scrollTop };
     if (priorLayout.current) priorLayout.current.top = top;
-    setView({ top, height, width: scroller.clientWidth });
+    setView(viewAt(top, height, scroller.clientWidth));
   }, [scroller, totalHeight, view.height]);
   const readScroll = useCallback((element: HTMLDivElement) => {
     const height = element.clientHeight;
@@ -135,7 +138,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
       ? Math.min(space.logicalRange, scrollPosition.current.logical) : logicalScroll(space, element.scrollTop);
     scrollPosition.current = { logical: top, physical: element.scrollTop };
     if (priorLayout.current) priorLayout.current.top = top;
-    setView({ top, height, width: element.clientWidth });
+    setView(viewAt(top, height, element.clientWidth));
   }, [totalHeight]);
   useLayoutEffect(() => {
     const previous = priorLayout.current;

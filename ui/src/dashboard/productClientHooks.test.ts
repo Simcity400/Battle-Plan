@@ -8,17 +8,26 @@ type Effect = { deps: readonly unknown[]; run: () => void | (() => void); cleanu
 type Payload = { owner: string };
 const request: ProductRequest = { sourceId: 'same-source', revision: 'same-revision', product: 'country-fuel',
   params: { branchId: 'same-branch', tag: 'ONE' } };
-const settle = () => new Promise<void>(resolve => setImmediate(resolve));
+const frames = new Map<number, FrameRequestCallback>();
+let frameIds = 0;
+// Replies settle, then the frame they landed in commits.
+const settle = async () => {
+  await new Promise<void>(resolve => setImmediate(resolve));
+  for (const [id, frame] of [...frames]) { frames.delete(id); frame(0); }
+};
 
 test('actual product and window hooks scope ready, late and retried results to their client under identical keys', async () => {
   const states = new Map<number, unknown>(), effects = new Map<number, Effect>(), pending = new Map<number, Effect>();
   const memos = new Map<number, { deps: readonly unknown[]; value: unknown }>();
-  let cursor = 0;
+  let cursor = 0, writes = 0;
+  const animation = { request: globalThis.requestAnimationFrame, cancel: globalThis.cancelAnimationFrame };
+  globalThis.requestAnimationFrame = callback => { frames.set(++frameIds, callback); return frameIds; };
+  globalThis.cancelAnimationFrame = id => { frames.delete(id); };
   const fixture = {
     useState(initial?: unknown) {
       const index = cursor++;
       if (!states.has(index)) states.set(index, initial);
-      return [states.get(index), (next: unknown) => states.set(index, typeof next === 'function' ? next(states.get(index)) : next)];
+      return [states.get(index), (next: unknown) => { writes++; states.set(index, typeof next === 'function' ? next(states.get(index)) : next); }];
     },
     useMemo(run: () => unknown, deps: readonly unknown[]) {
       const index = cursor++, before = memos.get(index);
@@ -87,8 +96,10 @@ test('actual product and window hooks scope ready, late and retried results to t
       for (const outcome of ['data', 'error']) {
         const a = transport(), b = transport();
         absent(render(a.client)); fixture.commit(); await settle();
+        const before = writes;
         for (const call of a.calls) outcome === 'data' ? call.answer('A') : call.fail();
         await settle();
+        if (mode === 'windows') assert.equal(writes - before, 1, 'windows landing in one frame commit together');
         const ready = render(a.client);
         if (outcome === 'data') assert.deepEqual(owners(ready), requests.map(() => 'A'));
         else assert.equal(ready.error, 'Previous client failed');
@@ -157,5 +168,6 @@ test('actual product and window hooks scope ready, late and retried results to t
     assert.equal(display(a.client, { owner: 'Current A' }, 125)?.hour, 125);
   } finally {
     fixture.unmount(); await vite.close(); delete host.__productClientHooks;
+    globalThis.requestAnimationFrame = animation.request; globalThis.cancelAnimationFrame = animation.cancel;
   }
 });

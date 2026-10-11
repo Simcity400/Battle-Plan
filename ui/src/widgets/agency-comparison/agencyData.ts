@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { AgencyComparisonParams, AgencyComparisonReply, AgencyRankField, AgencyValue, CountryGroupReply } from '../../generated/dashboard';
 import { isOrderedSpans, runAt, spansCovered } from '../../charts/series.ts';
 import type { TooltipContent } from '../../charts/tooltip';
@@ -96,7 +97,7 @@ export function agencyTooltip(row: AgencyRow, name: string, upgradesUnrecorded: 
     ...(value.upgrades.unavailable ? [{ label: value.upgrades.unavailable, tone: 'muted' as const }]
       : value.upgrades.readHour === null && upgradesUnrecorded ? [{ label: upgradesUnrecorded, tone: 'muted' as const }] : []),
     ...value.upgrades.items.flatMap(item => [
-      { label: item.name ?? (item.branchToken !== null && item.token !== null ? `Unknown upgrade (${item.branchToken}/${item.token})` : `Unknown upgrade (entry ${item.ordinal})`),
+      { label: contentTitle(item.name, item.token, 'Upgrade name unavailable'),
         value: `Level ${item.level}`, icon: item.icon ?? undefined },
       ...(item.identityRefusal ? [{ label: item.identityRefusal, tone: 'muted' as const }] : []),
       ...(item.contentReason ? [{ label: item.contentReason, tone: 'muted' as const }] : []),

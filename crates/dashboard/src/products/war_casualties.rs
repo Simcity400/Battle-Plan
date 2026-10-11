@@ -52,10 +52,14 @@ use crate::{
     Source,
     metadata::{link_slot, mapped_slot, slot_read, validate_campaign},
 };
+use installed_content::{
+    country_names::{CountryNames, Operands},
+    localisation::Localisation,
+};
 use replay::{
     cadence::{self, Cadence},
     container::Replay,
-    frame::FrameDecoder,
+    frame::{FrameDecoder, SharedView, TableView, ViewIdentity},
     rows::{TableId, tables},
 };
 use serde::{Deserialize, Serialize};
@@ -206,7 +210,7 @@ impl Product for WarCasualties {
         check_cancel(cancelled)?;
         let branch = params.branch_id.parse().expect("validated branch");
         let scanned = scanned_branch(source, branch, cancelled)?;
-        let mut unknown_label = UNKNOWN_LABEL.to_owned();
+        let mut unknown_label = "Unknown attacker".to_owned();
         let mut labels = None;
         let mut warnings = Vec::new();
         if let Some(options) = &context.content {
@@ -214,8 +218,7 @@ impl Product for WarCasualties {
                 Ok(catalogue) => {
                     unknown_label = catalogue
                         .localised(UNKNOWN_LABEL, crate::catalogue::View::Plain)
-                        .filter(|label| !label.trim().is_empty())
-                        .unwrap_or_else(|| UNKNOWN_LABEL.into());
+                        .unwrap_or_else(|| "Unknown attacker".into());
                     labels = Some(branch_labels(
                         source,
                         branch,
@@ -232,10 +235,10 @@ impl Product for WarCasualties {
                     warnings.extend(catalogue.warnings.iter().cloned());
                     warnings.extend(catalogue.refusal_lines());
                 }
-                Err(reason) => warnings.push(format!("Casualty labels use their keys: {reason}")),
+                Err(reason) => warnings.push(format!("Casualty titles are unavailable: {reason}")),
             }
         } else {
-            warnings.push("Game content is unavailable; casualty labels use their keys.".into());
+            warnings.push("Game content is unavailable; casualty titles are unavailable.".into());
         }
         scanned.reply(
             params,
@@ -249,6 +252,9 @@ impl Product for WarCasualties {
 
 type Identity = (u32, u32);
 type PairKey = (usize, usize, i32);
+/// A tag's naming operands (`CountryNames::operands`): its slot's, then each
+/// overlord's in turn, the only slots its name reads.
+type NameInputs = Vec<(u32, Option<Result<Operands, String>>)>;
 
 #[derive(Default)]
 struct Unknown {
@@ -314,6 +320,8 @@ struct HeldPair {
     values: [i64; 4],
     read: u64,
     hour: i32,
+    /// Dense first-sighting order, indexing per-pair caches.
+    ordinal: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -539,7 +547,8 @@ struct Scan {
     incomplete: bool,
     gap_read: Option<u64>,
     touched: Vec<usize>,
-    names: Vec<replay::frame::DecodedFrame>,
+    /// Each tag's naming operands where they change, in snapshot and row order.
+    names: Vec<(String, NameInputs)>,
 }
 impl Scan {
     fn new() -> Self {
@@ -728,6 +737,7 @@ impl Scan {
                 self.touched.push(index);
             }
         }
+        let ordinal = self.pairs.len();
         let pair = self.pairs.entry((first, second, start)).or_insert_with(|| {
             self.active_dirty |=
                 self.countries[first].relations == 0 || self.countries[second].relations == 0;
@@ -737,6 +747,7 @@ impl Scan {
                 values: [0; 4],
                 read: 0,
                 hour: self.hour.expect("relation hour"),
+                ordinal,
             }
         });
         let spans = pair.read != 0 && pair.read + 1 == self.read;
@@ -848,7 +859,7 @@ pub struct ScannedCasualties {
     observed: Vec<HourSpan>,
     incomplete: bool,
     windows: Vec<TopWindow>,
-    names: Vec<replay::frame::DecodedFrame>,
+    names: Vec<(String, NameInputs)>,
     holders: BTreeMap<String, HashSet<Identity>>,
     pairs: pairs::PairHistory,
 }
@@ -1220,7 +1231,7 @@ impl ScannedCasualties {
             labels: labels
                 .and_then(|l| l.get(tag))
                 .cloned()
-                .unwrap_or_else(|| vec![tag.into()]),
+                .unwrap_or_else(|| vec!["Country name unavailable".into()]),
             membership: None,
         };
         let mut cursor = 0;
@@ -1396,53 +1407,30 @@ fn branch_labels(
         .filter(|tag| !labels.contains_key(*tag))
         .map(String::as_str)
         .collect();
-    let mut operands = BTreeMap::new();
-    // Snapshots were collected alongside the casualty scan, only when actual
-    // naming inputs changed. No second branch decode is needed for any selection.
-    for decoded in &scanned.names {
+    // The casualty scan kept each tag's naming operands where they changed.
+    // No second branch decode is needed for any selection.
+    for (tag, inputs) in &scanned.names {
         if wanted.is_empty() {
             break;
         }
         check_cancel(cancelled)?;
-        let names = installed_content::country_names::CountryNames::read(decoded, &catalogue.localisation);
-        let Ok(countries) = decoded.complete::<tables::Countries>() else {
+        if !wanted.contains(tag.as_str()) {
             continue;
-        };
-        for country in countries {
-            let Ok(tag) = std::str::from_utf8(&country.tag) else {
-                continue;
-            };
-            if !wanted.contains(tag) {
-                continue;
-            }
-            let mut inputs = Vec::new();
-            let mut slot = Some(country.canonical_slot);
-            let mut seen = BTreeSet::new();
-            while let Some(at) = slot
-                && seen.insert(at)
-            {
-                let input = names.operands(at).cloned();
-                slot = input
-                    .as_ref()
-                    .and_then(|input| input.as_ref().ok())
-                    .and_then(|input| input.overlord);
-                inputs.push((at, input));
-            }
-            if operands.get(tag) == Some(&inputs) {
-                continue;
-            }
-            operands.insert(tag.to_owned(), inputs);
-            let name = names
-                .name(country.canonical_slot)
-                .and_then(|name| crate::catalogue::plain_text(&name))
-                .unwrap_or_else(|reason| {
-                    catalogue.refuse(&reason, tag);
-                    tag.into()
-                });
-            let choices = labels.entry(tag.into()).or_default();
-            if !choices.contains(&name) {
-                choices.push(name);
-            }
+        }
+        let operands = inputs
+            .iter()
+            .filter_map(|(slot, input)| Some((*slot, input.clone()?)))
+            .collect();
+        let name = CountryNames::of_operands(&catalogue.localisation, operands)
+            .name(inputs[0].0)
+            .and_then(|name| crate::catalogue::plain_text(&name))
+            .unwrap_or_else(|reason| {
+                catalogue.refuse(&reason, tag);
+                "Country name unavailable".to_owned()
+            });
+        let choices = labels.entry(tag.clone()).or_default();
+        if !choices.contains(&name) {
+            choices.push(name);
         }
     }
     let labels = Arc::new(labels);
@@ -1463,39 +1451,74 @@ const NAME_TABLES: [TableId; 6] = [
     TableId::PoliticalParties,
     TableId::Autonomy,
 ];
-fn same_rows<T: replay::rows::TableSchema>(
-    a: &replay::frame::DecodedFrame,
-    b: &replay::frame::DecodedFrame,
-    equal: impl Fn(&T::Row, &T::Row) -> bool,
-) -> bool {
-    if replay::frame::SharedView::ptr_eq(&a.tables[T::ID.index()], &b.tables[T::ID.index()]) {
+/// The naming tables the census does not already compare.
+const NAME_INPUTS: [TableId; 4] = [
+    TableId::CountryAppearance,
+    TableId::Politics,
+    TableId::PoliticalParties,
+    TableId::Autonomy,
+];
+/// Whether two views of `table` agree on every field `CountryNames::read`
+/// reads: complete tables by those fields, other views whole.
+pub(crate) fn same_name_rows(table: TableId, a: &SharedView, b: &SharedView) -> bool {
+    fn rows<T: replay::rows::TableSchema>(
+        a: &SharedView,
+        b: &SharedView,
+        equal: impl Fn(&T::Row, &T::Row) -> bool,
+    ) -> bool {
+        let (TableView::Complete(x), TableView::Complete(y)) = (&**a, &**b) else {
+            return a == b;
+        };
+        match (x.rows::<T>(), y.rows::<T>()) {
+            (Some(x), Some(y)) => x.len() == y.len() && x.iter().zip(y).all(|(x, y)| equal(x, y)),
+            _ => a == b,
+        }
+    }
+    if SharedView::ptr_eq(a, b) {
         return true;
     }
-    match (a.complete::<T>(), b.complete::<T>()) {
-        (Ok(a), Ok(b)) => a.len() == b.len() && a.iter().zip(b).all(|(a, b)| equal(a, b)),
-        _ => a.tables[T::ID.index()] == b.tables[T::ID.index()],
+    match table {
+        TableId::Countries => rows::<tables::Countries>(a, b, |a, b| {
+            (a.id, a.canonical_slot, &a.tag) == (b.id, b.canonical_slot, &b.tag)
+        }),
+        TableId::CountryAppearance => rows::<tables::CountryAppearance>(a, b, |a, b| {
+            (
+                a.country,
+                &a.cosmetic_tag,
+                &a.name_tag,
+                &a.leader_ideology,
+                a.overlord,
+            ) == (
+                b.country,
+                &b.cosmetic_tag,
+                &b.name_tag,
+                &b.leader_ideology,
+                b.overlord,
+            )
+        }),
+        TableId::Politics => rows::<tables::Politics>(a, b, |a, b| {
+            (a.country, a.ruling_party) == (b.country, b.ruling_party)
+        }),
+        TableId::PoliticalParties => rows::<tables::PoliticalParties>(a, b, |a, b| {
+            (a.country, a.id, &a.token) == (b.country, b.id, &b.token)
+        }),
+        TableId::Autonomy => {
+            rows::<tables::Autonomy>(a, b, |a, b| (a.subject, &a.state) == (b.subject, &b.state))
+        }
+        _ => a == b,
     }
 }
-fn same_name_inputs(a: &replay::frame::DecodedFrame, b: &replay::frame::DecodedFrame) -> bool {
-    same_rows::<tables::CountryAppearance>(a, b, |a, b| {
-        (
-            a.country,
-            &a.cosmetic_tag,
-            &a.name_tag,
-            &a.leader_ideology,
-            a.overlord,
-        ) == (
-            b.country,
-            &b.cosmetic_tag,
-            &b.name_tag,
-            &b.leader_ideology,
-            b.overlord,
-        )
-    }) && same_rows::<tables::Politics>(a, b, |a, b| {
-        (a.country, a.ruling_party) == (b.country, b.ruling_party)
-    }) && same_rows::<tables::PoliticalParties>(a, b, |a, b| {
-        (a.country, a.id, &a.token) == (b.country, b.id, &b.token)
-    }) && same_rows::<tables::Autonomy>(a, b, |a, b| (a.subject, &a.state) == (b.subject, &b.state))
+/// `seen` names the last compared hour's views, which already agreed with `a`.
+fn same_name_inputs(
+    a: &replay::frame::DecodedFrame,
+    b: &replay::frame::DecodedFrame,
+    seen: &[ViewIdentity],
+) -> bool {
+    NAME_INPUTS.iter().enumerate().all(|(index, table)| {
+        let view = &b.tables[table.index()];
+        seen.get(index).is_some_and(|seen| seen.is(view))
+            || same_name_rows(*table, &a.tables[table.index()], view)
+    })
 }
 fn span_push(spans: &mut Vec<HourSpan>, hour: i32) {
     if let Some(last) = spans.last_mut()
@@ -1537,6 +1560,11 @@ struct ScanFrames {
     seen: HashSet<PairKey>,
     endpoints: Vec<(usize, usize)>,
     relation_keys: Vec<(u32, u32, i32)>,
+    /// The newest naming snapshot, and each tag's latest entry in `scan.names`.
+    name_snapshot: Option<replay::frame::DecodedFrame>,
+    name_entries: HashMap<String, usize>,
+    /// The last compared hour's NAME_INPUTS views, agreeing with the newest snapshot.
+    name_views: Vec<ViewIdentity>,
 }
 impl ScanFrames {
     fn new(replay: &Replay, branch: u64) -> Self {
@@ -1550,6 +1578,46 @@ impl ScanFrames {
             seen: HashSet::new(),
             endpoints: Vec::new(),
             relation_keys: Vec::new(),
+            name_snapshot: None,
+            name_entries: HashMap::new(),
+            name_views: Vec::new(),
+        }
+    }
+    /// Appends each tag whose naming operands differ from its latest entry. The
+    /// operands read no localisation; labels resolve them with the content's.
+    fn names(&mut self, snapshot: &replay::frame::DecodedFrame) {
+        let localisation = Localisation::default();
+        let names = CountryNames::read(snapshot, &localisation);
+        let Ok(countries) = snapshot.complete::<tables::Countries>() else {
+            return;
+        };
+        for country in countries {
+            let Ok(tag) = std::str::from_utf8(&country.tag) else {
+                continue;
+            };
+            let mut inputs = Vec::new();
+            let mut slot = Some(country.canonical_slot);
+            let mut seen = BTreeSet::new();
+            while let Some(at) = slot
+                && seen.insert(at)
+            {
+                let input = names.operands(at).cloned();
+                slot = input
+                    .as_ref()
+                    .and_then(|input| input.as_ref().ok())
+                    .and_then(|input| input.overlord);
+                inputs.push((at, input));
+            }
+            if self
+                .name_entries
+                .get(tag)
+                .is_some_and(|&entry| self.scan.names[entry].1 == inputs)
+            {
+                continue;
+            }
+            self.name_entries
+                .insert(tag.to_owned(), self.scan.names.len());
+            self.scan.names.push((tag.to_owned(), inputs));
         }
     }
     fn frame(&mut self, decoded: &replay::frame::DecodedFrame, replay: &Replay) {
@@ -1606,10 +1674,9 @@ impl ScanFrames {
             before_links.clone_from(&decoded.tables[TableId::CountryLinks.index()]);
         }
         if self
-            .scan
-            .names
-            .last()
-            .is_none_or(|before| changed || !same_name_inputs(before, decoded))
+            .name_snapshot
+            .as_ref()
+            .is_none_or(|before| changed || !same_name_inputs(before, decoded, &self.name_views))
         {
             let mut snapshot = decoded.clone();
             for table in TableId::ALL {
@@ -1620,24 +1687,15 @@ impl ScanFrames {
                     .into();
                 }
             }
-            self.scan.names.push(snapshot);
-        } else if let Some(before) = self.scan.names.last_mut()
-            && NAME_TABLES.iter().any(|table| {
-                *table != TableId::Countries
-                    && !replay::frame::SharedView::ptr_eq(
-                        &before.tables[table.index()],
-                        &decoded.tables[table.index()],
-                    )
-            })
-        {
-            // Equivalent inputs can share the newest table views. Otherwise
-            // every hour after a keyframe repeats full row comparisons.
-            for table in NAME_TABLES {
-                if table != TableId::Countries {
-                    before.tables[table.index()].clone_from(&decoded.tables[table.index()]);
-                }
-            }
+            self.names(&snapshot);
+            self.name_snapshot = Some(snapshot);
         }
+        // Identities spare unchanged views a row comparison without holding
+        // them, which would copy every naming table the next hour changes.
+        self.name_views = NAME_INPUTS
+            .iter()
+            .map(|table| decoded.tables[table.index()].identity())
+            .collect();
         // Counters change hourly; endpoint joins and duplicate checks change
         // only with a relation key or the country/link census.
         let relation_key = |row: &replay::rows::WarRelationRow| {
@@ -1706,23 +1764,33 @@ fn scan_frames(
     let mut pairs = pairs::PairHistory::default();
     check_cadence(cadence::cadence(TableId::WarRelations))?;
     let mut builder = ScanFrames::new(replay, branch);
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        check_cancel(cancelled)?;
-        let mut decoder = FrameDecoder::for_tables(&SCAN_TABLES);
-        let Ok(frames) = replay.read_block_selected(block, &SCAN_TABLES) else {
-            builder.scan.gap();
-            continue;
-        };
-        for frame in frames {
-            check_cancel(cancelled)?;
-            let Ok(decoded) = decoder.advance(&frame) else {
-                builder.scan.gap();
-                break;
-            };
-            builder.frame(decoded, replay);
-            pairs.observe(&builder.scan);
-        }
-    }
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &SCAN_TABLES,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                check_cancel(cancelled)?;
+                let mut decoder = FrameDecoder::for_tables(&SCAN_TABLES);
+                let Ok(frames) = frames else {
+                    builder.scan.gap();
+                    continue;
+                };
+                for frame in frames {
+                    check_cancel(cancelled)?;
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        builder.scan.gap();
+                        break;
+                    };
+                    builder.frame(decoded, replay);
+                    pairs.observe(&builder.scan);
+                }
+            }
+            Ok(())
+        },
+    )?;
+    pairs.shrink_to_fit();
     Ok((builder.scan, pairs))
 }
 

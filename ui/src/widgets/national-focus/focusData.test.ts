@@ -8,6 +8,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
+import { HourStore, planRequests } from '../../dashboard/countryFacts.ts';
 
 const request = focusRequest('source', 'v1', { branchId: '1', tag: 'GER' });
 const first = { completed: [{ ordinal: 0, token: 'one', completedByHour: null }], current: 'two', continuous: null, paused: false };
@@ -142,8 +143,13 @@ test('registered focus renderer owns dated art, pending/refused hover text, Pin 
       transform(code, id) {
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/national-focus/NationalFocusWidget.tsx')) return code.replace(
+          "import { useLayoutEffect, useMemo, useRef, useState } from 'react';",
+          "import { useMemo } from 'react'; import { useLayoutEffect, useRef, useState } from 'focus-state';").replace(
           "import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';",
           "import { useMemo } from 'react'; import { useEffect, useLayoutEffect, useRef } from 'focus-state';");
+        if (path.endsWith('/dashboard/useDiagnostics.ts')) return code.replace(
+          "import { useEffect, useMemo } from 'react';",
+          "import { useMemo } from 'react'; import { useEffect } from 'focus-state';");
         if (path.endsWith('/dashboard/countryNamesAt.ts')) return code.replace(
           "import { useEffect, useMemo, useRef, useState } from 'react';",
           "import { useMemo } from 'react'; import { useEffect, useRef, useState } from 'focus-state';");
@@ -172,15 +178,16 @@ test('registered focus renderer owns dated art, pending/refused hover text, Pin 
       .then(data => ({ sourceId: request.sourceId, revision: request.revision, product: request.product, data })) }) as unknown as DashboardClient;
   const clientA = client('A'), clientB = client('B');
   let hour = 100, diagnostics: string[] = [];
+  const reports: string[][] = [];
   const props = { widget: { id: 'focus', kind: 'national-focus', trackIds: ['track'], countries: { kind: 'tags', tags: ['synthetic'] }, time: { mode: 'follow' } },
     runtime: { client: clientA, tracks: [{ id: 'track', axisOffset: 0, branch: { id: '1', firstHour: 100, lastHour: 150 }, source: { id: 'source', revision: '1' } }], clock: { getHour: () => hour } },
-    active: true, headerSlot: null, onDiagnostics: (warnings: string[]) => { diagnostics = warnings; } } as unknown as WidgetProps;
+    active: true, headerSlot: null, onDiagnostics: (warnings: string[]) => { diagnostics = warnings; reports.push(warnings); } } as unknown as WidgetProps;
   const render = () => { state.begin(); return renderToStaticMarkup(createElement(renderer.render, props)); };
   const settle = () => new Promise<void>(resolve => setImmediate(resolve));
   const complete = (read: Pending, name: string | null, reason: string | null = null, warnings: string[] = [], icon = 'data:image/png;base64,YQ==') => read.resolve({
     branchId: read.params.branchId, hour: read.params.hour, tag: read.params.tag, warnings,
     items: read.params.tokens.map(token => ({ artwork: { token, name: token === 'switch' ? name : 'Completed at 100', description: null,
-      baseDurationDays: 10, icon: reason ? null : icon }, reason: token === 'switch' ? reason : null })),
+      baseDurationDays: 10, icon: reason || read.params.textOnly ? null : icon }, reason: token === 'switch' ? reason : null })),
   });
   try {
     render(); state.flush(); await settle(); render(); state.flush();
@@ -190,6 +197,8 @@ test('registered focus renderer owns dated art, pending/refused hover text, Pin 
     assert.deepEqual([...firstRead.params.tokens].sort(), ['done', 'switch']);
     complete(firstRead, 'Early choice'); await settle();
     assert.match(render(), /Early choice/);
+    assert.equal(firstRead.params.textOnly, true);
+    assert.doesNotMatch(render(), /src="data:image/); // Text does not wait for the unresolved image request.
     hour = 101; const pending = render(); state.flush();
     assert.doesNotMatch(pending, /Early choice/);
     assert.match(pending, /Loading game artwork/);
@@ -197,37 +206,94 @@ test('registered focus renderer owns dated art, pending/refused hover text, Pin 
     const next = reads.find(read => read.params.hour === 101)!;
     assert.deepEqual(next.params.tokens, ['switch']);
     complete(next, 'Later choice', null, [], 'data:image/png;base64,Yg=='); await settle();
+    complete(reads.find(read => read.params.hour === 101 && !read.params.textOnly)!, 'Image-side title', null, [], 'data:image/png;base64,Yg=='); await settle();
     const changed = render();
     assert.match(changed, /Later choice/);
+    assert.doesNotMatch(changed, /Image-side title/);
     assert.match(changed, /src="data:image\/png;base64,Yg=="/);
     assert.doesNotMatch(changed, /Early choice/);
     hour = 102; render(); state.flush();
     complete(reads.find(read => read.params.hour === 102)!, null, 'focus-window mode is not recorded', ['Named content warning']); await settle();
     const refused = render(); state.flush();
-    assert.match(refused, /data-tooltip="focus-window mode is not recorded"/);
+    assert.match(refused, /data-tooltip="[^"]*focus-window mode is not recorded/);
     assert.match(refused, /Artwork unavailable \(1\)/);
     assert.ok(diagnostics.includes('Named content warning'));
+    const reportCount = reports.length;
+    render(); state.flush(); render(); state.flush();
+    assert.equal(reports.length, reportCount, 'equal diagnostics do not clear and re-report on each parent render');
     hour = 103; render(); state.flush();
     complete(reads.find(read => read.params.hour === 103)!, ''); await settle();
-    assert.match(render(), /focus-now-text"><strong><\/strong>/, 'defined empty name is not a failed name or token fallback');
+    assert.match(render(), /focus-now-text"><strong[^>]*><\/strong>/, 'defined empty name is not a failed name or token fallback');
     props.widget.time = { mode: 'pin', windows: { track: { firstOffset: 10, lastOffset: 10 } } };
     hour = 140; render(); state.flush();
     const pinned = reads.find(read => read.params.hour === 110)!;
     assert.ok(pinned, 'Pin requests its own supplying hour rather than playback');
     complete(pinned, 'Pinned choice'); await settle(); assert.match(render(), /Pinned choice/);
     props.widget.time = { mode: 'follow' }; hour = 120; render(); state.flush();
-    const oldA = reads.find(read => read.owner === 'A' && read.params.hour === 120)!;
+    const oldA = reads.find(read => read.owner === 'A' && read.params.hour === 120 && read.params.textOnly)!;
     props.runtime.client = clientB;
     assert.doesNotMatch(render(), /Pinned choice/); state.flush(); await settle(); render(); state.flush();
     complete(reads.find(read => read.owner === 'B' && read.params.hour === 120)!, 'B choice'); await settle(); assert.match(render(), /B choice/);
     props.runtime.client = clientA;
     assert.doesNotMatch(render(), /B choice/); state.flush(); await settle(); render(); state.flush();
-    const newA = reads.filter(read => read.owner === 'A' && read.params.hour === 120).at(-1)!;
+    const newA = reads.filter(read => read.owner === 'A' && read.params.hour === 120 && read.params.textOnly).at(-1)!;
     assert.notEqual(newA, oldA);
     complete(oldA, 'Expired A choice'); await settle();
     assert.doesNotMatch(render(), /Expired A choice/);
     assert.match(render(), /Loading game artwork/);
-    newA.reject(new Error('Synthetic native refusal')); await settle();
+    newA.reject(new Error('Synthetic native refusal'));
+    reads.filter(read => read.owner === 'A' && read.params.hour === 120 && !read.params.textOnly).at(-1)!.reject(new Error('Synthetic image refusal')); await settle();
     assert.match(render(), /Game artwork request failed/);
   } finally { state.dispose(); delete host.__focusHooks; await vite.close(); }
+});
+
+test('Follow schedules the current and newest focus first while every time mode preserves rendered completion order and dates', async () => {
+  const completed = Array.from({ length: 20 }, (_, ordinal) => ({ ordinal, token: `focus_${ordinal}`,
+    completedByHour: ordinal === 0 ? null : 100 + ordinal }));
+  const data: FocusReply = { history: { segments: [{ firstHour: 100, lastHour: 200, order: {
+    completed, current: 'current_focus', continuous: null, paused: false,
+  } }], progress: [] }, artwork: [], warnings: [] };
+  const fixture = { data, wanted: [] as { tag: string; hour: number }[] };
+  const host = globalThis as typeof globalThis & { __focusPriorities?: typeof fixture };
+  host.__focusPriorities = fixture;
+  const replacements: Record<string, string> = {
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__focusPriorities.data });',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
+    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
+    '/national-focus/useFocusArtwork.ts': `export const useFocusArtwork = (_client, _track, _country, wanted) => {
+      globalThis.__focusPriorities.wanted = wanted;
+      return { warnings: [], read: new Map(wanted.map(({ tag, hour }) => [JSON.stringify([hour, tag]), {
+        artwork: { token: tag, name: 'Localized ' + tag, description: 'Recorded description', baseDurationDays: 10, icon: null }, reason: null,
+      }])) }; };`,
+  };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'focus-priority-renderer', enforce: 'pre',
+      transform(_code, id) { const path = id.replaceAll('\\', '/'); return Object.entries(replacements).find(([suffix]) => path.endsWith(suffix))?.[1]; },
+    }] });
+  try {
+    const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
+    const props = { widget: { id: 'priority', kind: 'national-focus', trackIds: ['track'], countries: { kind: 'tags', tags: ['synthetic'] }, time: { mode: 'follow' } },
+      runtime: { client: {}, tracks: [{ id: 'track', axisOffset: 0, branch: { id: '1', firstHour: 100, lastHour: 200 },
+        source: { id: 'source', revision: '1' } }], clock: { getHour: () => 200 } }, active: true, headerSlot: null, onDiagnostics() {} } as unknown as WidgetProps;
+    const completionPairs = completed.map(entry => ({ tag: entry.token, hour: entry.completedByHour ?? 100 }));
+    const render = () => renderToStaticMarkup(createElement(Widget, props));
+    for (const mode of ['follow', 'pin', 'campaign'] as const) {
+      props.widget.time = mode === 'pin' ? { mode, windows: { track: { firstOffset: 100, lastOffset: 100 } } } : { mode };
+      const markup = render();
+      const current = { tag: 'current_focus', hour: 200 };
+      const expected = mode === 'follow' ? [current, ...completionPairs.slice().reverse()]
+        : mode === 'pin' ? [current, ...completionPairs] : [...completionPairs, current];
+      assert.deepEqual(fixture.wanted, expected);
+      const images = planRequests(new HourStore(64), fixture.wanted, 21, 8, 'wanted');
+      assert.deepEqual(images.slice(0, 2).map(([hour, tags]) => ({ hour, tag: tags[0] })), expected.slice(0, 2));
+      const rendered = [...markup.matchAll(/Key: (focus_\d+)/g)].map(match => match[1]);
+      assert.deepEqual(rendered, completed.map(entry => entry.token), 'scheduling never reverses, hides or drops displayed rows');
+      assert.match(markup, /Date not recorded/);
+      assert.match(markup, /Recorded description/);
+      assert.match(markup, /Localized current_focus/);
+      assert.equal(completed[0].completedByHour, null);
+      assert.deepEqual(data.history.segments[0].order.completed, completed);
+    }
+  } finally { delete host.__focusPriorities; await vite.close(); }
 });

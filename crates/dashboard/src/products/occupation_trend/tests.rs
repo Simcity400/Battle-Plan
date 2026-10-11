@@ -516,7 +516,7 @@ fn occupation_trend_refusals_are_named_counted_and_do_not_change_occupied_states
     assert!(shared.trend.series.is_empty());
     assert_eq!(
         shared.states.states[0].runs[0].value.resistance_raw,
-        i64::MAX.to_string()
+        i64::MAX
     );
     assert_eq!(
         shared.trend.warnings,

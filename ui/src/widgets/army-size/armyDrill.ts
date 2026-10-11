@@ -90,7 +90,7 @@ export function armyDrillActors(model: CountryValuesModel, candidates: readonly 
 /** Content labels and an appended window manifest do not change drawn operands. */
 export function armyDrillNumbers(reply: ArmySizeReply): ArmySizeReply {
   return { ...reply, warnings: [], windows: [], window: null, interval: null,
-    types: reply.types.map(type => ({ ...type, name: type.key })) };
+    types: reply.types.map(type => ({ ...type, name: 'Battalion group name unavailable' })) };
 }
 
 /** Preserve the displayed mix measure and the native selection date when pinned. */

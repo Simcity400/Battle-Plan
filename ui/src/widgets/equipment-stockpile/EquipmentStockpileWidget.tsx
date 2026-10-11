@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { Select } from '../../components/Select';
 import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { ChipSet } from '../../components/ChipSet';
@@ -39,7 +40,8 @@ import { resolveWindow } from '../../dashboard/model';
 import type { BoundTrack } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { readAt, readNote } from '../../dashboard/reads';
+import { readAt } from '../../dashboard/reads';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { EquipmentStockpileReply } from '../../generated/dashboard';
 import { BREAKDOWN, OPTIONS } from './definition';
 import { AI_NOTE, automaticLines, CHOSEN_KEYS, hasRecords, balanceAt, balanceMode, barExtent, chartRuns, choiceKey, choiceRow, formatPercent, oneChoicePerRow, GROUP_NOUNS, groupLabel, groupTooltip, labelAt,
@@ -54,25 +56,10 @@ import './equipmentStockpile.css';
 
 const NO_WARNINGS: string[] = [];
 /** How often each record is read, for the note under a value read earlier. */
-const STOCK_CADENCE = 'the stockpile is read once a day.';
-const LOGISTICS_CADENCE = 'the surplus and shortage are read once a day, just after the game’s daily update.';
-const LINE_CADENCE = 'production lines are read once a day.';
 /** One bar row's height; rows slide by it when the order changes. */
 const ROW_HEIGHT = 34;
 /** Room for the names at the line ends, at the right of the plot. */
 const END_LABEL_ROOM = 136;
-
-/** The notes under a group's values at an hour: when the stockpile and, for a
- * player-controlled country, the surplus were read. */
-function readNotes(data: EquipmentStockpileReply, hour: number): string | undefined {
-  const stockRead = readAt(data.reads, hour);
-  const lineRead = readAt(data.lineReads, hour);
-  const notes = [balanceMode(data, hour) === 'player' ? readNote(readAt(data.logisticsReads, hour), hour, LOGISTICS_CADENCE) : undefined,
-    readNote(stockRead, hour, STOCK_CADENCE),
-    // Production dated on its own where it was read apart from the stockpile.
-    lineRead !== stockRead ? readNote(lineRead, hour, LINE_CADENCE) : undefined].filter(Boolean);
-  return notes.length ? notes.join(' ') : undefined;
-}
 
 /** One country's equipment stockpile: for a player-controlled
  * country each equipment type's surplus or shortage as a share of what is needed, as
@@ -227,10 +214,8 @@ function StockBars({ data, tokens, hour, grouping, included, allGroups, order, s
   const variants = useMemo(() => grouping === 'variant' ? groups.flatMap(group => group.variants.map(variant => variant.id)) : [], [groups, grouping]);
   const artwork = useStockpileArtwork(runtime, track, data.tag, artHour, variants, active);
   const art = useMemo(() => new Map(artwork?.data?.entries.map(entry => [entry.key, entry]) ?? []), [artwork]);
-  useEffect(() => {
-    onDiagnostics([...data.warnings, ...(artwork?.data?.warnings ?? []), ...(artwork?.error ? [artwork.error] : [])]);
-    return () => onDiagnostics(NO_WARNINGS);
-  }, [data, artwork, onDiagnostics]);
+  const diagnostics = useMemo(() => [...data.warnings, ...(artwork?.data?.warnings ?? []), ...(artwork?.error ? [artwork.error] : [])], [data, artwork]);
+  useDiagnostics(onDiagnostics, diagnostics);
   // The campaign scales depend on the groups, not on the names shown at an hour.
   const campaignStock = useMemo(() => barExtent(data, allGroups, null), [data, allGroups]);
   const campaignShare = useMemo(() => shareScale(data, allGroups, null), [data, allGroups]);
@@ -251,7 +236,7 @@ function StockBars({ data, tokens, hour, grouping, included, allGroups, order, s
   // and window); moving the pointer reuses them.
   const described = useMemo(() => new Map(groups.map(group => {
     const picture = art.get(grouping === 'variant' ? `variant:${group.variants[0]?.id}` : `type:${group.key}`);
-    const note = [readNotes(data, hour), picture && artHour !== null
+    const note = [picture && artHour !== null
       ? `Picture: ${picture.name ?? `variant ${picture.variant}`}, read ${formatDateTime(artHour)}.${picture.reason ? ` ${picture.reason}.` : ''}`
       : grouping === 'domain' ? 'An arm combines equipment types and has no single native best variant.'
         : artwork?.data ? 'A native picture is unavailable at this value read.' : undefined].filter(Boolean).join(' ');
@@ -426,12 +411,11 @@ function OverTime({ data, tokens, viewport, options, runtime, track, extent, pla
       return { id: line.group.key, label: labelAt(line.group, grouping, head), color: line.color, value: stock == null ? 'Not recorded' : formatAmount(stock, data.decimals) };
     })} />}
     <p className="stockpile-caption">{caption}</p>
-    {pending && <label>Choose drawn equipment on {dayLabel(pending.hour)} <select autoFocus value="" onChange={event => {
-      const group = lines.find(line => line.group.key === event.target.value)?.group;
+    {pending && <div className="select-row">Choose drawn equipment on {dayLabel(pending.hour)} <Select autoFocus label="Drawn equipment" value="" onChange={key => {
+      const group = lines.find(line => line.group.key === key)?.group;
       if (group && pending.keys.includes(group.key)) { onPick(group, pending.hour, shareMode ? 'balance' : 'stock'); setSelection(null); }
-    }}><option value="" disabled>Choose equipment…</option>
-      {lines.filter(line => pending.keys.includes(line.group.key)).map(line => <option key={line.group.key} value={line.group.key}>
-        {labelAt(line.group, grouping, pending.hour)}</option>)}</select></label>}
+    }} options={[{ value: '', label: 'Choose equipment…', disabled: true },
+      ...lines.filter(line => pending.keys.includes(line.group.key)).map(line => ({ value: line.group.key, label: labelAt(line.group, grouping, pending.hour) }))]} /></div>}
     {lines.length === 0 && <p className="stockpile-empty">{shareMode
       ? 'Nothing here can be plotted: what is needed cannot be derived for these types, so they have no share to draw.'
       : 'Nothing chosen was recorded in stock.'}</p>}
@@ -462,7 +446,7 @@ function OverTime({ data, tokens, viewport, options, runtime, track, extent, pla
           return overTimeTooltip(dayLabel(hour), lines.map(line => ({ group: { ...line.group, label: labelAt(line.group, grouping, hour) }, color: line.color,
             stock: stockAt(data, line.group, hour), weekly: weeklyAt(data, line.group, hour),
             ...(shareMode ? { logistics: balanceAt(data, line.group, hour) } : {}) })),
-          data.decimals, [readNotes(data, hour), ai ? AI_NOTE : undefined].filter(Boolean).join(' ') || undefined, viewport);
+          data.decimals, ai ? AI_NOTE : undefined, viewport);
         }}
         overlay={(ctx, frame, chartTokens) => {
           if (!endLabels) return;

@@ -1,9 +1,15 @@
 import { formatDateTime, isEngineHour } from '../../dashboard/calendar.ts';
 import { int, object } from '../../dashboard/validation.ts';
 import { formatFixed } from '../../charts/valueAxis.ts';
-import type { LandBattleHistory, LandBattleLossRead, LandBattlesReply, LandBattlesManifestReply, LandBattlesRankingReply } from '../../generated/dashboard';
-import type { BattleRow, BattleValue } from '../battles/battleRows';
+import type { BattleWindow, LandBattleHistory, LandBattlesReply, LandBattlesManifestReply, LandBattlesRankingReply } from '../../generated/dashboard';
+import type { BattleRow, BattleValue, BattleWarning } from '../battles/battleRows';
 import { battleMeasure, battleValueText, isBattleValue } from '../battles/battleRows.ts';
+
+/** A loss read as shown: each side's full values; equipment raw is the fixed5 total then variants. */
+export interface LandLossRead { hour: number; terminal: boolean; sides: [BattleValue[], BattleValue[]]; equipmentRaw?: [string[], string[]] }
+export type LandBattle = Omit<LandBattleHistory, 'losses'> & { losses: LandLossRead[] };
+export type LandBattlesWindow = Omit<LandBattlesReply, 'labels' | 'rows' | 'reasons' | 'warnings'> & { rows: LandBattle[]; warnings: BattleWarning[] };
+export type LandBattlesRanking = Omit<LandBattlesRankingReply, 'labels' | 'rows'> & { rows: LandBattle[] };
 
 export interface LandBattleRow extends BattleRow {
   provinceId: number;
@@ -22,28 +28,76 @@ const moment = (v: unknown) => object(v) && hour(v.hour) && (v.bound === 'exact'
 const peak = (v: unknown) => object(v) && int(v.value) && v.value >= 0 && hour(v.hour);
 const span = (v: unknown) => object(v) && hour(v.firstHour) && hour(v.lastHour) && v.firstHour <= v.lastHour;
 const warnings = (v: unknown) => Array.isArray(v) && v.every(w => object(w) && hour(w.hour) && typeof w.reason === 'string' && int(w.count) && w.count > 0);
-const contentWarnings = (v: unknown) => Array.isArray(v) && v.every((warning: unknown) => typeof warning === 'string');
+const texts = (v: unknown): v is string[] => Array.isArray(v) && v.every((text: unknown) => typeof text === 'string');
 const rawAmount = (v: unknown): v is string => typeof v === 'string' && v.length <= 40 && /^-?(0|[1-9]\d*)$/.test(v)
   && BigInt(v) >= -(1n << 127n) && BigInt(v) < (1n << 127n);
-function lossReads(v: unknown, start: unknown): boolean {
-  if (!Array.isArray(v) || !object(start) || !hour(start.hour)) return false;
-  const first = start.hour;
-  return v.every((read, index) => {
-    if (!object(read) || !hour(read.hour) || read.hour < first || typeof read.terminal !== 'boolean') return false;
-    const sides = read.sides;
-    if (!Array.isArray(sides) || sides.length !== 2
-      || !sides.every(side => Array.isArray(side) && side.every(isBattleValue) && new Set(side.map(value => value.label)).size === side.length)) return false;
-    return (read.equipmentRaw === undefined || Array.isArray(read.equipmentRaw) && read.equipmentRaw.length === 2
-      && read.equipmentRaw.every((side, sideIndex) => Array.isArray(side) && side.every(rawAmount)
-        && (side.length === 0 || side.length === sides[sideIndex].length - 1)))
-      && (index === 0 || read.hour >= v[index - 1].hour && !v[index - 1].terminal);
-  });
+const MANPOWER = 'Manpower lost';
+const EQUIPMENT = 'Equipment lost';
+const MAX_EXACT = BigInt(Number.MAX_SAFE_INTEGER);
+/** A safe fixed5 amount is a number, a wider one its exact text; the raw stays exact either way. */
+function equipmentValue(label: string, raw: bigint): BattleValue {
+  const amount = raw < 0n ? -raw : raw;
+  return amount <= MAX_EXACT ? { label, value: Number(raw) / 100000 }
+    : { label, value: null, unknown: `Exact amount: ${raw < 0n ? '-' : ''}${amount / 100000n}.${String(amount % 100000n).padStart(5, '0')}` };
+}
+type Variants = [number, string][];
+const variants = (v: unknown, size: number): v is Variants => Array.isArray(v) && v.every(entry => Array.isArray(entry) && entry.length === 2
+  && int(entry[0]) && entry[0] >= 0 && entry[0] < size && rawAmount(entry[1]));
+interface LossSide { values: BattleValue[]; raw: string[]; variants: Variants | null }
+/** A side lists every variant, or changes its previous read's amounts by position. */
+function lossSide(v: unknown, labels: readonly string[], previous: LossSide | null): LossSide | null {
+  if (!object(v)) return null;
+  const manpower: BattleValue = typeof v.manpower === 'number' ? { label: MANPOWER, value: v.manpower } : { label: MANPOWER, value: null, unknown: v.manpower as string };
+  if (v.unknown !== undefined) return { values: [manpower, { label: EQUIPMENT, value: null, unknown: v.unknown as string }], raw: [], variants: null };
+  let list: Variants;
+  if (variants(v.variants, labels.length)) list = v.variants;
+  else if (previous?.variants && variants(v.changed, previous.variants.length) && v.changed.every((entry, index, all) => index === 0 || entry[0] > all[index - 1][0])) {
+    list = [...previous.variants];
+    for (const [at, amount] of v.changed) list[at] = [list[at][0], amount];
+  } else return null;
+  const amounts = list.map(([, amount]) => BigInt(amount));
+  const total = amounts.reduce((sum, amount) => sum + amount, 0n);
+  return { values: [manpower, equipmentValue(EQUIPMENT, total), ...list.map(([label], index) => equipmentValue(labels[label], amounts[index]))],
+    raw: [String(total), ...list.map(([, amount]) => amount)], variants: list };
+}
+/** Rebuilds each read's full values; a side's changes apply to its previous read in the reply. */
+function lossReads(v: unknown, start: unknown, labels: readonly string[]): LandLossRead[] | null {
+  if (!Array.isArray(v) || !object(start) || !hour(start.hour)) return null;
+  const reads: LandLossRead[] = [];
+  let previous: (LossSide | null)[] = [null, null];
+  for (const read of v) {
+    const last = reads[reads.length - 1];
+    if (!object(read) || !hour(read.hour) || read.hour < start.hour || typeof read.terminal !== 'boolean'
+      || last && (read.hour < last.hour || last.terminal)) return null;
+    const unread = read.sides;
+    if (typeof unread === 'string') {
+      const side = (): BattleValue[] => [{ label: MANPOWER, value: null, unknown: unread }, { label: EQUIPMENT, value: null, unknown: unread }];
+      reads.push({ hour: read.hour, terminal: read.terminal, sides: [side(), side()] });
+      previous = [null, null];
+      continue;
+    }
+    if (!Array.isArray(read.sides) || read.sides.length !== 2) return null;
+    const attacker = lossSide(read.sides[0], labels, previous[0]), defender = lossSide(read.sides[1], labels, previous[1]);
+    if (!attacker || !defender) return null;
+    previous = [attacker, defender];
+    reads.push({ hour: read.hour, terminal: read.terminal, sides: [attacker.values, defender.values], equipmentRaw: [attacker.raw, defender.raw] });
+  }
+  return reads.every(read => read.sides.every(side => side.every(isBattleValue) && new Set(side.map(value => value.label)).size === side.length)) ? reads : null;
+}
+function battles(v: unknown, labels: unknown): LandBattle[] | null {
+  if (!histories(v) || !texts(labels)) return null;
+  const rows: LandBattle[] = [];
+  for (const row of v as LandBattleHistory[]) {
+    const losses = lossReads(row.losses, row.start, labels);
+    if (!losses) return null;
+    rows.push({ ...row, losses });
+  }
+  return rows;
 }
 const histories = (v: unknown) => Array.isArray(v) && v.every(r => object(r) && typeof r.id === 'string' && uint(r.provinceId) && moment(r.start)
   && (r.end === null || moment(r.end) || object(r.end) && typeof r.end.unknown === 'string')
   && (r.endUnknownHour === null || hour(r.endUnknownHour)) && int(r.counterBase)
   && (r.priorPeak === null || peak(r.priorPeak)) && Array.isArray(r.runs) && r.runs.length > 0
-  && lossReads(r.losses, r.start)
   && (r.result === null || object(r.result) && hour(r.result.hour)
     && int(r.result.duration) && r.result.duration >= -2147483648 && r.result.duration <= 2147483647
     && object(r.result.winner) && (r.result.winner.side === 0 || r.result.winner.side === 1 || typeof r.result.winner.unknown === 'string')
@@ -57,27 +111,35 @@ const histories = (v: unknown) => Array.isArray(v) && v.every(r => object(r) && 
   && new Set(v.map(r => r.id)).size === v.length;
 export function validateLandBattlesManifest(v: unknown): LandBattlesManifestReply {
   if (!object(v) || !Array.isArray(v.windows) || !v.windows.every(span) || typeof v.available !== 'boolean' || !nullableText(v.unavailable)
-    || !contentWarnings(v.contentWarnings))
+    || !texts(v.contentWarnings))
     throw new Error('The land battles manifest is malformed.');
   return v as unknown as LandBattlesManifestReply;
 }
-export function validateLandBattlesReply(v: unknown): LandBattlesReply {
-  if (!object(v) || !span(v.interval) || !int(v.window) || v.window < 0 || !histories(v.rows)
+/** Decodes the window's interned labels, changed amounts and warning reasons into full reads and warnings. */
+export function validateLandBattlesReply(v: unknown): LandBattlesWindow {
+  const rows = object(v) ? battles(v.rows, v.labels) : null;
+  const reasons = object(v) && texts(v.reasons) ? v.reasons : null;
+  if (!object(v) || !rows || !reasons || !span(v.interval) || !int(v.window) || v.window < 0
     || !Array.isArray(v.observed) || !v.observed.every(s => Array.isArray(s) && s.length === 2 && hour(s[0]) && hour(s[1]) && s[0] <= s[1])
-    || !warnings(v.warnings) || !contentWarnings(v.contentWarnings)) throw new Error('The land battles reply is malformed.');
-  return v as unknown as LandBattlesReply;
+    || !Array.isArray(v.warnings) || !v.warnings.every(w => Array.isArray(w) && w.length === 3 && hour(w[0])
+      && int(w[1]) && w[1] >= 0 && w[1] < reasons.length && int(w[2]) && w[2] > 0)
+    || !texts(v.contentWarnings)) throw new Error('The land battles reply is malformed.');
+  return { window: v.window, interval: v.interval as BattleWindow, rows, observed: v.observed,
+    warnings: v.warnings.map(([at, reason, count]) => ({ hour: at, reason: reasons[reason], count })), contentWarnings: v.contentWarnings };
 }
-export function validateLandBattlesRanking(v: unknown): LandBattlesRankingReply {
-  if (!object(v) || !histories(v.rows) || !(v.censusHour === null || hour(v.censusHour))
-    || !['Casualties', 'Peak size', 'Length'].includes(String(v.effectiveMeasure)) || !warnings(v.warnings) || !contentWarnings(v.contentWarnings))
+export function validateLandBattlesRanking(v: unknown): LandBattlesRanking {
+  const rows = object(v) ? battles(v.rows, v.labels) : null;
+  if (!object(v) || !rows || !(v.censusHour === null || hour(v.censusHour))
+    || !['Casualties', 'Peak size', 'Length'].includes(String(v.effectiveMeasure)) || !warnings(v.warnings) || !texts(v.contentWarnings))
     throw new Error('The land battles ranking is malformed.');
-  return v as unknown as LandBattlesRankingReply;
+  return { rows, censusHour: v.censusHour as number | null, effectiveMeasure: v.effectiveMeasure as string,
+    warnings: v.warnings as BattleWarning[], contentWarnings: v.contentWarnings };
 }
 
 /** Merge in recording order, independent of network completion order. */
-export function landBattleRows(windows: ReadonlyMap<number, LandBattlesReply>, at: number,
+export function landBattleRows(windows: ReadonlyMap<number, LandBattlesWindow>, at: number,
   matches: (tag: string, hour: number) => boolean, all: boolean, from: number | null = null): LandBattleRow[] {
-  const histories = new Map<string, { history: LandBattleHistory; index: number }>();
+  const histories = new Map<string, { history: LandBattle; index: number }>();
   for (const [index, window] of [...windows].sort(([a], [b]) => a - b)) {
     if (window.interval.firstHour > at) continue;
     for (const history of window.rows) {
@@ -107,7 +169,7 @@ export function landBattleRows(windows: ReadonlyMap<number, LandBattlesReply>, a
       if (value > peak.value || value === peak.value && run.firstHour < peak.hour) peak = { value, hour: run.firstHour };
     }
     const duration = result?.duration ?? run.duration + read - run.firstHour;
-    let loss: LandBattleLossRead | undefined;
+    let loss: LandLossRead | undefined;
     for (let index = h.losses.length - 1; index >= 0; index--) {
       if (h.losses[index].hour <= at) { loss = h.losses[index]; break; }
     }
@@ -146,13 +208,13 @@ export function landLossText(value: BattleValue, row: LandBattleRow, side: numbe
   const raw = index >= 0 ? row.lossRead?.equipmentRaw?.[side]?.[index] : undefined;
   return raw === undefined ? landCasualtyText(value, row, tooltip) : datedLossText(formatFixed(raw, 5, 5), row, tooltip);
 }
-export function casualtyRankingNote(data: LandBattlesRankingReply | undefined): string | null {
+export function casualtyRankingNote(data: LandBattlesRanking | undefined): string | null {
   if (data?.effectiveMeasure === 'Peak size') return 'Casualties: Not in this recording. Ranked by peak size.';
   if (data?.effectiveMeasure === 'Casualties') return 'Ranked by manpower lost on both sides. Running battles use losses so far; unknown casualties follow recorded values.';
   return null;
 }
 /** Ranking is computed before top N by the product, including country selection. */
-export function rankedLandBattleRows(data: LandBattlesRankingReply | undefined, at: number): LandBattleRow[] {
+export function rankedLandBattleRows(data: LandBattlesRanking | undefined, at: number): LandBattleRow[] {
   if (!data) return [];
   return landBattleRows(new Map([[-1, { window: 0, interval: { firstHour: at, lastHour: at }, rows: data.rows, observed: [], warnings: [], contentWarnings: data.contentWarnings }]]), at, () => true, true);
 }

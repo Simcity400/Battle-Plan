@@ -2,6 +2,7 @@ import { dayLabel } from '../../charts/draw.ts';
 import { fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatAmount } from '../../charts/valueAxis.ts';
+import { usNumber } from '../../charts/numberFormat.ts';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import type { NameAt } from '../../dashboard/countryNamesAt';
 import { compareTags } from '../../dashboard/tagOrder.ts';
@@ -32,7 +33,7 @@ function tooltipContext(options: TooltipOptions) {
     const at = fact(identity);
     return at ? labelAt(at.hour)(at.tag) : undefined;
   };
-  const named = (identity: string) => nativeLabel(identity) ?? { name: identity };
+  const named = (identity: string) => nativeLabel(identity) ?? { name: 'Country name unavailable' };
   return {
     named, nativeLabel,
     ask: (identities: readonly (string | null)[]) => {
@@ -69,7 +70,7 @@ export function ribbonTooltip(link: SideLink, source: SideNode, target: SideNode
         : parts.slice(0, count).map((flow, index) => ({ label: `${named(flow.sellerIdentity).name} → ${named(flow.buyerIdentity).name}`,
           value: amount([flow]), indent: true, short: true, divider: index === 0 }));
       const more = parts.length - count;
-      yield { ...head, rows: [...rows, ...listed, ...(more ? [{ label: `${more.toLocaleString('en-US')} more`, tone: 'muted' as const, indent: true }] : [])] };
+      yield { ...head, rows: [...rows, ...listed, ...(more ? [{ label: `${usNumber.format(more)} more`, tone: 'muted' as const, indent: true }] : [])] };
     }
     yield { ...head, rows };
   }
@@ -104,14 +105,14 @@ export function nodeTooltip(node: SideNode, links: readonly SideLink[], options:
   ask(node.identity ? [node.identity] : members.slice(0, TOOLTIP_LIMIT));
   const head = { title: name(node), countryFlag: node.identity ? nativeLabel(node.identity) : undefined,
     subtitle: `${sells ? 'Sells' : 'Buys'} · ${subtitle}`, note };
-  const total: TooltipRow = { label: `${sells ? 'Sold to' : 'Bought from'} ${partners.size.toLocaleString('en-US')} ${partners.size === 1 ? 'country' : 'countries'}`,
+  const total: TooltipRow = { label: `${sells ? 'Sold to' : 'Bought from'} ${usNumber.format(partners.size)} ${partners.size === 1 ? 'country' : 'countries'}`,
     value: amount(everything), strong: true, divider: true };
   function* forms(): Generator<TooltipContent> {
     for (let count = Math.min(TOOLTIP_LIMIT, members.length); count >= 0; count--) {
       const listed: TooltipRow[] = members.slice(0, count).map((tag, index) => ({ label: named(tag).name, countryFlag: nativeLabel(tag), divider: index === 0, short: true,
         value: amount(everything.filter(flow => (sells ? flow.sellerIdentity : flow.buyerIdentity) === tag)) }));
       const more = members.length - count;
-      yield { ...head, rows: [...resourceRows, total, ...listed, ...(members.length && more ? [{ label: `${more.toLocaleString('en-US')} more`, tone: 'muted' as const }] : [])] };
+      yield { ...head, rows: [...resourceRows, total, ...listed, ...(members.length && more ? [{ label: `${usNumber.format(more)} more`, tone: 'muted' as const }] : [])] };
     }
   }
   return fitTooltip(forms(), viewport, { keep: 1 });

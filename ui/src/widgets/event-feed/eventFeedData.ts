@@ -103,7 +103,7 @@ export function eventSentence(at: FeedEvent): SentencePart[] {
   };
   const country = role(0);
   const other = role(1);
-  const named = item?.name ?? (item?.token ? `${item.token} (name not known)` : 'an item not known');
+  const named = item?.name ?? 'an item whose name is unavailable';
   const words = (before: string, after = ''): SentencePart[] => [country, { text: before }, other, ...(after ? [{ text: after }] : [])];
   const counterparts = (before: string): SentencePart[] => [country, { text: before }, ...
     (event.tags.length < 2 ? [{ text: 'a country not known' }] : event.tags.slice(1).flatMap((tag, index, tags): SentencePart[] =>

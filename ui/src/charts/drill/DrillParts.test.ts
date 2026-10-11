@@ -79,7 +79,7 @@ test('country rows retain missing and pending flag frames while generic part art
   assert.equal((html.match(/country-flag-unavailable/g) ?? []).length, 2);
   assert.match(html, /Flag not available: Flag read failed at this hour/);
   assert.match(html, /Flag loading/);
-  assert.match(html, /class="drill-part-flag" src="dated.png"/);
+  assert.match(html, /class="country-flag-art drill-part-flag" src="dated.png"/);
   assert.match(html, /<img src="equipment.png" alt=""/);
   assert.doesNotMatch(html, /No artwork/);
 });

@@ -43,6 +43,7 @@ import type { LossRow } from './lossDrill';
 import './equipmentLosses.css';
 
 const ROOT = { id: 'all', label: 'All losses' }, NO_WARNINGS: string[] = [];
+const rowKey = (row: LossRow) => row.id;
 export default function EquipmentLossesWidget({ widget, runtime, active, countrySlot, onDiagnostics }: WidgetProps) {
   const [localDrill, setLocalDrill] = useState<{ owner: unknown; state: DrillState } | null>(null);
   const [picked, setPicked] = useState<readonly string[] | null | undefined>(undefined);
@@ -176,7 +177,7 @@ export default function EquipmentLossesWidget({ widget, runtime, active, country
     {selected && <button type="button" className="button small" onClick={() => setPicked(null)}>All recorded losses</button>}
     <DrillParts parts={parts} format={value => formatLosses(value * scale, null, scale)} positiveBars virtual active={active && open}
       showShares={!rows.some(row => row.incomplete || row.exact === null || row.exact < 0n)} onPick={id => { const part = parts.find(part => part.id === id); if (part) setPicked(part.keys); }} />
-    <div className="equipment-losses-table"><Table label="Exact recorded equipment losses" rows={rows} columns={columns} rowKey={row => row.id}
+    <div className="equipment-losses-table"><Table label="Exact recorded equipment losses" rows={rows} columns={columns} rowKey={rowKey}
       sort={{ column: 'amount', direction: 'descending' }} cellBars={false} rankMarkers={false} hoursPerSecond={speed} onRowClick={row => setPicked([row.id])}
       menu={row => row.readHour === null ? [] : [jumpItem(runtime, track.id, row.readHour)]}
       tooltip={row => fitTooltip([{ title: `${row.cause} / ${row.type} / ${row.design}`, rows: [{ label: 'Signed losses', value: rowText(row) },

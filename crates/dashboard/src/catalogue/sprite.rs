@@ -1,6 +1,6 @@
 //! Native Up-state sprite draw at a newly shown drawable's time zero.
 use super::*;
-use installed_content::{gui::native::sprites::FrameAnimation, image::dds, pdxshader::program};
+use installed_content::{gui::native::sprites::FrameAnimation, image::dds};
 
 pub(super) fn frame(
     layers: &ResolvedLayers,
@@ -78,7 +78,7 @@ pub(super) fn frame(
     // Unsupported animation sets are cleared; frame-animated sprites
     // never select the overlay animation program.
     if animated.is_none() && !plain.legacy_lazy_load && !plain.animations.is_empty() {
-        let program = program::read_reported(layers, plain.effect()).map_err(invalid)?;
+        let program = shader_pipeline::artwork::program(layers, plain.effect()).map_err(invalid)?;
         let slots = program
             .common
             .samplers

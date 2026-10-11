@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { intervalIndexOf } from '../../charts/intervalIndex.ts';
 import type { IntervalIndex } from '../../charts/intervalIndex';
 import { runAt } from '../../charts/series.ts';
@@ -229,7 +230,7 @@ export function supplyDemandRuns(series: ResourceSeries, decimals: number): { su
 
 /** A resource's name: content's, else its token; a repeated declaration of a
  * token is numbered ("Steel (2)"), as the game keeps it as another resource. */
-export const resourceName = (item: Pick<ResourceInfo, 'name' | 'token' | 'ordinal'>) => `${item.name ?? item.token}${item.ordinal > 1 ? ` (${item.ordinal})` : ''}`;
+export const resourceName = (item: Pick<ResourceInfo, 'name' | 'token' | 'ordinal'>) => `${contentTitle(item.name, item.token, 'Resource name unavailable')}${item.ordinal > 1 ? ` (${item.ordinal})` : ''}`;
 
 /** Most deals listed per direction; the rest share one row. */
 export const MAX_DEALS = 8;

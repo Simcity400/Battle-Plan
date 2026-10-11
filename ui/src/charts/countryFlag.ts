@@ -1,4 +1,4 @@
-import { countryFlagUnavailable } from '../components/countryFlagPresentation.ts';
+import { countryFlagUnavailable, fitCountryFlag } from '../components/countryFlagPresentation.ts';
 import type { CountryFlagLook } from '../components/countryFlagPresentation';
 import { mix } from '../shell/appearance/color.ts';
 import { canvasImageRead } from './images.ts';
@@ -21,7 +21,11 @@ export function drawCountryFlag(context: CanvasRenderingContext2D, flag: Country
   wake: () => void): void {
   if (!flag) return;
   const image = flag.flag ? canvasImageRead(flag.flag, wake).image : null;
-  if (image) { context.drawImage(image, x, y, width, height); return; }
+  if (image) {
+    const fitted = fitCountryFlag(image.naturalWidth, image.naturalHeight, width, height);
+    context.drawImage(image, x + fitted.x, y + fitted.y, fitted.width, fitted.height);
+    return;
+  }
   context.save();
   context.fillStyle = mix(tokens.surface, tokens.muted, 0.25);
   context.fillRect(x, y, width, height);

@@ -14,6 +14,7 @@
 - Values/ranks use every hourly read; equal values/repeated deltas compress without losing hours or supplying dates. Missing hours stay gaps; oversized complete replies refuse the shared byte budget.
 - Ended/disappeared relations retain counters. Missing history can omit positive losses or negative corrections: **Recorded subtotal** (legacy `atLeast` flags) is not a lower bound. Entire unseen wars and final ticks between reads cannot be recovered.
 - Manual tags follow their native holders/aliases without inheriting another holder's counters. Looks and Jump use the supplying sample date; no name or flag crosses an identity gap.
+- Localised titles preserve authored empty text and titles equal to their keys. Missing country titles stay unavailable; missing unknown-attacker localisation uses the plain Unknown attacker label.
 
 **Files:** [CasualtiesWidget.tsx](CasualtiesWidget.tsx) renders the shared butterfly/race; [casualtiesData.ts](casualtiesData.ts) validates and indexes exact BigInt histories, with adjacent tests. `casualties.css`, `definition.ts` and `index.ts` own styling, settings and registration.
 

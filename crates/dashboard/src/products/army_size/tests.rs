@@ -852,7 +852,7 @@ fn army_size_battalions_include_support_and_keep_unknown_groups() {
         reply
             .types
             .iter()
-            .all(|kind| kind.name.contains("unknown-group"))
+            .all(|kind| kind.name == "Unit group name unavailable")
     );
     let series = reply
         .series

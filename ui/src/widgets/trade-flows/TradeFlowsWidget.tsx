@@ -10,6 +10,7 @@ import FlowDiagram from '../../charts/flow/FlowDiagram';
 import type { FlowHit, FlowLink, FlowNode } from '../../charts/flow/FlowDiagram';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
+import { usNumber } from '../../charts/numberFormat';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { formatAmount } from '../../charts/valueAxis';
@@ -53,7 +54,7 @@ const DESCRIBED = 24;
 type Label = CountryFlagLook & { name: string; color: readonly [number, number, number] | null };
 type TradeNode = FlowNode & { trade: { selection: TradeSelection; node: SideNode; links: readonly SideLink[]; hour: number; from: number } };
 type TradeLink = FlowLink & { trade: { selection: TradeSelection; link: SideLink; source: SideNode; target: SideNode; hour: number; from: number } };
-const SMALL_FLAGS = flagReadSpec('small');
+const FLAGS = flagReadSpec('shield');
 const ALL_CONTRIBUTORS: TradeSelection = { kind: 'all' };
 
 /** Who sells what to whom: a Sankey of sellers to buyers, one
@@ -116,7 +117,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const fixed = tokens.countryColours === 'fixed';
   const colourPlan = useMemo(() => tradeColourPlan(trade ?? null, track?.branch, moment, fixed), [trade, track?.branch, moment, fixed]);
   const styles = useCountryFactsRead(runtime.client, track, fixed ? colourPlan.wanted : looksWanted, active, STYLES, fixed ? colourPlan.maxHours : lookHours);
-  const flags = useCountryFactsRead(runtime.client, track, looksWanted, active, SMALL_FLAGS, lookHours);
+  const flags = useCountryFactsRead(runtime.client, track, looksWanted, active, FLAGS, lookHours);
   const contentRevision = useContentRevision(runtime.client);
   const heldKey = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, contentRevision]);
   const held = useRef({ key: heldKey, client: runtime.client, looks: new Map<string, Look>(), segments: new Map<string, number>() });
@@ -148,7 +149,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const labelOf = useCallback((identity: string): Label => {
     const fact = lookFacts.get(identity);
     const look = heldLooks.get(identity);
-    return { name: look?.name || fact?.tag || identity,
+    return { name: look?.name ?? 'Country name unavailable',
       ...(fact ? flagReadMetadata(flags.get(nameKey(fact.hour, fact.tag))) : {}), flag: look?.flag ?? undefined, color: look?.color ?? null };
   }, [lookFacts, heldLooks, flags]);
   const [hoverWanted, setHoverWanted] = useState<readonly NameAt[]>([]);
@@ -186,7 +187,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
     flag: item.icon ? <img className="trade-resource-icon" src={item.icon} alt="" /> : <span className="trade-resource-icon is-missing" aria-hidden="true" /> })),
   [shownResources, resourceColour, otherColour]);
   const nodeName = useCallback((node: SideNode) => node.identity ? labelOf(node.identity).name
-    : `${node.members.length.toLocaleString('en-US')} other ${node.side === 'source' ? (node.members.length === 1 ? 'seller' : 'sellers') : (node.members.length === 1 ? 'buyer' : 'buyers')}`, [labelOf]);
+    : `${usNumber.format(node.members.length)} other ${node.side === 'source' ? (node.members.length === 1 ? 'seller' : 'sellers') : (node.members.length === 1 ? 'buyer' : 'buyers')}`, [labelOf]);
   const { flowNodes, flowLinks } = useMemo(() => {
     const colour = new Map(diagram.nodes.flatMap(node => {
       if (!node.identity) return [];
@@ -265,7 +266,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
       if (sums.last != null && sums.last !== sums.first) items.push({ ...jumpItem(runtime, track.id, sums.last), hint: 'Last recorded in the time shown' });
     }
     menu.open(x, y, items);
-  }, [track, runtime, measure, read, moment, extent[0], extent[1], menu]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [track, runtime, measure, read, moment, extent[0], extent[1], menu.open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const savedSelection = useMemo(() => track ? readSelection(options.tradeSelection, tradeContext(track)) : null,
     [options.tradeSelection, track]);

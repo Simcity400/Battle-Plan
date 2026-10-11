@@ -7,7 +7,7 @@ import { tokensFromValues } from '../charts/tokens.ts';
 
 const requests: unknown[] = [];
 const CLIENT = {};
-const shared = globalThis as typeof globalThis & { airRequests: unknown[]; airClient?: object; airTimeline: unknown; airChoices?: unknown; airDay?: unknown; airDayError?: string; airHeld?: unknown; airWindows?: unknown; airFactionName?: string; airFactionColours?: [string, string][]; airStyleReads?: { tag: string; hour: number }[][]; airStyles?: [string, number, [number, number, number]][]; airLookPlans?: { hour: number; segmentAt: (tag: string, hour: number) => number | null; hours?: ReadonlyMap<string, number>; exact: boolean }[]; airUseState?: () => unknown; airUseEffect?: (effect: () => unknown, deps: readonly unknown[]) => void };
+const shared = globalThis as typeof globalThis & { airRequests: unknown[]; airClient?: object; airTimeline: unknown; airChoices?: unknown; airDay?: unknown; airDayError?: string; airHeld?: unknown; airWindows?: unknown; airFactionName?: string; airFactionColours?: [string, string][]; airStyleReads?: { tag: string; hour: number }[][]; airStyles?: [string, number, [number, number, number]][]; airLookPlans?: { hour: number; segmentAt: (tag: string, hour: number) => number | null; hours?: ReadonlyMap<string, number>; exact: boolean }[]; airHoverSegment?: (tag: string, hour: number) => number | null; airUseState?: () => unknown; airUseEffect?: (effect: () => unknown, deps: readonly unknown[]) => void };
 shared.airRequests = requests;
 shared.airTimeline = { view: 'timeline', branchId: '1', firstHour: 0, lastHour: 24, available: true,
   days: [23, 24], sides: [], segments: {}, anchorReads: {}, rows: [], excluded: [], theatreReads: [], warnings: [], scale: 100000, dayHours: 24, badBelow: 40000, goodAbove: 60000 };
@@ -46,7 +46,7 @@ const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery
         return { name: tag => tag, color: () => [136,153,170], flag: () => undefined }; };
       export const useCountriesAt = () => ({ country: tag => ({ name: tag }) });
       export const FOLLOW_MS = 400;
-      export const useHoverLabels = () => ({ ask() {}, labelAt: () => tag => ({ name: tag }), revision: 0 });`;
+      export const useHoverLabels = (_, track, active, pending, missing, segmentAt) => { globalThis.airHoverSegment = segmentAt; return { ask() {}, labelAt: () => tag => ({ name: tag }), revision: 0 }; };`;
   },
 }] });
 const { useAir } = await vite.ssrLoadModule('/ui/src/dashboard/useAirSuperiority.ts').finally(() => vite.close());
@@ -255,12 +255,12 @@ test('Follow keeps the default state of selected regions absent from current-day
   shared.airDay = { ...(original as object), view: 'moment', firstHour: 24, lastHour: 47, regions: [],
     fallback: [[24, 47, 'no-air-object']], recorded: [{ firstHour: 24, lastHour: 47 }], complete: [], wingsKnown: [], excluded: [], theatreReads: [] };
   try {
-    const missing = render(26).result.projectedTimeline?.views.get(7000)?.at(-1);
-    assert.equal(missing?.state, 'no-air-object');
+    const current = render(26).result.projectedTimeline!;
+    assert.equal(current.viewAt(7000, current.periods.length - 1)?.state, 'no-air-object');
     shared.airDay = { ...(shared.airDay as object), fallback: [[24, 47, 'outside-theatres']] };
-    const outside = render(26).result.projectedTimeline;
-    assert.equal(outside?.views.get(7000)?.at(-1)?.reason, 'outside-theatres');
-    assert.equal(outside?.rows[0].cells.at(-1)?.filtered, true);
+    const outside = render(26).result.projectedTimeline!;
+    assert.equal(outside.viewAt(7000, outside.periods.length - 1)?.reason, 'outside-theatres');
+    assert.equal(outside.rows[0].cells.at(-1)?.filtered, true);
   } finally { shared.airTimeline = original; delete shared.airDay; }
 });
 
@@ -361,4 +361,18 @@ test('timeline cells resolve country colours at their supplying hours through ta
     assert.equal(cells[1].parts[0].color, '#708090');
     assert.deepEqual(shared.airStyleReads.flat(), [{ tag: 'X', hour: 23 }, { tag: 'X', hour: 47 }]);
   } finally { shared.airTimeline = original; delete shared.airStyles; delete shared.airStyleReads; }
+});
+
+
+test('air hover labels receive the recorded country identity bounds, including reuse and missing evidence', () => {
+  const original = shared.airTimeline;
+  shared.airTimeline = { ...(original as object), segments: { A: [{ firstHour: 0, lastHour: 10 }, { firstHour: 12, lastHour: 24 }] } };
+  try {
+    render(7, 'campaign');
+    assert.equal(typeof shared.airHoverSegment, 'function');
+    assert.equal(shared.airHoverSegment!('A', 7), 0);
+    assert.equal(shared.airHoverSegment!('A', 11), null);
+    assert.equal(shared.airHoverSegment!('A', 20), 12);
+    assert.equal(shared.airHoverSegment!('missing', 7), null);
+  } finally { shared.airTimeline = original; delete shared.airHoverSegment; }
 });

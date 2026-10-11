@@ -174,17 +174,24 @@ useGameGraphics: boolean, graphics: MapGraphics,
  */
 visualMods: Array<string> | null, };
 export type MapSettingsReply = { sourceId: string, revision: string, settings: CampaignMapSettings, inheritedSettings: CampaignMapSettings, mods: { id: string, name: string, recordedId: string, reason: string | null }[], recordedMods: Array<string>, sampleCounts: Array<number>, gameGraphics: MapGraphics | null, gameGraphicsError: string | null, };
+export type HistoryCacheReply = { bytes: number, limit: number, };
 export type SourceReply = {
 /**
  * A client lease. Several leases may share one underlying source and cache.
  */
 id: string, path: string, revision: string, metadata: ReplayMetadata, };
 export type CountryParams = { branchId: string, tag: string, };
-export type FocusReply = { history: FocusHistory, artwork: Array<Artwork>, warnings: Array<string>, };
-export type FocusArtworkParams = { branchId: string, hour: number, tag: string, tokens: Array<string>, };
+export type FocusReply = { history: FocusHistory, artwork: Array<Artwork>,
+/**
+ * Country-independent text only; scoped titles still require dated reads.
+ */
+staticText?: Array<Artwork>, warnings: Array<string>, };
+export type FocusArtworkParams = { branchId: string, hour: number, tag: string, tokens: Array<string>, textOnly?: boolean, includeDescriptions?: boolean, iconsOnly?: boolean, };
 export type DatedFocusArtwork = { artwork: Artwork, reason: string | null, };
 export type FocusArtworkReply = { branchId: string, hour: number, tag: string, items: Array<DatedFocusArtwork>, warnings: Array<string>, };
 export type ResearchReply = { history: ResearchHistory, artwork: Array<Artwork>, warnings: Array<string>, };
+export type TechnologyArtworkParams = { tokens: Array<string>, };
+export type TechnologyArtworkReply = { items: Array<Artwork>, warnings: Array<string>, };
 export type CountryFlagSize = "full" | "medium" | "small" | "shield";
 export type CountryFlagImage = { tag: string, asset: string, width: number, height: number,
 /**
@@ -264,18 +271,32 @@ export type LeaderFormationKind = "army" | "armyGroup" | "fleet";
 export type LeaderCommand = { firstHour: number, lastHour: number, formation: string, kind: LeaderFormationKind, name: string | null, nameReadHour: number | null, nameUnknown: Array<HourSpan>, };
 export type LeaderCareer = { reference: string, runs: Array<UnitLeaderRun>, traitGains: Array<LeaderTraitGain>, commands: Array<LeaderCommand>,
 /**
- * First participation hours: first absolute, then deltas. Deduplicated by combat.
+ * Careers: first participation hours: first absolute, then deltas. Deduplicated by combat.
  */
-battleStarts: number[],
+battleStarts?: number[],
 /**
- * First supplying read for each participation, independent of its native date.
+ * Careers: first supplying read for each participation, independent of its native date.
  */
-battleStartReadHours: Array<number>,
+battleStartReadHours?: Array<number>,
 /**
- * Indices whose combat was not known absent in the preceding hour. This is
+ * Careers: indices whose combat was not known absent in the preceding hour. This is
  * the combat's start uncertainty, not the leader's participation date.
  */
-unknownBattleStarts: Array<number>, battleWon?: Array<boolean | null>, battleResultHours?: Array<number | null>, battleResultReadHours?: Array<number | null>,
+unknownBattleStarts?: Array<number>, battleWon?: Array<boolean | null>, battleResultHours?: Array<number | null>, battleResultReadHours?: Array<number | null>,
+/**
+ * Leaderboards: when each participation became visible, the later of its date
+ * and first supplying read. Sorted hours: first absolute, then deltas.
+ */
+foughtHours?: number[],
+/**
+ * Leaderboards: when each known win became visible, the latest of its
+ * participation's visible hour, result date and result read; coded as `fought_hours`.
+ */
+wonHours?: number[],
+/**
+ * Leaderboards: the same for each known loss.
+ */
+lostHours?: number[],
 /**
  * First hour with incomplete battle observations; recorded totals remain visible.
  */
@@ -309,22 +330,33 @@ export type LandBattleRun = { firstHour: number, lastHour: number, counts: [numb
  * Exact native counter at first_hour; every subsequent recorded read steps by one.
  */
 duration: number, };
+export type LandManpower = number | string;
+export type LandLossSide = { manpower: LandManpower, variants: Array<[number, string]>, } | { manpower: LandManpower, changed: Array<[number, string]>, } | { manpower: LandManpower, unknown: string, };
+export type LandLossSides = [LandLossSide, LandLossSide] | string;
 export type LandBattleLossRead = { hour: number,
 /**
  * True only for the post-flush FinalizeCombat read, never inferred from absence.
  */
 terminal: boolean,
 /**
- * Attacker then defender; equipment totals and named variant values stay separate.
+ * Attacker then defender, or why neither side's counters were read.
  */
-sides: [Array<BattleValue>, Array<BattleValue>],
-/**
- * Fixed5 equipment total then variants; empty for an unrecorded pool.
- */
-equipmentRaw?: [Array<string>, Array<string>], };
+sides: LandLossSides, };
 export type LandBattleResultRead = { hour: number, duration: number, winner: BattleWinner, countries: [Array<string>, Array<string>], countriesUnknown: [boolean, boolean], };
 export type LandBattleHistory = { id: string, provinceId: number, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number, priorPeak: LandBattlePeak | null, runs: Array<LandBattleRun>, losses: Array<LandBattleLossRead>, result: LandBattleResultRead | null, };
-export type LandBattlesReply = { window: number, interval: BattleWindow, rows: Array<LandBattleHistory>, observed: Array<[number, number]>, warnings: Array<BattleWarning>, contentWarnings: Array<string>, };
+export type LandBattlesReply = { window: number, interval: BattleWindow,
+/**
+ * Equipment loss labels, which the rows' reads refer to by index.
+ */
+labels: Array<string>, rows: Array<LandBattleHistory>, observed: Array<[number, number]>,
+/**
+ * Each warning reason once, for `warnings` to refer to by index.
+ */
+reasons: Array<string>,
+/**
+ * [hour, reason, count] in hour then reason order.
+ */
+warnings: Array<[number, number, number]>, contentWarnings: Array<string>, };
 export type LandBattlesManifestParams = { branchId: string, };
 export type LandBattlesManifestReply = {
 /**
@@ -333,7 +365,11 @@ export type LandBattlesManifestReply = {
 windows: Array<BattleWindow>, available: boolean, unavailable: string | null, contentWarnings: Array<string>, };
 export type LandBattleCountryFilter = { tags: Array<string> | null, membership: Array<MembershipRun> | null, unobserved: Array<HourSpan>, };
 export type LandBattlesRankingParams = { branchId: string, firstHour: number, lastHour: number, topN: number, measure: string, countries: LandBattleCountryFilter, };
-export type LandBattlesRankingReply = { rows: Array<LandBattleHistory>, censusHour: number | null, effectiveMeasure: string, warnings: Array<BattleWarning>, contentWarnings: Array<string>, };
+export type LandBattlesRankingReply = {
+/**
+ * Equipment loss labels, which the rows' reads refer to by index.
+ */
+labels: Array<string>, rows: Array<LandBattleHistory>, censusHour: number | null, effectiveMeasure: string, warnings: Array<BattleWarning>, contentWarnings: Array<string>, };
 export type PlaceNamesParams = { branchId: string,
 /**
  * Land's presentation ladder; other callers retain the native resolver.
@@ -1206,38 +1242,40 @@ available: boolean | null, unavailable: string | null, types: Array<RaidTypeInfo
  * resolved. Partial per-country values remain in series, never a world zero.
  */
 readHours: Array<number>, warnings: Array<string>, };
-export type OccupiedStatesParams = { branchId: string, };
-export type OccupiedValues = { name: string | null, nameMissing: string | null, owner: string | null, occupier: string | null,
+export type OccupiedStatesParams = { branchId: string, window: number, };
+export type OccupiedSeries = { state: number,
+/**
+ * Stored fixed5 percentage units, one run per span the state is occupied.
+ */
+resistance: Array<NativeFixed5Run>, compliance: Array<NativeFixed5Run>,
+/**
+ * Percentage points/day, over the same spans.
+ */
+resistanceSpeed: Array<NativeFixed5Run>, complianceSpeed: Array<NativeFixed5Run>, name: Array<[number, number | null]>, nameMissing: Array<[number, number | null]>, owner: Array<[number, number | null]>, occupier: Array<[number, number | null]>,
 /**
  * Original occupied country, which can differ from today's legal owner.
  */
-occupied: string | null,
-/**
- * Stored fixed5 percentage units. Speeds are percentage points/day.
- */
-resistanceRaw: string, complianceRaw: string, resistanceSpeedRaw: string, complianceSpeedRaw: string,
+occupied: Array<[number, number | null]>,
 /**
  * Native displayed strength fraction, signed fixed5 (100000 is full).
  */
-garrisonStrengthRaw: string | null, requiredManpower: number | null,
+garrisonStrengthRaw: Array<[number, string | null]>, requiredManpower: Array<[number, number | null]>,
 /**
  * Recorded required template amount, not garrison strength.
  */
-garrisonRequiredRaw: string | null,
+garrisonRequiredRaw: Array<[number, string | null]>,
 /**
- * Requirement failure makes displayed strength zero.
+ * Native requirement failure; its strength getter returns zero.
  */
-garrisonAlert: boolean,
+garrisonAlert: Array<[number, boolean]>,
 /**
  * Below the content threshold, only when displayed strength is established.
  */
-garrisonRed: boolean | null, assignedManpower: number | null, garrisonMissing: string | null,
+garrisonRed: Array<[number, boolean | null]>, assignedManpower: Array<[number, number | null]>, garrisonMissing: Array<[number, number | null]>,
 /**
- * Effective native law, using override/group/default/fallback precedence.
+ * Effective native law token, using override/group/default/fallback precedence.
  */
-law: string | null, lawMissing: string | null, };
-export type OccupiedRun = { firstHour: number, lastHour: number, value: OccupiedValues, };
-export type OccupiedSeries = { state: number, runs: Array<OccupiedRun>, };
+law: Array<[number, number | null]>, lawMissing: Array<[number, number | null]>, };
 export type OccupiedObservation = { firstHour: number, lastHour: number,
 /**
  * Read supplying resistance/compliance and the daily occupation tables.
@@ -1247,12 +1285,34 @@ readHour: number,
  * False means known rows are shown but the inventory is incomplete.
  */
 complete: boolean, };
-export type OccupationLawInfo = { token: string, name: string | null, icon: string | null, missing: string | null, };
-export type OccupiedStatesReply = { branchId: string, decimals: number, states: Array<OccupiedSeries>,
+export type OccupiedStatesReply = { branchId: string, window: number,
 /**
- * Includes known empty inventories, distinguishing them from gaps.
+ * The window's hours, both included.
  */
-observed: Array<OccupiedObservation>, laws: Array<OccupationLawInfo>, strengthMissing: string, warnings: Array<string>, };
+interval: HourSpan,
+/**
+ * Each text the window's states show, once.
+ */
+texts: Array<string>,
+/**
+ * Every state occupied at an hour of the window, by id.
+ */
+states: Array<OccupiedSeries>,
+/**
+ * Includes known empty inventories, distinguishing them from gaps. Only one
+ * starting at the window's first hour can hold an earlier read.
+ */
+observed: Array<OccupiedObservation>, warnings: Array<string>, };
+export type OccupationLawInfo = { token: string, name: string | null, icon: string | null, missing: string | null, };
+export type OccupiedStatesManifestReply = { branchId: string, decimals: number,
+/**
+ * The branch's replay blocks, each one `occupied-states` window.
+ */
+windows: Array<HourSpan>,
+/**
+ * Every law a state holds in the branch.
+ */
+laws: Array<OccupationLawInfo>, strengthMissing: string, warnings: Array<string>, };
 export type OccupationMeasure = "resistance" | "compliance";
 export type OccupationTop = { count: number, measure: OccupationMeasure, };
 export type OccupationTrendParams = { branchId: string,
@@ -2682,7 +2742,11 @@ recorded: Array<HourSpan>,
  * not name: a country without a lane there may be one of them.
  */
 unidentified: Array<HourSpan>, warnings: Array<string>, };
-export type ConstructionLogParams = { branchId: string, };
+export type ConstructionLogParams = { branchId: string,
+/**
+ * Index into [`ConstructionLogManifestReply::windows`].
+ */
+window: number, };
 export type ProjectKind = "building" | "railway";
 export type EndKind = "finished" | "removed" | "unknown";
 export type UnknownEnd = "notRecorded" | "sharedTarget" | "nothingLeft" | "completionNotRecorded";
@@ -2723,15 +2787,6 @@ remaining: number,
  * (the engine's repair branch), else it builds its remaining new levels.
  */
 repairLevels: number, };
-export type ConstructionOutputRead = { knownAt: number, sinceHour: number | null,
-/**
- * Fixed5 factory output since `since_hour`; null when attribution is unknown.
- */
-constructionRaw: string | null, repairRaw: string | null, reason: SpendingGap | null, observedSinceCreation: boolean,
-/**
- * Includes zero-factory natural repair advances; it is not an IC amount.
- */
-repairTicks: number, };
 export type SpendingGap = "notRecorded" | "readFailed" | "linkedOutput" | "inexactOutput" | "observationRestart" | "finalOutputMissing" | "ownerUnknown";
 export type ConstructionProject = {
 /**
@@ -2743,7 +2798,7 @@ id: string, kind: ProjectKind,
  */
 tag: string,
 /**
- * Index into [`ConstructionLogReply::types`].
+ * Index into [`ConstructionLogManifestReply::types`].
  */
 building: number,
 /**
@@ -2823,9 +2878,28 @@ added: Array<LevelsBuilt>,
  */
 end: ProjectEnd | null,
 /**
- * Factory output observed since the recording began, dated by its publication.
+ * The first output read counting a repair advance (natural or by factories).
  */
-output: Array<ConstructionOutputRead>, };
+firstRepairTick: number | null, };
+export type ConstructionOutputRun = { from: number, to: number,
+/**
+ * Fixed5 factory output since observation began; null when attribution is unknown.
+ */
+constructionRaw: string | null, repairRaw: string | null, reason: SpendingGap | null,
+/**
+ * Output before observation began is not recorded.
+ */
+beforeObservation: boolean,
+/**
+ * No row was published: the reason is the table's at each read (it was
+ * unavailable), else the line's final output is missing.
+ */
+absent: boolean, };
+export type ProjectOutput = { id: string,
+/**
+ * In hour order.
+ */
+runs: Array<ConstructionOutputRun>, };
 export type BuildingInfo = {
 /**
  * The recorded lexer id of the type.
@@ -2840,31 +2914,43 @@ token: string | null, name: string | null,
  */
 icon: string | null, };
 export type StateName = { id: number, name: string | null, };
-export type ConstructionLogReply = { branchId: string,
+export type ConstructionLogReply = { window: number, interval: BattleWindow,
+/**
+ * Hours the output table was read from the last read before the window to
+ * the next window, ascending.
+ */
+outputReads: Array<number>,
+/**
+ * Those reads at which the table was unavailable, and why.
+ */
+outputUnavailable: Array<[number, SpendingGap]>,
+/**
+ * Every project with a row date in the window, in the scan's order: by first
+ * read, building lines before railway lines, then by handle.
+ */
+projects: Array<ConstructionProject>,
+/**
+ * For every project changing output in the window, its runs read there; for
+ * every project listed, its last run too, held from then on.
+ */
+outputs: Array<ProjectOutput>, warnings: Array<string>, };
+export type ConstructionLogManifestReply = {
 /**
  * Units per factory output point of `cost_raw`.
  */
 costScale: number,
 /**
- * Hours the building queue was read, ascending.
+ * The branch's blocks: the log's windows, in hour order.
  */
-reads: Array<number>,
+windows: Array<BattleWindow>,
 /**
- * Hours the railway queue was read, ascending.
+ * Either construction queue was read in the branch.
  */
-railwayReads: Array<number>, types: Array<BuildingInfo>,
+recorded: boolean, types: Array<BuildingInfo>,
 /**
  * The construction queue's repair marker.
  */
-repairIcon: string | null,
-/**
- * Names of the states the projects name, by state id.
- */
-states: Array<StateName>,
-/**
- * In order of first read, then handle.
- */
-projects: Array<ConstructionProject>, warnings: Array<string>, };
+repairIcon: string | null, warnings: Array<string>, };
 export type LandSource = "destruction" | "combatLog";
 export type LossCountry = { slot: number, countryId: number, originHour: number, };
 export type LossesParams = { branchId: string, tag: string, landSource: LandSource, country?: LossCountry | null, };
@@ -3395,11 +3481,12 @@ upgradesUnrecorded: string | null, warnings: Array<string>, };
 export const MAX_MESSAGE_BYTES = 33554432;
 /** Refusals for want of room: a message starting with one may be tried again. */
 export const CAPACITY_REACHED = "Dashboard request capacity reached";
-export const TOO_MANY_SOURCES = "Too many open dashboard source bindings";
 export const BROWSER_BRIDGE_BUSY = "The recording bridge is busy";
 export const NATIVE_QUEUE_FULL = "Native dashboard request queue is full";
 export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
-export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
+export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "research", "country-flags", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "place-names", "country-styles", "country-groups", "wars", "country-stability", "stability-parts", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupation-trend", "idea-history", "party-history", "politics-ledger", "peace-deals", "resource-balance", "decryption", "production-lines", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "event-feed", "autonomy", "construction-log", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "operative-placements", "operatives-roster", "agency-comparison"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "research", "technology-artwork", "country-flags", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "place-names", "country-styles", "country-groups", "wars", "country-stability", "stability-parts", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-ledger", "peace-deals", "resource-balance", "decryption", "production-lines", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "event-feed", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "operative-placements", "operatives-roster", "agency-comparison"] as const;
+/** Products served separately from whole-branch history reads. */
+export const INTERACTIVE_PRODUCTS = ["focus-artwork", "technology-artwork", "country-flags", "unit-leader-portraits", "place-names", "country-styles", "air-ace-portraits", "stockpile-artwork"] as const;

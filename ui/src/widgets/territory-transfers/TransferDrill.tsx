@@ -7,6 +7,7 @@ import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
 import { jumpItem } from '../../charts/jump';
 import { dayLabel, drawBands, drawPlayhead } from '../../charts/draw';
+import { usNumber } from '../../charts/numberFormat';
 import { compactStack, compactStackExtent, forEachCompactStackSegment } from '../../charts/stack';
 import { heldStackSegment } from '../../charts/race/countryRace';
 import { formatDateTime } from '../../dashboard/calendar';
@@ -54,7 +55,7 @@ export default function TransferDrill({ links, measure, day, cutoff, first, last
   const parts: DrillPart[] = current.map(link => {
     const value = transferPartRaw(link, measure);
     return { id: link.id, label: name(link), raw: value, value: value == null ? null : Number(value), color: colorOf(link),
-      text: value == null ? 'Not recorded' : value.toLocaleString('en-US'),
+      text: value == null ? 'Not recorded' : usNumber.format(value),
       shareText: value == null || total == null || total === 0n ? '—' : `${Number(value * 1000n / total) / 10}%` };
   });
   const bands = useMemo(() => transferHistory(links, measure, first, last, from), [links, measure, first, last, from]);
@@ -72,7 +73,7 @@ export default function TransferDrill({ links, measure, day, cutoff, first, last
   }], [stack, colors, cutoff]);
   const vp = (state: TransferOccurrence) => state.victoryPointsPending ? state.victoryPointsReadHour == null ? 'VP read hour not recorded'
     : `VP not recorded at this moment; read ${formatDateTime(state.victoryPointsReadHour)}` : state.victoryPoints == null ? 'VP not recorded'
-      : `${BigInt(state.victoryPoints).toLocaleString('en-US')} VP${state.victoryPointsReadHour == null ? '; read hour not recorded' : `; read ${formatDateTime(state.victoryPointsReadHour)}`}`;
+      : `${usNumber.format(BigInt(state.victoryPoints))} VP${state.victoryPointsReadHour == null ? '; read hour not recorded' : `; read ${formatDateTime(state.victoryPointsReadHour)}`}`;
   const describe = (row: LogRow<TransferOccurrence>) => {
     const state = row.item, place = stateAt(row.hour, state.state);
     return `${place.name ?? `State ${state.state}`} ${labelAt(state.fromCountry.hour)(state.fromCountry.tag).name} to ${labelAt(state.toCountry.hour)(state.toCountry.tag).name}; ${vp(state)}; ${state.derived === false ? 'Captured' : state.derived ? 'Derived net change' : 'Provenance not recorded'}${place.missing ? `; ${place.missing}` : ''}`;
@@ -80,8 +81,8 @@ export default function TransferDrill({ links, measure, day, cutoff, first, last
   const outside = day < first || day > last;
   return <div className="transfer-drill">
     {outside ? <p className="drill-empty">This time is outside the selected recorded interval.</p> : <div className="transfer-drill-parts">
-      <DrillParts parts={parts} format={value => value.toLocaleString('en-US')} virtual active={active} positiveBars signedShares
-        onVisible={setVisibleIds} onPick={setDetail} totalRow={{ label: 'Total', value: total == null ? 'Not recorded' : total.toLocaleString('en-US') }} />
+      <DrillParts parts={parts} format={value => usNumber.format(value)} virtual active={active} positiveBars signedShares
+        onVisible={setVisibleIds} onPick={setDetail} totalRow={{ label: 'Total', value: total == null ? 'Not recorded' : usNumber.format(total) }} />
     </div>}
     <div className="transfer-drill-history"><TimeChart label="Transfer parts over time" extent={[first, last]} playhead={cutoff} playback="cursor" afterPlayhead={false}
       branchStart={track.branch.firstHour} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }}

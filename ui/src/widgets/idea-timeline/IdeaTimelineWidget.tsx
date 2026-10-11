@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { useEffect, useMemo } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
@@ -65,7 +66,7 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
       tooltips.art.get(token)?.description, [], undefined, span.firstHour, Infinity)) : `${lane.label}: ${span.label}`;
   }).join('. ')}.`;
   return <div className="idea-timeline">
-    <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}:${tag}`} label={`${category.name ?? category.token} of ${tag}`} extent={extent} playhead={playhead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} description={description}
+    <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}:${tag}`} label={`${contentTitle(category.name, category.token, 'Category name unavailable')} of ${tag}`} extent={extent} playhead={playhead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} description={description}
       showIcons showNames unobserved={data.unobserved} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} revision={data}
       tooltip={(lane, span, hour, full) => {
         if (!span) return { title: lane.label, rows: [{ label: inSpans(data.unobserved, hour) ? 'Not recorded' : 'Empty', value: dayLabel(hour), tone: 'muted' }] };

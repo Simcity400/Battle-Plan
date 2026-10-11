@@ -16,14 +16,76 @@ pub(super) struct CharacterFact {
     pub portrait: RecordedPortrait,
 }
 
+/// Kept with its row. A day's costs repeat an advisor, idea, organisation or
+/// cost modifier, so equal operands and texts share one allocation (`Shared`).
+#[derive(Default)]
 pub(super) struct EventFacts {
     pub native_cause: PowerCause,
-    pub token: Option<String>,
-    pub character: Option<CharacterFact>,
-    pub organisation: Option<RawOrganisation>,
+    pub token: Option<Arc<str>>,
+    pub character: Option<Arc<CharacterFact>>,
+    pub organisation: Option<Arc<RawOrganisation>>,
     /// Missing lexical spelling must not discard explicit name/icon overrides.
     pub organisation_token_known: bool,
-    pub modifier: Option<ModifierDefinitionRow>,
+    pub modifier: Option<Arc<ModifierDefinitionRow>>,
+    /// The item's text, resolved at the event frame.
+    pub text: Option<Arc<ItemText>>,
+}
+
+#[derive(Default)]
+pub(super) struct Shared {
+    tokens: BTreeSet<Arc<str>>,
+    texts: BTreeSet<Arc<ItemText>>,
+    /// The latest fact of each character and organisation reference.
+    characters: BTreeMap<u32, Option<Arc<CharacterFact>>>,
+    organisations: BTreeMap<u64, Option<Arc<RawOrganisation>>>,
+    modifier: Option<Arc<ModifierDefinitionRow>>,
+}
+impl Shared {
+    pub(super) fn text(&mut self, text: ItemText) -> Arc<ItemText> {
+        intern(&mut self.texts, text)
+    }
+}
+/// The kept allocation of an equal value, else a new one, kept.
+fn intern<T, V>(kept: &mut BTreeSet<Arc<T>>, value: V) -> Arc<T>
+where
+    T: Ord + ?Sized,
+    V: std::borrow::Borrow<T> + Into<Arc<T>>,
+{
+    if let Some(old) = kept.get(value.borrow()) {
+        return Arc::clone(old);
+    }
+    let value = value.into();
+    kept.insert(Arc::clone(&value));
+    value
+}
+/// `kept` if it equals `value`, else `value`, kept in its place.
+fn share<T: PartialEq>(kept: &mut Option<Arc<T>>, value: T) -> Arc<T> {
+    if let Some(old) = kept.as_ref().filter(|old| ***old == value) {
+        return Arc::clone(old);
+    }
+    Arc::clone(kept.insert(Arc::new(value)))
+}
+/// `share` for operands dated by the first event that recorded them: this
+/// ledger never reads that hour.
+fn share_organisation(
+    kept: &mut Option<Arc<RawOrganisation>>,
+    value: RawOrganisation,
+) -> Arc<RawOrganisation> {
+    let bare = |raw: &RawOrganisation| RawOrganisation {
+        first_hour: 0,
+        ..raw.clone()
+    };
+    let first_hour = match kept.as_deref() {
+        Some(old) if bare(old) == bare(&value) => old.first_hour,
+        _ => value.first_hour,
+    };
+    share(
+        kept,
+        RawOrganisation {
+            first_hour,
+            ..value
+        },
+    )
 }
 
 pub(super) fn token_identity(frame: &DecodedFrame, item: &LedgerItem) -> Option<String> {
@@ -40,16 +102,22 @@ pub(super) fn lexical_token(frame: &DecodedFrame, token: u32) -> Option<String> 
         .map(str::to_owned)
 }
 
-pub(super) fn character_fact(
-    frame: &DecodedFrame,
+/// The character an item records, directly or through the unit leader it
+/// references, and the script token and saved name that name it.
+struct RecordedCharacter<'f> {
+    row: &'f CharacterRow,
+    leader: Option<&'f UnitLeaderRow>,
+    script_token: Option<&'f str>,
+    saved_name: &'f str,
+}
+fn recorded_character<'f>(
+    frame: &'f DecodedFrame,
     item: &LedgerItem,
-    cause: PowerCause,
-) -> Option<CharacterFact> {
-    let leaders = frame.complete::<tables::UnitLeaders>().ok();
+) -> Option<RecordedCharacter<'f>> {
     let leader = (item.object_kind == "Leader")
         .then(|| {
             let reference = item.object_reference.as_deref()?.parse::<u64>().ok()?;
-            let leaders = leaders?;
+            let leaders = frame.complete::<tables::UnitLeaders>().ok()?;
             let index = leaders
                 .binary_search_by_key(&reference, |row| {
                     (u64::from(row.id) << 32) | u64::from(row.reference_type)
@@ -62,12 +130,30 @@ pub(super) fn character_fact(
         .character
         .or_else(|| leader.map(|row| row.character_id))?;
     let rows = frame.complete::<tables::Characters>().ok()?;
-    let index = rows.binary_search_by_key(&id, |row| row.id).ok()?;
-    let recorded = &rows[index];
+    let row = &rows[rows.binary_search_by_key(&id, |row| row.id).ok()?];
     let lexical = frame.complete::<tables::LexicalTokens>().ok();
-    let category = leader
+    Some(RecordedCharacter {
+        row,
+        leader,
+        script_token: lexical.and_then(|lexical| character_script_token(row, lexical)),
+        saved_name: std::str::from_utf8(&row.token).ok()?,
+    })
+}
+pub(super) fn character_fact(
+    frame: &DecodedFrame,
+    item: &LedgerItem,
+    cause: PowerCause,
+) -> Option<CharacterFact> {
+    let recorded = recorded_character(frame, item)?;
+    let id = recorded.row.id;
+    let category = recorded
+        .leader
         .or_else(|| {
-            leaders.and_then(|leaders| leaders.iter().find(|leader| leader.character_id == id))
+            frame
+                .complete::<tables::UnitLeaders>()
+                .ok()?
+                .iter()
+                .find(|leader| leader.character_id == id)
         })
         .map(|leader| leader.category);
     // Role creation reads the category mask; upgrades request
@@ -94,11 +180,12 @@ pub(super) fn character_fact(
     };
     Some(CharacterFact {
         id,
-        script_token: lexical
-            .and_then(|lexical| character_script_token(recorded, lexical))
-            .map(str::to_owned),
-        saved_name: std::str::from_utf8(&recorded.token).ok()?.to_owned(),
-        template: crate::products::identity::built_template(recorded, lexical),
+        script_token: recorded.script_token.map(str::to_owned),
+        saved_name: recorded.saved_name.to_owned(),
+        template: crate::products::identity::built_template(
+            recorded.row,
+            frame.complete::<tables::LexicalTokens>().ok(),
+        ),
         leader_category: category,
         portrait: if role == u32::MAX {
             RecordedPortrait::Unrecorded
@@ -115,17 +202,24 @@ pub(super) fn character_fact(
 pub(super) fn character_name(fact: &CharacterFact, content: &PoliticsContent) -> Option<String> {
     content.character_name(fact.script_token.as_deref(), &fact.saved_name)
 }
-pub(super) fn store_facts(
-    scan: &mut Scanned,
+/// [`character_name`] of the character an item records, without building the
+/// portrait, template and leader category its event fact keeps: a holder
+/// names its character every hour.
+pub(super) fn recorded_name(
+    frame: &DecodedFrame,
+    item: &LedgerItem,
+    content: &PoliticsContent,
+) -> Option<Option<String>> {
+    let recorded = recorded_character(frame, item)?;
+    Some(content.character_name(recorded.script_token, recorded.saved_name))
+}
+pub(super) fn event_facts(
+    shared: &mut Shared,
     row: &LedgerMutation,
     frame: Option<&DecodedFrame>,
     cause: PowerCause,
     component: Option<PowerDailyCostKind>,
-) {
-    let key = item_text_id(row);
-    if scan.event_facts.contains_key(&key) {
-        return;
-    }
+) -> EventFacts {
     // Late publications must not borrow the current frame's identities.
     let frame = frame.filter(|frame| frame.hour == row.hour);
     let character = frame.and_then(|frame| character_fact(frame, &row.item, cause));
@@ -174,7 +268,7 @@ pub(super) fn store_facts(
             })
             .and_then(|country| std::str::from_utf8(&country.tag).ok())
             .map(str::to_owned);
-        Some(RawOrganisation {
+        let raw = RawOrganisation {
             first_hour: row.hour,
             // The witness above guards every token-dependent selector; this
             // placeholder is never used to select a fallback icon.
@@ -183,7 +277,8 @@ pub(super) fn store_facts(
             icon: std::str::from_utf8(&organisation.icon).ok()?.to_owned(),
             owner_unknown: (organisation.owner as i32) > 0 && owner_tag.is_none(),
             owner_tag,
-        })
+        };
+        Some((reference, raw))
     });
     // The daily getter reads modifier index 0x26. Its title and argument
     // come from that read's ModifierDefinitions, never a vanilla key.
@@ -197,15 +292,17 @@ pub(super) fn store_facts(
                 .cloned()
         })
         .flatten();
-    let facts = EventFacts {
+    EventFacts {
         native_cause: cause,
-        token,
-        character,
-        organisation,
+        token: token.map(|token| intern(&mut shared.tokens, token)),
+        character: character.map(|fact| share(shared.characters.entry(fact.id).or_default(), fact)),
+        organisation: organisation.map(|(reference, raw)| {
+            share_organisation(shared.organisations.entry(reference).or_default(), raw)
+        }),
         organisation_token_known,
-        modifier,
-    };
-    scan.event_facts.insert(key, facts);
+        modifier: modifier.map(|definition| share(&mut shared.modifier, definition)),
+        text: None,
+    }
 }
 
 #[cfg(test)]

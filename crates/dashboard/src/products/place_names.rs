@@ -134,11 +134,17 @@ fn region_names(source: &Source, cat: &Arc<Catalogue>) -> Result<Arc<RegionNames
             let mut provinces = BTreeMap::new();
             for region in regions.regions.values() {
                 for &province in &region.provinces {
-                    let name = cat
-                        .localisation
-                        .localise(region.name_key.as_bytes())
-                        .map_err(|error| error.to_string())
-                        .and_then(|name| catalogue::plain_text(&name));
+                    let name = if !cat.has_presentation_key(&region.name_key) {
+                        Err(format!(
+                            "localisation {} is missing; region title is unavailable",
+                            region.name_key
+                        ))
+                    } else {
+                        cat.localisation
+                            .localise(region.name_key.as_bytes())
+                            .map_err(|error| error.to_string())
+                            .and_then(|name| catalogue::plain_text(&name))
+                    };
                     if provinces.insert(province, name).is_some() {
                         provinces.insert(
                             province,
@@ -454,6 +460,7 @@ fn read_names(
 impl Product for PlaceNames {
     const KEY: &'static str = "place-names";
     const CONTENT_DEPENDENT: bool = true;
+    const INTERACTIVE: bool = true;
     type Params = PlaceNamesParams;
     type Reply = PlaceNamesReply;
 

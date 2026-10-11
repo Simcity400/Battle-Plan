@@ -37,7 +37,7 @@ fn equipment_part(
         match archetype_of(units, token) {
             Ok((key, _, _)) if !key.starts_with(UNRESOLVED_MARK) => {
                 return AirForcePart {
-                    name: Some(localise(&key).unwrap_or_else(|| key.clone())),
+                    name: localise(&key),
                     key,
                     unresolved: false,
                 };
@@ -58,11 +58,7 @@ fn equipment_part(
         } else {
             format!("{UNRESOLVED_MARK}variant/{variant}/{token}")
         },
-        name: Some(if token.is_empty() {
-            format!("Variant {variant}")
-        } else {
-            format!("{token} (Variant {variant})")
-        }),
+        name: Some(format!("Variant {variant}")),
         unresolved: true,
     }
 }
@@ -87,7 +83,10 @@ fn wing_part(keys: &[String], parts: &BTreeMap<String, AirForcePart>) -> AirForc
             "Mixed types: {}",
             resolved
                 .values()
-                .map(|part| part.name.as_deref().unwrap_or(&part.key))
+                .map(|part| part
+                    .name
+                    .as_deref()
+                    .unwrap_or("Equipment type name unavailable"))
                 .collect::<Vec<_>>()
                 .join(" / ")
         )),

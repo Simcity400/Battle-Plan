@@ -4,7 +4,7 @@ import type { Sort } from '../../charts/table/logic';
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
 import type { OptionValue } from '../../dashboard/options';
-import { readNote, readRunAt } from '../../dashboard/reads.ts';
+import { readRunAt } from '../../dashboard/reads.ts';
 import { countryIdentityKey } from '../../dashboard/countryIdentity.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { int, object } from '../../dashboard/validation.ts';
@@ -126,8 +126,7 @@ export function scoreboardTooltip(row: ScoreboardRow, columns: readonly Scoreboa
       const cell = row.cells.get(column.key);
       const value = formatCell(column, cell?.amount ?? null, cell?.atLeast);
       const note = !column.available ? column.reason ?? 'Not available yet'
-        : cell?.amount === null || !cell ? cell?.readHour == null ? 'Not recorded at this hour' : 'Not known from this recording at this hour'
-          : readNote(cell.readHour, row.hour, `${column.label} follows its recorded read cadence.`);
+        : cell?.amount === null || !cell ? cell?.readHour == null ? 'Not recorded at this hour' : 'Not known from this recording at this hour' : undefined;
       return [{ label: column.label, value }, ...(note ? [{ label: note, tone: 'muted' as const }] : []),
         ...(cell?.amount != null && cell.atLeast ? [{ label: 'Recorded subtotal (†): sorting uses this recorded amount. Missing history may omit positive losses or negative corrections.', tone: 'muted' as const }] : []),
         ...(column.note ? [{ label: column.note, tone: 'muted' as const }] : [])];

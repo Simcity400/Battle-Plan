@@ -9,6 +9,7 @@
 **Notable behaviour:**
 
 - Hourly counters retain manpower and exact signed fixed5 equipment/variant losses separately. Post-flush results supply final losses and native winner masks; earlier losses say **so far**. Older absent fields stay unknown. Only manpower ranks casualties; unavailable totals fall back to peak size.
+- Replies send each equipment label and window warning reason once, by index. Within a reply, a side's read lists every variant on its first read or when its labels or order change, else only the changed amounts. The validator rebuilds each full read (equipment total, values and exact raw amounts) and dated warning before rendering.
 - Counts include distinct reserve divisions at `readHour`; peak is the largest simultaneous roster, a minimum with incomplete bounds. Duration uses observed span/native rounds. Terminal-only rows retain results but have no known roster/peak; the manifest accepts a complete census or covered result.
 - Locations try primary name, state, then **Unnamed province**, including empty primary names. State-less provinces never use region names; IDs appear only in tooltips.
 - Adjacent complete absence bounds episodes. Gaps split them and end known losses; results cannot join across gaps. Unread endings say **Ending not recorded**; latest-present battles stay ongoing. Disappearance proves neither winner nor final losses.

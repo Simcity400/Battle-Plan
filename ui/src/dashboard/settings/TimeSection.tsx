@@ -1,4 +1,5 @@
 import { Segmented } from '../../components/Segmented';
+import { SettingLabel } from './SettingLabel';
 import DateTimePicker from '../../components/DateTimePicker';
 import { formatDateTime } from '../calendar';
 import { pinTime } from '../model';
@@ -36,9 +37,8 @@ export function TimeSection({ widget, effective, reference, runtime, modes, onCh
   return <>
     {offered.length > 1 && <Segmented label="Time" value={time.mode} onChange={choose}
       options={offered.map(mode => ({ value: mode, ...MODES[mode] }))} />}
-    {time.mode === 'pin' && <div className="setting-row"><span>{pinned && reference
-      ? <>Holding {formatDateTime(reference.branch.firstHour + pinned.lastOffset)}</> : 'The pinned moment is not in this campaign'}
-      <small>Playback moves on without this widget</small></span>
+    {time.mode === 'pin' && <div className="setting-row"><SettingLabel label={pinned && reference
+      ? <>Holding {formatDateTime(reference.branch.firstHour + pinned.lastOffset)}</> : 'The pinned moment is not in this campaign'} hint="Playback moves on without this widget" />
       <button type="button" className="button small" disabled={!reference} onClick={() => choose('pin')}
         data-tooltip={reference ? undefined : 'Load this campaign to pin a new moment'}>Pin to now</button></div>}
     {time.mode === 'range' && reference && <RangeFields time={time} reference={reference} onChange={onChange} />}

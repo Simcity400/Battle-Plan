@@ -4,7 +4,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use installed_content::{
@@ -13,15 +13,15 @@ use installed_content::{
 };
 use replay::{
     Hour,
-    frame::{DecodedFrame, TableView},
+    frame::{DecodedFrame, TableView, ViewIdentity},
     rows::{
         ArmyOrderPlanRow, ArmyOrderRow, CharacterRow, CountryAppearanceRow, CountryCounterInputRow,
-        InvasionPreparationRow, ProvinceRow, ScriptVariablesRow, StateRow, TableSchema,
-        UnitLeaderRow, tables,
+        CountryLinkRow, CountryRow, InvasionPreparationRow, ProvinceRow, ScriptVariablesRow,
+        StateRow, TableSchema, UnitLeaderRow, tables,
     },
 };
 
-use super::{Eval, Scope, fold_token, ongoing, refused, variables::Store};
+use super::{Eval, Scope, ongoing, refused, variables::Store};
 use crate::{
     character_scope,
     scope::RecordedScopes,
@@ -29,6 +29,13 @@ use crate::{
 };
 
 type Index<T> = OnceLock<Result<T, String>>;
+/// Lexer tokens by their literal under the lexer's fold; `Err` for a fold two
+/// recorded literals share.
+type Folds = BTreeMap<Vec<u8>, Result<u32, String>>;
+/// The latest folds by the LexicalTokens allocation they were read from. The
+/// table is static, so every hour's World shares one until it is read again;
+/// an identity matches no other allocation.
+static FOLDS: Mutex<Vec<(ViewIdentity, Arc<Folds>)>> = Mutex::new(Vec::new());
 /// An index of rows joined through `CountryLinks`, and why some row's link
 /// did not resolve: an answer the index does not hold is then unknown, since
 /// the unresolved row may be the one asked about.
@@ -78,12 +85,99 @@ struct PoliticalParties<'a> {
     members: BTreeSet<(u32, u32)>,
 }
 
+/// The core tables' rows: CountryLinks, Countries, Provinces and States.
+type CoreRows<'f> = (
+    &'f [CountryLinkRow],
+    &'f [CountryRow],
+    &'f [ProvinceRow],
+    &'f [StateRow],
+);
+
+/// The core tables' rows and why each, in their order, is not complete this
+/// hour: a truncated table's rows are exact; a row it lacks is unknown.
+fn core_tables(frame: &DecodedFrame) -> (CoreRows<'_>, Vec<(&'static str, String)>) {
+    fn rows<'f, T: TableSchema>(
+        frame: &'f DecodedFrame,
+        name: &'static str,
+        gaps: &mut Vec<(&'static str, String)>,
+    ) -> &'f [T::Row] {
+        match &*frame.tables[T::ID.index()] {
+            TableView::Complete(rows) => rows.rows::<T>().unwrap_or_default(),
+            TableView::Truncated { rows, missing } => {
+                gaps.push((
+                    name,
+                    format!("{name} is truncated ({missing} rows missing)"),
+                ));
+                rows.rows::<T>().unwrap_or_default()
+            }
+            TableView::Unavailable { reason } => {
+                gaps.push((name, format!("{name} is unavailable: {reason}")));
+                &[]
+            }
+        }
+    }
+    let mut gaps = Vec::new();
+    let core = (
+        rows::<tables::CountryLinks>(frame, "CountryLinks", &mut gaps),
+        rows::<tables::Countries>(frame, "Countries", &mut gaps),
+        rows::<tables::Provinces>(frame, "Provinces", &mut gaps),
+        rows::<tables::States>(frame, "States", &mut gaps),
+    );
+    (core, gaps)
+}
+
+/// [`World::core_gap`] of the hour, without building its indexes.
+pub(crate) fn core_gap(frame: &DecodedFrame) -> Option<String> {
+    core_tables(frame).1.into_iter().next().map(|(_, why)| why)
+}
+
 /// The localisation, content stack and language division template names are read with.
 type TemplateNames<'a> = (
     &'a OnceLock<Result<installed_content::localisation::Localisation, String>>,
     &'a installed_content::ResolvedLayers,
     &'a str,
 );
+
+/// Borrowed preparation inputs keep geography lazy without owning scope lifetimes.
+#[derive(Clone, Copy)]
+pub(crate) struct GeographyInputs<'a> {
+    pub neighbors: &'a OnceLock<Result<BTreeMap<u32, Vec<u32>>, String>>,
+    pub terrain: &'a OnceLock<Option<installed_content::movement::MovementMap>>,
+    pub layers: &'a installed_content::ResolvedLayers,
+    pub state_provinces: &'a BTreeMap<u32, Vec<u32>>,
+    pub state_error: Option<&'a str>,
+    pub defines: &'a installed_content::defines::Defines,
+    pub terrain_definitions: Option<&'a installed_content::terrain::TerrainDefinitions>,
+}
+
+impl<'a> GeographyInputs<'a> {
+    pub(crate) fn neighbors(self) -> Result<&'a BTreeMap<u32, Vec<u32>>, &'a str> {
+        self.neighbors
+            .get_or_init(|| match self.state_error {
+                Some(why) => Err(why.to_owned()),
+                None => installed_content::province_graph::ProvinceGraph::read(self.layers)
+                    .and_then(|(graph, _)| graph.neighbor_states(self.state_provinces))
+                    .map_err(|error| error.to_string()),
+            })
+            .as_ref()
+            .map_err(String::as_str)
+    }
+
+    pub(crate) fn terrain(self) -> Option<&'a installed_content::movement::MovementMap> {
+        self.terrain
+            .get_or_init(|| {
+                self.terrain_definitions.and_then(|terrain| {
+                    installed_content::movement::MovementMap::read_with_terrain(
+                        self.layers,
+                        self.defines,
+                        terrain,
+                    )
+                    .ok()
+                })
+            })
+            .as_ref()
+    }
+}
 
 /// One hour's trigger inputs, each built on first use.
 pub struct World<'a> {
@@ -110,10 +204,11 @@ pub struct World<'a> {
     pub(super) ideologies: Result<&'a installed_content::ideologies::Ideologies, &'a str>,
     pub(super) impassable: &'a BTreeSet<u32>,
     /// Content: each state's neighbour states, or why they are unknown.
-    pub(crate) neighbor_states: Result<&'a BTreeMap<u32, Vec<u32>>, &'a str>,
+    neighbor_states: Result<&'a BTreeMap<u32, Vec<u32>>, &'a str>,
     /// Content: each province's static terrain flags; `None` when the
     /// movement map could not be read.
-    pub(super) terrain: Option<&'a installed_content::movement::MovementMap>,
+    terrain: Option<&'a installed_content::movement::MovementMap>,
+    lazy_geography: Option<GeographyInputs<'a>>,
     pub(super) dlcs: &'a BTreeSet<String>,
     /// Content: the scripted triggers and the count trigger names.
     pub(super) triggers: Result<&'a TriggerNames, &'a str>,
@@ -126,10 +221,8 @@ pub struct World<'a> {
     aliases: &'a Arc<TagAliases>,
     /// The hour's scope facts ([`RecordedScopes`]).
     recorded: OnceLock<RecordedScopes>,
-    /// Lexer tokens by their literal under the lexer's fold
-    /// (the lexer ASCII fold); `Err` for a fold two recorded
-    /// literals share.
-    names: Index<BTreeMap<Vec<u8>, Result<u32, String>>>,
+    /// The lexer folds ([`FOLDS`]).
+    names: Index<Arc<Folds>>,
     literals: Index<BTreeMap<u32, &'a [u8]>>,
     factions: Index<Linked<BTreeMap<u32, u64>>>,
     wars: Index<Linked<BTreeSet<(u32, u32)>>>,
@@ -139,7 +232,6 @@ pub struct World<'a> {
     projects: Index<Linked<BTreeSet<(u32, u32)>>>,
     political_parties: Index<PoliticalParties<'a>>,
     politics_ruling: Index<Linked<BTreeMap<u32, Option<u32>>>>,
-    flags: Index<BTreeMap<(u8, u32, u32), i16>>,
     /// With each modifier name a row of an unlinked country holds, and
     /// that country.
     country_modifiers: Index<(Modifiers<'a>, BTreeMap<&'a [u8], u32>)>,
@@ -315,15 +407,27 @@ pub struct RecordedTemplate {
 }
 
 /// The recorded template of a character, `None` without one.
-pub(super) fn recorded_template(
-    character: &CharacterRow,
-) -> Result<Option<RecordedTemplate>, String> {
-    Ok((character.template_present != 0).then(|| RecordedTemplate {
+fn recorded_template(character: &CharacterRow) -> Option<RecordedTemplate> {
+    (character.template_present != 0).then(|| RecordedTemplate {
         tag: character.template_tag,
         file: character.template_file.clone(),
         line: character.template_line,
         generated: character.template_generated != 0,
-    }))
+    })
+}
+
+/// What decides a unit leader's visibility before its owner's scope is
+/// entered ([`super::Evaluator::leader_visible`]), read from its visibility
+/// inputs, its character's recorded template and the content alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LeaderVisibility {
+    /// Decided without the owner's scope.
+    Decided(Eval),
+    /// A role without `visible`: its empty conjunction holds in the owner's scope.
+    Unconditioned,
+    /// The role of the content template at this index of [`LeaderRoles`],
+    /// whose `visible` conjunction decides in the owner's scope.
+    Conditioned(usize),
 }
 
 /// The null state scope: a child event scope whose
@@ -401,12 +505,29 @@ impl<'a> World<'a> {
     /// province next to sea or an authored-coastal lake, an authored-coastal
     /// lake. A province the map does not know is not coastal.
     pub fn coastal(&self, province: u32) -> Result<bool, String> {
-        let terrain = self.terrain.ok_or(
+        let terrain = self.terrain().ok_or(
             "the content movement map is unavailable, so a province's coastal flag is unknown",
         )?;
         Ok(terrain
             .terrain(province)
             .is_some_and(|terrain| terrain.flags & 8 != 0))
+    }
+
+    /// Shared content readers run only when a geographic operand is reached.
+    /// Worlds constructed from static content facts retain those supplied facts.
+    pub(crate) fn with_geography(mut self, geography: GeographyInputs<'a>) -> Self {
+        self.lazy_geography = Some(geography);
+        self
+    }
+
+    pub(crate) fn neighbor_states(&self) -> Result<&'a BTreeMap<u32, Vec<u32>>, &'a str> {
+        self.lazy_geography
+            .map_or_else(|| self.neighbor_states, GeographyInputs::neighbors)
+    }
+
+    fn terrain(&self) -> Option<&'a installed_content::movement::MovementMap> {
+        self.lazy_geography
+            .map_or_else(|| self.terrain, GeographyInputs::terrain)
     }
 
     /// The hour's inputs, strictly: a raid or scripted text needs the
@@ -423,46 +544,15 @@ impl<'a> World<'a> {
     /// that read the country links, countries, provinces or states are then
     /// unknown, the others still decided.
     pub fn read(frame: &'a DecodedFrame, content: ContentFacts<'a>) -> Self {
-        // A truncated table's rows are exact; a row it lacks is unknown.
-        fn rows<'f, T: TableSchema>(
-            frame: &'f DecodedFrame,
-            name: &'static str,
-            gaps: &mut Vec<(&'static str, String)>,
-        ) -> &'f [T::Row] {
-            match &*frame.tables[T::ID.index()] {
-                TableView::Complete(rows) => rows.rows::<T>().unwrap_or_default(),
-                TableView::Truncated { rows, missing } => {
-                    gaps.push((
-                        name,
-                        format!("{name} is truncated ({missing} rows missing)"),
-                    ));
-                    rows.rows::<T>().unwrap_or_default()
-                }
-                TableView::Unavailable { reason } => {
-                    gaps.push((name, format!("{name} is unavailable: {reason}")));
-                    &[]
-                }
-            }
-        }
-        let mut core_gaps = Vec::new();
-        let links = rows::<tables::CountryLinks>(frame, "CountryLinks", &mut core_gaps)
-            .iter()
-            .map(|row| (row.id, row.canonical_slot))
-            .collect();
-        let countries = rows::<tables::Countries>(frame, "Countries", &mut core_gaps);
-        let provinces = rows::<tables::Provinces>(frame, "Provinces", &mut core_gaps)
-            .iter()
-            .map(|row| (row.id, row))
-            .collect();
-        let states = rows::<tables::States>(frame, "States", &mut core_gaps)
-            .iter()
-            .map(|row| (row.id, row))
-            .collect();
+        let ((links, countries, provinces, states), core_gaps) = core_tables(frame);
         Self {
             frame,
             hour: frame.hour,
             core_gaps,
-            links,
+            links: links
+                .iter()
+                .map(|row| (row.id, row.canonical_slot))
+                .collect(),
             tags: countries
                 .iter()
                 .map(|row| (row.canonical_slot, row.tag.as_slice()))
@@ -471,8 +561,8 @@ impl<'a> World<'a> {
                 .iter()
                 .map(|row| (row.canonical_slot, row.id))
                 .collect(),
-            provinces,
-            states,
+            provinces: provinces.iter().map(|row| (row.id, row)).collect(),
+            states: states.iter().map(|row| (row.id, row)).collect(),
             state_provinces: content.state_provinces,
             state_content: content.state_content,
             continents: content.continents,
@@ -480,6 +570,7 @@ impl<'a> World<'a> {
             impassable: content.impassable,
             neighbor_states: content.neighbor_states,
             terrain: content.terrain,
+            lazy_geography: None,
             dlcs: content.dlcs,
             triggers: content.triggers,
             character_traits: content.character_traits,
@@ -496,7 +587,6 @@ impl<'a> World<'a> {
             projects: OnceLock::new(),
             political_parties: OnceLock::new(),
             politics_ruling: OnceLock::new(),
-            flags: OnceLock::new(),
             country_modifiers: OnceLock::new(),
             state_modifiers: OnceLock::new(),
             state_members: OnceLock::new(),
@@ -644,9 +734,19 @@ impl<'a> World<'a> {
         }
     }
 
-    pub(super) fn names(&self) -> Result<&BTreeMap<Vec<u8>, Result<u32, String>>, String> {
+    pub(super) fn names(&self) -> Result<&Folds, String> {
         get(&self.names, || {
-            let mut out: BTreeMap<Vec<u8>, Result<u32, String>> = BTreeMap::new();
+            let view = &self.frame.tables[replay::rows::TableId::LexicalTokens.index()];
+            let cached = |cache: &[(ViewIdentity, Arc<Folds>)]| {
+                cache
+                    .iter()
+                    .find(|(identity, _)| identity.is(view))
+                    .map(|(_, folds)| Arc::clone(folds))
+            };
+            if let Some(folds) = cached(&FOLDS.lock().unwrap_or_else(|e| e.into_inner())) {
+                return Ok(folds);
+            }
+            let mut out = Folds::new();
             for row in table::<tables::LexicalTokens>(self.frame)? {
                 let folded = row.literal.to_ascii_lowercase();
                 match out.get_mut(&folded) {
@@ -662,8 +762,15 @@ impl<'a> World<'a> {
                     }
                 }
             }
+            let out = Arc::new(out);
+            let mut cache = FOLDS.lock().unwrap_or_else(|e| e.into_inner());
+            cache.retain(|(identity, _)| !identity.is(view));
+            cache.insert(0, (view.identity(), Arc::clone(&out)));
+            // One per table allocation a concurrent scan can be reading.
+            cache.truncate(8);
             Ok(out)
         })
+        .map(|folds| &**folds)
     }
 
     /// Why a raw country reference of `table` does not resolve.
@@ -966,13 +1073,14 @@ impl<'a> World<'a> {
         let Some(token) = self.token_of(name)? else {
             return Ok(None);
         };
-        let flags = get(&self.flags, || {
-            Ok(table::<tables::ScriptFlags>(self.frame)?
-                .iter()
-                .map(|row| ((row.scope_kind, row.scope_id, row.token), row.value))
-                .collect())
-        })?;
-        Ok(flags.get(&(kind, id, token)).copied())
+        // Rows hold unique keys ascending by (scope kind, scope id, token).
+        let flags = table::<tables::ScriptFlags>(self.frame)?;
+        Ok(flags
+            .binary_search_by_key(&(kind, id, token), |row| {
+                (row.scope_kind, row.scope_id, row.token)
+            })
+            .ok()
+            .map(|at| flags[at].value))
     }
 
     /// Select the country's dynamic-modifier container.
@@ -1538,13 +1646,87 @@ impl<'a> World<'a> {
         Ok(leaders.get(&reference).copied())
     }
 
-    /// The unit leader role of a recorded template: the one content template
-    /// of its tag (folded as the lexer folds) that its file and line name.
-    pub(super) fn template_role(
+    /// A leader's [`LeaderVisibility`], its character and tag spelling read
+    /// from the hour's indexes.
+    pub(super) fn leader_visibility(&self, row: &UnitLeaderRow) -> LeaderVisibility {
+        self.leader_visibility_from(row, |id| self.character(id), |token| self.token(token))
+    }
+
+    /// [`Self::leader_visibility`] with the hour's Characters and LexicalTokens
+    /// rows binary searched instead of indexed: the decoder validates a
+    /// table's keys unique and ascending, so both find the same row.
+    pub(crate) fn decoded_leader_visibility(&self, row: &UnitLeaderRow) -> LeaderVisibility {
+        self.leader_visibility_from(
+            row,
+            |id| {
+                let rows = table::<tables::Characters>(self.frame)?;
+                Ok(rows
+                    .binary_search_by_key(&id, |row| row.id)
+                    .ok()
+                    .map(|at| &rows[at]))
+            },
+            |token| {
+                let rows = table::<tables::LexicalTokens>(self.frame)?;
+                Ok(rows
+                    .binary_search_by_key(&token, |row| row.token)
+                    .ok()
+                    .map(|at| rows[at].literal.as_slice()))
+            },
+        )
+    }
+
+    /// [`Self::leader_visibility`], `character` reading a Characters row by
+    /// id and `literal` a LexicalTokens literal by token.
+    fn leader_visibility_from(
+        &self,
+        row: &UnitLeaderRow,
+        character: impl FnOnce(u32) -> Result<Option<&'a CharacterRow>, String>,
+        literal: impl FnOnce(u32) -> Result<Option<&'a [u8]>, String>,
+    ) -> LeaderVisibility {
+        if row.visibility_choice == 0 && row.template_visibility == 0 {
+            return LeaderVisibility::Decided(Eval::True);
+        }
+        let template = character(row.character_id).and_then(|character| match character {
+            Some(character) => Ok(recorded_template(character)),
+            None => Err(format!(
+                "unit leader {}'s character {} is not recorded",
+                row.id, row.character_id
+            )),
+        });
+        self.template_visibility(row, template, literal)
+    }
+
+    /// The [`LeaderVisibility`] of a leader whose character's recorded
+    /// template is `template`, `literal` spelling its tag token.
+    pub(super) fn template_visibility(
+        &self,
+        row: &UnitLeaderRow,
+        template: Result<Option<RecordedTemplate>, String>,
+        literal: impl FnOnce(u32) -> Result<Option<&'a [u8]>, String>,
+    ) -> LeaderVisibility {
+        match template.and_then(|template| self.template_role(row, template, literal)) {
+            Ok(Some((_, visible))) if visible.is_empty() => LeaderVisibility::Unconditioned,
+            Ok(Some((index, _))) => LeaderVisibility::Conditioned(index),
+            // A stored role choice needs a template role, so a template without one did not
+            // build this leader.
+            Ok(None) if row.visibility_choice == 0 => LeaderVisibility::Decided(Eval::True),
+            Ok(None) => LeaderVisibility::Decided(Eval::unknown(format!(
+                "unit leader {} has its own role choice, but its character's template has no unit leader role",
+                row.id
+            ))),
+            Err(reason) => LeaderVisibility::Decided(Eval::unknown(reason)),
+        }
+    }
+
+    /// The unit leader role of a recorded template, with its index in
+    /// [`LeaderRoles`]: the one content template of its tag (folded as the
+    /// lexer folds) that its file and line name.
+    fn template_role(
         &self,
         row: &UnitLeaderRow,
         template: Option<RecordedTemplate>,
-    ) -> Result<Option<&'a installed_content::triggers::Triggers>, String> {
+        literal: impl FnOnce(u32) -> Result<Option<&'a [u8]>, String>,
+    ) -> Result<Option<(usize, &'a installed_content::triggers::Triggers)>, String> {
         let template = template.ok_or_else(|| {
             format!(
                 "unit leader {} has a visibility input, but its character has no template",
@@ -1558,8 +1740,7 @@ impl<'a> World<'a> {
             ));
         }
         let roles = self.leader_roles.map_err(str::to_owned)?;
-        let tag = self
-            .token(template.tag)?
+        let tag = literal(template.tag)?
             .and_then(|literal| std::str::from_utf8(literal).ok())
             .ok_or_else(|| {
                 format!(
@@ -1567,15 +1748,14 @@ impl<'a> World<'a> {
                     template.tag
                 )
             })?;
-        let place = u32::try_from(template.line)
+        // The lexer fold (`fold_token`), compared without allocating.
+        let mut candidates = u32::try_from(template.line)
             .ok()
-            .and_then(|line| roles.by_place.get(&(template.file.clone(), line)));
-        let candidates: Vec<&LeaderTemplate> = place
+            .and_then(|line| roles.by_place.get(&(template.file.clone(), line)))
             .into_iter()
             .flatten()
-            .map(|&index| &roles.templates[index])
-            .filter(|content| fold_token(&content.tag) == fold_token(tag))
-            .collect();
+            .copied()
+            .filter(|&index| roles.templates[index].tag.eq_ignore_ascii_case(tag));
         let where_ = || {
             format!(
                 "{tag} at {}:{}",
@@ -1583,17 +1763,26 @@ impl<'a> World<'a> {
                 template.line
             )
         };
-        match candidates.as_slice() {
-            [content] => {
-                content.role.as_ref().map(Option::as_ref).map_err(|reason| {
-                    format!("character template {} is refused: {reason}", where_())
-                })
-            }
-            [] => Err(format!("no content character template is {}", where_())),
-            _ => Err(format!(
+        match (candidates.next(), candidates.next()) {
+            (Some(index), None) => roles.templates[index]
+                .role
+                .as_ref()
+                .map(|role| role.as_ref().map(|visible| (index, visible)))
+                .map_err(|reason| format!("character template {} is refused: {reason}", where_())),
+            (None, _) => Err(format!("no content character template is {}", where_())),
+            (Some(_), Some(_)) => Err(format!(
                 "several content character templates are {}",
                 where_()
             )),
+        }
+    }
+
+    /// The `visible` conjunction of a [`LeaderVisibility::Conditioned`] read
+    /// with this world's content.
+    pub(super) fn role_visible(&self, index: usize) -> &'a installed_content::triggers::Triggers {
+        match self.leader_roles.map(|roles| &roles.templates[index].role) {
+            Ok(Ok(Some(visible))) => visible,
+            _ => unreachable!("leader role {index} is no content role"),
         }
     }
 

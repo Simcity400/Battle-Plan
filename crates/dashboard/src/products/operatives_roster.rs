@@ -569,469 +569,489 @@ pub(super) fn scan(
     let mut operations: Vec<OperativeRosterObservation> = Vec::new();
     let mut agency_absent: Vec<super::country_groups::HourSpan> = Vec::new();
     let mut last_hour: Option<i32> = None;
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            for history in &mut histories {
-                history.interrupt();
-            }
-            operation_read_hour = None;
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Operatives roster request cancelled",
-                ));
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                for history in &mut histories {
-                    history.interrupt();
-                }
-                operation_read_hour = None;
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            if last_hour.is_some_and(|last| last.checked_add(1) != Some(frame.hour)) {
-                operation_read_hour = None;
-            }
-            last_hour = Some(frame.hour);
-            // collector::extended::intel times the operation/assignment walk
-            // under Operations itself. A held table or slot peer is no read.
-            let operations_read = decoded.complete::<tables::Operations>().is_ok()
-                && operative_rows::operations_read(decoded);
-            if decoded.complete::<tables::Operations>().is_err() {
-                operation_read_hour = None;
-            } else if operations_read {
-                operation_read_hour = Some(frame.hour);
-            }
-            if let Some(read_hour) = operation_read_hour {
-                match operations.last_mut() {
-                    Some(observation)
-                        if observation.last_hour.checked_add(1) == Some(frame.hour)
-                            && observation.read_hour == read_hour =>
-                    {
-                        observation.last_hour = frame.hour
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    for history in &mut histories {
+                        history.interrupt();
                     }
-                    _ => {
-                        let observation = OperativeRosterObservation {
-                            first_hour: frame.hour,
-                            last_hour: frame.hour,
-                            read_hour,
-                        };
-                        budget.add(&observation)?;
-                        operations.push(observation);
-                    }
-                }
-            }
-            // Feature availability is independent of whether the roster table
-            // exists: an absent agency must be reported even in old recordings.
-            let feature = operative_rows::agency_feature(decoded);
-            if feature != Some(true) {
-                for history in &mut histories {
-                    history.interrupt();
-                    history.track.step(None, frame.hour);
-                }
-                if feature == Some(false) {
-                    match agency_absent.last_mut() {
-                        Some(span) if span.last_hour.checked_add(1) == Some(frame.hour) => {
-                            span.last_hour = frame.hour
-                        }
-                        _ => {
-                            let span = super::country_groups::HourSpan {
-                                first_hour: frame.hour,
-                                last_hour: frame.hour,
-                            };
-                            budget.add(&span)?;
-                            agency_absent.push(span);
-                        }
-                    }
-                    refused.note(
-                        "The intelligence agency feature is absent",
-                        "SimulationFeatures DLC mask bit 5",
-                    );
-                } else {
-                    refused.note(
-                        "The intelligence agency feature was not recorded",
-                        "SimulationFeatures",
-                    );
-                }
-                continue;
-            }
-            let (Ok(countries), Ok(links), Ok(rows)) = (
-                decoded.complete::<tables::Countries>(),
-                decoded.complete::<tables::CountryLinks>(),
-                decoded.complete::<tables::OperativeMemberships>(),
-            ) else {
-                for history in &mut histories {
-                    history.interrupt();
-                    history.track.step(None, frame.hour);
-                }
-                continue;
-            };
-            let read = operative_rows::membership_read(decoded);
-            // Build the full identity catalogue only for actual roster reads.
-            let slots = if read {
-                let (slots, unresolved) = operative_rows::country_rows_partial(countries, links);
-                for id in unresolved {
-                    refused.note("country identity is unresolved", format!("country {id}"));
-                }
-                slots
-            } else {
-                HashMap::new()
-            };
-            // Country tags are native identities. Reuse a validated holder by
-            // binary lookup; rebuild the catalogue at reads or identity changes.
-            let identity_changed = histories.iter().any(|history| {
-                history.country.is_some_and(|id| {
-                    operative_rows::country_at(id, countries, links)
-                        .is_none_or(|row| row.tag != history.reply.tag.as_bytes())
-                })
-            });
-            let tagged = (read || identity_changed).then(|| tagged_countries(countries, links));
-            let mut renamed = BTreeMap::new();
-            if !read && identity_changed {
-                let (current_slots, _) = operative_rows::country_rows_partial(countries, links);
-                let mut aliases = BTreeMap::new();
-                for row in countries {
-                    let current = current_slots
-                        .get(&row.canonical_slot)
-                        .filter(|found| found.id == row.id)
-                        .map(|_| CountryIdentity {
-                            slot: row.canonical_slot,
-                            id: row.id,
-                        });
-                    aliases
-                        .entry(row.tag.as_slice())
-                        .and_modify(|found| *found = None)
-                        .or_insert(current);
-                }
-                for history in &mut histories {
-                    let Some(country) = history.country else {
-                        continue;
-                    };
-                    let Some(row) = operative_rows::country_at(country, countries, links) else {
-                        continue;
-                    };
-                    if !history.open
-                        || history.reply.observed.last().is_none_or(|observation| {
-                            observation.last_hour.checked_add(1) != Some(frame.hour)
-                        })
-                        || row.tag == history.reply.tag.as_bytes()
-                        || aliases.get(row.tag.as_slice()).copied().flatten() != Some(country)
-                    {
-                        continue;
-                    }
-                    let joined: Vec<_> = history
-                        .active
-                        .iter()
-                        .map(|(&id, &index)| (id, history.reply.operatives[index].joined_hour))
-                        .collect();
-                    // Move the actual held census, not the carried table's rows.
-                    // Duplicate sources cannot choose a roster for this holder.
-                    renamed
-                        .entry(country)
-                        .and_modify(|carry| *carry = None)
-                        .or_insert(Some((
-                            std::mem::take(&mut history.held),
-                            joined,
-                            history.read_hour,
-                        )));
-                }
-            }
-            let characters = if read {
-                character_links(
-                    decoded
-                        .complete::<tables::CharacterOperatives>()
-                        .unwrap_or(&[]),
-                    &mut refused,
-                )
-            } else {
-                HashMap::new()
-            };
-            // Group once; never country x operative scanning, nor a player/AI test.
-            let mut by_slot: HashMap<u32, Vec<&OperativeMembershipRow>> = HashMap::new();
-            let mut roster_links_known = true;
-            if read {
-                for row in rows {
-                    if let Some(slot) = link_slot(links, row.roster_country) {
-                        by_slot.entry(slot).or_default().push(row);
-                    } else {
-                        roster_links_known = false;
-                        refused.note(
-                            "unresolved roster country",
-                            format!("operative {} / roster {}", row.id, row.roster_country),
-                        );
-                    }
-                }
-            }
-            for history in &mut histories {
-                let current = (if let Some(tagged) = &tagged {
-                    tagged
-                        .get(history.reply.tag.as_bytes())
-                        .and_then(|country| country.found())
-                        .map(|(country, slot)| CountryIdentity {
-                            slot,
-                            id: country.id,
-                        })
-                } else {
-                    history.country
-                })
-                .filter(|country| {
-                    selected_identities
-                        .is_none_or(|selected| selected.contains(&(country.slot, country.id)))
-                });
-                let continues = history
-                    .track
-                    .step(current.map(|c| (c.slot, c.id)), frame.hour);
-                if !continues {
-                    history.interrupt();
-                }
-                if current != history.country {
-                    // A new holder of the tag is not evidence that the old holder's
-                    // operatives died or retired. End identity, without inventing exits.
-                    history.active.clear();
-                    history.latest.clear();
-                    history.country = current;
-                }
-                let Some(current) = current else {
+                    operation_read_hour = None;
                     continue;
                 };
-                if let Some(Some((held, joined, read_hour))) = renamed.remove(&current) {
-                    history.active.clear();
-                    history.latest.clear();
-                    for (id, joined_hour) in joined {
-                        let entry = history.entry(id, joined_hour);
-                        budget.add(&entry)?;
-                        history.active.insert(id, history.reply.operatives.len());
-                        history.latest.insert(id, history.reply.operatives.len());
-                        history.reply.operatives.push(entry);
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "Operatives roster request cancelled",
+                        ));
                     }
-                    history.held = held;
-                    history.read_hour = read_hour;
-                    history.open = true;
-                }
-                if read {
-                    let mut values = BTreeMap::new();
-                    let mut departed = Vec::new();
-                    let mut unique = BTreeMap::new();
-                    // An unassigned row could belong to any requested country;
-                    // it cannot turn that country's unknown roster into empty.
-                    let mut complete = roster_links_known;
-                    for row in by_slot.get(&current.slot).into_iter().flatten() {
-                        if let Err(reason) = operative_rows::supported_kind_assignment(
-                            row.roster_kind,
-                            row.assignment,
-                        ) {
-                            refused.note(reason, format!("operative {}", row.id));
-                            complete = false;
-                            continue;
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        for history in &mut histories {
+                            history.interrupt();
                         }
-                        // Only the active agency roster establishes membership.
-                        if row.roster_kind != 0 {
-                            continue;
-                        }
-                        match operative_rows::admit(&mut unique, row, links, &slots) {
-                            Ok(true) => {}
-                            Ok(false) => continue,
-                            Err(reason) => {
-                                refused.note(reason, format!("operative {}", row.id));
-                                complete = false;
-                                continue;
+                        operation_read_hour = None;
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    if last_hour.is_some_and(|last| last.checked_add(1) != Some(frame.hour)) {
+                        operation_read_hour = None;
+                    }
+                    last_hour = Some(frame.hour);
+                    // collector::extended::intel times the operation/assignment walk
+                    // under Operations itself. A held table or slot peer is no read.
+                    let operations_read = decoded.complete::<tables::Operations>().is_ok()
+                        && operative_rows::operations_read(decoded);
+                    if decoded.complete::<tables::Operations>().is_err() {
+                        operation_read_hour = None;
+                    } else if operations_read {
+                        operation_read_hour = Some(frame.hour);
+                    }
+                    if let Some(read_hour) = operation_read_hour {
+                        match operations.last_mut() {
+                            Some(observation)
+                                if observation.last_hour.checked_add(1) == Some(frame.hour)
+                                    && observation.read_hour == read_hour =>
+                            {
+                                observation.last_hour = frame.hour
+                            }
+                            _ => {
+                                let observation = OperativeRosterObservation {
+                                    first_hour: frame.hour,
+                                    last_hour: frame.hour,
+                                    read_hour,
+                                };
+                                budget.add(&observation)?;
+                                operations.push(observation);
                             }
                         }
-                        let operation_token = row
-                            .operation
-                            .require("OperativeMemberships.operation")
-                            .ok()
-                            .copied()
-                            .flatten()
-                            .and_then(|id| operation_name(decoded, id))
-                            .filter(|_| operation_read_hour.is_some());
-                        let mut value = operative_values(
-                            content,
-                            decoded,
-                            row,
-                            characters.get(&row.id).copied().flatten(),
-                            operation_token,
-                            (&mut tables, &mut budget, &mut refused),
-                        )?;
-                        let owner = identity(row.owner_country, links, &slots);
-                        let target = row
-                            .target_country
-                            .require("OperativeMemberships.target_country")
-                            .ok()
-                            .copied()
-                            .flatten()
-                            .and_then(|raw| identity(raw, links, &slots));
-                        // Captured status resolves raw zero to the reserved slot;
-                        // it needs no Countries row.
-                        let capturer = (value.captured == Some(true))
-                            .then(|| {
-                                if row.capturer_country == 0
-                                    || link_slot(links, row.capturer_country) == Some(0)
-                                {
-                                    Some(CountryIdentity { slot: 0, id: 0 })
-                                } else {
-                                    identity(row.capturer_country, links, &slots)
+                    }
+                    // Feature availability is independent of whether the roster table
+                    // exists: an absent agency must be reported even in old recordings.
+                    let feature = operative_rows::agency_feature(decoded);
+                    if feature != Some(true) {
+                        for history in &mut histories {
+                            history.interrupt();
+                            history.track.step(None, frame.hour);
+                        }
+                        if feature == Some(false) {
+                            match agency_absent.last_mut() {
+                                Some(span) if span.last_hour.checked_add(1) == Some(frame.hour) => {
+                                    span.last_hour = frame.hour
                                 }
-                            })
-                            .flatten();
-                        for (needed, resolved, role) in [
-                            (true, owner, "owner"),
-                            (
-                                row.target_country
-                                    .require("OperativeMemberships.target_country")
-                                    .map_or(true, Option::is_some),
-                                target,
-                                "target",
-                            ),
-                            (value.captured == Some(true), capturer, "capturer"),
-                        ] {
-                            if needed && resolved.is_none() {
+                                _ => {
+                                    let span = super::country_groups::HourSpan {
+                                        first_hour: frame.hour,
+                                        last_hour: frame.hour,
+                                    };
+                                    budget.add(&span)?;
+                                    agency_absent.push(span);
+                                }
+                            }
+                            refused.note(
+                                "The intelligence agency feature is absent",
+                                "SimulationFeatures DLC mask bit 5",
+                            );
+                        } else {
+                            refused.note(
+                                "The intelligence agency feature was not recorded",
+                                "SimulationFeatures",
+                            );
+                        }
+                        continue;
+                    }
+                    let (Ok(countries), Ok(links), Ok(rows)) = (
+                        decoded.complete::<tables::Countries>(),
+                        decoded.complete::<tables::CountryLinks>(),
+                        decoded.complete::<tables::OperativeMemberships>(),
+                    ) else {
+                        for history in &mut histories {
+                            history.interrupt();
+                            history.track.step(None, frame.hour);
+                        }
+                        continue;
+                    };
+                    let read = operative_rows::membership_read(decoded);
+                    // Build the full identity catalogue only for actual roster reads.
+                    let slots = if read {
+                        let (slots, unresolved) =
+                            operative_rows::country_rows_partial(countries, links);
+                        for id in unresolved {
+                            refused.note("country identity is unresolved", format!("country {id}"));
+                        }
+                        slots
+                    } else {
+                        HashMap::new()
+                    };
+                    // Country tags are native identities. Reuse a validated holder by
+                    // binary lookup; rebuild the catalogue at reads or identity changes.
+                    let identity_changed = histories.iter().any(|history| {
+                        history.country.is_some_and(|id| {
+                            operative_rows::country_at(id, countries, links)
+                                .is_none_or(|row| row.tag != history.reply.tag.as_bytes())
+                        })
+                    });
+                    let tagged =
+                        (read || identity_changed).then(|| tagged_countries(countries, links));
+                    let mut renamed = BTreeMap::new();
+                    if !read && identity_changed {
+                        let (current_slots, _) =
+                            operative_rows::country_rows_partial(countries, links);
+                        let mut aliases = BTreeMap::new();
+                        for row in countries {
+                            let current = current_slots
+                                .get(&row.canonical_slot)
+                                .filter(|found| found.id == row.id)
+                                .map(|_| CountryIdentity {
+                                    slot: row.canonical_slot,
+                                    id: row.id,
+                                });
+                            aliases
+                                .entry(row.tag.as_slice())
+                                .and_modify(|found| *found = None)
+                                .or_insert(current);
+                        }
+                        for history in &mut histories {
+                            let Some(country) = history.country else {
+                                continue;
+                            };
+                            let Some(row) = operative_rows::country_at(country, countries, links)
+                            else {
+                                continue;
+                            };
+                            if !history.open
+                                || history.reply.observed.last().is_none_or(|observation| {
+                                    observation.last_hour.checked_add(1) != Some(frame.hour)
+                                })
+                                || row.tag == history.reply.tag.as_bytes()
+                                || aliases.get(row.tag.as_slice()).copied().flatten()
+                                    != Some(country)
+                            {
+                                continue;
+                            }
+                            let joined: Vec<_> = history
+                                .active
+                                .iter()
+                                .map(|(&id, &index)| {
+                                    (id, history.reply.operatives[index].joined_hour)
+                                })
+                                .collect();
+                            // Move the actual held census, not the carried table's rows.
+                            // Duplicate sources cannot choose a roster for this holder.
+                            renamed
+                                .entry(country)
+                                .and_modify(|carry| *carry = None)
+                                .or_insert(Some((
+                                    std::mem::take(&mut history.held),
+                                    joined,
+                                    history.read_hour,
+                                )));
+                        }
+                    }
+                    let characters = if read {
+                        character_links(
+                            decoded
+                                .complete::<tables::CharacterOperatives>()
+                                .unwrap_or(&[]),
+                            &mut refused,
+                        )
+                    } else {
+                        HashMap::new()
+                    };
+                    // Group once; never country x operative scanning, nor a player/AI test.
+                    let mut by_slot: HashMap<u32, Vec<&OperativeMembershipRow>> = HashMap::new();
+                    let mut roster_links_known = true;
+                    if read {
+                        for row in rows {
+                            if let Some(slot) = link_slot(links, row.roster_country) {
+                                by_slot.entry(slot).or_default().push(row);
+                            } else {
+                                roster_links_known = false;
                                 refused.note(
-                                    format!("operative {role} not recorded or unresolved"),
-                                    format!("operative {} {role}", row.id),
+                                    "unresolved roster country",
+                                    format!("operative {} / roster {}", row.id, row.roster_country),
                                 );
                             }
                         }
-                        value.owner_tag = tag_of(owner, &slots);
-                        value.target_tag = tag_of(target, &slots);
-                        value.capturer_tag = tag_of(capturer, &slots);
-                        let held = Held {
-                            value,
-                            owner,
-                            target,
-                            capturer,
-                            operation: (row.assignment == 4)
-                                .then(|| {
-                                    row.operation
-                                        .require("OperativeMemberships.operation")
-                                        .ok()
-                                        .copied()
-                                        .flatten()
+                    }
+                    for history in &mut histories {
+                        let current = (if let Some(tagged) = &tagged {
+                            tagged
+                                .get(history.reply.tag.as_bytes())
+                                .and_then(|country| country.found())
+                                .map(|(country, slot)| CountryIdentity {
+                                    slot,
+                                    id: country.id,
                                 })
-                                .flatten(),
-                            captured_input: None,
-                            cooldown: operative_rows::cooldown(row).ok().flatten(),
-                            cooldown_remaining: None,
+                        } else {
+                            history.country
+                        })
+                        .filter(|country| {
+                            selected_identities.is_none_or(|selected| {
+                                selected.contains(&(country.slot, country.id))
+                            })
+                        });
+                        let continues = history
+                            .track
+                            .step(current.map(|c| (c.slot, c.id)), frame.hour);
+                        if !continues {
+                            history.interrupt();
+                        }
+                        if current != history.country {
+                            // A new holder of the tag is not evidence that the old holder's
+                            // operatives died or retired. End identity, without inventing exits.
+                            history.active.clear();
+                            history.latest.clear();
+                            history.country = current;
+                        }
+                        let Some(current) = current else {
+                            continue;
                         };
-                        // Disband writes assignment 2 and death writes 5;
-                        // the agency status dispatcher has neither arm.
-                        if matches!(row.assignment, 2 | 5) {
-                            departed.push((
-                                row.id,
-                                held,
-                                if row.assignment == 2 {
-                                    "Disbanded"
-                                } else {
-                                    "Killed"
-                                },
-                            ));
-                        } else if values.insert(row.id, held).is_some() {
-                            refused.note(
-                                "conflicting active memberships",
-                                format!("operative {}", row.id),
-                            );
-                            complete = false;
+                        if let Some(Some((held, joined, read_hour))) = renamed.remove(&current) {
+                            history.active.clear();
+                            history.latest.clear();
+                            for (id, joined_hour) in joined {
+                                let entry = history.entry(id, joined_hour);
+                                budget.add(&entry)?;
+                                history.active.insert(id, history.reply.operatives.len());
+                                history.latest.insert(id, history.reply.operatives.len());
+                                history.reply.operatives.push(entry);
+                            }
+                            history.held = held;
+                            history.read_hour = read_hour;
+                            history.open = true;
+                        }
+                        if read {
+                            let mut values = BTreeMap::new();
+                            let mut departed = Vec::new();
+                            let mut unique = BTreeMap::new();
+                            // An unassigned row could belong to any requested country;
+                            // it cannot turn that country's unknown roster into empty.
+                            let mut complete = roster_links_known;
+                            for row in by_slot.get(&current.slot).into_iter().flatten() {
+                                if let Err(reason) = operative_rows::supported_kind_assignment(
+                                    row.roster_kind,
+                                    row.assignment,
+                                ) {
+                                    refused.note(reason, format!("operative {}", row.id));
+                                    complete = false;
+                                    continue;
+                                }
+                                // Only the active agency roster establishes membership.
+                                if row.roster_kind != 0 {
+                                    continue;
+                                }
+                                match operative_rows::admit(&mut unique, row, links, &slots) {
+                                    Ok(true) => {}
+                                    Ok(false) => continue,
+                                    Err(reason) => {
+                                        refused.note(reason, format!("operative {}", row.id));
+                                        complete = false;
+                                        continue;
+                                    }
+                                }
+                                let operation_token = row
+                                    .operation
+                                    .require("OperativeMemberships.operation")
+                                    .ok()
+                                    .copied()
+                                    .flatten()
+                                    .and_then(|id| operation_name(decoded, id))
+                                    .filter(|_| operation_read_hour.is_some());
+                                let mut value = operative_values(
+                                    content,
+                                    decoded,
+                                    row,
+                                    characters.get(&row.id).copied().flatten(),
+                                    operation_token,
+                                    (&mut tables, &mut budget, &mut refused),
+                                )?;
+                                let owner = identity(row.owner_country, links, &slots);
+                                let target = row
+                                    .target_country
+                                    .require("OperativeMemberships.target_country")
+                                    .ok()
+                                    .copied()
+                                    .flatten()
+                                    .and_then(|raw| identity(raw, links, &slots));
+                                // Captured status resolves raw zero to the reserved slot;
+                                // it needs no Countries row.
+                                let capturer = (value.captured == Some(true))
+                                    .then(|| {
+                                        if row.capturer_country == 0
+                                            || link_slot(links, row.capturer_country) == Some(0)
+                                        {
+                                            Some(CountryIdentity { slot: 0, id: 0 })
+                                        } else {
+                                            identity(row.capturer_country, links, &slots)
+                                        }
+                                    })
+                                    .flatten();
+                                for (needed, resolved, role) in [
+                                    (true, owner, "owner"),
+                                    (
+                                        row.target_country
+                                            .require("OperativeMemberships.target_country")
+                                            .map_or(true, Option::is_some),
+                                        target,
+                                        "target",
+                                    ),
+                                    (value.captured == Some(true), capturer, "capturer"),
+                                ] {
+                                    if needed && resolved.is_none() {
+                                        refused.note(
+                                            format!("operative {role} not recorded or unresolved"),
+                                            format!("operative {} {role}", row.id),
+                                        );
+                                    }
+                                }
+                                value.owner_tag = tag_of(owner, &slots);
+                                value.target_tag = tag_of(target, &slots);
+                                value.capturer_tag = tag_of(capturer, &slots);
+                                let held = Held {
+                                    value,
+                                    owner,
+                                    target,
+                                    capturer,
+                                    operation: (row.assignment == 4)
+                                        .then(|| {
+                                            row.operation
+                                                .require("OperativeMemberships.operation")
+                                                .ok()
+                                                .copied()
+                                                .flatten()
+                                        })
+                                        .flatten(),
+                                    captured_input: None,
+                                    cooldown: operative_rows::cooldown(row).ok().flatten(),
+                                    cooldown_remaining: None,
+                                };
+                                // Disband writes assignment 2 and death writes 5;
+                                // the agency status dispatcher has neither arm.
+                                if matches!(row.assignment, 2 | 5) {
+                                    departed.push((
+                                        row.id,
+                                        held,
+                                        if row.assignment == 2 {
+                                            "Disbanded"
+                                        } else {
+                                            "Killed"
+                                        },
+                                    ));
+                                } else if values.insert(row.id, held).is_some() {
+                                    refused.note(
+                                        "conflicting active memberships",
+                                        format!("operative {}", row.id),
+                                    );
+                                    complete = false;
+                                }
+                            }
+                            if complete {
+                                history.read(frame.hour, values, departed, &mut budget)?;
+                            } else {
+                                history.interrupt();
+                            }
+                        }
+                        if history.open
+                            && operations_read
+                            && let Some(content) = content
+                        {
+                            // Operations has its own daily slot. A newly recorded definition
+                            // may name a held membership before the next membership read;
+                            // date that identity separately, without changing assignment or target.
+                            for (&id, held) in &mut history.held {
+                                if let Some(operation) = held.operation {
+                                    let token = operation_name(decoded, operation);
+                                    let assignment = content.assignment(
+                                        &OperativeMembershipRow {
+                                            id,
+                                            assignment: 4,
+                                            operation: Some(operation).into(),
+                                            ..Default::default()
+                                        },
+                                        token,
+                                        None,
+                                    );
+                                    held.value.assignment_name = assignment.name;
+                                    held.value.assignment_icon =
+                                        tables.artwork.intern(assignment.icon, &mut budget)?;
+                                    held.value.assignment_missing = tables
+                                        .reasons
+                                        .intern(assignment.missing.clone(), &mut budget)?;
+                                    held.value.assignment_icon_missing = tables
+                                        .reasons
+                                        .intern(assignment.icon_missing.clone(), &mut budget)?;
+                                    if let Some(reason) = assignment.missing {
+                                        refused.note(reason, format!("operative {id} assignment"));
+                                    }
+                                    if let Some(reason) = assignment.icon_missing {
+                                        refused.note(
+                                            reason,
+                                            format!("operative {id} assignment icon"),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        if operation_read_hour.is_none() {
+                            for held in history
+                                .held
+                                .values_mut()
+                                .filter(|held| held.operation.is_some())
+                            {
+                                held.value.assignment_name = None;
+                                held.value.assignment_icon = None;
+                                held.value.assignment_missing = tables.reasons.intern(
+                                Some(
+                                    "Operation identity is unavailable until a fresh Operations read"
+                                        .into(),
+                                ),
+                                &mut budget,
+                            )?;
+                                held.value.assignment_icon_missing = held.value.assignment_missing;
+                            }
                         }
                     }
-                    if complete {
-                        history.read(frame.hour, values, departed, &mut budget)?;
-                    } else {
-                        history.interrupt();
+                    if let Some(content) = content {
+                        let capturers = histories
+                            .iter()
+                            .flat_map(|history| history.held.values())
+                            .filter(|held| held.value.captured == Some(true))
+                            .filter_map(|held| held.capturer)
+                            .collect();
+                        names.update(decoded, capturers, &content.catalogue.localisation);
                     }
-                }
-                if history.open
-                    && operations_read
-                    && let Some(content) = content
-                {
-                    // Operations has its own daily slot. A newly recorded definition
-                    // may name a held membership before the next membership read;
-                    // date that identity separately, without changing assignment or target.
-                    for (&id, held) in &mut history.held {
-                        if let Some(operation) = held.operation {
-                            let token = operation_name(decoded, operation);
-                            let assignment = content.assignment(
-                                &OperativeMembershipRow {
-                                    id,
-                                    assignment: 4,
-                                    operation: Some(operation).into(),
-                                    ..Default::default()
-                                },
-                                token,
-                                None,
-                            );
-                            held.value.assignment_name = assignment.name;
-                            held.value.assignment_icon =
-                                tables.artwork.intern(assignment.icon, &mut budget)?;
-                            held.value.assignment_missing = tables
-                                .reasons
-                                .intern(assignment.missing.clone(), &mut budget)?;
-                            held.value.assignment_icon_missing = tables
-                                .reasons
-                                .intern(assignment.icon_missing.clone(), &mut budget)?;
-                            if let Some(reason) = assignment.missing {
-                                refused.note(reason, format!("operative {id} assignment"));
-                            }
-                            if let Some(reason) = assignment.icon_missing {
-                                refused.note(reason, format!("operative {id} assignment icon"));
-                            }
-                        }
-                    }
-                }
-                if operation_read_hour.is_none() {
-                    for held in history
-                        .held
-                        .values_mut()
-                        .filter(|held| held.operation.is_some())
-                    {
-                        held.value.assignment_name = None;
-                        held.value.assignment_icon = None;
-                        held.value.assignment_missing = tables.reasons.intern(
-                            Some(
-                                "Operation identity is unavailable until a fresh Operations read"
-                                    .into(),
-                            ),
-                            &mut budget,
+                    for history in &mut histories {
+                        history.publish(
+                            frame.hour,
+                            &mut Projection {
+                                countries,
+                                links,
+                                content,
+                                names: &names,
+                                tables: &mut tables,
+                                refused: &mut refused,
+                                budget: &mut budget,
+                            },
                         )?;
-                        held.value.assignment_icon_missing = held.value.assignment_missing;
+                    }
+                    if budget.0.saturating_add(refused.check()?) > REPLY_BUDGET {
+                        return Err(io::Error::other(
+                            "Operatives roster exceeds its complete-response budget",
+                        ));
                     }
                 }
             }
-            if let Some(content) = content {
-                let capturers = histories
-                    .iter()
-                    .flat_map(|history| history.held.values())
-                    .filter(|held| held.value.captured == Some(true))
-                    .filter_map(|held| held.capturer)
-                    .collect();
-                names.update(decoded, capturers, &content.catalogue.localisation);
-            }
-            for history in &mut histories {
-                history.publish(
-                    frame.hour,
-                    &mut Projection {
-                        countries,
-                        links,
-                        content,
-                        names: &names,
-                        tables: &mut tables,
-                        refused: &mut refused,
-                        budget: &mut budget,
-                    },
-                )?;
-            }
-            if budget.0.saturating_add(refused.check()?) > REPLY_BUDGET {
-                return Err(io::Error::other(
-                    "Operatives roster exceeds its complete-response budget",
-                ));
-            }
-        }
-    }
+            Ok(())
+        },
+    )?;
     refused.check()?;
     let mut warnings = content.map_or_else(Vec::new, |content| content.warnings.clone());
     warnings.extend(refused.lines("operative fields"));

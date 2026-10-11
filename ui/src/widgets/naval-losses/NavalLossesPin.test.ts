@@ -318,8 +318,8 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
       assert.match(header(), /unavailable/); assert.deepEqual(state.labelRequests.at(-1), { wanted: [], active: false });
       assert.ok(header().includes('Country shown at ' + formatDateTime(112)), 'a known displayed date remains explicit when identity is refused');
       state.reply = reply; state.labels = {}; unmount(); template.widgets = [original]; state.hour = 112;
-      assert.match(frame(), /mod A/); assert.equal(state.portals.length, 0);
-      state.main!.onPick!(108, 'reused alias', ['reused alias']); assert.match(frame(), /mod A/);
+      assert.match(frame(), /Country name unavailable/); assert.equal(state.portals.length, 0);
+      state.main!.onPick!(108, 'reused alias', ['reused alias']); assert.match(frame(), /Country name unavailable/);
       assert.equal(state.portals.length, 0, 'ordinary main/comparison headers keep their country roots during an inline drill');
       assert.deepEqual(changes, [], 'local choices, history and Follow never write layout preferences');
     });

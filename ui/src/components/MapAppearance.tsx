@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Select } from './Select';
 import { errorMessage } from '../shell/api';
 import { Icon } from './Icons';
 import VideoControls, { useVideoSettings } from '../shell/VideoSettings';
@@ -67,13 +68,14 @@ export default function MapAppearance({ source, client, global = false, viewId, 
     {draft && <small className="pill graphics-inheritance">{draft.useGameGraphics ? `Using ${parentLabel}` : 'Custom graphics'}</small>}
     <div className="map-graphics-options">
     <div className="map-graphics-fields">
-    <label className="map-option-row"><span>{ANTI_ALIASING}</span><select aria-label={ANTI_ALIASING} disabled={!draft || busy} value={draft?.graphics.samples ?? ""} onChange={event => { if (draft) setDraft({ ...draft, useGameGraphics: false, graphics: { ...draft.graphics, samples: Number(event.currentTarget.value) } }); }}>
-      {!draft && <option value="">{!available ? "No campaign" : error ? "Unavailable" : "Loading..."}</option>}
-      {[...new Set([...(reply?.sampleCounts ?? []), ...(draft ? [draft.graphics.samples] : [])])].sort((a, b) => a - b).map(count => <option key={count} value={count} disabled={!!reply && !reply.sampleCounts.includes(count)}>{count === 1 ? 'Off' : `${count}x MSAA`}{reply && !reply.sampleCounts.includes(count) ? ' (unavailable)' : ''}</option>)}
-    </select></label>
-    <label className="map-option-row"><span>{TEXTURE_QUALITY}</span><select aria-label={TEXTURE_QUALITY} disabled={!draft || busy} value={draft?.graphics.textureQuality ?? ""} onChange={event => { if (draft) setDraft({ ...draft, useGameGraphics: false, graphics: { ...draft.graphics, textureQuality: Number(event.currentTarget.value) } }); }}>
-      {!draft && <option value="">{!available ? "No campaign" : error ? "Unavailable" : "Loading..."}</option>}<option value={0}>High</option><option value={1}>Medium</option><option value={2}>Low</option>
-    </select></label>
+    <div className="map-option-row"><span>{ANTI_ALIASING}</span><Select label={ANTI_ALIASING} disabled={!draft || busy} value={String(draft?.graphics.samples ?? "")}
+      onChange={value => { if (draft) setDraft({ ...draft, useGameGraphics: false, graphics: { ...draft.graphics, samples: Number(value) } }); }}
+      options={[...(draft ? [] : [{ value: "", label: !available ? "No campaign" : error ? "Unavailable" : "Loading..." }]),
+        ...[...new Set([...(reply?.sampleCounts ?? []), ...(draft ? [draft.graphics.samples] : [])])].sort((a, b) => a - b).map(count => ({ value: String(count),
+          label: `${count === 1 ? 'Off' : `${count}x MSAA`}${reply && !reply.sampleCounts.includes(count) ? ' (unavailable)' : ''}`, disabled: !!reply && !reply.sampleCounts.includes(count) }))]} /></div>
+    <div className="map-option-row"><span>{TEXTURE_QUALITY}</span><Select label={TEXTURE_QUALITY} disabled={!draft || busy} value={String(draft?.graphics.textureQuality ?? "")}
+      onChange={value => { if (draft) setDraft({ ...draft, useGameGraphics: false, graphics: { ...draft.graphics, textureQuality: Number(value) } }); }}
+      options={[...(draft ? [] : [{ value: "", label: !available ? "No campaign" : error ? "Unavailable" : "Loading..." }]), { value: "0", label: "High" }, { value: "1", label: "Medium" }, { value: "2", label: "Low" }]} /></div>
     {global && <VideoControls video={video} busy={busy} />}
     </div>
     <div className="map-graphics-grid">{graphics.map(([key, label]) => {

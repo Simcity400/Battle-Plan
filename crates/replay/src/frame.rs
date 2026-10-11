@@ -365,23 +365,31 @@ fn validate_singleton(table: TableId, rows: &TableRows, hour: Hour) -> io::Resul
 }
 
 fn validate_delta(table: TableId, changed: &[DeltaRow], deleted: &[u128]) -> io::Result<()> {
-    for key in changed
-        .iter()
-        .map(|row| row.key)
-        .chain(deleted.iter().copied())
-    {
+    validate_delta_keys(table, changed.iter().map(|row| row.key), deleted)
+}
+
+fn validate_delta_keys(
+    table: TableId,
+    changed: impl Iterator<Item = u128> + Clone,
+    deleted: &[u128],
+) -> io::Result<()> {
+    for key in changed.clone().chain(deleted.iter().copied()) {
         table.check_key(key)?;
     }
-    if changed.windows(2).any(|w| w[0].key >= w[1].key) || deleted.windows(2).any(|w| w[0] >= w[1])
+    if changed
+        .clone()
+        .zip(changed.clone().skip(1))
+        .any(|(a, b)| a >= b)
+        || deleted.windows(2).any(|w| w[0] >= w[1])
     {
         return Err(invalid("delta keys must be unique and ascending"));
     }
     let mut deleted = deleted.iter().peekable();
-    for row in changed {
-        while deleted.peek().is_some_and(|key| **key < row.key) {
+    for changed_key in changed {
+        while deleted.peek().is_some_and(|key| **key < changed_key) {
             deleted.next();
         }
-        if deleted.peek().is_some_and(|key| **key == row.key) {
+        if deleted.peek().is_some_and(|key| **key == changed_key) {
             return Err(invalid("delta both changes and deletes a key"));
         }
     }

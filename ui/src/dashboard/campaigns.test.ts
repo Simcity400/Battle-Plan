@@ -15,12 +15,20 @@ test('failed loads reserve only transient capacity and never enter saved layouts
     assert.equal(includeCampaigns(template, pending), template);
     assert.deepEqual(campaignSlots(template, []).empty.map(role => role.id), ['primary']);
   }
-  const pending = Array.from({ length: 12 }, (_, i) => ({ id: i ? `slot${i}` : 'primary', path: `${i}`, label: `${i}`, loading: true }));
-  assert.equal(campaignSlots(template, pending).canAdd, false);
+  const pending = Array.from({ length: 40 }, (_, i) => ({ id: i ? `slot${i}` : 'primary', path: `${i}`, label: `${i}`, loading: true }));
+  assert.equal(campaignSlots(template, pending).empty.length, 0);
   assert.equal(includeCampaigns(template, pending), template);
 });
 
-test('saved slots can be rebound at the role and track limits without changing pins', () => {
+test('any number of open campaigns fit a saved layout', () => {
+  const loaded = Array.from({ length: 40 }, (_, i) => ({ id: i ? `slot${i}` : 'primary', path: `${i}`, label: `Campaign ${i}` }));
+  const restored = parseTemplate(includeCampaigns(defaultTemplate(), loaded));
+  assert.ok(restored, 'a layout holding 40 campaigns saves and restores');
+  assert.equal(restored.roles.length, 40);
+  assert.ok(restored.tracks.length >= 40);
+});
+
+test('saved slots can be rebound without changing pins', () => {
   const loaded = Array.from({ length: 12 }, (_, i) => ({ id: i ? `slot${i}` : 'primary', path: `${i}`, label: `Campaign ${i}` }));
   const template = includeCampaigns(defaultTemplate(), loaded);
   while (template.tracks.length < 32) template.tracks.push({ ...template.tracks[1], id: `comparison${template.tracks.length}` });
@@ -28,7 +36,6 @@ test('saved slots can be rebound at the role and track limits without changing p
   const restored = parseTemplate(template)!;
   const slots = campaignSlots(restored, loaded.filter(campaign => campaign.id !== 'slot1'));
   assert.deepEqual(slots.empty.map(role => role.id), ['slot1']);
-  assert.equal(slots.canAdd, false);
   const rebound = includeCampaigns(restored, [{ id: 'slot1', path: 'new-file', label: 'Reopened' }]);
   assert.deepEqual(rebound.tracks, restored.tracks);
   assert.deepEqual(rebound.widgets, restored.widgets);

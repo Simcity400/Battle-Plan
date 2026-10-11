@@ -8,6 +8,7 @@ import { campaignToken } from '../../dashboard/chosen.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { isOrderedSpans } from '../../charts/series.ts';
 import { int, object } from '../../dashboard/validation.ts';
+import { contentTitleHint } from '../../dashboard/contentTitles.ts';
 
 export type CountryRole = 'victim' | 'sinker' | 'both';
 const text = (value: unknown) => value === null || typeof value === 'string';
@@ -69,19 +70,18 @@ export function shipClassKey(reply: ShipsSunkReply, type: ShipClassInfo, campaig
 export function shipClassName(reply: ShipsSunkReply, row: ShipsSunkRow): string {
   const type = reply.classes[row.classIndex];
   const recorded = row.recordedNameIndex === null ? null : reply.recordedNames[row.recordedNameIndex];
-  return type.name ?? (recorded ? `${recorded} (recorded class)`
-    : type.key ? `${type.key} (class name not resolved)` : `Class token ${type.token} (name not recorded)`);
+  return type.name ?? (recorded !== null ? recorded === '' ? '' : `${recorded} (recorded class)` : 'Class name unavailable');
 }
 
-export function shipClassChoices(reply: ShipsSunkReply | undefined, campaignKey: string): { value: string; label: string; icon: string | null }[] {
+export function shipClassChoices(reply: ShipsSunkReply | undefined, campaignKey: string): { value: string; label: string; icon: string | null; hint?: string }[] {
   if (!reply) return [];
   const present = new Map<number, ShipsSunkRow>();
   for (const row of reply.rows) if (!present.has(row.classIndex)) present.set(row.classIndex, row);
-  const choices = [...new Map([...present].map(([index, row]) => ({ value: shipClassKey(reply, reply.classes[index], campaignKey), label: shipClassName(reply, row), icon: reply.classes[index].icon })).map(choice => [choice.value, choice])).values()];
-  const labels = new Map<string, number>();
-  for (const choice of choices) labels.set(choice.label, (labels.get(choice.label) ?? 0) + 1);
-  return choices.map(choice => ({ ...choice, label: (labels.get(choice.label) ?? 0) > 1 ? `${choice.label} (${choice.value})` : choice.label }))
-    .sort((a, b) => a.label.localeCompare(b.label));
+  return [...new Map([...present].map(([index, row]) => {
+    const type = reply.classes[index];
+    return { value: shipClassKey(reply, type, campaignKey), label: shipClassName(reply, row), icon: type.icon,
+      hint: contentTitleHint(type.key ?? type.token) };
+  }).map(choice => [choice.value, choice])).values()].sort((a, b) => a.label.localeCompare(b.label));
 }
 
 /** Immutable event order is built once per reply, not on every playback hour. */
@@ -160,6 +160,7 @@ export function shipTooltip(reply: ShipsSunkReply, row: ShipsSunkRow, victim: st
   const title = shipBattleLabel(row, battle);
   return { title: shipName(row), icon: reply.classes[row.classIndex].icon ?? undefined, subtitle: formatDateTime(row.sinkHour), rows: [
     { label: 'Class', value: shipClassName(reply, row) },
+    { label: 'Class key', value: reply.classes[row.classIndex].key ?? String(reply.classes[row.classIndex].token) },
     { label: 'Victim', value: row.victimAsOf === null ? victim : `${victim} (as of ${formatDateTime(row.victimAsOf)})` },
     { label: 'Attribution country', value: row.attackerAsOf === null ? attacker : `${attacker} (as of ${formatDateTime(row.attackerAsOf)})` },
     { label: 'Cause', value: row.cause === 'cause' ? row.attributionName ?? 'Not recorded' : shipCauseLabel(row) },

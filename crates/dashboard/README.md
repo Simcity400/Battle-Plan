@@ -24,6 +24,8 @@ neither reads live game memory nor draws map pixels. See the
 | [cryptology.rs](src/cryptology.rs), [naval_battle_name.rs](src/naval_battle_name.rs), [state_resources.rs](src/state_resources.rs) | Native helpers shared by products and viewer tooltips. |
 | [content_check.rs](src/content_check.rs) | Offline preparation and diagnostics for every registered product. |
 | [service.rs](src/service.rs), [service/](src/service/) | Source leases, loader jobs, request admission and the bounded response pump. |
+| [blocks.rs](src/blocks.rs) | Whole-branch scans with their blocks read ahead on spare cores, in order. |
+| [reply_cache.rs](src/reply_cache.rs) | Whole-branch product replies kept on disk between sessions. |
 | [transport.rs](src/transport.rs), [protocol.rs](src/protocol.rs) | Generic data requests, fragmented replies and host/viewer control messages. |
 | [config.rs](src/config.rs), [content.rs](src/content.rs), [map_settings.rs](src/map_settings.rs) | Game folders, content verification/cache keys and map preferences. |
 | [dto.rs](src/dto.rs), [lib.rs](src/lib.rs) | Shared wire types, public facade and TypeScript contract assembly. |
@@ -51,7 +53,10 @@ current uncovered-content-read warnings through `ReplyWarnings`, including for
 cached replies. Preserve independent known values when a name or image refuses.
 
 Keep caches in `source.state::<YourState>()`. Share scans between consumers of
-the same inputs instead of decoding a branch again. Numeric history and
+the same inputs instead of decoding a branch again. Read a branch's blocks through
+`blocks::scan_blocks`, which reads ahead in parallel; read one hour with
+`Replay::seek_selected` and only the tables used (`installed_content::country_names::TABLES`
+for country names). Whole-block or whole-table reads cost seconds per block. Numeric history and
 content-dependent presentation can have separate cache keys. State is revision
 local; append inheritance is an explicit `append_state` opt-in after the source
 verifies the recorded prefix. Its clone shares immutable history and gives the
@@ -117,7 +122,36 @@ localisation, native GUI/sprite lookup and texture decoding must not acquire
 parallel parsers. The [installed-content contract](../installed-content/README.md) owns content
 verification and uncovered-read reporting. Keep its named, counted diagnostics
 visible after lazy reads. Missing artwork leaves independent text and values
-available with its reason.
+available with its reason. Native GUI templates are read once on the first
+template-dependent lookup, preserving the shared registry and post-load pass;
+focus text and focus images do not wait for GUI parsing. GUI read failures remain
+named refusals for dependent fields while independent localized titles stay usable.
+
+Focus text-only requests and research history resolve text independently of sprite
+rendering. Focus cards request localized titles and icons without expanding
+descriptions; opening their details loads the complete dated description. Focus
+`iconsOnly` requests omit text evaluation and its unrequested operands, while
+retaining the complete authored icon selector at the recorded hour. Other focus
+requests preserve their combined presentation fields. Focus
+hour reads stream selected tables only up to the requested hour and retain frames
+after the replay reader verifies the block. Technology images use the separate
+`technology-artwork` product.
+First-use focus history scans run alongside shared content preparation. The
+preparation worker is fully joined before returning or unwinding; a refused scan
+keeps its own error, and pre-cancelled requests start neither task. Populated
+focus contexts use the normal shared catalogue freshness check.
+Selected-country focus history also retains its new order segments' first-hour
+Campaign, Countries and CountryLinks views in that same bounded frame cache.
+Static completion images reuse those verified inputs without another recording
+read; scoped presentation still upgrades to its complete selected-table kit.
+Seeding preserves sampled provenance and previously scoped entries, and retains
+neither focus/completion rows nor a second list of decoded hours.
+Cached hours stay available during reconstruction misses. Misses serialize and
+recheck the cache after admission, keeping shared reads and cancellation local
+to the requesting lease.
+Focus/technology definitions and rendered sprite frames are shared within the
+resolved content stack; concurrent identical images render once. The image cache
+has a byte budget, without limiting content inventories or reply completeness.
 
 Sprite images select an authored strip frame at time zero. All sprite images
 run the stack's Up program through [shader-pipeline artwork](../shader-pipeline/src/artwork.rs),
@@ -133,6 +167,13 @@ recorded-hour evaluator and caller-owned event graph/variable session. Missing
 operands and unsupported reached forms retain named, counted refusals, without
 invented scopes, roster order or rebuilt native caches. Supported forms and
 refusal handling belong beside those helpers.
+
+Scripted text and trigger worlds read province-neighbor graphs and movement maps
+only when a reached neighbor, coastal or terrain operand needs them. These reads
+share success and refusal caches within the resolved content environment, and
+their diagnostics join the shared catalogue after loading. Political and constant
+scripted text do not prepare those geographic inputs. Effect descriptions reuse
+the resolved stack's complete key-name registry without rereading its databases.
 
 Faction naming preserves complete empty bindings and successfully localised empty strings as known empty text. Missing inputs retain a null name and a named reason; a literal never becomes a localisation key.
 
@@ -152,11 +193,34 @@ releasable leases; `open_map` uses the same sources. An outdated expected revisi
 is refused. A new revision uses a separate source and caches. Every product reply
 echoes the requesting lease, revision and key so it cannot answer another recording.
 
-Loader jobs run off rendering. Ordinary product caches serialize their own
-requests; scans with their own gates do expensive work outside short cache locks.
+Loader jobs run off rendering, in two lanes: `Product::INTERACTIVE` reads (one hour
+or one block, for hovers and labels) have their own threads, so a whole-branch scan
+never delays them. Ordinary product caches serialize their own requests; scans with
+their own gates, and hour reads, do expensive work outside short cache locks.
 Open/append work stays outside the global sources lock. Check cancellation during
 reads, scans and serialization, and never publish a cancelled partial result.
 Different products and sources can run in parallel; replies are fragmented and bounded.
+Its hosts (the viewer and `dashboard-bridge`) allocate with mimalloc: the Windows heap
+slows every later scan several-fold once the service holds gigabytes of caches.
+
+Whole-branch replies persist in `reply_cache`, in the `history` folder beside the
+content hash cache, so a reopened campaign answers without scanning recorded history.
+An entry is keyed by a BLAKE3 hash of every recording byte (not its path), the cache
+format, the build, the product and parameters, the content folders, the
+unverified-content choice, the game language and the effective texture decode
+settings. The resident recording bytes are hashed once per source without
+inflating blocks. A reply must depend on nothing else. Content-dependent replies
+are stored and served only after the source resolves and verifies its recorded
+content stack for this open; a failed resolution leaves live replies available
+with their refusals. Recording-only products do not require that verification.
+Replies are neither stored nor served while the source reports dependencies
+outside the recorded content coverage, including explicit uncovered reads and
+missing candidates. Compressed entries, streamed decoded replies and decoder
+windows are bounded by the transport reply budget; oversized, corrupt or obsolete
+entries are misses and can be replaced. A stored reply
+keeps the catalogue's text-refusal lines of the session that computed it. The folder is
+disposable; the least recently used entries go past `reply_cache::LIMIT`.
+Settings measures and clears it through `DataCommand::HistoryCache`, on the interactive lane.
 
 Measure complete product replies against `products::MAX_PRODUCT_REPLY_BYTES`
 with `transport::json_len` (or the shared budget helper), including identity,

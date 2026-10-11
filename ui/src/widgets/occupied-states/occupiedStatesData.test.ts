@@ -4,37 +4,100 @@ import { test } from 'node:test';
 import { createElement, isValidElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
+import { runAt } from '../../charts/series.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { TableProps } from '../../charts/table/Table';
-import type { CountryGroupReply } from '../../generated/dashboard';
+import type { CountryGroupReply, OccupiedObservation, OccupiedSeries, OccupiedStatesManifestReply, OccupiedStatesReply } from '../../generated/dashboard';
 import type { WidgetStateProps } from '../../components/WidgetState';
-import type { OccupiedRow } from './occupiedStatesData';
-import { countryHour, garrisonCell, occupiedAt, occupationTooltip, percent, strengthPercent, strengthBar, percentCell, stateName, validateOccupiedStatesReply } from './occupiedStatesData.ts';
-import type { OccupiedStatesReply, OccupiedValues } from '../../generated/dashboard';
+import type { OccupiedRow, OccupiedValues } from './occupiedStatesData';
+import { countryHour, garrisonCell, occupiedAt, occupiedWindows, occupationTooltip, percent, strengthPercent, strengthBar, percentCell, stateName,
+  validateOccupiedStatesManifest, validateOccupiedStatesReply, valuesAt } from './occupiedStatesData.ts';
 
+type Run = { firstHour: number; lastHour: number; value: OccupiedValues };
 const value: OccupiedValues = { name: 'Mod state', nameMissing: null, owner: 'Owner with spaces', occupier: 'Dynamic tag', occupied: 'Original tag',
   resistanceRaw: '9007199254740993', complianceRaw: '0', resistanceSpeedRaw: '-1', complianceSpeedRaw: '10000',
   garrisonStrengthRaw: null, requiredManpower: 0, garrisonRequiredRaw: null, garrisonAlert: false, garrisonRed: null, assignedManpower: null,
   garrisonMissing: 'Garrison row missing', law: 'extra_mod_law', lawMissing: null };
-const reply: OccupiedStatesReply = { branchId: '1', decimals: 5,
-  states: [{ state: 2000, runs: [{ firstHour: 10, lastHour: 33, value }, { firstHour: 40, lastHour: 50, value }] }],
-  observed: [{ firstHour: 10, lastHour: 20, readHour: 10, complete: true }, { firstHour: 21, lastHour: 33, readHour: 21, complete: true }, { firstHour: 40, lastHour: 50, readHour: 40, complete: true }],
+/** Each run as its own span, restating every value; fixed5 values hold within it. */
+function series(state: number, runs: Run[], texts: string[]): OccupiedSeries {
+  const text = (v: string | null) => v === null ? null : texts.includes(v) ? texts.indexOf(v) : texts.push(v) - 1;
+  const fixed5 = (key: 'resistanceRaw' | 'complianceRaw' | 'resistanceSpeedRaw' | 'complianceSpeedRaw') =>
+    runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour, raw: run.value[key], readEachHour: false }));
+  const at = <T>(read: (value: OccupiedValues) => T) => runs.map(run => [run.firstHour, read(run.value)] as [number, T]);
+  return { state, resistance: fixed5('resistanceRaw'), compliance: fixed5('complianceRaw'), resistanceSpeed: fixed5('resistanceSpeedRaw'), complianceSpeed: fixed5('complianceSpeedRaw'),
+    name: at(v => text(v.name)), nameMissing: at(v => text(v.nameMissing)), owner: at(v => text(v.owner)), occupier: at(v => text(v.occupier)), occupied: at(v => text(v.occupied)),
+    garrisonStrengthRaw: at(v => v.garrisonStrengthRaw), requiredManpower: at(v => v.requiredManpower), garrisonRequiredRaw: at(v => v.garrisonRequiredRaw),
+    garrisonAlert: at(v => v.garrisonAlert), garrisonRed: at(v => v.garrisonRed), assignedManpower: at(v => v.assignedManpower),
+    garrisonMissing: at(v => text(v.garrisonMissing)), law: at(v => text(v.law)), lawMissing: at(v => text(v.lawMissing)) };
+}
+const OBSERVED: OccupiedObservation[] = [{ firstHour: 10, lastHour: 20, readHour: 10, complete: true }, { firstHour: 21, lastHour: 33, readHour: 21, complete: true },
+  { firstHour: 40, lastHour: 50, readHour: 40, complete: true }];
+function windowOf(states: { state: number; runs: Run[] }[], observed = OBSERVED): OccupiedStatesReply {
+  const texts: string[] = [];
+  return { branchId: '1', window: 0, interval: { firstHour: 10, lastHour: 50 }, texts, states: states.map(item => series(item.state, item.runs, texts)), observed, warnings: [] };
+}
+const reply = windowOf([{ state: 2000, runs: [{ firstHour: 10, lastHour: 33, value }, { firstHour: 40, lastHour: 50, value }] }]);
+const manifest: OccupiedStatesManifestReply = { branchId: '1', decimals: 5, windows: [{ firstHour: 10, lastHour: 50 }],
   laws: [{ token: 'extra_mod_law', name: 'Overridden law name', icon: null, missing: 'Mod sprite missing' }], strengthMissing: 'Equipment inputs missing', warnings: [] };
 
 test('validation accepts exact mod values and refuses malformed nested payloads', () => {
+  assert.equal(validateOccupiedStatesManifest(manifest), manifest);
+  for (const data of [null, {}, { ...manifest, decimals: 4 }, { ...manifest, laws: [...manifest.laws, ...manifest.laws] },
+    { ...manifest, windows: [{ firstHour: 10, lastHour: 50 }, { firstHour: 50, lastHour: 60 }] }]) {
+    assert.throws(() => validateOccupiedStatesManifest(data), /malformed/);
+  }
   assert.equal(validateOccupiedStatesReply(reply), reply);
-  for (const data of [null, {}, { ...reply, states: [null] }, { ...reply, observed: [null] }, { ...reply, decimals: 4 },
-    { ...reply, states: [{ state: 1, runs: [{ firstHour: 0, lastHour: 1, value: { ...value, resistanceRaw: '9223372036854775808' } }] }] },
-    ...[{ garrisonAlert: 'yes' }, { garrisonRed: 1 }, { assignedManpower: 0.5 }].map(fields => ({ ...reply, states: [{ state: 1, runs: [{ firstHour: 10, lastHour: 20, value: { ...value, ...fields } }] }] })),
-    { ...reply, observed: [{ firstHour: 10, lastHour: 20, readHour: 11, complete: true }] },
-    { ...reply, observed: [{ firstHour: 10, lastHour: 33, readHour: 9, complete: true }, { firstHour: 40, lastHour: 50, readHour: 40, complete: true }] },
-    { ...reply, observed: [{ firstHour: 10, lastHour: 33, readHour: 10, complete: true }, { firstHour: 40, lastHour: 50, readHour: 10, complete: true }] },
-    { ...reply, laws: [...reply.laws, ...reply.laws] },
-    { ...reply, states: [{ state: 1, runs: [{ firstHour: 10, lastHour: 50, value }] }] },
-    { ...reply, observed: [{ firstHour: 10, lastHour: 20, readHour: 10, complete: true }, { firstHour: 21, lastHour: 33, readHour: 9, complete: true }] },
-    { ...reply, states: [{ state: 1, runs: [{ firstHour: 10, lastHour: 20, value }, { firstHour: 20, lastHour: 30, value }] }] }]) {
+  // The window's first observation can continue a read before it.
+  const continued = { ...reply, observed: [{ ...OBSERVED[0], readHour: 5 }, ...OBSERVED.slice(1)] };
+  assert.equal(validateOccupiedStatesReply(continued), continued);
+  const state = reply.states[0];
+  const withState = (fields: Record<string, unknown>) => ({ ...reply, states: [{ ...state, ...fields }] });
+  for (const data of [null, {}, { ...reply, states: [null] }, { ...reply, observed: [null] }, { ...reply, states: [state, state] },
+    withState({ resistance: [{ ...state.resistance[0], raw: '9223372036854775808' }, state.resistance[1]] }),
+    ...[{ garrisonAlert: [[10, 'yes'], [40, false]] }, { garrisonRed: [[10, 1], [40, null]] }, { assignedManpower: [[10, 0.5], [40, null]] },
+      { owner: [[10, 99], [40, 0]] }].map(withState),
+    // A value not restated where a span starts would carry across the gap; none changes inside it.
+    withState({ law: [state.law[0]] }), withState({ law: [state.law[0], [35, null], state.law[1]] }), withState({ compliance: [state.compliance[0]] }),
+    { ...reply, interval: { firstHour: 20, lastHour: 50 } },
+    { ...reply, observed: [{ ...OBSERVED[0], readHour: 11 }, ...OBSERVED.slice(1)] },
+    { ...reply, observed: [OBSERVED[0], { ...OBSERVED[1], firstHour: 22 }, OBSERVED[2]] },
+    { ...reply, observed: [...OBSERVED.slice(0, 2), { ...OBSERVED[2], readHour: 10 }] },
+    windowOf([{ state: 1, runs: [{ firstHour: 10, lastHour: 50, value }] }]),
+    windowOf([{ state: 1, runs: [{ firstHour: 10, lastHour: 20, value }, { firstHour: 20, lastHour: 30, value }] }])]) {
     assert.throws(() => validateOccupiedStatesReply(data), /malformed/);
   }
+});
+
+test('a window decodes to the recorded values at every hour, each span restating them', () => {
+  const raised = { ...value, resistanceRaw: '9007199254741000', complianceRaw: '100000', garrisonStrengthRaw: '49999', garrisonRed: true, assignedManpower: 100 };
+  const renamed = { ...raised, owner: 'Later owner', name: '' };
+  const returned = { ...value, occupier: 'Later occupier', law: null, lawMissing: 'Group law not recorded' };
+  const runs: Run[] = [{ firstHour: 10, lastHour: 20, value }, { firstHour: 21, lastHour: 24, value: raised },
+    { firstHour: 25, lastHour: 33, value: renamed }, { firstHour: 40, lastHour: 50, value: returned }];
+  // Each value returns at 40 to its value at 10.
+  const held = (raw: string, deltas?: { deltas: string; deltaScale?: string }) => [{ firstHour: 10, lastHour: 33, raw, readEachHour: false, ...deltas },
+    { firstHour: 40, lastHour: 50, raw, readEachHour: false }];
+  const window: OccupiedStatesReply = { ...reply, texts: ['Mod state', 'Owner with spaces', 'Dynamic tag', 'Original tag', 'Garrison row missing',
+    'extra_mod_law', 'Later owner', '', 'Later occupier', 'Group law not recorded'], states: [{ state: 2000,
+    resistance: held('9007199254740993', { deltas: '11:1', deltaScale: '7' }), compliance: held('0', { deltas: '11:1' }),
+    resistanceSpeed: held('-1'), complianceSpeed: held('10000'),
+    name: [[10, 0], [25, 7], [40, 0]], nameMissing: [[10, null], [40, null]], owner: [[10, 1], [25, 6], [40, 1]],
+    occupier: [[10, 2], [40, 8]], occupied: [[10, 3], [40, 3]], garrisonStrengthRaw: [[10, null], [21, '49999'], [40, null]],
+    requiredManpower: [[10, 0], [40, 0]], garrisonRequiredRaw: [[10, null], [40, null]], garrisonAlert: [[10, false], [40, false]],
+    garrisonRed: [[10, null], [21, true], [40, null]], assignedManpower: [[10, null], [21, 100], [40, null]],
+    garrisonMissing: [[10, 4], [40, 4]], law: [[10, 5], [40, null]], lawMissing: [[10, null], [40, 9]] }] };
+  assert.equal(validateOccupiedStatesReply(window), window);
+  for (let hour = 0; hour <= 60; hour++) assert.deepEqual(valuesAt(window, window.states[0], hour), runAt(runs, hour)?.value ?? null, `hour ${hour}`);
+});
+
+test('the shown window and, while following, both neighbours are wanted', () => {
+  const windows = [{ firstHour: 0, lastHour: 9 }, { firstHour: 10, lastHour: 19 }, { firstHour: 30, lastHour: 39 }];
+  assert.deepEqual(occupiedWindows(windows, 15, true), { target: 1, wanted: [0, 1, 2] });
+  assert.deepEqual(occupiedWindows(windows, 15, false), { target: 1, wanted: [1] });
+  assert.deepEqual(occupiedWindows(windows, 0, true), { target: 0, wanted: [0, 1] });
+  assert.deepEqual(occupiedWindows(windows, 25, true), { target: 1, wanted: [0, 1, 2] }, 'a gap keeps the block before it');
+  assert.deepEqual(occupiedWindows(windows, 39, true), { target: 2, wanted: [1, 2] });
+  assert.deepEqual(occupiedWindows(windows, -1, true), { target: -1, wanted: [] });
 });
 
 test('playback is an exact lookup; missing hours and known empty inventories differ', () => {
@@ -59,7 +122,7 @@ test('native endpoint filters follow every selected holder at the supplying occu
   ]);
   const selected = identities.selected(['X']);
   const matches = (tag: string, readHour: number) => { const key = identities.keyAt(tag, readHour); return key !== null && selected.has(key); };
-  const held = { ...reply, states: [{ ...reply.states[0], runs: reply.states[0].runs.map(run => ({ ...run, value: { ...run.value, occupier: 'Y' } })) }] };
+  const held = windowOf([{ state: 2000, runs: [{ firstHour: 10, lastHour: 33, value: { ...value, occupier: 'Y' } }, { firstHour: 40, lastHour: 50, value: { ...value, occupier: 'Y' } }] }]);
   assert.equal(occupiedAt(held, 25, matches, 'occupier').rows.length, 1);
   assert.equal(occupiedAt(held, 33, matches, 'occupier').rows.length, 1);
   assert.equal(occupiedAt(held, 45, matches, 'occupier').rows.length, 0);
@@ -85,8 +148,7 @@ test('complete occupation inventories cannot prove filtered absence through an u
   const selected = identities.selected(['X']);
   const known = (tag: string, readHour: number) => identities.keyAt(tag, readHour) !== null;
   const matches = (tag: string, readHour: number) => { const key = identities.keyAt(tag, readHour); return key !== null && selected.has(key); };
-  const inventory = (occupiers: (string | null)[]): OccupiedStatesReply => ({ ...reply,
-    states: occupiers.map((occupier, state) => ({ state, runs: [{ firstHour: 10, lastHour: 33, value: { ...value, occupier } }] })) });
+  const inventory = (occupiers: (string | null)[]) => windowOf(occupiers.map((occupier, state) => ({ state, runs: [{ firstHour: 10, lastHour: 33, value: { ...value, occupier } }] })));
   const gap = occupiedAt(inventory(['X']), 25, matches, 'occupier', known);
   assert.equal(gap.observation?.complete, true);
   assert.equal(gap.rows.length, 0);
@@ -104,9 +166,9 @@ test('complete occupation inventories cannot prove filtered absence through an u
 });
 
 test('actual occupation columns date hourly Owner looks and retain unknown native selection in empty states', async () => {
-  const complete: OccupiedStatesReply = { ...reply, observed: [{ firstHour: 10, lastHour: 33, readHour: 10, complete: true }],
-    states: [{ state: 2000, runs: [{ firstHour: 10, lastHour: 24, value: { ...value, owner: 'X' } },
-      { firstHour: 25, lastHour: 33, value: { ...value, owner: 'Y', occupier: 'X' } }] }] };
+  const observed = [{ firstHour: 10, lastHour: 33, readHour: 10, complete: true }];
+  const complete = windowOf([{ state: 2000, runs: [{ firstHour: 10, lastHour: 24, value: { ...value, owner: 'X' } },
+    { firstHour: 25, lastHour: 33, value: { ...value, owner: 'Y', occupier: 'X' } }] }], observed);
   const groups: CountryGroupReply = { branchId: '1', humans: [], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
     countryIdentities: [
       { tag: 'X', identities: [{ firstHour: 0, lastHour: 9, slot: 1, countryId: 10 }, { firstHour: 20, lastHour: 33, slot: 1, countryId: 10 }] },
@@ -114,12 +176,19 @@ test('actual occupation columns date hourly Owner looks and retain unknown nativ
       { tag: 'Other', identities: [{ firstHour: 0, lastHour: 33, slot: 4, countryId: 40 }] },
     ], unobserved: { humans: [], factions: [], wars: [] }, warnings: [] };
   type Ask = { tag: string; hour: number };
-  const fixture: { data: OccupiedStatesReply; groups: CountryGroupReply; visible: OccupiedRow[]; wanted: Ask[]; sorting: Ask[];
-    table?: TableProps<OccupiedRow>; state?: WidgetStateProps } = { data: complete, groups, visible: occupiedAt(complete, 25, null, 'occupier').rows, wanted: [], sorting: [] };
+  const fixture: { manifest: OccupiedStatesManifestReply; data: OccupiedStatesReply; groups: CountryGroupReply; visible: OccupiedRow[]; wanted: Ask[]; sorting: Ask[];
+    windows?: number[]; request?: unknown; table?: TableProps<OccupiedRow>; state?: WidgetStateProps } = {
+    manifest: { ...manifest, windows: [{ firstHour: 0, lastHour: 9 }, { firstHour: 10, lastHour: 29 }, { firstHour: 30, lastHour: 33 }] },
+    data: complete, groups, visible: occupiedAt(complete, 25, null, 'occupier').rows, wanted: [], sorting: [] };
   const host = globalThis as typeof globalThis & { __occupiedR2?: typeof fixture };
   host.__occupiedR2 = fixture;
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__occupiedR2.data });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__occupiedR2.manifest });',
+    '/dashboard/productWindows.ts': `export const useProductWindows = (_client, _identity, request, wanted) => {
+      const f = globalThis.__occupiedR2; f.windows = wanted; f.request = request(wanted[0]);
+      return { data: new Map(wanted.map(index => [index, f.data])), errors: new Map(), retry() {} }; };
+      export const useWindowDisplay = (identity, data, hour) => data ? { identity, data, hour } : null;`,
+    '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__occupiedR2.groups });',
     '/charts/table/useTableHour.ts': 'export const useTableHour = clock => clock.getHour();',
     '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
@@ -136,8 +205,8 @@ test('actual occupation columns date hourly Owner looks and retain unknown nativ
     plugins: [{ name: 'occupied-native-dates', enforce: 'pre', transform(code, id) {
       const path = id.replaceAll('\\', '/');
       if (path.endsWith('/occupied-states/OccupiedStatesWidget.tsx')) return code.replace(
-        "import { useCallback, useEffect, useMemo, useState } from 'react';",
-        "import { useCallback, useEffect, useMemo } from 'react'; const useState = () => [globalThis.__occupiedR2.visible, () => {}];");
+        "import { useCallback, useMemo, useState } from 'react';",
+        "import { useCallback, useMemo } from 'react'; const useState = () => [globalThis.__occupiedR2.visible, () => {}];");
       return Object.entries(replacements).find(([suffix]) => path.endsWith(suffix))?.[1];
     } }] });
   try {
@@ -149,6 +218,8 @@ test('actual occupation columns date hourly Owner looks and retain unknown nativ
     const currentTable = () => fixture.table;
     const render = () => { fixture.table = undefined; fixture.state = undefined; return renderToStaticMarkup(createElement(Widget, props)); };
     render();
+    assert.deepEqual(fixture.windows, [0, 1, 2], 'following wants the shown block and both neighbours');
+    assert.deepEqual(fixture.request, { sourceId: 'source', revision: '1', product: 'occupied-states', params: { branchId: '1', window: 0 } });
     assert.deepEqual(fixture.wanted, [{ hour: 25, tag: 'Y' }, { hour: 10, tag: 'X' }, { hour: 10, tag: 'Original tag' }]);
     assert.deepEqual(fixture.sorting, [{ hour: 25, tag: 'Y' }, { hour: 10, tag: 'X' }]);
     const row = fixture.table!.rows[0];
@@ -160,6 +231,20 @@ test('actual occupation columns date hourly Owner looks and retain unknown nativ
       assert.equal(cell.props.name, `${row.value[role]}@${at}`);
       assert.equal(cell.props.flag, `${row.value[role]}-flag@${at}`);
     }
+    const lawColumn = fixture.table!.columns.find(column => column.key === 'law')!;
+    assert.equal(lawColumn.value!(row), 'Overridden law name');
+    const unreadLaw = { ...row, value: { ...row.value, law: 'Unresolved mod law' } };
+    assert.equal(lawColumn.value!(unreadLaw), 'Occupation law name unavailable', 'sorting uses the displayed missing title rather than the lookup key');
+    const unreadCell = lawColumn.render!(unreadLaw);
+    assert.ok(isValidElement<{ 'data-tooltip'?: string }>(unreadCell));
+    assert.equal(unreadCell.props['data-tooltip'], 'Key: Unresolved mod law');
+    assert.doesNotMatch(renderToStaticMarkup(unreadCell), />Unresolved mod law</);
+    fixture.manifest = { ...fixture.manifest, laws: [{ ...fixture.manifest.laws[0], name: '' }] };
+    render();
+    assert.equal(fixture.table!.columns.find(column => column.key === 'law')!.value!(row), '');
+    fixture.manifest = { ...fixture.manifest, laws: [{ ...fixture.manifest.laws[0], name: fixture.manifest.laws[0].token }] };
+    render();
+    assert.equal(fixture.table!.columns.find(column => column.key === 'law')!.value!(row), fixture.manifest.laws[0].token);
     props.widget.countries = { kind: 'tags', tags: ['X'] };
     render();
     assert.equal(fixture.state?.kind, 'unavailable');
@@ -167,17 +252,21 @@ test('actual occupation columns date hourly Owner looks and retain unknown nativ
     assert.equal(fixture.table, undefined);
     fixture.groups = { ...groups, countryIdentities: [...groups.countryIdentities,
       { tag: 'Alias', identities: [{ firstHour: 10, lastHour: 19, slot: 1, countryId: 10 }] }] };
-    fixture.data = { ...complete, states: [...complete.states, { state: 3000,
-      runs: [{ firstHour: 10, lastHour: 33, value: { ...value, occupier: 'Alias' } }] }] };
+    fixture.data = windowOf([{ state: 2000, runs: [{ firstHour: 10, lastHour: 24, value: { ...value, owner: 'X' } },
+      { firstHour: 25, lastHour: 33, value: { ...value, owner: 'Y', occupier: 'X' } }] }, { state: 3000,
+      runs: [{ firstHour: 10, lastHour: 33, value: { ...value, occupier: 'Alias' } }] }], observed);
     assert.match(render(), /Some occupied states could not be matched/);
     assert.equal(currentTable()?.rows.length, 1, 'known matching rows stay visible beside an unknown endpoint');
     assert.equal(fixture.state, undefined);
-    fixture.data = { ...complete, states: [{ state: 2000, runs: [{ firstHour: 10, lastHour: 33, value: { ...value, occupier: 'Other' } }] }] };
+    fixture.data = windowOf([{ state: 2000, runs: [{ firstHour: 10, lastHour: 33, value: { ...value, occupier: 'Other' } }] }], observed);
     render();
     assert.equal(currentState()?.kind, 'empty', 'a proved unrelated endpoint preserves known absence');
-    fixture.data = { ...complete, states: [] };
+    fixture.data = windowOf([], observed);
     render();
     assert.equal(currentState()?.kind, 'empty', 'a complete empty inventory needs no endpoint attribution');
+    props.widget.time = { mode: 'campaign' };
+    render();
+    assert.deepEqual(fixture.windows, [2], 'a fixed moment wants only its own block');
   } finally { delete host.__occupiedR2; await vite.close(); }
 });
 
@@ -185,15 +274,14 @@ test('exact labels distinguish missing from zero and date equal consecutive read
   assert.equal(percent('10000000'), '100%'); assert.equal(percent('9999999'), '99.99999%');
   const row = occupiedAt(reply, 25, null, 'occupier').rows[0];
   const label = (tag: string) => `Recorded name of ${tag}`;
-  const tip = occupationTooltip(reply, row, 25, label);
+  const tip = occupationTooltip(manifest.strengthMissing, row, label);
   assert.equal(tip.rows.find(item => item.label === 'Occupied country')?.value, 'Recorded name of Original tag');
   assert.equal(tip.rows.find(item => item.label === 'Resistance speed')?.value, '−0.00001 pp/day');
   assert.equal(tip.rows.find(item => item.label === 'Compliance speed')?.value, '+0.1 pp/day');
   assert.equal(tip.rows.find(item => item.label === 'Required manpower')?.value, '0');
   assert.equal(tip.rows.find(item => item.label === 'Required garrison amount')?.value, '—');
-  assert.match(tip.note!, /Read .*occupation values are read once a day/);
-  assert.equal(occupationTooltip(reply, row, 21, label).note, undefined);
-  const known = occupationTooltip(reply, { ...row, value: { ...row.value, garrisonStrengthRaw: '0' } }, 25, label);
+  assert.equal(tip.note, undefined);
+  const known = occupationTooltip(manifest.strengthMissing, { ...row, value: { ...row.value, garrisonStrengthRaw: '0' } }, label);
   assert.equal(known.rows.find(item => item.label === 'Garrison strength')?.value, '0%');
   assert.equal(known.description, undefined);
 });
@@ -203,7 +291,7 @@ test('empty state names remain authoritative while null keeps the fallback and r
   for (const [name, expected] of [['', ''], [null, 'State 2000']] as const) {
     const shown = { ...row, value: { ...row.value, name, nameMissing: name === null ? 'State name unavailable' : null } };
     assert.equal(stateName(shown), expected);
-    const tip = occupationTooltip(reply, shown, 25, tag => tag);
+    const tip = occupationTooltip(manifest.strengthMissing, shown, tag => tag);
     assert.equal(tip.title, expected);
     assert.equal(tip.rows.some(item => item.label === 'State name unavailable'), name === null);
   }
@@ -232,7 +320,7 @@ test('compact native cells retain exact resistance, compliance, speeds and garri
   assert.equal(percentCell(shown.resistanceRaw), '41%');
   assert.equal(percentCell(shown.complianceRaw), '9%');
   assert.equal(garrisonCell(shown, true).text, '1.23');
-  const tip = occupationTooltip(reply, { key: '2000', state: 2000, hour: 21, value: shown }, 25, tag => tag);
+  const tip = occupationTooltip(manifest.strengthMissing, { key: '2000', state: 2000, hour: 21, value: shown }, tag => tag);
   const text = (label: string) => tip.rows.find(row => row.label === label)?.value;
   assert.equal(text('Resistance'), '41.3354%');
   assert.equal(text('Compliance'), '9.40099%');
@@ -247,7 +335,7 @@ test('garrison fraction uses full and half bar geometry and exact tooltip percen
     assert.equal(strengthPercent(raw), percentage);
     const shown = { ...value, garrisonRequiredRaw: '123999', garrisonStrengthRaw: raw };
     assert.equal(garrisonCell(shown, true).bar, strengthBar(raw));
-    const tooltip = occupationTooltip(reply, { key: '7', state: 7, hour: 10, value: shown }, 10, tag => tag);
+    const tooltip = occupationTooltip(manifest.strengthMissing, { key: '7', state: 7, hour: 10, value: shown }, tag => tag);
     assert.equal(tooltip.rows.find(item => item.label === 'Garrison strength')?.value, percentage);
   }
 });

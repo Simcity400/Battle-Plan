@@ -293,10 +293,7 @@ fn parts(
                 _ => None,
             }?;
             match grouping {
-                NavyGrouping::Class => Some((
-                    format!("class:{registered}"),
-                    Some(localise(registered).unwrap_or_else(|| registered.to_owned())),
-                )),
+                NavyGrouping::Class => Some((format!("class:{registered}"), localise(registered))),
                 NavyGrouping::Type => {
                     let mask = units.category(registered.as_bytes()).ok()?;
                     let types = match installed_content::equipment::category_names(mask) {
@@ -311,10 +308,10 @@ fn parts(
                     }
                     let name = types
                         .iter()
-                        .map(|key| localise(key).unwrap_or_else(|| (*key).to_owned()))
-                        .collect::<Vec<_>>()
-                        .join(" / ");
-                    Some((format!("type:{mask}"), Some(name)))
+                        .map(|key| localise(key))
+                        .collect::<Option<Vec<_>>>()
+                        .map(|names| names.join(" / "));
+                    Some((format!("type:{mask}"), name))
                 }
             }
         });
@@ -338,7 +335,7 @@ fn parts(
                         super::equipment::UNRESOLVED_MARK,
                         serde_json::to_string(&(token, spelling)).expect("class identity")
                     ),
-                    Some(visible),
+                    Some("Ship class name unavailable".into()),
                     true,
                 )
             }

@@ -848,34 +848,42 @@ fn scan(
             .to_owned(),
         ..Builder::default()
     };
-    for block in replay
-        .index
-        .iter()
-        .filter(|block| block.branch == params.branch())
-    {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            builder.warn("Unread replay block; operation history has a gap");
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Espionage request cancelled",
-                ));
+    crate::blocks::scan_blocks(
+        replay,
+        replay
+            .index
+            .iter()
+            .filter(|block| block.branch == params.branch()),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    builder.warn("Unread replay block; operation history has a gap");
+                    continue;
+                };
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "Espionage request cancelled",
+                        ));
+                    }
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        builder.warn("Unread replay frame; operation history has a gap");
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    builder.observe(decoded);
+                    builder.observe_completions(decoded, replay, params.branch())?;
+                }
             }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                builder.warn("Unread replay frame; operation history has a gap");
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            builder.observe(decoded);
-            builder.observe_completions(decoded, replay, params.branch())?;
-        }
-    }
+            Ok(())
+        },
+    )?;
     let unavailable = builder
         .available
         .is_empty()

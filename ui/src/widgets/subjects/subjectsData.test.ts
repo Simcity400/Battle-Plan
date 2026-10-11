@@ -110,7 +110,7 @@ test('level colours follow the content order, never a level name, and fold past 
   const colours = levelColours(levels, ['c0', 'c1', 'c2'], 'other');
   assert.deepEqual([...colours], [['autonomy_mod_march', 'c0'], ['autonomy_puppet', 'c1'], ['autonomy_mod_unnamed', 'c2'], ['autonomy_mod_unordered', 'other']]);
   // A level with no localisation shows its id, and an unrecorded level says so.
-  assert.equal(levelName(byToken, 'autonomy_mod_unnamed'), 'autonomy_mod_unnamed');
+  assert.equal(levelName(byToken, 'autonomy_mod_unnamed'), 'Autonomy level name unavailable');
   assert.equal(levelName(byToken, null), 'Level not recorded');
 });
 
@@ -129,7 +129,7 @@ test('each overlord heads its subjects, dated as the game dates them, coloured b
   assert.deepEqual(lanes[2].spans[0].band?.map(item => [item.firstHour, item.value]).slice(0, 2), [[100, 1], [120, 2]]);
   // A bar per level stretch, coloured by level; an unrecorded level is left uncoloured.
   const realm = lanes[3].spans;
-  assert.deepEqual(realm.map(span => [span.firstHour, span.label, span.color]), [[100, 'March', 'c0'], [150, 'Puppet', 'c1'], [250, 'autonomy_mod_unnamed', 'c2']]);
+  assert.deepEqual(realm.map(span => [span.firstHour, span.label, span.color]), [[100, 'March', 'c0'], [150, 'Puppet', 'c1'], [250, 'Autonomy level name unavailable', 'c2']]);
   assert.equal(lanes[4].spans[0].color, undefined);
   assert.ok(lanes.some(lane => info.get(lane.id)?.subject?.runs[0].subject === 'A:B'));
   assert.deepEqual(laneCountries(lanes, info, 160).sort(), ['A:B', 'CAN', 'D01', 'ENG', 'MY TAG']);
@@ -142,7 +142,7 @@ test('ended and unrecorded stretches are said honestly, and can be hidden or nar
     .lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
   assert.ok(at(220).includes('Modded Realm: Ended day 200'));
   // Taken again later: a new relation, dated by its own start.
-  assert.ok(at(260).includes('Modded Realm: autonomy_mod_unnamed · since day 250'));
+  assert.ok(at(260).includes('Modded Realm: Autonomy level name unavailable · since day 250'));
   // Its hours after 299 were not recorded: unknown, then ended by the first recorded hour.
   assert.ok(at(305).includes('Modded Realm: Last recorded day 299'));
   assert.ok(at(320).includes('Modded Realm: Ended by day 310'));
@@ -201,7 +201,7 @@ test('a change of tag of a subject or its overlord keeps one lane and one overlo
   const colours = levelColours(levels, ['c0', 'c1'], 'other');
   const labels = subjectLanes(views, byToken, colours, 280, options, text, []).lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
   // Named by the tags they have at the hour, neither said to have ended.
-  assert.deepEqual(labels, ['D02: 2 subjects', 'BBB: Puppet · since day 50', 'CCC: autonomy_colony · since day 70']);
+  assert.deepEqual(labels, ['D02: 2 subjects', 'BBB: Puppet · since day 50', 'CCC: Autonomy level name unavailable · since day 70']);
   // Without the changes, the renamed subject would look released and another taken.
   assert.equal(overlordViews(renamed).length, 2);
 });

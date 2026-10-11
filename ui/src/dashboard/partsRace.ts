@@ -1,8 +1,10 @@
+import { contentTitle } from './contentTitles.ts';
 /** Recorded totals and parallel content parts for country races, lines and mix. */
 import type { CountryRaceEntry } from '../charts/race/countryRace';
 import type { Run, Span } from '../charts/series';
 import { isOrderedSpans, runAt, runIndexAt, spansCovered, stretchStarts } from '../charts/series.ts';
 import { shownRuns } from '../charts/race/lines.ts';
+import { usNumber } from '../charts/numberFormat.ts';
 import type { TooltipContent, TooltipRow } from '../charts/tooltip';
 import { compareTags } from './tagOrder.ts';
 import { object, int } from './validation.ts';
@@ -91,8 +93,8 @@ export function rankPartsRace(model: PartsRaceModel, candidates: readonly string
   }).sort((a, b) => b.at.total - a.at.total || compareTags(a.tag, b.tag)).slice(0, Math.max(0, limit));
 }
 
-export const formatPartsRaceValue = (value: number) => value.toLocaleString('en-US');
-export const partsRacePartName = (part: PartsRaceReply['parts'][number]) => part.name || part.key;
+export const formatPartsRaceValue = (value: number) => usNumber.format(value);
+export const partsRacePartName = (part: PartsRaceReply['parts'][number]) => contentTitle(part.name, part.key, 'Part name unavailable');
 
 /** A missing classification keeps the independently recorded total visible. */
 export function partsRaceEntries(model: PartsRaceModel, ranked: ReturnType<typeof rankPartsRace>, split: boolean,

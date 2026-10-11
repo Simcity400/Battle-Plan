@@ -17,7 +17,7 @@ export function countryChoices(countries: readonly CountryOption[]): CountryChoi
   const byTag = new Map<string, CountryOption>();
   for (const country of countries) if (!byTag.has(country.tag)) byTag.set(country.tag, country);
   return [...byTag.values()]
-    .map(country => ({ country, label: country.name || country.tag, search: `${country.name} ${country.tag}`.toLowerCase() }))
+    .map(country => ({ country, label: country.name, search: `${country.name} ${country.tag}`.toLowerCase() }))
     .sort((a, b) => collator.compare(a.label, b.label))
     .map(({ country, search }) => ({ country, search }));
 }
@@ -28,12 +28,12 @@ export function allowedCountryChoices(countries: readonly CountryMetadata[], all
   at: { branchId: string; hour: number } | null, names?: ReadonlyMap<string, string>): CountryChoice[] {
   const byTag = new Map<string, CountryMetadata>();
   for (const country of countries) if (!byTag.has(country.tag)) byTag.set(country.tag, country);
-  const choices = countryChoices(allowedTags.map(tag => byTag.get(tag) ?? { tag, name: tag,
+  const choices = countryChoices(allowedTags.map(tag => byTag.get(tag) ?? { tag, name: 'Country name unavailable',
     ...(at ? { observedBranchId: at.branchId, observedHour: at.hour } : {}) }));
   // Resolving a row's historical name must not move it out of the viewport and
   // trigger reads of further rows without scrolling.
   return choices.map(({ country }) => {
-    const name = at ? names?.get(country.tag) ?? country.tag : country.name;
+    const name = at ? names?.get(country.tag) ?? 'Country name unavailable' : country.name;
     return { country: { ...country, name }, search: `${name} ${country.tag}`.toLowerCase() };
   });
 }

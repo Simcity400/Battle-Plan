@@ -1,26 +1,30 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
 import type { ComponentProps, CSSProperties, PointerEvent } from 'react';
 import DateTimePicker from '../components/DateTimePicker';
 import PlaybackSpeed from '../components/PlaybackSpeed';
-import { formatDate, formatDateTime, gameDate } from './calendar';
+import { formatDateTime } from './calendar';
 import { Icon } from '../components/Icons';
 import type { BoundTrack, DashboardTemplate } from './model';
-import { usePlaybackHour } from './playback';
 import type { PlaybackController } from './playback';
 import { timelineGaps } from './timelineGaps';
 import CountryPicker from '../components/CountryPicker';
 
 /** The header's country picker, showing the flag the game drew at the playback hour.
- * Only this component follows the clock; while playing it asks at most every 250 ms. */
+ * Only this component follows the clock; while playing it asks at most every 250 ms,
+ * and the hours between those samples render nothing. */
 export function PlaybackCountryPicker({ clock, track, ...picker }: { clock: PlaybackController; track: BoundTrack | undefined } & Omit<ComponentProps<typeof CountryPicker>, 'flagAt'>) {
-  const hour = usePlaybackHour(clock);
   const [sampled, setSampled] = useState(() => clock.getHour());
-  const sent = useRef(0);
   useEffect(() => {
-    const wait = clock.getSnapshot().playing ? Math.max(0, 250 - (performance.now() - sent.current)) : 0;
-    const timer = setTimeout(() => { sent.current = performance.now(); setSampled(clock.getHour()); }, wait);
-    return () => clearTimeout(timer);
-  }, [hour, clock]);
+    let hour = clock.getHour(), sent = 0, timer: ReturnType<typeof setTimeout> | undefined;
+    const sample = () => {
+      clearTimeout(timer);
+      const wait = clock.getSnapshot().playing ? Math.max(0, 250 - (performance.now() - sent)) : 0;
+      timer = setTimeout(() => { sent = performance.now(); setSampled(clock.getHour()); }, wait);
+    };
+    sample();
+    const stop = clock.subscribeHour(() => { if (clock.getHour() !== hour) { hour = clock.getHour(); sample(); } });
+    return () => { stop(); clearTimeout(timer); };
+  }, [clock]);
   const raw = track ? sampled + track.axisOffset : null;
   const flagAt = useMemo(() => track && raw != null && raw >= track.branch.firstHour && raw <= track.branch.lastHour
     ? { branchId: track.branch.id, hour: raw } : null, [track?.branch.id, track?.branch.firstHour, track?.branch.lastHour, raw]);
@@ -50,7 +54,6 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
   const progress = bounds && span > 0 ? 100 * (snapshot.hour - bounds.firstHour) / span : 0;
   const gaps = useMemo(() => reference && bounds ? timelineGaps(reference.branch.gaps ?? [], reference.axisOffset, bounds.firstHour, bounds.lastHour) : [], [reference, bounds]);
   const currentGap = reference?.branch.gaps?.find(gap => rawHour != null && gap.firstHour <= rawHour && gap.lastHour >= rawHour);
-  const edge = (hour: number) => { const date = gameDate(hour); return date ? formatDate(date) : ''; };
   const trackHover = (event: PointerEvent<HTMLInputElement>) => {
     if (!bounds || span <= 0 || !reference) return;
     // The range maps values across the track minus the thumb.
@@ -75,7 +78,6 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
       <PlaybackSpeed value={snapshot.hoursPerSecond} onChange={(speed) => clock.setSpeed(speed)} />
     </section>
     <div className="header-timeline-wrap" data-empty={!bounds || span <= 0 || undefined}>
-      <span className="timeline-edge">{bounds && reference ? edge(bounds.firstHour + reference.axisOffset) : ''}</span>
       <div className="timeline-track">
         <input className="header-timeline" type="range" aria-label="Campaign timeline" disabled={!bounds || span <= 0}
           min={bounds?.firstHour ?? 0} max={bounds?.lastHour ?? 1} step={1} value={snapshot.hour}
@@ -87,7 +89,6 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
           data-tooltip={`Reported recording gap · ${formatDateTime(gap.firstHour)} to ${formatDateTime(gap.lastHour)} · ${gap.reason}`} />)}</div>
         {hover && <span className="timeline-hover" style={{ left: hover.left }} aria-hidden="true">{formatDateTime(hover.hour)}</span>}
       </div>
-      <span className="timeline-edge">{bounds && reference ? edge(bounds.lastHour + reference.axisOffset) : ''}</span>
     </div>
     <p className="sr-only" id={helpId}>Date browsing is a draft until Go. {alignment === 'anchors' ? 'The date uses the selected reference track; playback aligns by track anchors.' : 'Tracks share the game-calendar date.'} Only views following playback move with these controls.</p>
   </>;

@@ -34,6 +34,8 @@ export function useWindowDisplay<T>(identity: string | null, data: T | undefined
   return shown;
 }
 
+const withEntries = <V>(map: Map<number, V>, entries: readonly [number, V][]) => entries.length ? new Map([...map, ...entries]) : map;
+
 /** What is held once `wanted` is all that is wanted: nothing of another identity, and
  * none of the windows no longer wanted; the same object when nothing changes, so a
  * render that wants the same windows is not repeated. */
@@ -66,23 +68,32 @@ export function useProductWindows<T>(client: DashboardClient, identity: string |
       const kept = keepWanted(previous, identity, want);
       return kept === previous ? previous : { ...kept, owner, attempt: previous.attempt };
     });
+    // Windows landing in the same frame commit together: a widget asking for a whole
+    // campaign renders once a frame, not once a window.
+    const arrived: { data: [number, T][]; errors: [number, string][] } = { data: [], errors: [] };
+    let frame = 0;
+    const commit = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = 0;
+      if (!arrived.data.length && !arrived.errors.length) return;
+      const data = arrived.data.splice(0), errors = arrived.errors.splice(0);
+      setHeld(previous => previous.owner !== owner ? previous
+        : { ...previous, data: withEntries(previous.data, data), errors: withEntries(previous.errors, errors) });
+    };
+    const arrive = (add: () => void) => {
+      if (controller.signal.aborted) return;
+      add();
+      frame ||= requestAnimationFrame(commit);
+    };
     for (const window of want) {
       if (current?.data.has(window) || current?.errors.has(window)) continue;
       void loadProduct<T>(client, request(window), controller.signal, validate).then(
-        data => {
-          if (controller.signal.aborted) return;
-          setHeld(previous => previous.owner !== owner ? previous
-            : { ...previous, data: new Map(previous.data).set(window, data) });
-        },
-        error => {
-          if (controller.signal.aborted) return;
-          const message = error instanceof Error ? error.message : String(error);
-          setHeld(previous => previous.owner !== owner ? previous
-            : { ...previous, errors: new Map(previous.errors).set(window, message) });
-        },
+        data => arrive(() => arrived.data.push([window, data])),
+        error => arrive(() => arrived.errors.push([window, error instanceof Error ? error.message : String(error)])),
       );
     }
-    return () => controller.abort();
+    // Replies that landed before this request set changed still count.
+    return () => { commit(); controller.abort(); };
     // The identity and the wanted windows name every request; `request` is rebuilt each render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owner, key, active, attempt]);

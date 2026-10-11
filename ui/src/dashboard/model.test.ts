@@ -130,14 +130,13 @@ test('widget versions migrate independently and unavailable widgets survive temp
   assert.equal(widgetUnavailable(restored.widgets[2]), null);
 });
 
-test('only campaign maps start live; unlinked maps hold the branch end and linked maps follow the shared axis', () => {
+test('unlinked maps hold the branch end and linked maps follow the shared axis', () => {
   const template = defaultTemplate();
-  assert.ok(template.widgets.every((widget) => widget.time.mode === (widget.kind === 'map' ? 'follow' : 'campaign')));
   const tracks = bindTracks(template, new Map([['primary', source()]]));
   const track = { ...tracks[0], axisOffset: 1000 };
   const linked = createWidget('map', 'main');
   assert.equal(linked.time.mode, 'follow');
-  assert.equal(createWidget('placeholder', 'main').time.mode, 'campaign');
+  assert.equal(createWidget('territory', 'main').time.mode, 'campaign');
   // A widget about the whole world (`countries.all`) starts on all countries; others on the dashboard's country.
   assert.deepEqual(createWidget('trade-flows', 'main').countries, { kind: 'all' });
   assert.deepEqual(createWidget('resource-balance', 'main').countries, { kind: 'selected' });

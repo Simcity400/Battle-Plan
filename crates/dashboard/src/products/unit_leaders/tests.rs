@@ -131,7 +131,7 @@ fn leader_outcomes_join_native_handles_and_keep_pending_battles_unknown() {
     .unwrap();
     let reply = scan(&replay, &all_params(), None, &AtomicBool::new(false)).unwrap();
     assert_eq!(reply.leaders.len(), 1);
-    assert_eq!(reply.leaders[0].battle_starts, [100, 1, 1]);
+    assert_eq!(reply.leaders[0].battle_starts, Some(vec![100, 1, 1]));
     assert_eq!(
         reply.leaders[0].battle_won.as_deref(),
         Some(&[Some(true), None, Some(false)][..])
@@ -140,8 +140,11 @@ fn leader_outcomes_join_native_handles_and_keep_pending_battles_unknown() {
         reply.leaders[0].battle_result_hours.as_deref(),
         Some(&[Some(102), None, Some(102)][..])
     );
-    assert_eq!(reply.leaders[0].battle_start_read_hours, [100, 101, 104]);
-    assert_eq!(reply.leaders[0].unknown_battle_starts, [0, 2]);
+    assert_eq!(
+        reply.leaders[0].battle_start_read_hours,
+        Some(vec![100, 101, 104])
+    );
+    assert_eq!(reply.leaders[0].unknown_battle_starts, Some(vec![0, 2]));
     assert_eq!(
         reply.leaders[0].battle_result_read_hours.as_deref(),
         Some(&[Some(104), None, Some(104)][..])
@@ -291,13 +294,18 @@ fn naval_outcomes_require_the_exact_persistent_source_and_idle_fleets_are_comman
         leader.battle_result_hours.as_deref(),
         Some(&[Some(102), None, Some(102)][..])
     );
-    assert_eq!(leader.battle_starts, [100, 0, 2]);
-    assert_eq!(leader.battle_start_read_hours, [100, 100, 104]);
+    assert_eq!(leader.battle_starts, Some(vec![100, 0, 2]));
+    assert_eq!(leader.battle_start_read_hours, Some(vec![100, 100, 104]));
     assert_eq!(
         leader.battle_result_read_hours.as_deref(),
         Some(&[Some(104), None, Some(104)][..])
     );
-    assert!(leader.unknown_battle_starts.contains(&2));
+    assert!(
+        leader
+            .unknown_battle_starts
+            .as_ref()
+            .is_some_and(|unknown| unknown.contains(&2))
+    );
     assert_eq!(leader.commands.len(), 2);
     assert!(leader.commands.iter().all(|command| {
         command.formation == "70" && command.kind == LeaderFormationKind::Fleet
@@ -538,10 +546,9 @@ fn scan_joins_raw_owners_commands_and_counts_each_combat_once() {
     assert_eq!(l.runs.len(), 3);
     assert_eq!(l.commands.len(), 2);
     assert_eq!(l.commands[0].kind, LeaderFormationKind::ArmyGroup);
-    assert_eq!(l.battle_starts.len(), 2); // Both sides and repeated hours still count once.
-    assert_eq!(l.unknown_battle_starts, vec![0]);
-    assert!(!l.unknown_battle_starts.contains(&1));
-    assert_eq!(l.battle_starts, vec![100, 3]); // The gap never fills.
+    // Both sides and repeated hours still count once; the gap never fills.
+    assert_eq!(l.battle_starts, Some(vec![100, 3]));
+    assert_eq!(l.unknown_battle_starts, Some(vec![0]));
     assert!(l.battle_won.is_none());
     let country_request = UnitLeadersParams {
         selection: LeaderSelection::Countries {
@@ -553,7 +560,10 @@ fn scan_joins_raw_owners_commands_and_counts_each_combat_once() {
     let transferred = scan(&replay, &country_request, None, &AtomicBool::new(false)).unwrap();
     assert_eq!(transferred.leaders.len(), 1);
     assert_eq!(transferred.leaders[0].runs[0].first_hour, 100);
-    assert_eq!(transferred.leaders[0].battle_starts.len(), 2);
+    assert_eq!(
+        transferred.leaders[0].battle_starts.as_ref().map(Vec::len),
+        Some(2)
+    );
     let excluded = UnitLeadersParams {
         selection: LeaderSelection::Countries {
             tags: vec!["different country".into()],
@@ -698,7 +708,7 @@ fn missing_trait_reads_kinds_and_lightweight_choices_stay_honest() {
     assert!(choices.traits.is_empty());
     assert!(choices.leaders.iter().all(|leader| leader.runs.len() == 1
         && leader.runs[0].value.traits.is_none()
-        && leader.battle_starts.is_empty()));
+        && leader.battle_starts.as_ref().is_some_and(Vec::is_empty)));
 }
 
 #[test]
@@ -865,14 +875,15 @@ fn captured_hidden_and_unresolved_visibility_are_withheld() {
         captured: 1,
         ..Default::default()
     };
-    assert_eq!(visible(&row, None), Ok(false));
+    let visible = |row: &UnitLeaderRow| visible(row, None, &mut None, None, true);
+    assert_eq!(visible(&row), Ok(false));
     row.category = -1; // Captured categories compare as unsigned.
-    assert_eq!(visible(&row, None), Ok(true));
+    assert_eq!(visible(&row), Ok(true));
     row.category = 1;
     row.captured = 0;
-    assert_eq!(visible(&row, None), Ok(true));
+    assert_eq!(visible(&row), Ok(true));
     row.visibility_choice = 1;
-    assert!(visible(&row, None).is_err());
+    assert!(visible(&row).is_err());
     assert_ne!(
         handle(&row),
         handle(&UnitLeaderRow {
@@ -882,6 +893,81 @@ fn captured_hidden_and_unresolved_visibility_are_withheld() {
     );
 }
 
+/// A read visibility needs the hour's World only for `visible` conditions,
+/// an unlinked owner or changed inputs; the core tables still refuse first.
+#[test]
+fn read_leader_visibility_reads_the_world_only_to_evaluate() {
+    use replay::{frame::TableView, rows::TableRows};
+    fn hour<'a>(content: &'a ScriptedContent, frame: &'a DecodedFrame) -> HourWorld<'a> {
+        HourWorld {
+            content,
+            frame,
+            world: OnceCell::from(Err("the World is read".to_owned())),
+            gap: OnceCell::new(),
+        }
+    }
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
+        "common/defines/test.lua",
+        "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+    )]);
+    let content = catalogue.scripted_content().unwrap();
+    let row = UnitLeaderRow {
+        kind: 1,
+        category: 1,
+        character_id: 9,
+        template_visibility: 1,
+        ..Default::default()
+    };
+    let read = |visibility| {
+        Some(VisibilityRead {
+            key: (Some(1), 9, 0, 1),
+            visibility,
+            noted: false,
+        })
+    };
+    let refused = |why: &str| Err::<bool, _>(Some(why.to_owned()));
+    let mut frame = crate::test_fixtures::source(1, 100, None);
+    assert_eq!(
+        visible(
+            &row,
+            Some(&hour(content, &frame)),
+            &mut read(LeaderVisibility::Unconditioned),
+            Some(1),
+            true
+        ),
+        refused("Provinces is unavailable: outside country fixture")
+    );
+    for table in [TableId::Provinces, TableId::States] {
+        *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+    }
+    let hour = hour(content, &frame);
+    let visible = |read: &mut Option<VisibilityRead>, epoch, linked| {
+        visible(&row, Some(&hour), read, epoch, linked)
+    };
+    assert_eq!(
+        visible(&mut read(LeaderVisibility::Unconditioned), Some(1), true),
+        Ok(true)
+    );
+    for (visibility, epoch, linked) in [
+        (LeaderVisibility::Conditioned(0), Some(1), true),
+        (LeaderVisibility::Unconditioned, Some(1), false),
+        (LeaderVisibility::Unconditioned, Some(2), true),
+        (LeaderVisibility::Unconditioned, None, true),
+    ] {
+        assert_eq!(
+            visible(&mut read(visibility), epoch, linked),
+            refused("the World is read")
+        );
+    }
+    // Refusals are a set: a read unknown is noted once.
+    let mut unknown = read(LeaderVisibility::Decided(Eval::unknown("refused role")));
+    assert_eq!(
+        visible(&mut unknown, Some(1), true),
+        refused("refused role")
+    );
+    assert_eq!(visible(&mut unknown, Some(1), true), Err(None));
+}
+
 #[test]
 fn missing_command_name_is_unknown_without_fragmenting_the_command() {
     let mut l = LeaderState::new(5);
@@ -889,7 +975,7 @@ fn missing_command_name_is_unknown_without_fragmenting_the_command() {
         &mut l,
         70,
         LeaderFormationKind::Army,
-        Some("Named army".into()),
+        Some("Named army"),
         100,
     );
     append_command(&mut l, 70, LeaderFormationKind::Army, None, 101);
@@ -897,7 +983,7 @@ fn missing_command_name_is_unknown_without_fragmenting_the_command() {
         &mut l,
         70,
         LeaderFormationKind::Army,
-        Some("Named army".into()),
+        Some("Named army"),
         102,
     );
     assert_eq!(l.career.commands.len(), 1);
@@ -1191,7 +1277,7 @@ fn combat_heavy_1500_country_fixture_fits_the_transport_budget() {
         reply
             .leaders
             .iter()
-            .all(|leader| leader.battle_starts.len() == 50)
+            .all(|leader| leader.battle_starts.as_ref().map(Vec::len) == Some(50))
     );
     assert!(reply_bytes(&reply).is_ok());
     report_size("6000 leaders / 50 fights each", &reply);
@@ -1552,7 +1638,7 @@ fn history_items(reply: &UnitLeadersReply) -> usize {
                 leader.runs.len()
                     + leader.trait_gains.len()
                     + leader.commands.len()
-                    + leader.battle_starts.len()
+                    + leader.battle_starts.as_ref().map_or(0, Vec::len)
             })
             .sum::<usize>()
 }
@@ -1604,7 +1690,7 @@ fn report_size(label: &str, reply: &UnitLeadersReply) -> usize {
         reply
             .leaders
             .iter()
-            .map(|leader| leader.battle_starts.len())
+            .map(|leader| leader.battle_starts.as_ref().map_or(0, Vec::len))
             .sum::<usize>(),
         reply.observed.len(),
         history_items(reply),
@@ -1654,9 +1740,10 @@ fn compact_wire_retains_scan_runs_traits_and_recorded_battles() {
     for leader in &reply.leaders {
         assert_eq!(leader.runs.len(), 9);
         assert_eq!(leader.trait_gains.len(), 1);
-        assert_eq!(leader.battle_starts.len(), 9);
+        let starts = leader.battle_starts.as_deref().unwrap();
+        assert_eq!(starts.len(), 9);
         assert_eq!(
-            leader.battle_starts.iter().sum::<i64>(),
+            starts.iter().sum::<i64>(),
             i64::from(leader.runs.last().unwrap().first_hour)
         );
     }
@@ -1802,12 +1889,9 @@ fn projections_share_a_branch_scan_and_remap_selected_histories() {
     assert_eq!(selected.leaders.len(), 2);
     assert_eq!(selected.roles.len(), 1);
     assert_eq!(selected.roles[0].owner.as_deref(), Some("mod country 2"));
-    assert!(
-        selected
-            .leaders
-            .iter()
-            .all(|leader| leader.runs.len() == 3 && leader.battle_starts.len() == 3)
-    );
+    assert!(selected.leaders.iter().all(|leader| leader.runs.len() == 3
+        && leader.battle_starts.is_none()
+        && leader.fought_hours.as_ref().map(Vec::len) == Some(3)));
     assert!(selected.leaders.iter().all(|leader| {
         leader
             .runs
@@ -1826,7 +1910,155 @@ fn projections_share_a_branch_scan_and_remap_selected_histories() {
     assert!(choices.traits.is_empty());
     assert!(choices.leaders.iter().all(|leader| leader.runs.len() == 1
         && leader.runs[0].first_hour == leader.runs[0].last_hour
-        && leader.battle_starts.is_empty()));
+        && leader.battle_starts.is_none()
+        && leader.fought_hours.is_none()));
+}
+
+/// Raw battles as the scan keeps them: unknown starts before the recording,
+/// shared hours, delayed reads, undecided battles and results read before or
+/// after their participation.
+fn record_battles(leader: &mut LeaderCareer, first_hour: i32, count: u32) {
+    let mut previous = 0_i64;
+    let (mut starts, mut reads, mut unknown) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut won, mut result_hours, mut result_reads) = (Vec::new(), Vec::new(), Vec::new());
+    for i in 0..count {
+        let x = i.wrapping_mul(2_654_435_761) >> 13;
+        let start = first_hour - 10 + 20 * (i / 2) as i32;
+        let result = (x % 5 != 0).then_some(start + (x % 11) as i32);
+        starts.push(i64::from(start) - previous);
+        previous = i64::from(start);
+        reads.push(start.max(first_hour) + (x % 4) as i32 * 9);
+        if start < first_hour {
+            unknown.push(i);
+        }
+        won.push(result.map(|_| x % 2 == 0));
+        result_hours.push(result);
+        result_reads.push(result.map(|hour| hour.max(first_hour) + (x % 3) as i32));
+    }
+    leader.battle_starts = Some(starts);
+    leader.battle_start_read_hours = Some(reads);
+    leader.unknown_battle_starts = Some(unknown);
+    leader.battle_won = Some(won);
+    leader.battle_result_hours = Some(result_hours);
+    leader.battle_result_read_hours = Some(result_reads);
+}
+
+#[test]
+fn leaderboard_hours_give_the_career_counts_at_every_hour() {
+    fn through(hours: &[i64], hour: i64) -> usize {
+        hours.iter().filter(|&&at| at <= hour).count()
+    }
+    let mut scanned = scan_fixture(1, 1, 1, false);
+    let first_hour = scanned.first_hour;
+    record_battles(&mut scanned.leaders[0], first_hour, 400);
+    let career = scanned.leaders[0].clone();
+    let reference = career.reference.clone();
+    let career_params = UnitLeadersParams {
+        selection: LeaderSelection::Leader { reference },
+        view: LeaderView::Career,
+        ..all_params()
+    };
+    assert_eq!(project(&scanned, &career_params, None).leaders[0], career);
+    let board = project(&scanned, &all_params(), None).leaders.remove(0);
+    assert_eq!(
+        board,
+        LeaderCareer {
+            battle_starts: None,
+            battle_start_read_hours: None,
+            unknown_battle_starts: None,
+            battle_won: None,
+            battle_result_hours: None,
+            battle_result_read_hours: None,
+            fought_hours: board.fought_hours.clone(),
+            won_hours: board.won_hours.clone(),
+            lost_hours: board.lost_hours.clone(),
+            ..career.clone()
+        }
+    );
+    let decoded = |deltas: &Option<Vec<i64>>| {
+        let mut hour = 0_i64;
+        let hours: Vec<i64> = deltas
+            .as_deref()
+            .unwrap()
+            .iter()
+            .map(|delta| {
+                hour += delta;
+                hour
+            })
+            .collect();
+        assert!(hours.is_sorted());
+        hours
+    };
+    let [fought, won, lost] =
+        [&board.fought_hours, &board.won_hours, &board.lost_hours].map(decoded);
+    // The career's counts: a participation shows from the later of its date and
+    // first read; a result also waits for its own date and read.
+    let mut start = 0_i64;
+    let shown: Vec<i64> = career
+        .battle_starts
+        .as_deref()
+        .unwrap()
+        .iter()
+        .zip(career.battle_start_read_hours.as_deref().unwrap())
+        .map(|(delta, read)| {
+            start += delta;
+            start.max(i64::from(*read))
+        })
+        .collect();
+    let outcomes = career.battle_won.as_deref().unwrap();
+    let result_hours = career.battle_result_hours.as_deref().unwrap();
+    let result_reads = career.battle_result_read_hours.as_deref().unwrap();
+    let last = *fought.iter().chain(&won).chain(&lost).max().unwrap();
+    for hour in i64::from(first_hour) - 1..=last + 1 {
+        let decided = |outcome: bool| {
+            (0..shown.len())
+                .filter(|&i| {
+                    outcomes[i] == Some(outcome)
+                        && shown[i]
+                            .max(i64::from(result_hours[i].unwrap()))
+                            .max(i64::from(result_reads[i].unwrap()))
+                            <= hour
+                })
+                .count()
+        };
+        assert_eq!(
+            [
+                through(&fought, hour),
+                through(&won, hour),
+                through(&lost, hour)
+            ],
+            [through(&shown, hour), decided(true), decided(false)],
+            "hour {hour}"
+        );
+    }
+    let leader = &mut scanned.leaders[0];
+    (
+        leader.battle_won,
+        leader.battle_result_hours,
+        leader.battle_result_read_hours,
+    ) = (None, None, None);
+    let unrecorded = project(&scanned, &all_params(), None).leaders.remove(0);
+    assert_eq!(unrecorded.fought_hours, board.fought_hours);
+    assert!(unrecorded.won_hours.is_none() && unrecorded.lost_hours.is_none());
+}
+
+#[test]
+fn million_participation_leaderboard_fits_where_career_records_did_not() {
+    let mut scanned = scan_fixture(1, 1, 1, false);
+    let (first_hour, template) = (scanned.first_hour, scanned.leaders.remove(0));
+    scanned.leaders = (1..=4000_u32)
+        .map(|id| {
+            let mut leader = LeaderCareer {
+                reference: id.to_string(),
+                ..template.clone()
+            };
+            record_battles(&mut leader, first_hour, 250);
+            leader
+        })
+        .collect();
+    // The former leaderboard sent these per-participation records unchanged.
+    assert!(reply_bytes(&scanned).is_err());
+    assert!(reply_bytes(&project(&scanned, &all_params(), None)).is_ok());
 }
 
 #[test]
@@ -1976,4 +2208,14 @@ fn repeated_outcome_keeps_first_supplying_read_and_conflicts_stay_unresolved() {
     assert!(record_outcome(&mut outcomes, (1, 7), (102, 106, 2)));
     assert!(!record_outcome(&mut outcomes, (1, 7), (102, 107, 1)));
     assert_eq!(outcomes[&(1, 7)], None);
+}
+
+#[test]
+fn every_scan_decodes_the_trigger_kit_its_visibility_reads() {
+    for (career, choices) in [(true, false), (false, false), (false, true)] {
+        let tables = scan_tables(career, choices);
+        for table in crate::triggers::RECORDED_TABLES {
+            assert!(tables.contains(table), "{table:?} is not decoded");
+        }
+    }
 }

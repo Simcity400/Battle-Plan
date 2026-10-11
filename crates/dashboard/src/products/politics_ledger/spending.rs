@@ -2,6 +2,7 @@
 //! clamped; CP subtracts its operand. Upkeep commits on each paid activation
 //! anniversary. Reconciliation, grants and refunds are never payments.
 use super::*;
+use crate::blocks::PerBlock;
 use crate::products::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
 use crate::products::{
     idea_format::{self, LocalisedText, ModifierFormat},
@@ -19,7 +20,7 @@ use crate::{
 use installed_content::country_names::CountryNames;
 use std::sync::Arc;
 mod facts;
-use facts::{EventFacts, store_facts};
+use facts::{EventFacts, event_facts};
 mod presentation;
 use presentation::{count_reason, fill_gap, intern_tooltip, invalidate_read};
 mod holds;
@@ -115,17 +116,20 @@ struct Cache {
 }
 #[derive(Default)]
 pub(super) struct Scanned {
-    countries: BTreeMap<String, PoliticsLedgerReply>,
+    countries: BTreeMap<String, Country>,
     identities: BTreeMap<(u32, u32, u64), BTreeMap<i32, String>>,
     events: BTreeSet<(u32, u32, u64, u64)>,
     daily: BTreeMap<(u32, u32, u64, i32), usize>,
     costs: BTreeSet<(u32, u32, u64, i32, u32)>,
-    naming: BTreeMap<(u32, i32), NamedCountry>,
-    event_facts: BTreeMap<String, EventFacts>,
+    /// A country's equal names share one allocation across its event hours.
+    naming: BTreeMap<(u32, i32), Arc<NamedCountry>>,
+    shared: facts::Shared,
     modifier_definitions: Option<BTreeMap<String, ModifierDefinitionRow>>,
     modifier_views: Option<(replay::frame::ViewIdentity, replay::frame::ViewIdentity)>,
-    event_text: BTreeMap<String, ItemText>,
     previous: Option<DecodedFrame>,
+    /// Reads whose hour the next read dates a payment at: `previous` keeps
+    /// those whole and only the naming tables of others. None keeps all whole.
+    dated: Option<BTreeSet<i32>>,
     warnings: BTreeMap<Option<String>, BTreeMap<String, u64>>,
     presence: Vec<PresenceRun>,
     known_tags: BTreeMap<u32, String>,
@@ -141,12 +145,106 @@ struct NamedCountry {
     naming: NamingCountry,
     ruling_group: Result<Option<String>, String>,
 }
-#[derive(Default)]
+#[derive(Default, PartialEq, Eq, PartialOrd, Ord)]
 struct ItemText {
     name: Option<String>,
     sprite: Option<String>,
     description: Option<String>,
     unknown: Option<String>,
+}
+/// A country's recorded rows. The cached scan serves every view and tag, so
+/// rows keep their native values and are formatted only where used.
+#[derive(Default)]
+struct Country {
+    mutations: Vec<Mutation>,
+    governments: Vec<LedgerGovernment>,
+    daily: Vec<Daily>,
+    daily_costs: Vec<DailyCost>,
+    coverage: Vec<LedgerCoverage>,
+    spending_coverage: Vec<LedgerSpendCoverage>,
+}
+struct Mutation {
+    row: CountryPowerChangeRow,
+    read_hour: i32,
+    covered: bool,
+    facts: EventFacts,
+}
+#[derive(Clone, PartialEq, Eq)]
+struct Daily {
+    row: CountryPowerDailyRow,
+    read_hour: i32,
+    pp_read_hour: Option<i32>,
+    cp_read_hour: Option<i32>,
+}
+struct DailyCost {
+    row: CountryPowerDailyCostRow,
+    read_hour: i32,
+    covered: bool,
+    facts: EventFacts,
+}
+impl Mutation {
+    fn ledger(&self) -> LedgerMutation {
+        let row = &self.row;
+        LedgerMutation {
+            country: row.country,
+            instance: row.instance,
+            sequence: row.sequence.to_string(),
+            epoch: row.epoch.to_string(),
+            hour: row.hour,
+            read_hour: self.read_hour,
+            currency: format!("{:?}", row.currency),
+            cause: format!("{:?}", row.cause),
+            operation: format!("{:?}", row.operation),
+            site: format!("{:?}", row.site),
+            amount_raw: row.requested_delta_raw.map(|raw| raw.to_string()),
+            realized_delta_raw: row.realized_delta_raw().to_string(),
+            before_raw: row.balance_before_raw.to_string(),
+            after_raw: row.balance_after_raw.to_string(),
+            item: (&row.identity).into(),
+            covered: self.covered,
+        }
+    }
+}
+impl Daily {
+    fn ledger(&self) -> LedgerDaily {
+        let row = &self.row;
+        LedgerDaily {
+            country: row.country,
+            instance: row.instance,
+            epoch: row.epoch.to_string(),
+            day_hour: row.day_hour,
+            read_hour: self.read_hour,
+            pp_read_hour: self.pp_read_hour,
+            cp_read_hour: self.cp_read_hour,
+            pp_gross_raw: row.pp_gross_gain_raw.map(|raw| raw.to_string()),
+            pp_cost_raw: row.pp_cost_raw.map(|raw| raw.to_string()),
+            pp_income_raw: row.pp_net_gain_raw.map(|raw| raw.to_string()),
+            pp_realized_raw: row.pp_realized_delta_raw.map(|raw| raw.to_string()),
+            pp_sequence: row.pp_sequence.map(|raw| raw.to_string()),
+            cp_income_raw: row.cp_gain_raw.map(|raw| raw.to_string()),
+            cp_realized_raw: row.cp_realized_delta_raw.map(|raw| raw.to_string()),
+            cp_sequence: row.cp_sequence.map(|raw| raw.to_string()),
+        }
+    }
+}
+impl DailyCost {
+    fn ledger(&self) -> LedgerDailyCost {
+        let row = &self.row;
+        LedgerDailyCost {
+            country: row.country,
+            instance: row.instance,
+            epoch: row.epoch.to_string(),
+            day_hour: row.day_hour,
+            pp_sequence: row.pp_sequence.to_string(),
+            ordinal: row.ordinal,
+            read_hour: self.read_hour,
+            covered: self.covered,
+            component: format!("{:?}", row.component),
+            amount_raw: row.cost_raw.to_string(),
+            cause: format!("{:?}", row.cause),
+            item: (&row.identity).into(),
+        }
+    }
 }
 fn undated_reason(reason: &str) -> String {
     let mut words = reason.split_whitespace().peekable();
@@ -189,18 +287,11 @@ impl Scanned {
             .ok_or_else(|| io::Error::other("Politics warning count overflow"))?;
         Ok(())
     }
-    fn country(&mut self, tag: &str, branch: u64) -> &mut PoliticsLedgerReply {
-        self.countries
-            .entry(tag.to_owned())
-            .or_insert_with(|| PoliticsLedgerReply {
-                branch_id: branch.to_string(),
-                tag: tag.to_owned(),
-                decimals: 5,
-                ..Default::default()
-            })
+    fn country(&mut self, tag: &str) -> &mut Country {
+        self.countries.entry(tag.to_owned()).or_default()
     }
     fn name_at(&self, raw: u32, hour: i32) -> Option<&NamedCountry> {
-        self.naming.get(&(raw, hour))
+        self.naming.get(&(raw, hour)).map(Arc::as_ref)
     }
     fn tag_at(&self, country: u32, instance: u32, epoch: u64, hour: i32) -> Option<&str> {
         let tags = self.identities.get(&(country, instance, epoch))?;
@@ -267,6 +358,14 @@ impl Scanned {
                             .map_err(|reason| undated_reason(&reason))
                     },
                 ),
+            };
+            let earlier = self
+                .naming
+                .range((*raw, i32::MIN)..(*raw, frame.hour))
+                .next_back();
+            let value = match earlier {
+                Some((_, old)) if **old == value => Arc::clone(old),
+                _ => Arc::new(value),
             };
             self.naming.insert((*raw, frame.hour), value);
         }
@@ -374,7 +473,7 @@ fn observe_presence(scan: &mut Scanned, frame: &DecodedFrame) -> io::Result<()> 
     for country in countries {
         match valid_recorded_tag(country) {
             Ok(tag) => {
-                tags.insert(tag.to_owned());
+                tags.insert(tag);
                 if scan
                     .known_tags
                     .get(&country.canonical_slot)
@@ -392,9 +491,10 @@ fn observe_presence(scan: &mut Scanned, frame: &DecodedFrame) -> io::Result<()> 
             }
         }
     }
+    // An unchanged census extends its run without owning the hour's tags.
     if let Some(last) = scan.presence.last_mut()
         && last.last.checked_add(1) == Some(frame.hour)
-        && last.tags == tags
+        && last.tags.iter().eq(&tags)
         && last.refused_tags == refused_tags
     {
         last.last = frame.hour;
@@ -402,7 +502,7 @@ fn observe_presence(scan: &mut Scanned, frame: &DecodedFrame) -> io::Result<()> 
         scan.presence.push(PresenceRun {
             first: frame.hour,
             last: frame.hour,
-            tags,
+            tags: tags.into_iter().map(str::to_owned).collect(),
             refused_tags,
         });
     }
@@ -665,9 +765,9 @@ pub(super) fn observe_all(
                 value.reason.clone()
             },
         };
-        let reply = scan.country(tag, frame.branch);
-        merge_coverage(&mut reply.coverage, value);
-        merge_spending_coverage(&mut reply.spending_coverage, spending_cover);
+        let history = scan.country(tag);
+        merge_coverage(&mut history.coverage, value);
+        merge_spending_coverage(&mut history.spending_coverage, spending_cover);
     }
     if !unreconciled.is_empty() {
         for country in &unreconciled {
@@ -706,44 +806,31 @@ pub(super) fn observe_all(
         })
     };
     let previous = scan.previous.take();
-    let current_world = std::sync::OnceLock::new();
-    let previous_world = std::sync::OnceLock::new();
+    let current_texts = FrameTexts::default();
+    let previous_texts = FrameTexts::default();
     if let Ok(rows) = frame.complete::<tables::CountryPowerChanges>() {
         for row in rows {
+            // A row a later read publishes again is skipped before its tag.
+            let key = (row.country, row.instance, row.epoch, row.sequence);
+            if scan.events.contains(&key) {
+                continue;
+            }
             let Some(tag) = scan
                 .tag_at(row.country, row.instance, row.epoch, row.hour)
                 .map(str::to_owned)
             else {
                 continue;
             };
-            if !scan
-                .events
-                .insert((row.country, row.instance, row.epoch, row.sequence))
-            {
-                continue;
-            }
+            scan.events.insert(key);
             let bit = match row.currency {
                 PowerCurrency::Political => PoliticsCaptureCoverageRow::PP,
                 PowerCurrency::Command => PoliticsCaptureCoverageRow::CP,
             };
-            let item: LedgerItem = (&row.identity).into();
-            let mutation = LedgerMutation {
-                country: row.country,
-                instance: row.instance,
-                sequence: row.sequence.to_string(),
-                epoch: row.epoch.to_string(),
-                hour: row.hour,
+            let mut mutation = Mutation {
+                row: row.clone(),
                 read_hour: hour,
-                currency: format!("{:?}", row.currency),
-                cause: format!("{:?}", row.cause),
-                operation: format!("{:?}", row.operation),
-                site: format!("{:?}", row.site),
-                amount_raw: row.requested_delta_raw.map(|raw| raw.to_string()),
-                realized_delta_raw: row.realized_delta_raw().to_string(),
-                before_raw: row.balance_before_raw.to_string(),
-                after_raw: row.balance_after_raw.to_string(),
-                item,
                 covered: covered(row.country, row.instance, row.epoch, row.hour, bit),
+                facts: EventFacts::default(),
             };
             {
                 let event_frame = if row.hour == hour {
@@ -753,65 +840,65 @@ pub(super) fn observe_all(
                         .as_ref()
                         .filter(|previous| previous.hour == row.hour)
                 };
-                let world_cache = if row.hour == hour {
-                    &current_world
+                let texts = if row.hour == hour {
+                    &current_texts
                 } else {
-                    &previous_world
+                    &previous_texts
                 };
-                store_facts(scan, &mutation, event_frame, row.cause, None);
+                let ledger = mutation.ledger();
+                mutation.facts =
+                    event_facts(&mut scan.shared, &ledger, event_frame, row.cause, None);
                 if let Some(content) = content {
-                    store_item_text(scan, &mutation, content, event_frame, world_cache);
+                    mutation.facts.text =
+                        item_text(scan, &ledger, &mutation.facts, content, event_frame, texts);
                 }
             }
-            scan.country(&tag, frame.branch).mutations.push(mutation);
+            scan.country(&tag).mutations.push(mutation);
         }
     }
     if let Ok(rows) = frame.complete::<tables::GovernmentChanges>() {
         for row in rows {
+            let key = (row.country, row.instance, row.epoch, row.sequence);
+            if scan.events.contains(&key) {
+                continue;
+            }
             let Some(tag) = scan
                 .tag_at(row.country, row.instance, row.epoch, row.hour)
                 .map(str::to_owned)
             else {
                 continue;
             };
-            if !scan
-                .events
-                .insert((row.country, row.instance, row.epoch, row.sequence))
-            {
-                continue;
-            }
+            scan.events.insert(key);
             let before_token =
                 government_token(frame, previous.as_ref(), row.hour, row.before_ideology);
             let after_token =
                 government_token(frame, previous.as_ref(), row.hour, row.after_ideology);
-            scan.country(&tag, frame.branch)
-                .governments
-                .push(LedgerGovernment {
-                    country: row.country,
-                    instance: row.instance,
-                    sequence: row.sequence.to_string(),
-                    epoch: row.epoch.to_string(),
-                    hour: row.hour,
-                    read_hour: hour,
-                    cause: format!("{:?}", row.cause),
-                    before_party: row.before_party,
-                    after_party: row.after_party,
-                    before_ideology: row.before_ideology,
-                    after_ideology: row.after_ideology,
-                    before_token,
-                    after_token,
-                    actor_country: row.actor_country,
-                    origin_kind: format!("{:?}", row.origin_kind),
-                    origin_token: row.origin_token,
-                    origin_key: row.origin_key.clone(),
-                    covered: covered(
-                        row.country,
-                        row.instance,
-                        row.epoch,
-                        row.hour,
-                        PoliticsCaptureCoverageRow::GOVERNMENT,
-                    ),
-                });
+            scan.country(&tag).governments.push(LedgerGovernment {
+                country: row.country,
+                instance: row.instance,
+                sequence: row.sequence.to_string(),
+                epoch: row.epoch.to_string(),
+                hour: row.hour,
+                read_hour: hour,
+                cause: format!("{:?}", row.cause),
+                before_party: row.before_party,
+                after_party: row.after_party,
+                before_ideology: row.before_ideology,
+                after_ideology: row.after_ideology,
+                before_token,
+                after_token,
+                actor_country: row.actor_country,
+                origin_kind: format!("{:?}", row.origin_kind),
+                origin_token: row.origin_token,
+                origin_key: row.origin_key.clone(),
+                covered: covered(
+                    row.country,
+                    row.instance,
+                    row.epoch,
+                    row.hour,
+                    PoliticsCaptureCoverageRow::GOVERNMENT,
+                ),
+            });
         }
     }
     if let Ok(rows) = frame.complete::<tables::CountryPowerDaily>() {
@@ -823,11 +910,8 @@ pub(super) fn observe_all(
                 continue;
             };
             let key = (row.country, row.instance, row.epoch, row.day_hour);
-            let mut value = LedgerDaily {
-                country: row.country,
-                instance: row.instance,
-                epoch: row.epoch.to_string(),
-                day_hour: row.day_hour,
+            let mut value = Daily {
+                row: row.clone(),
                 read_hour: hour,
                 pp_read_hour: [
                     row.pp_gross_gain_raw,
@@ -844,43 +928,33 @@ pub(super) fn observe_all(
                     .any(Option::is_some)
                     .then_some(hour)
                     .or(row.cp_sequence.map(|_| hour)),
-                pp_gross_raw: row.pp_gross_gain_raw.map(|raw| raw.to_string()),
-                pp_cost_raw: row.pp_cost_raw.map(|raw| raw.to_string()),
-                pp_income_raw: row.pp_net_gain_raw.map(|raw| raw.to_string()),
-                pp_realized_raw: row.pp_realized_delta_raw.map(|raw| raw.to_string()),
-                pp_sequence: row.pp_sequence.map(|raw| raw.to_string()),
-                cp_income_raw: row.cp_gain_raw.map(|raw| raw.to_string()),
-                cp_realized_raw: row.cp_realized_delta_raw.map(|raw| raw.to_string()),
-                cp_sequence: row.cp_sequence.map(|raw| raw.to_string()),
             };
             if let Some(&index) = scan.daily.get(&key) {
-                let old = &mut scan.country(&tag, frame.branch).daily[index];
+                let old = &mut scan.country(&tag).daily[index];
                 // publish_daily commits matching PP rate/application operands
                 // together, independently of CP.
-                if [
-                    value.pp_gross_raw.as_deref(),
-                    value.pp_cost_raw.as_deref(),
-                    value.pp_income_raw.as_deref(),
-                    value.pp_realized_raw.as_deref(),
-                    value.pp_sequence.as_deref(),
-                ] == [
-                    old.pp_gross_raw.as_deref(),
-                    old.pp_cost_raw.as_deref(),
-                    old.pp_income_raw.as_deref(),
-                    old.pp_realized_raw.as_deref(),
-                    old.pp_sequence.as_deref(),
-                ] {
+                if (
+                    row.pp_gross_gain_raw,
+                    row.pp_cost_raw,
+                    row.pp_net_gain_raw,
+                    row.pp_realized_delta_raw,
+                    row.pp_sequence,
+                ) == (
+                    old.row.pp_gross_gain_raw,
+                    old.row.pp_cost_raw,
+                    old.row.pp_net_gain_raw,
+                    old.row.pp_realized_delta_raw,
+                    old.row.pp_sequence,
+                ) {
                     value.pp_read_hour = old.pp_read_hour;
                 }
-                if [
-                    value.cp_income_raw.as_deref(),
-                    value.cp_realized_raw.as_deref(),
-                    value.cp_sequence.as_deref(),
-                ] == [
-                    old.cp_income_raw.as_deref(),
-                    old.cp_realized_raw.as_deref(),
-                    old.cp_sequence.as_deref(),
-                ] {
+                if (row.cp_gain_raw, row.cp_realized_delta_raw, row.cp_sequence)
+                    == (
+                        old.row.cp_gain_raw,
+                        old.row.cp_realized_delta_raw,
+                        old.row.cp_sequence,
+                    )
+                {
                     value.cp_read_hour = old.cp_read_hour;
                 }
                 let mut unchanged = value.clone();
@@ -889,36 +963,33 @@ pub(super) fn observe_all(
                     *old = value;
                 }
             } else {
-                let index = scan.country(&tag, frame.branch).daily.len();
+                let index = scan.country(&tag).daily.len();
                 scan.daily.insert(key, index);
-                scan.country(&tag, frame.branch).daily.push(value);
+                scan.country(&tag).daily.push(value);
             }
         }
     }
     if let Ok(rows) = frame.complete::<tables::CountryPowerDailyCosts>() {
         for row in rows {
+            let key = (
+                row.country,
+                row.instance,
+                row.epoch,
+                row.day_hour,
+                row.ordinal,
+            );
+            if scan.costs.contains(&key) {
+                continue;
+            }
             let Some(tag) = scan
                 .tag_at(row.country, row.instance, row.epoch, row.day_hour)
                 .map(str::to_owned)
             else {
                 continue;
             };
-            if !scan.costs.insert((
-                row.country,
-                row.instance,
-                row.epoch,
-                row.day_hour,
-                row.ordinal,
-            )) {
-                continue;
-            }
-            let cost = LedgerDailyCost {
-                country: row.country,
-                instance: row.instance,
-                epoch: row.epoch.to_string(),
-                day_hour: row.day_hour,
-                pp_sequence: row.pp_sequence.to_string(),
-                ordinal: row.ordinal,
+            scan.costs.insert(key);
+            let mut cost = DailyCost {
+                row: row.clone(),
                 read_hour: hour,
                 covered: covered(
                     row.country,
@@ -927,10 +998,7 @@ pub(super) fn observe_all(
                     row.day_hour,
                     PoliticsCaptureCoverageRow::PP | PoliticsCaptureCoverageRow::PP_DAILY_COSTS,
                 ) && !unreconciled.contains(&row.country),
-                component: format!("{:?}", row.component),
-                amount_raw: row.cost_raw.to_string(),
-                cause: format!("{:?}", row.cause),
-                item: (&row.identity).into(),
+                facts: EventFacts::default(),
             };
             {
                 let event_frame = if row.day_hour == hour {
@@ -940,25 +1008,63 @@ pub(super) fn observe_all(
                         .as_ref()
                         .filter(|previous| previous.hour == row.day_hour)
                 };
-                let world_cache = if row.day_hour == hour {
-                    &current_world
+                let texts = if row.day_hour == hour {
+                    &current_texts
                 } else {
-                    &previous_world
+                    &previous_texts
                 };
-                let mutation = daily_mutation(&cost);
-                store_facts(scan, &mutation, event_frame, row.cause, Some(row.component));
+                let mutation = daily_mutation(&cost.ledger());
+                cost.facts = event_facts(
+                    &mut scan.shared,
+                    &mutation,
+                    event_frame,
+                    row.cause,
+                    Some(row.component),
+                );
                 if let Some(content) = content {
-                    store_item_text(scan, &mutation, content, event_frame, world_cache);
+                    cost.facts.text =
+                        item_text(scan, &mutation, &cost.facts, content, event_frame, texts);
                 }
             }
-            scan.country(&tag, frame.branch).daily_costs.push(cost);
+            scan.country(&tag).daily_costs.push(cost);
         }
     }
     holds::observe_holds(frame, scan, content);
     scan.first_hour.get_or_insert(hour);
     scan.last_hour = Some(scan.last_hour.map_or(hour, |last| last.max(hour)));
-    scan.previous = Some(frame.clone());
+    scan.previous = Some(match &scan.dated {
+        Some(dated) if !dated.contains(&hour) => naming_frame(frame),
+        _ => frame.clone(),
+    });
     Ok(())
+}
+/// A read the next read dates no payment at, as that read uses it: to name
+/// countries (`CountryNames`, `Look::read`) and government tokens. Its other
+/// tables share one unavailable view: holding them would copy each one the
+/// decoder changes for the next read.
+fn naming_frame(frame: &DecodedFrame) -> DecodedFrame {
+    use replay::frame::{SharedView, TABLE_COUNT, TableView};
+    // Look::read's civil-war operands, then government_token's spellings.
+    let read = [
+        TableId::CountryCivilWars,
+        TableId::CountryCounterInputs,
+        TableId::CountryWars,
+        TableId::WarRelations,
+        TableId::LexicalTokens,
+    ];
+    let unread = SharedView::from(TableView::Unavailable {
+        reason: "not retained after its read".into(),
+    });
+    let mut tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| unread.clone());
+    for table in installed_content::country_names::TABLES.into_iter().chain(read) {
+        tables[table.index()] = frame.tables[table.index()].clone();
+    }
+    DecodedFrame {
+        branch: frame.branch,
+        hour: frame.hour,
+        tables,
+        metrics: frame.metrics.clone(),
+    }
 }
 
 fn cancelled_request(cancelled: &AtomicBool) -> io::Result<()> {
@@ -971,51 +1077,77 @@ fn cancelled_request(cancelled: &AtomicBool) -> io::Result<()> {
         Ok(())
     }
 }
-fn world_hours(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<BTreeSet<i32>> {
+/// The hours an item's text reads trigger operands at, and the reads whose
+/// hour the next read dates a payment at: that payment's event frame is the
+/// previous read. A block reads alike whatever tables are selected, so the
+/// scan's previous read is this pass's.
+fn event_hours(
+    replay: &Replay,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<(BTreeSet<i32>, BTreeSet<i32>)> {
     let selected = [
         TableId::Campaign,
         TableId::CountryPowerChanges,
         TableId::CountryPowerDailyCosts,
     ];
     let mut hours = BTreeSet::new();
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        cancelled_request(cancelled)?;
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for frame in frames {
-            cancelled_request(cancelled)?;
-            let decoded = decoder.advance(&frame)?;
-            validate_campaign(decoded, replay)?;
-            for row in decoded
-                .complete::<tables::CountryPowerChanges>()
-                .unwrap_or_default()
-            {
-                if matches!(
-                    row.cause,
-                    PowerCause::Decision
-                        | PowerCause::TargetedDecision
-                        | PowerCause::DecisionTimeout
-                        | PowerCause::Focus
-                        | PowerCause::Idea
-                        | PowerCause::Advisor
-                        | PowerCause::AdvisorRemoval
-                ) {
-                    hours.insert(row.hour);
+    let mut dated = BTreeSet::new();
+    let mut previous = None;
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                cancelled_request(cancelled)?;
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                for frame in frames {
+                    cancelled_request(cancelled)?;
+                    let decoded = decoder.advance(&frame)?;
+                    validate_campaign(decoded, replay)?;
+                    for row in decoded
+                        .complete::<tables::CountryPowerChanges>()
+                        .unwrap_or_default()
+                    {
+                        if previous == Some(row.hour) {
+                            dated.insert(row.hour);
+                        }
+                        if matches!(
+                            row.cause,
+                            PowerCause::Decision
+                                | PowerCause::TargetedDecision
+                                | PowerCause::DecisionTimeout
+                                | PowerCause::Focus
+                                | PowerCause::Idea
+                                | PowerCause::Advisor
+                                | PowerCause::AdvisorRemoval
+                        ) {
+                            hours.insert(row.hour);
+                        }
+                    }
+                    for row in decoded
+                        .complete::<tables::CountryPowerDailyCosts>()
+                        .unwrap_or_default()
+                    {
+                        if previous == Some(row.day_hour) {
+                            dated.insert(row.day_hour);
+                        }
+                        if row.identity.object_kind == replay::rows::PowerObjectKind::Organisation {
+                            hours.insert(row.day_hour);
+                        }
+                    }
+                    previous = Some(decoded.hour);
                 }
             }
-            for row in decoded
-                .complete::<tables::CountryPowerDailyCosts>()
-                .unwrap_or_default()
-            {
-                if row.identity.object_kind == replay::rows::PowerObjectKind::Organisation {
-                    hours.insert(row.day_hour);
-                }
-            }
-        }
-    }
-    Ok(hours)
+            Ok(())
+        },
+    )?;
+    Ok((hours, dated))
 }
 fn scan_branch(
     replay: &Replay,
@@ -1025,11 +1157,13 @@ fn scan_branch(
 ) -> io::Result<Scanned> {
     // First identify event hours from the ledger. Decode trigger operands only
     // in blocks that contain an exact event hour, including a preceding block
-    // whose final hour is consumed by the next read's handoff.
-    let needed = if content.is_some() {
-        world_hours(replay, branch, cancelled)?
+    // whose final hour is consumed by the next read's handoff. Only a read the
+    // next read dates a payment at is retained whole for that handoff.
+    let (needed, dated) = if content.is_some() {
+        let (needed, dated) = event_hours(replay, branch, cancelled)?;
+        (needed, Some(dated))
     } else {
-        BTreeSet::new()
+        (BTreeSet::new(), None)
     };
     let mut selected = vec![
         TableId::Campaign,
@@ -1076,11 +1210,12 @@ fn scan_branch(
             .filter(|block| block.branch == branch)
             .map(|block| block.last_hour)
             .max(),
+        dated,
         ..Default::default()
     };
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        cancelled_request(cancelled)?;
-        let tables = if needed
+    // Trigger operands only in blocks holding an exact event hour.
+    let tables_of = |block: &replay::container::BlockIndex| -> &[TableId] {
+        if needed
             .range(block.first_hour..=block.last_hour)
             .next()
             .is_some()
@@ -1088,23 +1223,46 @@ fn scan_branch(
             &with_world
         } else {
             &selected
-        };
-        let frames = match replay.read_block_selected(block, tables) {
-            Ok(frames) => frames,
-            Err(_) => {
-                scan.note(None, "A recording block could not be read".into(), 1)?;
-                continue;
-            }
-        };
-        let mut decoder = FrameDecoder::for_tables(tables);
-        for frame in frames {
-            cancelled_request(cancelled)?;
-            let decoded = decoder.advance(&frame)?;
-            validate_campaign(decoded, replay)?;
-            observe_all(decoded, &mut scan, content)?;
         }
-    }
+    };
+    let blocks = replay.index.iter().filter(|block| block.branch == branch);
+    crate::blocks::scan_blocks(
+        replay,
+        blocks,
+        &PerBlock::new(tables_of),
+        cancelled,
+        |blocks| {
+            for (block, frames) in blocks {
+                cancelled_request(cancelled)?;
+                let tables = tables_of(block);
+                let frames = match frames {
+                    Ok(frames) => frames,
+                    Err(_) => {
+                        scan.note(None, "A recording block could not be read".into(), 1)?;
+                        continue;
+                    }
+                };
+                let mut decoder = FrameDecoder::for_tables(tables);
+                for frame in frames {
+                    cancelled_request(cancelled)?;
+                    let decoded = decoder.advance(&frame)?;
+                    validate_campaign(decoded, replay)?;
+                    observe_all(decoded, &mut scan, content)?;
+                }
+            }
+            Ok(())
+        },
+    )?;
     scan.previous = None;
+    // Only observation reads its row indexes, and the cached rows stop growing.
+    scan.events.clear();
+    scan.daily.clear();
+    scan.costs.clear();
+    for country in scan.countries.values_mut() {
+        country.mutations.shrink_to_fit();
+        country.daily.shrink_to_fit();
+        country.daily_costs.shrink_to_fit();
+    }
     Ok(scan)
 }
 
@@ -1219,31 +1377,18 @@ fn charge(row: &LedgerMutation) -> Option<Option<i128>> {
     }
 }
 
-fn recorded_token<'a>(scan: &'a Scanned, row: &'a LedgerMutation) -> Option<&'a str> {
-    scan.event_facts
-        .get(&item_text_id(row))
-        .and_then(|facts| facts.token.as_deref())
-        .or_else(|| {
-            (!row.item.key.is_empty())
-                .then(|| std::str::from_utf8(&row.item.key).ok())
-                .flatten()
-        })
+fn recorded_token<'a>(facts: &'a EventFacts, row: &'a LedgerMutation) -> Option<&'a str> {
+    facts.token.as_deref().or_else(|| {
+        (!row.item.key.is_empty())
+            .then(|| std::str::from_utf8(&row.item.key).ok())
+            .flatten()
+    })
 }
 fn mutation_id(row: &LedgerMutation) -> String {
     format!(
         "{}:{}:{}:{}",
         row.country, row.instance, row.epoch, row.sequence
     )
-}
-fn item_text_id(row: &LedgerMutation) -> String {
-    if let Some(ordinal) = row.site.strip_prefix("daily component:") {
-        format!(
-            "daily:{}:{}:{}:{}:{ordinal}",
-            row.country, row.instance, row.epoch, row.hour
-        )
-    } else {
-        mutation_id(row)
-    }
 }
 fn daily_mutation(cost: &LedgerDailyCost) -> LedgerMutation {
     LedgerMutation {
@@ -1270,27 +1415,67 @@ fn daily_mutation(cost: &LedgerDailyCost) -> LedgerMutation {
         covered: cost.covered,
     }
 }
-fn store_item_text<'a>(
-    scan: &mut Scanned,
-    row: &LedgerMutation,
-    content: &'a PoliticsContent,
-    frame: Option<&'a DecodedFrame>,
-    world_cache: &std::sync::OnceLock<Result<crate::triggers::World<'a>, String>>,
-) {
-    if let Some(mut text) = event_text(scan, row, content, frame, world_cache) {
-        text.unknown = text.unknown.map(|reason| undated_reason(&reason));
-        scan.event_text.insert(item_text_id(row), text);
+/// What resolving an hour's item texts builds once: the trigger world, and the
+/// scripted-text context of each root country (each reads every country's names
+/// and scopes from the frame).
+#[derive(Default)]
+struct FrameTexts<'a> {
+    world: std::sync::OnceLock<Result<crate::triggers::World<'a>, String>>,
+    scripted:
+        std::cell::RefCell<BTreeMap<u32, std::rc::Rc<crate::scripted_text::ScriptedText<'a>>>>,
+}
+
+impl<'a> FrameTexts<'a> {
+    /// The hour's scripted-text context for `root`, built once.
+    fn scripted(
+        &self,
+        content: &'a PoliticsContent,
+        frame: &'a DecodedFrame,
+        root: u32,
+    ) -> Result<std::rc::Rc<crate::scripted_text::ScriptedText<'a>>, String> {
+        if let Some(scripted) = self.scripted.borrow().get(&root) {
+            return Ok(std::rc::Rc::clone(scripted));
+        }
+        let scripted = std::rc::Rc::new(crate::scripted_text::ScriptedText::new(
+            frame,
+            &content.catalogue.localisation,
+            content.catalogue.scripted_content()?,
+            root,
+        ));
+        self.scripted
+            .borrow_mut()
+            .insert(root, std::rc::Rc::clone(&scripted));
+        Ok(scripted)
     }
 }
 
-fn localise_at(
-    content: &PoliticsContent,
+fn item_text<'a>(
+    scan: &mut Scanned,
+    row: &LedgerMutation,
+    facts: &EventFacts,
+    content: &'a PoliticsContent,
+    frame: Option<&'a DecodedFrame>,
+    texts: &FrameTexts<'a>,
+) -> Option<Arc<ItemText>> {
+    let mut text = event_text(scan, row, facts, content, frame, texts)?;
+    text.unknown = text.unknown.map(|reason| undated_reason(&reason));
+    Some(scan.shared.text(text))
+}
+
+fn localise_at<'a>(
+    content: &'a PoliticsContent,
     key: &str,
-    frame: Option<&DecodedFrame>,
+    frame: Option<&'a DecodedFrame>,
+    texts: &FrameTexts<'a>,
     slot: Option<u32>,
     decision: Option<(&LedgerMutation, bool)>,
     unknown_seed: bool,
 ) -> Result<Option<String>, String> {
+    if !content.catalogue.has_presentation_key(key) {
+        return Err(format!(
+            "localisation {key} is missing; title is unavailable"
+        ));
+    }
     let raw = content
         .catalogue
         .localisation
@@ -1302,12 +1487,7 @@ fn localise_at(
         })?;
         let frame = frame
             .ok_or_else(|| format!("localisation {key}: its event-hour frame is unavailable"))?;
-        let scripted = crate::scripted_text::ScriptedText::new(
-            frame,
-            &content.catalogue.localisation,
-            content.catalogue.scripted_content()?,
-            slot,
-        );
+        let scripted = texts.scripted(content, frame, slot)?;
         if let Some((decision, selects_state)) = decision {
             use crate::scripted_text::{EventObject, EventScope, EventScopes, Link};
             // The recorded identity supplies the country target, but not
@@ -1425,9 +1605,10 @@ fn event_world<'a>(
 fn event_text<'a>(
     scan: &Scanned,
     row: &LedgerMutation,
+    facts: &EventFacts,
     content: &'a PoliticsContent,
     frame: Option<&'a DecodedFrame>,
-    world_cache: &std::sync::OnceLock<Result<crate::triggers::World<'a>, String>>,
+    texts: &FrameTexts<'a>,
 ) -> Option<ItemText> {
     let own = scan.name_at(row.country, row.hour);
     let mut found = ItemText::default();
@@ -1446,17 +1627,27 @@ fn event_text<'a>(
                 .ok_or_else(|| {
                     format!("organisation {reference:#x}: its action-hour frame is unavailable")
                 })?;
-            let scripted = crate::scripted_text::ScriptedText::new(
-                frame,
-                &content.catalogue.localisation,
-                content.catalogue.scripted_content()?,
-                own.map_or(0, |own| own.naming.slot),
-            );
-            // The helper supplies the native organisation/owner pair; the
-            // country's default expansion scope is not used for this name.
-            scripted
-                .organisation_name(reference)
-                .and_then(|text| plain_text(&text))
+            let root = own.map_or(0, |own| own.naming.slot);
+            // The name never depends on the root unless its text is scripted, so
+            // one context per hour serves every country's plain names.
+            let any = texts
+                .scripted
+                .borrow()
+                .keys()
+                .next()
+                .copied()
+                .unwrap_or(root);
+            let (template, scopes) = texts
+                .scripted(content, frame, any)?
+                .organisation_template(reference)?;
+            let name = if template.contains('[') {
+                texts
+                    .scripted(content, frame, root)?
+                    .expand_in(&template, &scopes)?
+            } else {
+                template
+            };
+            plain_text(&name)
         })();
         match result {
             Ok(name) => found.name = Some(name),
@@ -1464,7 +1655,7 @@ fn event_text<'a>(
         }
         return Some(found);
     }
-    let token = recorded_token(scan, row)?;
+    let token = recorded_token(facts, row)?;
     if matches!(
         row.cause.as_str(),
         "Decision" | "TargetedDecision" | "DecisionTimeout"
@@ -1493,7 +1684,8 @@ fn event_text<'a>(
                     let frame = frame.ok_or_else(|| {
                         format!("decision {token} name selector: event-hour frame is unavailable")
                     })?;
-                    world_cache
+                    texts
+                        .world
                         .get_or_init(|| event_world(content, frame))
                         .as_ref()
                         .map_err(Clone::clone)?
@@ -1503,6 +1695,7 @@ fn event_text<'a>(
                     content,
                     &key,
                     frame,
+                    texts,
                     Some(own.naming.slot),
                     Some((row, selects_state)),
                     false,
@@ -1533,7 +1726,8 @@ fn event_text<'a>(
                 let own = own.ok_or_else(|| {
                     format!("decision {token} icon: country identity is unavailable at action hour")
                 })?;
-                let world = world_cache
+                let world = texts
+                    .world
                     .get_or_init(|| event_world(content, frame))
                     .as_ref()
                     .map_err(Clone::clone)?;
@@ -1591,6 +1785,7 @@ fn event_text<'a>(
                 content,
                 &focus.localisation,
                 frame,
+                texts,
                 own.map(|owner| owner.naming.slot),
                 None,
                 true,
@@ -1632,7 +1827,8 @@ fn event_text<'a>(
                         let frame = frame.ok_or_else(|| {
                             format!("focus {token} art: event-hour frame is unavailable")
                         })?;
-                        let world = world_cache
+                        let world = texts
+                            .world
                             .get_or_init(|| event_world(content, frame))
                             .as_ref()
                             .map_err(Clone::clone)?;
@@ -1662,10 +1858,11 @@ fn event_text<'a>(
     }
     if matches!(row.cause.as_str(), "Idea" | "Advisor" | "AdvisorRemoval") {
         let own = own?;
+        let slot = Some(own.naming.slot);
         if row.cause == "Idea" {
             match content.idea_name(token, own.naming.for_tag(&own.tag)) {
                 Ok(crate::products::politics_content::IdeaName::Key(key)) => {
-                    match localise_at(content, &key, frame, Some(own.naming.slot), None, false) {
+                    match localise_at(content, &key, frame, texts, slot, None, false) {
                         Ok(name) => found.name = name,
                         Err(reason) => found.unknown = Some(reason),
                     }
@@ -1677,7 +1874,7 @@ fn event_text<'a>(
             }
         }
         found.description = content.idea_description_key(token).and_then(|key| {
-            match localise_at(content, &key, frame, Some(own.naming.slot), None, false) {
+            match localise_at(content, &key, frame, texts, slot, None, false) {
                 Ok(description) => description,
                 Err(reason) => {
                     combine_reason(&mut found.unknown, Some(reason));
@@ -1689,8 +1886,15 @@ fn event_text<'a>(
     }
     None
 }
-fn sprite_png(content: &PoliticsContent, name: &str) -> Result<Option<String>, String> {
-    content.sprite_png(name).map_err(|error| error.to_string())
+/// A sprite's artwork, decoded once per reply however many rows show it.
+fn sprite_png(
+    content: &PoliticsContent,
+    pngs: &mut BTreeMap<String, Result<Option<String>, String>>,
+    name: &str,
+) -> Result<Option<String>, String> {
+    pngs.entry(name.to_owned())
+        .or_insert_with(|| content.sprite_png(name).map_err(|error| error.to_string()))
+        .clone()
 }
 fn character_art(
     content: &PoliticsContent,
@@ -1709,7 +1913,9 @@ fn character_art(
 fn resolve_item(
     scan: &Scanned,
     row: &LedgerMutation,
+    facts: &EventFacts,
     content: Option<&PoliticsContent>,
+    pngs: &mut BTreeMap<String, Result<Option<String>, String>>,
     id: String,
     daily_component: Option<&str>,
 ) -> (LedgerSpendItem, Option<IdeaInfo>, (String, String)) {
@@ -1718,15 +1924,13 @@ fn resolve_item(
         .item
         .target_country
         .and_then(|raw| scan.name_at(raw, row.hour));
-    let facts = scan.event_facts.get(&item_text_id(row));
-    let token = recorded_token(scan, row).map(str::to_owned);
-    let recorded = facts.and_then(|facts| facts.character.as_ref());
+    let token = recorded_token(facts, row).map(str::to_owned);
+    let recorded = facts.character.as_deref();
     let character = row
         .item
         .character
         .or_else(|| recorded.map(|recorded| recorded.id));
-    let (category_id, category_name) =
-        category(facts.map_or(PowerCause::NotIdentified, |facts| facts.native_cause));
+    let (category_id, category_name) = category(facts.native_cause);
     let mut category = (category_id.to_owned(), category_name.to_owned());
     let mut item = LedgerSpendItem {
         id,
@@ -1841,7 +2045,7 @@ fn resolve_item(
                                 item.name = content.localised(key, View::Plain);
                             }
                             if let Some(sprite) = power.abilities.static_sprite(token.as_bytes()) {
-                                match sprite_png(content, sprite) {
+                                match sprite_png(content, pngs, sprite) {
                                     Ok(icon) => item.icon = icon,
                                     Err(reason) => {
                                         item.unknown = Some(format!(
@@ -1882,13 +2086,13 @@ fn resolve_item(
         item.unknown = Some("recorded content has not been resolved".into());
     }
     if let Some(content) = content {
-        if let Some(text) = scan.event_text.get(&item_text_id(row)) {
+        if let Some(text) = facts.text.as_deref() {
             if !matches!(row.cause.as_str(), "Advisor" | "AdvisorRemoval") {
                 item.name = text.name.clone();
             }
             combine_reason(&mut item.unknown, text.unknown.clone());
             if let Some(sprite) = text.sprite.as_deref() {
-                match sprite_png(content, sprite) {
+                match sprite_png(content, pngs, sprite) {
                     Ok(icon) => item.icon = icon,
                     Err(reason) => item.unknown = Some(format!("sprite {sprite}: {reason}")),
                 }
@@ -1949,7 +2153,7 @@ fn resolve_item(
                         ));
                     }
                     match power.unit_traits.assignment_sprite(token) {
-                        Ok(Some(sprite)) => match sprite_png(content, &sprite) {
+                        Ok(Some(sprite)) => match sprite_png(content, pngs, &sprite) {
                             Ok(icon) => item.icon = icon,
                             Err(reason) => {
                                 item.unknown =
@@ -1972,7 +2176,7 @@ fn resolve_item(
     {
         match daily_component {
             Some("PoliticalPowerCostModifier") => {
-                if let Some(modifier) = facts.and_then(|facts| facts.modifier.as_ref()) {
+                if let Some(modifier) = facts.modifier.as_deref() {
                     let key = std::str::from_utf8(&modifier.name_key).ok();
                     let argument = std::str::from_utf8(&modifier.argument).ok();
                     match key.zip(argument) {
@@ -2007,13 +2211,13 @@ fn resolve_item(
                 }
             }
             Some("MioResearch" | "MioProduction") => {
-                if let Some(organisation) = facts.and_then(|facts| facts.organisation.as_ref()) {
+                if let Some(organisation) = facts.organisation.as_deref() {
                     // The scoped name is frozen by event_text at this read. Only artwork
                     // is loaded at presentation. Reuse the production kit's recorded
                     // owner/key precedence and icon fallback.
                     let sprite = crate::products::production_lines::organisation_icon_with_token(
                         organisation,
-                        facts.is_some_and(|facts| facts.organisation_token_known),
+                        facts.organisation_token_known,
                         |sprite| {
                             content
                                 .catalogue
@@ -2025,7 +2229,7 @@ fn resolve_item(
                         },
                     );
                     match sprite {
-                        Ok(Some(sprite)) => match sprite_png(content, &sprite) {
+                        Ok(Some(sprite)) => match sprite_png(content, pngs, &sprite) {
                             Ok(icon) => item.icon = icon,
                             Err(reason) => {
                                 item.unknown = Some(format!(
@@ -2149,8 +2353,9 @@ fn resolve_item(
             &own.map(|own| format!("{:?}", own.naming)),
             &recorded.map(|recorded| format!("{:?}", recorded.portrait)),
             &found,
-            scan.event_text
-                .get(&item_text_id(row))
+            facts
+                .text
+                .as_ref()
                 .and_then(|text| text.description.as_deref()),
         ))
         .expect("dated tooltip identity serializes");
@@ -2239,28 +2444,37 @@ fn present_view(
         decimals: 5,
         ..Default::default()
     };
-    let raw = scan.countries.get(tag).unwrap_or(&empty);
-    if view == LedgerView::Raw {
-        budget.add(raw)?;
-    }
+    let unrecorded = Country::default();
+    let raw = scan.countries.get(tag).unwrap_or(&unrecorded);
     let mut reply = if view == LedgerView::Governments {
         empty.clone()
     } else if view != LedgerView::Raw {
         budget.add(&raw.spending_coverage)?;
+        let daily: Vec<_> = if view == LedgerView::Balance {
+            raw.daily.iter().map(Daily::ledger).collect()
+        } else {
+            Vec::new()
+        };
         if view == LedgerView::Balance {
-            budget.add(&raw.daily)?;
+            budget.add(&daily)?;
         }
         PoliticsLedgerReply {
             spending_coverage: raw.spending_coverage.clone(),
-            daily: if view == LedgerView::Balance {
-                raw.daily.clone()
-            } else {
-                Vec::new()
-            },
+            daily,
             ..empty.clone()
         }
     } else {
-        raw.clone()
+        let reply = PoliticsLedgerReply {
+            mutations: raw.mutations.iter().map(Mutation::ledger).collect(),
+            governments: raw.governments.clone(),
+            daily: raw.daily.iter().map(Daily::ledger).collect(),
+            daily_costs: raw.daily_costs.iter().map(DailyCost::ledger).collect(),
+            coverage: raw.coverage.clone(),
+            spending_coverage: raw.spending_coverage.clone(),
+            ..empty.clone()
+        };
+        budget.add(&reply)?;
+        reply
     };
     // Ruling party shares the same all-country scan without requesting payments,
     // daily rates, holds or their artwork merely to name execution provenance.
@@ -2300,13 +2514,15 @@ fn present_view(
     let mut items = BTreeMap::new();
     let mut item_ids = BTreeSet::new();
     let mut upkeep = BTreeMap::new();
-    for row in &raw.mutations {
+    let mut pngs = BTreeMap::new();
+    for stored in &raw.mutations {
         if cancelled.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "Politics request cancelled",
             ));
         }
+        let row = &stored.ledger();
         let Some(charge) = charge(row) else {
             continue;
         };
@@ -2314,7 +2530,15 @@ fn present_view(
             "{}:{}:{}:{}",
             row.country, row.instance, row.epoch, row.sequence
         );
-        let (mut item, mut info, category) = resolve_item(scan, row, content, id.clone(), None);
+        let (mut item, mut info, category) = resolve_item(
+            scan,
+            row,
+            &stored.facts,
+            content,
+            &mut pngs,
+            id.clone(),
+            None,
+        );
         intern_tooltip(&mut item, &mut info, &mut tooltip_ids, tag);
         if let Some(reason) = &item.unknown {
             count_reason(&mut reasons, reason.clone(), 1)?;
@@ -2325,9 +2549,10 @@ fn present_view(
             let artwork = crate::Artwork {
                 token: info.token.clone(),
                 name: item.name.clone(),
-                description: scan
-                    .event_text
-                    .get(&item_text_id(row))
+                description: stored
+                    .facts
+                    .text
+                    .as_ref()
                     .and_then(|text| text.description.clone()),
                 icon: item.icon.clone(),
                 base_duration_days: None,
@@ -2419,42 +2644,33 @@ fn present_view(
         .daily
         .iter()
         .filter_map(|day| {
-            day.pp_sequence.as_deref().map(|sequence| {
-                (
-                    day.country,
-                    day.instance,
-                    day.epoch.as_str(),
-                    day.day_hour,
-                    sequence,
-                )
-            })
+            let day = &day.row;
+            day.pp_sequence
+                .map(|sequence| (day.country, day.instance, day.epoch, day.day_hour, sequence))
         })
         .collect();
-    for cost in &raw.daily_costs {
+    for stored in &raw.daily_costs {
         if cancelled.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "Politics request cancelled",
             ));
         }
-        let Some(amount) = cost
-            .amount_raw
-            .parse::<i128>()
-            .ok()
-            .filter(|amount| *amount != 0)
-        else {
+        let recorded = &stored.row;
+        let amount = i128::from(recorded.cost_raw);
+        if amount == 0 {
             continue;
-        };
+        }
         if !daily_applications.contains(&(
-            cost.country,
-            cost.instance,
-            cost.epoch.as_str(),
-            cost.day_hour,
-            cost.pp_sequence.as_str(),
+            recorded.country,
+            recorded.instance,
+            recorded.epoch,
+            recorded.day_hour,
+            recorded.pp_sequence,
         )) {
             invalidate_read(
                 &mut reply.spending_coverage,
-                cost.read_hour,
+                stored.read_hour,
                 "Daily political power costs have no matched payment at this read",
             );
             count_reason(
@@ -2464,13 +2680,21 @@ fn present_view(
             )?;
             continue;
         }
+        let cost = &stored.ledger();
         let id = format!(
             "daily:{}:{}:{}:{}:{}",
             cost.country, cost.instance, cost.epoch, cost.day_hour, cost.ordinal
         );
         let row = daily_mutation(cost);
-        let (mut item, mut info, mut category) =
-            resolve_item(scan, &row, content, id.clone(), Some(&cost.component));
+        let (mut item, mut info, mut category) = resolve_item(
+            scan,
+            &row,
+            &stored.facts,
+            content,
+            &mut pngs,
+            id.clone(),
+            Some(&cost.component),
+        );
         if amount < 0 {
             let name = item.name.as_deref().unwrap_or("Not identified");
             count_reason(
@@ -2510,9 +2734,10 @@ fn present_view(
             let artwork = crate::Artwork {
                 token: info.token.clone(),
                 name: item.name.clone(),
-                description: scan
-                    .event_text
-                    .get(&item_text_id(&row))
+                description: stored
+                    .facts
+                    .text
+                    .as_ref()
                     .and_then(|text| text.description.clone()),
                 icon: item.icon.clone(),
                 base_duration_days: None,
@@ -2659,8 +2884,9 @@ fn present_view(
     budget.add(holds)?;
     reply.command_holds = holds.to_vec();
     if view == LedgerView::Balance {
-        for row in &raw.mutations {
+        for stored in &raw.mutations {
             cancelled_request(cancelled)?;
+            let row = &stored.ledger();
             let (action, reason) = match row.cause.as_str() {
                 "DailyGain" => (
                     if row.currency == "Command"
@@ -2683,7 +2909,15 @@ fn present_view(
                 _ => {
                     // Shares spending's dated item/content resolution. The chart
                     // needs the sentence; the log owns art and idea tooltips.
-                    let (item, _, _) = resolve_item(scan, row, content, mutation_id(row), None);
+                    let (item, _, _) = resolve_item(
+                        scan,
+                        row,
+                        &stored.facts,
+                        content,
+                        &mut pngs,
+                        mutation_id(row),
+                        None,
+                    );
                     (item.action, item.unknown)
                 }
             };

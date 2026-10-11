@@ -7,7 +7,7 @@ import { countryFlagContent, drawCountryFlag } from '../countryFlag';
 import type { CountryFlagLook } from '../../components/CountryFlag';
 import { scheduler } from '../scheduler';
 import type { FrameInfo, FrameTask } from '../scheduler';
-import { backingSize, toLocal } from '../surface';
+import { toLocal, watchCanvasSize } from '../surface';
 import { readTokens, subscribeTokens } from '../tokens';
 import type { ChartTokens } from '../tokens';
 import { fitTooltip, hideTooltip, showTooltip, tooltipStore, tooltipText } from '../tooltip';
@@ -72,7 +72,7 @@ export default function RaceChart(props: RaceChartProps) {
   const task = useRef<FrameTask | null>(null);
   // Who drives the hover: the pointer, or the keyboard's entry (read out).
   const hover = useRef<{ pointer: Pointer | null; keyed: string | null; menuKey: boolean }>({ pointer: null, keyed: null, menuKey: false });
-  const shown = useRef<{ layout: RaceLayout; rows: readonly RaceRow[]; items: readonly RaceItem[]; min: number; max: number; rect: DOMRect; width: number; height: number;
+  const shown = useRef<{ layout: RaceLayout; rows: readonly RaceRow[]; items: readonly RaceItem[]; min: number; max: number; height: number;
     owner: unknown; resetKey?: string } | null>(null);
   const keyIntent = useRef(false);
   const [spoken, setSpoken] = useState('');
@@ -84,7 +84,7 @@ export default function RaceChart(props: RaceChartProps) {
     let tokens: ChartTokens = readTokens();
     let state: RaceState | null = null;
     let stateKey = props.resetKey;
-    let device: { width: number; height: number } | null = null;
+    const surface = watchCanvasSize(element, () => wake());
     // The widest name and value seen, so the columns only grow.
     let columns = { key: '', label: MIN_LABEL, value: 0 };
     let tooltipFor: { key: string; item: RaceItem; props: RaceChartProps; content: TooltipContent | null } | null = null;
@@ -95,12 +95,8 @@ export default function RaceChart(props: RaceChartProps) {
     const draw = (info: FrameInfo): boolean => {
       const p = latest.current;
       if (stateKey !== p.resetKey) { state = null; stateKey = p.resetKey; }
-      const layoutWidth = element.clientWidth;
-      const layoutHeight = element.clientHeight;
+      const { layoutWidth, layoutHeight, backing: size } = surface.read();
       if (!layoutWidth || !layoutHeight) return false;
-      const rect = element.getBoundingClientRect();
-      const size = backingSize({ layoutWidth, layoutHeight, rectWidth: rect.width, rectHeight: rect.height, devicePixelRatio: window.devicePixelRatio || 1,
-        devicePixelWidth: device?.width, devicePixelHeight: device?.height });
       if (element.width !== size.width) element.width = size.width;
       if (element.height !== size.height) element.height = size.height;
       context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
@@ -119,7 +115,7 @@ export default function RaceChart(props: RaceChartProps) {
       for (const row of state.rows) columns.value = Math.max(columns.value, context.measureText(row.item.label).width + VALUE_GAP + VALUE_PAD);
       const labelWidth = Math.min(columns.label, Math.max(MIN_LABEL, layoutWidth * MAX_LABEL_SHARE));
       const layout = raceLayout(layoutWidth, layoutHeight, fit.rows, labelWidth, Math.max(columns.value, 24), fit.hidden ? MORE_LINE : 0);
-      shown.current = { layout, rows: state.rows, items: fitted.shown, min: state.min, max: state.max, rect, width: layoutWidth, height: layoutHeight,
+      shown.current = { layout, rows: state.rows, items: fitted.shown, min: state.min, max: state.max, height: layoutHeight,
         owner: p.pickOwner, resetKey: p.resetKey };
 
       context.clearRect(0, 0, layoutWidth, layoutHeight);
@@ -197,8 +193,12 @@ export default function RaceChart(props: RaceChartProps) {
         const content = decoded ? fitTooltip([decoded], globalThis.innerHeight) : null;
         // The keyboard's tooltip sits at the row's tip; layout pixels become screen
         // pixels through the widget's Size zoom.
-        const at = pointer ?? { clientX: rect.left + Math.min(layoutWidth, ends.get(hovered.key) ?? layout.left) * rect.width / layoutWidth,
-          clientY: rect.top + rowCentre(layout, hovered.y) * rect.height / layoutHeight };
+        let at: { clientX: number; clientY: number } | null = pointer;
+        if (!at) {
+          const rect = element.getBoundingClientRect();
+          at = { clientX: rect.left + Math.min(layoutWidth, ends.get(hovered.key) ?? layout.left) * rect.width / layoutWidth,
+            clientY: rect.top + rowCentre(layout, hovered.y) * rect.height / layoutHeight };
+        }
         if (content) showTooltip(owner, content, at.clientX, at.clientY, `${hovered.key}:${hovered.item.label}:${hovered.item.value}`);
         else hideTooltip(owner);
         const text = !pointer && content ? tooltipText(content) : spokenText.current;
@@ -212,14 +212,6 @@ export default function RaceChart(props: RaceChartProps) {
     const wake = () => scheduler.wake(current);
     const remove = scheduler.add(current);
     const unsubscribe = subscribeTokens(next => { tokens = next; wake(); });
-    let observer: ResizeObserver | null = null;
-    const resize = (entries: ResizeObserverEntry[]) => {
-      const box = entries[0]?.devicePixelContentBoxSize?.[0];
-      device = box ? { width: box.inlineSize, height: box.blockSize } : null;
-      wake();
-    };
-    try { observer = new ResizeObserver(resize); observer.observe(element, { box: 'device-pixel-content-box' }); }
-    catch { observer = new ResizeObserver(resize); observer.observe(element); }
     const local = (event: PointerEvent | MouseEvent): Pointer => ({
       ...toLocal(event.clientX, event.clientY, element.getBoundingClientRect(), element.clientWidth, element.clientHeight), clientX: event.clientX, clientY: event.clientY });
     // The pointer takes the hover back from the keyboard.
@@ -250,7 +242,7 @@ export default function RaceChart(props: RaceChartProps) {
     element.addEventListener('contextmenu', menu);
     element.addEventListener('click', select);
     return () => {
-      remove(); unsubscribe(); observer?.disconnect(); hideTooltip(owner);
+      remove(); unsubscribe(); surface.disconnect(); hideTooltip(owner);
       element.removeEventListener('pointermove', move);
       element.removeEventListener('pointerleave', leave);
       element.removeEventListener('pointerdown', down);
@@ -297,7 +289,8 @@ export default function RaceChart(props: RaceChartProps) {
     if ((event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) && current.onContextMenu && keyed && shown.current) {
       event.preventDefault();
       hover.current = { ...hover.current, menuKey: true };
-      const { rect, layout, height } = shown.current;
+      const { layout, height } = shown.current;
+      const rect = canvas.current!.getBoundingClientRect();
       const y = rect.top + rowCentre(layout, row.y) * rect.height / height;
       current.onContextMenu(keyed, rect.left + rect.width / 2, y, row.item);
     }

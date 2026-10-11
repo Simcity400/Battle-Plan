@@ -15,14 +15,16 @@ const war: WarTimeline = { id: 'opaque', firstHour: 10, lastHour: 20, startedBy:
   observations: [observation], casualties: [], participants: [], capitulations: [] };
 const input = { war, observation, losses: null, hour: 15, until: 40, branchLast: 40, unobserved: [], capitulationsUnobserved: [], country, day };
 
-test('war settings default to native player, Gantt, war colours and campaign axis', () => {
+test('wars follow the dashboard country; saved viewpoints migrate to it unless a country was picked', () => {
   assert.equal(definition.countries.max, 1);
-  assert.deepEqual(resolveOptions(OPTIONS, undefined), { view: 'gantt', colour: 'war', viewpoint: 'player', grow: false });
-  assert.deepEqual(definition.defaultCountries, { kind: 'tags', tags: [] });
-  const old = { countries: { kind: 'selected' } } as WidgetSpec;
-  assert.deepEqual(definition.migrate(1, old)?.countries, { kind: 'tags', tags: [] });
-  const picked = { countries: { kind: 'tags', tags: ['opaque picked'] } } as WidgetSpec;
-  assert.equal(definition.migrate(1, picked)?.countries, picked.countries);
+  assert.equal('defaultCountries' in definition, false);
+  assert.deepEqual(resolveOptions(OPTIONS, undefined), { view: 'gantt', colour: 'war', grow: false });
+  const player = { countries: { kind: 'tags', tags: [] }, options: { viewpoint: 'player', view: 'countries' } } as unknown as WidgetSpec;
+  assert.deepEqual(definition.migrate(2, player), { countries: { kind: 'selected' }, options: { view: 'countries' } });
+  const unpicked = { countries: { kind: 'tags', tags: ['opaque picked'] }, options: { viewpoint: 'player' } } as unknown as WidgetSpec;
+  assert.deepEqual(definition.migrate(2, unpicked)?.countries, { kind: 'selected' });
+  const picked = { countries: { kind: 'tags', tags: ['opaque picked'] }, options: { viewpoint: 'country' } } as unknown as WidgetSpec;
+  assert.equal(definition.migrate(2, picked)?.countries, picked.countries);
 });
 
 test('finished-war hover retains the last name and orientation without extending rosters or losses', () => {

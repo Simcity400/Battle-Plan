@@ -1,6 +1,8 @@
 //! Ordered scripted entries and content used by recorded triggers.
 use super::*;
-use crate::triggers::{ContentFacts, Eval, LeaderRoles, Scope, Scopes, Temps, World};
+use crate::triggers::{
+    ContentFacts, Eval, GeographyInputs, LeaderRoles, Scope, Scopes, Temps, World,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(test)]
@@ -228,8 +230,8 @@ pub(super) struct EnvironmentInputs {
     state_error: Option<String>,
     continents: Result<Vec<String>, String>,
     impassable: BTreeSet<u32>,
-    neighbors: Result<BTreeMap<u32, Vec<u32>>, String>,
-    terrain: Option<installed_content::movement::MovementMap>,
+    neighbors: std::sync::OnceLock<Result<BTreeMap<u32, Vec<u32>>, String>>,
+    terrain: std::sync::OnceLock<Option<installed_content::movement::MovementMap>>,
     terrain_names: Result<Vec<Vec<u8>>, String>,
     dlcs: BTreeSet<String>,
     triggers: Result<installed_content::trigger_keys::TriggerNames, String>,
@@ -282,12 +284,6 @@ impl EnvironmentInputs {
                 installed_content::trigger_keys::TriggerNames { scripted, counts }
             })
             .map_err(|why| why.to_string());
-        let neighbors = match &state_error {
-            Some(why) => Err(why.clone()),
-            None => installed_content::province_graph::ProvinceGraph::read(layers)
-                .and_then(|(graph, _)| graph.neighbor_states(&state_provinces))
-                .map_err(|e| e.to_string()),
-        };
         let continents = installed_content::terrain::read_default_map(layers)
             .and_then(|map| layers.read(&map.file("continent")?))
             .and_then(|bytes| installed_content::equipment_graphics::context::continent_names(&bytes))
@@ -299,10 +295,8 @@ impl EnvironmentInputs {
             continents,
             impassable,
             state_names,
-            neighbors,
-            terrain: environment.terrain().ok().and_then(|terrain| {
-                installed_content::movement::MovementMap::read_with_terrain(layers, defines, terrain).ok()
-            }),
+            neighbors: std::sync::OnceLock::new(),
+            terrain: std::sync::OnceLock::new(),
             terrain_names: environment.terrain().map(|definitions| {
                 definitions
                     .categories
@@ -336,8 +330,11 @@ impl EnvironmentInputs {
             continents: self.continents.as_deref().map_err(String::as_str),
             ideologies: environment.ideologies.as_ref().map_err(String::as_str),
             impassable: &self.impassable,
-            neighbor_states: self.neighbors.as_ref().map_err(String::as_str),
-            terrain: self.terrain.as_ref(),
+            neighbor_states: self.neighbors.get().map_or(
+                Err("recorded-content neighbor states have not been requested"),
+                |neighbors| neighbors.as_ref().map_err(String::as_str),
+            ),
+            terrain: self.terrain.get().and_then(Option::as_ref),
             dlcs: &self.dlcs,
             triggers: self.triggers.as_ref().map_err(String::as_str),
             tag_aliases: &self.aliases,
@@ -357,6 +354,37 @@ impl EnvironmentInputs {
                 })
                 .map_err(String::as_str),
         }
+    }
+
+    fn geography<'a>(
+        &'a self,
+        content: &'a ScriptedContent,
+        environment: &'a Environment,
+    ) -> GeographyInputs<'a> {
+        GeographyInputs {
+            neighbors: &self.neighbors,
+            terrain: &self.terrain,
+            layers: &content.layers.layers,
+            state_provinces: &self.state_provinces,
+            state_error: self.state_error.as_deref(),
+            defines: environment.defines(),
+            terrain_definitions: environment.terrain_definitions.as_ref().ok(),
+        }
+    }
+
+    fn world<'a>(
+        &'a self,
+        content: &'a ScriptedContent,
+        environment: &'a Environment,
+        frame: &'a DecodedFrame,
+    ) -> World<'a> {
+        World::read(frame, self.facts(environment))
+            .with_geography(self.geography(content, environment))
+            .with_template_names(
+                &content.template_names,
+                &content.layers.layers,
+                &content.recorded_language,
+            )
     }
 }
 
@@ -435,12 +463,7 @@ impl ScriptedContent {
         frame: &'a DecodedFrame,
     ) -> Result<World<'a>, String> {
         let environment = self.environment()?;
-        let facts = environment.inputs(self)?.facts(environment);
-        Ok(World::read(frame, facts).with_template_names(
-            &self.template_names,
-            &self.layers.layers,
-            &self.recorded_language,
-        ))
+        Ok(environment.inputs(self)?.world(self, environment, frame))
     }
 }
 
@@ -453,12 +476,9 @@ impl<'a> ScriptedText<'a> {
     pub(crate) fn trigger_world(&self) -> Result<&World<'a>, String> {
         self.world
             .get_or_init(|| {
-                let facts = self.environment()?.facts(self.content.environment()?);
-                Ok(World::read(self.frame, facts).with_template_names(
-                    &self.content.template_names,
-                    &self.content.layers.layers,
-                    &self.content.recorded_language,
-                ))
+                Ok(self
+                    .environment()?
+                    .world(self.content, self.content.environment()?, self.frame))
             })
             .as_ref()
             .map_err(Clone::clone)
@@ -723,7 +743,7 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(crate) fn province_terrain(&self, id: u32) -> Result<i32, String> {
-        self.environment()?.terrain.as_ref().and_then(|map| map.terrain(id))
+        self.environment()?.geography(self.content, self.content.environment()?).terrain().and_then(|map| map.terrain(id))
             .map(|terrain| terrain.index)
             .ok_or_else(|| format!("Terrain of province {id}: the recorded-content province template is unavailable"))
     }
@@ -921,8 +941,8 @@ impl EnvironmentInputs {
             state_error: None,
             continents: Err("no synthetic continent content is supplied".into()),
             impassable: BTreeSet::new(),
-            neighbors: Ok(BTreeMap::new()),
-            terrain: None,
+            neighbors: std::sync::OnceLock::from(Ok(BTreeMap::new())),
+            terrain: std::sync::OnceLock::from(None),
             terrain_names: Ok(Vec::new()),
             dlcs: BTreeSet::new(),
             triggers: Ok(Default::default()),
@@ -956,7 +976,7 @@ impl EnvironmentInputs {
         terrain: installed_content::movement::MovementMap,
         names: Vec<Vec<u8>>,
     ) -> Self {
-        self.terrain = Some(terrain);
+        self.terrain = std::sync::OnceLock::from(Some(terrain));
         self.terrain_names = Ok(names);
         self
     }

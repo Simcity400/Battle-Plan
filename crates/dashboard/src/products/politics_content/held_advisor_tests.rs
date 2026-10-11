@@ -133,10 +133,7 @@ fn a_disagreeing_advisor_is_its_holders_template() {
         saved: "",
         template: built_template(&row(8), Some(&lexical)),
     };
-    assert_eq!(
-        line_group(&line, &content, Some(&holder)),
-        (Some("political_advisor".to_owned()), None)
-    );
+    assert_eq!(line_group(&line, &content, Some(&holder)), (None, None));
     assert_eq!(line_group(&line, &content, None), (None, None));
     assert!(
         content

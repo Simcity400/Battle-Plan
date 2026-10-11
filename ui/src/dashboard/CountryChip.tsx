@@ -8,8 +8,7 @@ import { groupLabel } from './groups';
 import { useCountryGroups } from './useCountryGroups';
 import { resolveWidgetCampaign } from './campaigns';
 import { selectedTags } from './countrySelection';
-import type { WidgetCountryChipProps, WidgetRuntime } from './definitions';
-import type { WidgetSpec } from './model';
+import type { WidgetCountryChipProps } from './definitions';
 
 /** Parts breakdowns publish the holder and date shown by their body here. */
 export function PartsCountryChip(props: WidgetCountryChipProps) {
@@ -17,9 +16,10 @@ export function PartsCountryChip(props: WidgetCountryChipProps) {
 }
 
 /** The widget header's country: flag and name, with "+N" when it shows several.
- * Names are the recording's own; the tooltip lists every country. */
-export default function CountryChip({ widget, runtime }: { widget: WidgetSpec; runtime: WidgetRuntime }) {
-  usePlaybackHour(runtime.clock, widget.time.mode === 'follow' && widget.countries.kind === 'group' && widget.countries.group.type === 'faction');
+ * Names are the recording's own; the tooltip lists every country. It follows
+ * playback only while its widget is in view. */
+export default function CountryChip({ widget, runtime, active }: Omit<WidgetCountryChipProps, 'onSlot'>) {
+  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow' && widget.countries.kind === 'group' && widget.countries.group.type === 'faction');
   const settings = useCampaignSettings();
   const effective = resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId);
   const track = runtime.tracks.find(item => item.id === effective.trackIds[0]);
@@ -30,9 +30,9 @@ export default function CountryChip({ widget, runtime }: { widget: WidgetSpec; r
   const faction = group?.type === 'faction' ? groups.data?.factions.find(faction => faction.id === group.id) : undefined;
   const nameReason = faction ? factionNameAt(faction, hour, overrides?.[faction.id]?.name).reason : null;
   const tags = selectedTags(widget.countries, track);
-  const name = (tag: string) => track?.source.metadata.countries.find(country => country.tag === tag)?.name || tag;
+  const name = (tag: string) => track?.source.metadata.countries.find(country => country.tag === tag)?.name ?? 'Country name unavailable';
   if (track && widget.countries.kind === 'all') return <span className="dash-widget-country"><Icon name="globe" /><span>All countries</span></span>;
-  if (track && widget.countries.kind === 'factions') return <span className="dash-widget-country"><Icon name="layers" /><span>Top {widget.countries.count} factions</span></span>;
+  if (track && widget.countries.kind === 'factions') return <span className="dash-widget-country"><Icon name="layers" /><span>{widget.countries.count === Number.MAX_SAFE_INTEGER ? 'All factions' : `Top ${widget.countries.count} factions`}</span></span>;
   if (track && widget.countries.kind === 'group') return <span className="dash-widget-country" data-tooltip={nameReason ?? undefined}>
     <Icon name="layers" /><span>{groupLabel(widget.countries.group, groups.data, name, hour, overrides)}</span></span>;
   if (!track || !tags.length) return null;

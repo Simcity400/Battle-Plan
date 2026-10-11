@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { ResearchEntry, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
 import { researchRateAt } from './researchData.ts';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
@@ -79,9 +80,9 @@ export function researchModifierParts(state: ResearchSlotState): ResearchModifie
     const kind = MODIFIER_KINDS[component.kind] ?? component.kind;
     const sources = component.kind === 'scientist' ? []
       : component.kind === 'applied' ? (state.details?.bonuses ?? []).filter(b => b.speedBonusRaw && b.speedBonusRaw !== '0')
-        .map(b => ({ id: `${b.id}`, label: b.name ?? b.token ?? 'Research bonus', raw: BigInt(b.speedBonusRaw!) }))
+        .map(b => ({ id: `${b.id}`, label: contentTitle(b.name, b.token, 'Research bonus'), raw: BigInt(b.speedBonusRaw!) }))
         : component.sources.filter(s => s.raw !== '0')
-          .map((s, i) => ({ id: s.token ?? `${i}`, label: s.name ?? s.token ?? pretty(kind), raw: BigInt(s.raw) }));
+          .map((s, i) => ({ id: s.token ?? `${i}`, label: contentTitle(s.name, s.token, pretty(kind)), raw: BigInt(s.raw) }));
     for (const source of sources) parts.push({ key: `${component.kind}:${source.id}`, kind, label: source.label, raw: source.raw });
     const rest = BigInt(component.raw) - sources.reduce((sum, s) => sum + s.raw, 0n);
     if (rest !== 0n) parts.push({ key: `${component.kind}:`, kind, label: sources.length ? `Other ${kind}` : pretty(kind), raw: rest });

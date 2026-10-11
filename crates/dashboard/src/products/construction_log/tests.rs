@@ -425,8 +425,8 @@ fn railway_live_amount_falls_are_counted_but_route_rises_do_not_prove_completion
 #[test]
 fn the_construction_log_lists_projects_by_token_without_content() {
     use crate::products::{
-        Product,
-        construction_log::{ConstructionLog, ConstructionLogParams},
+        BranchParams, LoadContext, Product,
+        construction_log::{ConstructionLog, ConstructionLogManifest, ConstructionLogParams},
     };
     let frames = (100..=101)
         .map(|hour| {
@@ -451,28 +451,38 @@ fn the_construction_log_lists_projects_by_token_without_content() {
         &AtomicBool::new(false),
     )
     .unwrap();
-    let load = |branch: &str| {
-        ConstructionLog::load(
+    let context = LoadContext { content: None };
+    let manifest = |branch: &str| {
+        ConstructionLogManifest::load(
             &source,
-            &ConstructionLogParams {
+            &BranchParams {
                 branch_id: branch.into(),
             },
-            &crate::products::LoadContext { content: None },
+            &context,
             &AtomicBool::new(false),
         )
         .unwrap()
     };
-    let reply = load("1");
+    let window = |branch: &str, window| {
+        ConstructionLog::load(
+            &source,
+            &ConstructionLogParams {
+                branch_id: branch.into(),
+                window,
+            },
+            &context,
+            &AtomicBool::new(false),
+        )
+    };
+    let reply = manifest("1");
     assert_eq!(reply.cost_scale, 100_000);
-    assert_eq!(reply.reads, [100]);
-    assert_eq!(reply.projects.len(), 1);
-    assert_eq!(reply.projects[0].cost_raw, "1080000000");
+    assert!(reply.recorded);
+    assert_eq!(reply.windows.len(), 1);
     assert_eq!(reply.types[0].token.as_deref(), Some("industrial_complex"));
     assert_eq!(
         (reply.types[0].name.as_ref(), reply.types[0].icon.as_ref()),
         (None, None)
     );
-    assert_eq!(reply.states.len(), 1);
     assert!(
         reply
             .warnings
@@ -481,10 +491,17 @@ fn the_construction_log_lists_projects_by_token_without_content() {
         "{:?}",
         reply.warnings
     );
-    assert!(load("2").projects.is_empty());
+    let projects = window("1", 0).unwrap().projects;
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].cost_raw, "1080000000");
+    assert!(window("1", 1).is_err());
+    let other = manifest("2");
+    assert!(!other.recorded && other.windows.is_empty());
+    assert!(window("2", 0).is_err());
     assert!(
         ConstructionLog::validate(&ConstructionLogParams {
-            branch_id: "x".into()
+            branch_id: "x".into(),
+            window: 0,
         })
         .is_err()
     );
@@ -503,8 +520,8 @@ fn construction_log_live_reply_warns_only_for_unproven_state_reading() {
     engine::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{
-        LoadContext, Product,
-        construction_log::{ConstructionLog, ConstructionLogParams},
+        BranchParams, LoadContext, Product,
+        construction_log::{ConstructionLogManifest, content_names, scanned},
     };
     use replay::spool::Record;
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -588,19 +605,33 @@ fn construction_log_live_reply_warns_only_for_unproven_state_reading() {
         .filter(|note| note.cause.is_some())
         .collect();
     assert_eq!(proven.len(), 5, "{proven:?}");
-    let reply = ConstructionLog::load(
+    let context = LoadContext {
+        content: Some(options),
+    };
+    let reply = ConstructionLogManifest::load(
         &source,
-        &ConstructionLogParams {
+        &BranchParams {
             branch_id: "1".into(),
         },
-        &LoadContext {
-            content: Some(options),
-        },
+        &context,
         &AtomicBool::new(false),
     )
     .unwrap();
-    assert_eq!(reply.projects.len(), 1);
-    assert_eq!(reply.states[0].name.as_deref(), Some("Kept state"));
+    let log = scanned(&source, 1, &AtomicBool::new(false)).unwrap();
+    let names = content_names(
+        &source,
+        &context,
+        1,
+        &log,
+        &AtomicBool::new(false),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(log.projects.len(), 1);
+    assert_eq!(
+        names.states(&[5].into())[0].name.as_deref(),
+        Some("Kept state")
+    );
     assert_eq!(reply.types[0].name.as_deref(), Some("Mod factory"));
     assert!(reply.types[0].icon.is_none());
     assert!(
@@ -659,8 +690,8 @@ fn construction_log_live_reply_warns_only_for_unproven_state_reading() {
 #[test]
 fn a_railway_recorded_without_a_route_ends_unknown_and_is_counted() {
     use crate::products::{
-        Product,
-        construction_log::{ConstructionLog, ConstructionLogParams, EndKind, UnknownEnd, scan},
+        BranchParams, Product,
+        construction_log::{ConstructionLogManifest, EndKind, UnknownEnd, scan},
     };
     let replay = Arc::new(construction_frames(130, |hour, read| {
         let rails = if hour < 124 {
@@ -692,9 +723,9 @@ fn a_railway_recorded_without_a_route_ends_unknown_and_is_counted() {
         &AtomicBool::new(false),
     )
     .unwrap();
-    let reply = ConstructionLog::load(
+    let reply = ConstructionLogManifest::load(
         &source,
-        &ConstructionLogParams {
+        &BranchParams {
             branch_id: "1".into(),
         },
         &crate::products::LoadContext { content: None },
@@ -954,7 +985,7 @@ fn construction_icons_follow_strip_direction_and_the_gui_repair_frame() {
             let view = ContentView {
                 layers: &catalogue.content.layers,
                 sprites: &catalogue.sprites,
-                guis: &catalogue.guis,
+                guis: catalogue.guis().map_err(|error| error.to_string()),
                 gui_decode: &catalogue.gui_decode,
                 localise: &|_| None,
             };
@@ -1015,15 +1046,13 @@ fn construction_icons_use_cached_guis_and_the_native_fallback_and_refuse_unknown
     let [red, blue] = [[200, 0, 0, 255], [0, 0, 200, 255]];
     std::fs::create_dir_all(folder.0.join("gfx")).unwrap();
     std::fs::write(folder.0.join("gfx/fallback.tga"), strip_tga(&[red, blue])).unwrap();
-    // The cached registry, not a fresh file parse, supplies the controls.
-    std::fs::write(folder.0.join("interface/fixture.gui"), "guiTypes = { }").unwrap();
     let types = [(42, Some("fixture_building".into()))];
     let read = |catalogue: &crate::catalogue::Catalogue| {
         named(
             &ContentView {
                 layers: &catalogue.content.layers,
                 sprites: &catalogue.sprites,
-                guis: &catalogue.guis,
+                guis: catalogue.guis().map_err(|error| error.to_string()),
                 gui_decode: &catalogue.gui_decode,
                 localise: &|_| Some("Fixture building".into()),
             },
@@ -1036,6 +1065,11 @@ fn construction_icons_use_cached_guis_and_the_native_fallback_and_refuse_unknown
     let known = read(&catalogue);
     assert_eq!(known.types[&42].1.as_deref().map(first_pixel), Some(blue));
     assert_eq!(known.repair_icon.as_deref().map(first_pixel), Some(red));
+    // After the first dependent lookup, the cached registry supplies the controls.
+    std::fs::write(folder.0.join("interface/fixture.gui"), "guiTypes = { }").unwrap();
+    let cached = read(&catalogue);
+    assert_eq!(cached.types[&42], known.types[&42]);
+    assert_eq!(cached.repair_icon, known.repair_icon);
     catalogue.gui_decode = Err("settings.txt texture decode is unknown".into());
     let unknown = read(&catalogue);
     assert_eq!(unknown.types[&42], (Some("Fixture building".into()), None));
@@ -1067,7 +1101,7 @@ fn refused_state_read_keeps_live_wording_and_is_omitted_offline() {
         &ContentView {
             layers: &catalogue.content.layers,
             sprites: &catalogue.sprites,
-            guis: &catalogue.guis,
+            guis: catalogue.guis().map_err(|error| error.to_string()),
             gui_decode: &catalogue.gui_decode,
             localise: &|_| Some("Mod building".into()),
         },
@@ -1095,6 +1129,84 @@ fn refused_state_read_keeps_live_wording_and_is_omitted_offline() {
             .iter()
             .all(|finding| !finding.message.contains(&expected)),
         "{shared:?}"
+    );
+}
+
+#[test]
+fn construction_titles_preserve_empty_and_key_equal_localisations() {
+    use super::{ContentView, named};
+    use std::collections::BTreeSet;
+
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/defines.lua",
+            "NDefines={NBuildings={MAX_BUILDING_LEVELS=15}}",
+        ),
+        (
+            "common/buildings/buildings.txt",
+            "buildings={mod_empty={} mod_same={} mod_missing={}}",
+        ),
+        (
+            "map/default.map",
+            "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp",
+        ),
+        ("map/definition.csv", "0;0;0;0;land;false;unknown;0\n"),
+        (
+            "history/states/1-empty.txt",
+            "state={id=1 name=STATE_EMPTY}",
+        ),
+        ("history/states/2-same.txt", "state={id=2 name=STATE_SAME}"),
+        (
+            "history/states/3-missing.txt",
+            "state={id=3 name=STATE_MISSING}",
+        ),
+        (
+            "localisation/english/construction_l_english.yml",
+            "\u{feff}l_english:\n mod_empty:0 \"\"\n mod_same:0 \"mod_same\"\n STATE_EMPTY:0 \"\"\n STATE_SAME:0 \"STATE_SAME\"\n",
+        ),
+    ]);
+    let localise = |key: &str| catalogue.localised(key, crate::catalogue::View::Plain);
+    let view = ContentView {
+        layers: &catalogue.content.layers,
+        sprites: &catalogue.sprites,
+        guis: catalogue.guis().map_err(|error| error.to_string()),
+        gui_decode: &catalogue.gui_decode,
+        localise: &localise,
+    };
+    let named = named(
+        &view,
+        &[
+            (101, Some("mod_empty".into())),
+            (102, Some("mod_same".into())),
+            (103, Some("mod_missing".into())),
+        ],
+        &BTreeSet::from([1, 2, 3]),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(named.types[&101].0.as_deref(), Some(""));
+    assert_eq!(named.types[&102].0.as_deref(), Some("mod_same"));
+    assert_eq!(named.types[&103].0, None);
+    assert_eq!(named.states[&1].as_deref(), Some(""));
+    assert_eq!(named.states[&2].as_deref(), Some("STATE_SAME"));
+    assert_eq!(named.states[&3], None);
+    let absent: Vec<_> = named
+        .warnings
+        .iter()
+        .map(|(_, message)| message)
+        .filter(|message| message.contains("have no name"))
+        .collect();
+    assert_eq!(absent.len(), 2, "{absent:?}");
+    assert!(
+        absent
+            .iter()
+            .any(|message| message.starts_with("1 building types")
+                && message.ends_with(": mod_missing."))
+    );
+    assert!(
+        absent
+            .iter()
+            .any(|message| message.starts_with("1 states") && message.ends_with(": 3."))
     );
 }
 
@@ -1226,7 +1338,7 @@ fn a_modded_content_stack_names_and_pictures_its_own_buildings_and_refuses_what_
     let view = ContentView {
         layers: &catalogue.content.layers,
         sprites: &catalogue.sprites,
-        guis: &catalogue.guis,
+        guis: catalogue.guis().map_err(|error| error.to_string()),
         gui_decode: &catalogue.gui_decode,
         localise: &localise,
     };
@@ -2086,4 +2198,268 @@ fn concurrent_requests_for_a_cold_branch_share_one_scan() {
     });
     assert_eq!(scans_run(&source), 1);
     assert!(logs.iter().all(|log| Arc::ptr_eq(log, &logs[0])));
+}
+
+/// A synthetic branch of `periods` windows of 720 hours, read daily and unrecorded
+/// for their last 12 hours, with the output table unavailable at one read in each.
+/// Each window starts three projects: one created in the window before and finished
+/// in the next, one whose final output was lost (read without a row to the branch's
+/// end), and one created after the read that first lists it.
+fn periodic_log(periods: i32) -> (super::ScannedLog, Vec<super::BattleWindow>) {
+    use super::{
+        BattleWindow, ConstructionOutputRead, ConstructionProject, EndKind, LevelsBuilt,
+        ProjectEnd, ProjectKind, ProjectRun, ScannedLog, SpendingGap,
+    };
+    const BASE: i32 = 1_000_000;
+    let last = BASE + 720 * periods - 1;
+    let windows = (0..periods)
+        .map(|period| BattleWindow {
+            first_hour: BASE + 720 * period,
+            last_hour: BASE + 720 * period + 707,
+        })
+        .collect();
+    let mut log = ScannedLog {
+        output_reads: (BASE + 10..=last)
+            .step_by(24)
+            .map(|hour| {
+                let read = (hour - BASE) / 24;
+                (hour, (read % 30 == 12).then_some(SpendingGap::ReadFailed))
+            })
+            .collect(),
+        ..ScannedLog::default()
+    };
+    for period in 0..periods {
+        let at = BASE + 720 * period;
+        let end = |kind, hour, known_at| {
+            Some(ProjectEnd {
+                kind,
+                hour,
+                known_at,
+                unknown: None,
+            })
+        };
+        // Created, first read, last row published, last output read, the row's
+        // output (none: growing at each read) and ending.
+        let lines = [
+            (
+                at - 100,
+                at + 10,
+                at + 730,
+                at + 730,
+                None,
+                end(EndKind::Finished, Some(at + 712), at + 730),
+            ),
+            (
+                at + 8,
+                at + 10,
+                at + 250,
+                last,
+                Some("7"),
+                end(EndKind::Unknown, None, at + 274),
+            ),
+            (
+                at + 730,
+                at + 682,
+                at + 826,
+                at + 826,
+                Some("0"),
+                end(EndKind::Finished, None, at + 826),
+            ),
+        ];
+        for (index, (created_hour, first_read, published, until, raw, end)) in
+            lines.into_iter().enumerate()
+        {
+            let output = log
+                .output_reads
+                .iter()
+                .filter(|(hour, _)| (first_read..=until).contains(hour))
+                .map(|&(hour, gap)| {
+                    let row = gap.is_none() && hour <= published;
+                    ConstructionOutputRead {
+                        known_at: hour,
+                        since_hour: row.then_some(at),
+                        construction_raw: row
+                            .then(|| raw.map_or_else(|| (hour - at).to_string(), str::to_owned)),
+                        repair_raw: row.then(|| "0".to_owned()),
+                        reason: (!row).then_some(gap.unwrap_or(SpendingGap::FinalOutputMissing)),
+                        observed_since_creation: false,
+                        repair_ticks: 0,
+                    }
+                })
+                .collect();
+            log.projects.push(ConstructionProject {
+                id: (100 + 10 * period + index as i32).to_string(),
+                kind: ProjectKind::Building,
+                tag: "GER".into(),
+                building: 0,
+                repair: false,
+                state: None,
+                to_state: None,
+                province: None,
+                route_provinces: None,
+                base_level: None,
+                target_level: None,
+                cost_raw: "100".into(),
+                created_hour,
+                first_read,
+                earlier_unknown: false,
+                runs: vec![ProjectRun {
+                    first_hour: first_read,
+                    last_hour: first_read,
+                    factories: 1,
+                    remaining: 1,
+                    repair_levels: 0,
+                }],
+                built: (index == 0)
+                    .then_some(LevelsBuilt {
+                        hour: Some(at + 600),
+                        known_at: at + 610,
+                        count: 1,
+                        repair: false,
+                    })
+                    .into_iter()
+                    .collect(),
+                unaccounted: Vec::new(),
+                possible: Vec::new(),
+                added: Vec::new(),
+                end,
+                first_repair_tick: None,
+            });
+            log.outputs.push(output);
+        }
+    }
+    (log, windows)
+}
+
+#[test]
+fn windows_hold_every_dated_project_and_the_output_its_tooltip_reads() {
+    use super::{
+        ConstructionLogReply, ConstructionOutputRead, ConstructionProject, Cut, SpendingGap,
+        window_at,
+    };
+    use std::collections::BTreeMap;
+    let (log, windows) = periodic_log(4);
+    let (projects, outputs) = (log.projects.clone(), log.outputs.clone());
+    let cut = Cut::new(Arc::new(log), windows.clone());
+    let replies: Vec<_> = (0..windows.len()).map(|window| cut.reply(window)).collect();
+    // The widget dates a row by the latest change known by then, else its start.
+    let dated = |project: &ConstructionProject, hour: i32| match &project.end {
+        Some(end) if end.known_at <= hour => end.hour.unwrap_or(end.known_at),
+        _ => [&project.built, &project.unaccounted, &project.possible]
+            .into_iter()
+            .flatten()
+            .filter(|levels| levels.known_at <= hour)
+            .max_by_key(|levels| (levels.known_at, levels.hour.unwrap_or(levels.known_at)))
+            .map_or(project.created_hour, |levels| {
+                levels.hour.unwrap_or(levels.known_at)
+            }),
+    };
+    // Its tooltip showed the latest read by then, from every read.
+    let was = |reads: &[ConstructionOutputRead], hour| {
+        reads
+            .iter()
+            .rev()
+            .find(|read| read.known_at <= hour)
+            .map(|read| {
+                let raws = (read.construction_raw.clone(), read.repair_raw.clone());
+                let before = read.since_hour.is_some() && !read.observed_since_creation;
+                (read.known_at, raws, read.reason, before)
+            })
+    };
+    // It now reads the hour's window and one other window listing the project.
+    let now = |held: [&ConstructionLogReply; 2], id: &str, hour: i32| {
+        let runs: BTreeMap<_, _> = held
+            .iter()
+            .flat_map(|reply| &reply.outputs)
+            .filter(|output| output.id == id)
+            .flat_map(|output| &output.runs)
+            .map(|run| (run.from, run))
+            .collect();
+        let (_, run) = runs.range(..=hour).next_back()?;
+        let reads = held[0];
+        let known_at = if hour >= run.to {
+            run.to
+        } else {
+            *reads
+                .output_reads
+                .iter()
+                .rev()
+                .find(|read| **read <= hour)?
+        };
+        let reason = if run.absent {
+            let gap = reads
+                .output_unavailable
+                .iter()
+                .find(|(read, _)| *read == known_at);
+            Some(gap.map_or(SpendingGap::FinalOutputMissing, |(_, gap)| *gap))
+        } else {
+            run.reason
+        };
+        let raws = (run.construction_raw.clone(), run.repair_raw.clone());
+        Some((known_at, raws, reason, run.before_observation))
+    };
+    let lists = |reply: &ConstructionLogReply, id: &str| {
+        reply.projects.iter().any(|listed| listed.id == id)
+    };
+    for hour in windows[0].first_hour..windows[3].first_hour + 720 {
+        let current = &replies[window_at(&windows, hour)];
+        for (project, reads) in projects.iter().zip(&outputs) {
+            if project.first_read > hour {
+                continue;
+            }
+            // In the window of its row's date, or the hour's when dated later.
+            let at = window_at(&windows, dated(project, hour).min(hour));
+            assert!(lists(&replies[at], &project.id), "{} at {hour}", project.id);
+            for member in replies.iter().filter(|reply| lists(reply, &project.id)) {
+                assert_eq!(
+                    now([current, member], &project.id, hour),
+                    was(reads, hour),
+                    "{} at {hour} with window {}",
+                    project.id,
+                    member.window
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_window_does_not_grow_with_the_branch() {
+    use super::Cut;
+    let last = |periods| {
+        let (log, windows) = periodic_log(periods);
+        let window = windows.len() - 1;
+        let reply = Cut::new(Arc::new(log), windows).reply(window);
+        serde_json::to_string(&reply).unwrap().len()
+    };
+    assert_eq!(last(2), last(6));
+}
+
+#[test]
+fn a_project_s_first_repair_advance_is_its_first_output_read_counting_one() {
+    use replay::rows::ConstructionLineOutputRow;
+    let replay = construction_frames(148, |hour, read| {
+        let mut frame = construction_frame(
+            hour,
+            read,
+            vec![building_line(1, 5, 1, 0, 0)],
+            Vec::new(),
+            Some(vec![building_at(5, CIVILIAN, (1, 1))]),
+            Vec::new(),
+        );
+        *frame.tables[TableId::ConstructionLineOutput.index()] =
+            TableView::Complete(TableRows::ConstructionLineOutput(vec![
+                ConstructionLineOutputRow {
+                    line: 1,
+                    since_hour: 100,
+                    exact: true,
+                    repair_ticks: i32::from(hour >= 124),
+                    ..Default::default()
+                },
+            ]));
+        frame
+    });
+    let log = timed_scan(&replay, 1, &AtomicBool::new(false)).unwrap();
+    assert_eq!(log.projects[0].first_repair_tick, Some(124));
+    assert_eq!(log.outputs[0].len(), 3);
 }

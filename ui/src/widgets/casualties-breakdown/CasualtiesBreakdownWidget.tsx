@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
 import { drawBands } from '../../charts/draw';
@@ -25,16 +25,22 @@ import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { CasualtyBreakdownReply } from '../../generated/dashboard';
-import { breakdownWindows, exactLosses, lossItems, lossesAt, lossStack, lossText, validateBreakdown } from './casualtiesBreakdownData';
+import { breakdownWindows, exactLosses, lossItems, lossesAt, lossStack, lossText, validateBreakdown, viewChange, viewWindows } from './casualtiesBreakdownData';
 import type { LossRow } from './casualtiesBreakdownData';
-import { casualtyCountryCell } from './casualtyFlags';
+import { casualtyCountryCell, casualtyEnemyName } from './casualtyFlags';
 import { definition, DETAIL } from './definition';
 import './casualtiesBreakdown.css';
 
 const ROOT = { id: 'positive-losses', label: 'Positive known losses' };
-const NO_WARNINGS: string[] = [];
 const TEXT: SunburstText = { format: (value, exact) => exactLosses(exact ?? BigInt(Math.round(value))), unit: 'casualties', valueLabel: 'Positive amounts' };
+const SORT = { column: 'losses', direction: 'descending' } as const;
+const rowKey = (row: LossRow) => row.id;
+// Columns that name no country keep their accessors: arriving names and flags never re-sort by them.
+const WAR: TableColumn<LossRow> = { key: 'war', header: 'War', label: 'War', value: row => row.war };
+const LOSSES: TableColumn<LossRow> = { key: 'losses', header: 'Known taken', label: 'Known taken', numeric: true, width: 'max-content', value: row => row.value, render: lossText };
+const READ: TableColumn<LossRow> = { key: 'read', header: 'Read', label: 'Read', width: 'max-content', value: row => row.readHour, render: row => formatDateTime(row.readHour) };
 
 export default function CasualtiesBreakdownWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const speed = usePlaybackSpeed(runtime.clock), tokens = useChartTokens(), height = useViewportHeight();
@@ -65,10 +71,8 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   const currentWindows = breakdownWindows(manifest.data, hour, widget.time.mode === 'follow');
   const detailWindows = breakdownWindows(manifest.data, detailHour, effectiveDrill.follow);
   const finalIndex = manifest.data ? manifest.data.windows.length - 1 : -1;
-  // Only the time-chart viewport requests history blocks. At the default full
-  // branch extent they all load; zooming releases the blocks no longer shown.
-  const chartWindows = open ? manifest.data?.windows.flatMap((span, index) => !chartRange
-    || span.firstHour <= chartRange[1] && chartRange[0] <= span.lastHour ? [index] : []) ?? [] : [];
+  const chartWindows = open && manifest.data ? viewWindows(manifest.data.windows, chartRange) : [];
+  const onChartView = useCallback((range: readonly [number, number]) => setChartRange(viewChange(manifest.data?.windows ?? [], range)), [manifest.data]);
   const wanted = [...new Set([...currentWindows, ...detailWindows, ...chartWindows, ...(finalIndex >= 0 ? [finalIndex] : [])])].sort((a, b) => a - b);
   const identity = track && tag ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag]) : null;
   const histories = useProductWindows<CasualtyBreakdownReply>(runtime.client, identity, index => ({ ...request!,
@@ -82,12 +86,12 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   const nameFacts = useMemo(() => [...(snapshot?.rows ?? []), ...(details?.rows ?? []), ...(end?.rows ?? [])]
     .map(row => ({ tag: row.enemyTag, hour: row.enemyHour })), [snapshot, details, end]);
   const names = useCountryNamesAt(runtime.client, track, nameFacts, active);
-  const enemyName = (row: LossRow) => names.get(nameKey(row.enemyHour, row.enemyTag)) ?? row.enemyTag;
+  const enemyName = (row: LossRow) => casualtyEnemyName(row, names);
   // Artwork follows the table viewport, including a removed enemy's last
   // observed holder. A replacement under its tag cannot supply its old flag.
   const flagFacts = useMemo(() => visible.map(row => ({ tag: row.enemyTag, hour: row.enemyHour })), [visible]);
-  const flags = useCountryFactsRead(runtime.client, track, flagFacts, active && open, flagReadSpec('small'));
-  const items = useMemo(() => lossItems(snapshot, end, (tag, hour) => names.get(nameKey(hour, tag)) ?? tag), [snapshot, end, names]);
+  const flags = useCountryFactsRead(runtime.client, track, flagFacts, active && open, flagReadSpec('shield'));
+  const items = useMemo(() => lossItems(snapshot, end, (tag, hour) => names.get(nameKey(hour, tag)) ?? 'Country name unavailable'), [snapshot, end, names]);
   const levels = [options.warLevel !== false, options.enemyLevel !== false];
   const chartReplies = useMemo(() => chartWindows.flatMap(index => histories.data.has(index) ? [histories.data.get(index)!] : []),
     [chartWindows.join(','), histories.data]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -102,18 +106,15 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
     },
     extent: range => stackExtent(stack.model, range[0], range[1]),
   }], [stack, colors.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
-  const columns = useMemo<TableColumn<LossRow>[]>(() => [
-    { key: 'war', header: 'War', label: 'War', value: row => row.war },
-    { key: 'enemy', header: 'Enemy', label: 'Enemy', value: row => names.get(nameKey(row.enemyHour, row.enemyTag)) ?? row.enemyTag,
+  const columns = useMemo<TableColumn<LossRow>[]>(() => [WAR,
+    { key: 'enemy', header: 'Enemy', label: 'Enemy', value: row => casualtyEnemyName(row, names),
       render: row => <CountryCell {...casualtyCountryCell(row, names, flags)} /> },
-    { key: 'losses', header: 'Known taken', label: 'Known taken', numeric: true, width: 'max-content', value: row => row.value, render: lossText },
-    { key: 'read', header: 'Read', label: 'Read', width: 'max-content', value: row => row.readHour, render: row => formatDateTime(row.readHour) },
+    LOSSES, READ,
   ], [names, flags]);
   useEffect(() => { setDrill(CLOSED); setVisible([]); setChartRange(null); }, [runtime.client, identity, widget.time, options.show]);
-  useEffect(() => {
-    onDiagnostics([...new Set([...(manifest.data?.warnings ?? []), ...[...histories.data.values()].flatMap(reply => reply.warnings)])]);
-    return () => onDiagnostics(NO_WARNINGS);
-  }, [manifest.data, histories.data, onDiagnostics]);
+  const diagnostics = useMemo(() => [...new Set([...(manifest.data?.warnings ?? []), ...[...histories.data.values()].flatMap(reply => reply.warnings)])],
+    [manifest.data, histories.data]);
+  useDiagnostics(onDiagnostics, diagnostics);
 
   if (!track || !tag) return <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its casualties." />;
   if (!window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign." />;
@@ -133,20 +134,21 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
         : !details ? <p className="drill-empty">{detail.observed.some(span => span.firstHour <= detailHour && detailHour <= span.lastHour)
           ? 'No casualty relations were recorded for this country' : 'Casualty counters were not recorded'} at {formatDateTime(detailHour)}.</p>
           : <>{summary(details)}<div className="casualty-breakdown-table"><Table label="Recorded casualty lifetimes" rows={details.rows}
-            columns={columns} rowKey={row => row.id} sort={{ column: 'losses', direction: 'descending' }}
+            columns={columns} rowKey={rowKey} sort={SORT}
             cellBars={false} rankMarkers={false} hoursPerSecond={speed} onVisibleRows={setVisible}
             menu={row => [jumpItem(runtime, track.id, row.readHour)]}
             tooltip={row => fitTooltip([{ title: `${row.war} › ${enemyName(row)}`, rows: [
               { label: 'Known taken', value: lossText(row), strong: true },
               { label: 'Read', value: formatDateTime(row.readHour) },
               { label: 'Native grouping supplied', value: formatDateTime(row.groupingHour) },
+              { label: 'Enemy key', value: row.enemyTag },
               ...(row.enemyHour < detailHour ? [{ label: 'Enemy facts read', value: formatDateTime(row.enemyHour) }] : []),
             ], note: [row.reason, row.nameReason, row.incomplete ? 'Missing hours may hide additional losses or whole wars.' : null].filter(Boolean).join(' ') }], height)} /></div></>}
     <div className="casualty-breakdown-history"><TimeChart label="Positive recorded casualties by war over time"
       extent={[track.branch.firstHour, track.branch.lastHour]} branchStart={track.branch.firstHour}
       playhead={effectiveDrill.follow ? clockHour : null} playback="cursor" hoursPerSecond={speed}
       axes={{ xFrom: null, xTo: null, yMin: 0, yMax: null, log: false }} layers={layers}
-      active={active && open} revision={stack} onViewChange={setChartRange}
+      active={active && open} revision={stack} onViewChange={onChartView}
       onPick={pickDay}
       onContextMenu={(at, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, Math.floor(at))])}
       tooltip={at => {

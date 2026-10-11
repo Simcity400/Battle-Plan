@@ -11,7 +11,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -90,71 +90,24 @@ fn technology_children(
     )
 }
 
-pub struct Context {
-    kind: Kind,
-    technology_names: BTreeMap<String, TechnologyName>,
-    /// The source's shared localisation and sprites for these folders.
-    catalogue: Arc<Catalogue>,
-    artwork_cache: BTreeMap<String, (Artwork, Vec<String>)>,
-    artwork_bytes: usize,
-    icon_cache: BTreeMap<String, Result<Option<String>, String>>,
-    definitions: BTreeMap<String, installed_content::focus::FocusDefinition>,
-    focus_text_needs_frame: bool,
+#[derive(Default)]
+struct PreparedContent {
+    focus: std::sync::OnceLock<Result<Preparation, String>>,
+    technology: std::sync::OnceLock<Result<Preparation, String>>,
+}
+
+struct Preparation {
+    definitions: Arc<BTreeMap<String, installed_content::focus::FocusDefinition>>,
     point_days: Option<f64>,
-    warnings: Vec<String>,
+    technology_names: Arc<BTreeMap<String, TechnologyName>>,
     inventory: Vec<String>,
     preparation_warnings: Vec<installed_content::Diagnostic>,
+    warnings: Vec<String>,
 }
 
-/// The source's artwork context for the configured folders, loaded on first use.
-pub fn ensure<'a>(
-    slot: &'a mut Option<Context>,
-    source: &Source,
-    content: &ContentOptions,
-    kind: Kind,
-) -> io::Result<&'a mut Context> {
-    let catalogue = catalogue::catalogue(source, content)?;
-    if !slot
-        .as_ref()
-        .is_some_and(|cached| Arc::ptr_eq(&cached.catalogue, &catalogue))
-    {
-        *slot = Some(Context::load(catalogue, kind)?);
-    }
-    Ok(slot.as_mut().expect("artwork context loaded"))
-}
-
-/// Resolved artwork and, when refused, its feed-local reason.
-pub type ResolvedArt = (Artwork, Option<String>);
-
-fn focus_needs_frame(
-    catalogue: &Catalogue,
-    definition: &installed_content::focus::FocusDefinition,
-) -> bool {
-    definition
-        .icons
-        .cases
-        .iter()
-        .chain(definition.alternate_icons.cases.iter())
-        .any(|case| {
-            case.trigger
-                .as_ref()
-                .is_some_and(|trigger| !trigger.is_empty())
-        })
-        || [&definition.localisation, &definition.description]
-            .into_iter()
-            .any(|key| {
-                catalogue
-                    .localisation
-                    .localise(key.as_bytes())
-                    .is_ok_and(|text| text.contains('['))
-            })
-}
-
-impl Context {
-    pub(crate) fn load(catalogue: Arc<Catalogue>, kind: Kind) -> io::Result<Self> {
-        let mut warnings = vec!["Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".into()];
-        warnings.extend(catalogue.verification.iter().cloned());
-        let layers = &catalogue.content.layers;
+impl Preparation {
+    fn read(layers: &installed_content::ResolvedLayers, kind: Kind) -> io::Result<Self> {
+        let mut warnings = Vec::new();
         let (definitions, point_days, technology_names, inventory, preparation_warnings) =
             match kind {
                 Kind::Focus => {
@@ -210,9 +163,122 @@ impl Context {
                     )
                 }
             };
-        let focus_text_needs_frame = definitions
-            .values()
-            .any(|definition| focus_needs_frame(&catalogue, definition));
+        Ok(Self {
+            definitions: Arc::new(definitions),
+            point_days,
+            technology_names: Arc::new(technology_names),
+            inventory,
+            preparation_warnings,
+            warnings,
+        })
+    }
+}
+
+pub struct Context {
+    kind: Kind,
+    technology_names: Arc<BTreeMap<String, TechnologyName>>,
+    /// The source's shared localisation and sprites for these folders.
+    catalogue: Arc<Catalogue>,
+    artwork_cache: BTreeMap<String, (Artwork, Vec<String>)>,
+    artwork_bytes: usize,
+    icon_cache: BTreeMap<String, Result<Option<String>, String>>,
+    definitions: Arc<BTreeMap<String, installed_content::focus::FocusDefinition>>,
+    focus_text_needs_frame: OnceLock<bool>,
+    point_days: Option<f64>,
+    warnings: Vec<String>,
+    inventory: Vec<String>,
+    preparation_warnings: Vec<installed_content::Diagnostic>,
+}
+
+/// The source's artwork context for the configured folders, loaded on first use.
+pub fn ensure<'a>(
+    slot: &'a mut Option<Context>,
+    source: &Source,
+    content: &ContentOptions,
+    kind: Kind,
+) -> io::Result<&'a mut Context> {
+    let catalogue = catalogue::catalogue(source, content)?;
+    if !slot
+        .as_ref()
+        .is_some_and(|cached| Arc::ptr_eq(&cached.catalogue, &catalogue))
+    {
+        *slot = Some(Context::load(catalogue, kind)?);
+    }
+    Ok(slot.as_mut().expect("artwork context loaded"))
+}
+
+/// Resolved artwork and, when refused, its feed-local reason.
+pub type ResolvedArt = (Artwork, Option<String>);
+
+#[derive(Clone, Copy)]
+enum FocusProjection {
+    Full,
+    Text,
+    Titles,
+    Display,
+    Icons,
+}
+
+impl FocusProjection {
+    fn icons(self) -> bool {
+        matches!(self, Self::Full | Self::Display | Self::Icons)
+    }
+
+    fn descriptions(self) -> bool {
+        matches!(self, Self::Full | Self::Text)
+    }
+}
+
+fn focus_icons_need_frame(definition: &installed_content::focus::FocusDefinition) -> bool {
+    definition
+        .icons
+        .cases
+        .iter()
+        .chain(definition.alternate_icons.cases.iter())
+        .any(|case| {
+            case.trigger
+                .as_ref()
+                .is_some_and(|trigger| !trigger.is_empty())
+        })
+}
+
+fn focus_needs_frame(
+    catalogue: &Catalogue,
+    definition: &installed_content::focus::FocusDefinition,
+    include_descriptions: bool,
+) -> bool {
+    focus_icons_need_frame(definition)
+        || [&definition.localisation, &definition.description]
+            .into_iter()
+            .take(if include_descriptions { 2 } else { 1 })
+            .any(|key| {
+                catalogue
+                    .localisation
+                    .localise(key.as_bytes())
+                    .is_ok_and(|text| text.contains('['))
+            })
+}
+
+impl Context {
+    pub(crate) fn load(catalogue: Arc<Catalogue>, kind: Kind) -> io::Result<Self> {
+        let mut warnings = vec!["Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".into()];
+        warnings.extend(catalogue.verification.iter().cloned());
+        let layers = &catalogue.content.layers;
+        let prepared = layers.derived::<PreparedContent>();
+        let slot = match kind {
+            Kind::Focus => &prepared.focus,
+            Kind::Technology => &prepared.technology,
+        };
+        let prepared = slot
+            .get_or_init(|| Preparation::read(layers, kind).map_err(|error| error.to_string()))
+            .as_ref()
+            .map_err(|reason| invalid(reason.clone()))?;
+        let definitions = Arc::clone(&prepared.definitions);
+        let technology_names = Arc::clone(&prepared.technology_names);
+        let point_days = prepared.point_days;
+        let inventory = prepared.inventory.clone();
+        let preparation_warnings = prepared.preparation_warnings.clone();
+        warnings.extend(prepared.warnings.iter().cloned());
         warnings.extend(catalogue.warnings.iter().cloned());
         Ok(Self {
             kind,
@@ -222,7 +288,7 @@ impl Context {
             artwork_bytes: 0,
             icon_cache: BTreeMap::new(),
             definitions,
-            focus_text_needs_frame,
+            focus_text_needs_frame: OnceLock::new(),
             point_days,
             warnings,
             inventory,
@@ -230,10 +296,12 @@ impl Context {
         })
     }
 
-    /// The localised text for a key as plain text, a key the content lacks
-    /// being its own bytes (the game's localiser, [`Catalogue::localised`]);
-    /// None when refused, which the catalogue notes.
+    /// Localized presentation text; absent keys stay unavailable. Defined empty
+    /// strings and authored text identical to its key remain valid.
     pub fn localise(&self, key: &str) -> Option<String> {
+        if !self.catalogue.has_presentation_key(key) {
+            return None;
+        }
         if matches!(self.kind, Kind::Technology) {
             return self.catalogue.localised(key, self.view());
         }
@@ -248,6 +316,19 @@ impl Context {
             self.catalogue.note(finding);
         }
         text
+    }
+
+    /// Only country-independent focus text belongs in a history reply. Scoped
+    /// strings wait for their recorded hour without producing an offline refusal.
+    fn static_focus_text(&self, key: &str) -> Option<String> {
+        if !self.catalogue.has_presentation_key(key) {
+            return None;
+        }
+        let raw = self.catalogue.localisation.localise(key.as_bytes()).ok()?;
+        if raw.contains('[') {
+            return None;
+        }
+        catalogue::plain_text(&raw).ok()
     }
 
     /// Focus names and descriptions expand scoped text; full technology names
@@ -549,13 +630,61 @@ impl Context {
         tokens
             .iter()
             .filter_map(|token| self.definitions.get(token))
-            .any(|definition| focus_needs_frame(&self.catalogue, definition))
+            .any(|definition| focus_needs_frame(&self.catalogue, definition, true))
+    }
+
+    /// Titles and icons do not depend on unrequested description operands.
+    pub fn requested_focus_display_needs_frame(&self, tokens: &[String]) -> bool {
+        tokens
+            .iter()
+            .filter_map(|token| self.definitions.get(token))
+            .any(|definition| focus_needs_frame(&self.catalogue, definition, false))
+    }
+
+    /// Icon requests do not depend on any title or description operands.
+    pub fn requested_focus_icons_need_frame(&self, tokens: &[String]) -> bool {
+        tokens
+            .iter()
+            .filter_map(|token| self.definitions.get(token))
+            .any(focus_icons_need_frame)
+    }
+
+    pub fn requested_focus_title_needs_frame(&self, tokens: &[String]) -> bool {
+        tokens
+            .iter()
+            .filter_map(|token| self.definitions.get(token))
+            .any(|definition| {
+                self.catalogue
+                    .localisation
+                    .localise(definition.localisation.as_bytes())
+                    .is_ok_and(|text| text.contains('['))
+            })
+    }
+
+    pub fn requested_focus_text_needs_frame(&self, tokens: &[String]) -> bool {
+        tokens
+            .iter()
+            .filter_map(|token| self.definitions.get(token))
+            .any(|definition| {
+                [&definition.localisation, &definition.description]
+                    .into_iter()
+                    .any(|key| {
+                        self.catalogue
+                            .localisation
+                            .localise(key.as_bytes())
+                            .is_ok_and(|text| text.contains('['))
+                    })
+            })
     }
 
     /// Whether focus text or icon cases need recorded country/hour operands.
     /// Dollar references have already expanded through the content localiser.
     pub fn focus_text_needs_frame(&self) -> bool {
-        self.focus_text_needs_frame
+        *self.focus_text_needs_frame.get_or_init(|| {
+            self.definitions
+                .values()
+                .any(|definition| focus_needs_frame(&self.catalogue, definition, true))
+        })
     }
 
     /// Event focus presentation resolves names and first-true icon cases at the row hour.
@@ -564,7 +693,9 @@ impl Context {
         requests: &[(&str, &str)],
         frame: &replay::frame::DecodedFrame,
     ) -> Vec<ResolvedArt> {
-        self.focuses(requests, frame, false, |items| items.collect())
+        self.focuses(requests, frame, false, FocusProjection::Full, |items| {
+            items.collect()
+        })
     }
 
     /// The caller admits each lazy item while the batch shares its text context.
@@ -574,7 +705,47 @@ impl Context {
         frame: &replay::frame::DecodedFrame,
         collect: impl FnOnce(&mut dyn Iterator<Item = ResolvedArt>) -> T,
     ) -> T {
-        self.focuses(requests, frame, true, collect)
+        self.focuses(requests, frame, true, FocusProjection::Full, collect)
+    }
+
+    /// Resolve dated text without selecting, decoding or rendering sprites.
+    pub fn focus_text_at<T>(
+        &mut self,
+        requests: &[(&str, &str)],
+        frame: &replay::frame::DecodedFrame,
+        collect: impl FnOnce(&mut dyn Iterator<Item = ResolvedArt>) -> T,
+    ) -> T {
+        self.focuses(requests, frame, true, FocusProjection::Text, collect)
+    }
+
+    /// Row titles use their recorded scope without expanding hidden descriptions.
+    pub fn focus_titles_at<T>(
+        &mut self,
+        requests: &[(&str, &str)],
+        frame: &replay::frame::DecodedFrame,
+        collect: impl FnOnce(&mut dyn Iterator<Item = ResolvedArt>) -> T,
+    ) -> T {
+        self.focuses(requests, frame, true, FocusProjection::Titles, collect)
+    }
+
+    /// Visible row artwork selects icons and titles independently of details.
+    pub fn focus_display_at<T>(
+        &mut self,
+        requests: &[(&str, &str)],
+        frame: &replay::frame::DecodedFrame,
+        collect: impl FnOnce(&mut dyn Iterator<Item = ResolvedArt>) -> T,
+    ) -> T {
+        self.focuses(requests, frame, true, FocusProjection::Display, collect)
+    }
+
+    /// Select and render dated icons without reaching unrequested text.
+    pub fn focus_icons_at<T>(
+        &mut self,
+        requests: &[(&str, &str)],
+        frame: &replay::frame::DecodedFrame,
+        collect: impl FnOnce(&mut dyn Iterator<Item = ResolvedArt>) -> T,
+    ) -> T {
+        self.focuses(requests, frame, true, FocusProjection::Icons, collect)
     }
 
     fn focuses<T>(
@@ -582,6 +753,7 @@ impl Context {
         requests: &[(&str, &str)],
         frame: &replay::frame::DecodedFrame,
         tree: bool,
+        projection: FocusProjection,
         collect: impl FnOnce(&mut dyn Iterator<Item = ResolvedArt>) -> T,
     ) -> T {
         let catalogue = Arc::clone(&self.catalogue);
@@ -623,6 +795,9 @@ impl Context {
                 .map_err(Clone::clone)
             };
             let selected = (|| -> Result<String, String> {
+                if !projection.icons() {
+                    return Ok(String::new());
+                }
                 let definition = self.definitions.get(token).ok_or_else(|| {
                     format!("focus {token}: definition absent from recorded content")
                 })?;
@@ -659,7 +834,9 @@ impl Context {
                     })
                     .map(|name| name.unwrap_or(UNKNOWN_FOCUS_ICON).to_owned())
             })();
-            let (icon, mut refusal) = match selected {
+            let (icon, mut refusal) = if !projection.icons() {
+                (None, None)
+            } else { match selected {
                 Ok(name) => match self.cached_icon(&name) {
                     Ok(Some(icon)) => (Some(icon), None),
                     Ok(None) => (
@@ -671,7 +848,7 @@ impl Context {
                     Err(reason) => (None, Some(format!("focus {token}: {reason}"))),
                 },
                 Err(reason) => (None, Some(reason)),
-            };
+            } };
             let mut art = Artwork {
                 token: token.into(),
                 name: None,
@@ -679,7 +856,13 @@ impl Context {
                 base_duration_days: self.base_duration_days(token),
                 icon,
             };
+            if matches!(projection, FocusProjection::Icons) {
+                return (art, refusal);
+            }
             let localise = |key: &str| -> Result<String, String> {
+                if !catalogue.has_presentation_key(key) {
+                    return Err(format!("localisation key {key} is absent from the recorded language"));
+                }
                 let raw = catalogue
                     .localisation
                     .localise(key.as_bytes())
@@ -725,10 +908,11 @@ impl Context {
                 catalogue::plain_text(&expanded)
             };
             if let Some(definition) = self.definitions.get(token) {
-                for (key, target) in [
-                    (&definition.localisation, &mut art.name),
-                    (&definition.description, &mut art.description),
-                ] {
+                let description = projection.descriptions()
+                    .then_some((&definition.description, &mut art.description));
+                for (key, target) in std::iter::once((&definition.localisation, &mut art.name))
+                    .chain(description)
+                {
                     match localise(key) {
                         Ok(value) => *target = Some(value),
                         Err(reason) => {
@@ -746,6 +930,11 @@ impl Context {
                         }
                     }
                 }
+            } else if refusal.is_none() {
+                // Text alone names the missing definition as an icon request does.
+                refusal = Some(format!(
+                    "focus {token}: definition absent from recorded content"
+                ));
             }
             (art, refusal)
         });
@@ -811,6 +1000,39 @@ impl Context {
         Ok((items, self.standing_warnings()))
     }
 
+    /// Independent text for history replies; artwork is requested separately.
+    pub fn text_catalogue(
+        &self,
+        tokens: BTreeSet<&str>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<(Vec<Artwork>, Vec<String>)> {
+        let mut items = Vec::with_capacity(tokens.len());
+        for token in tokens {
+            crate::metadata::check_cancel(cancelled)?;
+            let (name, description) = if self.kind == Kind::Focus {
+                let definition = self.definitions.get(token);
+                let name_key = definition.map_or(token, |definition| &definition.localisation);
+                let description_key = self.description_key(token, None).ok();
+                (
+                    self.static_focus_text(name_key),
+                    description_key
+                        .as_deref()
+                        .and_then(|key| self.static_focus_text(key)),
+                )
+            } else {
+                (self.name(token), self.description(token))
+            };
+            items.push(Artwork {
+                token: token.into(),
+                name,
+                description,
+                base_duration_days: self.base_duration_days(token),
+                icon: None,
+            });
+        }
+        Ok((items, self.standing_warnings()))
+    }
+
     /// Artwork for every token, with the context's standing warnings first.
     pub fn catalogue(
         &mut self,
@@ -859,8 +1081,11 @@ impl Context {
 /// ambiguous content refuses by authored paths.
 pub fn nuke_icon(catalogue: &Catalogue) -> io::Result<Option<String>> {
     use installed_content::gui::native::{Fields, Kind};
-    let (_, root) =
-        installed_content::gui::native::kept_container_window(&catalogue.guis, "topbar", &mut Vec::new())?;
+    let (_, root) = installed_content::gui::native::kept_container_window(
+        catalogue.guis()?,
+        "topbar",
+        &mut Vec::new(),
+    )?;
     let container = root
         .find_recursive(Kind::Container, "nukes")
         .ok_or_else(|| invalid("nukes artwork: topbar/nukes container unavailable"))?;
@@ -948,6 +1173,191 @@ mod tests {
     use installed_content::image::{Rgba8Image, native::Decode};
 
     #[test]
+    fn focus_text_keeps_authored_titles_without_reaching_conditional_icons() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        use replay::{
+            frame::{DecodedFrame, TableView},
+            rows::{TableId, TableRows},
+        };
+        let (catalogue, _folders) = texture_catalogue(
+            &[
+                (
+                    "common/national_focus/mod.txt",
+                    "focus_tree={focus={id=mod_focus text=mod_title icon={GFX_unavailable={has_country_flag=mod_flag}}} focus={id=mod_empty text=empty_title}}",
+                ),
+                (
+                    "localisation/mod_l_english.yml",
+                    "\u{feff}l_english:\n mod_title:0 \"Authored title\"\n mod_title_desc:0 \"Authored description\"\n empty_title:0 \"\"\n empty_title_desc:0 \"\"\n",
+                ),
+            ],
+            &[],
+        );
+        let catalogue = Arc::new(catalogue);
+        let mut text = Context::load(Arc::clone(&catalogue), Kind::Focus).unwrap();
+        let images = Context::load(catalogue, Kind::Focus).unwrap();
+        assert!(Arc::ptr_eq(&text.definitions, &images.definitions));
+        assert!(!text.requested_focus_text_needs_frame(&["mod_focus".into()]));
+        assert!(text.requested_focus_needs_frame(&["mod_focus".into()]));
+        let frame = DecodedFrame {
+            branch: 1,
+            hour: 10,
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index])).into()
+            }),
+            metrics: Default::default(),
+        };
+        let resolved: Vec<_> = text.focus_text_at(
+            &[("mod_focus", "synthetic"), ("mod_empty", "synthetic")],
+            &frame,
+            |items| items.collect(),
+        );
+        assert_eq!(resolved[0].0.name.as_deref(), Some("Authored title"));
+        assert_eq!(
+            resolved[0].0.description.as_deref(),
+            Some("Authored description")
+        );
+        assert_eq!(resolved[1].0.name.as_deref(), Some(""));
+        assert!(
+            resolved
+                .iter()
+                .all(|(art, reason)| art.icon.is_none() && reason.is_none())
+        );
+        assert!(text.icon_cache.is_empty());
+        let (static_text, _) = text
+            .text_catalogue(
+                BTreeSet::from(["mod_focus", "mod_empty"]),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert_eq!(
+            static_text
+                .iter()
+                .find(|item| item.token == "mod_focus")
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("Authored title")
+        );
+        assert_eq!(
+            static_text
+                .iter()
+                .find(|item| item.token == "mod_empty")
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn focus_display_projections_do_not_reach_unrequested_scoped_descriptions() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        use replay::{
+            frame::{DecodedFrame, TableView},
+            rows::{CountryLinkRow, CountryRow, TableId, TableRows},
+        };
+        let (catalogue, _folders) = texture_catalogue(
+            &[
+                (
+                    "common/national_focus/mod.txt",
+                    "focus_tree={focus={id=plain text=plain_title icon=GFX_mod} focus={id=empty text=empty_title icon=GFX_mod} focus={id=equal text=equal_title icon=GFX_mod} focus={id=scoped text=scoped_title icon=GFX_mod}}",
+                ),
+                (
+                    "interface/art.gfx",
+                    "spriteTypes={spriteType={name=GFX_mod textureFile=gfx/mod/icon.png}}",
+                ),
+                (
+                    "common/defines/mod.lua",
+                    "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+                ),
+                (
+                    "common/ideologies/mod.txt",
+                    "ideologies={mod_group={types={mod_type={}}}}",
+                ),
+                (
+                    "common/scripted_localisation/mod.txt",
+                    "defined_text={name=Broken text={trigger={has_government=mod_group} localization_key=desc_known}}",
+                ),
+                (
+                    "localisation/mod_l_english.yml",
+                    "\u{feff}l_english:\n plain_title:0 \"Authored literal title\"\n plain_title_desc:0 \"[Broken]\"\n empty_title:0 \"\"\n empty_title_desc:0 \"[Broken]\"\n equal_title:0 \"equal_title\"\n equal_title_desc:0 \"[Broken]\"\n scoped_title:0 \"[ROOT.GetTag] title\"\n scoped_title_desc:0 \"[Broken]\"\n desc_known:0 \"Reached description\"\n",
+                ),
+            ],
+            &[(
+                "gfx/mod/icon.png",
+                png_bytes(&Rgba8Image {
+                    width: 1,
+                    height: 1,
+                    pixels: vec![23, 0, 0, 255],
+                }),
+            )],
+        );
+        let mut context = Context::load(Arc::new(catalogue), Kind::Focus).unwrap();
+        let plain = ["plain".into(), "empty".into(), "equal".into()];
+        assert!(!context.requested_focus_title_needs_frame(&plain));
+        assert!(!context.requested_focus_display_needs_frame(&plain));
+        assert!(context.requested_focus_text_needs_frame(&plain));
+        assert!(context.requested_focus_needs_frame(&plain));
+        assert!(context.requested_focus_title_needs_frame(&["scoped".into()]));
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 10,
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index])).into()
+            }),
+            metrics: Default::default(),
+        };
+        *frame.tables[TableId::Countries.index()] =
+            TableView::Complete(TableRows::Countries(vec![CountryRow {
+                id: 7,
+                canonical_slot: 2,
+                tag: b"M0".to_vec(),
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(vec![CountryLinkRow {
+                id: 7,
+                canonical_slot: 2,
+            }]));
+        *frame.tables[TableId::PoliticalParties.index()] = TableView::Unavailable {
+            reason: "synthetic party read failed".into(),
+        };
+        let requests = [
+            ("plain", "M0"),
+            ("empty", "M0"),
+            ("equal", "M0"),
+            ("scoped", "M0"),
+        ];
+        let titles: Vec<_> = context.focus_titles_at(&requests, &frame, |items| items.collect());
+        let expected = ["Authored literal title", "", "equal_title", "M0 title"];
+        for ((art, reason), expected) in titles.iter().zip(expected) {
+            assert_eq!(art.name.as_deref(), Some(expected));
+            assert!(art.description.is_none());
+            assert!(art.icon.is_none());
+            assert!(reason.is_none(), "{reason:?}");
+        }
+        assert!(context.icon_cache.is_empty());
+        let displayed: Vec<_> =
+            context.focus_display_at(&requests, &frame, |items| items.collect());
+        for ((art, reason), expected) in displayed.iter().zip(expected) {
+            assert_eq!(art.name.as_deref(), Some(expected));
+            assert!(art.description.is_none());
+            assert_eq!(from_url(art.icon.as_deref().unwrap()).pixels[0], 23);
+            assert!(reason.is_none(), "{reason:?}");
+        }
+        let detailed: Vec<_> = context.focus_text_at(&requests, &frame, |items| items.collect());
+        for ((art, reason), expected) in detailed.iter().zip(expected) {
+            assert_eq!(art.name.as_deref(), Some(expected));
+            assert!(art.description.is_none());
+            let reason = reason.as_deref().unwrap();
+            assert!(reason.contains("_title_desc"), "{reason}");
+            assert!(reason.contains("PoliticalParties"), "{reason}");
+        }
+    }
+
+    #[test]
     fn focus_icons_evaluate_native_cases_and_preserve_caller_overrides() {
         engine::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -969,6 +1379,10 @@ mod tests {
                 (
                     "common/national_focus/mod.txt",
                     "focus_tree={focus={id=scalar icon=GFX_mod_scalar} focus={id=alternate icon=GFX_mod_scalar alternate_icon=GFX_mod_other} focus={id=constant icon={GFX_mod_other=yes}} focus={id=conditional icon={GFX_mod_other={has_country_flag=mod_mark}}} focus={id=iconless}}",
+                ),
+                (
+                    "localisation/mod_l_english.yml",
+                    "\u{feff}l_english:\n scalar:0 \"Scalar\"\n scalar_desc:0 \"Scalar description\"\n constant:0 \"Constant\"\n constant_desc:0 \"Constant description\"\n iconless:0 \"Iconless\"\n iconless_desc:0 \"Iconless description\"\n",
                 ),
             ],
             &[
@@ -1017,6 +1431,32 @@ mod tests {
             context.focus_tree_at(&[("scalar", "Z9")], &frame, |items| items.next().unwrap());
         assert_eq!(from_url(tree.0.icon.as_deref().unwrap()).pixels[0], 22);
         assert!(tree.1.is_none());
+        let icons: Vec<_> = context.focus_icons_at(
+            &[
+                ("scalar", "Z9"),
+                ("alternate", "Z9"),
+                ("conditional", "Z9"),
+                ("iconless", "Z9"),
+                ("absent", "Z9"),
+            ],
+            &frame,
+            |items| items.collect(),
+        );
+        assert_eq!(icons[0].0.icon, tree.0.icon);
+        assert!(icons[0].1.is_none());
+        assert!(icons[1].0.icon.is_none());
+        assert!(icons[1].1.as_deref().unwrap().contains("focus-window mode"));
+        assert!(icons[2].0.icon.is_none());
+        assert!(icons[2].1.is_some());
+        assert_eq!(from_url(icons[3].0.icon.as_deref().unwrap()).pixels[0], 22);
+        assert!(icons[3].1.is_none());
+        assert!(icons[4].0.icon.is_none());
+        assert!(icons[4].1.as_deref().unwrap().contains("definition absent"));
+        for (art, reason) in icons {
+            assert!(art.name.is_none());
+            assert!(art.description.is_none());
+            assert!(!reason.is_some_and(|reason| reason.contains("focus localisation")));
+        }
     }
 
     #[test]
@@ -1046,13 +1486,34 @@ mod tests {
                 ),
                 (
                     "localisation/mod_l_english.yml",
-                    "\u{feff}l_english:\n scoped:0 \"[ROOT.GetTag] focus\"\n scoped_desc:0 \"For [FROM.GetTag]\"\n random:0 \"[Choice]\"\n random_desc:0 \"Plain description\"\n promoted:0 \"[ROOT.Choice]\"\n A:0 \"A\"\n B:0 \"B\"\n",
+                    "\u{feff}l_english:\n scoped:0 \"[ROOT.GetTag] focus\"\n scoped_desc:0 \"For [FROM.GetTag]\"\n random:0 \"[Choice]\"\n random_desc:0 \"Plain description\"\n promoted:0 \"[ROOT.Choice]\"\n promoted_desc:0 \"\"\n A:0 \"A\"\n B:0 \"B\"\n",
                 ),
             ],
             &[],
         );
         let mut context = Context::load(Arc::new(catalogue), Kind::Focus).unwrap();
         assert!(context.focus_text_needs_frame());
+        let (static_text, _) = context
+            .text_catalogue(
+                BTreeSet::from(["scoped", "random", "promoted"]),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert!(
+            static_text
+                .iter()
+                .all(|item| item.name.is_none() && item.icon.is_none())
+        );
+        assert_eq!(
+            static_text
+                .iter()
+                .find(|item| item.token == "random")
+                .unwrap()
+                .description
+                .as_deref(),
+            Some("Plain description")
+        );
+        assert!(context.refusal_lines().is_empty());
         let mut frame = DecodedFrame {
             branch: 1,
             hour: 10,
@@ -1131,6 +1592,17 @@ mod tests {
         assert_eq!(
             context.focuses_at(&[("random", "M0")], &frame)[0].0.name,
             seeded.0.name
+        );
+        let titles: Vec<_> =
+            context.focus_titles_at(&[("random", "M0"), ("promoted", "M0")], &frame, |items| {
+                items.collect()
+            });
+        assert_eq!(titles[0].0.name, seeded.0.name);
+        assert_eq!(titles[1].0.name, result[2].0.name);
+        assert!(
+            titles
+                .iter()
+                .all(|(art, reason)| art.description.is_none() && reason.is_none())
         );
         // ROOT selects the country context; its entry fallback constructs a
         // fresh known 424242 scope.
@@ -1423,10 +1895,7 @@ mod tests {
         // Two total children use the parent name. The one non-duplicate
         // description gate still selects the FIRST child, the generated copy.
         assert_eq!(context.technology_root("duplicates").unwrap(), "mod_parent");
-        assert_eq!(
-            context.description("duplicates").as_deref(),
-            Some("mod_copy_desc")
-        );
+        assert_eq!(context.description("duplicates"), None);
         assert_eq!(
             context.description("fallback").as_deref(),
             Some("Archetype description")

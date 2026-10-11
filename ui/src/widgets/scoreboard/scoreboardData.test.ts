@@ -37,7 +37,7 @@ test('signed wide casualty subtotals retain exact sorting, known-attacker meanin
   const tooltip = scoreboardTooltip(row, [casualty], 'Dated name');
   assert.equal(tooltip.rows[0].value, formatCell(casualty, -wide, true));
   assert.equal(tooltip.rows[0].value, '† −1,208,925,819,614,629,174,706,177');
-  assert.ok(tooltip.rows.some(note => note.label.startsWith('Read ')));
+  assert.ok(!tooltip.rows.some(note => note.label.startsWith('Read ')));
   assert.ok(tooltip.rows.some(note => note.label.includes('Recorded subtotal (†)')));
   assert.ok(tooltip.rows.some(note => note.label.includes('negative corrections')));
   assert.ok(tooltip.rows.some(note => note.label.includes('attacker are excluded')));
@@ -152,7 +152,7 @@ test('read gaps never carry a value and held reads stay dated in the tooltip', (
   assert.match(scoreboardTooltip(unknown, [factories], 'Name').rows[1].label, /Not known/);
   const tooltip = scoreboardTooltip(row, [factories, army], 'Name at row hour');
   assert.equal(tooltip.title, 'Name at row hour');
-  assert.match(tooltip.rows[1].label, /^Read /);
+  assert.ok(!tooltip.rows.some(note => note.label.startsWith('Read ')));
   assert.match(tooltip.rows.at(-1)!.label, /Not available yet/);
 });
 

@@ -230,7 +230,7 @@ pub struct CachedContent {
     /// Advisor templates from the same ideas read.
     pub advisor_templates: Option<installed_content::characters::Characters>,
     name_lists: Option<installed_content::names::NameLists>,
-    key_names: Option<installed_content::key_names::KeyNames>,
+    key_names: Option<std::sync::Arc<installed_content::key_names::KeyNames>>,
     scripted_effects: Option<installed_content::scripted_effects::ScriptedEffects>,
     industrial_organisations: Option<installed_content::industrial_organisations::Database>,
     collections: Option<installed_content::collections::Database>,
@@ -367,11 +367,7 @@ impl CachedContent {
             None => (None, None),
         };
         let name_lists = keep(installed_content::names::read(layers), "name lists", &mut gaps);
-        let key_names = keep(
-            installed_content::key_names::KeyNames::read(layers),
-            "effect key names",
-            &mut gaps,
-        );
+        let key_names = keep(layers.key_names(), "effect key names", &mut gaps);
         let scripted_effects = key_names.as_ref().and_then(|names| {
             keep(
                 installed_content::scripted_effects::read(layers, names),
@@ -486,7 +482,7 @@ impl CachedContent {
             opinion_modifiers: self.opinion_modifiers.as_ref(),
             power_balances: self.power_balances.as_ref(),
             name_lists: self.name_lists.as_ref(),
-            key_names: self.key_names.as_ref(),
+            key_names: self.key_names.as_deref(),
             scripted_effects: self.scripted_effects.as_ref(),
             industrial_organisations: self.industrial_organisations.as_ref(),
             collections: self.collections.as_ref(),

@@ -7,3 +7,10 @@ export function countryFlagUnavailable(reason?: string, pending = false, decodeF
   const detail = decodeFailed ? 'The flag image could not be displayed.' : reason;
   return { reason: detail, text: detail ? `${label}: ${detail}` : label };
 }
+
+/** Fit the content's flag dimensions inside its slot without cropping or distortion. */
+export function fitCountryFlag(imageWidth: number, imageHeight: number, slotWidth: number, slotHeight: number) {
+  const scale = Math.min(slotWidth / imageWidth, slotHeight / imageHeight);
+  const width = imageWidth * scale, height = imageHeight * scale;
+  return { x: (slotWidth - width) / 2, y: (slotHeight - height) / 2, width, height };
+}

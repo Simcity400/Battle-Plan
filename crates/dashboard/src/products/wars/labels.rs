@@ -1,10 +1,16 @@
 //! Historical names for a stable label column, never for filling a dated label.
 use super::*;
-use installed_content::country_names::{CountryNames, Operands};
+use crate::products::war_casualties::same_name_rows;
+use installed_content::country_names::{self, CountryNames, Operands};
+use replay::frame::SharedView;
 
 #[derive(Default)]
 pub(super) struct CountryLabels {
-    tables: Vec<SharedView>,
+    /// By `country_names::TABLES`: the views of the last call past the
+    /// identity test, held by identity so a later change copies none, and the
+    /// views names were last read from.
+    seen: Vec<ViewIdentity>,
+    read: Vec<SharedView>,
     inputs: HashMap<u32, Option<Result<Operands, String>>>,
     resolved: HashMap<u32, String>,
     names: HashMap<u32, BTreeSet<String>>,
@@ -16,25 +22,32 @@ pub(super) struct CountryLabels {
 impl CountryLabels {
     pub fn observe(&mut self, frame: &DecodedFrame, cat: Option<&Catalogue>) {
         let Some(cat) = cat else { return };
-        let tables = [
-            TableId::Countries,
-            TableId::CountryLinks,
-            TableId::CountryAppearance,
-            TableId::Politics,
-            TableId::PoliticalParties,
-            TableId::Autonomy,
-        ]
-        .map(|table| frame.tables[table.index()].clone());
-        if self.tables.len() == tables.len()
-            && self
-                .tables
-                .iter()
-                .zip(&tables)
-                .all(|(a, b)| SharedView::ptr_eq(a, b))
+        let views = country_names::TABLES.map(|table| &frame.tables[table.index()]);
+        // As before, views unchanged since that call change nothing, whatever
+        // ReservedCountryNaming (read only for slot zero) holds.
+        if self.seen.len() == views.len()
+            && country_names::TABLES
+                .into_iter()
+                .zip(&self.seen)
+                .zip(views)
+                .all(|((table, seen), view)| {
+                    table == TableId::ReservedCountryNaming || seen.is(view)
+                })
         {
             return;
         }
-        self.tables = tables.into();
+        self.seen = views.map(SharedView::identity).into();
+        // Nor do views agreeing with the last read on every operand it read.
+        if self.read.len() == views.len()
+            && country_names::TABLES
+                .into_iter()
+                .zip(&self.read)
+                .zip(views)
+                .all(|((table, read), view)| same_name_rows(table, read, view))
+        {
+            return;
+        }
+        self.read = views.map(Clone::clone).into();
         let Ok(countries) = frame.complete::<tables::Countries>() else {
             return;
         };

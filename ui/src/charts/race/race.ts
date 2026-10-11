@@ -15,6 +15,7 @@ import { compareTags } from '../../dashboard/tagOrder.ts';
 import { stackEdges } from '../stack.ts';
 import type { Edge } from '../stack';
 import { linearTicks } from '../valueAxis.ts';
+import { usNumber } from '../numberFormat.ts';
 
 /** Pointer and keyboard activation share the same optional row callback. */
 export function selectRaceRow(key: string | null, trigger: string, select?: (key: string) => void): boolean {
@@ -264,7 +265,7 @@ export function fitRows(height: number, wanted: number): { rows: number; hidden:
 export const moreLineY = (layout: RaceLayout) => layout.bottom + RACE_AXIS + MORE_LINE / 2;
 
 /** The line under the rows when `hidden` entries do not fit. */
-export const moreText = (hidden: number) => `+${hidden.toLocaleString('en-US')} more: make the widget taller or show fewer countries`;
+export const moreText = (hidden: number) => `+${usNumber.format(hidden)} more: make the widget taller or show fewer countries`;
 
 /** The layout for `rows` rows: the label column (flag and name), the room kept at
  * the right for the value label at a bar's tip, and `reserve` px kept under the rows

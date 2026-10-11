@@ -1,11 +1,19 @@
 //! Occupied states, as recorded, over a whole branch. Daily reads are dated
 //! separately from equal-value runs; neither resumes after a gap without a read.
+//! The branch is scanned once; `occupied-states-manifest` sends its replay-block
+//! windows, laws and warnings, and `occupied-states` one window's values as
+//! changes, so no reply grows with the campaign.
 //!
 //! Resistance stores the occupied original tag. Garrisons iterate controlled
 //! states with a positive occupied link and active occupation.
 //! Controller != owner is not this test: annexed non-core states can still
 //! require occupation.
-use super::{LoadContext, Product, recorded_rows};
+use super::{
+    BranchParams, LoadContext, Product,
+    country_groups::HourSpan,
+    fixed5_runs::{Fixed5State, NativeFixed5Run, push_fixed5},
+    recorded_rows,
+};
 use crate::{
     Source,
     catalogue::{self, Catalogue, Refusals, View},
@@ -29,16 +37,19 @@ use std::{
 use ts_rs::TS;
 
 pub struct OccupiedStates;
+pub struct OccupiedStatesManifest;
 
+/// One window of the branch: the replay block at `window` in the manifest's `windows`.
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OccupiedStatesParams {
     pub branch_id: String,
+    pub window: usize,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct OccupiedValues {
+/// A state's values at a read, held until they change, as the scan keeps them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct OccupiedValues {
     pub name: Option<String>,
     pub name_missing: Option<String>,
     pub owner: Option<String>,
@@ -46,16 +57,16 @@ pub struct OccupiedValues {
     /// Original occupied country, which can differ from today's legal owner.
     pub occupied: Option<String>,
     /// Stored fixed5 percentage units. Speeds are percentage points/day.
-    pub resistance_raw: String,
-    pub compliance_raw: String,
-    pub resistance_speed_raw: String,
-    pub compliance_speed_raw: String,
+    pub resistance_raw: i64,
+    pub compliance_raw: i64,
+    pub resistance_speed_raw: i64,
+    pub compliance_speed_raw: i64,
     /// Native displayed strength fraction, signed fixed5 (100000 is full).
-    pub garrison_strength_raw: Option<String>,
+    pub garrison_strength_raw: Option<i64>,
     // Recorded required manpower.
     pub required_manpower: Option<i32>,
     /// Recorded required template amount, not garrison strength.
-    pub garrison_required_raw: Option<String>,
+    pub garrison_required_raw: Option<i64>,
     /// Requirement failure makes displayed strength zero.
     pub garrison_alert: bool,
     /// Below the content threshold, only when displayed strength is established.
@@ -67,19 +78,25 @@ pub struct OccupiedValues {
     pub law_missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct OccupiedRun {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct OccupiedRun {
     pub first_hour: i32,
     pub last_hour: i32,
     pub value: OccupiedValues,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct OccupiedSeries {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct StateRuns {
     pub state: u32,
     pub runs: Vec<OccupiedRun>,
+}
+
+/// The branch's occupied states as scanned: each state's equal-value runs.
+pub(super) struct OccupiedScan {
+    pub states: Vec<StateRuns>,
+    pub observed: Vec<OccupiedObservation>,
+    pub laws: Vec<OccupationLawInfo>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -102,14 +119,66 @@ pub struct OccupationLawInfo {
     pub missing: Option<String>,
 }
 
+/// A state's values in one window, each as `[hour, value]` changes. Every span
+/// the state is occupied restates each value at its first hour, so none carries
+/// across a gap or from another window. Text values index the reply's `texts`.
+#[derive(Clone, Debug, Default, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct OccupiedSeries {
+    pub state: u32,
+    /// Stored fixed5 percentage units, one run per span the state is occupied.
+    pub resistance: Vec<NativeFixed5Run>,
+    pub compliance: Vec<NativeFixed5Run>,
+    /// Percentage points/day, over the same spans.
+    pub resistance_speed: Vec<NativeFixed5Run>,
+    pub compliance_speed: Vec<NativeFixed5Run>,
+    pub name: Vec<(i32, Option<usize>)>,
+    pub name_missing: Vec<(i32, Option<usize>)>,
+    pub owner: Vec<(i32, Option<usize>)>,
+    pub occupier: Vec<(i32, Option<usize>)>,
+    /// Original occupied country, which can differ from today's legal owner.
+    pub occupied: Vec<(i32, Option<usize>)>,
+    /// Native displayed strength fraction, signed fixed5 (100000 is full).
+    pub garrison_strength_raw: Vec<(i32, Option<String>)>,
+    pub required_manpower: Vec<(i32, Option<i32>)>,
+    /// Recorded required template amount, not garrison strength.
+    pub garrison_required_raw: Vec<(i32, Option<String>)>,
+    /// Native requirement failure; its strength getter returns zero.
+    pub garrison_alert: Vec<(i32, bool)>,
+    /// Below the content threshold, only when displayed strength is established.
+    pub garrison_red: Vec<(i32, Option<bool>)>,
+    pub assigned_manpower: Vec<(i32, Option<i32>)>,
+    pub garrison_missing: Vec<(i32, Option<usize>)>,
+    /// Effective native law token, using override/group/default/fallback precedence.
+    pub law: Vec<(i32, Option<usize>)>,
+    pub law_missing: Vec<(i32, Option<usize>)>,
+}
+
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct OccupiedStatesReply {
     pub branch_id: String,
-    pub decimals: u32,
+    pub window: usize,
+    /// The window's hours, both included.
+    pub interval: HourSpan,
+    /// Each text the window's states show, once.
+    pub texts: Vec<String>,
+    /// Every state occupied at an hour of the window, by id.
     pub states: Vec<OccupiedSeries>,
-    /// Includes known empty inventories, distinguishing them from gaps.
+    /// Includes known empty inventories, distinguishing them from gaps. Only one
+    /// starting at the window's first hour can hold an earlier read.
     pub observed: Vec<OccupiedObservation>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct OccupiedStatesManifestReply {
+    pub branch_id: String,
+    pub decimals: u32,
+    /// The branch's replay blocks, each one `occupied-states` window.
+    pub windows: Vec<HourSpan>,
+    /// Every law a state holds in the branch.
     pub laws: Vec<OccupationLawInfo>,
     pub strength_missing: String,
     pub warnings: Vec<String>,
@@ -355,7 +424,7 @@ pub(super) use scan::scan_history;
 mod trend;
 
 pub(super) struct OccupationHistory {
-    pub states: OccupiedStatesReply,
+    pub states: OccupiedScan,
     pub trend: super::occupation_trend::History,
 }
 
@@ -366,7 +435,7 @@ struct Cache {
     reply: Option<Arc<OccupationHistory>>,
 }
 
-/// Both occupation products share the daily joins, decoder walk and cache.
+/// The occupation products share the daily joins, decoder walk and cache.
 pub(super) fn history(
     source: &Source,
     branch: u64,
@@ -405,6 +474,172 @@ pub(super) fn history(
     Ok(reply)
 }
 
+/// The branch's replay blocks, the windows `occupied-states` answers.
+fn windows(source: &Source, branch: u64) -> Vec<HourSpan> {
+    source
+        .replay_ref()
+        .index
+        .iter()
+        .filter(|block| block.branch == branch)
+        .map(|block| HourSpan {
+            first_hour: block.first_hour,
+            last_hour: block.last_hour,
+        })
+        .collect()
+}
+
+/// Lists `value` where it changes, and again where a span starts.
+fn change<T: PartialEq>(changes: &mut Vec<(i32, T)>, hour: i32, starts: bool, value: T) {
+    if starts || changes.last().is_none_or(|(_, last)| *last != value) {
+        changes.push((hour, value));
+    }
+}
+
+/// The runs and observations holding any hour of `interval`, clipped to it: a
+/// window states every value it shows, whatever the branch holds around it.
+fn window_reply<'a>(
+    scan: &'a OccupiedScan,
+    branch_id: &str,
+    window: usize,
+    interval: HourSpan,
+) -> OccupiedStatesReply {
+    let clip =
+        |first: i32, last: i32| (first.max(interval.first_hour), last.min(interval.last_hour));
+    let mut texts = Vec::new();
+    let mut indices = HashMap::new();
+    let mut text = |value: &'a Option<String>| {
+        value.as_ref().map(|value| {
+            *indices.entry(value.as_str()).or_insert_with(|| {
+                texts.push(value.clone());
+                texts.len() - 1
+            })
+        })
+    };
+    let mut states = Vec::new();
+    for scanned in &scan.states {
+        let first = scanned
+            .runs
+            .partition_point(|run| run.last_hour < interval.first_hour);
+        let last = scanned
+            .runs
+            .partition_point(|run| run.first_hour <= interval.last_hour);
+        if first == last {
+            continue;
+        }
+        let mut series = OccupiedSeries {
+            state: scanned.state,
+            ..Default::default()
+        };
+        let mut fixed5 = [Fixed5State::default(); 4];
+        let mut end = None;
+        for run in &scanned.runs[first..last] {
+            let (from, to) = clip(run.first_hour, run.last_hour);
+            let starts = end.and_then(|end: i32| end.checked_add(1)) != Some(from);
+            end = Some(to);
+            let value = &run.value;
+            for ((runs, state), raw) in [
+                &mut series.resistance,
+                &mut series.compliance,
+                &mut series.resistance_speed,
+                &mut series.compliance_speed,
+            ]
+            .into_iter()
+            .zip(&mut fixed5)
+            .zip([
+                value.resistance_raw,
+                value.compliance_raw,
+                value.resistance_speed_raw,
+                value.compliance_speed_raw,
+            ]) {
+                push_fixed5(runs, state, from, Some(raw), None, false, starts);
+                runs.last_mut().expect("pushed a run").last_hour = to;
+            }
+            change(&mut series.name, from, starts, text(&value.name));
+            change(
+                &mut series.name_missing,
+                from,
+                starts,
+                text(&value.name_missing),
+            );
+            change(&mut series.owner, from, starts, text(&value.owner));
+            change(&mut series.occupier, from, starts, text(&value.occupier));
+            change(&mut series.occupied, from, starts, text(&value.occupied));
+            change(
+                &mut series.garrison_strength_raw,
+                from,
+                starts,
+                value.garrison_strength_raw.map(|raw| raw.to_string()),
+            );
+            change(
+                &mut series.required_manpower,
+                from,
+                starts,
+                value.required_manpower,
+            );
+            change(
+                &mut series.garrison_required_raw,
+                from,
+                starts,
+                value.garrison_required_raw.map(|raw| raw.to_string()),
+            );
+            change(
+                &mut series.garrison_alert,
+                from,
+                starts,
+                value.garrison_alert,
+            );
+            change(&mut series.garrison_red, from, starts, value.garrison_red);
+            change(
+                &mut series.assigned_manpower,
+                from,
+                starts,
+                value.assigned_manpower,
+            );
+            change(
+                &mut series.garrison_missing,
+                from,
+                starts,
+                text(&value.garrison_missing),
+            );
+            change(&mut series.law, from, starts, text(&value.law));
+            change(
+                &mut series.law_missing,
+                from,
+                starts,
+                text(&value.law_missing),
+            );
+        }
+        states.push(series);
+    }
+    let first = scan
+        .observed
+        .partition_point(|span| span.last_hour < interval.first_hour);
+    let last = scan
+        .observed
+        .partition_point(|span| span.first_hour <= interval.last_hour);
+    let observed = scan.observed[first..last]
+        .iter()
+        .map(|span| {
+            let (first_hour, last_hour) = clip(span.first_hour, span.last_hour);
+            OccupiedObservation {
+                first_hour,
+                last_hour,
+                read_hour: span.read_hour,
+                complete: span.complete,
+            }
+        })
+        .collect();
+    OccupiedStatesReply {
+        branch_id: branch_id.to_owned(),
+        window,
+        interval,
+        texts,
+        states,
+        observed,
+        warnings: Vec::new(),
+    }
+}
+
 impl Product for OccupiedStates {
     const KEY: &'static str = "occupied-states";
     const CONTENT_DEPENDENT: bool = true;
@@ -420,11 +655,10 @@ impl Product for OccupiedStates {
     fn types() -> Vec<String> {
         vec![
             OccupiedStatesParams::decl(),
-            OccupiedValues::decl(),
-            OccupiedRun::decl(),
+            NativeFixed5Run::decl(),
             OccupiedSeries::decl(),
             OccupiedObservation::decl(),
-            OccupationLawInfo::decl(),
+            HourSpan::decl(),
             OccupiedStatesReply::decl(),
         ]
     }
@@ -435,7 +669,51 @@ impl Product for OccupiedStates {
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
         let branch = params.branch_id.parse().expect("validated branch");
-        Ok(history(source, branch, context, cancelled)?.states.clone())
+        let interval = windows(source, branch)
+            .get(params.window)
+            .cloned()
+            .ok_or_else(|| crate::invalid("Occupied states window not in this recording"))?;
+        let scanned = history(source, branch, context, cancelled)?;
+        let reply = window_reply(&scanned.states, &params.branch_id, params.window, interval);
+        super::check_reply_budget(&reply)?;
+        Ok(reply)
+    }
+}
+
+impl Product for OccupiedStatesManifest {
+    const KEY: &'static str = "occupied-states-manifest";
+    const CONTENT_DEPENDENT: bool = true;
+    type Params = BranchParams;
+    type Reply = OccupiedStatesManifestReply;
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        params.validate()
+    }
+    fn types() -> Vec<String> {
+        vec![
+            BranchParams::decl(),
+            HourSpan::decl(),
+            OccupationLawInfo::decl(),
+            OccupiedStatesManifestReply::decl(),
+        ]
+    }
+    fn load(
+        source: &Source,
+        params: &Self::Params,
+        context: &LoadContext,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self::Reply> {
+        let branch = params.branch();
+        let scanned = history(source, branch, context, cancelled)?;
+        let reply = OccupiedStatesManifestReply {
+            branch_id: params.branch_id.clone(),
+            decimals: 5,
+            windows: windows(source, branch),
+            laws: scanned.states.laws.clone(),
+            strength_missing: STRENGTH_MISSING.into(),
+            warnings: scanned.states.warnings.clone(),
+        };
+        super::check_reply_budget(&reply)?;
+        Ok(reply)
     }
 }
 

@@ -58,98 +58,103 @@ pub fn land_owners(
         TableId::PoliticalParties,
         TableId::Autonomy,
     ];
-    for block in &replay.index {
-        check()?;
-        let frames = match replay.read_block_selected(block, &selected) {
-            Ok(frames) => frames,
-            Err(_) => {
-                incomplete = true;
-                continue;
-            }
-        };
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for frame in frames {
+    crate::blocks::scan_blocks(replay, &replay.index, &selected, cancelled, |blocks| {
+        for (_, frames) in blocks {
             check()?;
-            let decoded = match decoder.advance(&frame) {
-                Ok(decoded) if validate_campaign(decoded, replay).is_ok() => decoded,
-                _ => {
+            let frames = match frames {
+                Ok(frames) => frames,
+                Err(_) => {
                     incomplete = true;
-                    break;
+                    continue;
                 }
             };
-            let states = match &*decoded.tables[replay::rows::TableId::States.index()] {
-                TableView::Complete(rows) => rows.rows::<tables::States>(),
-                TableView::Truncated { rows, .. } => {
-                    incomplete = true;
-                    rows.rows::<tables::States>()
-                }
-                TableView::Unavailable { .. } => None,
-            };
-            let (Some(states), Ok(links), Ok(rows)) = (
-                states,
-                decoded.complete::<tables::CountryLinks>(),
-                decoded.complete::<tables::Countries>(),
-            ) else {
-                incomplete = true;
-                continue;
-            };
-            let mut owners: BTreeSet<_> = states
-                .iter()
-                .filter_map(|state| {
-                    match links.binary_search_by_key(&state.owner, |link| link.id) {
-                        Ok(index) => Some(links[index].canonical_slot),
-                        Err(_) => {
-                            incomplete |= state.owner != 0;
-                            None
-                        }
+            let mut decoder = FrameDecoder::for_tables(&selected);
+            for frame in frames {
+                check()?;
+                let decoded = match decoder.advance(&frame) {
+                    Ok(decoded) if validate_campaign(decoded, replay).is_ok() => decoded,
+                    _ => {
+                        incomplete = true;
+                        break;
                     }
-                })
-                .collect();
-            // Operands are read only for a frame that adds a catalogue entry.
-            let mut names = None;
-            for row in rows {
-                let Ok(slot) = mapped_slot(row, links) else {
+                };
+                let states = match &*decoded.tables[replay::rows::TableId::States.index()] {
+                    TableView::Complete(rows) => rows.rows::<tables::States>(),
+                    TableView::Truncated { rows, .. } => {
+                        incomplete = true;
+                        rows.rows::<tables::States>()
+                    }
+                    TableView::Unavailable { .. } => None,
+                };
+                let (Some(states), Ok(links), Ok(rows)) = (
+                    states,
+                    decoded.complete::<tables::CountryLinks>(),
+                    decoded.complete::<tables::Countries>(),
+                ) else {
                     incomplete = true;
                     continue;
                 };
-                if row.tag.is_empty() || !owners.remove(&slot) {
-                    continue;
-                }
-                let tags = countries.entry(slot).or_default();
-                let known = tags.iter().position(|(tag, _, _)| *tag == row.tag);
-                if known.is_some_and(|index| tags[index].1 <= frame.branch) {
-                    continue;
-                }
-                let entry = (
-                    row.tag.clone(),
-                    frame.branch,
-                    CountryMetadata {
-                        id: slot.to_string(),
-                        tag: short_text(&String::from_utf8_lossy(&row.tag), 512),
-                        name: match localisation.map(|localisation| {
-                            names
-                                .get_or_insert_with(|| CountryNames::read(decoded, localisation))
-                                .name(slot)
-                        }) {
-                            Some(Ok(name)) => short_text(&name, 512),
-                            Some(Err(_)) => {
-                                unnamed += 1;
-                                short_text(&String::from_utf8_lossy(&row.tag), 512)
+                let mut owners: BTreeSet<_> = states
+                    .iter()
+                    .filter_map(|state| {
+                        match links.binary_search_by_key(&state.owner, |link| link.id) {
+                            Ok(index) => Some(links[index].canonical_slot),
+                            Err(_) => {
+                                incomplete |= state.owner != 0;
+                                None
                             }
-                            None => short_text(&String::from_utf8_lossy(&row.tag), 512),
+                        }
+                    })
+                    .collect();
+                // Operands are read only for a frame that adds a catalogue entry.
+                let mut names = None;
+                for row in rows {
+                    let Ok(slot) = mapped_slot(row, links) else {
+                        incomplete = true;
+                        continue;
+                    };
+                    if row.tag.is_empty() || !owners.remove(&slot) {
+                        continue;
+                    }
+                    let tags = countries.entry(slot).or_default();
+                    let known = tags.iter().position(|(tag, _, _)| *tag == row.tag);
+                    if known.is_some_and(|index| tags[index].1 <= frame.branch) {
+                        continue;
+                    }
+                    let entry = (
+                        row.tag.clone(),
+                        frame.branch,
+                        CountryMetadata {
+                            id: slot.to_string(),
+                            tag: short_text(&String::from_utf8_lossy(&row.tag), 512),
+                            name: match localisation.map(|localisation| {
+                                names
+                                    .get_or_insert_with(|| {
+                                        CountryNames::read(decoded, localisation)
+                                    })
+                                    .name(slot)
+                            }) {
+                                Some(Ok(name)) => short_text(&name, 512),
+                                Some(Err(_)) => {
+                                    unnamed += 1;
+                                    short_text(&String::from_utf8_lossy(&row.tag), 512)
+                                }
+                                None => short_text(&String::from_utf8_lossy(&row.tag), 512),
+                            },
+                            observed_branch_id: frame.branch.to_string(),
+                            observed_hour: frame.hour,
                         },
-                        observed_branch_id: frame.branch.to_string(),
-                        observed_hour: frame.hour,
-                    },
-                );
-                match known {
-                    Some(index) => tags[index] = entry,
-                    None => tags.push(entry),
+                    );
+                    match known {
+                        Some(index) => tags[index] = entry,
+                        None => tags.push(entry),
+                    }
                 }
+                incomplete |= !owners.is_empty();
             }
-            incomplete |= !owners.is_empty();
         }
-    }
+        Ok(())
+    })?;
     check()?;
     let mut countries: Vec<_> = countries
         .into_iter()

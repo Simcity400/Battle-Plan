@@ -212,69 +212,88 @@ fn finish(
         TableId::CountryAppearance,
     ];
     let mut events = Vec::new();
+    let blocks: Vec<_> = replay
+        .index
+        .iter()
+        .filter(|block| {
+            block.branch == branch
+                && pending
+                    .range(block.first_hour..=block.last_hour)
+                    .next()
+                    .is_some()
+        })
+        .collect();
     // Every relevant block is decoded forward once, including the prefix needed
     // to reconstruct its native event hours. No completion performs a seek.
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        let Some((&last_needed, _)) = pending
-            .range(block.first_hour..=block.last_hour)
-            .next_back()
-        else {
-            continue;
-        };
-        crate::metadata::check_cancel(cancelled)?;
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for frame in frames {
-            if frame.hour > last_needed {
-                break;
-            }
-            crate::metadata::check_cancel(cancelled)?;
-            let Ok(frame) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(frame, replay).is_err() {
-                break;
-            }
-            let Some(observations) = pending.remove(&frame.hour) else {
-                continue;
-            };
-            let identities = frame
-                .complete::<tables::Countries>()
-                .ok()
-                .zip(frame.complete::<tables::CountryLinks>().ok())
-                .map(|(countries, links)| {
-                    tagged_countries(countries, links)
-                        .into_iter()
-                        .filter_map(|(tag, lookup)| {
-                            lookup
-                                .found()
-                                .map(|(country, slot)| ((slot, country.id), tag))
+    if !blocks.is_empty() {
+        crate::blocks::scan_blocks(replay, blocks, &selected, cancelled, |blocks| {
+            for (block, frames) in blocks {
+                let Some((&last_needed, _)) = pending
+                    .range(block.first_hour..=block.last_hour)
+                    .next_back()
+                else {
+                    continue;
+                };
+                crate::metadata::check_cancel(cancelled)?;
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                for frame in frames {
+                    if frame.hour > last_needed {
+                        break;
+                    }
+                    crate::metadata::check_cancel(cancelled)?;
+                    let Ok(frame) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(frame, replay).is_err() {
+                        break;
+                    }
+                    let Some(observations) = pending.remove(&frame.hour) else {
+                        continue;
+                    };
+                    let identities = frame
+                        .complete::<tables::Countries>()
+                        .ok()
+                        .zip(frame.complete::<tables::CountryLinks>().ok())
+                        .map(|(countries, links)| {
+                            tagged_countries(countries, links)
+                                .into_iter()
+                                .filter_map(|(tag, lookup)| {
+                                    lookup
+                                        .found()
+                                        .map(|(country, slot)| ((slot, country.id), tag))
+                                })
+                                .collect::<BTreeMap<_, _>>()
                         })
-                        .collect::<BTreeMap<_, _>>()
-                })
-                .unwrap_or_default();
-            for observation in observations {
-                let Some(tag) = identities.get(&observation.identity) else {
-                    *counts.entry("Project country identity could not be resolved at its completion hour.".into()).or_default() += 1;
-                    continue;
-                };
-                let Ok(tag) = std::str::from_utf8(tag) else {
-                    *counts
-                        .entry("Project country tag at its completion hour is non-UTF-8.".into())
-                        .or_default() += 1;
-                    continue;
-                };
-                events.push(present_completion(
-                    tag.to_owned(),
-                    observation,
-                    frame,
-                    content.as_deref_mut(),
-                    &mut counts,
-                ));
+                        .unwrap_or_default();
+                    for observation in observations {
+                        let Some(tag) = identities.get(&observation.identity) else {
+                            *counts.entry("Project country identity could not be resolved at its completion hour.".into()).or_default() += 1;
+                            continue;
+                        };
+                        let Ok(tag) = std::str::from_utf8(tag) else {
+                            *counts
+                                .entry(
+                                    "Project country tag at its completion hour is non-UTF-8."
+                                        .into(),
+                                )
+                                .or_default() += 1;
+                            continue;
+                        };
+                        events.push(present_completion(
+                            tag.to_owned(),
+                            observation,
+                            frame,
+                            content.as_deref_mut(),
+                            &mut counts,
+                        ));
+                    }
+                }
             }
-        }
+            Ok(())
+        })?;
     }
     let missing = pending.values().map(Vec::len).sum::<usize>();
     if missing > 0 {

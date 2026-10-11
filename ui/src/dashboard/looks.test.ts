@@ -4,7 +4,7 @@ import { FAILED_FACT, FactRequests, factsKey, HourStore, nameKey, transientError
 import { lookHour, lookPlan, LOOK_STEP } from './countryLooks.ts';
 import { matchesLookSegment, nextLooks, retainLooks, sampledLooks } from './looks.ts';
 import type { Look, LookRead } from './looks';
-import { BROWSER_BRIDGE_BUSY, CAPACITY_REACHED, MAP_CONTROLS_BUSY, NATIVE_QUEUE_FULL, TOO_MANY_SOURCES, TRANSIENT_ERRORS } from '../generated/dashboard.ts';
+import { BROWSER_BRIDGE_BUSY, CAPACITY_REACHED, MAP_CONTROLS_BUSY, NATIVE_QUEUE_FULL, TRANSIENT_ERRORS } from '../generated/dashboard.ts';
 
 const germany: Look = { name: 'Germany', color: [1, 2, 3], flag: 'data:ger' };
 const style = { name: 'Germany', color: [1, 2, 3] as [number, number, number] };
@@ -43,10 +43,10 @@ test('only refusals for want of room, cancellations and an unreachable service a
   // Each producer's refusal, as it words it: the service's, the desktop's admission and
   // the browser bridge's (both past the service's budget), the desktop's pipe to the
   // native service (full by count or bytes) and its map controls.
-  for (const refusal of [CAPACITY_REACHED, `${CAPACITY_REACHED}. Retry this view.`, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, `${MAP_CONTROLS_BUSY}; try again`]) {
+  for (const refusal of [CAPACITY_REACHED, `${CAPACITY_REACHED}. Retry this view.`, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, `${MAP_CONTROLS_BUSY}; try again`]) {
     assert.equal(transientError(new Error(refusal)), true, refusal);
   }
-  assert.deepEqual([...TRANSIENT_ERRORS], [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY]);
+  assert.deepEqual([...TRANSIENT_ERRORS], [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY]);
   assert.equal(transientError(new DOMException('Request cancelled', 'AbortError')), true);
   assert.equal(transientError(new TypeError('Failed to fetch')), true);
   // The product's own answers: asking again gives them again.

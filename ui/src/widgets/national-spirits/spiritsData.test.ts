@@ -49,7 +49,7 @@ test('history lanes sort by gained, ended or name, and can hide ended spirits', 
   assert.deepEqual(historyLanes(list, 50, 'gained', true, describe).map(lane => lane.id), ['heer']);
   assert.equal(gained[0].spans[0].emphasis, true);
   assert.equal(gained[1].spans[0].emphasis, false);
-  assert.equal(gained[0].identity?.label, 'heer');
+  assert.equal(gained[0].identity?.label, 'National spirit name unavailable');
 });
 
 test('a spirit whose next hours were not recorded is unknown, not ended', () => {

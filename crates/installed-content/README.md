@@ -29,7 +29,14 @@ Resolve every content fact through `ResolvedLayers`: **vanilla, DLC, then mods i
 
 `resolve` uses recorded IDs, order, hashes and coverage policy, independently of current launcher selections. Machine paths and descriptor locations stay outside portable identity. Caches must preserve verification on hits and misses; changed, added or removed covered files are errors.
 
+The persistent content-hash cache is written only when entries change or an absent/unreadable cache needs rebuilding. An unchanged valid cache remains byte-for-byte intact. Verification and read statistics still cover every selected file; successful hashes persist even when a later layer refuses resolution. Cache write errors remain failures whenever a write is needed.
+
 Use stack listing/read APIs. `script_files::paths` and `ResolvedLayers::directory_files` list direct files in merged filename byte order. Follow each loader's suffix and recursion rules; recursive loaders generally read files before subdirectories.
+
+Consumers retain derived caches through `ResolvedLayers::derived`: clones share
+one resolved stack, another stack or mount roster has independent entries, and
+cosmetic overlay selection starts fresh. Cached reads retain the stack's shared
+diagnostics. Readers keep content inputs immutable during one resolved load.
 
 Paths are bytes (`LayerPath`): archives retain PhysFS name identity; folders use Windows lookup. Use byte-path APIs where required. The shared sanitizer and layer readers own normalization and case rules; decoding archive names or independently normalizing requests changes native identity.
 
@@ -42,6 +49,13 @@ Script content uses `parser::native`, the loader's lexer mode and each field's `
 Keep the separate tree grammar for saves and descriptor consumers that use it. Save brace mismatches are corruption. Do not add guessed variable evaluation or recovery to tree-based content readers. Numbers stay lexical bytes until native conversion; script fixed5 and save decimal parsing are separate paths.
 
 Triggers share `combat_tactics::Shaper` and the trigger registry; effects share `effect_keys`; modifiers share `modifiers`. Pass the native load point's `KeyNames`: later registrations must not change earlier reads. Reuse memoized names and common keyword/dynamic-token tables.
+
+Focus catalogues share the complete load-point `KeyNames` across file parsers.
+Their layer/path order determines duplicate precedence and diagnostic order.
+Reads verify sequentially in waves sized by available hardware concurrency;
+independent files parse concurrently within each wave and merge in original
+order. The first I/O error stops before any later path is read. A single-file
+wave parses directly, and every inventoried focus file remains eligible.
 
 Static keyword, modifier, trigger, effect, equipment, rule and AI metadata comes from `engine::executable_tables`, initialized explicitly from the selected installation's hash-verified executable. The process shares one immutable table set. Content binding validates the selected installation before using it; parsers do not guess an installation or fall back to bundled names. Authored definitions still use `ResolvedLayers` and the load point's `KeyNames`.
 
@@ -61,7 +75,7 @@ Scripted localisation retains ordered alternatives, triggers and random-list ope
 
 ## Asset contracts
 
-`ResolvedLayers::covered`/`covered_path` test the recording's hash policy; `content.rs` owns its roots. Ordinary reads outside coverage require `report_uncovered_reads()`: retain the shared `UncoveredReads` handle and refresh diagnostics with `append_to` after lazy reads. Explicit `read_uncovered` consumers keep asset-specific warnings. Both paths verify covered bytes, including covered folder aliases. Do not expand coverage incidentally.
+`ResolvedLayers::covered`/`covered_path` test the recording's hash policy; `content.rs` owns its roots. Ordinary reads outside coverage require `report_uncovered_reads()`: retain the shared `UncoveredReads` handle and refresh diagnostics with `append_to` after lazy reads. Explicit `read_uncovered` consumers keep asset-specific warnings and contribute their attempted uncovered paths, including missing candidates, to that shared handle when reporting is enabled. Both paths verify covered bytes, including covered folder aliases. Do not expand coverage incidentally.
 
 Name uncovered bytes in diagnostics and machine-readable output, including assets only newer policies cover. Loading a file does not prove hash verification.
 

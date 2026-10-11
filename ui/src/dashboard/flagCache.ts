@@ -90,7 +90,7 @@ export function forgetFlags(client: DashboardClient, sourceId: string): void {
 
 export interface FlagTarget { tag: string; branchId: string; hour: number }
 
-/** Load the list (medium) flags not yet stored, grouped by observation hour and batched
+/** Load the list shield flags not yet stored, grouped by observation hour and batched
  * within the product limit. Returns the replies' warnings, which describe the
  * recording (for example its content coverage) rather than a failed flag. */
 export async function loadListFlags(client: DashboardClient, source: { id: string; revision: string },
@@ -108,7 +108,7 @@ export async function loadListFlags(client: DashboardClient, source: { id: strin
     const batch = group.slice(start, start + FLAG_BATCH);
     const { branchId, hour } = batch[0];
     const request: ProductRequest<CountryFlagParams> = { sourceId: source.id, revision: source.revision, product: 'country-flags',
-      params: { branchId, hour, tags: batch.map(target => target.tag), size: 'medium' } };
+      params: { branchId, hour, tags: batch.map(target => target.tag), size: 'shield' } };
     const reply = validateProductReply(await client.product<CountryFlagReply>(request, signal), request).data;
     if (signal.aborted) throw new DOMException('Request cancelled', 'AbortError');
     const images = new Map(reply.flags.map(image => [image.tag, image]));

@@ -40,7 +40,7 @@ function choices(): AirChoices {
 
 test('air cards share filters, current-country default and versioned explicit choices', () => {
   for (const definition of [regionDefinition, timelineDefinition]) {
-    assert.ok(settingsSections(definition, {}, false).includes('campaign'));
+    assert.ok(settingsSections(definition, {}).includes('campaign'));
     assert.equal(definition.countries?.max, 1);
     for (const key of ['sides', 'regions', 'theatres']) assert.equal(definition.options.find(field => field.key === key)?.kind, 'content-set');
     assert.ok(definition.options.filter(field => field.kind === 'content-set').every(field => !('max' in field)));
@@ -110,20 +110,20 @@ test('equal daily scores retain dated co-belligerents, missing-side names and co
     [24, sides[0].name, sides[0].leader, null, 2, [], '10'],
   ] }];
   reply.rows[0].cells = [[2, [[0, '1']]]];
-  const views = timelineViews(reply, looks).views.get(7000)!;
-  assert.equal(views[0].parts[0].side?.coBelligerents, 1);
-  assert.equal(views[1].parts[0].side?.coBelligerents, 2);
+  const views = timelineViews(reply, looks);
+  assert.equal(views.viewAt(7000, 0)?.parts[0].side?.coBelligerents, 1);
+  assert.equal(views.viewAt(7000, 1)?.parts[0].side?.coBelligerents, 2);
   reply.sides[0].reads![1][1] = 'Later unknown faction';
   reply.rows[0].cells = [[2, { scores: [], unknown: [0] }]];
-  const missing = timelineViews(reply, looks).views.get(7000)!;
-  assert.equal(missing[0].unknown[0].name, sides[0].name);
-  assert.equal(missing[1].unknown[0].name, 'Later unknown faction');
+  const missing = timelineViews(reply, looks);
+  assert.equal(missing.viewAt(7000, 0)?.unknown[0].name, sides[0].name);
+  assert.equal(missing.viewAt(7000, 1)?.unknown[0].name, 'Later unknown faction');
   reply.rows[0].cells = [[2, [[0, '1']]]];
   reply.sides[0].reads![1][1] = sides[0].name;
   reply.sides[0].reads![1][6] = null;
   const datedLooks = { ...looks, color: (side: AirSide) => side.colourFaction ? '#336699' : '#993366' };
   const coloured = timelineViews(reply, datedLooks);
-  assert.equal(coloured.views.get(7000)![1].parts[0].color, '#993366');
+  assert.equal(coloured.viewAt(7000, 1)?.parts[0].color, '#993366');
   assert.equal(coloured.rows[0].cells[1].parts[0].color, '#993366');
 });
 
@@ -198,9 +198,9 @@ test('complete absent owners, unknown pairs and selected-side inactivity stay di
   assert.equal(momentViews(reply, 0, looks)[0].view.excluded, 4997);
   assert.equal(momentViews(reply, 12, looks)[0].view.excluded, 4996);
   const history = timeline(); history.excluded = [[0, 23, 4997], [72, 73, 4996]];
-  const views = timelineViews(history, looks).views.get(7000)!;
-  assert.equal(views[0].excluded, 4997);
-  assert.equal(views[3].excluded, 4996);
+  const views = timelineViews(history, looks);
+  assert.equal(views.viewAt(7000, 0)?.excluded, 4997);
+  assert.equal(views.viewAt(7000, 3)?.excluded, 4996);
 });
 
 test('one side key preserves dated context and regional coalition viewpoints', () => {
@@ -252,10 +252,10 @@ test('tooltip ranks largest shares first and dates names, viewpoints and co-bell
 
 test('theatre filters date their daily membership separately from hourly scores', () => {
   const history = timeline(); history.theatreReads = [[23, 23, 6], [73, 73, 54]];
-  const daily = timelineViews(validateAirReply(history) as AirTimeline, looks).views.get(7000)!;
-  assert.equal(daily[0].theatreRead, 6);
-  assert.equal(daily[1].theatreRead, undefined);
-  assert.equal(daily[3].theatreRead, 54);
+  const daily = timelineViews(validateAirReply(history) as AirTimeline, looks);
+  assert.equal(daily.viewAt(7000, 0)?.theatreRead, 6);
+  assert.equal(daily.viewAt(7000, 1)?.theatreRead, undefined);
+  assert.equal(daily.viewAt(7000, 3)?.theatreRead, 54);
   const reply = moment(); reply.theatreReads = [[0, 23, -18], [72, 95, 54], [96, 119, 78]];
   const current = momentViews(validateAirReply(reply) as AirMoment, 96, looks)[0].view;
   assert.equal(current.hour, 96);
@@ -423,8 +423,8 @@ test('moment wire shares unknown rosters and expands compact countries without l
   const reply = validateAirReply(raw) as AirMoment;
   assert.equal(JSON.stringify(raw), before, 'normalisation must not mutate a cached wire reply');
   assert.equal(reply.sides.length, countryCount);
-  assert.deepEqual(reply.sides.at(-1), { key: 'c:mod 4999', faction: null, colourFaction: null, tag: 'mod 4999', name: 'mod 4999', leader: 'mod 4999', coBelligerents: 0,
-    reads: [[72, 'mod 4999', 'mod 4999', 'mod 4999', 0, [], null]] });
+  assert.deepEqual(reply.sides.at(-1), { key: 'c:mod 4999', faction: null, colourFaction: null, tag: 'mod 4999', name: 'Country name unavailable', leader: 'mod 4999', coBelligerents: 0,
+    reads: [[72, 'Country name unavailable', 'mod 4999', 'mod 4999', 0, [], null]] });
   assert.deepEqual(reply.regions[0].runs[0][2], { scores: [], unknown });
   assert.equal(momentViews(reply, 73, looks)[0].view.unknown.length, countryCount);
   assert.equal(momentViews(reply, 73, looks)[1].view.unknown.at(-1)?.key, 'c:mod 4999');
@@ -470,4 +470,19 @@ test('timeline projection gives each equal-score country cell its own colour dat
   const projected = timelineViews(reply, { ...looks, color: (_, hour) => hour === 23 ? '#102030' : '#708090' });
   assert.equal(projected.rows[0].cells[0].parts[0].color, '#102030');
   assert.equal(projected.rows[0].cells[1].parts[0].color, '#708090');
+});
+
+test('timeline days alike in looks and sides take the day before’s geometry without being projected again', () => {
+  const days = Array.from({ length: 300 }, (_, day) => day * 24 + 23);
+  const reply: AirTimeline = { ...timeline(), lastHour: days.at(-1)!, days, rows: [{ region: 7000, name: 'Long mod region', cells: [[300, { scores: [[0, '3'], [1, '1']] }]] }] };
+  const look = (hour: number) => hour < days[150] ? 'early' : 'late';
+  let asked = 0;
+  const projected = timelineViews(reply, { ...looks, lookAt: look, color: (_, hour) => { asked++; return look(hour!) === 'early' ? '#336699' : '#993366'; } });
+  assert.equal(asked, 4, 'the run and the day its looks change');
+  const cells = projected.rows[0].cells;
+  assert.equal(cells[149], cells[0]);
+  assert.equal(cells[150].parts[0].color, '#993366');
+  assert.deepEqual(cells[299], cells[150]);
+  assert.notEqual(cells[299].parts, cells[150].parts, 'each differing day keeps its own stripe');
+  assert.equal(projected.viewAt(7000, 299)?.parts[0].color, '#993366');
 });

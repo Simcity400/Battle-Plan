@@ -47,9 +47,9 @@ test('history caps at the completion event and leaves unrecorded intervals empty
 });
 test('tooltips date reads and expose unknown art instead of assuming zero', () => {
   const data=fixture(); data.projects[0].runs[0].iterations=null; data.iterationTexts['2']=null;
-  const tip=projectTooltip(data,liveCards(data,120,240)[0],120);
+  const tip=projectTooltip(data,liveCards(data,120,240)[0]);
   assert.match(tip.rows.find(row=>row.label==='Started')!.value!,/^by /);
-  assert.match(tip.note!,/read once a day/);
+  assert.doesNotMatch(tip.note ?? '',/read once a day/);
   assert.match(tip.note!,/iterations unknown/);
   assert.match(tip.note!,/Missing mod icon/);
 });
@@ -69,7 +69,7 @@ test('last assignment is dated and known iterations with missing text are locali
   const data=fixture(); data.presentations[0].scientistAsOf=99;
   data.iterationTexts['2']=null;
   const card=liveCards(data,120,240)[0];
-  const tip=projectTooltip(data,card,120);
+  const tip=projectTooltip(data,card);
   assert.match(tip.rows.find(row=>row.label==='Scientist')!.value!,/^Last assigned/);
   assert.match(tip.note!,/Last assignment recorded/);
   assert.match(tip.note!,/Iteration localisation unavailable/);
@@ -89,7 +89,7 @@ test('paused cards are named and cancelled episodes end by observation without a
   const data = fixture();
   data.projects[0].runs = [{...data.projects[0].runs[0],state:'paused',lastHour:139}, {...data.projects[0].runs[0],firstHour:140,lastHour:199,state:'cancelled',cancellation:{hour:140,exact:false}}];
   assert.equal(liveCards(data,139,240).length,1);
-  assert.equal(projectTooltip(data,liveCards(data,139,240)[0],139).rows.find(row=>row.label==='State')?.value,'Paused');
+  assert.equal(projectTooltip(data,liveCards(data,139,240)[0]).rows.find(row=>row.label==='State')?.value,'Paused');
   assert.equal(liveCards(data,140,240).length,0);
   const lane=projectLanes(data,199)[0];
   assert.equal(lane.muted,true);

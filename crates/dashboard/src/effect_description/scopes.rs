@@ -978,7 +978,7 @@ impl Renderer<'_, '_, '_> {
                 let Scope::State(state) = scopes.this else {
                     return Ok(Vec::new());
                 };
-                let neighbors = world.neighbor_states.map_err(str::to_owned)?;
+                let neighbors = world.neighbor_states().map_err(str::to_owned)?;
                 Ok(neighbors
                     .get(&state)
                     .into_iter()

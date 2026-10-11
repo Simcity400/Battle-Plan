@@ -3,7 +3,6 @@ import type { CountrySelection } from '../../dashboard/model';
 import type { ResolvedCountries } from '../../dashboard/groups';
 import { isMember } from '../../dashboard/groups.ts';
 import { object, signed32, unsigned32, unsigned64 } from '../../dashboard/validation.ts';
-import { readAt, readNote } from '../../dashboard/reads.ts';
 import { clipToSpans, runAt } from '../../charts/series.ts';
 import type { Run, Span } from '../../charts/series';
 import type { StripBar } from '../../charts/strip';
@@ -46,7 +45,6 @@ const LEFT_OUT: Readonly<Record<DayLeftOut, (dayHours: number) => { value: strin
 /** Decimal places amounts are written with, at most. */
 const DECIMALS = 2;
 /** How often fuel is read, for a carried value's note. */
-const CADENCE = 'fuel is read once a day.';
 
 const nullableText = (value: unknown) => value === null || typeof value === 'string';
 const raws = (value: unknown, length: number) => Array.isArray(value) && value.length === length && value.every(isRaw);
@@ -252,7 +250,7 @@ export function fuelAwardBasis(reply: Pick<FuelReply, 'branchId' | 'tag'>, read:
 }
 
 /** Full and compact tooltip forms: the tank, then the day before its read. */
-export function fuelTooltips(reply: FuelReply, reads: readonly FuelRead[], readHours: readonly number[], hour: number, title: string,
+export function fuelTooltips(reply: FuelReply, reads: readonly FuelRead[], hour: number, title: string,
   colors: { fuel: string; capacity: string; gained: string; burned: string }): TooltipContent[] {
   const read = runAt(reads, hour);
   if (!read) return [{ title, rows: [{ label: 'Not recorded at this time', tone: 'muted' }] }];
@@ -262,7 +260,7 @@ export function fuelTooltips(reply: FuelReply, reads: readonly FuelRead[], readH
     { label: 'Capacity', value: formatFuel(read.capacityRaw, reply.quantityScale), swatch: colors.capacity, tone: 'muted' },
     { label: 'Full', value: full == null ? 'No capacity' : `${full}%` },
   ];
-  const notes = [readNote(readAt(readHours, hour), hour, CADENCE)];
+  const notes: (string | undefined)[] = [];
   const day = dayAmounts(reply, read);
   let rows: TooltipRow[];
   if (day) {

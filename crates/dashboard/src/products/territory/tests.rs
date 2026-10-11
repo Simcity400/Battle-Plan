@@ -1,6 +1,6 @@
 use super::*;
 use replay::{
-    frame::{Metrics, TableView},
+    frame::{Metrics, SharedView, TableView},
     rows::{CampaignRow, CountryLinkRow, CountryRow, ProvinceRow, StateRow, TableRows},
 };
 use std::sync::atomic::Ordering;
@@ -218,6 +218,40 @@ fn metadata_only_and_concurrent_selections_share_a_cached_branch_without_game_co
         }
     });
     assert_eq!(source.state::<Cache>().lock().unwrap().scans.len(), 1);
+}
+
+#[test]
+fn a_geographic_walk_builds_the_cached_totals_in_the_same_pass() {
+    let source = Source::from_replay(
+        crate::SourceKey {
+            source_id: "territory-fixture".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        Arc::new(replay(vec![frame(100, 3, 8), frame(101, 3, 8)])),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let context = LoadContext { content: None };
+    let mut hours = Vec::new();
+    for _ in 0..2 {
+        walk_branch(
+            &source,
+            1,
+            None,
+            &context,
+            &AtomicBool::new(false),
+            |frame| {
+                hours.push(frame.hour);
+                Ok(())
+            },
+        )
+        .unwrap();
+    }
+    assert_eq!(hours, [100, 101, 100, 101]);
+    let cache = source.state::<Cache>();
+    let scanned = cached_scan(&cache, 1, None, || panic!("cached branch rescanned")).unwrap();
+    assert_eq!(scanned.world_totals[0].last_hour, 101);
 }
 fn selected(tags: &[&str]) -> TerritoryParams {
     TerritoryParams {
@@ -1481,7 +1515,7 @@ fn territory_refuses_two_tags_for_one_canonical_slot() {
 }
 
 #[test]
-fn territory_totals_cache_tracks_views_lineage_and_unavailable_reads() {
+fn territory_totals_cache_tracks_measured_fields_lineage_and_unavailable_reads() {
     let mut decoded = frame(100, 2, 4);
     let mut scanned = Scan::default();
     let mut builder = Builder::default();
@@ -1491,6 +1525,20 @@ fn territory_totals_cache_tracks_views_lineage_and_unavailable_reads() {
     assert_eq!(
         builder.aggregations, 1,
         "shared unchanged views reuse the aggregate"
+    );
+    let mut countries = decoded.complete::<tables::Countries>().unwrap().to_vec();
+    countries[0].stability_raw += 1;
+    let mut provinces = decoded.complete::<tables::Provinces>().unwrap().to_vec();
+    provinces[0].move_gate ^= 1;
+    decoded.tables[TableId::Countries.index()] =
+        TableView::Complete(TableRows::Countries(countries)).into();
+    decoded.tables[TableId::Provinces.index()] =
+        TableView::Complete(TableRows::Provinces(provinces)).into();
+    decoded.hour += 1;
+    observe(&mut scanned, &decoded, None, &mut builder).unwrap();
+    assert_eq!(
+        builder.aggregations, 1,
+        "hourly balances and gates in new allocations reuse the aggregate"
     );
     decoded.tables[TableId::Provinces.index()] =
         TableView::Complete(TableRows::Provinces(vec![])).into();

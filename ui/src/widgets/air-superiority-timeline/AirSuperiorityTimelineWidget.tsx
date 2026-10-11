@@ -16,7 +16,7 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const menu = useContextMenu('Air superiority timeline');
   const onMenu = useCallback((hour: number, x: number, y: number) => {
     if (air.track) menu.open(x, y, [jumpItem(props.runtime, air.track.id, hour)]);
-  }, [air.track, menu, props.runtime]);
+  }, [air.track, menu.open, props.runtime]);
   const legend = useMemo(() => [...air.legend, ...(options.look === 'split' ? [] : [{ id: 'contested', label: 'Contested (small lead)', color: mix(air.tokens.surface, air.tokens.text, 0.2) }]),
     { id: 'blank', label: 'Blank = no air activity' }, { id: 'gap', label: 'Shaded = not recorded' }, { id: 'unknown', label: 'Hatched = unknown' },
     ...(air.mode.theatres.length ? [{ id: 'filtered', label: 'Outlined = outside selected theatres' }] : [])],

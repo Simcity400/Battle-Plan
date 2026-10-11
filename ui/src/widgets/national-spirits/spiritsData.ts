@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { spanAt } from '../../charts/timeline/layout.ts';
 import type { TimelineLane } from '../../charts/timeline/layout';
 import { describeRun, runState, startUnseen } from '../../charts/timeline/runState.ts';
@@ -27,7 +28,7 @@ export function spirits(reply: IdeaHistoryReply): Spirit[] {
     if (!tokens.has(span.token)) continue;
     let spirit = byToken.get(span.token);
     if (!spirit) {
-      spirit = { token: span.token, name: art.get(span.token)?.name ?? span.token, icon: art.get(span.token)?.icon ?? undefined, spans: [] };
+      spirit = { token: span.token, name: contentTitle(art.get(span.token)?.name, span.token, 'National spirit name unavailable'), icon: art.get(span.token)?.icon ?? undefined, spans: [] };
       byToken.set(span.token, spirit);
     }
     spirit.spans.push(span);

@@ -17,11 +17,11 @@ use crate::{
 };
 use replay::{
     container::Replay,
-    frame::{DecodedFrame, FrameDecoder},
+    frame::{DecodedFrame, FrameDecoder, SharedView, TableView},
     rows::{
         DivisionDeletionDisposition as Disposition, DivisionEquipmentDeletionRow, DivisionRow,
-        DivisionStatusRow, DivisionTemplateRow, EquipmentDestructionCause as Cause, TableId,
-        tables,
+        DivisionStatusRow, DivisionTemplateRow, EquipmentDestructionCause as Cause, NameOperands,
+        Recorded, TableId, TableSchema, tables,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -166,59 +166,48 @@ struct Event {
     row: DivisionLogEntry,
     presentation: Option<Presentation>,
 }
-// Index once per supplying frame, including a large simultaneous deployment.
+// Rows hold unique ascending keys, so a large simultaneous deployment is looked
+// up without indexing every hour.
 struct Presentations<'a> {
-    frame: &'a DecodedFrame,
-    divisions: HashMap<u64, &'a DivisionRow>,
-    names: HashMap<u64, &'a replay::rows::DivisionStatusRow>,
-    templates: HashMap<u64, &'a DivisionTemplateRow>,
-    icons: HashMap<u64, &'a replay::rows::DivisionTemplateIconRow>,
+    hour: i32,
+    divisions: &'a [DivisionRow],
+    names: Names<'a>,
+    templates: &'a [DivisionTemplateRow],
+    icons: &'a [replay::rows::DivisionTemplateIconRow],
     template_hour: Option<i32>,
+}
+fn keyed<T>(rows: &[T], key: u64, of: impl Fn(&T) -> u64) -> Option<&T> {
+    rows.binary_search_by_key(&key, of).ok().map(|at| &rows[at])
 }
 impl<'a> Presentations<'a> {
     fn new(frame: &'a DecodedFrame, template_hour: Option<i32>) -> Self {
         Self {
-            frame,
+            hour: frame.hour,
             template_hour,
-            divisions: frame
-                .complete::<tables::Divisions>()
-                .unwrap_or_default()
-                .iter()
-                .map(|row| (row.id, row))
-                .collect(),
-            names: frame
-                .complete::<tables::DivisionStatus>()
-                .unwrap_or_default()
-                .iter()
-                .map(|row| (row.division, row))
-                .collect(),
+            divisions: frame.complete::<tables::Divisions>().unwrap_or_default(),
+            names: Names::Rows(
+                frame
+                    .complete::<tables::DivisionStatus>()
+                    .unwrap_or_default(),
+            ),
             templates: frame
                 .complete::<tables::DivisionTemplates>()
-                .unwrap_or_default()
-                .iter()
-                .map(|row| (row.template, row))
-                .collect(),
+                .unwrap_or_default(),
             icons: frame
                 .complete::<tables::DivisionTemplateIcons>()
-                .unwrap_or_default()
-                .iter()
-                .map(|row| (row.template, row))
-                .collect(),
+                .unwrap_or_default(),
         }
     }
     fn get(&self, id: u64) -> Option<Presentation> {
-        let division = (*self.divisions.get(&id)?).clone();
-        let status = self.names.get(&id).map(|row| DivisionStatusRow {
-            division: row.division,
-            name: row.name.clone(),
-            naming: row.naming.clone(),
-            ..Default::default()
-        });
-        let template = self
-            .templates
-            .get(&division.template)
-            .map(|row| (*row).clone());
-        let icon = self.icons.get(&division.template).map(|row| {
+        let division = keyed(self.divisions, id, |row| row.id)?.clone();
+        let status = match self.names {
+            Names::Rows(rows) => keyed(rows, id, |row| row.division)
+                .map(|row| status(row.division, &row.name, &row.naming)),
+            Names::Held(names) => keyed(names, id, |held| held.division)
+                .map(|held| status(held.division, &held.name, &held.naming)),
+        };
+        let template = keyed(self.templates, division.template, |row| row.template).cloned();
+        let icon = keyed(self.icons, division.template, |row| row.template).map(|row| {
             (
                 row.priority_unit,
                 row.custom_icon,
@@ -226,7 +215,7 @@ impl<'a> Presentations<'a> {
             )
         });
         Some(Presentation {
-            hour: self.frame.hour,
+            hour: self.hour,
             division,
             status,
             template,
@@ -235,16 +224,101 @@ impl<'a> Presentations<'a> {
         })
     }
 }
+/// A status row as a presentation keeps it: its division and name operands.
+fn status(
+    division: u64,
+    name: &Recorded<Option<Vec<u8>>>,
+    naming: &Recorded<Option<NameOperands>>,
+) -> DivisionStatusRow {
+    DivisionStatusRow {
+        division,
+        name: name.clone(),
+        naming: naming.clone(),
+        ..Default::default()
+    }
+}
+enum Names<'a> {
+    Rows(&'a [DivisionStatusRow]),
+    Held(&'a [HeldName]),
+}
+struct HeldName {
+    division: u64,
+    name: Recorded<Option<Vec<u8>>>,
+    naming: Recorded<Option<NameOperands>>,
+}
+/// The last census's presentation inputs. DivisionStatus changes every hour, so
+/// only its names are kept, reused where unchanged: holding its rows would copy
+/// them at every later hour.
+struct Census {
+    hour: i32,
+    template_hour: Option<i32>,
+    divisions: SharedView,
+    templates: SharedView,
+    icons: SharedView,
+    names: Vec<HeldName>,
+}
+impl Census {
+    fn new(frame: &DecodedFrame, template_hour: Option<i32>, held: Option<Census>) -> Self {
+        let mut held = held
+            .map_or_else(Vec::new, |census| census.names)
+            .into_iter()
+            .peekable();
+        let names = frame
+            .complete::<tables::DivisionStatus>()
+            .unwrap_or_default()
+            .iter()
+            .map(|row| {
+                while held.next_if(|name| name.division < row.division).is_some() {}
+                held.next_if(|name| {
+                    name.division == row.division
+                        && name.name == row.name
+                        && name.naming == row.naming
+                })
+                .unwrap_or_else(|| HeldName {
+                    division: row.division,
+                    name: row.name.clone(),
+                    naming: row.naming.clone(),
+                })
+            })
+            .collect();
+        let view = |table: TableId| frame.tables[table.index()].clone();
+        Self {
+            hour: frame.hour,
+            template_hour,
+            divisions: view(TableId::Divisions),
+            templates: view(TableId::DivisionTemplates),
+            icons: view(TableId::DivisionTemplateIcons),
+            names,
+        }
+    }
+    fn presentations(&self) -> Presentations<'_> {
+        fn rows<T: TableSchema>(view: &SharedView) -> &[T::Row] {
+            match &**view {
+                TableView::Complete(rows) => rows.rows::<T>().unwrap_or_default(),
+                _ => &[],
+            }
+        }
+        Presentations {
+            hour: self.hour,
+            divisions: rows::<tables::Divisions>(&self.divisions),
+            names: Names::Held(&self.names),
+            templates: rows::<tables::DivisionTemplates>(&self.templates),
+            icons: rows::<tables::DivisionTemplateIcons>(&self.icons),
+            template_hour: self.template_hour,
+        }
+    }
+}
 #[derive(Default)]
 struct Scan {
     events: Vec<Event>,
     seen: HashSet<u64>,
-    live: HashSet<u64>,
+    /// The last census's divisions, ascending.
+    live: Vec<u64>,
     deletions: HashMap<u64, DivisionEquipmentDeletionRow>,
     links: LinkTags,
-    previous: Option<DecodedFrame>,
+    previous_hour: Option<i32>,
     previous_census: Option<i32>,
-    presentation: Option<(DecodedFrame, Option<i32>)>,
+    presentation: Option<Census>,
     template_hour: Option<i32>,
     available: bool,
     losses_available: bool,
@@ -255,7 +329,7 @@ impl Scan {
         *self.warnings.entry((hour, reason.into())).or_default() += 1;
     }
     fn gap(&mut self) {
-        self.previous = None;
+        self.previous_hour = None;
         self.previous_census = None;
         self.template_hour = None;
     }
@@ -299,9 +373,8 @@ impl Scan {
     fn observe(&mut self, frame: &DecodedFrame) {
         let hour = frame.hour;
         if self
-            .previous
-            .as_ref()
-            .is_some_and(|last| last.hour.checked_add(1) != Some(hour))
+            .previous_hour
+            .is_some_and(|last| last.checked_add(1) != Some(hour))
         {
             self.gap();
         }
@@ -319,20 +392,25 @@ impl Scan {
                 .then_some(hour);
         }
         let current_presentation = Presentations::new(frame, self.template_hour);
-        let presentation_frame = self.presentation.clone();
-        let previous_presentation = presentation_frame
-            .as_ref()
-            .map(|(frame, hour)| Presentations::new(frame, *hour));
+        let census = self.presentation.take();
+        let previous_presentation = census.as_ref().map(Census::presentations);
+        let live = std::mem::take(&mut self.live);
         let divisions = frame.complete::<tables::Divisions>().ok();
         if let Some(divisions) = divisions {
             let baseline = !self.available;
             self.available = true;
+            let mut held = live.iter().peekable();
             for division in divisions {
                 // Native reveal-skip copies are intel presentations, not divisions.
                 if division.reveal_skip != 0 {
                     continue;
                 }
-                if self.seen.insert(division.id) && !baseline {
+                // Every division of the last census was seen then.
+                while held.next_if(|id| **id < division.id).is_some() {}
+                if held.next_if(|id| **id == division.id).is_none()
+                    && self.seen.insert(division.id)
+                    && !baseline
+                {
                     let presentation = current_presentation.get(division.id);
                     // Division owner is the positive expeditionary owner, otherwise
                     // the recorded roster owner.
@@ -372,10 +450,7 @@ impl Scan {
             .unwrap_or_default()
         {
             if death.hour <= hour
-                && self
-                    .previous
-                    .as_ref()
-                    .is_some_and(|last| death.hour >= last.hour)
+                && self.previous_hour.is_some_and(|last| death.hour >= last)
                 && frame
                     .complete::<tables::LandEventCoverage>()
                     .is_ok_and(|coverage| {
@@ -459,7 +534,7 @@ impl Scan {
             );
         }
         if let Some(divisions) = divisions {
-            let current: HashSet<_> = divisions
+            let current: Vec<_> = divisions
                 .iter()
                 .filter(|row| row.reveal_skip == 0)
                 .map(|row| row.id)
@@ -469,10 +544,14 @@ impl Scan {
                 .flatten()
                 .map(|row| row.division_handle)
                 .collect();
-            let missing = self
-                .live
-                .difference(&current)
-                .filter(|id| !witnessed.contains(id))
+            // Both are ascending, so one pass finds the divisions gone since.
+            let mut remaining = current.iter().peekable();
+            let missing = live
+                .iter()
+                .filter(|id| {
+                    while remaining.next_if(|current| current < id).is_some() {}
+                    remaining.peek() != Some(id) && !witnessed.contains(*id)
+                })
                 .count();
             if missing > 0 {
                 *self
@@ -485,9 +564,12 @@ impl Scan {
             }
             self.live = current;
             self.previous_census = Some(hour);
-            self.presentation = Some((frame.clone(), self.template_hour));
+            self.presentation = Some(Census::new(frame, self.template_hour, census));
+        } else {
+            self.live = live;
+            self.presentation = census;
         }
-        self.previous = Some(frame.clone());
+        self.previous_hour = Some(hour);
     }
 }
 fn disposition(row: &DivisionEquipmentDeletionRow) -> (DivisionLogKind, &'static str) {
@@ -499,31 +581,40 @@ fn disposition(row: &DivisionEquipmentDeletionRow) -> (DivisionLogKind, &'static
 }
 fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan> {
     let mut scan = Scan::default();
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        check_cancel(cancelled)?;
-        let mut decoder = FrameDecoder::for_tables(&TABLES);
-        let frames = match replay.read_block_selected(block, &TABLES) {
-            Ok(frames) => frames,
-            Err(error) => {
-                scan.gap();
-                scan.warn(block.first_hour, format!("Unread replay block: {error}"));
-                continue;
-            }
-        };
-        for frame in frames {
-            check_cancel(cancelled)?;
-            let decoded = match decoder.advance(&frame) {
-                Ok(frame) => frame,
-                Err(error) => {
-                    scan.gap();
-                    scan.warn(frame.hour, format!("Unread replay frame: {error}"));
-                    break;
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &TABLES,
+        cancelled,
+        |blocks| {
+            for (block, frames) in blocks {
+                check_cancel(cancelled)?;
+                let mut decoder = FrameDecoder::for_tables(&TABLES);
+                let frames = match frames {
+                    Ok(frames) => frames,
+                    Err(error) => {
+                        scan.gap();
+                        scan.warn(block.first_hour, format!("Unread replay block: {error}"));
+                        continue;
+                    }
+                };
+                for frame in frames {
+                    check_cancel(cancelled)?;
+                    let decoded = match decoder.advance(&frame) {
+                        Ok(frame) => frame,
+                        Err(error) => {
+                            scan.gap();
+                            scan.warn(frame.hour, format!("Unread replay frame: {error}"));
+                            break;
+                        }
+                    };
+                    validate_campaign(decoded, replay)?;
+                    scan.observe(decoded);
                 }
-            };
-            validate_campaign(decoded, replay)?;
-            scan.observe(decoded);
-        }
-    }
+            }
+            Ok(())
+        },
+    )?;
     scan.events.sort_by_key(|event| event.row.read_hour);
     Ok(scan)
 }

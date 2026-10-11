@@ -1,4 +1,4 @@
-import { Popover, usePopover } from '../components/Popover';
+import { Popover, PopoverBody, usePopover } from '../components/Popover';
 import { useId } from 'react';
 import { Icon } from '../components/Icons';
 import { widgetDefinitions } from './definitions';
@@ -24,12 +24,12 @@ export default function WidgetPicker({ disabled, onAdd, onOpen, runtime }: { dis
       popoverTarget={id} aria-haspopup="dialog" aria-expanded={open} onClick={onOpen}><Icon name="plus" /></button>
     <Popover menu={menu} id={id} className="widget-picker" aria-label="Add a widget">
       <div className="ui-popover-heading"><strong>Add a widget</strong><button type="button" className="icon-button ui-popover-action" aria-label="Close widget picker" popoverTarget={id} popoverTargetAction="hide"><Icon name="close" /></button></div>
-      <div className="widget-picker-items">{widgetDefinitions().map((definition) => {
+      <div className="widget-picker-items"><PopoverBody open={open}>{() => widgetDefinitions().map((definition) => {
         const Items = definition.pickerItems ?? PickerItem;
         return <Items key={definition.kind} definition={definition} runtime={runtime} track={track} active={open} disabled={disabled} onAdd={(kind, initial) => {
           menu.close(); onAdd(kind, initial);
         }} />;
-      })}</div>
+      })}</PopoverBody></div>
     </Popover>
   </>;
 }

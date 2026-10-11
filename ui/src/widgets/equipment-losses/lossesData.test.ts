@@ -96,7 +96,7 @@ test('names are content types and the design name recorded at the hour shown, ne
   data.designs[0].names.unshift({ firstHour: 100, name: null, known: false, design: null });
   assert.equal(lossItems(data, live(104))[1].path[2].label, 'Design 91001 (name not known)');
   data.designs[0].archetypeName = null;
-  assert.equal(lossItems(data, live(104))[1].path[1].label, 'mod_walkers');
+  assert.equal(lossItems(data, live(104))[1].path[1].label, 'Equipment type name unavailable');
 });
 
 test('each hourly land state has its legend entry, shared status colour and Partial exact N', () => {
@@ -169,7 +169,7 @@ test('unknown causes say Not known with the reason, and have no equipment leaves
   }
   assert.match(sunburstSummary(root, TEXT), /not known/);
   assert.deepEqual(unknownCauses(data, 105).map(entry => entry.label), ['Mod combat: Not known — Content retention deletes changing entries.',
-    'Unnamed cause (destruction:air_accident): Not known — Destruction table is unavailable.']);
+    'Cause name unavailable: Not known — Destruction table is unavailable.']);
   assert.equal(root.exact, 100000n);
 });
 
@@ -332,7 +332,7 @@ test('every stable air cause has design leaves in both land modes, with product 
   game.name.text = null;
   assert.equal(causeName(game), 'Mod content combat');
   game.name.template = null;
-  assert.equal(causeName(game), 'mod_combat_key');
+  assert.equal(causeName(game), 'Cause name unavailable');
   assert.equal(causeName(cause({ source: { kind: 'destruction', reason: 'air_accident' }, domain: 'air',
     name: { key: null, template: null, text: 'Air accidents' } })), 'Air accidents');
 });

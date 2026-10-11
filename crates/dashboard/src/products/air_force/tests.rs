@@ -475,10 +475,7 @@ fn air_force_reply_budget_uses_actual_json_bytes_and_never_truncates() {
     )
     .unwrap();
     assert_eq!(output.parts.len(), 1);
-    assert_eq!(
-        output.parts[0].name.as_ref().unwrap().len(),
-        MAX_REPLY_BYTES / 6 + " (Variant 1)".len()
-    );
+    assert_eq!(output.parts[0].name.as_deref(), Some("Variant 1"));
     assert_eq!(output.series[0].runs[0].total, Some(1));
     assert_eq!(output.series[0].runs[0].values, vec![Some(1)]);
     assert!(transport::json_len(&output, MAX_REPLY_BYTES).is_some());
@@ -778,7 +775,7 @@ fn air_force_recorded_variants_use_mod_archetypes_and_keep_unresolved_designs() 
     );
     assert_eq!(
         wings.parts[0].name.as_deref(),
-        Some("Mixed types: mod_air / mod_bomber")
+        Some("Mixed types: Equipment type name unavailable / Equipment type name unavailable")
     );
     drop(layers);
     std::fs::remove_dir_all(root).unwrap();

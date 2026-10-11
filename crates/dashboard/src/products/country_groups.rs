@@ -855,7 +855,12 @@ struct Continuation {
     faction_ids: Vec<u32>,
     invalid_names: BTreeSet<u64>,
     names: BTreeMap<u64, RunHistory<NameOperands>>,
-    lexical: Option<Arc<faction_names::LexicalNames>>,
+    /// The latest dictionary read, named without holding its rows, and the
+    /// first read of equal rows, which name operands share.
+    lexical: Option<(
+        replay::frame::ViewIdentity,
+        Arc<faction_names::LexicalNames>,
+    )>,
     lexical_read: i32,
 }
 
@@ -1331,306 +1336,249 @@ fn scan_from(
     let mut previous_hour =
         previous_read.or_else(|| bounds.and_then(|(first, _)| first.checked_sub(1)));
     // Link id to tag, rebuilt only when the country identities change.
-    for block in replay
-        .index
-        .iter()
-        .filter(|block| block.branch == branch)
-        .skip(blocks)
-    {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancel());
-        }
-        humans.begin_block();
-        wars.begin_block();
-        identity_changes.begin_block();
-        rosters.begin_block();
-        for history in identities.values_mut() {
-            history.begin_block();
-        }
-        for faction in factions.values_mut() {
-            faction.members.begin_block();
-            faction.leaders.begin_block();
-        }
-        for history in names.values_mut() {
-            history.begin_block();
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            unreadable_blocks += 1;
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancel());
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                stopped += 1;
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                stopped += 1;
-                break;
-            }
-            let hour = frame.hour;
-            if let Some(previous) = previous_hour
-                && hour > previous + 1
-            {
-                mark_all(Arc::make_mut(&mut unobserved), previous + 1, hour - 1);
-                continuous_since = None;
-            }
-            previous_hour = Some(hour);
-            let current = &decoded.tables[TableId::LexicalTokens.index()];
-            if lexical
-                .as_ref()
-                .is_none_or(|previous| !previous.matches(current))
-            {
-                lexical = Some(Arc::new(faction_names::LexicalNames::new(current.clone())));
-                lexical_read = hour;
-            }
-            if let Ok(rows) = decoded.complete::<tables::Factions>() {
-                for row in rows {
-                    if std::str::from_utf8(&row.name).is_err() {
-                        invalid_names.insert(row.id);
+    crate::blocks::scan_blocks(
+        replay,
+        replay
+            .index
+            .iter()
+            .filter(|block| block.branch == branch)
+            .skip(blocks),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancel());
+                }
+                humans.begin_block();
+                wars.begin_block();
+                identity_changes.begin_block();
+                rosters.begin_block();
+                for history in identities.values_mut() {
+                    history.begin_block();
+                }
+                for faction in factions.values_mut() {
+                    faction.members.begin_block();
+                    faction.leaders.begin_block();
+                }
+                for history in names.values_mut() {
+                    history.begin_block();
+                }
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    unreadable_blocks += 1;
+                    continue;
+                };
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(cancel());
                     }
-                    let history = names.entry(row.id).or_default();
-                    if let Some(previous) = history.last_mut()
-                        && previous.last_hour.checked_add(1) == Some(hour)
-                        && previous.literal == row.name
-                        && previous.template_token == row.template_token
-                        && (row.template_token.is_none() || previous.lexical_read == lexical_read)
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        stopped += 1;
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        stopped += 1;
+                        break;
+                    }
+                    let hour = frame.hour;
+                    if let Some(previous) = previous_hour
+                        && hour > previous + 1
                     {
-                        previous.last_hour = hour;
-                    } else {
-                        history.push(NameOperands {
-                            first_hour: hour,
-                            last_hour: hour,
-                            literal: row.name.clone(),
-                            template_token: row.template_token,
-                            lexical_read,
-                            tokens: Arc::clone(
-                                lexical.as_ref().expect("the hour has a lexical table view"),
-                            ),
-                            template: faction_names::template_spelling(decoded, row.template_token),
-                        });
+                        mark_all(Arc::make_mut(&mut unobserved), previous + 1, hour - 1);
+                        continuous_since = None;
                     }
-                }
-            }
-            let updated = tags.update(decoded);
-            let countries_known = updated.is_ok();
-            let ids_changed = countries_known && {
-                let rows = decoded.complete::<tables::Countries>()?;
-                let changed = rows.len() != faction_ids.len()
-                    || rows.iter().zip(&faction_ids).any(|(row, id)| row.id != *id);
-                if changed {
-                    faction_ids = rows.iter().map(|row| row.id).collect();
-                }
-                changed
-            };
-            if updated.as_ref().is_ok_and(|rebuilt| *rebuilt) || ids_changed {
-                // Sum rosters use the same canonical holder as their country measures.
-                let slots = link_slots(decoded.complete::<tables::CountryLinks>()?);
-                let mut slot_tags: HashMap<u32, Option<&[u8]>> = HashMap::new();
-                for (tag, country) in
-                    tagged_countries_indexed(decoded.complete::<tables::Countries>()?, &slots)
-                {
-                    if let TaggedCountry::Found(_, slot) = country {
-                        let entry = slot_tags.entry(slot).or_insert(Some(tag));
-                        if *entry != Some(tag) {
-                            *entry = None;
-                        }
+                    previous_hour = Some(hour);
+                    let current = &decoded.tables[TableId::LexicalTokens.index()];
+                    if lexical.as_ref().is_none_or(|(seen, _)| !seen.is(current)) {
+                        // Every block reads the static dictionary again; equal
+                        // rows keep the one copy (and token index) already held.
+                        let names = lexical
+                            .take()
+                            .map(|(_, names)| names)
+                            .filter(|names| names.holds(current))
+                            .unwrap_or_else(|| {
+                                Arc::new(faction_names::LexicalNames::new(current.clone()))
+                            });
+                        lexical = Some((current.identity(), names));
+                        lexical_read = hour;
                     }
-                }
-                faction_tags = slots
-                    .into_iter()
-                    .filter_map(|(raw, slot)| {
-                        let tag =
-                            std::str::from_utf8(slot_tags.get(&slot).copied().flatten()?).ok()?;
-                        (!tag.is_empty()).then(|| (raw, tag.to_owned()))
-                    })
-                    .collect();
-            }
-            rosters.observe(
-                decoded,
-                hour,
-                countries_known,
-                &faction_tags,
-                !updated.as_ref().is_ok_and(|rebuilt| !*rebuilt) || ids_changed,
-            );
-            let capitulation_rows = decoded.complete::<tables::Capitulation>();
-            if capitulation_rows.is_err() {
-                capitulations_unread += 1;
-            } else {
-                capitulations_observed = true;
-            }
-            let Ok(rebuilt) = updated else {
-                incomplete += 1;
-                mark_all(Arc::make_mut(&mut unobserved), hour, hour);
-                continuous_since = None;
-                continue;
-            };
-            if rebuilt {
-                // An id naming another tag than the hour before, with no gap between.
-                if continuous_since.is_some() {
-                    let mut changed: Vec<IdentityChange> = named_since
-                        .iter()
-                        .filter_map(|(id, (from, _))| {
-                            let to = tags.get(*id)?;
-                            (to != from).then(|| IdentityChange {
-                                hour,
-                                from: from.clone(),
-                                to: to.clone(),
-                            })
-                        })
-                        .collect();
-                    // Several ids may name one country: each change is listed once.
-                    changed.sort();
-                    changed.dedup();
-                    for change in changed {
-                        identity_changes.push(change);
-                    }
-                }
-                named_since.retain(|id, (tag, _)| tags.get(*id) == Some(tag));
-                for (id, tag) in tags.iter() {
-                    named_since
-                        .entry(*id)
-                        .or_insert_with(|| (tag.clone(), hour));
-                }
-            }
-            let since = *continuous_since.get_or_insert(hour);
-            // Native holder bounds are independent of memberships and air activity.
-            let holders = tagged_countries(
-                decoded.complete::<tables::Countries>()?,
-                decoded.complete::<tables::CountryLinks>()?,
-            );
-            for (tag, holder) in holders {
-                let Some((country, slot)) = holder.found() else {
-                    continue;
-                };
-                let Ok(tag) = std::str::from_utf8(tag) else {
-                    continue;
-                };
-                let history = identities.entry(tag.to_owned()).or_default();
-                let mut track = IdentityTrack::default();
-                if let Some(last) = history.iter().next_back() {
-                    track.step(Some((last.slot, last.country_id)), last.last_hour);
-                }
-                let contiguous = track.step(Some((slot, country.id)), hour);
-                if contiguous {
-                    history.last_mut().expect("identity run").last_hour = hour;
-                } else {
-                    history.push(super::country_history::CountryIdentityRun {
-                        first_hour: hour,
-                        last_hour: hour,
-                        slot,
-                        country_id: country.id,
-                    });
-                }
-            }
-            // The tag an id had at `at`, when that is known (see `named_since`).
-            let tag_at = |raw: u32, at: i32| -> Option<&String> {
-                let (tag, from) = named_since.get(&raw)?;
-                (since.max(*from) <= at).then_some(tag)
-            };
-            // Every group table names countries by their raw link id.
-            let tag_of = |raw: u32, unmapped: &mut BTreeSet<u32>| -> Option<&String> {
-                let tag = tags.get(raw);
-                if tag.is_none() {
-                    unmapped.insert(raw);
-                }
-                tag
-            };
-            // Each history is unobserved only where its own tables are incomplete.
-            let mut missed = false;
-            match decoded.complete::<tables::HumanControllers>() {
-                Ok(rows) => {
-                    // A country the links cannot name leaves the hour's list incomplete.
-                    let mut incomplete = false;
-                    for row in rows.iter().filter(|row| row.count > 0) {
-                        let Some(tag) = tag_of(row.country, &mut unmapped) else {
-                            incomplete = true;
-                            continue;
-                        };
-                        extend_history(&mut human_open, &mut humans, tag.clone(), hour, || {
-                            MembershipRun {
-                                tag: tag.clone(),
-                                first_hour: hour,
-                                last_hour: hour,
+                    if let Ok(rows) = decoded.complete::<tables::Factions>() {
+                        for row in rows {
+                            if std::str::from_utf8(&row.name).is_err() {
+                                invalid_names.insert(row.id);
                             }
-                        });
-                    }
-                    if incomplete {
-                        mark_unobserved(&mut Arc::make_mut(&mut unobserved).humans, hour, hour);
-                    }
-                }
-                Err(_) => {
-                    missed = true;
-                    mark_unobserved(&mut Arc::make_mut(&mut unobserved).humans, hour, hour);
-                }
-            }
-            match (
-                decoded.complete::<tables::Factions>(),
-                decoded.complete::<tables::FactionMembers>(),
-            ) {
-                (Ok(rows), Ok(members)) => {
-                    let present: BTreeSet<_> = rows.iter().map(|row| row.id).collect();
-                    for row in rows {
-                        let name = std::str::from_utf8(&row.name).unwrap_or_default();
-                        let faction = factions.entry(row.id).or_insert_with(|| ScannedFaction {
-                            name: name.to_owned(),
-                            names: RunHistory::default(),
-                            first_hour: hour,
-                            last_hour: hour,
-                            members: RunHistory::default(),
-                            leaders: RunHistory::default(),
-                            incomplete: Arc::new(Vec::new()),
-                        });
-                        faction.last_hour = hour;
-                        if rosters.factions[&row.id.to_string()]
-                            .iter()
-                            .next_back()
-                            .is_some_and(|roster| !roster.complete)
-                        {
-                            mark_unobserved(Arc::make_mut(&mut faction.incomplete), hour, hour);
-                        }
-                        if faction.name != name {
-                            faction.name = name.to_owned();
-                        }
-                    }
-                    let mut ordered: Vec<_> = members.iter().collect();
-                    ordered.sort_by_key(|member| (member.faction, member.ordinal));
-                    // A member the links cannot name leaves that faction's roster
-                    // incomplete this hour: no join, leave or founding is read there. A
-                    // member of a faction the Factions table does not list belongs to
-                    // no faction this reply names.
-                    for member in ordered {
-                        if !present.contains(&member.faction) {
-                            continue;
-                        }
-                        let Some(faction) = factions.get_mut(&member.faction) else {
-                            continue;
-                        };
-                        let tag = tag_of(member.country, &mut unmapped);
-                        if tag.is_none() {
-                            mark_unobserved(Arc::make_mut(&mut faction.incomplete), hour, hour);
-                        }
-                        if let Some(tag) = tag {
-                            extend_history(
-                                &mut member_open,
-                                &mut faction.members,
-                                (member.faction, tag.clone()),
-                                hour,
-                                || MembershipRun {
-                                    tag: tag.clone(),
+                            let history = names.entry(row.id).or_default();
+                            if let Some(previous) = history.last_mut()
+                                && previous.last_hour.checked_add(1) == Some(hour)
+                                && previous.literal == row.name
+                                && previous.template_token == row.template_token
+                                && (row.template_token.is_none()
+                                    || previous.lexical_read == lexical_read)
+                            {
+                                previous.last_hour = hour;
+                            } else {
+                                history.push(NameOperands {
                                     first_hour: hour,
                                     last_hour: hour,
-                                },
-                            );
-                            // The member at order zero leads the faction (module notes).
-                            if member.ordinal == 0 {
+                                    literal: row.name.clone(),
+                                    template_token: row.template_token,
+                                    lexical_read,
+                                    tokens: Arc::clone(
+                                        &lexical
+                                            .as_ref()
+                                            .expect("the hour has a lexical table view")
+                                            .1,
+                                    ),
+                                    template: faction_names::template_spelling(
+                                        decoded,
+                                        row.template_token,
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                    let updated = tags.update(decoded);
+                    let countries_known = updated.is_ok();
+                    let ids_changed = countries_known && {
+                        let rows = decoded.complete::<tables::Countries>()?;
+                        let changed = rows.len() != faction_ids.len()
+                            || rows.iter().zip(&faction_ids).any(|(row, id)| row.id != *id);
+                        if changed {
+                            faction_ids = rows.iter().map(|row| row.id).collect();
+                        }
+                        changed
+                    };
+                    if updated.as_ref().is_ok_and(|rebuilt| *rebuilt) || ids_changed {
+                        // Sum rosters use the same canonical holder as their country measures.
+                        let slots = link_slots(decoded.complete::<tables::CountryLinks>()?);
+                        let mut slot_tags: HashMap<u32, Option<&[u8]>> = HashMap::new();
+                        for (tag, country) in tagged_countries_indexed(
+                            decoded.complete::<tables::Countries>()?,
+                            &slots,
+                        ) {
+                            if let TaggedCountry::Found(_, slot) = country {
+                                let entry = slot_tags.entry(slot).or_insert(Some(tag));
+                                if *entry != Some(tag) {
+                                    *entry = None;
+                                }
+                            }
+                        }
+                        faction_tags = slots
+                            .into_iter()
+                            .filter_map(|(raw, slot)| {
+                                let tag =
+                                    std::str::from_utf8(slot_tags.get(&slot).copied().flatten()?)
+                                        .ok()?;
+                                (!tag.is_empty()).then(|| (raw, tag.to_owned()))
+                            })
+                            .collect();
+                    }
+                    rosters.observe(
+                        decoded,
+                        hour,
+                        countries_known,
+                        &faction_tags,
+                        !updated.as_ref().is_ok_and(|rebuilt| !*rebuilt) || ids_changed,
+                    );
+                    let capitulation_rows = decoded.complete::<tables::Capitulation>();
+                    if capitulation_rows.is_err() {
+                        capitulations_unread += 1;
+                    } else {
+                        capitulations_observed = true;
+                    }
+                    let Ok(rebuilt) = updated else {
+                        incomplete += 1;
+                        mark_all(Arc::make_mut(&mut unobserved), hour, hour);
+                        continuous_since = None;
+                        continue;
+                    };
+                    if rebuilt {
+                        // An id naming another tag than the hour before, with no gap between.
+                        if continuous_since.is_some() {
+                            let mut changed: Vec<IdentityChange> = named_since
+                                .iter()
+                                .filter_map(|(id, (from, _))| {
+                                    let to = tags.get(*id)?;
+                                    (to != from).then(|| IdentityChange {
+                                        hour,
+                                        from: from.clone(),
+                                        to: to.clone(),
+                                    })
+                                })
+                                .collect();
+                            // Several ids may name one country: each change is listed once.
+                            changed.sort();
+                            changed.dedup();
+                            for change in changed {
+                                identity_changes.push(change);
+                            }
+                        }
+                        named_since.retain(|id, (tag, _)| tags.get(*id) == Some(tag));
+                        for (id, tag) in tags.iter() {
+                            named_since
+                                .entry(*id)
+                                .or_insert_with(|| (tag.clone(), hour));
+                        }
+                    }
+                    let since = *continuous_since.get_or_insert(hour);
+                    // Native holder bounds are independent of memberships and air activity.
+                    let holders = tagged_countries(
+                        decoded.complete::<tables::Countries>()?,
+                        decoded.complete::<tables::CountryLinks>()?,
+                    );
+                    for (tag, holder) in holders {
+                        let Some((country, slot)) = holder.found() else {
+                            continue;
+                        };
+                        let Ok(tag) = std::str::from_utf8(tag) else {
+                            continue;
+                        };
+                        let history = identities.entry(tag.to_owned()).or_default();
+                        let mut track = IdentityTrack::default();
+                        if let Some(last) = history.iter().next_back() {
+                            track.step(Some((last.slot, last.country_id)), last.last_hour);
+                        }
+                        let contiguous = track.step(Some((slot, country.id)), hour);
+                        if contiguous {
+                            history.last_mut().expect("identity run").last_hour = hour;
+                        } else {
+                            history.push(super::country_history::CountryIdentityRun {
+                                first_hour: hour,
+                                last_hour: hour,
+                                slot,
+                                country_id: country.id,
+                            });
+                        }
+                    }
+                    // The tag an id had at `at`, when that is known (see `named_since`).
+                    let tag_at = |raw: u32, at: i32| -> Option<&String> {
+                        let (tag, from) = named_since.get(&raw)?;
+                        (since.max(*from) <= at).then_some(tag)
+                    };
+                    // Every group table names countries by their raw link id.
+                    let tag_of = |raw: u32, unmapped: &mut BTreeSet<u32>| -> Option<&String> {
+                        let tag = tags.get(raw);
+                        if tag.is_none() {
+                            unmapped.insert(raw);
+                        }
+                        tag
+                    };
+                    // Each history is unobserved only where its own tables are incomplete.
+                    let mut missed = false;
+                    match decoded.complete::<tables::HumanControllers>() {
+                        Ok(rows) => {
+                            // A country the links cannot name leaves the hour's list incomplete.
+                            let mut incomplete = false;
+                            for row in rows.iter().filter(|row| row.count > 0) {
+                                let Some(tag) = tag_of(row.country, &mut unmapped) else {
+                                    incomplete = true;
+                                    continue;
+                                };
                                 extend_history(
-                                    &mut leader_open,
-                                    &mut faction.leaders,
-                                    (member.faction, tag.clone()),
+                                    &mut human_open,
+                                    &mut humans,
+                                    tag.clone(),
                                     hour,
                                     || MembershipRun {
                                         tag: tag.clone(),
@@ -1639,126 +1587,231 @@ fn scan_from(
                                     },
                                 );
                             }
+                            if incomplete {
+                                mark_unobserved(
+                                    &mut Arc::make_mut(&mut unobserved).humans,
+                                    hour,
+                                    hour,
+                                );
+                            }
+                        }
+                        Err(_) => {
+                            missed = true;
+                            mark_unobserved(&mut Arc::make_mut(&mut unobserved).humans, hour, hour);
                         }
                     }
-                }
-                _ => {
-                    missed = true;
-                    mark_unobserved(&mut Arc::make_mut(&mut unobserved).factions, hour, hour);
-                }
-            }
-            match decoded.complete::<tables::WarRelations>() {
-                Ok(rows) => {
-                    // When each war started, and which side instigated it.
-                    for row in rows.iter() {
-                        let key = (row.first_country, row.second_country, row.start_hour);
-                        if named_starts.contains(&key) {
-                            continue;
+                    match (
+                        decoded.complete::<tables::Factions>(),
+                        decoded.complete::<tables::FactionMembers>(),
+                    ) {
+                        (Ok(rows), Ok(members)) => {
+                            let present: BTreeSet<_> = rows.iter().map(|row| row.id).collect();
+                            for row in rows {
+                                let name = std::str::from_utf8(&row.name).unwrap_or_default();
+                                let faction =
+                                    factions.entry(row.id).or_insert_with(|| ScannedFaction {
+                                        name: name.to_owned(),
+                                        names: RunHistory::default(),
+                                        first_hour: hour,
+                                        last_hour: hour,
+                                        members: RunHistory::default(),
+                                        leaders: RunHistory::default(),
+                                        incomplete: Arc::new(Vec::new()),
+                                    });
+                                faction.last_hour = hour;
+                                if rosters.factions[&row.id.to_string()]
+                                    .iter()
+                                    .next_back()
+                                    .is_some_and(|roster| !roster.complete)
+                                {
+                                    mark_unobserved(
+                                        Arc::make_mut(&mut faction.incomplete),
+                                        hour,
+                                        hour,
+                                    );
+                                }
+                                if faction.name != name {
+                                    faction.name = name.to_owned();
+                                }
+                            }
+                            let mut ordered: Vec<_> = members.iter().collect();
+                            ordered.sort_by_key(|member| (member.faction, member.ordinal));
+                            // A member the links cannot name leaves that faction's roster
+                            // incomplete this hour: no join, leave or founding is read there. A
+                            // member of a faction the Factions table does not list belongs to
+                            // no faction this reply names.
+                            for member in ordered {
+                                if !present.contains(&member.faction) {
+                                    continue;
+                                }
+                                let Some(faction) = factions.get_mut(&member.faction) else {
+                                    continue;
+                                };
+                                let tag = tag_of(member.country, &mut unmapped);
+                                if tag.is_none() {
+                                    mark_unobserved(
+                                        Arc::make_mut(&mut faction.incomplete),
+                                        hour,
+                                        hour,
+                                    );
+                                }
+                                if let Some(tag) = tag {
+                                    extend_history(
+                                        &mut member_open,
+                                        &mut faction.members,
+                                        (member.faction, tag.clone()),
+                                        hour,
+                                        || MembershipRun {
+                                            tag: tag.clone(),
+                                            first_hour: hour,
+                                            last_hour: hour,
+                                        },
+                                    );
+                                    // The member at order zero leads the faction (module notes).
+                                    if member.ordinal == 0 {
+                                        extend_history(
+                                            &mut leader_open,
+                                            &mut faction.leaders,
+                                            (member.faction, tag.clone()),
+                                            hour,
+                                            || MembershipRun {
+                                                tag: tag.clone(),
+                                                first_hour: hour,
+                                                last_hour: hour,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
                         }
-                        named_starts.insert(key);
-                        let (Some(first), Some(second)) = (
-                            tag_at(row.first_country, row.start_hour),
-                            tag_at(row.second_country, row.start_hour),
-                        ) else {
-                            // Before the branch it is not this branch's event at all.
-                            let refused = usize::from(
-                                branch_first.is_some_and(|first| row.start_hour >= first),
+                        _ => {
+                            missed = true;
+                            mark_unobserved(
+                                &mut Arc::make_mut(&mut unobserved).factions,
+                                hour,
+                                hour,
                             );
-                            unattributed += refused;
-                            unattributed_war_starts += refused;
-                            continue;
-                        };
-                        let (attacking, defending) = if row.first_was_instigator != 0 {
-                            (first, second)
-                        } else {
-                            (second, first)
-                        };
-                        let start = WarStart {
-                            hour: row.start_hour,
-                            attacking: attacking.clone(),
-                            defending: defending.clone(),
-                        };
-                        Arc::make_mut(&mut war_start_reads)
-                            .entry(start.clone())
-                            .or_insert(hour);
-                        Arc::make_mut(&mut war_starts).insert(start);
+                        }
                     }
-                    // A war the links cannot name leaves the hour's wars incomplete.
-                    let mut incomplete = false;
-                    for row in rows
-                        .iter()
-                        .filter(|row| war_ongoing(row.start_hour, row.end_hour, hour))
-                    {
-                        let (Some(first), Some(second)) = (
-                            tag_of(row.first_country, &mut unmapped),
-                            tag_of(row.second_country, &mut unmapped),
-                        ) else {
-                            incomplete = true;
-                            continue;
-                        };
-                        // A war is one pair whichever side the row lists first.
-                        let (first, second) = if first <= second {
-                            (first, second)
-                        } else {
-                            (second, first)
-                        };
-                        extend_history(
-                            &mut war_open,
-                            &mut wars,
-                            (first.clone(), second.clone()),
-                            hour,
-                            || WarPairRun {
-                                first: first.clone(),
-                                second: second.clone(),
-                                first_hour: hour,
-                                last_hour: hour,
-                            },
-                        );
+                    match decoded.complete::<tables::WarRelations>() {
+                        Ok(rows) => {
+                            // When each war started, and which side instigated it.
+                            for row in rows.iter() {
+                                let key = (row.first_country, row.second_country, row.start_hour);
+                                if named_starts.contains(&key) {
+                                    continue;
+                                }
+                                named_starts.insert(key);
+                                let (Some(first), Some(second)) = (
+                                    tag_at(row.first_country, row.start_hour),
+                                    tag_at(row.second_country, row.start_hour),
+                                ) else {
+                                    // Before the branch it is not this branch's event at all.
+                                    let refused = usize::from(
+                                        branch_first.is_some_and(|first| row.start_hour >= first),
+                                    );
+                                    unattributed += refused;
+                                    unattributed_war_starts += refused;
+                                    continue;
+                                };
+                                let (attacking, defending) = if row.first_was_instigator != 0 {
+                                    (first, second)
+                                } else {
+                                    (second, first)
+                                };
+                                let start = WarStart {
+                                    hour: row.start_hour,
+                                    attacking: attacking.clone(),
+                                    defending: defending.clone(),
+                                };
+                                Arc::make_mut(&mut war_start_reads)
+                                    .entry(start.clone())
+                                    .or_insert(hour);
+                                Arc::make_mut(&mut war_starts).insert(start);
+                            }
+                            // A war the links cannot name leaves the hour's wars incomplete.
+                            let mut incomplete = false;
+                            for row in rows
+                                .iter()
+                                .filter(|row| war_ongoing(row.start_hour, row.end_hour, hour))
+                            {
+                                let (Some(first), Some(second)) = (
+                                    tag_of(row.first_country, &mut unmapped),
+                                    tag_of(row.second_country, &mut unmapped),
+                                ) else {
+                                    incomplete = true;
+                                    continue;
+                                };
+                                // A war is one pair whichever side the row lists first.
+                                let (first, second) = if first <= second {
+                                    (first, second)
+                                } else {
+                                    (second, first)
+                                };
+                                extend_history(
+                                    &mut war_open,
+                                    &mut wars,
+                                    (first.clone(), second.clone()),
+                                    hour,
+                                    || WarPairRun {
+                                        first: first.clone(),
+                                        second: second.clone(),
+                                        first_hour: hour,
+                                        last_hour: hour,
+                                    },
+                                );
+                            }
+                            if incomplete {
+                                mark_unobserved(
+                                    &mut Arc::make_mut(&mut unobserved).wars,
+                                    hour,
+                                    hour,
+                                );
+                            }
+                        }
+                        Err(_) => {
+                            missed = true;
+                            mark_unobserved(&mut Arc::make_mut(&mut unobserved).wars, hour, hour);
+                        }
                     }
-                    if incomplete {
-                        mark_unobserved(&mut Arc::make_mut(&mut unobserved).wars, hour, hour);
+                    // Capitulations as the engine dates them, read while the flag is set; the
+                    // date stays with the event after recovery. The hour word is certified
+                    // only while the flag is set (the fresh-save oracle lists the retained word
+                    // of an inactive capitulation as a limitation), so a capitulation that began
+                    // and ended between two readable samples is not recorded, never guessed
+                    // from that word.
+                    if let Ok(rows) = capitulation_rows {
+                        for row in rows.iter().filter(|row| row.capitulated != 0) {
+                            let key = (row.country, row.capitulated_hour);
+                            if !named_capitulations.insert(key) {
+                                continue;
+                            }
+                            let Some(tag) = tag_at(row.country, row.capitulated_hour) else {
+                                let refused = usize::from(
+                                    branch_first.is_some_and(|first| row.capitulated_hour >= first),
+                                );
+                                unattributed += refused;
+                                unattributed_capitulations += refused;
+                                continue;
+                            };
+                            let event = Capitulation {
+                                hour: row.capitulated_hour,
+                                tag: tag.clone(),
+                            };
+                            Arc::make_mut(&mut capitulation_reads)
+                                .entry(event.clone())
+                                .or_insert(hour);
+                            Arc::make_mut(&mut capitulations).insert(event);
+                        }
+                    }
+                    if missed {
+                        incomplete += 1;
                     }
                 }
-                Err(_) => {
-                    missed = true;
-                    mark_unobserved(&mut Arc::make_mut(&mut unobserved).wars, hour, hour);
-                }
             }
-            // Capitulations as the engine dates them, read while the flag is set; the
-            // date stays with the event after recovery. The hour word is certified
-            // only while the flag is set (the fresh-save oracle lists the retained word
-            // of an inactive capitulation as a limitation), so a capitulation that began
-            // and ended between two readable samples is not recorded, never guessed
-            // from that word.
-            if let Ok(rows) = capitulation_rows {
-                for row in rows.iter().filter(|row| row.capitulated != 0) {
-                    let key = (row.country, row.capitulated_hour);
-                    if !named_capitulations.insert(key) {
-                        continue;
-                    }
-                    let Some(tag) = tag_at(row.country, row.capitulated_hour) else {
-                        let refused = usize::from(
-                            branch_first.is_some_and(|first| row.capitulated_hour >= first),
-                        );
-                        unattributed += refused;
-                        unattributed_capitulations += refused;
-                        continue;
-                    };
-                    let event = Capitulation {
-                        hour: row.capitulated_hour,
-                        tag: tag.clone(),
-                    };
-                    Arc::make_mut(&mut capitulation_reads)
-                        .entry(event.clone())
-                        .or_insert(hour);
-                    Arc::make_mut(&mut capitulations).insert(event);
-                }
-            }
-            if missed {
-                incomplete += 1;
-            }
-        }
-    }
+            Ok(())
+        },
+    )?;
     let continuation_unobserved = unobserved.clone();
     if let (Some((first, last)), previous) = (bounds, previous_hour) {
         let from = previous.map_or(first, |previous| previous.saturating_add(1));

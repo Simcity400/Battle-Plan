@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { clipToSpans, runAt } from '../../charts/series.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { stackedSpans } from '../../charts/timeline/layout.ts';
@@ -23,6 +24,9 @@ export type LeaderObservation = UnitLeadersReply['observed'][number] & { landCom
 export type UnitLeadersData = Omit<UnitLeadersReply, 'leaders' | 'roles' | 'observed'> & { leaders: LeaderCareer[]; roles: LeaderRole[]; observed: LeaderObservation[] };
 const text = (v: unknown) => v === null || typeof v === 'string';
 const png = (v: unknown) => typeof v === 'string' && v.startsWith('data:image/png;base64,');
+const ascending = (a: number, b: number) => a - b;
+/** Hours coded first absolute, then as deltas. */
+const decode = (deltas: readonly number[]) => { let hour = 0; return deltas.map(delta => hour += delta); };
 
 export function validateLeaderPortraitsReply(input: unknown): UnitLeaderPortraitsReply {
   if (!object(input) || !Array.isArray(input.portraits)
@@ -51,11 +55,17 @@ export function validateUnitLeadersReply(input: unknown): UnitLeadersData {
     || !(r.kind === 1 || r.kind === 2) || !(r.maximumSkill === null || integer(r.maximumSkill) && r.maximumSkill >= 0)) return bad();
   const keys = new Set<string>(); const leaders: LeaderCareer[] = [];
   const traitCount = input.traits.length;
+  /** Sorted delta-coded hours, none before the first read. */
+  const visibleHours = (deltas: unknown) => {
+    let hour = 0;
+    return Array.isArray(deltas) && deltas.every((delta, i) => Number.isSafeInteger(delta) && (!i || delta >= 0) && integer(hour += delta) && hour >= firstHour) ? decode(deltas) : null;
+  };
   for (const l of input.leaders) {
     if (!object(l) || !handle(l.reference) || keys.has(String(l.reference)) || !Array.isArray(l.runs)
-      || !Array.isArray(l.traitGains) || !Array.isArray(l.commands) || !(l.partialFrom === null || integer(l.partialFrom))
-      || !Array.isArray(l.battleStarts) || !Array.isArray(l.battleStartReadHours) || l.battleStartReadHours.length !== l.battleStarts.length || !Array.isArray(l.unknownBattleStarts)) return bad();
-    const battleStarts = l.battleStarts;
+      || !Array.isArray(l.traitGains) || !Array.isArray(l.commands) || !(l.partialFrom === null || integer(l.partialFrom))) return bad();
+    // Careers list every participation, leaderboards only when counts change, choices neither.
+    const battleStarts = l.battleStarts ?? []; const startReads = l.battleStartReadHours ?? []; const unknownStarts = l.unknownBattleStarts ?? [];
+    if (!Array.isArray(battleStarts) || !Array.isArray(startReads) || startReads.length !== battleStarts.length || !Array.isArray(unknownStarts)) return bad();
     keys.add(String(l.reference));
     const runs: LeaderRun[] = [];
     for (const r of l.runs) {
@@ -74,26 +84,33 @@ export function validateUnitLeadersReply(input: unknown): UnitLeadersData {
       || !l.commands.every(c => span(c) && handle(c.formation) && (c.kind === 'army' || c.kind === 'armyGroup' || c.kind === 'fleet') && text(c.name)
         && (c.nameReadHour === null || integer(c.nameReadHour) && c.firstHour <= c.nameReadHour && c.nameReadHour <= c.lastHour) && ordered(c.nameUnknown))) return bad();
     let hour = 0;
-    for (const [i, delta] of l.battleStarts.entries()) {
+    for (const [i, delta] of battleStarts.entries()) {
       if (typeof delta !== 'number' || !Number.isSafeInteger(delta) || i > 0 && delta < 0 || !integer(hour + delta)) return bad();
-      hour += delta; const read = l.battleStartReadHours[i];
-      if (!integer(read) || read < hour || read < firstHour || hour < firstHour && !l.unknownBattleStarts.includes(i)) return bad();
+      hour += delta; const read = startReads[i];
+      if (!integer(read) || read < hour || read < firstHour || hour < firstHour && !unknownStarts.includes(i)) return bad();
     }
-    const battleCount = l.battleStarts.length;
-    if (!l.unknownBattleStarts.every((n, i, all) => u32(n) && n < battleCount && (!i || all[i - 1] < n))) return bad();
+    const battleCount = battleStarts.length;
+    if (!unknownStarts.every((n, i, all) => u32(n) && n < battleCount && (!i || all[i - 1] < n))) return bad();
     const won = l.battleWon; const resultHours = l.battleResultHours; const resultReads = l.battleResultReadHours;
     if ((won === undefined) !== (resultHours === undefined) || (won === undefined) !== (resultReads === undefined)) return bad();
-    if (won !== undefined && (!Array.isArray(won) || !Array.isArray(resultHours) || !Array.isArray(resultReads) || resultReads.length !== won.length || won.length !== l.battleStarts.length || resultHours.length !== won.length
+    if (won !== undefined && (!Array.isArray(won) || !Array.isArray(resultHours) || !Array.isArray(resultReads) || resultReads.length !== won.length || won.length !== battleCount || resultHours.length !== won.length
       || !won.every((w, i) => (w === null || typeof w === 'boolean') && (resultHours[i] === null || integer(resultHours[i])) && (w === null) === (resultHours[i] === null) && (w === null) === (resultReads[i] === null) && (resultReads[i] === null || integer(resultReads[i]) && resultReads[i] >= resultHours[i] && resultReads[i] >= firstHour)))) return bad();
     hour = 0;
     if (Array.isArray(resultHours) && resultHours.some((result, i) => {
       hour += battleStarts[i]; return result !== null && result < hour;
     })) return bad();
+    // Every decided result needs an earlier or same-hour participation of its own.
+    const foughtAt = l.foughtHours === undefined ? [] : visibleHours(l.foughtHours);
+    const wonAt = l.wonHours === undefined ? [] : visibleHours(l.wonHours);
+    const lostAt = l.lostHours === undefined ? [] : visibleHours(l.lostHours);
+    if (!foughtAt || !wonAt || !lostAt || (l.wonHours === undefined) !== (l.lostHours === undefined)
+      || (l.foughtHours === undefined ? l.wonHours !== undefined : l.battleStarts !== undefined)
+      || [...wonAt, ...lostAt].sort(ascending).some((at, i) => !(foughtAt[i] <= at))) return bad();
     leaders.push({ ...l, runs, traitGains } as unknown as LeaderCareer);
   }
   if (new Set(input.traits.map(t => (t as Record<string, unknown>).token)).size !== input.traits.length) return bad();
   const reply = { ...input, leaders } as unknown as UnitLeadersData;
-  for (const leader of reply.leaders) { participationReads(leader); if (leader.battleWon && leader.battleResultHours) outcomeEvents(leader); }
+  for (const leader of reply.leaders) battleHours(leader);
   return reply;
 }
 
@@ -104,55 +121,47 @@ export function battleHistoryComplete(reply: UnitLeadersData, kind: number, hour
   const read = runAt(reply.observed, hour);
   return !!read && (kind === 1 ? read.landBattles : read.navalBattles);
 }
-const startsCache = new WeakMap<LeaderCareer, { encoded: readonly number[]; starts: readonly number[] }>();
+const startsCache = new WeakMap<LeaderCareer, { encoded: LeaderCareer['battleStarts']; starts: readonly number[] }>();
 export function battleStarts(leader: LeaderCareer): readonly number[] {
   let cached = startsCache.get(leader);
   if (!cached || cached.encoded !== leader.battleStarts) {
-    let hour = 0;
-    cached = { encoded: leader.battleStarts, starts: leader.battleStarts.map(delta => hour += delta) };
+    cached = { encoded: leader.battleStarts, starts: decode(leader.battleStarts ?? []) };
     startsCache.set(leader, cached);
   }
   return cached.starts;
 }
-const participationCache = new WeakMap<LeaderCareer, { encoded: LeaderCareer['battleStarts']; reads: LeaderCareer['battleStartReadHours']; hours: number[] }>();
-function participationReads(leader: LeaderCareer): readonly number[] {
-  const cached = participationCache.get(leader);
-  if (cached && cached.encoded === leader.battleStarts && cached.reads === leader.battleStartReadHours) return cached.hours;
-  const hours = battleStarts(leader).map((hour, i) => Math.max(hour, leader.battleStartReadHours[i])).sort((a, b) => a - b);
-  participationCache.set(leader, { encoded: leader.battleStarts, reads: leader.battleStartReadHours, hours });
+const BATTLE_FIELDS = ['foughtHours', 'wonHours', 'lostHours', 'battleStarts', 'battleStartReadHours', 'battleWon', 'battleResultHours', 'battleResultReadHours'] as const;
+interface BattleHours { from: LeaderCareer; fought: readonly number[]; won: readonly number[] | null; lost: readonly number[] | null }
+const hoursCache = new WeakMap<LeaderCareer, BattleHours>();
+/** Sorted hours each participation and known win or loss became visible: leaderboards list them; careers derive them from their records. */
+function battleHours(leader: LeaderCareer): BattleHours {
+  const cached = hoursCache.get(leader);
+  if (cached && BATTLE_FIELDS.every(field => cached.from[field] === leader[field])) return cached;
+  let hours: BattleHours;
+  if (leader.foughtHours) {
+    hours = { from: { ...leader }, fought: decode(leader.foughtHours), won: leader.wonHours ? decode(leader.wonHours) : null, lost: leader.lostHours ? decode(leader.lostHours) : null };
+  } else {
+    // A participation shows from its date and first read; a result also waits for its own date and read.
+    const reads = leader.battleStartReadHours ?? []; const outcomes = leader.battleWon; const resultHours = leader.battleResultHours; const resultReads = leader.battleResultReadHours;
+    const shown = battleStarts(leader).map((hour, i) => Math.max(hour, reads[i]));
+    const results = (outcome: boolean) => outcomes && resultHours && resultReads
+      ? shown.flatMap((hour, i) => outcomes[i] === outcome ? [Math.max(hour, resultHours[i]!, resultReads[i]!)] : []).sort(ascending) : null;
+    const won = results(true); const lost = results(false);
+    hours = { from: { ...leader }, fought: shown.sort(ascending), won, lost };
+  }
+  hoursCache.set(leader, hours);
   return hours;
 }
-interface OutcomeEvent { hour: number; won: number; lost: number }
-const outcomeCache = new WeakMap<LeaderCareer, { won: LeaderCareer['battleWon']; hours: LeaderCareer['battleResultHours']; reads: LeaderCareer['battleResultReadHours']; starts: LeaderCareer['battleStarts']; startReads: LeaderCareer['battleStartReadHours']; events: OutcomeEvent[] }>();
-function outcomeEvents(leader: LeaderCareer): readonly OutcomeEvent[] {
-  const cached = outcomeCache.get(leader);
-  if (cached && cached.won === leader.battleWon && cached.hours === leader.battleResultHours && cached.reads === leader.battleResultReadHours && cached.starts === leader.battleStarts && cached.startReads === leader.battleStartReadHours) return cached.events;
-  const starts = battleStarts(leader);
-  const results = (leader.battleResultHours ?? []).flatMap((hour, index) => {
-    const won = leader.battleWon?.[index];
-    const read = leader.battleResultReadHours?.[index];
-    return hour == null || won == null || read == null ? [] : [{ hour: Math.max(hour, read, starts[index], leader.battleStartReadHours[index]), won: won ? 1 : 0, lost: won ? 0 : 1 }];
-  }).sort((a, b) => a.hour - b.hour);
-  const events: OutcomeEvent[] = [];
-  let won = 0; let lost = 0;
-  for (const result of results) {
-    won += result.won; lost += result.lost;
-    const previous = events.at(-1);
-    if (previous?.hour === result.hour) { previous.won = won; previous.lost = lost; }
-    else events.push({ hour: result.hour, won, lost });
-  }
-  outcomeCache.set(leader, { won: leader.battleWon, hours: leader.battleResultHours, reads: leader.battleResultReadHours, starts: leader.battleStarts, startReads: leader.battleStartReadHours, events });
-  return events;
-}
+/** How many sorted hours are at or before `hour`. */
+const through = (hours: readonly number[], hour: number) => {
+  let lo = 0; let hi = hours.length;
+  while (lo < hi) { const mid = (lo + hi) >>> 1; if (hours[mid] <= hour) lo = mid + 1; else hi = mid; }
+  return lo;
+};
 export function battleTotals(leader: LeaderCareer, hour: number) {
-  const starts = participationReads(leader); let lo = 0; let hi = starts.length;
-  while (lo < hi) { const mid = (lo + hi) >>> 1; if (starts[mid] <= hour) lo = mid + 1; else hi = mid; }
-  const fought = lo;
-  if (!leader.battleWon || !leader.battleResultHours) return { fought, won: null, lost: null, winRate: null, unresolved: fought };
-  const events = outcomeEvents(leader);
-  lo = 0; hi = events.length;
-  while (lo < hi) { const mid = (lo + hi) >>> 1; if (events[mid].hour <= hour) lo = mid + 1; else hi = mid; }
-  const won = events[lo - 1]?.won ?? 0; const lost = events[lo - 1]?.lost ?? 0;
+  const hours = battleHours(leader); const fought = through(hours.fought, hour);
+  if (!hours.won || !hours.lost) return { fought, won: null, lost: null, winRate: null, unresolved: fought };
+  const won = through(hours.won, hour); const lost = through(hours.lost, hour);
   const decided = won + lost;
   return { fought, won, lost, winRate: decided ? won * 100 / decided : null, unresolved: fought - decided };
 }
@@ -196,7 +205,7 @@ export function careerCountryFacts(reply: UnitLeadersData, leader: LeaderCareer,
   }
   return [...wanted.values()];
 }
-export const leaderName = (row: Pick<LeaderRow, 'person'>) => row.person.name ?? row.person.token ?? `Character ${row.person.characterId}`;
+export const leaderName = (row: Pick<LeaderRow, 'person'>) => row.person.name ?? 'Character name unavailable';
 export const attributeNames = (role: Pick<LeaderRole, 'attributeNames'>) => role.attributeNames.map(name => name ?? 'Name not recorded');
 export const recordedSince = (leader: LeaderCareer, recordingStart: number) => `Recorded battles since ${formatDateTime(leader.runs[0]?.firstHour ?? recordingStart)}`;
 
@@ -225,7 +234,7 @@ export function leaderTooltip(reply: UnitLeadersData, row: LeaderRow, country: {
       { label: 'Win rate among decided battles', value: row.winRate == null ? row.won == null ? 'Result not recorded' : 'No decided recorded battles' : `${Math.round(row.winRate)}%` },
       ...(row.value.traits?.length === 0 ? [{ label: 'Traits', value: 'None recorded', divider: true }] : row.value.traits?.map((token, i) => {
         const gain = dates.get(token); const trait = row.traitCatalogue[token];
-        return { label: trait.name || trait.token, icon: trait.icon ?? undefined, divider: i === 0,
+        return { label: contentTitle(trait.name, trait.token, 'Trait name unavailable'), icon: trait.icon ?? undefined, divider: i === 0,
           value: gain ? `${gain.date === 'heldBefore' ? 'Held before' : gain.date === 'gained' ? 'Gained' : 'First observed'} ${formatDateTime(gain.hour)}` : 'Date not recorded' };
       }) ?? [{ label: 'Traits not recorded', divider: true }])],
     description: `${recordedSince(row.career, reply.firstHour)}${row.foughtPartial ? ' · Some battle observations are missing' : ''}${row.won == null ? ' · Result not recorded' : ''}`,
@@ -247,7 +256,7 @@ export function careerLanes(reply: UnitLeadersData, leader: LeaderCareer, firstH
   const earlier = leader.traitGains.filter(g => g.hour < firstHour && held.includes(g.token)).filter((g, i, all) => !all.slice(i + 1).some(other => other.token === g.token));
   const dates = new Map<number, TimelineSpan>();
   for (const g of [...earlier.map(g => ({ ...g, hour: firstHour, date: 'heldBefore' as const })), ...leader.traitGains.filter(g => g.hour >= firstHour && g.hour <= lastHour)]) {
-    const label = `${traits.get(g.token)?.name || traits.get(g.token)?.token || String(g.token)} · ${g.date === 'heldBefore' ? 'Held before' : g.date === 'gained' ? 'Gained' : 'First observed'} ${formatDateTime(g.hour)}`;
+    const label = `${contentTitle(traits.get(g.token)?.name, g.token, 'Trait name unavailable')} · ${g.date === 'heldBefore' ? 'Held before' : g.date === 'gained' ? 'Gained' : 'First observed'} ${formatDateTime(g.hour)}`;
     const previous = dates.get(g.hour);
     dates.set(g.hour, { id: `trait:${g.hour}`, firstHour: g.hour, lastHour: g.hour, marker: true,
       label: previous ? `${previous.label}; ${label}` : label, icons: [...(previous?.icons ?? []), traits.get(g.token)?.icon ?? undefined] });
@@ -257,9 +266,9 @@ export function careerLanes(reply: UnitLeadersData, leader: LeaderCareer, firstH
   // Separate neutral fought counts from the result series, so joined outcomes can
   // replace them with won above and lost below the shared monthly axis.
   const months = new Map<number, { first: number; last: number; count: number; unknown: number; won: number; lost: number }>();
-  const unknown = new Set(leader.unknownBattleStarts);
+  const unknown = new Set(leader.unknownBattleStarts); const startReads = leader.battleStartReadHours ?? [];
   for (const [i, first] of battleStarts(leader).entries()) {
-    if (first < firstHour || first > lastHour || leader.battleStartReadHours[i] > readHour) continue;
+    if (first < firstHour || first > lastHour || startReads[i] > readHour) continue;
     const date = gameDate(first); const index = date ? monthIndex(date) : first;
     const start = date ? firstHourOfMonth(index) : first; const end = date ? firstHourOfMonth(index + 1) - 1 : first;
     const month = months.get(index) ?? { first: Math.max(firstHour, start), last: Math.min(lastHour, end), count: 0, unknown: 0, won: 0, lost: 0 };

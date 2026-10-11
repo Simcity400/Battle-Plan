@@ -11,6 +11,53 @@ use std::{
 };
 
 #[test]
+fn initial_catalogue_discards_countries_and_player_when_block_verification_fails() {
+    let mut first = source(1, 100, Some(1));
+    *first.tables[TableId::LocalPlayer.index()] =
+        TableView::Complete(TableRows::LocalPlayer(vec![replay::rows::LocalPlayerRow {
+            country: 11,
+            observer_country: 0,
+        }]));
+    let healthy = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, vec![first, scale_frame(1, 101, 5000)])],
+    )
+    .unwrap();
+    let healthy = Arc::new(healthy);
+    let path = Path::new("memory.battleplan");
+    let good = super::read(&healthy, path, &AtomicBool::new(false)).unwrap();
+    assert_eq!(good.countries.len(), 1);
+    assert_eq!(good.player_country_id.as_deref(), Some("7"));
+    let block = &healthy.index[0];
+    let mut bytes = healthy.bytes().to_vec();
+    // Leave the decoded prefix intact and invalidate only the zstd checksum.
+    bytes[(block.offset + block.length - 1) as usize] ^= 1;
+    let damaged = Arc::new(Replay::open(bytes).unwrap());
+    let mut observed = false;
+    assert!(
+        damaged
+            .visit_block(&damaged.index[0], Some(&super::CATALOGUE_TABLES), |_| {
+                observed = true;
+                Ok(false)
+            })
+            .is_err()
+    );
+    assert!(
+        observed,
+        "fixture must supply a country frame before failing verification"
+    );
+    let metadata = super::read(&damaged, path, &AtomicBool::new(false)).unwrap();
+    assert!(metadata.countries.is_empty());
+    assert_eq!(metadata.player_country_id, None);
+    assert!(
+        metadata
+            .warnings
+            .iter()
+            .any(|line| line.contains("initial block is unreadable"))
+    );
+}
+
+#[test]
 fn link_tags_balance_reads_keep_mapping_and_identity_changes_rebuild_at_5000_countries() {
     let mut sample = scale_frame(1, 100, 5000);
     let mut tags = super::LinkTags::default();
@@ -31,10 +78,25 @@ fn link_tags_balance_reads_keep_mapping_and_identity_changes_rebuild_at_5000_cou
     ));
     assert!(!tags.update(&sample).unwrap());
     assert_eq!(tags.get(100_000).unwrap().as_ptr(), allocation);
-    assert!(SharedView::ptr_eq(
-        &tags.from.as_ref().unwrap().0,
-        &sample.tables[TableId::Countries.index()],
-    ));
+    assert!(
+        tags.from
+            .as_ref()
+            .unwrap()
+            .countries
+            .is(&sample.tables[TableId::Countries.index()])
+    );
+    // Naming the table does not hold its rows, so a later hour updates them in place.
+    let countries = std::mem::replace(
+        &mut sample.tables[TableId::Countries.index()],
+        TableView::Unavailable {
+            reason: "taken".into(),
+        }
+        .into(),
+    );
+    sample.tables[TableId::Countries.index()] = countries
+        .try_unwrap()
+        .expect("only the frame holds the rows")
+        .into();
     for country in sample.complete::<tables::Countries>().unwrap() {
         assert_eq!(
             tags.get(country.id).unwrap().as_bytes(),

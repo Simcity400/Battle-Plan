@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
 import DrillParts from '../../charts/drill/DrillParts';
 import type { DrillPart } from '../../charts/drill/DrillParts';
@@ -20,6 +20,7 @@ import { useProductWindows } from '../../dashboard/productWindows';
 import type { FuelDemandHistoryReply, FuelDemandPart, FuelDemandReply, FuelConsumptionReply, FuelReply } from '../../generated/dashboard';
 import { formatFuelPart } from './fuelData';
 import FuelConsumptionStack from './FuelConsumptionStack';
+import { useDetailView } from './FuelBreakdown';
 import { consumptionAt, consumptionBasis, consumptionCoverage, consumptionForActor, consumptionGeometry, consumptionHistoryNumbers,
   consumptionLevelAvailable, consumptionParts, consumptionRuns, consumptionSelection, demandNumbers, mergeConsumptionWindows, siteLevel, validateFuelConsumption, validateFuelDemand, validateFuelDemandHistory } from './fuelConsumption';
 import type { FuelConsumptionLevel, FuelConsumptionSelection } from './fuelConsumption';
@@ -186,7 +187,7 @@ function ConsumptionHistory({ runtime, track, reply, selection, coverage, hour, 
 } & HistoryChart) {
   const end = Math.max(chart.extent[0], Math.min(chart.extent[1], hour ?? chart.extent[1]));
   const start = Math.max(chart.extent[0], end - reply.detailHours + 1);
-  const [visible, setVisible] = useState<readonly [number, number]>([start, end]);
+  const [visible, onViewChange] = useDetailView(start, end, reply.detailHours);
   const from = Math.max(chart.extent[0], visible[0]), to = Math.min(chart.extent[1], visible[1]);
   const wanted: number[] = [];
   for (let window = Math.floor(from / reply.detailHours); window <= Math.floor(to / reply.detailHours); window++) wanted.push(window);
@@ -231,7 +232,7 @@ function ConsumptionHistory({ runtime, track, reply, selection, coverage, hour, 
     {[...windows.errors.values()].map((reason, i) => <WidgetState key={i} kind="error" message={reason} onRetry={windows.retry} />)}
     {values.flatMap(value => value.warnings).map((reason, i) => <p key={i} className="drill-empty">{reason}</p>)}
     <BreakdownChart {...chart} within={allowed} pickOwner={owner} series={series} selectedHour={hour} keyHours={numericRuns.map(run => run.firstHour)}
-      onViewChange={range => setVisible(previous => previous[0] === range[0] && previous[1] === range[1] ? previous : range)}
+      onViewChange={onViewChange}
       label="Individual current consumption required per day" axes={{ xFrom: start - chart.branchStart, xTo: end - chart.branchStart, yMin: 0, yMax: null, log: false }} />
   </>;
 }

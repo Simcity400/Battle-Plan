@@ -30,6 +30,7 @@ import { useProducts } from '../../dashboard/products';
 import { NumericReply } from '../../dashboard/numericReply';
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { CountryGroupReply, FuelReply } from '../../generated/dashboard';
 import { BREAKDOWNS, OPTIONS } from './definition';
 import FuelBreakdown from './FuelBreakdown';
@@ -132,12 +133,11 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   }, [active, pickOwner]);
   const actorContentPending = !!selectedCountry && !!actorNumbers && !actorProduct.data && !actorProduct.error;
   useEffect(() => { dispatch({ type: 'close' }); setDrillOwner(undefined); setCountryPick(null); setChosenTag(undefined); setPickTags(undefined); setRecipient(undefined); setConsumption(undefined); setLevel(undefined); }, [pickOwner]);
-  useEffect(() => {
-    onDiagnostics([...(groupContentPending ? ['Group names are updating from the recorded content.'] : []),
-      ...(contentPending || actorContentPending ? ['Fuel source and consumer names are updating from the recorded content.']
-        : (selectedCountry ? actorData : data)?.flatMap(reply => reply.warnings.map(note => `${reply.tag}: ${note}`)) ?? [])]);
-    return () => onDiagnostics([]);
-  }, [data, actorData, selectedCountry, contentPending, actorContentPending, groupContentPending, onDiagnostics]);
+  const diagnostics = useMemo(() => [...(groupContentPending ? ['Group names are updating from the recorded content.'] : []),
+    ...(contentPending || actorContentPending ? ['Fuel source and consumer names are updating from the recorded content.']
+      : (selectedCountry ? actorData : data)?.flatMap(reply => reply.warnings.map(note => `${reply.tag}: ${note}`)) ?? [])],
+  [data, actorData, selectedCountry, contentPending, actorContentPending, groupContentPending]);
+  useDiagnostics(onDiagnostics, diagnostics);
   const views = useMemo(() => (data ?? []).map(reply => ({ reply, view: fuelView(reply, extent[0], extent[1]) })),
     [data, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   const lines = useMemo<CountryRaceLine[]>(() => views.flatMap(({ reply, view }) => {
@@ -201,12 +201,12 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
       }}>Individual consumption and daily accounting</button></>}
     onPick={open} pickOwner={pickOwner} tooltip={() => null}
     timeTooltip={single ? hour => isMember(countries.membership?.get(views[0].reply.tag), hour)
-      ? fuelTooltips(views[0].reply, views[0].view.reads, views[0].view.readHours, hour, dayLabel(hour), colors) : null : undefined}
+      ? fuelTooltips(views[0].reply, views[0].view.reads, hour, dayLabel(hour), colors) : null : undefined}
     lineTooltip={(hour, tags, labels, country) => [{ title: dayLabel(hour), rows: tags.flatMap(tag => {
       const value = views.find(item => item.reply.tag === tag);
       if (!value) return [];
       const label = labels(hour)(tag);
-      const tip = fuelTooltips(value.reply, value.view.reads, value.view.readHours, hour, label.name, colors)[0];
+      const tip = fuelTooltips(value.reply, value.view.reads, hour, label.name, colors)[0];
       return [{ label: label.name, countryFlag: label, swatch: country(tag), strong: true },
         ...tip.rows.map(row => ({ ...row, indent: true })), ...(tip.note ? [{ label: tip.note, tone: 'muted' as const, indent: true }] : [])];
     }) }]} />;

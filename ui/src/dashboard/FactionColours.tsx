@@ -137,7 +137,7 @@ function FactionColoursEditor({ client, source }: { client: DashboardClient; sou
   // An unnamed faction is told apart by its first recorded leader, named as the recording's catalogue names it.
   const unnamed = (id: string) => {
     const tag = founder(id);
-    const name = tag ? source.metadata.countries.find(country => country.tag === tag)?.name || tag : null;
+    const name = tag ? source.metadata.countries.find(country => country.tag === tag)?.name ?? 'Country name unavailable' : null;
     return name ? `Unnamed faction (${name})` : 'Unnamed faction';
   };
   const chosen = settings.campaigns[campaign]?.factions ?? {};

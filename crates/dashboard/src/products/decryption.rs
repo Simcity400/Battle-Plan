@@ -508,37 +508,46 @@ pub fn scan(
         TableId::RaidIntelInputs,
     ];
     let mut scan = Scan::default();
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        metadata::check_cancel(cancelled)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let frames = match replay.read_block_selected(block, &selected) {
-            Ok(frames) => frames,
-            Err(error) => {
-                scan.refusals.note(
-                    format!("unreadable decryption block: {error}"),
-                    block.first_hour.to_string(),
-                );
-                continue;
-            }
-        };
-        for frame in frames {
-            metadata::check_cancel(cancelled)?;
-            let decoded = match decoder.advance(&frame).and_then(|decoded| {
-                metadata::validate_campaign(decoded, replay)?;
-                Ok(decoded)
-            }) {
-                Ok(decoded) => decoded,
-                Err(error) => {
-                    scan.refusals.note(
-                        format!("unreadable decryption frame: {error}"),
-                        frame.hour.to_string(),
-                    );
-                    break;
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (block, frames) in blocks {
+                metadata::check_cancel(cancelled)?;
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let frames = match frames {
+                    Ok(frames) => frames,
+                    Err(error) => {
+                        scan.refusals.note(
+                            format!("unreadable decryption block: {error}"),
+                            block.first_hour.to_string(),
+                        );
+                        continue;
+                    }
+                };
+                for frame in frames {
+                    metadata::check_cancel(cancelled)?;
+                    let decoded = match decoder.advance(&frame).and_then(|decoded| {
+                        metadata::validate_campaign(decoded, replay)?;
+                        Ok(decoded)
+                    }) {
+                        Ok(decoded) => decoded,
+                        Err(error) => {
+                            scan.refusals.note(
+                                format!("unreadable decryption frame: {error}"),
+                                frame.hour.to_string(),
+                            );
+                            break;
+                        }
+                    };
+                    scan.frame(decoded, defines)?;
                 }
-            };
-            scan.frame(decoded, defines)?;
-        }
-    }
+            }
+            Ok(())
+        },
+    )?;
     let reply = DecryptionReply {
         branch_id: branch.to_string(),
         pairs: scan.pairs.into_values().map(|state| state.pair).collect(),

@@ -15,7 +15,7 @@ use replay::{
     BranchId,
     branches::{BranchStart, Parentage},
     container::Replay,
-    frame::{DecodedFrame, FrameDecoder, Metrics, SharedView, TableView},
+    frame::{DecodedFrame, FrameDecoder, Metrics, TableView, ViewIdentity},
     rows::{CountryLinkRow, CountryRow, TableId, tables},
 };
 
@@ -60,41 +60,48 @@ pub fn read(
     for branch in &replay.branches {
         check_cancel(cancelled)?;
         let mut catalogue = Catalogue::default();
+        let mut player_country_id = None;
+        let mut warnings = Vec::new();
         let Some(block) = replay.index.iter().find(|block| block.branch == branch.id) else {
             continue;
         };
-        match replay.read_block(block) {
-            Ok(frames) => {
-                let mut decoder = FrameDecoder::new();
-                for frame in frames {
-                    check_cancel(cancelled)?;
-                    let decoded = match decoder.advance(&frame).and_then(|decoded| {
-                        validate_campaign(decoded, replay)?;
-                        Ok(decoded)
-                    }) {
-                        Ok(decoded) => decoded,
-                        Err(error) => {
-                            warn(
-                                &mut metadata.warnings,
-                                format!("Branch {} catalogue: {error}", branch.id),
-                            );
-                            break;
-                        }
-                    };
-                    if let Ok((rows, links)) = country_tables(decoded) {
-                        catalogue.observe(rows, links, branch.id, frame.hour);
-                        if metadata.player_country_id.is_none() {
-                            metadata.player_country_id =
-                                player_slot(decoded, links).map(|slot| slot.to_string());
-                        }
-                        break;
-                    }
+        // Only the tables the catalogue reads, up to its first complete country table.
+        let mut decoder = FrameDecoder::for_tables(&CATALOGUE_TABLES);
+        let read = replay.visit_block(block, Some(&CATALOGUE_TABLES), |frame| {
+            check_cancel(cancelled)?;
+            let decoded = match decoder.advance(&frame).and_then(|decoded| {
+                validate_campaign(decoded, replay)?;
+                Ok(decoded)
+            }) {
+                Ok(decoded) => decoded,
+                Err(error) => {
+                    warn(
+                        &mut warnings,
+                        format!("Branch {} catalogue: {error}", branch.id),
+                    );
+                    return Ok(false);
                 }
-            }
-            Err(error) => warn(
+            };
+            let Ok((rows, links)) = country_tables(decoded) else {
+                return Ok(true);
+            };
+            catalogue.observe(rows, links, branch.id, frame.hour);
+            player_country_id = player_slot(decoded, links).map(|slot| slot.to_string());
+            Ok(false)
+        });
+        if let Err(error) = read {
+            check_cancel(cancelled)?;
+            warn(
                 &mut metadata.warnings,
                 format!("Branch {} initial block is unreadable: {error}", branch.id),
-            ),
+            );
+            continue;
+        }
+        for warning in warnings {
+            warn(&mut metadata.warnings, warning);
+        }
+        if metadata.player_country_id.is_none() {
+            metadata.player_country_id = player_country_id;
         }
         let countries = catalogue.finish(&mut metadata.warnings);
         merge_countries(&mut metadata.countries, &mut known, countries);
@@ -159,13 +166,22 @@ pub fn link_slot(links: &[CountryLinkRow], raw: u32) -> Option<u32> {
 
 /// Each raw country link id's tag this hour, for a scan over a branch's hours.
 /// Rebuilt only when country tags, slots or links change; balance-only updates
-/// keep the mapping. The views are held, not just their addresses,
-/// so a freed table's address can never be mistaken for them. A link whose
-/// country has no tag, or a tag that is not UTF-8, names no country.
+/// keep the mapping. The tables are named by identity, which cannot match a
+/// later allocation and does not hold their rows, so a later hour's update is
+/// never copied for them. A link whose country has no tag, or a tag that is not
+/// UTF-8, names no country.
 #[derive(Clone, Default)]
 pub struct LinkTags {
     tags: HashMap<u32, String>,
-    from: Option<(SharedView, SharedView)>,
+    from: Option<ReadFrom>,
+}
+
+/// The country tables last read, and each country's slot and tag then.
+#[derive(Clone)]
+struct ReadFrom {
+    countries: ViewIdentity,
+    links: ViewIdentity,
+    slots: Vec<(u32, Vec<u8>)>,
 }
 
 impl LinkTags {
@@ -181,29 +197,20 @@ impl LinkTags {
             }
         };
         let views = (
-            frame.tables[TableId::Countries.index()].clone(),
-            frame.tables[TableId::CountryLinks.index()].clone(),
+            &frame.tables[TableId::Countries.index()],
+            &frame.tables[TableId::CountryLinks.index()],
         );
-        let same = self.from.as_ref().is_some_and(|(previous, old_links)| {
-            if !SharedView::ptr_eq(old_links, &views.1) {
-                return false;
-            }
-            if SharedView::ptr_eq(previous, &views.0) {
-                return true;
-            }
-            let TableView::Complete(rows) = &**previous else {
-                return false;
-            };
-            let Some(old) = rows.rows::<tables::Countries>() else {
-                return false;
-            };
-            old.len() == countries.len()
-                && old.iter().zip(countries).all(|(old, new)| {
-                    old.canonical_slot == new.canonical_slot && old.tag == new.tag
-                })
-        });
-        if same {
-            self.from = Some(views);
+        if let Some(from) = &mut self.from
+            && from.links.is(views.1)
+            && (from.countries.is(views.0)
+                || from.slots.len() == countries.len()
+                    && from
+                        .slots
+                        .iter()
+                        .zip(countries)
+                        .all(|((slot, tag), new)| *slot == new.canonical_slot && *tag == new.tag))
+        {
+            from.countries = views.0.identity();
             return Ok(false);
         }
         // Resolve the link's country, then use its recorded current tag;
@@ -219,7 +226,14 @@ impl LinkTags {
                 (!tag.is_empty()).then(|| (link.id, tag.to_owned()))
             })
             .collect();
-        self.from = Some(views);
+        self.from = Some(ReadFrom {
+            countries: views.0.identity(),
+            links: views.1.identity(),
+            slots: countries
+                .iter()
+                .map(|country| (country.canonical_slot, country.tag.clone()))
+                .collect(),
+        });
         Ok(true)
     }
 
@@ -231,6 +245,30 @@ impl LinkTags {
     /// Every raw link id and its tag.
     pub fn iter(&self) -> impl Iterator<Item = (&u32, &String)> {
         self.tags.iter()
+    }
+}
+
+/// Each country's id, slot and tag in table order: all that country identity
+/// reads from Countries, whose balances change it every hour.
+#[derive(Clone, Default)]
+pub(crate) struct CountryKeys(Vec<(u32, u32, Vec<u8>)>);
+
+impl CountryKeys {
+    pub(crate) fn read(countries: &[CountryRow]) -> Self {
+        Self(
+            countries
+                .iter()
+                .map(|row| (row.id, row.canonical_slot, row.tag.clone()))
+                .collect(),
+        )
+    }
+
+    /// Whether `countries` hold these keys.
+    pub(crate) fn same(&self, countries: &[CountryRow]) -> bool {
+        self.0.len() == countries.len()
+            && self.0.iter().zip(countries).all(|((id, slot, tag), row)| {
+                *id == row.id && *slot == row.canonical_slot && *tag == row.tag
+            })
     }
 }
 
@@ -362,6 +400,14 @@ pub fn tagged_countries_indexed<'a>(
 
 /// The recording client's stored viewpoint, including an observer's selected
 /// country. Multiplayer roster order never identifies the local client.
+/// The tables the catalogue reads from each branch's first frames.
+const CATALOGUE_TABLES: [TableId; 4] = [
+    TableId::Campaign,
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::LocalPlayer,
+];
+
 fn player_slot(frame: &DecodedFrame, links: &[CountryLinkRow]) -> Option<u32> {
     let [player] = frame.complete::<tables::LocalPlayer>().ok()? else {
         return None;

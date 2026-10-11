@@ -6,6 +6,7 @@ import type { SunburstText } from '../../charts/sunburst/Sunburst';
 import { levelsShown, sunburstSettings } from '../../charts/sunburst/sunburstOptions';
 import { jumpItem } from '../../charts/jump';
 import { runAt, stretchAt, stretchStarts } from '../../charts/series';
+import { usNumber } from '../../charts/numberFormat';
 import { useCountryLooks } from '../../dashboard/countryLooks';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { useFactionColours } from '../../dashboard/FactionColours';
@@ -64,10 +65,11 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
   const stretch = shape.items.some(item => item.present && (item.unknownValue || item.unknownLevels?.some(Boolean)))
     ? null : stretchAt(worldRuns, worldStarts, hour);
   const text = useMemo<SunburstText>(() => ({ format: (value, exact, denominator = 1n) => {
-    if (exact == null) return value.toLocaleString('en-US', { maximumFractionDigits: 3 });
+    // At most three decimals: the en-US default.
+    if (exact == null) return usNumber.format(value);
     const whole = exact / denominator, remainder = exact % denominator;
-    return remainder === 0n ? whole.toLocaleString('en-US')
-      : `${whole === 0n ? '' : `${whole.toLocaleString('en-US')} `}${remainder}/${denominator}`;
+    return remainder === 0n ? usNumber.format(whole)
+      : `${whole === 0n ? '' : `${usNumber.format(whole)} `}${remainder}/${denominator}`;
   },
     unit: measure === 'area' ? product.data?.areaUnit ?? 'map cells' : measure === 'victoryPoints' ? 'victory points' : measure,
     valueLabel: rule === 'owned' ? 'Owned' : 'Controlled', missingLabel: 'Not recorded', emptyLabel: 'No territory at this hour.' }), [measure, rule, product.data?.areaUnit]);

@@ -14,7 +14,10 @@ type AirReply = AirTimeline | AirMoment | AirChoices;
 export type AirState = 'known' | 'unknown' | 'inactive' | 'filtered' | 'no-air-object' | 'gap';
 export interface AirPart { id: string; label: string; color: string; share: number; score: bigint; side?: AirSide; tag?: string }
 export interface AirView { state: AirState; parts: readonly AirPart[]; total: bigint; unknown: readonly AirSide[]; noAirObject: readonly AirSide[]; excluded: number; reason?: string; wings: number | null; hour: number | null; theatreRead?: number; scale: number; badBelow: number; goodAbove: number; viewpoint: AirLooks['viewpoint'] }
-export interface AirLooks { name(side: AirSide): string; color(side: AirSide, hour?: number): string; viewpointAt?(hour: number): AirLooks['viewpoint']; viewpoint: { name: string; tag?: string; color: string }; enemy: string; scale: number; badBelow: number; goodAbove: number; mode?: 'sides' | 'viewpoint' }
+/** `lookAt` names what `color` and `viewpointAt` give at an hour: hours with the same
+ * value look alike, so a projection need not ask again for each. */
+export interface AirLooks { name(side: AirSide): string; color(side: AirSide, hour?: number): string; viewpointAt?(hour: number): AirLooks['viewpoint']; lookAt?(hour: number): unknown; viewpoint: { name: string; tag?: string; color: string }; enemy: string; scale: number; badBelow: number; goodAbove: number; mode?: 'sides' | 'viewpoint' }
+export interface AirTimelineViews { rows: HeatRow[]; periods: HeatPeriod[]; viewAt(region: number, day: number): AirView | undefined }
 export const MODE_NOTE = 'Each side uses its leader’s friendly score. The game keeps “my side vs my enemies”; these shares compare those independent views. Allied factions merge. Co-belligerents join the side with the most distinct shared enemies; ties count enemies also fought by its leader, then use the numeric faction anchor. A factionless coalition uses the region’s highest-scoring member as its viewpoint.';
 export const FILTERED_NOTE = 'No selected side has a score (others may)';
 
@@ -56,12 +59,29 @@ export function airSideName(side: AirSide, country: (tag: string) => string, fac
   return side.key.startsWith('w:') && side.coBelligerents > 0 ? `${name} and allies` : name;
 }
 
-export function sideAt(side: AirSide, hour: number): AirSide {
+/** How many of the side's reads are dated at or before `hour`. */
+function readsBy(side: AirSide, hour: number): number {
   const reads = side.reads ?? [];
   let lo = 0, hi = reads.length;
   while (lo < hi) { const mid = (lo + hi) >>> 1; if (reads[mid][0] <= hour) lo = mid + 1; else hi = mid; }
-  const read = reads[lo - 1];
+  return lo;
+}
+
+export function sideAt(side: AirSide, hour: number): AirSide {
+  const read = side.reads?.[readsBy(side, hour) - 1];
   return read ? { ...side, name: read[1], leader: read[2], tag: read[3], coBelligerents: read[4], factions: read[5], colourFaction: read[6] } : side;
+}
+
+/** Recorded scores as exact integers, parsed once per reply rather than per hour shown. */
+const exactScores = new WeakMap<object, { values: readonly bigint[]; total: bigint }>();
+function scoresOf(scores: readonly (string | readonly [number, string])[]): { values: readonly bigint[]; total: bigint } {
+  let exact = exactScores.get(scores);
+  if (!exact) {
+    const values = scores.map(score => BigInt(typeof score === 'string' ? score : score[1]));
+    exact = { values, total: values.reduce((sum, value) => sum + value, 0n) };
+    exactScores.set(scores, exact);
+  }
+  return exact;
 }
 
 /** Looks include the regional coalition winner, even when it never led a faction. */
@@ -95,19 +115,19 @@ export function cellView(cell: AirCell, sides: readonly AirSide[], looks: AirLoo
   const pair = sideView ? (cell as { view: [string, string] }).view : Array.isArray(cell) && typeof cell[0] === 'string' ? cell as [string, string] : null;
   if (pair) {
     const viewpoint = sideView ? { name: looks.name(sideView), color: looks.color(sideView, hour), tag: !Array.isArray(cell) && 'view' in cell ? cell.leader ?? undefined : undefined } : base.viewpoint;
-    const friendly = BigInt(pair[0]), enemy = BigInt(pair[1]), total = friendly + enemy;
+    const { values: [friendly, enemy], total } = scoresOf(pair);
     return { ...base, viewpoint, state: total ? 'known' : 'inactive', total, parts: [
       { id: 'friendly', label: `${viewpoint.name} (friendly)`, color: viewpoint.color, score: friendly, share: total ? Number(friendly) / Number(total) : 0, tag: viewpoint.tag, side: sideView },
       { id: 'enemy', label: `Enemies of ${viewpoint.name}`, color: looks.enemy, score: enemy, share: total ? Number(enemy) / Number(total) : 0 },
     ] };
   }
   const scores = Array.isArray(cell) ? cell as [number, string][] : (cell as { scores: [number, string][] }).scores;
-  const total = scores.reduce((sum, [, score]) => sum + BigInt(score), 0n);
+  const { values, total } = scoresOf(scores);
   const leaders = !Array.isArray(cell) && 'scores' in cell ? new Map(cell.viewpoints ?? []) : null;
-  const parts = scores.map(([index, raw]) => {
+  const parts = scores.map(([index], at) => {
     const baseSide = sideAt(sides[index], hour);
     const leader = leaders?.get(index);
-    const side = baseSide, score = BigInt(raw);
+    const side = baseSide, score = values[at];
     return { id: side.key, label: looks.name(side), color: looks.color(side, hour), score, share: total ? Number(score) / Number(total) : 0, side, tag: leader ?? side.leader ?? side.tag ?? undefined };
   }).sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
   const details = Array.isArray(cell) ? {} : cell as { unknown?: number[]; noAirObject?: number[]; excluded?: number; filtered?: boolean };
@@ -123,33 +143,61 @@ export function airPeriods(reply: AirTimeline): HeatPeriod[] {
   return reply.days.map((readHour, index) => ({ firstHour: reply.firstHour + index * reply.dayHours, lastHour: Math.min(reply.lastHour, reply.firstHour + (index + 1) * reply.dayHours - 1), readHour }));
 }
 
-/** Only the server-selected rows are projected. Equal RLE cells share one immutable geometry. */
-export function timelineViews(reply: AirTimeline, looks: AirLooks): { rows: HeatRow[]; views: ReadonlyMap<number, readonly AirView[]>; periods: HeatPeriod[] } {
-  const order = sideOrder(reply.sides), views = new Map<number, AirView[]>();
-  const sideFacts = (side: AirSide) => [side.key, side.name, side.leader, side.tag, side.coBelligerents, side.factions, side.colourFaction];
+/** The sides whose dated reads shape a cell's parts. */
+function partSides(cell: AirCell, sides: readonly AirSide[]): AirSide[] {
+  if (cell == null || typeof cell === 'string') return [];
+  if (!Array.isArray(cell) && 'view' in cell) return [sides[cell.side]];
+  if (Array.isArray(cell) && typeof cell[0] === 'string') return [];
+  return (Array.isArray(cell) ? cell as [number, string][] : (cell as { scores: [number, string][] }).scores).map(([index]) => sides[index]);
+}
+
+/** Only the server-selected rows are projected. Equal RLE cells share one immutable
+ * geometry; a day whose sides and looks read as the day before's takes its geometry
+ * without projecting the cell again. Day views are projected when asked for. */
+export function timelineViews(reply: AirTimeline, looks: AirLooks): AirTimelineViews {
+  const order = sideOrder(reply.sides), runs = new Map<number, { start: number; cell: AirCell; view: AirView }[]>();
   const rows = reply.rows.map(row => {
-    const values: AirView[] = [], cells: HeatRow['cells'][number][] = [];
+    const cells: HeatRow['cells'][number][] = [], starts: { start: number; cell: AirCell; view: AirView }[] = [];
     for (const [repeat, cell] of row.cells) {
-      const view = cellView(cell, reply.sides, looks, order, reply.days[values.length] ?? 0);
+      const start = cells.length;
+      const view = cellView(cell, reply.sides, looks, order, reply.days[start] ?? 0);
+      starts.push({ start, cell, view });
       const geometry = { parts: view.parts, unknown: view.state === 'unknown', filtered: view.reason === 'outside-theatres' };
-      const details = new Map<string, AirView>();
-      for (let count = 0; count < repeat; count++) {
-        const read = reply.days[values.length];
-        const dated = read == null ? view : cellView(cell, reply.sides, looks, order, read);
-        const excluded = view.excluded + (read == null ? 0 : tupleAt(reply.excluded, read) ?? 0);
-        const theatreRead = read == null ? undefined : tupleAt(reply.theatreReads, read);
-        const key = JSON.stringify([excluded, theatreRead,
-          dated.parts.map(part => [part.label, part.tag, part.color, part.side && sideFacts(part.side)]),
-          dated.unknown.map(sideFacts), dated.noAirObject.map(sideFacts)]);
-        let projected = details.get(key);
-        if (!projected) { projected = excluded === dated.excluded && theatreRead === undefined ? dated : { ...dated, excluded, theatreRead }; details.set(key, projected); }
-        values.push(projected); cells.push(dated.parts.every((part, index) => part.id === geometry.parts[index]?.id && part.color === geometry.parts[index]?.color) ? geometry : { parts: dated.parts, unknown: dated.state === 'unknown', filtered: dated.reason === 'outside-theatres' });
+      const actors = partSides(cell, reply.sides);
+      let before: { read: number; cell: HeatRow['cells'][number] } | null = null;
+      for (let day = start; day < start + repeat; day++) {
+        const read = reply.days[day];
+        if (read == null || day === start) { cells.push(geometry); if (read != null) before = { read, cell: geometry }; continue; }
+        let shown: HeatRow['cells'][number];
+        const previous = before;
+        if (looks.lookAt && previous && looks.lookAt(read) === looks.lookAt(previous.read) && actors.every(side => readsBy(side, read) === readsBy(side, previous.read))) {
+          // Alike in every input, so alike in parts; a part list of its own keeps its own stripe.
+          shown = previous.cell === geometry ? geometry : { ...previous.cell, parts: [...previous.cell.parts] };
+        } else {
+          const projected = cellView(cell, reply.sides, looks, order, read);
+          shown = projected.parts.every((part, index) => part.id === geometry.parts[index]?.id && part.color === geometry.parts[index]?.color) ? geometry
+            : { parts: projected.parts, unknown: projected.state === 'unknown', filtered: projected.reason === 'outside-theatres' };
+        }
+        cells.push(shown);
+        before = { read, cell: shown };
       }
     }
-    views.set(row.region, values);
+    runs.set(row.region, starts);
     return { id: String(row.region), label: row.name, cells };
   });
-  return { rows, views, periods: airPeriods(reply) };
+  const viewAt = (region: number, day: number): AirView | undefined => {
+    const starts = runs.get(region);
+    if (!starts || !Number.isInteger(day) || day < 0 || day >= reply.days.length) return undefined;
+    let low = 0, high = starts.length;
+    while (low < high) { const middle = (low + high) >>> 1; if (starts[middle].start <= day) low = middle + 1; else high = middle; }
+    const { cell, view } = starts[low - 1];
+    const read = reply.days[day];
+    const dated = read == null ? view : cellView(cell, reply.sides, looks, order, read);
+    const excluded = view.excluded + (read == null ? 0 : tupleAt(reply.excluded, read) ?? 0);
+    const theatreRead = read == null ? undefined : tupleAt(reply.theatreReads, read);
+    return excluded === dated.excluded && theatreRead === undefined ? dated : { ...dated, excluded, theatreRead };
+  };
+  return { rows, periods: airPeriods(reply), viewAt };
 }
 
 export function tupleAt<T>(runs: readonly [number, number, T][], hour: number): T | undefined {
@@ -287,15 +335,16 @@ export function validateAirReply(value: unknown): AirReply {
   const text = (item: unknown): item is string => typeof item === 'string';
   const optionalText = (item: unknown) => item === null || text(item);
   const natural = (item: unknown): item is number => int(item) && item >= 0;
-  const raw = (item: unknown) => text(item) && /^(0|[1-9][0-9]{0,18})$/.test(item) && BigInt(item) <= 9223372036854775807n;
+  // Fewer than 19 digits are always below i64::MAX, so only 19-digit scores are parsed.
+  const raw = (item: unknown) => text(item) && /^(0|[1-9][0-9]{0,18})$/.test(item) && (item.length < 19 || BigInt(item) <= 9223372036854775807n);
   if (!object(value) || !text(value.branchId) || !Array.isArray(value.sides) || !Array.isArray(value.warnings) || !value.warnings.every(text)) return invalid();
   if (value.view === 'moment') {
     const sides = value.sides.map(side => {
       if (!Array.isArray(side)) return side;
       if (side.length !== 2 || !text(side[0]) || !side[0] || !int(side[1])) return invalid();
       const [tag, hour] = side;
-      return { key: `c:${tag}`, faction: null, colourFaction: null, tag, name: tag, leader: tag, coBelligerents: 0,
-        reads: [[hour, tag, tag, tag, 0, [], null]] };
+      return { key: `c:${tag}`, faction: null, colourFaction: null, tag, name: 'Country name unavailable', leader: tag, coBelligerents: 0,
+        reads: [[hour, 'Country name unavailable', tag, tag, 0, [], null]] };
     });
     value = { ...value, sides };
   }

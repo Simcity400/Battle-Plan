@@ -8,9 +8,9 @@ import { registerWidgets } from './definitions.ts';
 import type { WidgetProps } from './definitions';
 import { bindTracks, clockBounds, createWidget } from './model.ts';
 import { PlaybackController } from './playback.ts';
-import type { ConstructionLogReply, ConstructionProject, ConstructionSpendingReply, CountryGroupReply } from '../generated/dashboard';
+import type { ConstructionLogManifestReply, ConstructionProject, ConstructionSpendingReply, CountryGroupReply } from '../generated/dashboard';
 import { definition as logDefinition } from '../widgets/construction-log/definition.ts';
-import { logRows } from '../widgets/construction-log/constructionData.ts';
+import { logRows, mergeWindows } from '../widgets/construction-log/constructionData.ts';
 import { definition as spendingDefinition } from '../widgets/construction-spending/definition.ts';
 import { placeName, stateNameRequests } from './construction.ts';
 import type { StateNameAt } from './construction';
@@ -68,11 +68,13 @@ test('both construction renderers release dated-name demand outside their branch
   const project: ConstructionProject = { id: '1', kind: 'building', tag: 'synthetic-country', building: 0, repair: false, state: 7,
     toState: null, province: null, routeProvinces: null, baseLevel: null, targetLevel: null, costRaw: '100', createdHour: 90, firstRead: 100,
     runs: [{ firstHour: 100, lastHour: 200, factories: 1, remaining: 1, repairLevels: 0 }],
-    earlierUnknown: false, output: [], built: [], unaccounted: [], possible: [], added: [], end: null };
-  const log: ConstructionLogReply = { branchId: '1', costScale: 100000, reads: [100, 124, 200], railwayReads: [],
-    repairIcon: null, types: [{ id: 777, token: 'synthetic_mod_building', name: 'Building', icon: null }], states: [], projects: [project], warnings: [] };
-  const spending: ConstructionSpendingReply = { branchId: '1', tag: project.tag, costScale: log.costScale, reads: log.reads,
-    railwayReads: [], repairIcon: null, types: log.types, states: [], beforeFirstRead: 0, unattributed: [], warnings: [],
+    earlierUnknown: false, built: [], unaccounted: [], possible: [], added: [], end: null, firstRepairTick: null };
+  const manifest: ConstructionLogManifestReply = { costScale: 100000, windows: [{ firstHour: 100, lastHour: 200 }], recorded: true,
+    repairIcon: null, types: [{ id: 777, token: 'synthetic_mod_building', name: 'Building', icon: null }], warnings: [] };
+  const log = mergeWindows(manifest, new Map([[0, { window: 0, interval: manifest.windows[0], outputReads: [], outputUnavailable: [],
+    projects: [project], outputs: [], warnings: [] }]]), 0);
+  const spending: ConstructionSpendingReply = { branchId: '1', tag: project.tag, costScale: manifest.costScale, reads: [100, 124, 200],
+    railwayReads: [], repairIcon: null, types: manifest.types, states: [], beforeFirstRead: 0, unattributed: [], warnings: [],
     leaves: [{ repair: false, kind: 'building', building: 0, state: 7, toState: null, spent: [{ knownAt: 100, totalRaw: '10' }], unknown: [],
       projects: [{ project: '1', firstRead: 100, knownAt: null, until: null, unread: false, resumes: null }] }] };
   type Demand = { kind: 'country' | 'state'; active: boolean; wanted: readonly { hour: number; tag?: string; state?: number }[] };
@@ -85,7 +87,8 @@ test('both construction renderers release dated-name demand outside their branch
   host.__constructionDemand = fixture;
   // Keep the real renderers/model; retain a reached viewport row and observe their shared-hook request boundary.
   const replacements: Record<string, string> = {
-    '/construction-log/useConstructionLog.ts': 'export const useConstructionLog = () => ({track: globalThis.__constructionDemand.track, data: globalThis.__constructionDemand.log});',
+    '/construction-log/useConstructionLog.ts': `export const useConstructionLog = (_runtime, _track, _active, hour) =>
+      ({manifest: globalThis.__constructionDemand.log.manifest, log: globalThis.__constructionDemand.log, hour, onDrawn() {}});`,
     '/dashboard/products.ts': 'export const useProduct = () => ({data: globalThis.__constructionDemand.spending});',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({data: globalThis.__constructionDemand.groups});',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => undefined;',

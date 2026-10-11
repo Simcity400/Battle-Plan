@@ -14,12 +14,12 @@ use super::{
 };
 use crate::{
     Source, catalogue, content,
-    metadata::{branch_bounds, slot_read, validate_campaign},
+    metadata::{CountryKeys, branch_bounds, country_tables, slot_read, validate_campaign},
 };
 use replay::{
     container::Replay,
-    frame::{DecodedFrame, FrameDecoder, SharedView},
-    rows::{TableId, tables},
+    frame::{DecodedFrame, FrameDecoder, ViewIdentity},
+    rows::{CountryLinkRow, CountryRow, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -394,22 +394,104 @@ fn neutral(kind: PeaceActionKind) -> PeaceActionLabel {
     }
 }
 
-/// Raw references are resolved once per frame, with aliases joined by slot.
+/// Shared tag text: hourly maps clone a reference, not the string.
+type Tag = Arc<str>;
+
+/// Raw references are resolved once per frame, with aliases joined by slot,
+/// beside each tag's native (canonical slot, country id).
+struct CountryTags {
+    tags: HashMap<u32, Tag>,
+    identities: HashMap<Tag, (u32, u32)>,
+}
+
+impl CountryTags {
+    fn resolve(countries: &[CountryRow], links: &[CountryLinkRow]) -> Option<Self> {
+        let mut slots = HashMap::with_capacity(countries.len());
+        let mut tags = HashMap::with_capacity(links.len());
+        let mut identities = HashMap::with_capacity(countries.len());
+        for row in countries {
+            let tag = Tag::from(std::str::from_utf8(&row.tag).ok()?);
+            if tag.is_empty()
+                || identities
+                    .insert(tag.clone(), (row.canonical_slot, row.id))
+                    .is_some()
+                || slots.insert(row.canonical_slot, tag.clone()).is_some()
+            {
+                return None;
+            }
+            tags.insert(row.id, tag);
+        }
+        for row in links {
+            if let Some(tag) = slots.get(&row.canonical_slot) {
+                if tags.get(&row.id).is_some_and(|prior| prior != tag) {
+                    return None;
+                }
+                tags.insert(row.id, tag.clone());
+            }
+        }
+        Some(Self { tags, identities })
+    }
+}
+
+/// The last `CountryTags`, kept while the only rows they read are unchanged:
+/// the Countries keys and CountryLinks.
+#[derive(Default)]
+struct CountryResolution {
+    countries: CountryKeys,
+    links: Vec<CountryLinkRow>,
+    resolved: Option<Arc<CountryTags>>,
+}
+
+impl CountryResolution {
+    fn read(&mut self, frame: &DecodedFrame) -> Option<Arc<CountryTags>> {
+        let (countries, links) = country_tables(frame).ok()?;
+        if self.resolved.is_none() || !self.countries.same(countries) || self.links != links {
+            self.resolved = CountryTags::resolve(countries, links).map(Arc::new);
+            self.countries = CountryKeys::read(countries);
+            self.links = links.to_vec();
+        }
+        self.resolved.clone()
+    }
+}
+
+/// The last victory points summed by state, kept while every province's state
+/// and victory points compare equal. Provinces changes every hour.
+#[derive(Default)]
+struct VictoryPoints {
+    fields: Vec<(u32, i32)>,
+    totals: Option<Arc<HashMap<u32, i64>>>,
+}
+
+impl VictoryPoints {
+    fn read(&mut self, frame: &DecodedFrame) -> Option<Arc<HashMap<u32, i64>>> {
+        let rows = frame.complete::<tables::Provinces>().ok()?;
+        let fields = rows.iter().map(|row| (row.state, row.victory_points));
+        if self.totals.is_none() || !fields.clone().eq(self.fields.iter().copied()) {
+            let mut totals = HashMap::new();
+            for (state, victory_points) in fields.clone() {
+                *totals.entry(state).or_insert(0_i64) += i64::from(victory_points);
+            }
+            self.totals = Some(Arc::new(totals));
+            self.fields = fields.collect();
+        }
+        self.totals.clone()
+    }
+}
+
 struct Snapshot {
     hour: i32,
     roster_complete: bool,
-    tags: Arc<HashMap<u32, String>>,
-    identities: HashMap<String, (u32, u32)>,
-    owners: HashMap<u32, String>,
-    states_by_owner: HashMap<String, Vec<u32>>,
+    countries: Arc<CountryTags>,
+    owners: HashMap<u32, Tag>,
+    states_by_owner: HashMap<Tag, Vec<u32>>,
     unresolved_owners: Vec<(u32, u32)>,
     wars: HashMap<(String, String), (i32, i32)>,
     unresolved_wars: Vec<(u32, u32)>,
     vps: Option<Arc<HashMap<u32, i64>>>,
     subjects: Option<HashMap<(String, String), (i32, String)>>,
     subject_targets: HashMap<String, Vec<String>>,
-    governments: Option<HashMap<String, PeaceGovernment>>,
-    exists: Option<HashMap<String, bool>>,
+    governments: Option<HashMap<Tag, PeaceGovernment>>,
+    exists: Option<Arc<HashMap<Tag, bool>>>,
     state_action_key: Option<String>,
 }
 
@@ -426,53 +508,16 @@ fn pair(a: &str, b: &str) -> (String, String) {
     }
 }
 
-fn tags(frame: &DecodedFrame) -> Option<HashMap<u32, String>> {
-    let countries = frame.complete::<tables::Countries>().ok()?;
-    let links = frame.complete::<tables::CountryLinks>().ok()?;
-    let mut slots = HashMap::with_capacity(countries.len());
-    let mut result = HashMap::with_capacity(links.len());
-    let mut unique = HashSet::new();
-    for row in countries {
-        let tag = std::str::from_utf8(&row.tag).ok()?.to_owned();
-        if tag.is_empty()
-            || !unique.insert(tag.clone())
-            || slots.insert(row.canonical_slot, tag.clone()).is_some()
-        {
-            return None;
-        }
-        result.insert(row.id, tag);
-    }
-    for row in links {
-        if let Some(tag) = slots.get(&row.canonical_slot) {
-            if result.get(&row.id).is_some_and(|prior| prior != tag) {
-                return None;
-            }
-            result.insert(row.id, tag.clone());
-        }
-    }
-    Some(result)
-}
-
 fn snapshot(
     frame: &DecodedFrame,
-    tags: Arc<HashMap<u32, String>>,
+    countries: Arc<CountryTags>,
     vps: Option<Arc<HashMap<u32, i64>>>,
-    exists: Option<HashMap<String, bool>>,
+    exists: Option<Arc<HashMap<Tag, bool>>>,
     state_action_key: Option<String>,
 ) -> Option<Snapshot> {
     let states = frame.complete::<tables::States>().ok()?;
     let relations = frame.complete::<tables::WarRelations>().ok()?;
-    let identities = frame
-        .complete::<tables::Countries>()
-        .ok()?
-        .iter()
-        .map(|row| {
-            Some((
-                std::str::from_utf8(&row.tag).ok()?.to_owned(),
-                (row.canonical_slot, row.id),
-            ))
-        })
-        .collect::<Option<HashMap<_, _>>>()?;
+    let tags = &countries.tags;
     let mut unresolved_owners = Vec::new();
     let owners = states
         .iter()
@@ -485,7 +530,7 @@ fn snapshot(
             }
         })
         .collect::<HashMap<_, _>>();
-    let mut states_by_owner: HashMap<String, Vec<u32>> = HashMap::new();
+    let mut states_by_owner: HashMap<Tag, Vec<u32>> = HashMap::new();
     for (&state, tag) in &owners {
         states_by_owner.entry(tag.clone()).or_default().push(state);
     }
@@ -517,8 +562,8 @@ fn snapshot(
                 .map(|row| {
                     Some((
                         (
-                            tags.get(&row.overlord)?.clone(),
-                            tags.get(&row.subject)?.clone(),
+                            tags.get(&row.overlord)?.to_string(),
+                            tags.get(&row.subject)?.to_string(),
                         ),
                         (
                             row.start_hour,
@@ -537,12 +582,11 @@ fn snapshot(
                 .push(subject.clone());
         }
     }
-    let governments = government_snapshot(frame, &tags);
+    let governments = government_snapshot(frame, tags);
     Some(Snapshot {
         hour: frame.hour,
         roster_complete: frame.complete::<tables::PeaceConferences>().is_ok(),
-        tags,
-        identities,
+        countries,
         owners,
         states_by_owner,
         unresolved_owners,
@@ -557,19 +601,10 @@ fn snapshot(
     })
 }
 
-fn victory_points(frame: &DecodedFrame) -> Option<HashMap<u32, i64>> {
-    let rows = frame.complete::<tables::Provinces>().ok()?;
-    let mut totals = HashMap::new();
-    for row in rows {
-        *totals.entry(row.state).or_insert(0_i64) += i64::from(row.victory_points);
-    }
-    Some(totals)
-}
-
 fn existence_snapshot(
     frame: &DecodedFrame,
-    tags: &HashMap<u32, String>,
-) -> Option<HashMap<String, bool>> {
+    tags: &HashMap<u32, Tag>,
+) -> Option<HashMap<Tag, bool>> {
     frame
         .complete::<tables::CountryCounterInputs>()
         .ok()?
@@ -668,8 +703,8 @@ fn name_actions(
 
 fn government_snapshot(
     frame: &DecodedFrame,
-    tags: &HashMap<u32, String>,
-) -> Option<HashMap<String, PeaceGovernment>> {
+    tags: &HashMap<u32, Tag>,
+) -> Option<HashMap<Tag, PeaceGovernment>> {
     let politics = frame.complete::<tables::Politics>().ok()?;
     let parties = frame.complete::<tables::PoliticalParties>().ok()?;
     let appearances = frame.complete::<tables::CountryAppearance>().ok()?;
@@ -678,7 +713,7 @@ fn government_snapshot(
         .map(|row| {
             Some((
                 (tags.get(&row.country)?.clone(), row.id),
-                std::str::from_utf8(&row.token).ok()?.to_owned(),
+                std::str::from_utf8(&row.token).ok()?,
             ))
         })
         .collect::<Option<HashMap<_, _>>>()?;
@@ -687,7 +722,7 @@ fn government_snapshot(
         .map(|row| {
             Some((
                 tags.get(&row.country)?.clone(),
-                std::str::from_utf8(&row.leader_ideology).ok()?.to_owned(),
+                std::str::from_utf8(&row.leader_ideology).ok()?,
             ))
         })
         .collect::<Option<HashMap<_, _>>>()?;
@@ -701,8 +736,9 @@ fn government_snapshot(
                     ruling_party: row.ruling_party,
                     party_token: row
                         .ruling_party
-                        .and_then(|id| tokens.get(&(tag.clone(), id)).cloned()),
-                    leader_ideology: ideologies.get(tag).cloned(),
+                        .and_then(|id| tokens.get(&(tag.clone(), id)).copied())
+                        .map(str::to_owned),
+                    leader_ideology: ideologies.get(tag).copied().map(str::to_owned),
                 },
             ))
         })
@@ -806,264 +842,292 @@ pub fn scan_branch(
     let mut has_ambiguous = false;
     let mut previous: Option<Arc<Snapshot>> = None;
     let mut previous_hour = first.checked_sub(1);
-    let mut first_existing: HashMap<String, i32> = HashMap::new();
+    let mut first_existing: HashMap<Tag, i32> = HashMap::new();
     let mut graph = GraphBuilder::default();
     let mut exact = exact::Observed::default();
-    let mut lexical_view: Option<SharedView> = None;
+    let mut lexical_view: Option<ViewIdentity> = None;
     let mut action_key = None;
     let mut action_refusals = catalogue::Refusals::default();
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        check_cancel(cancelled)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let frames = match replay.read_block_selected(block, &selected) {
-            Ok(frames) => frames,
-            Err(error) => {
-                reply.warnings.push(format!(
-                    "Peace deals: unreadable block {}: {error}",
-                    block.first_hour
-                ));
-                continue;
-            }
-        };
-        for frame in frames {
-            check_cancel(cancelled)?;
-            let decoded = match decoder.advance(&frame).and_then(|decoded| {
-                validate_campaign(decoded, replay)?;
-                Ok(decoded)
-            }) {
-                Ok(decoded) => decoded,
-                Err(error) => {
-                    reply.warnings.push(format!(
-                        "Peace deals: stopped block at {}: {error}",
-                        frame.hour
-                    ));
-                    break;
-                }
-            };
-            let hour = decoded.hour;
-            if let Some(prev) = previous_hour
-                && prev.checked_add(1).is_some_and(|next| next < hour)
-            {
-                reply.unobserved.all(prev + 1, hour - 1);
-            }
-            previous_hour = Some(hour);
-            let view = &decoded.tables[TableId::LexicalTokens.index()];
-            if lexical_view
-                .as_ref()
-                .is_none_or(|prior| !SharedView::ptr_eq(prior, view))
-            {
-                action_key = state_action_key(decoded)
-                    .inspect_err(|reason| action_refusals.note(reason.clone(), "state transfer"))
-                    .ok();
-                lexical_view = Some(view.clone());
-            }
-            let country_tags = tags(decoded).map(Arc::new);
-            let vps = victory_points(decoded).map(Arc::new);
-            let exists = country_tags
-                .as_ref()
-                .and_then(|tags| existence_snapshot(decoded, tags));
-            let current = country_tags
-                .as_ref()
-                .and_then(|tags| {
-                    snapshot(
-                        decoded,
-                        Arc::clone(tags),
-                        vps.clone(),
-                        exists.clone(),
-                        action_key.clone(),
-                    )
-                })
-                .map(Arc::new);
-            exact.observe(decoded, country_tags.as_ref(), vps.as_deref());
-            let had_open = !open.is_empty();
-            let had_active = has_active;
-            let roster_read =
-                hour == first || slot_read(&decoded.metrics, TableId::PeaceConferences, hour);
-            let roster = decoded.complete::<tables::PeaceConferences>();
-            let roster_complete = roster.is_ok();
-            if roster_read && let Ok(rows) = roster {
-                let active: Vec<_> = open
-                    .values()
-                    .filter(|entry| !processed.contains(&entry.index))
-                    .map(|entry| entry.index)
-                    .collect();
-                if active.len() > 1 {
-                    unassigned.extend(active);
-                }
-                let present: HashSet<_> = rows.iter().map(|row| row.id).collect();
-                open.retain(|id, conference| {
-                    if present.contains(id) {
-                        return true;
+    let mut country_tags = CountryResolution::default();
+    let mut victory_points = VictoryPoints::default();
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (block, frames) in blocks {
+                check_cancel(cancelled)?;
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let frames = match frames {
+                    Ok(frames) => frames,
+                    Err(error) => {
+                        reply.warnings.push(format!(
+                            "Peace deals: unreadable block {}: {error}",
+                            block.first_hour
+                        ));
+                        continue;
                     }
-                    let deal = &mut reply.deals[conference.index];
-                    deal.first_absent_hour = Some(hour);
-                    deal.end_is_by = deal.last_observed_hour.checked_add(1) != Some(hour);
-                    deal.end_hour = Some(if deal.end_is_by {
-                        hour
-                    } else {
-                        deal.last_observed_hour
-                    });
-                    if !processed.contains(&conference.index) {
-                        pending.insert(conference.index, conference.before.clone());
-                    }
-                    false
-                });
-                for row in rows {
-                    let conference = open.entry(row.id).or_insert_with(|| {
-                        let mut deal = card(
-                            format!("conference:{}:{}", row.id, hour),
-                            PeaceObservation::RecordedConference,
-                            hour,
-                        );
-                        deal.conference_id = Some(row.id.to_string());
-                        reply.deals.push(deal);
-                        OpenConference {
-                            index: reply.deals.len() - 1,
-                            before: previous.clone(),
+                };
+                for frame in frames {
+                    check_cancel(cancelled)?;
+                    let decoded = match decoder.advance(&frame).and_then(|decoded| {
+                        validate_campaign(decoded, replay)?;
+                        Ok(decoded)
+                    }) {
+                        Ok(decoded) => decoded,
+                        Err(error) => {
+                            reply.warnings.push(format!(
+                                "Peace deals: stopped block at {}: {error}",
+                                frame.hour
+                            ));
+                            break;
                         }
-                    });
-                    let index = conference.index;
-                    let deal = &mut reply.deals[index];
-                    deal.last_observed_hour = hour;
-                    deal.current_turn = Some(row.current_turn);
-                    deal.finalized = Some(row.finalized != 0);
-                    if row.finalized != 0 && deal.first_finalized_hour.is_none() {
-                        deal.first_finalized_hour = Some(hour);
-                        deal.end_hour = Some(hour);
-                        deal.end_is_by = true;
-                        if !processed.contains(&index) {
-                            pending.insert(index, conference.before.clone());
-                        }
-                    }
-                    if row.finalized == 0 && current.is_some() {
-                        conference.before = current.clone();
-                    }
-                }
-                let comparisons: HashSet<_> = open
-                    .values()
-                    .filter(|entry| !processed.contains(&entry.index))
-                    .map(|entry| entry.index)
-                    .chain(pending.keys().copied())
-                    .collect();
-                if comparisons.len() > 1 {
-                    unassigned.extend(comparisons);
-                }
-                has_active = open.values().any(|entry| !processed.contains(&entry.index));
-                has_ambiguous = open.values().any(|entry| {
-                    !processed.contains(&entry.index) && unassigned.contains(&entry.index)
-                });
-            } else {
-                mark(&mut reply.unobserved.conferences, hour, hour);
-            }
-            if current
-                .as_ref()
-                .is_none_or(|s| !s.unresolved_owners.is_empty())
-            {
-                mark(&mut reply.unobserved.ownership, hour, hour);
-            }
-            if current
-                .as_ref()
-                .is_none_or(|s| !s.unresolved_wars.is_empty())
-            {
-                mark(&mut reply.unobserved.wars, hour, hour);
-            }
-            if decoded.complete::<tables::Provinces>().is_err() {
-                mark(&mut reply.unobserved.victory_points, hour, hour);
-            }
-            if decoded.complete::<tables::Subjects>().is_err()
-                || current.as_ref().is_none_or(|s| s.subjects.is_none())
-            {
-                mark(&mut reply.unobserved.subjects, hour, hour);
-            }
-            if current.as_ref().is_none_or(|s| s.governments.is_none()) {
-                mark(&mut reply.unobserved.governments, hour, hour);
-            }
-            if exists.is_none() {
-                mark(&mut reply.unobserved.existence, hour, hour);
-            }
-            if let Some(current) = current {
-                let candidates: Vec<_> = pending.keys().copied().collect();
-                let assigned = candidates.len() == 1 && !unassigned.contains(&candidates[0]);
-                if assigned {
-                    let index = candidates[0];
-                    if let Some(before) = &pending[&index] {
-                        let transfers = transfers(before, &current, true);
-                        populate(
-                            &mut reply.deals[index],
-                            before,
-                            &current,
-                            transfers,
-                            &first_existing,
-                        );
-                        for item in &reply.deals[index].items {
-                            graph.add(item);
-                        }
-                    } else {
-                        reply.deals[index].limitations.push("No complete ownership and war read before settlement; outcomes are not recorded.".into());
-                    }
-                }
-                if let Some(before) = previous.as_ref() {
-                    let consecutive = before.hour.checked_add(1) == Some(hour);
-                    // A single resident conference reserves its net change for its
-                    // next actual roster read. Several cannot be distinguished.
-                    let unmatched = !assigned
-                        && (!had_active && !has_active
-                            || has_ambiguous
-                            || candidates.iter().any(|index| unassigned.contains(index)));
-                    let transfers = if unmatched && consecutive {
-                        transfers(before, &current, false)
-                    } else {
-                        Vec::new()
                     };
-                    if !transfers.is_empty() {
-                        let observation = if !had_open
-                            && open.is_empty()
-                            && roster_complete
-                            && before.roster_complete
-                        {
-                            PeaceObservation::ConferenceNotRecorded
-                        } else {
-                            PeaceObservation::ConferenceUnknown
-                        };
-                        for (group, transfers) in components(transfers).into_iter().enumerate() {
-                            let mut deal =
-                                card(format!("outcome:{hour}:{group}"), observation, hour);
-                            deal.end_hour = Some(hour);
-                            deal.end_is_by = true;
-                            populate(&mut deal, before, &current, transfers, &first_existing);
-                            deal.limitations.push("Connected war-end transfer pairs group this outcome; the data cannot prove how many conferences produced it.".into());
-                            for item in &deal.items {
-                                graph.add(item);
+                    let hour = decoded.hour;
+                    if let Some(prev) = previous_hour
+                        && prev.checked_add(1).is_some_and(|next| next < hour)
+                    {
+                        reply.unobserved.all(prev + 1, hour - 1);
+                    }
+                    previous_hour = Some(hour);
+                    // A weak identity: holding the view would copy it at its next delta.
+                    let view = &decoded.tables[TableId::LexicalTokens.index()];
+                    if lexical_view.as_ref().is_none_or(|prior| !prior.is(view)) {
+                        action_key = state_action_key(decoded)
+                            .inspect_err(|reason| {
+                                action_refusals.note(reason.clone(), "state transfer")
+                            })
+                            .ok();
+                        lexical_view = Some(view.identity());
+                    }
+                    let countries = country_tags.read(decoded);
+                    let vps = victory_points.read(decoded);
+                    let exists = countries
+                        .as_ref()
+                        .and_then(|countries| existence_snapshot(decoded, &countries.tags))
+                        .map(Arc::new);
+                    let current = countries
+                        .as_ref()
+                        .and_then(|countries| {
+                            snapshot(
+                                decoded,
+                                Arc::clone(countries),
+                                vps.clone(),
+                                exists.clone(),
+                                action_key.clone(),
+                            )
+                        })
+                        .map(Arc::new);
+                    exact.observe(
+                        decoded,
+                        countries.as_deref(),
+                        vps.as_deref(),
+                        action_key.as_deref(),
+                    );
+                    let had_open = !open.is_empty();
+                    let had_active = has_active;
+                    let roster_read = hour == first
+                        || slot_read(&decoded.metrics, TableId::PeaceConferences, hour);
+                    let roster = decoded.complete::<tables::PeaceConferences>();
+                    let roster_complete = roster.is_ok();
+                    if roster_read && let Ok(rows) = roster {
+                        let active: Vec<_> = open
+                            .values()
+                            .filter(|entry| !processed.contains(&entry.index))
+                            .map(|entry| entry.index)
+                            .collect();
+                        if active.len() > 1 {
+                            unassigned.extend(active);
+                        }
+                        let present: HashSet<_> = rows.iter().map(|row| row.id).collect();
+                        open.retain(|id, conference| {
+                            if present.contains(id) {
+                                return true;
                             }
-                            reply.deals.push(deal);
+                            let deal = &mut reply.deals[conference.index];
+                            deal.first_absent_hour = Some(hour);
+                            deal.end_is_by = deal.last_observed_hour.checked_add(1) != Some(hour);
+                            deal.end_hour = Some(if deal.end_is_by {
+                                hour
+                            } else {
+                                deal.last_observed_hour
+                            });
+                            if !processed.contains(&conference.index) {
+                                pending.insert(conference.index, conference.before.clone());
+                            }
+                            false
+                        });
+                        for row in rows {
+                            let conference = open.entry(row.id).or_insert_with(|| {
+                                let mut deal = card(
+                                    format!("conference:{}:{}", row.id, hour),
+                                    PeaceObservation::RecordedConference,
+                                    hour,
+                                );
+                                deal.conference_id = Some(row.id.to_string());
+                                reply.deals.push(deal);
+                                OpenConference {
+                                    index: reply.deals.len() - 1,
+                                    before: previous.clone(),
+                                }
+                            });
+                            let index = conference.index;
+                            let deal = &mut reply.deals[index];
+                            deal.last_observed_hour = hour;
+                            deal.current_turn = Some(row.current_turn);
+                            deal.finalized = Some(row.finalized != 0);
+                            if row.finalized != 0 && deal.first_finalized_hour.is_none() {
+                                deal.first_finalized_hour = Some(hour);
+                                deal.end_hour = Some(hour);
+                                deal.end_is_by = true;
+                                if !processed.contains(&index) {
+                                    pending.insert(index, conference.before.clone());
+                                }
+                            }
+                            if row.finalized == 0 && current.is_some() {
+                                conference.before = current.clone();
+                            }
+                        }
+                        let comparisons: HashSet<_> = open
+                            .values()
+                            .filter(|entry| !processed.contains(&entry.index))
+                            .map(|entry| entry.index)
+                            .chain(pending.keys().copied())
+                            .collect();
+                        if comparisons.len() > 1 {
+                            unassigned.extend(comparisons);
+                        }
+                        has_active = open.values().any(|entry| !processed.contains(&entry.index));
+                        has_ambiguous = open.values().any(|entry| {
+                            !processed.contains(&entry.index) && unassigned.contains(&entry.index)
+                        });
+                    } else {
+                        mark(&mut reply.unobserved.conferences, hour, hour);
+                    }
+                    if current
+                        .as_ref()
+                        .is_none_or(|s| !s.unresolved_owners.is_empty())
+                    {
+                        mark(&mut reply.unobserved.ownership, hour, hour);
+                    }
+                    if current
+                        .as_ref()
+                        .is_none_or(|s| !s.unresolved_wars.is_empty())
+                    {
+                        mark(&mut reply.unobserved.wars, hour, hour);
+                    }
+                    if decoded.complete::<tables::Provinces>().is_err() {
+                        mark(&mut reply.unobserved.victory_points, hour, hour);
+                    }
+                    if decoded.complete::<tables::Subjects>().is_err()
+                        || current.as_ref().is_none_or(|s| s.subjects.is_none())
+                    {
+                        mark(&mut reply.unobserved.subjects, hour, hour);
+                    }
+                    if current.as_ref().is_none_or(|s| s.governments.is_none()) {
+                        mark(&mut reply.unobserved.governments, hour, hour);
+                    }
+                    if exists.is_none() {
+                        mark(&mut reply.unobserved.existence, hour, hour);
+                    }
+                    if let Some(current) = current {
+                        let candidates: Vec<_> = pending.keys().copied().collect();
+                        let assigned =
+                            candidates.len() == 1 && !unassigned.contains(&candidates[0]);
+                        if assigned {
+                            let index = candidates[0];
+                            if let Some(before) = &pending[&index] {
+                                let transfers = transfers(before, &current, true);
+                                populate(
+                                    &mut reply.deals[index],
+                                    before,
+                                    &current,
+                                    transfers,
+                                    &first_existing,
+                                );
+                                for item in &reply.deals[index].items {
+                                    graph.add(item);
+                                }
+                            } else {
+                                reply.deals[index].limitations.push("No complete ownership and war read before settlement; outcomes are not recorded.".into());
+                            }
+                        }
+                        if let Some(before) = previous.as_ref() {
+                            let consecutive = before.hour.checked_add(1) == Some(hour);
+                            // A single resident conference reserves its net change for its
+                            // next actual roster read. Several cannot be distinguished.
+                            let unmatched = !assigned
+                                && (!had_active && !has_active
+                                    || has_ambiguous
+                                    || candidates.iter().any(|index| unassigned.contains(index)));
+                            let transfers = if unmatched && consecutive {
+                                transfers(before, &current, false)
+                            } else {
+                                Vec::new()
+                            };
+                            if !transfers.is_empty() {
+                                let observation = if !had_open
+                                    && open.is_empty()
+                                    && roster_complete
+                                    && before.roster_complete
+                                {
+                                    PeaceObservation::ConferenceNotRecorded
+                                } else {
+                                    PeaceObservation::ConferenceUnknown
+                                };
+                                for (group, transfers) in
+                                    components(transfers).into_iter().enumerate()
+                                {
+                                    let mut deal =
+                                        card(format!("outcome:{hour}:{group}"), observation, hour);
+                                    deal.end_hour = Some(hour);
+                                    deal.end_is_by = true;
+                                    populate(
+                                        &mut deal,
+                                        before,
+                                        &current,
+                                        transfers,
+                                        &first_existing,
+                                    );
+                                    deal.limitations.push("Connected war-end transfer pairs group this outcome; the data cannot prove how many conferences produced it.".into());
+                                    for item in &deal.items {
+                                        graph.add(item);
+                                    }
+                                    reply.deals.push(deal);
+                                }
+                            }
+                        }
+                        for &index in &candidates {
+                            if unassigned.contains(&index) {
+                                reply.deals[index].limitations.push("Sampled conferences overlap this comparison; outcomes cannot be assigned to one.".into());
+                            }
+                        }
+                        for (index, _) in pending.drain() {
+                            processed.insert(index);
+                        }
+                        if !candidates.is_empty() {
+                            has_active =
+                                open.values().any(|entry| !processed.contains(&entry.index));
+                            has_ambiguous = open.values().any(|entry| {
+                                !processed.contains(&entry.index)
+                                    && unassigned.contains(&entry.index)
+                            });
+                        }
+                        previous = Some(current);
+                    }
+                    if let Some(exists) = &exists {
+                        for (tag, exists) in exists.iter() {
+                            if *exists {
+                                first_existing.entry(tag.clone()).or_insert(hour);
+                            }
                         }
                     }
                 }
-                for &index in &candidates {
-                    if unassigned.contains(&index) {
-                        reply.deals[index].limitations.push("Sampled conferences overlap this comparison; outcomes cannot be assigned to one.".into());
-                    }
-                }
-                for (index, _) in pending.drain() {
-                    processed.insert(index);
-                }
-                if !candidates.is_empty() {
-                    has_active = open.values().any(|entry| !processed.contains(&entry.index));
-                    has_ambiguous = open.values().any(|entry| {
-                        !processed.contains(&entry.index) && unassigned.contains(&entry.index)
-                    });
-                }
-                previous = Some(current);
             }
-            if let Some(exists) = &exists {
-                for (tag, exists) in exists {
-                    if *exists {
-                        first_existing.entry(tag.clone()).or_insert(hour);
-                    }
-                }
-            }
-        }
-    }
+            Ok(())
+        },
+    )?;
     if let Some(prev) = previous_hour {
         if let Some(next) = prev.checked_add(1) {
             reply.unobserved.all(next, last);
@@ -1114,22 +1178,21 @@ fn transfers(before: &Snapshot, after: &Snapshot, recorded: bool) -> Vec<PeaceIt
     let mut unresolved_countries = HashSet::new();
     let mut unidentified_pair = false;
     for (first, second) in &after.unresolved_wars {
-        match (after.tags.get(first), after.tags.get(second)) {
+        match (
+            after.countries.tags.get(first),
+            after.countries.tags.get(second),
+        ) {
             (Some(first), Some(second)) => {
                 unresolved_pairs.insert(pair(first, second));
             }
             (Some(country), None) | (None, Some(country)) => {
-                unresolved_countries.insert(country.as_str());
+                unresolved_countries.insert(country);
             }
             (None, None) => unidentified_pair = true,
         }
     }
-    let changed_tags: HashSet<_> = before
-        .tags
-        .iter()
-        .filter(|(raw, tag)| after.tags.get(raw).is_some_and(|now| now != *tag))
-        .flat_map(|(raw, tag)| [tag.as_str(), after.tags[raw].as_str()])
-        .collect();
+    // Built at the first owner change; most compared hours have none.
+    let mut changed_tags: Option<HashSet<&Tag>> = None;
     for (&state, from) in &before.owners {
         let Some(to) = after.owners.get(&state) else {
             continue;
@@ -1138,12 +1201,21 @@ fn transfers(before: &Snapshot, after: &Snapshot, recorded: bool) -> Vec<PeaceIt
             continue;
         }
         // Tag changes of a raw country must never masquerade as a territorial deal.
-        if changed_tags.contains(from.as_str()) || changed_tags.contains(to.as_str()) {
+        let changed_tags = changed_tags.get_or_insert_with(|| {
+            before
+                .countries
+                .tags
+                .iter()
+                .filter(|(raw, tag)| after.countries.tags.get(raw).is_some_and(|now| now != *tag))
+                .flat_map(|(raw, tag)| [tag, &after.countries.tags[raw]])
+                .collect()
+        });
+        if changed_tags.contains(from) || changed_tags.contains(to) {
             continue;
         }
         if [from, to].into_iter().any(|tag| {
-            !before.identities.contains_key(tag)
-                || before.identities.get(tag) != after.identities.get(tag)
+            !before.countries.identities.contains_key(tag)
+                || before.countries.identities.get(tag) != after.countries.identities.get(tag)
         }) {
             continue;
         }
@@ -1170,8 +1242,8 @@ fn transfers(before: &Snapshot, after: &Snapshot, recorded: bool) -> Vec<PeaceIt
                 // An unresolved/conflicting row is not evidence of its removal.
                 if unidentified_pair
                     || unresolved_pairs.contains(&key)
-                    || unresolved_countries.contains(from.as_str())
-                    || unresolved_countries.contains(to.as_str())
+                    || unresolved_countries.contains(from)
+                    || unresolved_countries.contains(to)
                 {
                     continue;
                 }
@@ -1184,7 +1256,7 @@ fn transfers(before: &Snapshot, after: &Snapshot, recorded: bool) -> Vec<PeaceIt
                 before_hour: before.hour,
                 after_hour: after.hour,
             },
-            winner: Some(to.clone()),
+            winner: Some(to.to_string()),
             action: PeaceActionLabel {
                 kind: PeaceActionKind::StateTransfer,
                 key: after.state_action_key.clone(),
@@ -1192,18 +1264,18 @@ fn transfers(before: &Snapshot, after: &Snapshot, recorded: bool) -> Vec<PeaceIt
             },
             change: PeaceChange::StateTransfer {
                 state,
-                from: from.clone(),
-                to: to.clone(),
+                from: from.to_string(),
+                to: to.to_string(),
                 from_country: PeaceTransferCountry {
-                    slot: before.identities[from].0,
-                    country_id: before.identities[from].1,
-                    tag: from.clone(),
+                    slot: before.countries.identities[from].0,
+                    country_id: before.countries.identities[from].1,
+                    tag: from.to_string(),
                     hour: before.hour,
                 },
                 to_country: PeaceTransferCountry {
-                    slot: after.identities[to].0,
-                    country_id: after.identities[to].1,
-                    tag: to.clone(),
+                    slot: after.countries.identities[to].0,
+                    country_id: after.countries.identities[to].1,
+                    tag: to.to_string(),
                     hour: after.hour,
                 },
                 victory_points: vp.map(|vp| vp.to_string()),
@@ -1261,7 +1333,7 @@ fn populate(
     before: &Snapshot,
     after: &Snapshot,
     mut items: Vec<PeaceItem>,
-    first_existing: &HashMap<String, i32>,
+    first_existing: &HashMap<Tag, i32>,
 ) {
     for sample in [before, after] {
         if !sample.unresolved_owners.is_empty() {
@@ -1296,23 +1368,29 @@ fn populate(
     if let (Some(old), Some(new)) = (&before.exists, &after.exists) {
         let mut released: HashMap<String, (HashSet<String>, Vec<u32>)> = HashMap::new();
         for from in &losers {
-            for &state in before.states_by_owner.get(from).into_iter().flatten() {
+            for &state in before
+                .states_by_owner
+                .get(from.as_str())
+                .into_iter()
+                .flatten()
+            {
                 let Some(country) = after.owners.get(&state) else {
                     continue;
                 };
                 if !losers.contains(from)
-                    || country == from
+                    || **country == **from
                     || old.get(country) != Some(&false)
                     || new.get(country) != Some(&true)
-                    || !before.identities.contains_key(country)
-                    || before.identities.get(country) != after.identities.get(country)
+                    || !before.countries.identities.contains_key(country)
+                    || before.countries.identities.get(country)
+                        != after.countries.identities.get(country)
                     || first_existing
                         .get(country)
                         .is_some_and(|first| *first <= before.hour)
                 {
                     continue;
                 }
-                let entry = released.entry(country.clone()).or_default();
+                let entry = released.entry(country.to_string()).or_default();
                 entry.0.insert(from.clone());
                 entry.1.push(state);
             }
@@ -1372,7 +1450,8 @@ fn populate(
     }
     if let (Some(old), Some(new)) = (&before.governments, &after.governments) {
         for country in &losers {
-            let (Some(old), Some(new)) = (old.get(country), new.get(country)) else {
+            let (Some(old), Some(new)) = (old.get(country.as_str()), new.get(country.as_str()))
+            else {
                 deal.limitations.push(format!(
                     "Government of {country} is not recorded at both reads."
                 ));

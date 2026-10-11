@@ -1,5 +1,280 @@
 use super::*;
 
+fn geography_catalogue() -> (crate::catalogue::Catalogue, crate::catalogue::tests::Folder) {
+    let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/fixture.lua",
+            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 }, NBuildings = { MAX_BUILDING_LEVELS = 15 }, NMilitary = { RIVER_SMALL_START_INDEX = 0, RIVER_SMALL_STOP_INDEX = 6, RIVER_LARGE_STOP_INDEX = 11 } }",
+        ),
+        (
+            "common/ideologies/fixture.txt",
+            "ideologies = { mod_group = { types = { mod_type = {} } } }",
+        ),
+        (
+            "common/terrain/fixture.txt",
+            "categories = { mod_land = { movement_cost = 1 } mod_sea = { movement_cost = 1 } } terrain = { fixture = { type = mod_land color = { 0 } } }",
+        ),
+        (
+            "common/scripted_localisation/fixture.txt",
+            "defined_text = { name = Always text = { trigger = { always = yes } localization_key = TITLE } }
+             defined_text = { name = Political text = { trigger = { has_government = mod_group } localization_key = POLITICAL } }
+             defined_text = { name = Neighbors text = { trigger = { any_neighbor_state = { always = yes } } localization_key = NEIGHBORS } }",
+        ),
+        (
+            "localisation/fixture_l_english.yml",
+            "\u{feff}l_english:\n TITLE:0 \"Localized title\"\n POLITICAL:0 \"Localized political title\"\n NEIGHBORS:0 \"Localized neighbors\"\n mod_land:0 \"terrain_alias\"\n terrain_alias:0 \"Localized terrain\"\n",
+        ),
+        (
+            "map/default.map",
+            "definitions = definition.csv provinces = logs/provinces.bmp terrain = logs/terrain.bmp rivers = logs/rivers.bmp heightmap = heightmap.bmp tree_definition = trees.bmp continent = continents.txt adjacencies = adjacencies.csv adjacency_rules = adjacency_rules.txt",
+        ),
+        (
+            "map/definition.csv",
+            "0;0;0;0;land;false;mod_land;1\n1;1;0;0;land;false;mod_land;1\n2;2;0;0;land;false;mod_land;1\n3;3;0;0;sea;false;mod_sea;1\n",
+        ),
+        ("map/continents.txt", "continents = { mod_continent }"),
+        ("map/adjacencies.csv", "header\n"),
+        ("map/adjacency_rules.txt", ""),
+        ("history/states/first.txt", "state = { id = 64 name = FIRST provinces = { 1 } }"),
+        ("history/states/second.txt", "state = { id = 65 name = SECOND provinces = { 2 } }"),
+    ]);
+    std::fs::create_dir_all(folder.0.join("map/logs")).unwrap();
+    // The excluded folder exercises diagnostics contributed by reached lazy reads.
+    let bitmap = |bits: u16, pixels: &[u8]| {
+        let mut bytes = vec![0; 54];
+        bytes[..2].copy_from_slice(b"BM");
+        for (at, value) in [(10, 54_u32), (14, 40), (18, 4), (22, 1)] {
+            bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[26..28].copy_from_slice(&1_u16.to_le_bytes());
+        bytes[28..30].copy_from_slice(&bits.to_le_bytes());
+        bytes.extend_from_slice(pixels);
+        bytes
+    };
+    for (name, bytes) in [
+        (
+            "provinces.bmp",
+            bitmap(24, &[0, 0, 1, 0, 0, 2, 0, 0, 3, 0, 0, 3]),
+        ),
+        ("terrain.bmp", bitmap(8, &[0; 4])),
+        ("rivers.bmp", bitmap(8, &[255; 4])),
+    ] {
+        std::fs::write(folder.0.join("map/logs").join(name), bytes).unwrap();
+    }
+    let layers = installed_content::ResolvedLayers::from_folders(&[(&folder.0, &[])]).unwrap();
+    let _reads = layers.report_uncovered_reads();
+    (crate::catalogue::tests::layers_catalogue(layers), folder)
+}
+
+fn geography_frame() -> DecodedFrame {
+    use replay::{
+        frame::TableView,
+        rows::{PoliticalPartyRow, ProvinceRow, StateRow, TableId, TableRows},
+    };
+    let mut frame = crate::scope::tests::positive_frame();
+    for id in TableId::ALL {
+        if matches!(&*frame.tables[id.index()], TableView::Unavailable { .. }) {
+            *frame.tables[id.index()] = TableView::Complete(TableRows::empty(id));
+        }
+    }
+    *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
+        [64, 65]
+            .map(|id| StateRow {
+                id,
+                owner: 100,
+                controller: 100,
+                ..Default::default()
+            })
+            .into(),
+    ));
+    *frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(
+        [(1, 64), (2, 65)]
+            .map(|(id, state)| ProvinceRow {
+                id,
+                state,
+                owner: 100,
+                controller: 100,
+                ..Default::default()
+            })
+            .into(),
+    ));
+    *frame.tables[TableId::PoliticalParties.index()] =
+        TableView::Complete(TableRows::PoliticalParties(vec![PoliticalPartyRow {
+            country: 100,
+            id: 3,
+            token: b"mod_group".to_vec(),
+            is_ruling: 1,
+            ..Default::default()
+        }]));
+    frame
+}
+
+#[test]
+fn scripted_political_and_always_titles_leave_geography_unread() {
+    let (cat, folder) = geography_catalogue();
+    let path = folder.0.join("map/logs/provinces.bmp");
+    let bitmap = std::fs::read(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    let content = cat.scripted_content().unwrap();
+    let frame = geography_frame();
+    let text = ScriptedText::new(&frame, &cat.localisation, content, 1);
+    assert_eq!(
+        text.expand("[Always] [Political]").as_deref(),
+        Ok("Localized title Localized political title")
+    );
+    let inputs = text.environment().unwrap();
+    assert!(inputs.neighbors.get().is_none());
+    assert!(inputs.terrain.get().is_none());
+    assert!(
+        cat.reader_warning_lines()
+            .iter()
+            .all(|line| !line.contains("map/logs/"))
+    );
+
+    // Restoring the unavailable file before its first reached use must succeed.
+    // An eager read would already have cached its failure while expanding titles.
+    std::fs::write(&path, bitmap).unwrap();
+    assert_eq!(
+        text.expand("[ROOT.64.Neighbors]").as_deref(),
+        Ok("Localized neighbors")
+    );
+    assert!(inputs.terrain.get().is_none());
+}
+
+#[test]
+fn reached_scripted_geography_preserves_values_diagnostics_and_cache_reuse() {
+    let (cat, folder) = geography_catalogue();
+    let content = cat.scripted_content().unwrap();
+    let frame = geography_frame();
+    let text = ScriptedText::new(&frame, &cat.localisation, content, 1);
+    assert_eq!(
+        text.expand("[ROOT.64.Neighbors]").as_deref(),
+        Ok("Localized neighbors")
+    );
+    let inputs = text.environment().unwrap();
+    assert_eq!(
+        inputs
+            .geography(content, content.environment().unwrap())
+            .neighbors()
+            .unwrap()[&64],
+        [65]
+    );
+    assert!(inputs.terrain.get().is_none());
+    let warnings = cat.reader_warning_lines();
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|line| line.starts_with("Content: "))
+            .count(),
+        1
+    );
+    assert!(warnings.iter().any(
+        |line| line.contains("map/logs/provinces.bmp") && line.contains("map/logs/terrain.bmp")
+    ));
+    assert!(
+        warnings
+            .iter()
+            .all(|line| !line.contains("map/logs/rivers.bmp"))
+    );
+
+    let world = content.recorded_world(&frame).unwrap();
+    assert_eq!(world.coastal(1), Ok(true));
+    assert_eq!(world.coastal(3), Ok(false));
+    assert_eq!(world.coastal(999), Ok(false));
+    assert_eq!(text.province_terrain(1), Ok(1));
+    let scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
+    assert_eq!(
+        text.expand_province_in("[Terrain.GetName]", 1, &scopes)
+            .as_deref(),
+        Ok("Localized terrain")
+    );
+    let warnings = cat.reader_warning_lines();
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|line| line.starts_with("Content: "))
+            .count(),
+        1
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|line| line.contains("map/logs/rivers.bmp"))
+    );
+    let cached = inputs
+        .geography(content, content.environment().unwrap())
+        .terrain()
+        .unwrap();
+
+    for name in ["provinces.bmp", "terrain.bmp", "rivers.bmp"] {
+        std::fs::remove_file(folder.0.join("map/logs").join(name)).unwrap();
+    }
+    let next = ScriptedText::new(&frame, &cat.localisation, content, 1);
+    assert_eq!(
+        next.expand("[ROOT.64.Neighbors]").as_deref(),
+        Ok("Localized neighbors")
+    );
+    assert_eq!(next.province_terrain(1), Ok(1));
+    assert_eq!(content.recorded_world(&frame).unwrap().coastal(1), Ok(true));
+    assert!(std::ptr::eq(
+        cached,
+        next.environment()
+            .unwrap()
+            .geography(content, content.environment().unwrap())
+            .terrain()
+            .unwrap()
+    ));
+    assert_eq!(cat.reader_warning_lines(), warnings);
+}
+
+#[test]
+fn reached_geography_caches_missing_and_malformed_map_refusals_without_refusing_titles() {
+    for malformed in [false, true] {
+        let (cat, folder) = geography_catalogue();
+        let path = folder.0.join("map/logs/provinces.bmp");
+        let bitmap = std::fs::read(&path).unwrap();
+        if malformed {
+            std::fs::write(&path, b"synthetic invalid bitmap").unwrap();
+        } else {
+            std::fs::remove_file(&path).unwrap();
+        }
+        let content = cat.scripted_content().unwrap();
+        let frame = geography_frame();
+        let text = ScriptedText::new(&frame, &cat.localisation, content, 1);
+        assert_eq!(
+            text.expand("[Always] [Political]").as_deref(),
+            Ok("Localized title Localized political title")
+        );
+        let refusal = text.expand("[ROOT.64.Neighbors]").unwrap_err();
+        assert!(
+            refusal.contains("scripted localisation Neighbors")
+                && refusal.contains("any_neighbor_state"),
+            "{refusal}"
+        );
+        let inputs = text.environment().unwrap();
+        assert!(inputs.neighbors.get().unwrap().is_err());
+        assert!(inputs.terrain.get().is_none());
+        let terrain_refusal = text.province_terrain(1).unwrap_err();
+        assert!(terrain_refusal.contains("Terrain of province 1"));
+        assert!(inputs.terrain.get().unwrap().is_none());
+        let coastal_refusal = content
+            .recorded_world(&frame)
+            .unwrap()
+            .coastal(1)
+            .unwrap_err();
+        assert!(coastal_refusal.contains("content movement map is unavailable"));
+
+        std::fs::write(&path, bitmap).unwrap();
+        let next = ScriptedText::new(&frame, &cat.localisation, content, 1);
+        assert_eq!(next.expand("[ROOT.64.Neighbors]").unwrap_err(), refusal);
+        assert_eq!(next.province_terrain(1).unwrap_err(), terrain_refusal);
+        assert_eq!(
+            next.expand("[Always] [Political]").as_deref(),
+            Ok("Localized title Localized political title")
+        );
+    }
+}
+
 #[test]
 fn description_append_preserves_active_cursor_graph_and_guard_state() {
     engine::executable_tables::initialize_for_tests()

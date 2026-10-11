@@ -20,7 +20,7 @@ use crate::{
 use native::{Pair, World, pair};
 use replay::{
     container::Replay,
-    frame::{DecodedFrame, FrameDecoder, SharedView, TableView},
+    frame::{DecodedFrame, FrameDecoder, TableView, ViewIdentity},
     rows::{self, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
@@ -163,6 +163,8 @@ pub struct WarsReply {
     pub capitulations_unobserved: Vec<HourSpan>,
     pub warnings: Vec<String>,
 }
+/// Replies kept for the most recently requested viewpoints.
+const CACHED_REPLIES: usize = 4;
 struct Cache {
     branch: u64,
     view: Option<String>,
@@ -222,7 +224,7 @@ impl Wars {
             .transpose()?;
         let state = source.state::<Vec<Cache>>();
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(hit) = state.iter().find(|c| {
+        if let Some(hit) = state.iter().position(|c| {
             c.branch == branch
                 && (identities.is_some() || c.view == p.viewpoint_tag)
                 && c.identities.as_ref() == identities
@@ -232,7 +234,9 @@ impl Wars {
                     _ => false,
                 }
         }) {
-            return Ok(hit.reply.clone());
+            // The most recently requested first.
+            state[..=hit].rotate_right(1);
+            return Ok(state[0].reply.clone());
         }
         let reply = Arc::new(if let Some(identities) = identities {
             scan_selected(
@@ -267,6 +271,7 @@ impl Wars {
                 reply: reply.clone(),
             },
         );
+        state.truncate(CACHED_REPLIES);
         Ok(reply)
     }
 }
@@ -294,7 +299,8 @@ struct Hour {
     goal_owned: HashMap<Pair, rows::WarOwnedRelationRow>,
 }
 struct HeldHour {
-    tables: Vec<SharedView>,
+    /// Identities, not views: holding a view copies it when the next hour changes it.
+    tables: Vec<ViewIdentity>,
     observed: Result<(Hour, Vec<Observed>), String>,
 }
 
@@ -371,11 +377,10 @@ impl Hour {
         };
         let owned = frame
             .complete::<tables::WarOwnedRelations>()
-            .map_err(|e| e.to_string())?
-            .to_vec();
+            .map_err(|e| e.to_string())?;
         // Keys preserve the complete vector's ordinals, not a tag sort.
         let mut goal_owned = HashMap::new();
-        for r in &owned {
+        for r in owned {
             let (owner, a, b) = (
                 slot(r.owner)?,
                 slot(r.first_country)?,
@@ -520,7 +525,7 @@ impl Hour {
         sums.map(|n| n.to_string())
     }
     fn observe(&self, frame: &DecodedFrame, cat: Option<&Catalogue>) -> Vec<Observed> {
-        let naming = naming::Inputs::read(frame, cat);
+        let naming = naming::Inputs::read(frame);
         self.world
             .blobs(self.view)
             .into_iter()
@@ -842,6 +847,17 @@ fn scan_selected(
         TableId::Autonomy,
         TableId::States,
     ];
+    // Operands of the held hour; losses refresh separately.
+    let compared: Vec<_> = selected
+        .iter()
+        .copied()
+        .filter(|&t| {
+            t != TableId::Clock
+                && t != TableId::Campaign
+                && t != TableId::Capitulation
+                && t != TableId::WarRelations
+        })
+        .collect();
     let mut reply=WarsReply{branch_id:branch.to_string(),available:false,viewpoints:Vec::new(),country_names:Vec::new(),wars:Vec::new(),unobserved:Vec::new(),capitulations_unobserved:Vec::new(),warnings:vec!["War continuity and participant runs are app observations; the game stores no grouped war identity, start/end or join/leave hours.".into(),"Attackers and defenders are oriented by the representative relation's instigator.".into(),"Native groups can overlap; casualties belong to each group's distinct bilateral relations and must not be summed across groups.".into()]};
     let mut previous = None;
     let mut previous_view = None;
@@ -853,213 +869,222 @@ fn scan_selected(
     let mut last_frame = first.checked_sub(1);
     let mut held: Option<HeldHour> = None;
     let mut country_labels = labels::CountryLabels::default();
-    for block in replay.index.iter().filter(|b| b.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(invalid("Wars request cancelled"));
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let frames = match replay.read_block_selected(block, &selected) {
-            Ok(f) => f,
-            Err(e) => {
-                warnings.insert(format!("Wars block unreadable: {e}"));
-                continue;
-            }
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(invalid("Wars request cancelled"));
-            }
-            let decoded = match decoder.advance(&frame) {
-                Ok(f) => f,
-                Err(e) => {
-                    warnings.insert(format!("Wars frame unreadable: {e}"));
-                    break;
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|b| b.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(invalid("Wars request cancelled"));
                 }
-            };
-            validate_campaign(decoded, replay)?;
-            country_labels.observe(decoded, cat);
-            reply.available |= [
-                TableId::WarOwnedRelations,
-                TableId::WarRelationGoals,
-                TableId::WarOverviewCountries,
-                TableId::WarNameRules,
-            ]
-            .iter()
-            .any(|table| {
-                !matches!(
-                    &*decoded.tables[table.index()],
-                    TableView::Unavailable { .. }
-                )
-            });
-            let hour = decoded.hour;
-            if let Some(before) = last_frame
-                && before.checked_add(1) != Some(hour)
-            {
-                span(&mut reply.unobserved, before + 1, hour - 1);
-                span(&mut reply.capitulations_unobserved, before + 1, hour - 1);
-                for (id, _) in &open {
-                    let war: &mut WarTimeline = &mut reply.wars[*id];
-                    for &index in war.open_participants.values() {
-                        war.participants[index].last_hour = war.last_hour;
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let frames = match frames {
+                    Ok(f) => f,
+                    Err(e) => {
+                        warnings.insert(format!("Wars block unreadable: {e}"));
+                        continue;
                     }
-                }
-                previous = None;
-                open.clear();
-                identity_since.clear();
-            }
-            last_frame = Some(hour);
-            let values = selected
-                .iter()
-                .filter(|&&t| {
-                    t != TableId::Clock
-                        && t != TableId::Campaign
-                        && t != TableId::Capitulation
-                        && t != TableId::WarRelations
-                })
-                .map(|t| decoded.tables[t.index()].clone())
-                .collect::<Vec<_>>();
-            let same = held.as_mut().is_some_and(|old| {
-                old.tables
-                    .iter()
-                    .zip(&values)
-                    .all(|(a, b)| SharedView::ptr_eq(a, b))
-                    && old
-                        .observed
-                        .as_mut()
-                        .is_ok_and(|(inputs, _)| inputs.refresh_losses(decoded))
-            });
-            if !same {
-                held = Some(HeldHour {
-                    tables: values,
-                    observed: identities
-                        .map_or_else(
-                            || Ok(view.map(str::to_owned)),
-                            |selected| selected_view(decoded, selected).map(Some),
-                        )
-                        .and_then(|view| Hour::read(decoded, view.as_deref()))
-                        .map(|inputs| {
-                            let observations = inputs.observe(decoded, cat);
-                            (inputs, observations)
-                        }),
-                });
-            }
-            if let Ok((inputs, observed)) = &held.as_ref().expect("held hour").observed {
-                if !same || previous.is_none() {
-                    country_labels.include(inputs, observed);
-                }
-                append_viewpoint(&mut reply, inputs, hour);
-                if previous_view.as_ref() != inputs.tags.get(&inputs.view) {
-                    for (id, _) in &open {
-                        let war = &mut reply.wars[*id];
-                        for &index in war.open_participants.values() {
-                            war.participants[index].last_hour = war.last_hour;
+                };
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(invalid("Wars request cancelled"));
+                    }
+                    let decoded = match decoder.advance(&frame) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            warnings.insert(format!("Wars frame unreadable: {e}"));
+                            break;
                         }
-                    }
-                    previous = None;
-                    open.clear();
-                }
-                previous_view = inputs.tags.get(&inputs.view).cloned();
-                if same && previous.is_some() && open.len() == observed.len() {
-                    // Loss-only hours retain native groups and continuity. No
-                    // side lists, membership sets or relation runs are rebuilt.
-                    for ((id, _), observed) in open.iter().zip(observed) {
-                        let war = &mut reply.wars[*id];
-                        append_losses(war, hour, inputs.losses(&observed.loss_pairs), previous);
-                        append_relations(war, hour, &observed.relations);
-                        war.last_hour = hour;
-                        war.observations
-                            .last_mut()
-                            .expect("open war observation")
-                            .last_hour = hour;
-                    }
-                } else {
-                    // A structural change settles the held participant bounds
-                    // before splitting, merging or ending the previous groups.
-                    if let Some(last) = previous {
+                    };
+                    validate_campaign(decoded, replay)?;
+                    country_labels.observe(decoded, cat);
+                    reply.available |= [
+                        TableId::WarOwnedRelations,
+                        TableId::WarRelationGoals,
+                        TableId::WarOverviewCountries,
+                        TableId::WarNameRules,
+                    ]
+                    .iter()
+                    .any(|table| {
+                        !matches!(
+                            &*decoded.tables[table.index()],
+                            TableView::Unavailable { .. }
+                        )
+                    });
+                    let hour = decoded.hour;
+                    if let Some(before) = last_frame
+                        && before.checked_add(1) != Some(hour)
+                    {
+                        span(&mut reply.unobserved, before + 1, hour - 1);
+                        span(&mut reply.capitulations_unobserved, before + 1, hour - 1);
                         for (id, _) in &open {
-                            let war = &mut reply.wars[*id];
+                            let war: &mut WarTimeline = &mut reply.wars[*id];
                             for &index in war.open_participants.values() {
-                                war.participants[index].last_hour = last;
+                                war.participants[index].last_hour = war.last_hour;
                             }
                         }
+                        previous = None;
+                        open.clear();
+                        identity_since.clear();
                     }
-                    let observations = observed
-                        .iter()
-                        .map(|o| Observed {
-                            data: WarObservation {
-                                first_hour: hour,
-                                last_hour: hour,
-                                ..o.data.clone()
-                            },
-                            relations: o.relations.clone(),
-                            losses: inputs.losses(&o.loss_pairs),
-                            loss_pairs: o.loss_pairs.clone(),
-                        })
-                        .collect();
-                    open = continue_wars(&mut reply.wars, &open, observations, previous);
-                }
-                identity_since.retain(|raw, _| {
-                    inputs
-                        .raw_to_slot
-                        .get(raw)
-                        .is_some_and(|slot| inputs.tags.contains_key(slot))
-                });
-                for (&raw, &slot) in &inputs.raw_to_slot {
-                    let Some(tag) = inputs.tags.get(&slot) else {
-                        continue;
-                    };
-                    let entry = identity_since.entry(raw).or_insert((tag.clone(), hour));
-                    if &entry.0 != tag || previous.is_none() {
-                        *entry = (tag.clone(), hour);
+                    last_frame = Some(hour);
+                    let same = held.as_mut().is_some_and(|old| {
+                        old.tables
+                            .iter()
+                            .zip(&compared)
+                            .all(|(seen, table)| seen.is(&decoded.tables[table.index()]))
+                            && old
+                                .observed
+                                .as_mut()
+                                .is_ok_and(|(inputs, _)| inputs.refresh_losses(decoded))
+                    });
+                    if !same {
+                        held = Some(HeldHour {
+                            tables: compared
+                                .iter()
+                                .map(|table| decoded.tables[table.index()].identity())
+                                .collect(),
+                            observed: identities
+                                .map_or_else(
+                                    || Ok(view.map(str::to_owned)),
+                                    |selected| selected_view(decoded, selected).map(Some),
+                                )
+                                .and_then(|view| Hour::read(decoded, view.as_deref()))
+                                .map(|inputs| {
+                                    let observations = inputs.observe(decoded, cat);
+                                    (inputs, observations)
+                                }),
+                        });
                     }
-                }
-                match decoded.complete::<tables::Capitulation>() {
-                    Ok(rows) => {
-                        for r in rows.iter().filter(|r| r.capitulated != 0) {
-                            let Some((tag, since)) = identity_since.get(&r.country) else {
+                    if let Ok((inputs, observed)) = &held.as_ref().expect("held hour").observed {
+                        if !same || previous.is_none() {
+                            country_labels.include(inputs, observed);
+                        }
+                        append_viewpoint(&mut reply, inputs, hour);
+                        if previous_view.as_ref() != inputs.tags.get(&inputs.view) {
+                            for (id, _) in &open {
+                                let war = &mut reply.wars[*id];
+                                for &index in war.open_participants.values() {
+                                    war.participants[index].last_hour = war.last_hour;
+                                }
+                            }
+                            previous = None;
+                            open.clear();
+                        }
+                        previous_view = inputs.tags.get(&inputs.view).cloned();
+                        if same && previous.is_some() && open.len() == observed.len() {
+                            // Loss-only hours retain native groups and continuity. No
+                            // side lists, membership sets or relation runs are rebuilt.
+                            for ((id, _), observed) in open.iter().zip(observed) {
+                                let war = &mut reply.wars[*id];
+                                append_losses(
+                                    war,
+                                    hour,
+                                    inputs.losses(&observed.loss_pairs),
+                                    previous,
+                                );
+                                append_relations(war, hour, &observed.relations);
+                                war.last_hour = hour;
+                                war.observations
+                                    .last_mut()
+                                    .expect("open war observation")
+                                    .last_hour = hour;
+                            }
+                        } else {
+                            // A structural change settles the held participant bounds
+                            // before splitting, merging or ending the previous groups.
+                            if let Some(last) = previous {
+                                for (id, _) in &open {
+                                    let war = &mut reply.wars[*id];
+                                    for &index in war.open_participants.values() {
+                                        war.participants[index].last_hour = last;
+                                    }
+                                }
+                            }
+                            let observations = observed
+                                .iter()
+                                .map(|o| Observed {
+                                    data: WarObservation {
+                                        first_hour: hour,
+                                        last_hour: hour,
+                                        ..o.data.clone()
+                                    },
+                                    relations: o.relations.clone(),
+                                    losses: inputs.losses(&o.loss_pairs),
+                                    loss_pairs: o.loss_pairs.clone(),
+                                })
+                                .collect();
+                            open = continue_wars(&mut reply.wars, &open, observations, previous);
+                        }
+                        identity_since.retain(|raw, _| {
+                            inputs
+                                .raw_to_slot
+                                .get(raw)
+                                .is_some_and(|slot| inputs.tags.contains_key(slot))
+                        });
+                        for (&raw, &slot) in &inputs.raw_to_slot {
+                            let Some(tag) = inputs.tags.get(&slot) else {
                                 continue;
                             };
-                            if r.capitulated_hour < *since || r.capitulated_hour > hour {
-                                warnings.insert("Capitulations whose country identity at the event hour is unobserved are omitted.".into());
-                                continue;
+                            let entry = identity_since
+                                .entry(raw)
+                                .or_insert_with(|| (tag.clone(), hour));
+                            if &entry.0 != tag || previous.is_none() {
+                                *entry = (tag.clone(), hour);
                             }
-                            if !seen_caps.insert((tag.clone(), r.capitulated_hour)) {
-                                continue;
-                            }
-                            dated_caps
-                                .entry(tag.clone())
-                                .or_default()
-                                .push(r.capitulated_hour);
                         }
+                        match decoded.complete::<tables::Capitulation>() {
+                            Ok(rows) => {
+                                for r in rows.iter().filter(|r| r.capitulated != 0) {
+                                    let Some((tag, since)) = identity_since.get(&r.country) else {
+                                        continue;
+                                    };
+                                    if r.capitulated_hour < *since || r.capitulated_hour > hour {
+                                        warnings.insert("Capitulations whose country identity at the event hour is unobserved are omitted.".into());
+                                        continue;
+                                    }
+                                    if !seen_caps.insert((tag.clone(), r.capitulated_hour)) {
+                                        continue;
+                                    }
+                                    dated_caps
+                                        .entry(tag.clone())
+                                        .or_default()
+                                        .push(r.capitulated_hour);
+                                }
+                            }
+                            Err(_) => span(&mut reply.capitulations_unobserved, hour, hour),
+                        }
+                        previous = Some(hour);
+                    } else {
+                        warnings.insert(
+                            held.as_ref()
+                                .expect("held hour")
+                                .observed
+                                .as_ref()
+                                .err()
+                                .expect("failed hour")
+                                .clone(),
+                        );
+                        span(&mut reply.unobserved, hour, hour);
+                        span(&mut reply.capitulations_unobserved, hour, hour);
+                        for (id, _) in &open {
+                            let war: &mut WarTimeline = &mut reply.wars[*id];
+                            for &index in war.open_participants.values() {
+                                war.participants[index].last_hour = war.last_hour;
+                            }
+                        }
+                        previous = None;
+                        open.clear();
+                        identity_since.clear();
+                        held = None;
                     }
-                    Err(_) => span(&mut reply.capitulations_unobserved, hour, hour),
                 }
-                previous = Some(hour);
-            } else {
-                warnings.insert(
-                    held.as_ref()
-                        .expect("held hour")
-                        .observed
-                        .as_ref()
-                        .err()
-                        .expect("failed hour")
-                        .clone(),
-                );
-                span(&mut reply.unobserved, hour, hour);
-                span(&mut reply.capitulations_unobserved, hour, hour);
-                for (id, _) in &open {
-                    let war: &mut WarTimeline = &mut reply.wars[*id];
-                    for &index in war.open_participants.values() {
-                        war.participants[index].last_hour = war.last_hour;
-                    }
-                }
-                previous = None;
-                open.clear();
-                identity_since.clear();
-                held = None;
             }
-        }
-    }
+            Ok(())
+        },
+    )?;
     if let Some(before) = last_frame {
         span(&mut reply.unobserved, before.saturating_add(1), last);
         span(

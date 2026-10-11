@@ -2,12 +2,12 @@
 .special-project-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:10px; padding:4px 12px 12px; }
 .special-project-card { display:grid; grid-template-columns:72px 1fr; gap:10px; padding:10px; border-radius:9px; background:color-mix(in srgb,var(--text) 4%,transparent); box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--border) 70%,transparent); }
 .special-project-detail { min-width:0; }
-.special-project-detail b { display:block; font-size:12.5px; font-weight:600; }
-.special-project-detail small { color:var(--muted); font-size:11px; }
-.special-project-iterations { min-height:13px; font-size:10.5px; color:var(--muted); }
-.special-project-scientist { display:flex; align-items:center; gap:6px; margin-top:6px; font-size:11px; }
+.special-project-detail b { display:block; font-size: 0.78125rem; font-weight:600; }
+.special-project-detail small { color:var(--muted); font-size: 0.6875rem; }
+.special-project-iterations { min-height:13px; font-size: 0.65625rem; color:var(--muted); }
+.special-project-scientist { display:flex; align-items:center; gap:6px; margin-top:6px; font-size: 0.6875rem; }
 .special-project-scientist img, .special-project-portrait { width:20px; height:27px; border-radius:3px; flex:none; object-fit:contain; }
 .special-project-portrait { display:grid; place-items:center; color:var(--muted); background:var(--raised); }
 .special-project-card.is-complete { opacity:.8; }
 .special-project-detail .progress-meter { margin:6px 0 4px; }
-.special-project-country-note { color:var(--muted); font-size:10.5px; }
+.special-project-country-note { color:var(--muted); font-size: 0.65625rem; }

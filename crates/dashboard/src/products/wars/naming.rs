@@ -1,7 +1,9 @@
 //! War names use content-defined types and overrides;
 //! the capture supplies the native default prefix and ordered first goal.
 use super::*;
+use crate::scripted_text::ScriptedText;
 use installed_content::{country_names::CountryNames, localisation::Argument};
+use std::cell::OnceCell;
 
 pub(super) fn unknown(reason: impl Into<String>) -> WarName {
     WarName {
@@ -11,31 +13,24 @@ pub(super) fn unknown(reason: impl Into<String>) -> WarName {
         key: None,
     }
 }
+/// One frame's naming operands, used with one catalogue. Rows ascend by key,
+/// so lookups search them; the first war named builds the shared contexts.
 pub(super) struct Inputs<'a> {
-    pub goals: Result<HashMap<(u32, u32, u32), &'a rows::WarRelationGoalRow>, String>,
-    pub tokens: Result<HashMap<u32, &'a [u8]>, String>,
+    pub goals: Result<&'a [rows::WarRelationGoalRow], String>,
+    pub tokens: Result<&'a [rows::LexicalTokenRow], String>,
     pub prefix: Result<&'a str, String>,
-    pub names: Option<CountryNames<'a>>,
+    names: OnceCell<CountryNames<'a>>,
+    /// Plain state names read the frame and content, never the context's root.
+    states: OnceCell<ScriptedText<'a>>,
 }
 impl<'a> Inputs<'a> {
-    pub fn read(frame: &'a DecodedFrame, cat: Option<&'a Catalogue>) -> Self {
+    pub fn read(frame: &'a DecodedFrame) -> Self {
         Self {
             goals: frame
                 .complete::<tables::WarRelationGoals>()
-                .map(|rows| {
-                    rows.iter()
-                        .filter(|r| r.ordinal == 0)
-                        .map(|r| ((r.owner, r.relation_ordinal, r.side), r))
-                        .collect()
-                })
                 .map_err(|e| e.to_string()),
             tokens: frame
                 .complete::<tables::LexicalTokens>()
-                .map(|rows| {
-                    rows.iter()
-                        .map(|r| (r.token, r.literal.as_slice()))
-                        .collect()
-                })
                 .map_err(|e| e.to_string()),
             prefix: frame
                 .complete::<tables::WarNameRules>()
@@ -45,24 +40,24 @@ impl<'a> Inputs<'a> {
                         .map_err(|_| "native war naming prefix is not UTF-8".into()),
                     _ => Err("native war naming prefix is missing".into()),
                 }),
-            names: cat.map(|c| CountryNames::read(frame, &c.localisation)),
+            names: OnceCell::new(),
+            states: OnceCell::new(),
         }
     }
 }
-pub(super) fn name(
-    frame: &DecodedFrame,
+pub(super) fn name<'a>(
+    frame: &'a DecodedFrame,
     hour: &Hour,
     p: Pair,
-    cat: Option<&Catalogue>,
-    inputs: &Inputs<'_>,
+    cat: Option<&'a Catalogue>,
+    inputs: &Inputs<'a>,
 ) -> WarName {
     let built = (|| -> Result<(String, String), String> {
         let cat = cat.ok_or("Not recorded: the recorded content stack is not resolved")?;
         let localisation = &cat.localisation;
         let names = inputs
             .names
-            .as_ref()
-            .ok_or("Not recorded: country naming operands")?;
+            .get_or_init(|| CountryNames::read(frame, localisation));
         let relation = &hour.world.relations[&p];
         let (instigator, defender, side) = if relation.first_was_instigator != 0 {
             (relation.first_country, relation.second_country, 0)
@@ -81,27 +76,23 @@ pub(super) fn name(
         let goal = if count == 0 {
             None
         } else {
-            Some(
-                *inputs
-                    .goals
-                    .as_ref()
-                    .map_err(Clone::clone)?
-                    .get(&(owned.owner, owned.ordinal, side))
-                    .ok_or("Not recorded: instigator's first war goal")?,
-            )
+            let goals = inputs.goals.as_ref().map_err(Clone::clone)?;
+            let first = goals
+                .binary_search_by_key(&(owned.owner, owned.ordinal, side, 0), |r| {
+                    (r.owner, r.relation_ordinal, r.side, r.ordinal)
+                })
+                .map_err(|_| "Not recorded: instigator's first war goal")?;
+            Some(&goals[first])
         };
         let goal = goal.filter(|r| r.resolved != 0);
         let mut prefix = inputs.prefix.clone()?;
         if let Some(goal) = goal {
-            let token = std::str::from_utf8(
-                inputs
-                    .tokens
-                    .as_ref()
-                    .map_err(Clone::clone)?
-                    .get(&goal.type_token)
-                    .ok_or("Not recorded: war goal type token")?,
-            )
-            .map_err(|_| "war goal type is not UTF-8")?;
+            let tokens = inputs.tokens.as_ref().map_err(Clone::clone)?;
+            let token = tokens
+                .binary_search_by_key(&goal.type_token, |r| r.token)
+                .map_err(|_| "Not recorded: war goal type token")?;
+            let token = std::str::from_utf8(&tokens[token].literal)
+                .map_err(|_| "war goal type is not UTF-8")?;
             let override_key = cat.war_names()?.prefix(token)?;
             if !override_key.is_empty() {
                 prefix = override_key;
@@ -160,13 +151,10 @@ pub(super) fn name(
         if let Some(goal) = goal {
             if goal.state_count != 0 {
                 let scripted = cat.scripted_content()?;
-                state = crate::scripted_text::ScriptedText::new(
-                    frame,
-                    localisation,
-                    scripted,
-                    hour.view,
-                )
-                .plain_state_name(goal.first_state)?;
+                state = inputs
+                    .states
+                    .get_or_init(|| ScriptedText::new(frame, localisation, scripted, hour.view))
+                    .plain_state_name(goal.first_state)?;
             }
             if goal.country_count != 0 {
                 // Reference zero selects the reserved country without a link.

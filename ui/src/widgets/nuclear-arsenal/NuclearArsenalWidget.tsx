@@ -116,7 +116,7 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
       : !headerAlias ? 'The selected native country identity is unknown or conflicting at this hour.' : null)} />, countrySlot);
   const looks = useCountryLooks(runtime.client, track, currentAlias ? [currentAlias] : [], drillAt, active,
     (tag, hour) => drillData?.series.find(series => series.tag === tag)?.segments.find(span => span.firstHour <= hour && hour <= span.lastHour)?.firstHour ?? null);
-  const pendingLabel = useCallback((tag: string) => ({ name: tag }), []);
+  const pendingLabel = useCallback(() => ({ name: 'Loading name…' }), []);
   const hover = useHoverLabels(runtime.client, track, active, pendingLabel);
   const entityLooks = {
     name: (_tag: string, hour = drillAt) => { const alias = aliasAt(hour); return alias ? looks.name(alias, hour) : 'Country identity not recorded'; },

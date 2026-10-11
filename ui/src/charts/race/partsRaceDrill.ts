@@ -28,7 +28,7 @@ export const nativePartsRaceNumbers = (reply: NativePartsRaceReply): NativeParts
 export function partsRaceDrillData(model: PartsRaceModel, histories: NativePartsRaceReply['series'],
   tooltip: CountryPartsData['tooltip']): CountryPartsData {
   return { histories, warnings: model.reply.warnings,
-    parts: () => model.reply.parts.map(part => ({ id: part.key, label: part.name || part.key })),
+    parts: () => model.reply.parts.map(part => ({ id: part.key, label: part.name ?? 'Part name unavailable' })),
     at: (tag, hour) => partsRaceAt(model, tag, hour),
     bands: (tag, range) => partsRaceDrillBands(model, tag, null, range),
     segmentAt: (tag, hour) => partsRaceSegmentAt(model, tag, hour),

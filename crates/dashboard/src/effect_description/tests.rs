@@ -11,6 +11,83 @@ use replay::{
 use std::{collections::BTreeSet, sync::Arc};
 
 #[test]
+fn effect_key_names_share_the_complete_cached_registry_after_a_source_disappears() {
+    let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+        ),
+        (
+            "common/country_tags/test.txt",
+            "SYN=\"countries/synthetic.txt\"",
+        ),
+        (
+            "common/resources/test.txt",
+            "resources={synthetic_resource={icon_frame=1}}",
+        ),
+        (
+            "common/buildings/test.txt",
+            "buildings={synthetic_building={}}",
+        ),
+        (
+            "common/scripted_effects/test.txt",
+            "synthetic_effect={army_experience=2}",
+        ),
+        (
+            "common/units/equipment/test.txt",
+            "equipments={synthetic_type={is_archetype=yes}} duplicate_archetypes={synthetic_copy={archetype=missing}}",
+        ),
+    ]);
+    let layers = &catalogue.content.layers;
+    let shared = layers.key_names().unwrap();
+    let scripted = catalogue.scripted_content().unwrap();
+    std::fs::remove_file(folder.0.join("common/country_tags/test.txt")).unwrap();
+    assert!(installed_content::key_names::KeyNames::read(layers).is_err());
+
+    let cached = scripted.effects().unwrap();
+    assert!(Arc::ptr_eq(&shared, cached.key_names.as_ref().unwrap()));
+    let names = cached.view(None).key_names.unwrap();
+    assert!(std::ptr::eq(shared.as_ref(), names));
+    assert!(names.countries.contains(b"SYN".as_slice()));
+    assert!(
+        names
+            .counts
+            .resources
+            .contains(b"synthetic_resource".as_slice())
+    );
+    assert!(
+        names
+            .counts
+            .buildings
+            .contains(b"synthetic_building".as_slice())
+    );
+    assert!(
+        names
+            .scripted_effects
+            .contains(b"synthetic_effect".as_slice())
+    );
+    assert!(
+        names
+            .equipment_database()
+            .unwrap()
+            .get("synthetic_type")
+            .is_some()
+    );
+    assert!(!cached.gaps.contains_key("effect key names"));
+    assert!(cached.scripted_effects.is_some());
+    assert_eq!(
+        cached
+            .notes
+            .iter()
+            .filter(
+                |note| note.contains("asked to duplicate missing, which is not a known archetype")
+            )
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn advisor_templates_and_idea_notes_share_one_read() {
     engine::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

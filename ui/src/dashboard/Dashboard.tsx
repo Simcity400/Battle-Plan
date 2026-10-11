@@ -1,4 +1,5 @@
 import { Popover, usePopover } from '../components/Popover';
+import { Select } from '../components/Select';
 import { newId } from '../shell/ids.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -9,7 +10,9 @@ import { Icon } from '../components/Icons';
 import type { DashboardClient, DashboardSource } from './client';
 import { addGridItem, addGridItemBelow, bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate, MAX_WIDGETS, mergeViewPreferences, rebaseWidget, seekPositionFor, stableJson } from './model';
 import type { DashboardTemplate, GridLayouts, WidgetSpec } from './model';
+import type { PageId } from './pages';
 import { droppedTagWarning, loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseTemplate, parseTemplateWithNotes, saveLayouts } from './storage';
+import type { LayoutLibrary } from './storage';
 import { PlaybackController } from './playback';
 import { widgetDefinition } from './definitions';
 import '../widgets';
@@ -26,11 +29,15 @@ import { hasMapOverlay, isMapOverlay } from '../shell/mapOverlays';
 import type { Campaign } from './campaigns';
 import { followMapPlayback } from './mapPlayback';
 
-interface Props { library: ReplayLibraryState; path: string | null; client: DashboardClient; onPrimaryPath?: (path: string | null) => void; active?: boolean; mapActive?: boolean; mapSwitching?: boolean; mapReady?: boolean; onMetadata: (metadata: ReplayMetadata | null) => void; onMapError?: (error: string | null) => void; playbackHost?: HTMLElement | null; campaignHost?: HTMLElement | null; onOpenReady?: (open: (() => void) | null) => void }
+interface Props { page: PageId; resetToken: number; library: ReplayLibraryState; path: string | null; client: DashboardClient; onPrimaryPath?: (path: string | null) => void; active?: boolean; mapActive?: boolean; mapSwitching?: boolean; mapReady?: boolean; onMetadata: (metadata: ReplayMetadata | null) => void; onMapError?: (error: string | null) => void; playbackHost?: HTMLElement | null; campaignHost?: HTMLElement | null; onOpenReady?: (open: (() => void) | null) => void }
 
-export default function Dashboard({ path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, onMetadata, onMapError, playbackHost, campaignHost, onOpenReady }: Props) {
-  const [restored] = useState(loadLayouts);
+export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, onMetadata, onMapError, playbackHost, campaignHost, onOpenReady }: Props) {
+  const [restored] = useState(() => loadLayouts(undefined, page));
   const [library, setLibrary] = useState(restored.library);
+  // The page whose layouts are shown; it trails `page` until the swap below runs.
+  const [shownPage, setShownPage] = useState(page);
+  const pageRef = useRef(shownPage);
+  pageRef.current = shownPage;
   const libraryRef = useRef(library);
   libraryRef.current = library;
   const selectedLayout = library.layouts.find((entry) => entry.id === library.activeId)!;
@@ -63,6 +70,26 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
   }, [saved, savedTemplate]);
   const [editing, setEditing] = useState(false);
   const saveMenu = usePopover();
+  // Each page keeps its layouts, draft and edit state while another page is shown. A new
+  // reset token drops them all, so every page reopens from storage.
+  const pageStates = useRef(new Map<PageId, { library: LayoutLibrary; template: DashboardTemplate; editing: boolean }>());
+  const resetSeen = useRef(resetToken);
+  useLayoutEffect(() => {
+    const reset = resetToken !== resetSeen.current;
+    if (page === shownPage && !reset) return;
+    resetSeen.current = resetToken;
+    if (reset) pageStates.current.clear();
+    else pageStates.current.set(shownPage, { library: libraryRef.current, template: templateRef.current, editing });
+    let next = pageStates.current.get(page);
+    if (!next) {
+      const loaded = loadLayouts(undefined, page);
+      next = { library: loaded.library, template: loaded.library.layouts.find(entry => entry.id === loaded.library.activeId)!.template, editing: false };
+      setWarning(loaded.warning);
+    }
+    saveMenu.popup.current?.hidePopover();
+    viewport.current?.scrollTo({ top: 0 });
+    setLibrary(next.library); setTemplate(next.template); setEditing(next.editing); setSavedTemplate(null); setShownPage(page);
+  }, [page, shownPage, editing, saveMenu.popup, resetToken]);
   const saving = saveMenu.open;
   const [layoutName, setLayoutName] = useState('');
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -149,7 +176,7 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
         widgets: entry.template.widgets.map(item => item.id === widget.id ? mergeViewPreferences(item, previous, widget, tracks) : item) } };
     }) };
     if (!parseLayoutLibrary(next)) { setWarning('This setting applies now and is saved with the layout when you press Save.'); return; }
-    const error = saveLayouts(next);
+    const error = saveLayouts(next, undefined, pageRef.current);
     if (error) { setWarning(error); return; }
     libraryRef.current = next;
     setLibrary(next);
@@ -188,7 +215,7 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
     const id = asNew ? newId() : library.activeId;
     const entry = { id, template: clean };
     const next = { ...library, activeId: id, layouts: asNew ? [...library.layouts, entry] : library.layouts.map((item) => item.id === id ? entry : item) };
-    const error = saveLayouts(next);
+    const error = saveLayouts(next, undefined, shownPage);
     setSaveError(error);
     if (error) return;
     setLibrary(next); setTemplate(clean); setSavedTemplate(clean); saveMenu.popup.current?.hidePopover(); setEditing(false); setWarning(droppedTagWarning(droppedTags));
@@ -201,7 +228,7 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
     if (!entry) return;
     if (!parseTemplate(includeCampaigns(entry.template, campaigns))) { setWarning('This layout has no room for the open campaigns. Use a layout with fewer source slots or tracks.'); return; }
     const next = { ...library, activeId: id };
-    setWarning(saveLayouts(next));
+    setWarning(saveLayouts(next, undefined, shownPage));
     setLibrary(next); setTemplate(entry.template); setSavedTemplate(null);
   };
 
@@ -213,7 +240,6 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
     const slots = campaignSlots(draftTemplate, campaignsRef.current);
     const slot = slotId === 'new' ? undefined : slotId ? slots.empty.find(role => role.id === slotId) : slots.empty[0];
     if (slotId && slotId !== 'new' && !slot) { setActionError('That campaign slot is now occupied. Choose another slot.'); return null; }
-    if (!known && !slot && !slots.canAdd) { setActionError('Unload a campaign before loading another.'); return null; }
     if (reconnect) clock.stop();
     const id = known?.id ?? slot?.id ?? newId();
     const campaign = { id, path: chosen, label: label.slice(0, 160), loading: true };
@@ -374,18 +400,16 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
     {active && <>
       {/* The layout picker and the editing tools share one slot, so the bar never shifts or grows. */}
       <div className="toolbar-swap" data-editing={editing || dirty || undefined}>
-      <label className="header-layout"><Icon name="layers" /><span className="sr-only">Layout</span>
-        <select aria-label="Saved layout" value={library.activeId} disabled={editing || dirty || campaigns.some(campaign => campaign.loading)}
-          onChange={(event) => selectLayout(event.currentTarget.value)}>
-          {library.layouts.map((entry) => <option key={entry.id} value={entry.id}>{entry.template.name}</option>)}
-        </select></label>
+      <div className="header-layout"><Icon name="layers" />
+        <Select label="Saved layout" value={library.activeId} disabled={editing || dirty || campaigns.some(campaign => campaign.loading)}
+          onChange={selectLayout} options={library.layouts.map(entry => ({ value: entry.id, label: entry.template.name }))} /></div>
       <div className="dash-toolbar" role="toolbar" aria-label="Layout changes">
         <span className="toolbar-slot" data-shown={editing || undefined}><WidgetPicker runtime={runtime} disabled={!editing || template.widgets.length >= MAX_WIDGETS} onOpen={() => saveMenu.popup.current?.hidePopover()} onAdd={(kind, initial) => {
           const widget = { ...createWidget(kind, template.tracks[0].id), ...initial };
           update((previous) => ({ ...previous, widgets: [...previous.widgets, widget], layouts: addGridItem(previous.layouts, widget) }));
         }} /></span>
         <button type="button" className="icon-button header-reset toolbar-slot" data-shown={editing || undefined} aria-label="Reset layout" data-tooltip="Reset arrangement to default" onClick={() => {
-          update(() => ({ ...defaultTemplate(), name: template.name })); saveMenu.popup.current?.hidePopover();
+          update(() => ({ ...defaultTemplate(shownPage), name: template.name })); saveMenu.popup.current?.hidePopover();
         }}><Icon name="refresh" /></button>
         <button type="button" className="icon-button" aria-label="Cancel layout changes" data-tooltip="Discard layout changes" onClick={() => {
           setTemplate(selectedLayout.template); setEditing(false); saveMenu.popup.current?.hidePopover(); editButton.current?.focus();
@@ -417,7 +441,7 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
     {saved && savedVisible && <div className="layout-saved" role="status"><Icon name="check" />{saved}</div>}
     <div className={`dash-grid-scroll${editing ? ' is-editing' : ''}`} ref={viewport}>
       {active && <DashboardGrid template={template} runtime={runtime} editing={editing} onLayouts={layoutsChanged} onApply={applyWidget} onRemove={removeWidget} />}
-      {template.widgets.length === 0 && <div className="dash-empty dash-empty-dashboard"><span className="empty-icon"><Icon name="grid" /></span><strong>Make room for your campaign</strong><p>Choose Edit, then add a campaign map, a national focus or research panel, or an empty panel to plan around.</p></div>}
+      {template.widgets.length === 0 && <div className="dash-empty dash-empty-dashboard"><span className="empty-icon"><Icon name="grid" /></span><strong>Make room for your campaign</strong><p>Choose Edit, then add widgets, or reset this page to its default arrangement.</p></div>}
     </div>
   </div>;
 }

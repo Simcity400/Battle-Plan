@@ -324,6 +324,29 @@ fn destruction_hours_roundtrip_signed_empty_unavailable_and_selected() {
             );
         }
     }
+    // A selected seek stops at its hour yet verifies the rest of its block first, and
+    // rebuilds only what was asked for (with the campaign every frame is checked against).
+    let tables = [TableId::EquipmentDestruction];
+    let fresh = Replay::open(replay.bytes().to_vec()).unwrap();
+    for (i, (amounts, _)) in views.iter().enumerate() {
+        let SeekResult::Frame(frame) = fresh.seek_selected(1, i as i32 + 1, Some(&tables)).unwrap()
+        else {
+            panic!("missing hour");
+        };
+        assert!(fresh.is_verified(&fresh.index[0]));
+        assert_eq!(
+            &*frame.tables[TableId::EquipmentDestruction.index()],
+            amounts
+        );
+        assert!(matches!(
+            &*frame.tables[TableId::Campaign.index()],
+            TableView::Complete(_)
+        ));
+        assert!(matches!(
+            &*frame.tables[TableId::DivisionEquipmentDeletions.index()],
+            TableView::Unavailable { .. }
+        ));
+    }
     assert_eq!(
         crate::cadence::cadence(TableId::EquipmentDestruction),
         crate::cadence::Cadence::Hourly
@@ -1026,10 +1049,9 @@ fn parallel_payloads_report_the_first_bad_frame_in_position_order() {
     payloads[40].truncate(3);
     payloads[9].push(0);
     let slices: Vec<&[u8]> = payloads.iter().map(Vec::as_slice).collect();
-    let sequential = decode_payloads(&slices, None, None, FormatVersion::CURRENT);
+    let sequential = decode_payloads(&slices, None, FormatVersion::CURRENT);
     let parallel = decode_payloads(
         &slices,
-        None,
         Some(&Parallel {
             workers: 4,
             on_worker: &|| {},
@@ -1102,6 +1124,39 @@ fn a_broken_payload_boundary_is_the_same_error_read_in_parallel() {
     let (sequential, parallel_read) = both(&overlong);
     assert!(sequential.is_err());
     assert_eq!(sequential, parallel_read);
+}
+
+#[test]
+fn a_seek_that_stops_early_still_refuses_a_block_broken_after_its_hour() {
+    let hours: Vec<i32> = (1..=64).collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &hours)]).unwrap();
+    let unreadable = |replay: &Replay, hour| matches!(replay.seek(1, hour).unwrap(), SeekResult::Gap { reason, .. } if reason.contains("unreadable block"));
+    // One more frame counted than the block holds: the frame at hour 1 decodes, but
+    // the block as a whole does not, so no hour of it is trusted.
+    let overcounted = edited_block(&replay, |raw| {
+        let count = u32::from_le_bytes(raw[..4].try_into().unwrap()) + 1;
+        raw[..4].copy_from_slice(&count.to_le_bytes());
+    });
+    assert!(unreadable(&overcounted, 1));
+    assert!(
+        unreadable(&overcounted, 1),
+        "a refused block is never marked verified"
+    );
+    // Blocks whose frames end before the hour range the index claims: the
+    // early hours decode, the block's end check fails, even after a whole read.
+    let mut index = replay.index.clone();
+    index[0].last_hour = 65;
+    let wrong_range = Replay::open(rebuild(
+        &replay,
+        replay.bytes()[..replay.trailer_start].into(),
+        &index,
+    ))
+    .unwrap();
+    assert!(wrong_range.read_block(&wrong_range.index[0]).is_err());
+    assert!(unreadable(&wrong_range, 1));
+    // An intact block, once read whole, may be left partway on later seeks.
+    assert!(replay.read_block(&replay.index[0]).is_ok());
+    assert!(matches!(replay.seek(1, 1).unwrap(), SeekResult::Frame(_)));
 }
 
 #[test]

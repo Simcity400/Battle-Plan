@@ -63,7 +63,8 @@ test('actual picker offers content categories, persists their choices and exclud
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/components/Popover.tsx')) return `export const usePopover = () => ({ trigger: null, open: globalThis.__ideaPicker.open,
-          close() { globalThis.__ideaPicker.open = false; } }); export const Popover = ({ children }) => children;`;
+          close() { globalThis.__ideaPicker.open = false; } }); export const Popover = ({ children }) => children;
+          export const PopoverBody = ({ children }) => children();`;
         if (path.endsWith('/dashboard/products.ts')) return source.replace("import { useEffect, useState } from 'react';",
           'const { useEffect, useState } = globalThis.__ideaPicker;');
         if (path.endsWith('/idea-timeline/IdeaTimelinePickerItems.tsx')) return source.replace("import { useEffect, useMemo, useRef } from 'react';",
@@ -120,7 +121,7 @@ test('actual picker offers content categories, persists their choices and exclud
     assert.equal(chosenCategory([category(MOD_CATEGORY, 'Extra council')], String(restored.widgets[0].options?.category))?.token, MOD_CATEGORY);
     const settings = renderToStaticMarkup(createElement(OptionFields, { fields: OPTIONS.filter((field: { key: string }) => field.key === 'category'),
       values: { category: MOD_CATEGORY }, choices: { category: [{ value: MOD_CATEGORY, label: 'Extra council' }] }, onChange() {} }));
-    assert.match(settings, /value="mod council,elite:20:seat" selected=""/); assert.doesNotMatch(settings, /disabled|cannot be saved/);
+    assert.match(settings, /aria-label="Category"><span>Extra council<\/span>/); assert.doesNotMatch(settings, /disabled|cannot be saved/);
     const stale = extra.onAdd;
     render(); fixture.commit(); stale(extra.definition.kind, extra.initial); assert.equal(added.length, 1, 'a closed picker rejects its old category callback');
     fixture.open = true; render(); fixture.commit();
@@ -146,10 +147,10 @@ test('actual picker offers content categories, persists their choices and exclud
     const longName = 'Synthetic category title '.repeat(10);
     calls[3].answer({ ...reply([category('raw_label', null), category('empty_title', ''), category('long_title', longName)]),
       warnings: ['Synthetic category content warning.'] }); await settle();
-    const content = render(); assert.match(content, /<strong>raw_label<\/strong>/); assert.match(content, /Synthetic category content warning/);
+    const content = render(); assert.match(content, /<strong>Category name unavailable<\/strong>/); assert.match(content, /Synthetic category content warning/);
     const empty = fixture.buttons.find(button => button.initial?.options?.category === 'empty_title')!;
     assert.equal(empty.definition.title, '', 'known empty category names stay empty in the picker');
-    assert.equal(empty.initial?.title, definition.title, 'an empty content label gets the existing editable application title');
+    assert.equal(empty.initial?.title, definition.title, 'a defined empty category keeps its blank picker label and gets a valid editable widget title');
     empty.onAdd(empty.definition.kind, empty.initial); render(); fixture.commit();
     fixture.open = true; render(); fixture.commit();
     const long = fixture.buttons.find(button => button.initial?.options?.category === 'long_title')!;

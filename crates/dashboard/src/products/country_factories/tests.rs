@@ -702,11 +702,11 @@ fn factory_types_follow_a_modded_content_stack() {
         &[
             (
                 "common/buildings/mod_buildings.txt",
-                "buildings = { arms_factory = { military_production = 1 } tank_works = { military_production = 1 rocket_production = 2 } industrial_complex = { general_production = 1 } workshop = { general_production = 1 rocket_production = -1 } launch_site = { rocket_launch_capacity = 3 rocket_production = 0 } }",
+                "buildings = { arms_factory = { military_production = 1 } tank_works = { military_production = 1 rocket_production = 2 } industrial_complex = { general_production = 1 } workshop = { general_production = 1 rocket_production = -1 } empty_works = { general_production = 1 } same_key_works = { general_production = 1 } launch_site = { rocket_launch_capacity = 3 rocket_production = 0 } }",
             ),
             (
                 "localisation/english/mod_l_english.yml",
-                "\u{feff}l_english:\n tank_works:0 \"Tank Works\"\n",
+                "\u{feff}l_english:\n tank_works:0 \"Tank Works\"\n empty_works:0 \"\"\n same_key_works:0 \"same_key_works\"\n",
             ),
             (
                 "localisation/replace/english/mod_replace_l_english.yml",
@@ -732,7 +732,7 @@ fn factory_types_follow_a_modded_content_stack() {
     assert!(findings.iter().any(|finding| {
         finding.kind == Kind::Content
             && finding.subject == "building workshop"
-            && finding.message.contains("shown by its token")
+            && finding.message.contains("title is unavailable")
     }));
     assert!(findings.iter().any(|finding| {
         finding.kind == Kind::Fallback && finding.subject == "factory group naval_production"
@@ -761,7 +761,9 @@ fn factory_types_follow_a_modded_content_stack() {
         named(FactoryGroupKey::Civilian),
         [
             ("industrial_complex".to_owned(), some("Public Works Hall")),
-            ("workshop".to_owned(), None)
+            ("workshop".to_owned(), None),
+            ("empty_works".to_owned(), some("")),
+            ("same_key_works".to_owned(), some("same_key_works"))
         ]
     );
     // The removed vanilla dockyard is gone; the group is named by its flag.

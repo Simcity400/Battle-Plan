@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Select } from '../components/Select';
 import { invoke } from '@tauri-apps/api/core';
 import { desktopAvailable, errorMessage } from './api';
 import { Icon } from '../components/Icons';
@@ -49,17 +50,19 @@ export default function VideoControls({ video, busy }: { video: ReturnType<typeo
     <label className="map-option-row"><span>{VSYNC} <span className="folder-info" tabIndex={0} role="img" aria-label="About VSync" data-tooltip="Synchronizes all native maps to the display to reduce tearing. This is a global graphics setting; browser preview uses the browser's presentation settings."><Icon name="info" /></span></span>
       {desktopAvailable ? <input type="checkbox" role="switch" disabled={!enabled} aria-checked={video.draft ? video.draft.vsync : 'mixed'} checked={video.draft?.vsync ?? false} onChange={event => video.update({ vsync: event.currentTarget.checked })} /> : <span className="graphics-unavailable">Desktop only</span>}
     </label>
-    <label className="map-option-row"><span>{INTERFACE_SCALE} <span className="folder-info" tabIndex={0} role="img" aria-label="About interface scale" data-tooltip="Changes the size of app text, menus and buttons. Map widget sizes still use the dashboard Edit handles. In browser preview, use browser zoom."><Icon name="info" /></span></span>
-      {desktopAvailable ? <select disabled={!enabled} value={video.draft?.uiScale ?? ''} onChange={event => video.update({ uiScale: Number(event.currentTarget.value) })}>
-        {!video.draft && <option value="">{video.error ? 'Unavailable' : 'Loading...'}</option>}{[...new Set([...Array.from({ length: 16 }, (_, index) => 75 + index * 5), ...(video.draft ? [video.draft.uiScale] : [])])].sort((a, b) => a - b).map(scale => <option key={scale} value={scale}>{scale}%</option>)}
-      </select> : <span className="graphics-unavailable">Browser zoom</span>}
-    </label>
-    <label className="map-option-row"><span>{MAP_UI_SCALE} <span className="folder-info" tabIndex={0} role="img" aria-label="About map UI scale" data-tooltip="Size of counters, map icons, labels, combat bubbles, the combat window and map tooltips. Match game draws them as large as the game shows them on this desktop, from its settings.txt and pdx_settings.txt display settings."><Icon name="info" /></span></span>
-      {desktopAvailable ? <select disabled={!enabled} value={video.draft ? video.draft.mapUiScale ?? MATCH_GAME : ''} onChange={event => { const value = event.currentTarget.value; video.update({ mapUiScale: value === MATCH_GAME ? null : Number(value) }); }}>
-        {!video.draft && <option value="">{video.error ? 'Unavailable' : 'Loading...'}</option>}
-        <option value={MATCH_GAME}>{video.gameMapUiScale === null ? 'Match game (default)' : `Match game (${video.gameMapUiScale}%)`}</option>
-        {[...new Set([...video.mapUiScaleChoices, ...(video.draft?.mapUiScale != null ? [video.draft.mapUiScale] : [])])].sort((a, b) => a - b).map(scale => <option key={scale} value={scale}>{scale}%</option>)}
-      </select> : <span className="graphics-unavailable">Desktop only</span>}
-    </label>
+    <div className="map-option-row"><span>{INTERFACE_SCALE} <span className="folder-info" tabIndex={0} role="img" aria-label="About interface scale" data-tooltip="Changes the size of app text, menus and buttons. Map widget sizes still use the dashboard Edit handles. In browser preview, use browser zoom."><Icon name="info" /></span></span>
+      {desktopAvailable ? <Select label={INTERFACE_SCALE} disabled={!enabled} value={String(video.draft?.uiScale ?? '')} onChange={value => video.update({ uiScale: Number(value) })}
+        options={[...(video.draft ? [] : [{ value: '', label: video.error ? 'Unavailable' : 'Loading...' }]),
+          ...[...new Set([...Array.from({ length: 16 }, (_, index) => 75 + index * 5), ...(video.draft ? [video.draft.uiScale] : [])])].sort((a, b) => a - b).map(scale => ({ value: String(scale), label: `${scale}%` }))]} />
+        : <span className="graphics-unavailable">Browser zoom</span>}
+    </div>
+    <div className="map-option-row"><span>{MAP_UI_SCALE} <span className="folder-info" tabIndex={0} role="img" aria-label="About map UI scale" data-tooltip="Size of counters, map icons, labels, combat bubbles, the combat window and map tooltips. Match game draws them as large as the game shows them on this desktop, from its settings.txt and pdx_settings.txt display settings."><Icon name="info" /></span></span>
+      {desktopAvailable ? <Select label={MAP_UI_SCALE} disabled={!enabled} value={video.draft ? String(video.draft.mapUiScale ?? MATCH_GAME) : ''}
+        onChange={value => video.update({ mapUiScale: value === MATCH_GAME ? null : Number(value) })}
+        options={[...(video.draft ? [] : [{ value: '', label: video.error ? 'Unavailable' : 'Loading...' }]),
+          { value: MATCH_GAME, label: video.gameMapUiScale === null ? 'Match game (default)' : `Match game (${video.gameMapUiScale}%)` },
+          ...[...new Set([...video.mapUiScaleChoices, ...(video.draft?.mapUiScale != null ? [video.draft.mapUiScale] : [])])].sort((a, b) => a - b).map(scale => ({ value: String(scale), label: `${scale}%` }))]} />
+        : <span className="graphics-unavailable">Desktop only</span>}
+    </div>
   </>;
 }

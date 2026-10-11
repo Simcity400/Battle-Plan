@@ -240,159 +240,170 @@ pub fn scan(
     let mut pools_open = false;
     let mut deals_open = false;
     let mut open_trades: BTreeMap<u64, usize> = BTreeMap::new();
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancel());
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancel());
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            let hour = frame.hour;
-            let identity = decoded
-                .complete::<tables::Countries>()
-                .ok()
-                .zip(decoded.complete::<tables::CountryLinks>().ok())
-                .and_then(|(countries, links)| {
-                    tagged_country(countries, links, tag)
-                        .found()
-                        .map(|(country, slot)| ((slot, country.id), links))
-                });
-            let continues = track.step(identity.map(|(identity, _)| identity), hour);
-            // Each table's values go on only from its previous hour of the same
-            // identity; where one is missing, the other keeps going.
-            let pools_continue = continues && pools_open;
-            if !(continues && deals_open) {
-                open_trades.clear();
-            }
-            pools_open = false;
-            deals_open = false;
-            let Some(((slot, _), links)) = identity else {
-                continue;
-            };
-            // Without names, nothing this hour records can be shown.
-            let (Ok(definitions), Ok(lexical)) = (
-                decoded.complete::<tables::ResourceDefinitions>(),
-                decoded.complete::<tables::LexicalTokens>(),
-            ) else {
-                continue;
-            };
-            learned.learn(definitions, lexical);
-            result.resources = learned.list();
-            if let Ok(rows) = decoded.complete::<tables::CountryResources>() {
-                pools_open = true;
-                for row in rows
-                    .iter()
-                    .filter(|row| link_slot(links, row.country) == Some(slot))
-                {
-                    if !learned.contains(row.resource) {
-                        result.unnamed += 1;
-                        continue;
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancel());
+                }
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(cancel());
                     }
-                    let values = PoolRun {
-                        first_hour: hour,
-                        last_hour: hour,
-                        starts_segment: false,
-                        produced_raw: row.produced.to_string(),
-                        subjects_raw: row.adjustment.to_string(),
-                        imported_raw: row.imported.to_string(),
-                        to_export_raw: row.to_export.to_string(),
-                        exported_raw: row.exported.to_string(),
-                        available_raw: row.used.to_string(),
-                        after_projects_raw: row.special_total.to_string(),
-                        production_raw: row.production_demand.to_string(),
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
                     };
-                    let series = result.series.entry(row.resource).or_default();
-                    let follows = pools_continue
-                        && series
-                            .last()
-                            .is_some_and(|run| run.last_hour.checked_add(1) == Some(hour));
-                    match series.last_mut() {
-                        Some(run) if follows && same_pools(run, &values) => run.last_hour = hour,
-                        _ => {
-                            series.push(PoolRun {
-                                starts_segment: !follows,
-                                ..values
-                            });
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    let hour = frame.hour;
+                    let identity = decoded
+                        .complete::<tables::Countries>()
+                        .ok()
+                        .zip(decoded.complete::<tables::CountryLinks>().ok())
+                        .and_then(|(countries, links)| {
+                            tagged_country(countries, links, tag)
+                                .found()
+                                .map(|(country, slot)| ((slot, country.id), links))
+                        });
+                    let continues = track.step(identity.map(|(identity, _)| identity), hour);
+                    // Each table's values go on only from its previous hour of the same
+                    // identity; where one is missing, the other keeps going.
+                    let pools_continue = continues && pools_open;
+                    if !(continues && deals_open) {
+                        open_trades.clear();
+                    }
+                    pools_open = false;
+                    deals_open = false;
+                    let Some(((slot, _), links)) = identity else {
+                        continue;
+                    };
+                    // Without names, nothing this hour records can be shown.
+                    let (Ok(definitions), Ok(lexical)) = (
+                        decoded.complete::<tables::ResourceDefinitions>(),
+                        decoded.complete::<tables::LexicalTokens>(),
+                    ) else {
+                        continue;
+                    };
+                    learned.learn(definitions, lexical);
+                    result.resources = learned.list();
+                    if let Ok(rows) = decoded.complete::<tables::CountryResources>() {
+                        pools_open = true;
+                        for row in rows
+                            .iter()
+                            .filter(|row| link_slot(links, row.country) == Some(slot))
+                        {
+                            if !learned.contains(row.resource) {
+                                result.unnamed += 1;
+                                continue;
+                            }
+                            let values = PoolRun {
+                                first_hour: hour,
+                                last_hour: hour,
+                                starts_segment: false,
+                                produced_raw: row.produced.to_string(),
+                                subjects_raw: row.adjustment.to_string(),
+                                imported_raw: row.imported.to_string(),
+                                to_export_raw: row.to_export.to_string(),
+                                exported_raw: row.exported.to_string(),
+                                available_raw: row.used.to_string(),
+                                after_projects_raw: row.special_total.to_string(),
+                                production_raw: row.production_demand.to_string(),
+                            };
+                            let series = result.series.entry(row.resource).or_default();
+                            let follows = pools_continue
+                                && series
+                                    .last()
+                                    .is_some_and(|run| run.last_hour.checked_add(1) == Some(hour));
+                            match series.last_mut() {
+                                Some(run) if follows && same_pools(run, &values) => {
+                                    run.last_hour = hour
+                                }
+                                _ => {
+                                    series.push(PoolRun {
+                                        starts_segment: !follows,
+                                        ..values
+                                    });
+                                }
+                            }
                         }
                     }
+                    let Ok(exchanges) = decoded.complete::<tables::ResourceExchanges>() else {
+                        open_trades.clear();
+                        continue;
+                    };
+                    mark(&mut result.deal_hours, hour);
+                    deals_open = true;
+                    // Deals this hour still lists continue; the others ended.
+                    let countries = decoded.complete::<tables::Countries>()?;
+                    let mut still = BTreeMap::new();
+                    for exchange in exchanges {
+                        let (exporter, importer) = (
+                            link_slot(links, exchange.exporter),
+                            link_slot(links, exchange.importer),
+                        );
+                        let (direction, partner) = if exporter == Some(slot) {
+                            (TradeDirection::Export, importer)
+                        } else if importer == Some(slot) {
+                            (TradeDirection::Import, exporter)
+                        } else {
+                            continue;
+                        };
+                        if !learned.contains(exchange.resource) {
+                            result.unnamed += 1;
+                            continue;
+                        }
+                        let Some(partner) = partner.and_then(|partner| {
+                            countries
+                                .iter()
+                                .find(|country| country.canonical_slot == partner)
+                                .and_then(|country| std::str::from_utf8(&country.tag).ok())
+                        }) else {
+                            result.unresolved += 1;
+                            continue;
+                        };
+                        let terms = TradeRun {
+                            deal: exchange.id.to_string(),
+                            resource: exchange.resource,
+                            direction,
+                            partner: partner.to_owned(),
+                            delivered_raw: exchange.delivered.to_string(),
+                            factories: exchange.assigned_factories,
+                            convoys_assigned: exchange.convoys_assigned,
+                            convoys_required: exchange.convoys_required,
+                            first_hour: hour,
+                            last_hour: hour,
+                            starts_segment: false,
+                        };
+                        // An open deal was listed at the previous hour.
+                        match open_trades.get(&exchange.id) {
+                            Some(&index) if same_terms(&result.trades[index], &terms) => {
+                                result.trades[index].last_hour = hour;
+                                still.insert(exchange.id, index);
+                            }
+                            previous => {
+                                result.trades.push(TradeRun {
+                                    starts_segment: previous.is_none(),
+                                    ..terms
+                                });
+                                still.insert(exchange.id, result.trades.len() - 1);
+                            }
+                        }
+                    }
+                    open_trades = still;
                 }
             }
-            let Ok(exchanges) = decoded.complete::<tables::ResourceExchanges>() else {
-                open_trades.clear();
-                continue;
-            };
-            mark(&mut result.deal_hours, hour);
-            deals_open = true;
-            // Deals this hour still lists continue; the others ended.
-            let countries = decoded.complete::<tables::Countries>()?;
-            let mut still = BTreeMap::new();
-            for exchange in exchanges {
-                let (exporter, importer) = (
-                    link_slot(links, exchange.exporter),
-                    link_slot(links, exchange.importer),
-                );
-                let (direction, partner) = if exporter == Some(slot) {
-                    (TradeDirection::Export, importer)
-                } else if importer == Some(slot) {
-                    (TradeDirection::Import, exporter)
-                } else {
-                    continue;
-                };
-                if !learned.contains(exchange.resource) {
-                    result.unnamed += 1;
-                    continue;
-                }
-                let Some(partner) = partner.and_then(|partner| {
-                    countries
-                        .iter()
-                        .find(|country| country.canonical_slot == partner)
-                        .and_then(|country| std::str::from_utf8(&country.tag).ok())
-                }) else {
-                    result.unresolved += 1;
-                    continue;
-                };
-                let terms = TradeRun {
-                    deal: exchange.id.to_string(),
-                    resource: exchange.resource,
-                    direction,
-                    partner: partner.to_owned(),
-                    delivered_raw: exchange.delivered.to_string(),
-                    factories: exchange.assigned_factories,
-                    convoys_assigned: exchange.convoys_assigned,
-                    convoys_required: exchange.convoys_required,
-                    first_hour: hour,
-                    last_hour: hour,
-                    starts_segment: false,
-                };
-                // An open deal was listed at the previous hour.
-                match open_trades.get(&exchange.id) {
-                    Some(&index) if same_terms(&result.trades[index], &terms) => {
-                        result.trades[index].last_hour = hour;
-                        still.insert(exchange.id, index);
-                    }
-                    previous => {
-                        result.trades.push(TradeRun {
-                            starts_segment: previous.is_none(),
-                            ..terms
-                        });
-                        still.insert(exchange.id, result.trades.len() - 1);
-                    }
-                }
-            }
-            open_trades = still;
-        }
-    }
+            Ok(())
+        },
+    )?;
     Ok(result)
 }
 

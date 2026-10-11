@@ -1,7 +1,7 @@
 import type { ContentFolders, MapBounds, MapOptions, ReplayMetadata } from '../shell/api';
-import type { CampaignMapSettings, MapSettingsReply } from '../generated/dashboard';
+import type { CampaignMapSettings, HistoryCacheReply, MapSettingsReply } from '../generated/dashboard';
 
-export type { CampaignMapSettings, MapGraphics, MapSettingsReply } from '../generated/dashboard';
+export type { CampaignMapSettings, HistoryCacheReply, MapGraphics, MapSettingsReply } from '../generated/dashboard';
 
 /** Runtime source identity. Saved layouts keep source roles, not these handles. */
 export interface DashboardSource {
@@ -79,6 +79,8 @@ export interface DashboardClient {
   releaseSource(id: string): Promise<void>;
   product<T>(request: ProductRequest, signal: AbortSignal): Promise<ProductReply<T>>;
   mapSettings?(sourceId: string, revision: string, settings: CampaignMapSettings | null, signal: AbortSignal, target?: MapSettingsTarget): Promise<MapSettingsReply>;
+  /** The widget history cache's size, after clearing it when asked. */
+  historyCache?(clear: boolean, signal: AbortSignal): Promise<HistoryCacheReply>;
   contentFolders?(signal: AbortSignal): Promise<ContentFolders>;
   chooseContentFolder?(kind: 'game' | 'user', initial: string): Promise<string | null>;
   setContentFolders?(game: string, user: string): Promise<ContentFolders>;

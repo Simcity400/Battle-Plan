@@ -106,6 +106,48 @@ pub struct ExperienceReply {
     pub warnings: Vec<String>,
 }
 
+/// An [`ExperienceRead`] as exact integers; only replies format them.
+#[derive(Clone, Copy)]
+struct RawRead {
+    first_hour: i32,
+    last_hour: i32,
+    read_hour: i32,
+    starts_segment: bool,
+    banked: [i64; 3],
+    /// Banked at the read exactly a day earlier in this stretch.
+    day_before: Option<[i64; 3]>,
+    gain: Option<[i128; 3]>,
+}
+
+impl From<&RawRead> for ExperienceRead {
+    fn from(read: &RawRead) -> Self {
+        let branches = |values: [i128; 3]| ExperienceChange {
+            army_raw: values[0].to_string(),
+            navy_raw: values[1].to_string(),
+            air_raw: values[2].to_string(),
+        };
+        // Widen before subtraction: two valid signed raws can differ by more than i64.
+        let change = read.day_before.map(|previous| {
+            branches(std::array::from_fn(|index| {
+                i128::from(read.banked[index]) - i128::from(previous[index])
+            }))
+        });
+        Self {
+            first_hour: read.first_hour,
+            last_hour: read.last_hour,
+            read_hour: read.read_hour,
+            starts_segment: read.starts_segment,
+            army_raw: read.banked[0].to_string(),
+            navy_raw: read.banked[1].to_string(),
+            air_raw: read.banked[2].to_string(),
+            change_unknown: change.is_none().then_some(ChangeUnknown::NoMatchingRead),
+            change,
+            gain: read.gain.map(branches),
+            gain_unknown: read.gain.is_none().then_some(GainUnknown::NoCompleteDay),
+        }
+    }
+}
+
 #[derive(Default)]
 struct Seen {
     track: IdentityTrack,
@@ -113,16 +155,37 @@ struct Seen {
     open: bool,
     recent: VecDeque<(i32, [i64; 3])>,
     gains: VecDeque<(i32, u32, [i64; 3])>,
-    held: Option<ExperienceRead>,
+    held: Option<RawRead>,
 }
 
-/// One numeric walk; native country state survives a change of its recorded tag.
+/// The walk's reads, as the reply shows them.
+#[cfg(test)]
 pub fn scan(
     replay: &Replay,
     branch: u64,
     tags: &[&str],
     cancelled: &AtomicBool,
 ) -> io::Result<BTreeMap<String, ExperienceSeries>> {
+    Ok(scan_reads(replay, branch, tags, cancelled)?
+        .into_iter()
+        .map(|(tag, reads)| {
+            let series = ExperienceSeries {
+                tag: tag.clone(),
+                identities: None,
+                reads: reads.iter().map(ExperienceRead::from).collect(),
+            };
+            (tag, series)
+        })
+        .collect())
+}
+
+/// One numeric walk; native country state survives a change of its recorded tag.
+fn scan_reads(
+    replay: &Replay,
+    branch: u64,
+    tags: &[&str],
+    cancelled: &AtomicBool,
+) -> io::Result<BTreeMap<String, Vec<RawRead>>> {
     let selected = [
         TableId::Campaign,
         TableId::Countries,
@@ -130,206 +193,186 @@ pub fn scan(
         TableId::CountryExperience,
         TableId::CountryExperienceGains,
     ];
-    let mut result: BTreeMap<String, ExperienceSeries> = tags
+    let mut result: BTreeMap<String, Vec<RawRead>> = tags
         .iter()
-        .map(|tag| {
-            (
-                (*tag).to_owned(),
-                ExperienceSeries {
-                    tag: (*tag).to_owned(),
-                    identities: None,
-                    reads: Vec::new(),
-                },
-            )
-        })
+        .map(|tag| ((*tag).to_owned(), Vec::new()))
         .collect();
     let mut seen: BTreeMap<(u32, u32), Seen> = BTreeMap::new();
     let mut published = BTreeMap::new();
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Experience request cancelled");
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancel());
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancel());
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            let hour = frame.hour;
-            let read_hour = slot_read(&decoded.metrics, TableId::CountryExperience, hour);
-            let inputs = decoded
-                .complete::<tables::Countries>()
-                .ok()
-                .zip(decoded.complete::<tables::CountryLinks>().ok());
-            let mut identities = BTreeMap::new();
-            if let Some((countries, links)) = inputs {
-                for (tag, country) in tagged_countries(countries, links) {
-                    let Some((country, slot)) = country.found() else {
-                        continue;
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancel());
+                }
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(cancel());
+                    }
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
                     };
-                    let Ok(tag) = std::str::from_utf8(tag) else {
-                        continue;
-                    };
-                    // Two tags claiming one native identity cannot name its history.
-                    identities
-                        .entry((slot, country.id))
-                        .and_modify(|tag| *tag = None)
-                        .or_insert(Some(tag));
-                }
-            }
-            let rows = inputs.and_then(|(_, links)| {
-                decoded
-                    .complete::<tables::CountryExperience>()
-                    .ok()
-                    .map(|rows| unique_by_slot(rows, links, |row| row.country))
-            });
-            let gains = inputs.and_then(|(_, links)| {
-                decoded
-                    .complete::<tables::CountryExperienceGains>()
-                    .ok()
-                    .map(|rows| unique_by_slot(rows, links, |row| row.country))
-            });
-            for (identity, tag) in identities {
-                let Some(tag) = tag else {
-                    continue;
-                };
-                let state = seen.entry(identity).or_default();
-                let mut continues = state.track.step(Some(identity), hour);
-                if !continues {
-                    state.native_instance = None;
-                }
-                let observed = gains
-                    .as_ref()
-                    .and_then(|rows| rows.rows.get(&identity.0))
-                    .and_then(|row| *row);
-                if let Some(row) = observed {
-                    continues &= state
-                        .native_instance
-                        .is_none_or(|instance| instance == row.instance);
-                    state.native_instance = Some(row.instance);
-                }
-                if !continues {
-                    state.gains.clear();
-                }
-                let gained = observed.filter(|row| row.complete == 1);
-                if let Some(gained) = gained {
-                    if state.gains.back().is_some_and(|(previous, instance, _)| {
-                        previous.checked_add(1) != Some(hour) || *instance != gained.instance
-                    }) {
-                        state.gains.clear();
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
                     }
-                    while state.gains.front().is_some_and(|(at, _, _)| {
-                        i64::from(hour) - i64::from(*at) >= i64::from(DAY_HOURS)
-                    }) {
-                        state.gains.pop_front();
-                    }
-                    state.gains.push_back((
-                        hour,
-                        gained.instance,
-                        [gained.army_raw, gained.navy_raw, gained.air_raw],
-                    ));
-                } else {
-                    state.gains.clear();
-                }
-                state.open &= continues;
-                if !state.open {
-                    state.recent.clear();
-                }
-                let Some(rows) = rows.as_ref() else {
-                    state.open = false;
-                    continue;
-                };
-                let Some(row) = rows.rows.get(&identity.0).and_then(|row| *row) else {
-                    state.open = false;
-                    continue;
-                };
-                if !read_hour {
-                    if state.open
-                        && let Some(held) = &state.held
-                    {
-                        publish(&mut result, &mut published, tag, identity, held, hour);
-                    }
-                    continue;
-                }
-                while state
-                    .recent
-                    .front()
-                    .is_some_and(|(at, _)| i64::from(hour) - i64::from(*at) > i64::from(DAY_HOURS))
-                {
-                    state.recent.pop_front();
-                }
-                let banked = [row.army_raw, row.navy_raw, row.air_raw];
-                let change = hour
-                    .checked_sub(DAY_HOURS)
-                    .and_then(|before| state.recent.iter().find(|(at, _)| *at == before))
-                    .map(|(_, previous)| {
-                        // Widen before subtraction: two valid signed raws can differ by more than i64.
-                        let delta = |index: usize| {
-                            (i128::from(banked[index]) - i128::from(previous[index])).to_string()
-                        };
-                        ExperienceChange {
-                            army_raw: delta(0),
-                            navy_raw: delta(1),
-                            air_raw: delta(2),
+                    let hour = frame.hour;
+                    let read_hour = slot_read(&decoded.metrics, TableId::CountryExperience, hour);
+                    let inputs = decoded
+                        .complete::<tables::Countries>()
+                        .ok()
+                        .zip(decoded.complete::<tables::CountryLinks>().ok());
+                    let mut identities = BTreeMap::new();
+                    if let Some((countries, links)) = inputs {
+                        for (tag, country) in tagged_countries(countries, links) {
+                            let Some((country, slot)) = country.found() else {
+                                continue;
+                            };
+                            let Ok(tag) = std::str::from_utf8(tag) else {
+                                continue;
+                            };
+                            // Two tags claiming one native identity cannot name its history.
+                            identities
+                                .entry((slot, country.id))
+                                .and_modify(|tag| *tag = None)
+                                .or_insert(Some(tag));
                         }
-                    });
-                let gain = (state.gains.len() == DAY_HOURS as usize).then(|| {
-                    let totals = state
-                        .gains
-                        .iter()
-                        .fold([0_i128; 3], |mut sum, (_, _, values)| {
-                            for index in 0..3 {
-                                sum[index] += i128::from(values[index]);
-                            }
-                            sum
-                        });
-                    ExperienceChange {
-                        army_raw: totals[0].to_string(),
-                        navy_raw: totals[1].to_string(),
-                        air_raw: totals[2].to_string(),
                     }
-                });
-                let held = ExperienceRead {
-                    first_hour: hour,
-                    last_hour: hour,
-                    read_hour: hour,
-                    starts_segment: !state.open,
-                    army_raw: banked[0].to_string(),
-                    navy_raw: banked[1].to_string(),
-                    air_raw: banked[2].to_string(),
-                    change_unknown: change.is_none().then_some(ChangeUnknown::NoMatchingRead),
-                    change,
-                    gain_unknown: gain.is_none().then_some(GainUnknown::NoCompleteDay),
-                    gain,
-                };
-                publish(&mut result, &mut published, tag, identity, &held, hour);
-                state.held = Some(held);
-                state.recent.push_back((hour, banked));
-                state.open = true;
+                    let rows = inputs.and_then(|(_, links)| {
+                        decoded
+                            .complete::<tables::CountryExperience>()
+                            .ok()
+                            .map(|rows| unique_by_slot(rows, links, |row| row.country))
+                    });
+                    let gains = inputs.and_then(|(_, links)| {
+                        decoded
+                            .complete::<tables::CountryExperienceGains>()
+                            .ok()
+                            .map(|rows| unique_by_slot(rows, links, |row| row.country))
+                    });
+                    for (identity, tag) in identities {
+                        let Some(tag) = tag else {
+                            continue;
+                        };
+                        let state = seen.entry(identity).or_default();
+                        let mut continues = state.track.step(Some(identity), hour);
+                        if !continues {
+                            state.native_instance = None;
+                        }
+                        let observed = gains
+                            .as_ref()
+                            .and_then(|rows| rows.rows.get(&identity.0))
+                            .and_then(|row| *row);
+                        if let Some(row) = observed {
+                            continues &= state
+                                .native_instance
+                                .is_none_or(|instance| instance == row.instance);
+                            state.native_instance = Some(row.instance);
+                        }
+                        if !continues {
+                            state.gains.clear();
+                        }
+                        let gained = observed.filter(|row| row.complete == 1);
+                        if let Some(gained) = gained {
+                            if state.gains.back().is_some_and(|(previous, instance, _)| {
+                                previous.checked_add(1) != Some(hour)
+                                    || *instance != gained.instance
+                            }) {
+                                state.gains.clear();
+                            }
+                            while state.gains.front().is_some_and(|(at, _, _)| {
+                                i64::from(hour) - i64::from(*at) >= i64::from(DAY_HOURS)
+                            }) {
+                                state.gains.pop_front();
+                            }
+                            state.gains.push_back((
+                                hour,
+                                gained.instance,
+                                [gained.army_raw, gained.navy_raw, gained.air_raw],
+                            ));
+                        } else {
+                            state.gains.clear();
+                        }
+                        state.open &= continues;
+                        if !state.open {
+                            state.recent.clear();
+                        }
+                        let Some(rows) = rows.as_ref() else {
+                            state.open = false;
+                            continue;
+                        };
+                        let Some(row) = rows.rows.get(&identity.0).and_then(|row| *row) else {
+                            state.open = false;
+                            continue;
+                        };
+                        if !read_hour {
+                            if state.open
+                                && let Some(held) = &state.held
+                            {
+                                publish(&mut result, &mut published, tag, identity, held, hour);
+                            }
+                            continue;
+                        }
+                        while state.recent.front().is_some_and(|(at, _)| {
+                            i64::from(hour) - i64::from(*at) > i64::from(DAY_HOURS)
+                        }) {
+                            state.recent.pop_front();
+                        }
+                        let banked = [row.army_raw, row.navy_raw, row.air_raw];
+                        let day_before = hour
+                            .checked_sub(DAY_HOURS)
+                            .and_then(|before| state.recent.iter().find(|(at, _)| *at == before))
+                            .map(|(_, previous)| *previous);
+                        let gain = (state.gains.len() == DAY_HOURS as usize).then(|| {
+                            state
+                                .gains
+                                .iter()
+                                .fold([0_i128; 3], |mut sum, (_, _, values)| {
+                                    for index in 0..3 {
+                                        sum[index] += i128::from(values[index]);
+                                    }
+                                    sum
+                                })
+                        });
+                        let held = RawRead {
+                            first_hour: hour,
+                            last_hour: hour,
+                            read_hour: hour,
+                            starts_segment: !state.open,
+                            banked,
+                            day_before,
+                            gain,
+                        };
+                        publish(&mut result, &mut published, tag, identity, &held, hour);
+                        state.held = Some(held);
+                        state.recent.push_back((hour, banked));
+                        state.open = true;
+                    }
+                }
             }
-        }
-    }
+            Ok(())
+        },
+    )?;
     Ok(result)
 }
 
 fn publish(
-    result: &mut BTreeMap<String, ExperienceSeries>,
+    result: &mut BTreeMap<String, Vec<RawRead>>,
     published: &mut BTreeMap<String, (u32, u32)>,
     tag: &str,
     identity: (u32, u32),
-    held: &ExperienceRead,
+    held: &RawRead,
     hour: i32,
 ) {
-    let Some(series) = result.get_mut(tag) else {
+    let Some(reads) = result.get_mut(tag) else {
         return;
     };
     let same_identity = if let Some(previous) = published.get_mut(tag) {
@@ -340,24 +383,24 @@ fn publish(
         published.insert(tag.to_owned(), identity);
         false
     };
-    if let Some(read) = series.reads.last_mut()
+    if let Some(read) = reads.last_mut()
         && same_identity
         && read.read_hour == held.read_hour
         && read.last_hour.checked_add(1) == Some(hour)
     {
         read.last_hour = hour;
     } else {
-        let mut read = held.clone();
+        let mut read = *held;
         read.first_hour = hour;
         read.last_hour = hour;
         read.starts_segment = !same_identity || held.starts_segment && held.read_hour == hour;
-        series.reads.push(read);
+        reads.push(read);
     }
 }
 
 #[derive(Default)]
 struct Cache {
-    entries: BTreeMap<(u64, String), ExperienceSeries>,
+    entries: BTreeMap<(u64, String), Vec<RawRead>>,
 }
 
 impl Product for CountryExperience {
@@ -409,18 +452,13 @@ impl Product for CountryExperience {
         let scanned = if missing.is_empty() {
             BTreeMap::new()
         } else {
-            scan(&source.replay(), branch, &missing, cancelled)?
+            scan_reads(&source.replay(), branch, &missing, cancelled)?
         };
         let mut warnings = Vec::new();
         let series = tags
             .iter()
             .map(|tag| {
                 let found = scanned.get(tag).or_else(|| cache.entries.get(&key(tag)));
-                let mut found = found.cloned().unwrap_or_else(|| ExperienceSeries {
-                    tag: tag.clone(),
-                    identities: None,
-                    reads: Vec::new(),
-                });
                 let selected: Vec<_> = history
                     .countries
                     .get(tag)
@@ -429,9 +467,9 @@ impl Product for CountryExperience {
                     .filter(|identity| identities.contains(&(identity.slot, identity.country_id)))
                     .cloned()
                     .collect();
-                found.reads = found
-                    .reads
-                    .iter()
+                let reads: Vec<_> = found
+                    .into_iter()
+                    .flatten()
                     .flat_map(|read| {
                         let first = selected
                             .partition_point(|identity| identity.last_hour < read.first_hour);
@@ -439,22 +477,26 @@ impl Product for CountryExperience {
                             .iter()
                             .take_while(move |identity| identity.first_hour <= read.last_hour)
                             .filter_map(move |identity| {
-                                let mut piece = read.clone();
+                                let mut piece = *read;
                                 piece.first_hour = piece.first_hour.max(identity.first_hour);
                                 piece.last_hour = piece.last_hour.min(identity.last_hour);
-                                (piece.first_hour <= piece.last_hour).then_some(piece)
+                                (piece.first_hour <= piece.last_hour)
+                                    .then(|| ExperienceRead::from(&piece))
                             })
                     })
                     .collect();
-                found.identities = Some(selected);
-                if found.reads.is_empty() {
+                if reads.is_empty() {
                     warnings.push(format!("{tag}: no recorded experience in this branch"));
                 }
-                found
+                ExperienceSeries {
+                    tag: tag.clone(),
+                    identities: Some(selected),
+                    reads,
+                }
             })
             .collect();
-        for (tag, series) in scanned {
-            cache.entries.insert(key(&tag), series);
+        for (tag, reads) in scanned {
+            cache.entries.insert(key(&tag), reads);
         }
         let reply = ExperienceReply {
             branch_id: params.branch_id.clone(),

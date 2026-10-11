@@ -49,7 +49,7 @@ test('laws and advisors taken on while recorded are government changes; focuses 
       { token: 'economy', name: null, character: false, seats: 1, laws: ['civilian_economy', 'war_economy', 'total_mobilisation'] },
       { token: 'political_advisor', name: null, character: true, seats: 3, laws: [] }] }],
   } as unknown as IdeaHistoryReply;
-  const focus = { warnings: [], artwork: [{ token: 'GER_rhineland', name: 'Rhineland', description: null, baseDurationDays: null, icon: null }],
+  const focus = { warnings: [], artwork: [], staticText: [{ token: 'GER_rhineland', name: 'Rhineland', description: null, baseDurationDays: null, icon: null }],
     history: { progress: [], segments: [{ firstHour: 0, lastHour: 1000, order: { completed: [{ ordinal: 0, token: 'GER_rhineland', completedByHour: 50 }, { ordinal: 1, token: 'GER_old', completedByHour: null }], current: null, continuous: null, paused: false } }] } } as unknown as FocusReply;
   const badges = stabilityMarkers({ ...base, ideas, focus }, ALL);
   // The branch-start law and the one after an unrecorded hour are not changes.
@@ -103,13 +103,13 @@ test('a continuing advisor, a shared founding and a repeated focus are read hone
     { firstHour: 0, lastHour: 150, order: { completed: [{ ordinal: 0, token: 'repeatable', completedByHour: 100 }], current: null, continuous: null, paused: false } },
     { firstHour: 151, lastHour: 1000, order: { completed: [{ ordinal: 0, token: 'repeatable', completedByHour: 100 }, { ordinal: 1, token: 'repeatable', completedByHour: 200 }], current: null, continuous: null, paused: false } },
   ] } } as unknown as FocusReply;
-  assert.deepEqual(stabilityMarkers({ ...base, extent: [150, 1000], focus }, ALL).map(badge => [badge.hour, badge.label]), [[200, 'Focus: repeatable (completed by then)']]);
+  assert.deepEqual(stabilityMarkers({ ...base, extent: [150, 1000], focus }, ALL).map(badge => [badge.hour, badge.label]), [[200, 'Focus: Focus name unavailable (completed by then)']]);
   // Two completions seen at one hour after a gap: both kept, each marked as a bound.
   const twice = { warnings: [], artwork: [], history: { progress: [], segments: [
     { firstHour: 0, lastHour: 99, order: { completed: [], current: null, continuous: null, paused: false } },
     { firstHour: 300, lastHour: 1000, order: { completed: [{ ordinal: 0, token: 'repeatable', completedByHour: 300 }, { ordinal: 1, token: 'repeatable', completedByHour: 300 }], current: null, continuous: null, paused: false } },
   ] } } as unknown as FocusReply;
-  assert.deepEqual(stabilityMarkers({ ...base, focus: twice }, ALL).map(badge => badge.label), ['Focus: repeatable (completed by then)', 'Focus: repeatable (completed by then)']);
+  assert.deepEqual(stabilityMarkers({ ...base, focus: twice }, ALL).map(badge => badge.label), ['Focus: Focus name unavailable (completed by then)', 'Focus: Focus name unavailable (completed by then)']);
   // A law continuing across a change of country identity is no new law.
   const kept = { ...ideas, holders: [], spans: [
     { token: 'law', firstHour: 0, lastHour: 149, slot: 'economy', character: null }, { token: 'law', firstHour: 150, lastHour: 300, slot: 'economy', character: null }],

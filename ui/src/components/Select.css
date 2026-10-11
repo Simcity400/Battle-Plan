@@ -1,0 +1,13 @@
+.select-trigger {
+  display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; height: var(--control-h); padding: 0 9px; border: 1px solid var(--control-border);
+  border-radius: var(--r-sm); background: var(--control-fill); box-shadow: var(--control-shadow); text-align: left; font-size: 0.8125rem;
+  transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.select-trigger:hover:not(:disabled) { border-color: var(--control-border-hover); background: var(--control-fill-hover); }
+.select-trigger[aria-expanded='true'] { border-color: var(--accent-line); }
+.select-trigger:disabled { opacity: .5; cursor: default; }
+.select-trigger > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.select-trigger > svg { width: 14px; height: 14px; flex: none; color: var(--muted); }
+.select-row { display: flex; align-items: center; gap: 8px; }
+.select-menu { min-width: 200px; max-height: 320px; padding: 4px; }
+.select-menu .menu-item { min-height: 30px; padding: 4px 8px; }

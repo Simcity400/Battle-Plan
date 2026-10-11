@@ -254,25 +254,34 @@ fn scan(replay: &Replay, branch: u64, detailed: bool, cancelled: &AtomicBool) ->
     ]);
     let mut result = Scan::default();
     let mut state = ScanState::new(detailed);
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        crate::metadata::check_cancel(cancelled)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &wire_selected) else {
-            continue;
-        };
-        for frame in frames {
-            crate::metadata::check_cancel(cancelled)?;
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &wire_selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                crate::metadata::check_cancel(cancelled)?;
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                for frame in frames {
+                    crate::metadata::check_cancel(cancelled)?;
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    state.apply_changes(&frame, decoded);
+                    state.compose(decoded);
+                    observe_totals(&mut result, decoded, &frame, replay, branch, &mut state);
+                }
             }
-            state.apply_changes(&frame, decoded);
-            state.compose(decoded);
-            observe_totals(&mut result, decoded, &frame, replay, branch, &mut state);
-        }
-    }
+            Ok(())
+        },
+    )?;
     Ok(result)
 }
 

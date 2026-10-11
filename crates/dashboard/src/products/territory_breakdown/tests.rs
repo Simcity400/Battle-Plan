@@ -1,7 +1,7 @@
 use super::*;
 use replay::{
     frame::{Metrics, TableView},
-    rows::{CampaignRow, CountryLinkRow, CountryRow, ProvinceRow, StateRow, TableRows},
+    rows::{CampaignRow, CountryLinkRow, CountryRow, ProvinceRow, StateRow, TableId, TableRows},
 };
 
 #[test]
@@ -17,17 +17,19 @@ fn territory_region_names_keep_successful_empty_text_distinct_from_failure() {
         ),
     ]);
     let regions = Regions::read(&catalogue).unwrap();
-    for (region, name) in regions.names[..3].iter().zip(["", "", "ABSENT"]) {
+    for (region, name) in regions.names[..2].iter().zip(["", ""]) {
         assert_eq!(region.name.as_deref(), Some(name));
         assert!(region.missing.is_none());
     }
-    assert!(regions.names[3].name.is_none());
-    assert!(regions.names[3].missing.is_some());
+    for region in &regions.names[2..] {
+        assert!(region.name.is_none());
+        assert!(region.missing.is_some());
+    }
     assert!(
         regions
             .warnings
             .iter()
-            .any(|warning| { warning.starts_with("1 strategic region names unavailable") })
+            .any(|warning| { warning.starts_with("2 strategic region names unavailable") })
     );
 }
 
@@ -111,9 +113,17 @@ fn regions(count: u32) -> Regions {
 #[test]
 fn every_country_region_and_signed_value_survives_without_a_count_ceiling() {
     let mut scan = Scan::default();
-    observe(&mut scan, &frame(100, 5_000), &regions(5_000), None).unwrap();
+    let mut builder = Builder::default();
+    observe(
+        &mut scan,
+        &frame(100, 5_000),
+        &regions(5_000),
+        None,
+        &mut builder,
+    )
+    .unwrap();
     assert_eq!(scan.series.len(), 5_000);
-    for series in scan.series.values() {
+    for series in &scan.series {
         assert!(series.tag.is_some());
         assert_eq!(
             series.runs[0].values,
@@ -138,9 +148,10 @@ fn every_country_region_and_signed_value_survives_without_a_count_ceiling() {
 #[test]
 fn gaps_and_reused_tags_start_new_stretches_without_inventing_zeroes() {
     let mut scan = Scan::default();
+    let mut builder = Builder::default();
     let regions = regions(1);
-    observe(&mut scan, &frame(100, 1), &regions, None).unwrap();
-    observe(&mut scan, &frame(102, 1), &regions, None).unwrap();
+    observe(&mut scan, &frame(100, 1), &regions, None, &mut builder).unwrap();
+    observe(&mut scan, &frame(102, 1), &regions, None, &mut builder).unwrap();
     let mut renamed = frame(103, 1);
     *renamed.tables[TableId::Countries.index()] =
         TableView::Complete(TableRows::Countries(vec![CountryRow {
@@ -160,8 +171,8 @@ fn gaps_and_reused_tags_start_new_stretches_without_inventing_zeroes() {
                 canonical_slot: 1,
             },
         ]));
-    observe(&mut scan, &renamed, &regions, None).unwrap();
-    let runs = &scan.series.values().next().unwrap().runs;
+    observe(&mut scan, &renamed, &regions, None, &mut builder).unwrap();
+    let runs = &scan.series[0].runs;
     assert_eq!(
         runs.iter()
             .map(|run| (run.first_hour, run.last_hour, run.starts_segment))
@@ -194,11 +205,11 @@ fn multi_region_states_split_exactly_while_unknown_holders_keep_named_parts() {
     regions
         .states
         .insert(1, state_parts(&[1, 2], &regions.provinces).unwrap());
-    observe(&mut scan, &frame, &regions, None).unwrap();
+    observe(&mut scan, &frame, &regions, None, &mut Builder::default()).unwrap();
     for region in [1, 2] {
         let state = scan
             .series
-            .values()
+            .iter()
             .find(|series| {
                 series.tag.as_deref() == Some("realm 1") && series.region == Some(region)
             })
@@ -214,7 +225,7 @@ fn multi_region_states_split_exactly_while_unknown_holders_keep_named_parts() {
     }
     let unknown = scan
         .series
-        .values()
+        .iter()
         .find(|series| {
             series.tag.is_none()
                 && series
@@ -226,7 +237,7 @@ fn multi_region_states_split_exactly_while_unknown_holders_keep_named_parts() {
     assert_eq!(unknown.runs[0].values[1].as_deref(), Some("-9"));
     assert!(
         scan.series
-            .values()
+            .iter()
             .any(|series| series.tag.is_none() && series.missing.is_none())
     );
 }
@@ -242,10 +253,11 @@ fn unchanged_tables_compress_but_unavailable_tables_cannot_reuse_a_known_measure
         reason: "unreadable states".into(),
     };
     let mut scan = Scan::default();
+    let mut builder = Builder::default();
     for read in [&first, &same, &stale] {
-        observe(&mut scan, read, &regions(1), None).unwrap();
+        observe(&mut scan, read, &regions(1), None, &mut builder).unwrap();
     }
-    let runs = &scan.series.values().next().unwrap().runs;
+    let runs = &scan.series[0].runs;
     assert_eq!((runs[0].first_hour, runs[0].last_hour), (100, 101));
     assert_eq!(runs[1].state_shares[0], None);
     assert_eq!(runs[1].values[0].as_deref(), Some("1"));
@@ -262,10 +274,10 @@ fn native_content_roster_keeps_repeats_and_unattributed_shares_without_a_provinc
         reason: "province read failed".into(),
     };
     let mut scan = Scan::default();
-    observe(&mut scan, &read, &regions, None).unwrap();
+    observe(&mut scan, &read, &regions, None, &mut Builder::default()).unwrap();
     let shares: BTreeMap<_, _> = scan
         .series
-        .values()
+        .iter()
         .map(|series| (series.region, series.runs[0].state_shares[0].clone()))
         .collect();
     for (region, numerator) in [(Some(1), "2"), (Some(2), "1"), (None, "1")] {
@@ -279,7 +291,7 @@ fn native_content_roster_keeps_repeats_and_unattributed_shares_without_a_provinc
     }
     assert!(
         scan.series
-            .values()
+            .iter()
             .all(|series| series.runs[0].values[0].is_none())
     );
 }
@@ -309,10 +321,10 @@ fn state_terms_combine_by_denominator_without_rounding_or_lcm_limits() {
         },
     ]));
     let mut scan = Scan::default();
-    observe(&mut scan, &read, &regions, None).unwrap();
+    observe(&mut scan, &read, &regions, None, &mut Builder::default()).unwrap();
     let first = scan
         .series
-        .values()
+        .iter()
         .find(|series| series.region == Some(1))
         .unwrap();
     assert_eq!(

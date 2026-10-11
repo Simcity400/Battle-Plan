@@ -1,5 +1,6 @@
 import type { TerritoryMeasure, TerritoryReply, TerritoryRule, TerritoryRun } from '../generated/dashboard';
 import type { Span } from '../charts/series';
+import { usWhole } from '../charts/numberFormat.ts';
 import { validCountryIdentityRuns } from './countryIdentity.ts';
 
 export const MEASURES = [
@@ -20,7 +21,7 @@ export function measureChoices(reply: TerritoryReply | undefined) {
 }
 
 export function formatTerritory(value: number): string {
-  return value.toLocaleString('en-US', { maximumFractionDigits: 0 });
+  return usWhole.format(value);
 }
 
 /** Map cells describe the authored raster, whose projection enlarges the north. */

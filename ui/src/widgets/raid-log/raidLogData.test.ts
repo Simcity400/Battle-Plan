@@ -58,7 +58,7 @@ test('raid chips contain only branch-observed types, disambiguated, regardless o
     { ...type, token: 'mod/unused', name: 'Unused type' }];
   data.episodes[0].runs[1].type = 'mod/other';
   assert.deepEqual(raidLogTypes(data).map(choice => [choice.token, choice.label]),
-    [['mod/sky_raid', 'Air raid (mod/sky_raid)'], ['mod/other', 'Air raid (mod/other)']]);
+    [['mod/sky_raid', 'Air raid (1)'], ['mod/other', 'Air raid (2)']]);
   assert.equal(raidLogRows(data, 105, ['mod/unused'], () => true, null).length, 0);
   assert.equal(raidLogRows(data, 105, [], () => true, null).length, 1);
 });

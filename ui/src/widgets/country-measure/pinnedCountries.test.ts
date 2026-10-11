@@ -92,6 +92,7 @@ test('registered politics and losses pins date their native country headers to l
     '/dashboard/DatedCountryChip.tsx': 'export default props => {globalThis.__pinnedCountries.header = props; return null;};',
     '/dashboard/campaignSettings.ts': 'export const useCampaignSettings = () => ({campaigns: {}});',
     '/dashboard/countryLooks.ts': `export const useCountryLooks = () => ({name: tag => tag, color: () => [20, 50, 80], flag() {}, flagPending() {}, flagReason() {}, revision: 0});`,
+    '/widgets/national-focus/useFocusArtwork.ts': 'export const useFocusText = () => ({read: new Map(), warnings: []});',
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map(); export const useCountryNamesRead = () => new Map();',
     '/dashboard/useCountryLineStyles.ts': `export const useCountryLineStyles = () => ({known: new Map([['X', {tag: 'X', color: [20, 50, 80]}]]), data: {warnings: []}});`,
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({categories: ['#123456'], muted: '#888888', surface: '#000000', countryColours: 'game'}); export const useViewportHeight = () => 1000;`,
@@ -126,7 +127,7 @@ test('registered politics and losses pins date their native country headers to l
         metadata: {campaignKey: 'campaign', countries: [], branches: []}}};
       const props = {widget: JSON.parse(JSON.stringify(widget)), runtime: {client: {}, tracks: [track], clock: {getHour: () => state.clock,
         getSnapshot: () => ({playing: false, hoursPerSecond: 24})}}, active: true, countrySlot: {} as HTMLElement, onDiagnostics() {}} as unknown as WidgetProps;
-      const chip = (renderer.countryChip as (props: WidgetCountryChipProps) => ReactElement)({widget, runtime: props.runtime, onSlot() {}});
+      const chip = (renderer.countryChip as (props: WidgetCountryChipProps) => ReactElement)({widget, runtime: props.runtime, active: true, onSlot() {}});
       assert.equal(chip.type, 'span', kind + ' registers a country slot');
       // PP/CP registration supplies the common body's config through an element.
       const body = kind === 'political-power' || kind === 'command-power' ? Widget(props) as ReactElement<{ config: unknown }> : null;

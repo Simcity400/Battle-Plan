@@ -1,6 +1,68 @@
 use super::*;
 
 #[test]
+fn explicit_uncovered_reads_report_hits_and_missing_candidates() {
+    let root = std::env::temp_dir().join(format!("explicit-uncovered-{}", std::process::id()));
+    fs::create_dir_all(root.join("gfx/custom")).unwrap();
+    fs::write(root.join("gfx/custom/mod-icon.dds"), b"synthetic").unwrap();
+    let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let reads = layers.report_uncovered_reads();
+    for _ in 0..2 {
+        assert_eq!(
+            layers
+                .read_uncovered_path(b"gfx/custom/mod-icon.dds")
+                .unwrap(),
+            b"synthetic"
+        );
+        assert_eq!(
+            layers
+                .read_uncovered_path(b"gfx/custom/missing.dds")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+    let warning = reads.warning().unwrap();
+    assert!(warning.contains("2 file(s)"), "{warning}");
+    assert!(warning.contains("gfx/custom/mod-icon.dds"));
+    assert!(warning.contains("gfx/custom/missing.dds"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn derived_caches_share_a_resolved_stack_and_reset_for_another_roster() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let mut layers = ResolvedLayers::default();
+    let first = layers.derived::<AtomicUsize>();
+    first.store(7, Ordering::Relaxed);
+    assert!(Arc::ptr_eq(
+        &first,
+        &layers.clone().derived::<AtomicUsize>()
+    ));
+    assert_eq!(
+        layers
+            .clone()
+            .derived::<AtomicUsize>()
+            .load(Ordering::Relaxed),
+        7
+    );
+    assert!(!Arc::ptr_eq(
+        &first,
+        &ResolvedLayers::default().derived::<AtomicUsize>()
+    ));
+    let root = std::env::temp_dir().join(format!("derived-roster-{}", std::process::id()));
+    layers
+        .layers
+        .push(folder_layer("additional-mod", &root, Vec::new()));
+    let changed = layers.derived::<AtomicUsize>();
+    assert!(!Arc::ptr_eq(&first, &changed));
+    assert_eq!(changed.load(Ordering::Relaxed), 0);
+}
+
+#[test]
 fn a_database_directory_lists_its_own_files_by_byte_name_without_recursion() {
     let listed = [
         "gfx/train_gfx_database/zz_mod.txt",
@@ -954,6 +1016,7 @@ fn uncovered_reads_follow_load_order_replacement_and_folder_case() {
         descriptor_roster: Default::default(),
         key_names: Default::default(),
         faction_templates: Default::default(),
+        derived: Default::default(),
         visual: Vec::new(),
     };
     assert_eq!(layers.read_uncovered("gfx/world/hoi.fnt").unwrap(), b"over");
@@ -977,6 +1040,7 @@ fn uncovered_reads_follow_load_order_replacement_and_folder_case() {
         descriptor_roster: Default::default(),
         key_names: Default::default(),
         faction_templates: Default::default(),
+        derived: Default::default(),
         visual: Vec::new(),
     };
     assert_eq!(

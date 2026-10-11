@@ -51,7 +51,7 @@ test('visible sampled flags retain backend reasons, clear current failures and n
     const { useCountryLooks } = await vite.ssrLoadModule('/ui/src/dashboard/countryLooks.ts') as typeof import('./countryLooks.ts');
     const { flagReadSpec } = await vite.ssrLoadModule('/ui/src/dashboard/countryFlagsAt.ts') as typeof import('./countryFlagsAt.ts');
     const failed: typeof FAILED_FACT = (await vite.ssrLoadModule('/ui/src/dashboard/countryFacts.ts') as typeof import('./countryFacts.ts')).FAILED_FACT;
-    const missing = flagReadSpec('small').extract({ flags: [], unavailable: [{ tag: 'native_4999', reason: 'Synthetic mod flag refusal' }] });
+    const missing = await flagReadSpec('small').extract({ flags: [], unavailable: [{ tag: 'native_4999', reason: 'Synthetic mod flag refusal' }] });
     assert.equal(missing.get('native_4999')?.reason, 'Synthetic mod flag refusal');
     const tags = Array.from({ length: 5000 }, (_, index) => `native_${index}`);
     const track = { source: { id: 'source', revision: '1' }, branch: { id: 'branch', firstHour: 100, lastHour: 3000, gaps: [] } };

@@ -29,7 +29,7 @@ use super::{
 use crate::{
     Source,
     catalogue::View,
-    metadata::{link_slot, tagged_countries, tagged_country, validate_campaign},
+    metadata::{CountryKeys, link_slot, tagged_countries, tagged_country, validate_campaign},
     products::country_groups::{HourSpan, mark_unobserved},
 };
 use replay::{
@@ -822,172 +822,202 @@ fn scan_selected(
         TableId::CountryAppearance,
         TableId::ReservedCountryNaming,
     ];
-    let mut previous_frame: Option<(i32, [ViewIdentity; 5])> = None;
+    let mut previous_frame: Option<(i32, [ViewIdentity; 5], Option<CountryKeys>)> = None;
     let mut party_views: Option<[ViewIdentity; 2]> = None;
     let mut parties_by_slot: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancel());
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancel());
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            let hour = frame.hour;
-            let (Ok(countries), Ok(links)) = (
-                decoded.complete::<tables::Countries>(),
-                decoded.complete::<tables::CountryLinks>(),
-            ) else {
-                mark_unobserved(&mut unobserved, hour, hour);
-                continue;
-            };
-            let parties = decoded.complete::<tables::PoliticalParties>().ok();
-            observed |= parties.is_some();
-            if parties.is_none() {
-                mark_unobserved(&mut unobserved, hour, hour);
-            }
-            if let Some(tag) = requested {
-                let Some((country, slot)) = tagged_country(countries, links, tag).found() else {
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancel());
+                }
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
                     continue;
                 };
-                let owned: Vec<_> = parties
-                    .into_iter()
-                    .flatten()
-                    .enumerate()
-                    .filter(|(_, party)| link_slot(links, party.country) == Some(slot))
-                    .map(|(index, _)| index)
-                    .collect();
-                let appearance = decoded
-                    .complete::<tables::CountryAppearance>()
-                    .ok()
-                    .and_then(|rows| rows.iter().rev().find(|row| row.country == country.id));
-                let politics = decoded
-                    .complete::<tables::Politics>()
-                    .ok()
-                    .and_then(|rows| {
-                        rows.iter()
-                            .find(|row| link_slot(links, row.country) == Some(slot))
-                    });
-                if !states.contains_key(tag) {
-                    states.insert(tag.to_owned(), CountryScan::default());
-                }
-                states
-                    .get_mut(tag)
-                    .expect("selected country inserted")
-                    .observe(
-                        decoded,
-                        CountryRead {
-                            country,
-                            slot,
-                            parties: parties.map(|rows| (rows, owned.as_slice())),
-                            appearance,
-                            politics,
-                        },
-                        None,
-                        true,
-                    );
-                continue;
-            }
-            if parties.is_some()
-                && previous_frame.as_ref().is_some_and(|(previous, views)| {
-                    previous.checked_add(1) == Some(hour)
-                        && views
-                            .iter()
-                            .zip(FEED_VIEWS)
-                            .all(|(view, table)| view.is(&decoded.tables[table.index()]))
-                })
-            {
-                for state in states.values_mut() {
-                    if state.unresolved_now {
-                        state.unresolved += 1;
-                    } else {
-                        state.extend(hour);
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(cancel());
                     }
-                }
-                previous_frame.as_mut().expect("unchanged frame exists").0 = hour;
-                continue;
-            }
-            previous_frame = parties.is_some().then(|| {
-                (
-                    hour,
-                    FEED_VIEWS.map(|table| decoded.tables[table.index()].identity()),
-                )
-            });
-            let found = tagged_countries(countries, links);
-            const PARTY_VIEWS: [TableId; 2] = [TableId::CountryLinks, TableId::PoliticalParties];
-            // Row indexes remain valid while both the inventory and its owner links stand.
-            if party_views.as_ref().is_none_or(|views| {
-                views
-                    .iter()
-                    .zip(PARTY_VIEWS)
-                    .any(|(view, table)| !view.is(&decoded.tables[table.index()]))
-            }) {
-                parties_by_slot.clear();
-                for (index, party) in parties.into_iter().flatten().enumerate() {
-                    if party.is_ruling != 0
-                        && let Some(slot) = link_slot(links, party.country)
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    let hour = frame.hour;
+                    let (Ok(countries), Ok(links)) = (
+                        decoded.complete::<tables::Countries>(),
+                        decoded.complete::<tables::CountryLinks>(),
+                    ) else {
+                        mark_unobserved(&mut unobserved, hour, hour);
+                        continue;
+                    };
+                    let parties = decoded.complete::<tables::PoliticalParties>().ok();
+                    observed |= parties.is_some();
+                    if parties.is_none() {
+                        mark_unobserved(&mut unobserved, hour, hour);
+                    }
+                    if let Some(tag) = requested {
+                        let Some((country, slot)) = tagged_country(countries, links, tag).found()
+                        else {
+                            continue;
+                        };
+                        let owned: Vec<_> = parties
+                            .into_iter()
+                            .flatten()
+                            .enumerate()
+                            .filter(|(_, party)| link_slot(links, party.country) == Some(slot))
+                            .map(|(index, _)| index)
+                            .collect();
+                        let appearance = decoded
+                            .complete::<tables::CountryAppearance>()
+                            .ok()
+                            .and_then(|rows| {
+                                rows.iter().rev().find(|row| row.country == country.id)
+                            });
+                        let politics =
+                            decoded
+                                .complete::<tables::Politics>()
+                                .ok()
+                                .and_then(|rows| {
+                                    rows.iter()
+                                        .find(|row| link_slot(links, row.country) == Some(slot))
+                                });
+                        if !states.contains_key(tag) {
+                            states.insert(tag.to_owned(), CountryScan::default());
+                        }
+                        states
+                            .get_mut(tag)
+                            .expect("selected country inserted")
+                            .observe(
+                                decoded,
+                                CountryRead {
+                                    country,
+                                    slot,
+                                    parties: parties.map(|rows| (rows, owned.as_slice())),
+                                    appearance,
+                                    politics,
+                                },
+                                None,
+                                true,
+                            );
+                        continue;
+                    }
+                    // Hourly balances change Countries; the feed reads only its keys.
+                    if parties.is_some()
+                        && previous_frame
+                            .as_ref()
+                            .is_some_and(|(previous, views, keys)| {
+                                previous.checked_add(1) == Some(hour)
+                                && views.iter().zip(FEED_VIEWS).all(|(view, table)| {
+                                    view.is(&decoded.tables[table.index()])
+                                        || table == TableId::Countries
+                                            && matches!(keys, Some(keys) if keys.same(countries))
+                                })
+                            })
                     {
-                        parties_by_slot.entry(slot).or_default().push(index);
+                        for state in states.values_mut() {
+                            if state.unresolved_now {
+                                state.unresolved += 1;
+                            } else {
+                                state.extend(hour);
+                            }
+                        }
+                        previous_frame.as_mut().expect("unchanged frame exists").0 = hour;
+                        continue;
                     }
-                }
-                party_views =
-                    Some(PARTY_VIEWS.map(|table| decoded.tables[table.index()].identity()));
-            }
-            let appearances: BTreeMap<_, _> = decoded
-                .complete::<tables::CountryAppearance>()
-                .ok()
-                .into_iter()
-                .flatten()
-                .map(|row| (row.country, row))
-                .collect();
-            let naming_rows = party_naming_rows(decoded, countries);
-            for state in states.values_mut() {
-                state.unresolved_now = false;
-            }
-            for (tag, found) in found {
-                let Ok(tag) = std::str::from_utf8(tag) else {
-                    continue;
-                };
-                if !states.contains_key(tag) {
-                    states.insert(tag.to_owned(), CountryScan::default());
-                }
-                let state = states.get_mut(tag).expect("feed country inserted");
-                let Some((country, slot)) = found.found() else {
-                    if matches!(found, crate::metadata::TaggedCountry::Unresolved) {
-                        state.unresolved_now = true;
-                        state.unresolved += 1;
+                    let found = tagged_countries(countries, links);
+                    const PARTY_VIEWS: [TableId; 2] =
+                        [TableId::CountryLinks, TableId::PoliticalParties];
+                    // Row indexes remain valid while both the inventory and its owner links stand.
+                    if party_views.as_ref().is_none_or(|views| {
+                        views
+                            .iter()
+                            .zip(PARTY_VIEWS)
+                            .any(|(view, table)| !view.is(&decoded.tables[table.index()]))
+                    }) {
+                        parties_by_slot.clear();
+                        for (index, party) in parties.into_iter().flatten().enumerate() {
+                            if party.is_ruling != 0
+                                && let Some(slot) = link_slot(links, party.country)
+                            {
+                                parties_by_slot.entry(slot).or_default().push(index);
+                            }
+                        }
+                        party_views =
+                            Some(PARTY_VIEWS.map(|table| decoded.tables[table.index()].identity()));
                     }
-                    continue;
-                };
-                state.observe(
-                    decoded,
-                    CountryRead {
-                        country,
-                        slot,
-                        parties: parties.and_then(|rows| {
+                    let appearances: BTreeMap<_, _> = decoded
+                        .complete::<tables::CountryAppearance>()
+                        .ok()
+                        .into_iter()
+                        .flatten()
+                        .map(|row| (row.country, row))
+                        .collect();
+                    let naming_rows = party_naming_rows(decoded, countries);
+                    for state in states.values_mut() {
+                        state.unresolved_now = false;
+                    }
+                    // Extending runs is observing the same rows again only while each
+                    // holder has at most one ruling row with a valid token, so only
+                    // then may Countries' keys stand in for its rows.
+                    let mut extendable = true;
+                    for (tag, found) in found {
+                        let Ok(tag) = std::str::from_utf8(tag) else {
+                            continue;
+                        };
+                        if !states.contains_key(tag) {
+                            states.insert(tag.to_owned(), CountryScan::default());
+                        }
+                        let state = states.get_mut(tag).expect("feed country inserted");
+                        let Some((country, slot)) = found.found() else {
+                            if matches!(found, crate::metadata::TaggedCountry::Unresolved) {
+                                state.unresolved_now = true;
+                                state.unresolved += 1;
+                            }
+                            continue;
+                        };
+                        let ruling = parties.and_then(|rows| {
                             parties_by_slot
                                 .get(&slot)
                                 .map(|indices| (rows, indices.as_slice()))
-                        }),
-                        appearance: appearances.get(&country.id).copied(),
-                        politics: None,
-                    },
-                    Some(&naming_rows),
-                    false,
-                );
+                        });
+                        extendable &= match ruling {
+                            None => true,
+                            Some((rows, [index])) => std::str::from_utf8(&rows[*index].token)
+                                .is_ok_and(|token| !token.is_empty()),
+                            Some(_) => false,
+                        };
+                        state.observe(
+                            decoded,
+                            CountryRead {
+                                country,
+                                slot,
+                                parties: ruling,
+                                appearance: appearances.get(&country.id).copied(),
+                                politics: None,
+                            },
+                            Some(&naming_rows),
+                            false,
+                        );
+                    }
+                    previous_frame = parties.is_some().then(|| {
+                        (
+                            hour,
+                            FEED_VIEWS.map(|table| decoded.tables[table.index()].identity()),
+                            extendable.then(|| CountryKeys::read(countries)),
+                        )
+                    });
+                }
             }
-        }
-    }
+            Ok(())
+        },
+    )?;
     let mut result = ScannedPartyBranch {
         observed,
         absent: ScannedParties {

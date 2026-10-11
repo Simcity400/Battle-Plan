@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import {
   desktopAvailable,
@@ -9,6 +9,10 @@ import {
 } from './api';
 import { Icon } from '../components/Icons';
 import type { IconName } from '../components/Icons';
+import { defaultPages, loadPages, savePages } from '../dashboard/pages';
+import type { PageEntry, PageId } from '../dashboard/pages';
+import { clearLayouts } from '../dashboard/storage';
+import AnalyticsNav from './AnalyticsNav';
 import BrandMark from '../components/BrandMark';
 import { useDesktopState, useMapSurface } from './useNativeViewer';
 import { nativeDashboardClient } from '../dashboard/nativeClient';
@@ -16,6 +20,7 @@ import { browserDashboardClient } from '../dashboard/browserClient';
 import Settings, { SettingsNav, settingsSections } from './Settings';
 import type { SettingsSection, SettingsTarget } from './Settings';
 import { useAppearance } from './appearance/useAppearance';
+import { useSidebarIconMenu } from './appearance/SidebarIconMenu';
 import Backdrop from './appearance/Backdrop';
 import './shell.css';
 import { useReplayLibrary } from '../dashboard/replayLibrary';
@@ -27,12 +32,10 @@ import { RecordingNotice } from './recordingNotice';
 
 const browserRecordings = import.meta.env.DEV && !desktopAvailable;
 
-const Dashboard = lazy(() => import('../dashboard/Dashboard'));
+// Shell-only changes (sidebar, popovers, native state) leave the dashboard and its header alone.
+const Dashboard = memo(lazy(() => import('../dashboard/Dashboard')));
 type Tab = 'map' | 'analytics' | 'settings';
-const views: { tab: Tab; icon: IconName; label: string }[] = [
-  { tab: 'analytics', icon: 'grid', label: 'Overview' },
-  { tab: 'map', icon: 'map', label: 'Campaign map' },
-];
+const PAGE_KEY = 'hoi4-replay.analytics-page.v1';
 const SIDEBAR_KEY = 'hoi4-replay.sidebar.v1';
 const SIDEBAR_WIDTH_KEY = 'hoi4-replay.sidebar-width.v1';
 const SIDEBAR_WIDTH = { initial: 232, min: 200, max: 400, mainMin: 640 } as const;
@@ -79,10 +82,36 @@ function useSidebarState() {
     setWidth(clamped);
     saveWidth(clamped);
   };
-  const toggle = useCallback(() => setHidden(value => {
-    try { localStorage.setItem(SIDEBAR_KEY, value ? 'shown' : 'hidden'); } catch { /* Session-only preference. */ }
-    return !value;
-  }), []);
+  // A hidden sidebar slides over the workspace while the pointer is on it or a field in it is being typed in.
+  // Native listeners: portalled sidebar content does not bubble React events to the aside.
+  const [peek, setPeek] = useState(false);
+  const aside = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const element = aside.current;
+    if (!hidden || !element) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const open = () => { clearTimeout(timer); setPeek(true); };
+    const close = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { if (!element.matches(':hover, :has(:is(input, select, textarea):focus)')) setPeek(false); }, 250);
+    };
+    element.addEventListener('pointerenter', open);
+    element.addEventListener('pointerleave', close);
+    element.addEventListener('focusout', close);
+    return () => {
+      clearTimeout(timer);
+      element.removeEventListener('pointerenter', open);
+      element.removeEventListener('pointerleave', close);
+      element.removeEventListener('focusout', close);
+    };
+  }, [hidden]);
+  const toggle = useCallback(() => {
+    setPeek(false);
+    setHidden(value => {
+      try { localStorage.setItem(SIDEBAR_KEY, value ? 'shown' : 'hidden'); } catch { /* Session-only preference. */ }
+      return !value;
+    });
+  }, []);
   useEffect(() => {
     const key = (event: globalThis.KeyboardEvent) => {
       if (event.defaultPrevented || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'b') return;
@@ -95,7 +124,7 @@ function useSidebarState() {
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
   }, [toggle]);
-  return { hidden, toggle, width, resizing, startResize, resetWidth, resizeByKey };
+  return { hidden, peek: hidden && peek, openPeek: () => setPeek(true), aside, toggle, width, resizing, startResize, resetWidth, resizeByKey };
 }
 
 /** Where the app's update control will live. No update service exists yet, so a check only reports that. */
@@ -120,7 +149,16 @@ function MapState({ icon = 'map', eyebrow, title, children, busy = false, alert 
 
 export default function App() {
   const appearance = useAppearance();
+  const iconMenu = useSidebarIconMenu(appearance);
   const sidebar = useSidebarState();
+  // A manual popover gives sidebar peek the same native-window occlusion events as menus.
+  const peekOverlay = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const overlay = peekOverlay.current;
+    if (!sidebar.peek || !overlay) return;
+    overlay.showPopover();
+    return () => overlay.hidePopover();
+  }, [sidebar.peek]);
   useDiagnosticsShortcut();
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('folders');
   const [settingsTarget, setSettingsTarget] = useState<SettingsTarget | null>(null);
@@ -130,6 +168,28 @@ export default function App() {
   const replayLibrary = useReplayLibrary(client);
   const defaultChosen = useRef(false);
   const [tab, setTab] = useState<Tab>(desktopAvailable ? 'map' : 'analytics');
+  const [pages, setPages] = useState(loadPages);
+  const [page, setPage] = useState<PageId>(() => { try { const saved = localStorage.getItem(PAGE_KEY); return pages.find(entry => entry.id === saved)?.id ?? pages[0].id; } catch { return pages[0].id; } });
+  const [layoutReset, setLayoutReset] = useState(0);
+  const [pageStorageWarning, setPageStorageWarning] = useState<string | null>(null);
+  const choosePage = (next: PageId) => { setPage(next); try { localStorage.setItem(PAGE_KEY, next); } catch { /* Session-only preference. */ } };
+  const changePages = (next: PageEntry[]) => { setPages(next); setPageStorageWarning(savePages(next)); };
+  const deletePage = (id: PageId) => {
+    const index = pages.findIndex(entry => entry.id === id);
+    const next = pages.filter(entry => entry.id !== id);
+    if (index < 0 || !next.length) return;
+    changePages(next);
+    clearLayouts(id);
+    if (page === id) choosePage(next[Math.min(index, next.length - 1)].id);
+  };
+  /** Restores the built-in pages, removes added ones and resets every page's layouts. */
+  const resetPages = () => {
+    for (const entry of [...pages, ...defaultPages()]) clearLayouts(entry.id);
+    const next = defaultPages();
+    changePages(next);
+    choosePage(next[0].id);
+    setLayoutReset(count => count + 1);
+  };
   const [playbackHost, setPlaybackHost] = useState<HTMLDivElement | null>(null);
   const [campaignHost, setCampaignHost] = useState<HTMLDivElement | null>(null);
   const [metadata, setMetadata] = useState<ReplayMetadata | null>(null);
@@ -184,7 +244,7 @@ export default function App() {
   // Native load/configuration failures keep their existing controls reachable.
   // Only shell-owned failures need the child hidden for the web recovery panel.
   const shellError = actionError ?? native.error;
-  const boundsError = useMapSurface(content, tab === 'map' && !!path && !shellError && !popoverOpen, retry, tab === 'map');
+  const boundsError = useMapSurface(content, tab === 'map' && !!path && !shellError && !popoverOpen && !sidebar.peek, retry, tab === 'map');
   const nativePath = native.state?.viewer.path ?? null;
   const mapError = actionError ?? boundsError ?? native.error ?? native.state?.error ?? null;
 
@@ -248,12 +308,16 @@ export default function App() {
   const sectionLabel = settingsSections.find(item => item.id === settingsSection)?.label;
 
   return (
-    <div className={`app-shell${sidebar.resizing ? ' is-resizing' : ''}`} data-sidebar={sidebar.hidden ? 'hidden' : 'shown'} data-tab={tab}
-      style={{ '--sidebar-width': sidebar.hidden ? '0px' : `${sidebar.width}px` } as CSSProperties}>
+    <div className={`app-shell${sidebar.resizing ? ' is-resizing' : ''}`} data-sidebar={sidebar.peek ? 'peek' : sidebar.hidden ? 'hidden' : 'shown'} data-tab={tab}
+      style={{ '--sidebar-width': sidebar.hidden ? '0px' : `${sidebar.width}px`, '--sidebar-peek-width': `${sidebar.width}px` } as CSSProperties}>
       <Backdrop kind={appearance.settings.backdrop.kind} image={appearance.backdropImage} />
-      <aside className="sidebar" aria-label="Battle Plan navigation" inert={sidebar.hidden}>
+      <div ref={peekOverlay} popover="manual" className="sidebar-peek-overlay" aria-hidden="true" />
+      {sidebar.hidden && <div className="sidebar-edge" aria-hidden="true" onPointerEnter={sidebar.openPeek} />}
+      <aside ref={sidebar.aside} className="sidebar" aria-label="Battle Plan navigation" inert={sidebar.hidden && !sidebar.peek}
+        onContextMenu={iconMenu.onContextMenu} onKeyDown={iconMenu.onKeyDown}>
         <div className="sidebar-header">
-          <button type="button" className="icon-button sidebar-toggle" onClick={sidebar.toggle} aria-label="Hide sidebar" data-tooltip="Hide sidebar · Ctrl+B"><Icon name="sidebar" /></button>
+          <button type="button" className="icon-button sidebar-toggle" onClick={sidebar.toggle} aria-label={sidebar.hidden ? 'Keep sidebar open' : 'Hide sidebar'}
+            data-tooltip={`${sidebar.hidden ? 'Keep sidebar open' : 'Hide sidebar'} · Ctrl+B`}><Icon name="sidebar" /></button>
           <BrandMark size={20} /><span className="sidebar-wordmark"><strong>the game</strong> Replay</span>
         </div>
         <div className="sidebar-body">
@@ -261,13 +325,15 @@ export default function App() {
           ? <SettingsNav section={settingsSection} onBack={() => void changeTab(lastView.current)} onSection={section => openSettings(section)}
             onTarget={target => openSettings(target.section, target)} disabled={switching} />
           : <nav className="sidebar-menu" aria-label="Views">
-            {views.map(view => <button key={view.tab} id={`tab-${view.tab}`} type="button" className="sidebar-row" aria-current={tab === view.tab ? 'page' : undefined}
-              disabled={switching} onClick={() => void changeTab(view.tab)}><Icon name={view.icon} /><span>{view.label}</span></button>)}
+            <AnalyticsNav pages={pages} page={page} active={tab === 'analytics'} disabled={switching} onPages={changePages} onDelete={deletePage} iconMenu={iconMenu}
+              onChoose={id => { choosePage(id); void changeTab('analytics'); }} />
+            <button id="tab-map" type="button" className="sidebar-row" data-sidebar-icon="map" aria-current={tab === 'map' ? 'page' : undefined}
+              disabled={switching} onClick={() => void changeTab('map')}><Icon name="map" style={{ color: 'var(--sidebar-icon-map)' }} /><span>Campaign map</span></button>
           </nav>}
         <div className="sidebar-campaign-host" ref={setCampaignHost} hidden={tab === 'settings'} />
         <div className="sidebar-footer">
-          {tab !== 'settings' && <button id="tab-settings" type="button" className="icon-button sidebar-utility" disabled={switching} aria-label="Settings" data-tooltip="Settings"
-            onClick={() => void changeTab('settings')}><Icon name="settings" /></button>}
+          {tab !== 'settings' && <button id="tab-settings" type="button" className="icon-button sidebar-utility" data-sidebar-icon="settings" disabled={switching} aria-label="Settings" data-tooltip="Settings"
+            onClick={() => void changeTab('settings')}><Icon name="settings" style={{ color: 'var(--sidebar-icon-settings)' }} /></button>}
           <UpdateButton />
         </div>
         </div>
@@ -275,16 +341,17 @@ export default function App() {
           tabIndex={0} aria-valuenow={sidebar.width} aria-valuemin={SIDEBAR_WIDTH.min} aria-valuemax={clampWidth(SIDEBAR_WIDTH.max)}
           onPointerDown={sidebar.startResize} onDoubleClick={sidebar.resetWidth} onKeyDown={sidebar.resizeByKey} />}
       </aside>
+      {iconMenu.menu}
       <header className="shell-header">
-        {sidebar.hidden && <button type="button" className="icon-button sidebar-toggle" onClick={sidebar.toggle} aria-label="Show sidebar" data-tooltip="Show sidebar · Ctrl+B"><Icon name="sidebar" /></button>}
         <div className="shell-campaign-controls" ref={setPlaybackHost} hidden={tab === 'settings'} />
         {tab === 'settings' && <nav className="shell-location" aria-label="Location"><span>Settings</span><Icon name="chevron-right" /><strong aria-current="page">{sectionLabel}</strong></nav>}
         {tab !== 'settings' && <RecordingNotice partial={metadata?.partial} />}
+        {pageStorageWarning && <div className="notice warning shell-page-storage-warning" role="status">{pageStorageWarning}</div>}
       </header>
 
       <main className="workspace" ref={content}>
         <section id="panel-settings" aria-label="Settings" tabIndex={-1} className="settings-panel" hidden={tab !== 'settings'}>
-          {tab === 'settings' && <Settings section={settingsSection} target={settingsTarget} onTargetShown={clearSettingsTarget} folders={folders} folderError={folderError} onFoldersChange={value => { setBrowserFolders(value); setFolderError(null); }} native={native.state} metadata={metadata} library={replayLibrary} client={client} appearance={appearance} />}
+          {tab === 'settings' && <Settings section={settingsSection} target={settingsTarget} onTargetShown={clearSettingsTarget} folders={folders} folderError={folderError} onFoldersChange={value => { setBrowserFolders(value); setFolderError(null); }} native={native.state} metadata={metadata} library={replayLibrary} client={client} appearance={appearance} onResetPages={resetPages} />}
         </section>
         <section id="panel-map" aria-labelledby="tab-map" tabIndex={-1}
           className="map-panel" hidden={tab !== 'map'}>
@@ -324,7 +391,7 @@ export default function App() {
         <section id="panel-analytics" aria-labelledby="tab-analytics" tabIndex={-1}
           className="analytics-panel" hidden={tab !== 'analytics'}>
           <Suspense fallback={<div className="panel-loading" role="status"><span className="spinner" />Loading overview…</div>}>
-            <Dashboard path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} onMetadata={setMetadata} onMapError={setActionError} playbackHost={playbackHost} />
+            <Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} onMetadata={setMetadata} onMapError={setActionError} playbackHost={playbackHost} />
           </Suspense>
         </section>
       </main>

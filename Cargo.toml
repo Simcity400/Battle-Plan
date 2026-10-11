@@ -10,10 +10,12 @@ publish = false
 license = "MIT"
 
 [workspace.dependencies]
+blake3 = "1"
 bytemuck = "1"
 dashboard = { path = "crates/dashboard" }
 engine = { path = "crates/engine" }
 installed-content = { path = "crates/installed-content" }
+mimalloc = { version = "0.1", default-features = false }
 png = "0.18"
 pollster = "0.4"
 replay = { path = "crates/replay" }

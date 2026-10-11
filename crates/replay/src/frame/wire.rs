@@ -1,6 +1,6 @@
 use super::{
     EncodedFrame, Frame, Metrics, TABLE_COUNT, TableUpdate, put_count, validate_complete,
-    validate_delta, validate_rows,
+    validate_delta, validate_delta_keys, validate_rows,
 };
 use crate::{
     codec::{Decoder, invalid_static as invalid, put_string},
@@ -267,6 +267,34 @@ impl Frame {
                     reason,
                     source_format: format,
                     recorded_bytes: update_start - input.remaining(),
+                });
+                continue;
+            }
+            if status == 1 && selected.is_some_and(|tables| !tables.contains(&table)) {
+                input.i32()?;
+                let count =
+                    decode_row_count(table, input, table.minimum_delta_bytes_at(input.format))?;
+                let mut changed = allocation::vec(count)?;
+                let mut previous_key = 0;
+                for _ in 0..count {
+                    let key = rows::validate_delta_row(table, previous_key, input)?;
+                    previous_key = key;
+                    changed.push(key);
+                }
+                let count = decode_row_count(table, input, 1)?;
+                let mut deleted = allocation::vec(count)?;
+                let mut previous_key = 0;
+                for _ in 0..count {
+                    let key = table.decode_key(previous_key, input)?;
+                    previous_key = key;
+                    deleted.push(key);
+                }
+                validate_delta_keys(table, changed.iter().copied(), &deleted)?;
+                if keyframe {
+                    return Err(invalid("keyframe contains a dependent or partial table"));
+                }
+                tables.push(TableUpdate::Unavailable {
+                    reason: "Table not selected for reconstruction".into(),
                 });
                 continue;
             }

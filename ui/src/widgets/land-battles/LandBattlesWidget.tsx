@@ -1,6 +1,5 @@
 import type { WidgetProps } from '../../dashboard/definitions';
 import { formatDateTime } from '../../dashboard/calendar';
-import type { LandBattlesReply, LandBattlesRankingReply } from '../../generated/dashboard';
 import BattleLogView from '../battles/BattleLogView';
 import type { BattleViewAdapter } from '../battles/BattleLogView';
 import { battleValueText } from '../battles/battleRows';
@@ -8,7 +7,7 @@ import type { BattleLabels, BattleMeasure, BattleSideSummary } from '../battles/
 import { definition } from './definition';
 import { rankedLandBattleRows, landBattleRows, validateLandBattlesReply, validateLandBattlesManifest, validateLandBattlesRanking,
   casualtyRankingNote, landCasualtiesMissing, landCasualtyText, landDivisionText, landLossText } from './landBattlesData';
-import type { LandBattleRow } from './landBattlesData';
+import type { LandBattleRow, LandBattlesRanking, LandBattlesWindow } from './landBattlesData';
 
 const LABELS: BattleLabels = { place: 'Battle', date: 'Date', start: 'Started', end: 'Ended', winner: 'Winner',
   ongoing: 'Ongoing', unknownPlace: 'Unnamed province', unknownStart: 'Start not recorded' };
@@ -26,7 +25,7 @@ const MEASURES: readonly BattleMeasure<LandBattleRow>[] = [
 const NOTE = 'Side counts include reserves. Peak is the largest simultaneous recorded roster. ≥ marks a recorded minimum. Length uses recorded reads/rounds; gaps split battles.';
 const battleNote = (row: LandBattleRow) => `Province ${row.provinceId}. ${NOTE} Side counts read at ${formatDateTime(row.readHour)}.${row.end !== null && row.lossRead && !row.lossRead.terminal ? ' Terminal losses not recorded; losses shown are so far.' : ''}`;
 
-const adapter: BattleViewAdapter<LandBattleRow, LandBattlesReply, LandBattlesRankingReply> = {
+const adapter: BattleViewAdapter<LandBattleRow, LandBattlesWindow, LandBattlesRanking> = {
   definition, product: 'land-battles', landPlaceNames: true, validateManifest: validateLandBattlesManifest, validateWindow: validateLandBattlesReply,
   validateRanking: validateLandBattlesRanking, rows: landBattleRows, rankedRows: rankedLandBattleRows,
   labels: LABELS, measures: MEASURES, compactSides: SIDES, note: battleNote, formatLoss: landLossText,

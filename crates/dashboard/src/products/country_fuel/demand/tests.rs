@@ -1,4 +1,4 @@
-use super::super::tests::{award_row, fuel_frame};
+use super::super::tests::{award_row, fuel_frame, reply_read};
 use super::*;
 use crate::test_fixtures::{CAMPAIGN, records};
 use replay::frame::{DecodedFrame, TableView};
@@ -23,6 +23,9 @@ fn row(pack: FuelDemandRead) -> CountryFuelRow {
         demand: Recorded::Value(pack),
         ..award_row(100)
     }
+}
+fn consumption(row: &CountryFuelRow) -> FuelConsumptionRead {
+    FuelConsumptionRead::from(&summary_of(row, 100, 100, true, &mut Default::default()))
 }
 fn source(frames: Vec<DecodedFrame>) -> Source {
     Source::from_replay(
@@ -150,7 +153,7 @@ fn current_required_rows_keep_signed_wrapping_separate_from_burn_and_widened_sum
         ..Default::default()
     });
     let row = row(pack);
-    let summary = summary_of(&row, 100, 100, true);
+    let summary = consumption(&row);
     let individual = engine::fuel_demand::daily_required(5_000_000_000_000);
     assert!(individual < 0);
     assert_eq!(
@@ -172,17 +175,12 @@ fn current_required_rows_keep_signed_wrapping_separate_from_burn_and_widened_sum
     );
     assert_ne!(
         summary.known_daily_raw[0],
-        read_of(&row, 100, true, None).day.unwrap().burned_raw
+        reply_read(&row, 100, None).day.unwrap().burned_raw
     );
-    let legacy = summary_of(
-        &CountryFuelRow {
-            demand: Recorded::NotRecorded,
-            ..row
-        },
-        100,
-        100,
-        true,
-    );
+    let legacy = consumption(&CountryFuelRow {
+        demand: Recorded::NotRecorded,
+        ..row
+    });
     assert!(legacy.native_daily_raw.iter().all(Option::is_none));
     assert!(
         legacy
@@ -217,7 +215,7 @@ fn repeated_air_occurrences_and_partial_names_do_not_discard_known_quantities() 
         })
         .collect();
     let row = row(pack);
-    let summary = summary_of(&row, 100, 100, true);
+    let summary = consumption(&row);
     assert_eq!(summary.known_daily_raw[0], "-240000");
     assert!(summary.native_daily_raw[0].is_none());
     assert!(summary.native_daily_raw[1].is_none());

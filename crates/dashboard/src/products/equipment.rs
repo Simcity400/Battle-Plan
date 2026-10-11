@@ -740,7 +740,7 @@ pub fn localise_for(texts: &dyn Texts, tag: Option<&str>, key: &str) -> Option<S
         .as_deref()
         .filter(|prefixed| texts.has(prefixed))
         .unwrap_or(key);
-    texts.text(key).filter(|text| !text.is_empty())
+    texts.text(key)
 }
 
 /// A variant's name (its own name, else its type key localised for its country,

@@ -1,0 +1,33 @@
+import { useId } from 'react';
+import type { ReactNode } from 'react';
+import { Icon } from '../components/Icons';
+import { Popover, usePopover } from '../components/Popover';
+import { resolveWidgetCampaign } from './campaigns';
+import { widgetDefinition } from './definitions';
+import type { WidgetRuntime } from './definitions';
+import type { CountrySelection, DashboardTemplate, WidgetSpec } from './model';
+import { CountriesSection } from './settings/CountriesSection';
+
+/** The widget header's country chip. Every widget's chip looks and opens the same way: its
+ * countries chooser, with the searchable list in place. Choices save at once; picking a
+ * one-country widget's country closes the chooser. */
+export default function WidgetCountryControl({ widget, template, runtime, onApply, children }: {
+  widget: WidgetSpec; template: DashboardTemplate; runtime: WidgetRuntime; onApply: (widget: WidgetSpec, view?: boolean) => void; children: ReactNode;
+}) {
+  const id = useId();
+  const menu = usePopover();
+  const limits = widgetDefinition(widget.kind)?.countries ?? { max: 1 };
+  const reference = runtime.tracks.find(track => track.id === resolveWidgetCampaign(widget, template, runtime.defaultRoleId).trackIds[0]);
+  if (!reference) return children;
+  const save = (countries: CountrySelection) => {
+    onApply({ ...widget, countries }, true);
+    if (limits.max <= 1) menu.close();
+  };
+  return <>
+    <button ref={menu.trigger} type="button" className="dash-widget-country-button" popoverTarget={id} aria-haspopup="dialog" aria-expanded={menu.open}
+      aria-label={`${widget.title}: choose countries`}>{children}<Icon name="chevron-down" className="dash-widget-country-chevron" /></button>
+    <Popover menu={menu} id={id} className="widget-countries-menu" aria-label={`${widget.title} countries`}>
+      {menu.open && <CountriesSection inline widget={widget} reference={reference} runtime={runtime} limits={limits} onChange={save} />}
+    </Popover>
+  </>;
+}

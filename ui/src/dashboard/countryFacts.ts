@@ -101,11 +101,11 @@ export class HourStore<V> {
   clear(): void { this.hours.clear(); this.wanted.clear(); }
 }
 
-/** What a set of wanted facts is asked for by: the track and each (hour, country)
- * once, sorted, so the same countries in another order (a race re-ranking) are the
- * same request and never cancel one still being read. */
-export function factsKey(trackKey: string, wanted: readonly NameAt[]): string {
-  const pairs = [...new Set(wanted.map(item => JSON.stringify([item.hour, item.tag])))].sort();
+/** The track and each wanted pair once. Time-ordered facts ignore list reordering;
+ * artwork also tracks displayed order so queued work can follow a changed view. */
+export function factsKey(trackKey: string, wanted: readonly NameAt[], order: FactRequestOrder = 'time'): string {
+  const pairs = [...new Set(wanted.map(item => JSON.stringify([item.hour, item.tag])))];
+  if (order === 'time') pairs.sort();
   return JSON.stringify([trackKey, pairs]);
 }
 
@@ -114,9 +114,13 @@ export function wantedHours(wanted: readonly NameAt[], maxHours: number): number
   return [...new Set(wanted.map(item => item.hour))].sort((a, b) => a - b).slice(0, maxHours);
 }
 
-/** The requests `wanted` still needs: per hour (earliest first, at most `maxHours`),
- * the countries not yet answered, in chunks of at most `perRequest`. */
-export function planRequests<V>(store: HourStore<V>, wanted: readonly NameAt[], maxHours: number, perRequest: number): [number, string[]][] {
+/** Artwork may request list order so the visible rows load before later rows. */
+export type FactRequestOrder = 'time' | 'wanted';
+
+/** The requests `wanted` still needs, in chunks of at most `perRequest`.
+ * Hours remain subject to the caller's admission; ordering only schedules them. */
+export function planRequests<V>(store: HourStore<V>, wanted: readonly NameAt[], maxHours: number, perRequest: number,
+  order: FactRequestOrder = 'time'): [number, string[]][] {
   const hours = new Set(wantedHours(wanted, maxHours));
   const byHour = new Map<number, Set<string>>();
   for (const item of wanted) {
@@ -126,8 +130,11 @@ export function planRequests<V>(store: HourStore<V>, wanted: readonly NameAt[], 
     byHour.set(item.hour, tags);
   }
   const plan: [number, string[]][] = [];
-  for (const hour of [...byHour.keys()].sort((a, b) => a - b)) {
-    const tags = [...byHour.get(hour)!].sort();
+  const orderedHours = [...byHour.keys()];
+  if (order === 'time') orderedHours.sort((a, b) => a - b);
+  for (const hour of orderedHours) {
+    const tags = [...byHour.get(hour)!];
+    if (order === 'time') tags.sort();
     for (let start = 0; start < tags.length; start += Math.max(1, perRequest)) plan.push([hour, tags.slice(start, start + Math.max(1, perRequest))]);
   }
   return plan;
@@ -160,14 +167,17 @@ export const RETRY_MOST_MS = 8000;
 /** When to try a read again after `failures` failures in a row. */
 export const retryDelay = (failures: number) => Math.min(RETRY_MOST_MS, RETRY_FIRST_MS * 2 ** Math.max(0, failures - 1));
 
-/** Time for the reads: now, and a callback after a delay (cancellable). */
+/** Time for the reads: now, a callback after a delay (cancellable), and optionally
+ * one before the next frame is drawn (without it, changes are told at once). */
 export interface FactClock {
   now: () => number;
   after: (ms: number, run: () => void) => () => void;
+  frame?: (run: () => void) => void;
 }
 const REAL_CLOCK: FactClock = {
   now: () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
   after: (ms, run) => { const timer = setTimeout(run, ms); return () => clearTimeout(timer); },
+  frame: typeof requestAnimationFrame === 'function' ? run => { requestAnimationFrame(run); } : undefined,
 };
 
 /** The reads for one store: one request per hour and chunk of countries, at most
@@ -183,6 +193,8 @@ const REAL_CLOCK: FactClock = {
  *   decides nothing: it is tried again while its hour is wanted, after a wait that
  *   doubles each time ([`retryDelay`]). Product errors wait for `retry` or new content.
  * - Each read that ends starts the next queued, so nothing waits for a re-render.
+ * - Reads ending in the same frame are told as one change, so many small replies
+ *   arriving together update their consumers once.
  *
  * `cancel` (another track, nothing wanted, the widget off screen or gone) stops all. */
 export class FactRequests<V> {
@@ -195,15 +207,18 @@ export class FactRequests<V> {
   private wanted: readonly NameAt[] = [];
   private maxHours = MAX_NAME_HOURS;
   private perRequest = 1;
+  private order: FactRequestOrder = 'time';
   private nextId = 0;
   /** The wait for the next retry, and when it is due. */
   private waiting: { at: number; stop: () => void } | null = null;
+  /** Whether a change is to be told at the next frame. */
+  private telling = false;
   private readonly store: HourStore<V>;
   private readonly read: FactRead<V>;
   private readonly changed: () => void;
   private readonly clock: FactClock;
 
-  /** `changed` is told whenever a read completes or fails. */
+  /** `changed` is told, at most once a frame, whenever reads complete or fail. */
   constructor(store: HourStore<V>, read: FactRead<V>, changed: () => void, clock: FactClock = REAL_CLOCK) {
     this.store = store;
     this.read = read;
@@ -230,10 +245,11 @@ export class FactRequests<V> {
   /** Makes `wanted` what is wanted: cancels reads of hours it no longer names and
    * starts what it needs that is neither read nor being read, as places free up.
    * Returns the requests started now. */
-  want(wanted: readonly NameAt[], maxHours: number, perRequest: number): number {
+  want(wanted: readonly NameAt[], maxHours: number, perRequest: number, order: FactRequestOrder = 'time'): number {
     this.wanted = wanted;
     this.maxHours = maxHours;
     this.perRequest = perRequest;
+    this.order = order;
     const hours = new Set(wantedHours(wanted, maxHours));
     this.store.want(hours);
     // Configuration failures wait for retry only while their hours are wanted;
@@ -269,7 +285,7 @@ export class FactRequests<V> {
       return true;
     });
     let started = 0;
-    for (const [hour, tags] of planRequests(this.store, missing, this.maxHours, this.perRequest)) {
+    for (const [hour, tags] of planRequests(this.store, missing, this.maxHours, this.perRequest, this.order)) {
       if (this.reading.size >= MAX_READING) break;
       this.start(hour, tags);
       started++;
@@ -298,7 +314,6 @@ export class FactRequests<V> {
         // is read with nothing.
         for (const tag of tags) this.failures.delete(nameKey(hour, tag));
         this.store.record(hour, tags, found);
-        this.changed();
       } else {
         // Product/configuration errors wait for retry; transient errors back off.
         const at = this.clock.now();
@@ -307,12 +322,19 @@ export class FactRequests<V> {
           const count = (this.failures.get(key)?.count ?? 0) + 1;
           this.failures.set(key, { hour, count, at: retryable ? at + retryDelay(count) : Infinity });
         }
-        this.changed();
       }
+      this.tell();
       this.pump();
     };
     // A read that ends without reporting its chunk failed.
     void this.read([[hour, tags]], controller.signal, (_hour, _tags, found, retryable) => done(found, retryable)).then(() => done(null), () => done(null));
+  }
+
+  private tell(): void {
+    if (!this.clock.frame) { this.changed(); return; }
+    if (this.telling) return;
+    this.telling = true;
+    this.clock.frame(() => { this.telling = false; this.changed(); });
   }
 
   private stop(id: number, abort = true): void {
@@ -324,20 +346,28 @@ export class FactRequests<V> {
   }
 }
 
+/** The recording a read is of; `content` is the content revision it was asked under. */
+export interface FactSource { sourceId: string; revision: string; branchId: string; content?: number }
+
+/** What a reply gives: at once, or once its values are prepared (such as encoded artwork). */
+export type FactsFound<V> = ReadonlyMap<string, V> | Promise<ReadonlyMap<string, V>>;
+
 /** How one kind of fact is read: its product, its parameters for an hour's
  * countries, and the value per country its reply gives. */
-export interface FactSpec<V> {
+export interface FactSpec<V, Found extends FactsFound<V> = ReadonlyMap<string, V>> {
   product: string;
   /** Caller scope when the same product keys facts within a country. */
   identity?: string;
   perRequest: number;
+  /** Preserve displayed list order for artwork; other dated facts use time order. */
+  requestOrder?: FactRequestOrder;
   params: (branchId: string, hour: number, tags: readonly string[]) => unknown;
-  extract: (data: unknown, params?: unknown) => ReadonlyMap<string, V>;
+  extract: (data: unknown, params?: unknown, source?: FactSource) => Found;
 }
 
 /** Reads a plan on the transient path, one request at a time, reporting each
  * chunk's values (null when its read failed: a gap or an error). Stops when aborted. */
-export async function readFacts<V>(client: DashboardClient, source: { sourceId: string; revision: string; branchId: string }, spec: FactSpec<V>,
+export async function readFacts<V>(client: DashboardClient, source: FactSource, spec: FactSpec<V, FactsFound<V>>,
   plan: readonly (readonly [number, readonly string[]])[], signal: AbortSignal, onChunk: (hour: number, tags: readonly string[], found: ReadonlyMap<string, V> | null, retryable?: boolean) => void): Promise<void> {
   for (const [hour, tags] of plan) {
     let found: ReadonlyMap<string, V> | null = null;
@@ -345,7 +375,7 @@ export async function readFacts<V>(client: DashboardClient, source: { sourceId: 
     try {
       const params = spec.params(source.branchId, hour, tags);
       const data = await loadTransientProduct<unknown>(client, { sourceId: source.sourceId, revision: source.revision, product: spec.product, params }, signal);
-      found = spec.extract(data, params);
+      found = await spec.extract(data, params, source);
     } catch (error) {
       retryable = transientError(error);
     }

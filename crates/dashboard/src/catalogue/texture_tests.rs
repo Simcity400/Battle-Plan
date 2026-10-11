@@ -36,7 +36,7 @@ pub(crate) fn texture_catalogue(
     let layers =
         ResolvedLayers::from_folders(&[(&base.0, &[][..]), (&modification.0, &[][..])]).unwrap();
     catalogue.sprites = installed_content::gfx::read(&layers).unwrap();
-    catalogue.guis = installed_content::gui::native::read_layers(&layers).unwrap();
+    catalogue.guis = OnceLock::new();
     catalogue.content = Arc::new(ResolvedContent {
         layers,
         stats: Default::default(),
@@ -80,6 +80,45 @@ fn strip() -> Rgba8Image {
             .flat_map(|y| (0..6).flat_map(move |x| [10 + x, 20 + y, 30, 200]))
             .collect(),
     }
+}
+
+#[test]
+#[ignore = "requires DXC and a GPU; synthetic content only"]
+fn rendered_sprite_frames_are_shared_across_callers_and_new_stacks_read_fresh() {
+    let (catalogue, folders) = texture_catalogue(
+        &[(
+            "interface/art.gfx",
+            "spriteTypes={spriteType={name=GFX_cached textureFile=gfx/sheet.png noOfFrames=3}}",
+        )],
+        &[("gfx/sheet.png", png_bytes(&strip()))],
+    );
+    write_sprite_program(&folders[1].0);
+    let layers = &catalogue.content.layers;
+    let sprite = catalogue.sprites.lookup("GFX_cached").unwrap();
+    let decode = Decode {
+        force_pow2_textures: false,
+    };
+    let first = sprite_frame_png(layers, sprite, decode, 0, 96).unwrap();
+    let second = sprite_frame_png(layers, sprite, decode, 1, 96).unwrap();
+    assert_ne!(from_url(&first).pixels, from_url(&second).pixels);
+    std::fs::remove_file(folders[1].0.join("gfx/sheet.png")).unwrap();
+    std::thread::scope(|threads| {
+        let callers: Vec<_> = (0..8)
+            .map(|_| {
+                threads.spawn(|| sprite_frame_png(&layers.clone(), sprite, decode, 0, 96).unwrap())
+            })
+            .collect();
+        for caller in callers {
+            assert_eq!(caller.join().unwrap(), first);
+        }
+    });
+    assert_eq!(
+        sprite_frame_png(layers, sprite, decode, 1, 96).unwrap(),
+        second
+    );
+    let fresh = ResolvedLayers::from_folders(&[(&folders[0].0, &[][..]), (&folders[1].0, &[][..])])
+        .unwrap();
+    assert!(sprite_frame_png(&fresh, sprite, decode, 0, 96).is_err());
 }
 
 /// A mod replaces a base sprite with a PNG strip. Padding is part of the native

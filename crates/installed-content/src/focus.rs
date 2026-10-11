@@ -494,32 +494,78 @@ fn read_databases(
         .map(|p| (layers.layer_index(p).unwrap_or(0), p.to_owned()))
         .collect::<Vec<_>>();
     paths.sort();
+    let names = layers.key_names()?;
+    let workers = std::thread::available_parallelism().map_or(1, usize::from);
+    read_files(&paths, &names, workers, |path| layers.read(path), parse)
+}
+
+type ParsedFile = Result<(Focuses, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)>;
+
+fn read_files(
+    paths: &[(usize, String)],
+    names: &KeyNames,
+    workers: usize,
+    mut read: impl FnMut(&str) -> io::Result<Vec<u8>>,
+    parser: impl Fn(&[u8], Database, &KeyNames) -> ParsedFile + Sync,
+) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
     let mut result = BTreeMap::new();
     let mut warnings = Vec::new();
-    let names = layers.key_names()?;
-    for (_, path) in paths {
-        let database = if path.starts_with("common/national_focus/") {
-            Database::National
-        } else {
-            Database::Continuous
+    // Verify reads in order: an I/O error must never reach a later path or
+    // contribute its uncovered-read diagnostics. Only parsing is parallel.
+    // Each wave retains at most one file per worker; every path is consumed.
+    for wave in paths.chunks(workers.max(1)) {
+        let files = wave
+            .iter()
+            .map(|(_, path)| read(path).map(|bytes| (path, bytes)))
+            .collect::<io::Result<Vec<_>>>()?;
+        let parse_one = |(path, bytes): &(&String, Vec<u8>)| {
+            let database = if path.starts_with("common/national_focus/") {
+                Database::National
+            } else {
+                Database::Continuous
+            };
+            parser(bytes, database, names)
         };
-        match parse(&layers.read(&path)?, database, &names) {
-            Ok((definitions, notes)) => {
-                result.extend(definitions);
-                warnings.extend(
-                    notes
-                        .into_iter()
-                        .map(|(kind, note)| (kind, format!("{path}: {note}"))),
-                );
+        let parsed = if files.len() == 1 {
+            vec![parse_one(&files[0])]
+        } else {
+            std::thread::scope(|scope| {
+                let jobs = files
+                    .iter()
+                    .map(|file| scope.spawn(move || parse_one(file)))
+                    .collect::<Vec<_>>();
+                jobs.into_iter()
+                    .map(|job| {
+                        job.join()
+                            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        // Completion order cannot change duplicate precedence or diagnostics.
+        for ((path, _), parsed) in files.into_iter().zip(parsed) {
+            match parsed {
+                Ok((definitions, notes)) => {
+                    result.extend(definitions);
+                    warnings.extend(
+                        notes
+                            .into_iter()
+                            .map(|(kind, note)| (kind, format!("{path}: {note}"))),
+                    );
+                }
+                Err((kind, error)) => warnings.push((
+                    kind,
+                    format!("Focus definitions unavailable in {path}: {error}"),
+                )),
             }
-            Err((kind, error)) => warnings.push((
-                kind,
-                format!("Focus definitions unavailable in {path}: {error}"),
-            )),
         }
     }
     Ok((result, warnings))
 }
+
+#[cfg(test)]
+#[path = "focus_read_tests.rs"]
+mod read_tests;
 
 #[cfg(test)]
 mod tests {

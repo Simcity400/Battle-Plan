@@ -112,9 +112,8 @@ fn held_name(
             .localised(key, View::Plain)
             .ok_or_else(|| format!("ability {token}: name is not localised"));
     }
-    if let Some(character) = facts::character_fact(frame, &holder.item, holder.cause) {
-        return facts::character_name(&character, content)
-            .ok_or("recorded holder character name is not identified".into());
+    if let Some(name) = facts::recorded_name(frame, &holder.item, content) {
+        return name.ok_or("recorded holder character name is not identified".into());
     }
     Err(format!(
         "{} holder naming form is not identified",
@@ -300,27 +299,25 @@ pub(super) fn observe_holds(
         .map(|row| (row.canonical_slot, row))
         .collect();
     let mutations_complete = frame.complete::<tables::CountryPowerChanges>().is_ok();
-    let mut mutations = BTreeMap::<_, Vec<&LedgerMutation>>::new();
-    for reply in scan.countries.values() {
-        let start = reply
+    let mut mutations = BTreeMap::<_, Vec<&Mutation>>::new();
+    for history in scan.countries.values() {
+        let start = history
             .mutations
             .partition_point(|row| row.read_hour < frame.hour);
-        for row in reply.mutations[start..]
+        for row in history.mutations[start..]
             .iter()
             .take_while(|row| row.read_hour == frame.hour)
         {
-            if row.currency == "Command"
-                && let Ok(epoch) = row.epoch.parse::<u64>()
-            {
+            if row.row.currency == PowerCurrency::Command {
                 mutations
-                    .entry((row.country, row.instance, epoch))
+                    .entry((row.row.country, row.row.instance, row.row.epoch))
                     .or_default()
                     .push(row);
             }
         }
     }
     for rows in mutations.values_mut() {
-        rows.sort_by_key(|row| row.sequence.parse::<u64>().ok());
+        rows.sort_by_key(|row| row.row.sequence);
     }
     let mut present = BTreeSet::new();
     let refused: BTreeMap<_, _> = countries
@@ -351,7 +348,7 @@ pub(super) fn observe_holds(
         if validate_tag(tag).is_err() {
             continue;
         }
-        present.insert(tag.to_owned());
+        present.insert(tag);
         let state = holds.countries.entry(tag.to_owned()).or_default();
         state.slot = Some(country.canonical_slot);
         if state.last_hour.is_some_and(|old| old == frame.hour) {
@@ -381,18 +378,15 @@ pub(super) fn observe_holds(
             state.active.clear();
         }
         if let Some(rows) = identity.and_then(|identity| mutations.get(&identity)) {
-            for row in rows {
+            for stored in rows {
+                let row = &stored.ledger();
                 if !row.covered {
                     if is_hold(row) {
                         state.active.clear();
                     }
                     continue;
                 }
-                let cause = scan
-                    .event_facts
-                    .get(&item_text_id(row))
-                    .map_or(PowerCause::NotIdentified, |facts| facts.native_cause);
-                state.apply(row, cause);
+                state.apply(row, stored.facts.native_cause);
             }
         }
         let total = by_slot
@@ -407,7 +401,7 @@ pub(super) fn observe_holds(
         state.append(value);
     }
     for (tag, state) in &mut holds.countries {
-        if present.contains(tag) || state.last_hour == Some(frame.hour) {
+        if present.contains(tag.as_str()) || state.last_hour == Some(frame.hour) {
             continue;
         }
         state.active.clear();

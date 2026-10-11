@@ -3,7 +3,7 @@ import test from 'node:test';
 import { FAILED_FACT, FactRequests, HourStore, MAX_READING, nameKey, readFacts, RETRY_MOST_MS, retryDelay } from './countryFacts.ts';
 import type { FactClock, FactRead, NameAt } from './countryFacts';
 import type { DashboardClient, ProductRequest } from './client';
-import { BROWSER_BRIDGE_BUSY, CAPACITY_REACHED, MAP_CONTROLS_BUSY, NATIVE_QUEUE_FULL, TOO_MANY_SOURCES, TRANSIENT_ERRORS } from '../generated/dashboard.ts';
+import { BROWSER_BRIDGE_BUSY, CAPACITY_REACHED, MAP_CONTROLS_BUSY, NATIVE_QUEUE_FULL, TRANSIENT_ERRORS } from '../generated/dashboard.ts';
 
 /** Reads that finish when the test's clock passes their end, counted, with a clock
  * whose waits run as it advances. Like the desktop, at most `limit` requests are
@@ -60,6 +60,22 @@ function clockedReads(duration: number, limit = Infinity) {
 
 const at = (tags: readonly string[]): NameAt[] => tags.map(tag => ({ hour: 100, tag }));
 
+test('artwork queue fills visible batches first and still completes every dated row', async () => {
+  const { read, stats, advance, clock } = clockedReads(50);
+  const store = new HourStore<string>(8);
+  const requests = new FactRequests(store, read, () => {}, clock);
+  const wanted = [{ hour: 30, tag: 'Z' }, { hour: 30, tag: 'Y' }, { hour: 30, tag: 'A' },
+    { hour: 10, tag: 'old completion' }, { hour: 20, tag: 'another completion' }];
+  requests.want(wanted, Infinity, 2, 'wanted');
+  assert.deepEqual(stats.hours, [30, 30]);
+  assert.deepEqual(stats.asked, [['Z', 'Y'], ['A']]);
+  await advance(200);
+  assert.deepEqual(stats.hours, [30, 30, 10, 20]);
+  assert.equal(requests.pickRead(wanted).size, wanted.length);
+  assert.equal(stats.cancelled, 0);
+  assert.equal(requests.want(wanted, Infinity, 2, 'wanted'), 0);
+});
+
 test('configuration failures are kept while wanted and pruned when playback leaves their hours', async () => {
   let calls = 0;
   const requests = new FactRequests(new HourStore<string>(4), async (plan, _signal, done) => {
@@ -106,6 +122,20 @@ test('a top-N last place alternating every 50 ms never cancels reads taking 120 
   assert.equal(requests.pending.size, 0);
   // Asked again once read, nothing is requested.
   assert.equal(requests.want(at(top), 64, 64), 0);
+});
+
+test('reads ending in the same frame are told as one change', async () => {
+  const { read, advance, clock } = clockedReads(50);
+  const frames: (() => void)[] = [];
+  let changes = 0;
+  const requests = new FactRequests(new HourStore<string>(8), read, () => changes++, { ...clock, frame: run => { frames.push(run); } });
+  requests.want([{ hour: 100, tag: 'A' }, { hour: 101, tag: 'B' }], 64, 64);
+  await advance(100);
+  assert.equal(changes, 0);
+  assert.equal(frames.length, 1);
+  for (const run of frames.splice(0)) run();
+  assert.equal(changes, 1);
+  assert.deepEqual(requests.pickRead([{ hour: 100, tag: 'A' }, { hour: 101, tag: 'B' }]), new Map([[nameKey(100, 'A'), 'name of A'], [nameKey(101, 'B'), 'name of B']]));
 });
 
 test('only cancel stops reads, and what they would have answered is asked for again', async () => {
@@ -200,7 +230,6 @@ test('configuration errors stay failures; refusals for want of room can be retri
     ...TRANSIENT_ERRORS,
     CAPACITY_REACHED, // the data service
     `${CAPACITY_REACHED}. Retry this view.`, // the desktop's and the browser bridge's admission
-    TOO_MANY_SOURCES, // the data service's source bindings
     NATIVE_QUEUE_FULL, // the desktop's pipe to the native service
     `${MAP_CONTROLS_BUSY}; try again`, // the desktop's map controls
   ]) assert.deepEqual(await outcome(new Error(refusal)), [[null, true]], refusal);

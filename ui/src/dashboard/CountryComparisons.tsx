@@ -7,12 +7,14 @@ import { useComparisonCountries } from './comparisonCountries';
 import type { WidgetProps } from './definitions';
 import { resolveWindow } from './model';
 import { usePlaybackHour } from './playback';
+import { useDiagnostics } from './useDiagnostics';
 import type { HourSpan } from '../generated/dashboard';
 import './countryComparisons.css';
 
 /** Independent country panels share settings and keep their exact country data.
  * No aggregate is offered for balances with country-specific denominators. */
 export type ComparisonProps = WidgetProps & { within?: readonly HourSpan[] | null };
+const NO_WARNINGS: string[] = [];
 
 export default function CountryComparisons({ component: Component, ...props }: WidgetProps & { component: ComponentType<ComparisonProps> }) {
   const { widget, runtime, active, onDiagnostics } = props;
@@ -43,15 +45,17 @@ export default function CountryComparisons({ component: Component, ...props }: W
     setView(before => ({ ...before, left: 0 }));
     setNotes(new Map());
   }, [track?.source.id, track?.source.revision, track?.branch.id, countries.tags]);
+  // A panel resending an equal list keeps the notes, so it cannot re-render every panel again.
   const handlers = useMemo(() => new Map(countries.tags.map(tag => [tag, (warnings: readonly string[]) => setNotes(before => {
-    if (before.get(tag) === warnings) return before;
+    const held = before.get(tag) ?? NO_WARNINGS;
+    if (held.length === warnings.length && held.every((note, index) => note === warnings[index])) return before;
     return new Map(before).set(tag, warnings);
   })])), [countries.tags]);
-  useEffect(() => {
-    onDiagnostics([...(contentPending ? ['Group names are updating from the recorded content.'] : []),
-      ...new Set(countries.tags.flatMap(tag => (notes.get(tag) ?? []).map(note => `${tag}: ${note}`)))]);
-    return () => onDiagnostics([]);
-  }, [countries.tags, notes, contentPending, onDiagnostics]);
+  const diagnostics = useMemo(() => [...(contentPending ? ['Group names are updating from the recorded content.'] : []),
+    ...new Set(countries.tags.flatMap(tag => (notes.get(tag) ?? []).map(note => `${tag}: ${note}`)))], [countries.tags, notes, contentPending]);
+  useDiagnostics(onDiagnostics, diagnostics);
+  // Each mounted panel keeps its widget while this one re-renders, so its own hooks do not re-run.
+  const panels = useMemo(() => new Map(shown.map(tag => [tag, { ...widget, countries: { kind: 'tags' as const, tags: [tag] } }])), [widget, shown]);
   if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
   if (pending) return <WidgetState kind="loading" label="Loading countries…" />;
   if (countries.reason) return <WidgetState kind="empty" message={countries.reason} />;
@@ -63,7 +67,7 @@ export default function CountryComparisons({ component: Component, ...props }: W
       return <section key={tag} className="country-comparison" aria-label={label.name} style={multiple ? { flex: `0 0 ${panelWidth}px` } : undefined}>
         {countries.tags.length > 1 && <p className="country-comparison-name"><CountryFlagUrl className="country-comparison-flag" url={label.flag} reason={label.flagReason} pending={label.flagPending} />{label.name}</p>}
         <Component {...props} within={countries.membership?.get(tag)} onDiagnostics={handlers.get(tag)!}
-          widget={{ ...widget, countries: { kind: 'tags', tags: [tag] } }} />
+          widget={panels.get(tag)!} />
       </section>;
     })}
     {last < countries.tags.length && <div aria-hidden="true" style={{ flex: `0 0 ${(countries.tags.length - last) * panelWidth}px` }} />}

@@ -1155,106 +1155,120 @@ pub fn scan(
         .collect();
     let mut tracks: BTreeMap<String, Track> = BTreeMap::new();
     let mut warnings = Vec::new();
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancel());
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancel());
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            let (Ok(countries), Ok(links), Ok(inputs), Ok(reads)) = (
-                decoded.complete::<tables::Countries>(),
-                decoded.complete::<tables::CountryLinks>(),
-                recorded_rows::<tables::CountryStabilityInputs>(decoded),
-                decoded.complete::<tables::SliceReads>(),
-            ) else {
-                continue;
-            };
-            let read_hour = |table, owner| replay::sliced::read_hour(reads, table, owner);
-            for country in countries {
-                let Some(tag) = std::str::from_utf8(&country.tag).ok() else {
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancel());
+                }
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
                     continue;
                 };
-                let Some(series) = result.get_mut(tag) else {
-                    continue;
-                };
-                let Ok(slot) = mapped_slot(country, links) else {
-                    continue;
-                };
-                let Ok(index) = inputs.binary_search_by_key(&country.id, |row| row.country) else {
-                    continue;
-                };
-                let row = &inputs[index];
-                let Some(read) = read_hour(TableId::CountryStabilityInputs, row.country) else {
-                    continue;
-                };
-                let identity = (slot, country.id);
-                let track = tracks.entry(tag.to_owned()).or_default();
-                let continues = track.identity == Some(identity)
-                    && track.hour.and_then(|h| h.checked_add(1)) == Some(frame.hour);
-                let values = [
-                    formula::stability(row).value,
-                    formula::war_support(row).value,
-                    formula::max_command_power(row, formula::command_power(decoded, slot)).value,
-                ];
-                for ((runs, value), previous) in [
-                    &mut series.stability,
-                    &mut series.war_support,
-                    &mut series.max_command_power,
-                ]
-                .into_iter()
-                .zip(values)
-                .zip(track.values)
-                {
-                    let Some(value) = value else { continue };
-                    let joined = continues && previous.is_some();
-                    match runs.last_mut() {
-                        Some(run) if joined && run.value_raw.parse::<i64>() == Ok(value) => {
-                            run.last_hour = frame.hour;
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(cancel());
+                    }
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
+                    }
+                    let (Ok(countries), Ok(links), Ok(inputs), Ok(reads)) = (
+                        decoded.complete::<tables::Countries>(),
+                        decoded.complete::<tables::CountryLinks>(),
+                        recorded_rows::<tables::CountryStabilityInputs>(decoded),
+                        decoded.complete::<tables::SliceReads>(),
+                    ) else {
+                        continue;
+                    };
+                    let read_hour = |table, owner| replay::sliced::read_hour(reads, table, owner);
+                    for country in countries {
+                        let Some(tag) = std::str::from_utf8(&country.tag).ok() else {
+                            continue;
+                        };
+                        let Some(series) = result.get_mut(tag) else {
+                            continue;
+                        };
+                        let Ok(slot) = mapped_slot(country, links) else {
+                            continue;
+                        };
+                        let Ok(index) = inputs.binary_search_by_key(&country.id, |row| row.country)
+                        else {
+                            continue;
+                        };
+                        let row = &inputs[index];
+                        let Some(read) = read_hour(TableId::CountryStabilityInputs, row.country)
+                        else {
+                            continue;
+                        };
+                        let identity = (slot, country.id);
+                        let track = tracks.entry(tag.to_owned()).or_default();
+                        let continues = track.identity == Some(identity)
+                            && track.hour.and_then(|h| h.checked_add(1)) == Some(frame.hour);
+                        let values = [
+                            formula::stability(row).value,
+                            formula::war_support(row).value,
+                            formula::max_command_power(row, formula::command_power(decoded, slot))
+                                .value,
+                        ];
+                        for ((runs, value), previous) in [
+                            &mut series.stability,
+                            &mut series.war_support,
+                            &mut series.max_command_power,
+                        ]
+                        .into_iter()
+                        .zip(values)
+                        .zip(track.values)
+                        {
+                            let Some(value) = value else { continue };
+                            let joined = continues && previous.is_some();
+                            match runs.last_mut() {
+                                Some(run)
+                                    if joined && run.value_raw.parse::<i64>() == Ok(value) =>
+                                {
+                                    run.last_hour = frame.hour;
+                                }
+                                _ => {
+                                    runs.push(FixedRun {
+                                        first_hour: frame.hour,
+                                        last_hour: frame.hour,
+                                        value_raw: value.to_string(),
+                                        starts_segment: !joined,
+                                    });
+                                }
+                            }
                         }
-                        _ => {
-                            runs.push(FixedRun {
-                                first_hour: frame.hour,
-                                last_hour: frame.hour,
-                                value_raw: value.to_string(),
-                                starts_segment: !joined,
-                            });
+                        series.recorded = true;
+                        note_carried(&mut series.carried, frame.hour, read);
+                        track.identity = Some(identity);
+                        track.hour = Some(frame.hour);
+                        track.values = values;
+                        if hour == Some(frame.hour) {
+                            series.breakdown = Some(breakdown_of(
+                                BreakdownInput {
+                                    decoded,
+                                    hour: frame.hour,
+                                    row,
+                                    slot,
+                                    read_hour: read,
+                                    reads,
+                                    tag,
+                                },
+                                &mut warnings,
+                            ));
                         }
                     }
                 }
-                series.recorded = true;
-                note_carried(&mut series.carried, frame.hour, read);
-                track.identity = Some(identity);
-                track.hour = Some(frame.hour);
-                track.values = values;
-                if hour == Some(frame.hour) {
-                    series.breakdown = Some(breakdown_of(
-                        BreakdownInput {
-                            decoded,
-                            hour: frame.hour,
-                            row,
-                            slot,
-                            read_hour: read,
-                            reads,
-                            tag,
-                        },
-                        &mut warnings,
-                    ));
-                }
             }
-        }
-    }
+            Ok(())
+        },
+    )?;
     Ok((result, warnings))
 }
 

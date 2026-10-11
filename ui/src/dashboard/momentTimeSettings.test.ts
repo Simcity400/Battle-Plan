@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
-import type { WidgetRuntime } from './definitions';
+import type { WidgetMeta, WidgetRuntime } from './definitions';
 import type { BoundTrack, DashboardTemplate, WidgetSpec } from './model';
 
 interface TimeChoice { options: { value: string }[]; onChange: (mode: string) => void }
@@ -27,8 +27,10 @@ test('actual Air and Scoreboard moment settings expose Pin and save the resolved
     const { WidgetSettings } = await vite.ssrLoadModule('/ui/src/dashboard/settings/WidgetSettings.tsx') as typeof import('./settings/WidgetSettings.tsx');
     const { definition: air } = await vite.ssrLoadModule('/ui/src/widgets/air-superiority-region/definition.ts') as typeof import('../widgets/air-superiority-region/definition.ts');
     const { definition: scoreboard } = await vite.ssrLoadModule('/ui/src/widgets/scoreboard/definition.ts') as typeof import('../widgets/scoreboard/definition.ts');
-    const { definition: placeholder } = await vite.ssrLoadModule('/ui/src/widgets/placeholder/definition.ts') as typeof import('../widgets/placeholder/definition.ts');
-    registerWidgets([air, scoreboard, placeholder]);
+    // A widget without recorded data has no time to choose.
+    const still = { kind: 'still', version: 1, title: 'Still', icon: 'layout', description: 'No recorded data.', timeModes: ['campaign', 'follow'],
+      defaultTime: 'campaign', scope: 'moment', data: false, history: false, minSize: { w: 2, h: 3 }, defaultSize: { w: 4, h: 6 } } as const satisfies WidgetMeta;
+    registerWidgets([air, scoreboard, still]);
     const template: DashboardTemplate = { version: 1, name: 'Synthetic', alignment: 'calendar',
       roles: [{ id: 'primary', label: 'Primary', selectedTag: null }],
       tracks: [{ id: 'main', roleId: 'primary', label: 'Main', branchIndex: 0, anchorOffset: null }], widgets: [], layouts: {} };
@@ -56,7 +58,7 @@ test('actual Air and Scoreboard moment settings expose Pin and save the resolved
       position = -850;
     }
     host.__momentTimeChoices = [];
-    const markup = renderToStaticMarkup(createElement(WidgetSettings, { widget: createWidget(placeholder.kind, 'main', 'empty'),
+    const markup = renderToStaticMarkup(createElement(WidgetSettings, { widget: createWidget(still.kind, 'main', 'empty'),
       template, runtime, onChange() {} }));
     assert.doesNotMatch(markup, /aria-label="Time"/);
     assert.deepEqual(host.__momentTimeChoices, []);

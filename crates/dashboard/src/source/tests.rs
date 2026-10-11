@@ -179,6 +179,8 @@ fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products
         .collect();
     assert_eq!(notes.len(), 1);
     assert_eq!(notes[0].as_str(), Some(updated.as_str()));
+    // Replies that report unverified bytes are not kept between sessions.
+    assert!(!folder.0.join("cache").join("history").exists());
 }
 
 #[test]

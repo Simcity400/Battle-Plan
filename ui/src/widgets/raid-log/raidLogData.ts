@@ -3,6 +3,7 @@ import type { RaidsReply } from '../../generated/dashboard';
 import { raidIcon, raidPlace, raidPreparationRead, raidReadAt, raidType, raidTypeChoices, raidTypeName } from '../../dashboard/raids.ts';
 import { entryAt } from '../../dashboard/reads.ts';
 import { runAt } from '../../charts/series.ts';
+import { usNumber } from '../../charts/numberFormat.ts';
 import type { LogRow } from '../../charts/log/logData';
 import { newestFirst } from '../../charts/log/logData.ts';
 import type { TooltipContent } from '../../charts/tooltip';
@@ -53,7 +54,7 @@ export function raidPreparation(data: RaidsReply, at: RaidAt): string | null {
   // Preparation hours are shown only during the preparation phase.
   if ((at.current ?? at.latest).phase !== data.phasePreparing) return null;
   const read = raidPreparationRead(at);
-  return read ? `${read.hours.toLocaleString('en-US')} h prepared` : 'Preparation not known';
+  return read ? `${usNumber.format(read.hours)} h prepared` : 'Preparation not known';
 }
 export function raidDescription(data: RaidsReply, at: RaidAt, raider: string, victim: string): string {
   const preparation = raidPreparation(data, at);
@@ -66,7 +67,7 @@ export function raidTooltip(data: RaidsReply, at: RaidAt, raider: string, victim
   return { title: raidTypeName(type), icon: raidIcon(data, at.latest) ?? undefined, rows: [
     { label: 'Raider', value: raider }, { label: 'Target country', value: victim }, { label: 'Target', value: raidPlace(at.latest) },
     { label: 'Phase / outcome', value: raidStatus(data, at) },
-    ...(preparing ? [{ label: 'Hours prepared', value: preparation ? preparation.hours.toLocaleString('en-US') : 'Not known' },
+    ...(preparing ? [{ label: 'Hours prepared', value: preparation ? usNumber.format(preparation.hours) : 'Not known' },
       ...(preparation ? [{ label: 'Preparation read', value: formatDateTime(preparation.readHour) }] : [])] : []),
     { label: 'First observed', value: `By ${formatDateTime(at.episode.start.hour)}` },
     { label: 'Last read', value: formatDateTime(raidReadAt(at.episode, Math.min(at.hour, at.latest.lastHour))?.readHour ?? at.latest.firstHour) },

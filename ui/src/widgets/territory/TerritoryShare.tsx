@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import { dayLabel } from '../../charts/draw';
+import { usNumber } from '../../charts/numberFormat';
 import type { raceSeriesIndex } from '../../charts/race/series';
 import Sunburst from '../../charts/sunburst/Sunburst';
 import { sliceTooltip } from '../../charts/sunburst/layout';
@@ -54,7 +55,7 @@ export default function TerritoryShare(props: TerritoryShareProps) {
     },
     { id: REST, label: 'Rest of world', colour: tokens.muted }, factions?.reply, props.unavailableReason, props.expectedKeys),
   [series, world, hour, count, nameOf, countryFlagOf, colourOf, tokens.muted, factions?.reply, props.unavailableReason, props.expectedKeys, props.membershipNote]);
-  const text = useMemo<SunburstText>(() => ({ format: (value, exact) => exact?.toLocaleString('en-US') ?? formatTerritory(value),
+  const text = useMemo<SunburstText>(() => ({ format: (value, exact) => exact == null ? formatTerritory(value) : usNumber.format(exact),
     unit: measure === 'area' ? worldReply.areaUnit ?? '' : measure === 'victoryPoints' ? 'victory points' : measure,
     valueLabel: measureName, emptyLabel: 'No share to show.', missingLabel: reading.missingLabel }), [measure, worldReply.areaUnit, measureName, reading.missingLabel]);
   const tooltip = useCallback((node: SunburstNode, focus: SunburstNode, words: SunburstText) => {

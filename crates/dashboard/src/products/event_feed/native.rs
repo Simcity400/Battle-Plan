@@ -217,71 +217,80 @@ pub(super) fn scan(
         .filter(|block| block.branch == branch)
         .collect();
     blocks.sort_by_key(|block| block.first_hour);
-    for block in &blocks {
-        check_cancel(cancelled)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let frames = match replay.read_block_selected(block, &selected) {
-            Ok(frames) => frames,
-            Err(error) => {
-                builder.sampled_unavailable(
-                    "nativeEventCoverage",
-                    "Native event coverage",
-                    error.to_string(),
-                    1,
-                );
-                continue;
-            }
-        };
-        for encoded in frames {
-            check_cancel(cancelled)?;
-            let decoded = match decoder.advance(&encoded) {
-                Ok(frame) => frame,
-                Err(error) => {
-                    builder.sampled_unavailable(
-                        "nativeEventCoverage",
-                        "Native event coverage",
-                        error.to_string(),
-                        1,
-                    );
-                    break;
+    crate::blocks::scan_blocks(
+        replay,
+        blocks.iter().copied(),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                check_cancel(cancelled)?;
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let frames = match frames {
+                    Ok(frames) => frames,
+                    Err(error) => {
+                        builder.sampled_unavailable(
+                            "nativeEventCoverage",
+                            "Native event coverage",
+                            error.to_string(),
+                            1,
+                        );
+                        continue;
+                    }
+                };
+                for encoded in frames {
+                    check_cancel(cancelled)?;
+                    let decoded = match decoder.advance(&encoded) {
+                        Ok(frame) => frame,
+                        Err(error) => {
+                            builder.sampled_unavailable(
+                                "nativeEventCoverage",
+                                "Native event coverage",
+                                error.to_string(),
+                                1,
+                            );
+                            break;
+                        }
+                    };
+                    let read = validate_campaign(decoded, replay)
+                        .and_then(|()| decoded.complete::<tables::EventFeedHistory>());
+                    let pack = match read {
+                        Ok([pack]) if pack.read_hour == decoded.hour => pack,
+                        Ok(_) => {
+                            builder.sampled_unavailable(
+                                "nativeEventCoverage",
+                                "Native event coverage",
+                                "Event history has no unique pack for its supplying hour.",
+                                1,
+                            );
+                            continue;
+                        }
+                        Err(error) => {
+                            builder.sampled_unavailable(
+                                "nativeEventCoverage",
+                                "Native event coverage",
+                                error.to_string(),
+                                1,
+                            );
+                            continue;
+                        }
+                    };
+                    if pack.events.is_empty() {
+                        Projection::default().append_named(builder, pack, |_| None, cancelled)?;
+                        continue;
+                    }
+                    for event in &pack.events {
+                        wanted
+                            .entry(event.hour)
+                            .or_default()
+                            .extend([event.actor.reference, event.target.reference]);
+                    }
+                    packs.push(replay::rows::RowCodec::try_clone(pack)?);
                 }
-            };
-            let read = validate_campaign(decoded, replay)
-                .and_then(|()| decoded.complete::<tables::EventFeedHistory>());
-            let pack = match read {
-                Ok([pack]) if pack.read_hour == decoded.hour => pack,
-                Ok(_) => {
-                    builder.sampled_unavailable(
-                        "nativeEventCoverage",
-                        "Native event coverage",
-                        "Event history has no unique pack for its supplying hour.",
-                        1,
-                    );
-                    continue;
-                }
-                Err(error) => {
-                    builder.sampled_unavailable(
-                        "nativeEventCoverage",
-                        "Native event coverage",
-                        error.to_string(),
-                        1,
-                    );
-                    continue;
-                }
-            };
-            if pack.events.is_empty() {
-                Projection::default().append_named(builder, pack, |_| None, cancelled)?;
-                continue;
             }
-            for event in &pack.events {
-                wanted
-                    .entry(event.hour)
-                    .or_default()
-                    .extend([event.actor.reference, event.target.reference]);
-            }
-            packs.push(replay::rows::RowCodec::try_clone(pack)?);
-        }
-    }
+            Ok(())
+        },
+    )?;
     let mut names = BTreeMap::new();
     if !wanted.is_empty() {
         let selected = [
@@ -290,40 +299,43 @@ pub(super) fn scan(
             TableId::CountryLinks,
             TableId::CountryExperienceGains,
         ];
-        for block in blocks {
-            check_cancel(cancelled)?;
-            if wanted
+        // Only blocks holding a named event's hour are read.
+        let named = blocks.into_iter().filter(|block| {
+            wanted
                 .range(block.first_hour..=block.last_hour)
                 .next()
-                .is_none()
-            {
-                continue;
-            }
-            let mut decoder = FrameDecoder::for_tables(&selected);
-            let Ok(frames) = replay.read_block_selected(block, &selected) else {
-                continue;
-            };
-            for encoded in frames {
+                .is_some()
+        });
+        crate::blocks::scan_blocks(replay, named, &selected, cancelled, |blocks| {
+            for (_, frames) in blocks {
                 check_cancel(cancelled)?;
-                let Ok(frame) = decoder.advance(&encoded) else {
-                    break;
-                };
-                let Some(references) = wanted.get(&frame.hour) else {
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
                     continue;
                 };
-                if validate_campaign(frame, replay).is_err() {
-                    continue;
+                for encoded in frames {
+                    check_cancel(cancelled)?;
+                    let Ok(frame) = decoder.advance(&encoded) else {
+                        break;
+                    };
+                    let Some(references) = wanted.get(&frame.hour) else {
+                        continue;
+                    };
+                    if validate_campaign(frame, replay).is_err() {
+                        continue;
+                    }
+                    let Ok(mut at) = Names::at(frame, branch, frame.hour) else {
+                        continue;
+                    };
+                    at.slots
+                        .retain(|reference, _| references.contains(reference));
+                    let slots: std::collections::BTreeSet<_> = at.slots.values().copied().collect();
+                    at.tags.retain(|slot, _| slots.contains(slot));
+                    names.insert(frame.hour, at);
                 }
-                let Ok(mut at) = Names::at(frame, branch, frame.hour) else {
-                    continue;
-                };
-                at.slots
-                    .retain(|reference, _| references.contains(reference));
-                let slots: std::collections::BTreeSet<_> = at.slots.values().copied().collect();
-                at.tags.retain(|slot, _| slots.contains(slot));
-                names.insert(frame.hour, at);
             }
-        }
+            Ok(())
+        })?;
     }
     let mut projection = Projection::default();
     for pack in packs {

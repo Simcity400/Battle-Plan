@@ -8,13 +8,13 @@ fn value() -> OccupiedValues {
         owner: Some("Mod owner".into()),
         occupier: Some("Dynamic tag".into()),
         occupied: Some("Old tag".into()),
-        resistance_raw: "0".into(),
-        compliance_raw: "10000000".into(),
-        resistance_speed_raw: "-7".into(),
-        compliance_speed_raw: "9".into(),
+        resistance_raw: 0,
+        compliance_raw: 10000000,
+        resistance_speed_raw: -7,
+        compliance_speed_raw: 9,
         garrison_strength_raw: None,
         required_manpower: Some(0),
-        garrison_required_raw: Some("0".into()),
+        garrison_required_raw: Some(0),
         garrison_alert: false,
         garrison_red: None,
         assigned_manpower: None,
@@ -154,6 +154,184 @@ fn equal_values_compress_without_bridging_missing_hours() {
     assert_eq!(runs[2].value.required_manpower, None);
 }
 
+fn run(first_hour: i32, last_hour: i32, value: OccupiedValues) -> OccupiedRun {
+    OccupiedRun {
+        first_hour,
+        last_hour,
+        value,
+    }
+}
+
+fn observation(first_hour: i32, last_hour: i32) -> OccupiedObservation {
+    OccupiedObservation {
+        first_hour,
+        last_hour,
+        read_hour: first_hour,
+        complete: true,
+    }
+}
+
+/// A window's values at `hour`, read as the widget reads them.
+fn decoded(
+    reply: &OccupiedStatesReply,
+    series: &OccupiedSeries,
+    hour: i32,
+) -> Option<OccupiedValues> {
+    fn at<T: Clone>(changes: &[(i32, T)], first: i32, hour: i32) -> T {
+        let (changed, value) = &changes[changes.partition_point(|(at, _)| *at <= hour) - 1];
+        // Every span restates each value at its first hour.
+        assert!(*changed >= first, "a value carried into a later span");
+        value.clone()
+    }
+    let first = series
+        .resistance
+        .iter()
+        .find(|run| run.first_hour <= hour && hour <= run.last_hour)?
+        .first_hour;
+    let fixed5 = |runs: &[NativeFixed5Run]| runs.iter().find_map(|run| run.value_at(hour));
+    let text = |changes: &[(i32, Option<usize>)]| {
+        at(changes, first, hour).map(|index| reply.texts[index].clone())
+    };
+    let raw = |changes: &[(i32, Option<String>)]| {
+        at(changes, first, hour).map(|raw| raw.parse().unwrap())
+    };
+    Some(OccupiedValues {
+        name: text(&series.name),
+        name_missing: text(&series.name_missing),
+        owner: text(&series.owner),
+        occupier: text(&series.occupier),
+        occupied: text(&series.occupied),
+        resistance_raw: fixed5(&series.resistance)?,
+        compliance_raw: fixed5(&series.compliance)?,
+        resistance_speed_raw: fixed5(&series.resistance_speed)?,
+        compliance_speed_raw: fixed5(&series.compliance_speed)?,
+        garrison_strength_raw: raw(&series.garrison_strength_raw),
+        required_manpower: at(&series.required_manpower, first, hour),
+        garrison_required_raw: raw(&series.garrison_required_raw),
+        garrison_alert: at(&series.garrison_alert, first, hour),
+        garrison_red: at(&series.garrison_red, first, hour),
+        assigned_manpower: at(&series.assigned_manpower, first, hour),
+        garrison_missing: text(&series.garrison_missing),
+        law: text(&series.law),
+        law_missing: text(&series.law_missing),
+    })
+}
+
+#[test]
+fn windows_decode_to_the_scanned_values_at_every_hour() {
+    let mut read = value();
+    read.resistance_raw = 9007199254740993;
+    read.garrison_strength_raw = Some(49999);
+    read.assigned_manpower = Some(100);
+    let mut renamed = read.clone();
+    renamed.owner = Some("New owner".into());
+    renamed.name = Some("Renamed between reads".into());
+    let mut next = renamed.clone();
+    next.resistance_raw -= 7;
+    next.compliance_raw -= 100_000;
+    next.resistance_speed_raw = 12345;
+    next.garrison_strength_raw = None;
+    next.garrison_missing = Some("No matching StateGarrisons row was recorded".into());
+    next.law = Some("mod_law".into());
+    next.law_missing = None;
+    let mut returned = value();
+    returned.occupier = Some("Later occupier".into());
+    // State 7 crosses the hour-20 boundary, leaves after 27 and returns at the
+    // window starting at 40; state 9 crosses both boundaries.
+    let scan = OccupiedScan {
+        states: vec![
+            StateRuns {
+                state: 7,
+                runs: vec![
+                    run(0, 14, value()),
+                    run(15, 17, read.clone()),
+                    run(18, 25, renamed),
+                    run(26, 27, next),
+                    run(40, 59, returned),
+                ],
+            },
+            StateRuns {
+                state: 9,
+                runs: vec![run(15, 44, read)],
+            },
+        ],
+        observed: vec![
+            observation(0, 14),
+            observation(15, 25),
+            observation(26, 39),
+            observation(40, 59),
+        ],
+        laws: Vec::new(),
+        warnings: Vec::new(),
+    };
+    for (window, first) in [0, 20, 40].into_iter().enumerate() {
+        let interval = HourSpan {
+            first_hour: first,
+            last_hour: first + 19,
+        };
+        let reply = window_reply(&scan, "1", window, interval);
+        for hour in first..first + 20 {
+            let supplying = |spans: &[OccupiedObservation]| {
+                spans
+                    .iter()
+                    .find(|span| span.first_hour <= hour && hour <= span.last_hour)
+                    .map(|span| (span.read_hour, span.complete))
+            };
+            assert_eq!(
+                supplying(&reply.observed),
+                supplying(&scan.observed),
+                "hour {hour}"
+            );
+            for state in &scan.states {
+                let expected = state
+                    .runs
+                    .iter()
+                    .find(|run| run.first_hour <= hour && hour <= run.last_hour)
+                    .map(|run| run.value.clone());
+                let shown = reply
+                    .states
+                    .iter()
+                    .find(|series| series.state == state.state)
+                    .and_then(|series| decoded(&reply, series, hour));
+                assert_eq!(shown, expected, "state {}, hour {hour}", state.state);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_window_does_not_grow_with_its_branch() {
+    // Resistance, compliance and strength change at every daily read.
+    let scan = |days: i32| OccupiedScan {
+        states: vec![StateRuns {
+            state: 1,
+            runs: (0..days)
+                .map(|day| {
+                    let mut daily = value();
+                    daily.resistance_raw = i64::from(day) * 1234;
+                    daily.compliance_raw = i64::from(day) * 999;
+                    daily.garrison_strength_raw = Some(i64::from(day % 7));
+                    run(day * 24, day * 24 + 23, daily)
+                })
+                .collect(),
+        }],
+        observed: (0..days)
+            .map(|day| observation(day * 24, day * 24 + 23))
+            .collect(),
+        laws: Vec::new(),
+        warnings: Vec::new(),
+    };
+    let window = |days| {
+        let interval = HourSpan {
+            first_hour: 720,
+            last_hour: 1439,
+        };
+        let reply = window_reply(&scan(days), "1", 1, interval);
+        serde_json::to_string(&reply).unwrap()
+    };
+    assert_eq!(window(90), window(36_500));
+}
+
 #[test]
 fn raw_links_resolve_to_opaque_mod_tags_at_scale() {
     let links: Vec<_> = (1..=5000)
@@ -255,10 +433,7 @@ fn mod_added_law_uses_overridden_localisation_and_sprite() {
         cat.localised("renamed", View::Plain).as_deref(),
         Some("Modded name")
     );
-    assert_eq!(
-        cat.localised("removed", View::Plain).as_deref(),
-        Some("removed")
-    );
+    assert_eq!(cat.localised("removed", View::Plain), None);
     let state = StateRow {
         id: 6000,
         custom_name: b"Custom mod state".to_vec(),
@@ -415,7 +590,7 @@ fn branch_scan_dates_equal_reads_and_requires_a_new_read_after_a_gap() {
     );
     assert_eq!(runs[0].value.required_manpower, Some(0));
     assert_eq!(runs[0].value.law.as_deref(), Some("extra_mod_law"));
-    assert_eq!(runs[0].value.resistance_raw, "9007199254740993");
+    assert_eq!(runs[0].value.resistance_raw, 9007199254740993);
     let occupier = reply.states[0].runs[0].value.occupier.as_deref().unwrap();
     let means = &shared.trend.series[occupier];
     assert_eq!(
@@ -453,7 +628,7 @@ fn garrison_strength_keeps_the_native_early_zero_but_never_uses_strength_ratio()
     let runs = &reply.states[0].runs;
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[0].value.garrison_strength_raw, None);
-    assert_eq!(runs[1].value.garrison_strength_raw.as_deref(), Some("0"));
+    assert_eq!(runs[1].value.garrison_strength_raw, Some(0));
 }
 
 #[test]
@@ -730,7 +905,7 @@ fn controller_and_link_changes_between_reads_do_not_redate_occupation_values() {
     assert_eq!(runs[1].value.name.as_deref(), Some("Renamed between reads"));
     assert_eq!(runs[1].value.occupier.as_deref(), Some("Read occupier"));
     assert_eq!(runs[1].value.law.as_deref(), Some("extra_mod_law"));
-    assert_eq!(runs[1].value.garrison_required_raw.as_deref(), Some("0"));
+    assert_eq!(runs[1].value.garrison_required_raw, Some(0));
     assert!(
         !runs[1]
             .value
@@ -741,10 +916,7 @@ fn controller_and_link_changes_between_reads_do_not_redate_occupation_values() {
     );
     assert_eq!(runs[2].value.occupier.as_deref(), Some("New owner"));
     assert_eq!(runs[2].value.law.as_deref(), Some("new_mod_law"));
-    assert_eq!(
-        runs[2].value.garrison_required_raw.as_deref(),
-        Some("123999")
-    );
+    assert_eq!(runs[2].value.garrison_required_raw, Some(123999));
     assert_eq!(
         reply
             .observed
@@ -794,7 +966,7 @@ fn native_zero_strength_requires_complete_resolved_manpower_or_the_failure_flag(
             },
         ])),
     ];
-    let mut scan = super::scan::Scan::new(1, Some(&cat));
+    let mut scan = super::scan::Scan::new(Some(&cat));
     for (index, assigned) in inventories.into_iter().enumerate() {
         let hour = 100 + index as i32;
         let mut read = frame(hour, true);
@@ -822,7 +994,7 @@ fn native_zero_strength_requires_complete_resolved_manpower_or_the_failure_flag(
     };
     for hour in [100, 104] {
         assert_eq!(at(hour).assigned_manpower, Some(0));
-        assert_eq!(at(hour).garrison_strength_raw.as_deref(), Some("0"));
+        assert_eq!(at(hour).garrison_strength_raw, Some(0));
         assert_eq!(at(hour).garrison_red, Some(true));
     }
     for hour in [101, 102, 103] {
@@ -910,15 +1082,9 @@ fn positive_strength_uses_recorded_native_weights_and_mod_content_at_its_daily_r
         .unwrap()
         .states;
     let runs = &reply.states[0].runs;
-    assert_eq!(
-        runs[0].value.garrison_strength_raw.as_deref(),
-        Some("49999")
-    );
+    assert_eq!(runs[0].value.garrison_strength_raw, Some(49999));
     assert_eq!(runs[0].value.garrison_red, Some(true));
-    assert_eq!(
-        runs[1].value.garrison_strength_raw.as_deref(),
-        Some("100000")
-    );
+    assert_eq!(runs[1].value.garrison_strength_raw, Some(100000));
     assert_eq!(runs[1].value.garrison_red, Some(false));
     assert_eq!(runs[2].value.garrison_strength_raw, None);
     assert!(
@@ -959,7 +1125,7 @@ fn a_mod_threshold_uses_native_fixed5_and_missing_garrisons_are_not_zero() {
     missing.hour = 101;
     *missing.tables[TableId::StateGarrisons.index()] =
         TableView::Complete(TableRows::StateGarrisons(vec![]));
-    let mut scan = super::scan::Scan::new(1, Some(&cat));
+    let mut scan = super::scan::Scan::new(Some(&cat));
     for frame in [known, missing] {
         scan.push(&frame, frame.hour).unwrap();
     }
@@ -1017,7 +1183,7 @@ fn non_utf8_overrides_and_unresolved_links_are_named_and_counted_by_reason() {
                 name: vec![0xfe],
             },
         ]));
-    let mut scan = super::scan::Scan::new(1, None);
+    let mut scan = super::scan::Scan::new(None);
     scan.push(&read, 100).unwrap();
     let reply = scan.finish().states;
     assert!(
@@ -1087,7 +1253,7 @@ fn long_campaign_scan_at_design_scale() {
         TableView::Complete(TableRows::StateAssignedManpower(vec![]));
     let hours = 10 * 365 * 24;
     for changed_hourly in [false, true] {
-        let mut scan = super::scan::Scan::new(1, None);
+        let mut scan = super::scan::Scan::new(None);
         let started = Instant::now();
         for hour in 0..hours {
             frame.hour = hour;
@@ -1229,7 +1395,7 @@ fn occupation_group_law_and_null_default_are_joined_at_the_supplying_read() {
     settings.group_laws = Recorded::Value(Some(vec![]));
     *absent.tables[TableId::OccupationSettings.index()] =
         TableView::Complete(TableRows::OccupationSettings(vec![settings]));
-    let mut scan = super::scan::Scan::new(1, Some(&cat));
+    let mut scan = super::scan::Scan::new(Some(&cat));
     for frame in [first, held, next, absent] {
         scan.push(&frame, frame.hour).unwrap();
     }
@@ -1287,7 +1453,7 @@ fn occupation_default_scope_uses_the_retained_country_pointer_independently_of_m
         (None, None, None),
         (None, Some(b"group_policy".to_vec()), Some("group_policy")),
     ];
-    let mut scan = super::scan::Scan::new(1, Some(&cat));
+    let mut scan = super::scan::Scan::new(Some(&cat));
     for (index, (scope_country, law, _)) in cases.iter().enumerate() {
         let mut read = first.clone();
         read.hour += index as i32;
@@ -1418,7 +1584,7 @@ fn occupation_political_default_does_not_require_unrelated_map_assets() {
         *read.tables[TableId::Provinces.index()] = TableView::Unavailable {
             reason: "unrelated map gap".into(),
         };
-        let mut scan = super::scan::Scan::new(1, Some(&cat));
+        let mut scan = super::scan::Scan::new(Some(&cat));
         scan.push(&read, 100).unwrap();
         assert_eq!(
             scan.finish().states.states[0].runs[0].value.law.as_deref(),
@@ -1495,7 +1661,7 @@ fn occupation_default_continent_reads_the_retained_cache_through_from_capital() 
             unreachable!()
         };
         states[0].continent = continent;
-        let mut scan = super::scan::Scan::new(1, Some(&cat));
+        let mut scan = super::scan::Scan::new(Some(&cat));
         scan.push(&read, 100).unwrap();
         let reply = scan.finish().states;
         let value = &reply.states[0].runs[0].value;
@@ -1527,7 +1693,7 @@ fn occupation_default_continent_reads_the_retained_cache_through_from_capital() 
         unreachable!()
     };
     states[0].continent = Recorded::Value(Some(901));
-    let mut scan = super::scan::Scan::new(1, Some(&duplicates));
+    let mut scan = super::scan::Scan::new(Some(&duplicates));
     scan.push(&read, 100).unwrap();
     let reply = scan.finish().states;
     let value = &reply.states[0].runs[0].value;

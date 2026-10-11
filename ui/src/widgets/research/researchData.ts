@@ -79,6 +79,21 @@ export function researchColumns(slots: ResearchSlotHistory[]): ResearchColumn[] 
   return columns.sort((a, b) => a.slot.index - b.slot.index);
 }
 
+/** Images for the cards displayed at this hour: current assignments first,
+ * then completed rows in column order. Repeated technologies share one image. */
+export function researchArtworkTokens(slots: readonly ResearchSlotHistory[] | null, hour: number | undefined, moment: boolean): string[] {
+  if (!slots || hour === undefined) return [];
+  const ordered = [...slots].sort((a, b) => a.index - b.index), tokens: string[] = [];
+  if (moment) for (const slot of ordered) {
+    const current = researchStateAt(slot, hour);
+    const entry = current && slot.entries.find(entry => entry.outcome === 'active'
+      && entry.firstObservedHour === current.entryFirstObservedHour && entry.token === current.token);
+    if (entry) tokens.push(entry.token);
+  }
+  for (const slot of ordered) for (const entry of slot.entries) if (entry.outcome === 'completed') tokens.push(entry.token);
+  return [...new Set(tokens)];
+}
+
 /** Shape checks on the product payload; identity is checked by the transport. */
 export function validateResearchReply(input: unknown): ResearchReply {
   const reply = input as ResearchReply;
@@ -145,9 +160,9 @@ export function validateResearchReply(input: unknown): ResearchReply {
         })));
       index = s.index;
       return valid;
-    // The product answers at most 2048 artwork tokens per request (`products/artwork.rs`).
+    // Text-only history titles cover every technology reached by the history.
     // Each entry must have the product's shape; only an icon it cannot draw becomes missing art.
-    }) && entries <= 100000 && states <= 100000 && progress <= 100000 && reply.artwork.length <= 2048 && reply.artwork.every(artworkEntry);
+    }) && entries <= 100000 && states <= 100000 && progress <= 100000 && reply.artwork.every(artworkEntry);
   if (!valid) throw new Error('Research history does not match this country and recording.');
   keepDrawableIcons(reply.artwork);
   return reply;

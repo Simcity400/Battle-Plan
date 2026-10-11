@@ -144,7 +144,7 @@ test('variants, organisations and icons are as recorded at the hour, never from 
   assert.equal(organisationText(organisationAt(REPLY, '79', 150), run(0, 1)), 'Mauser');
   assert.equal(organisationText(organisationAt(REPLY, '0', 150), run(0, 1, { mio: '0' })), '—');
   assert.equal(organisationText(organisationAt(REPLY, '80', 150), run(0, 1, { mio: '80' })), 'Not recorded');
-  assert.equal(organisationText({ id: '79', firstHour: 0, token: 'GER_mauser_organization', name: null, icon: null, nameUnknown: null, iconUnknown: null }, run(0, 1)), 'GER_mauser_organization');
+  assert.equal(organisationText({ id: '79', firstHour: 0, token: 'GER_mauser_organization', name: null, icon: null, nameUnknown: null, iconUnknown: null }, run(0, 1)), 'Organisation name unavailable');
 });
 
 test('an unresolved organisation owner is said, instead of a generic name', () => {

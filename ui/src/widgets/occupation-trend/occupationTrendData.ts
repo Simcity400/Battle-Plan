@@ -116,7 +116,7 @@ function collaborationRows(run: OccupationTrendRun, hour: number, labelAt: Label
     const named = collaborationNamed(item);
     const reason = item.actor === undefined ? 'Country identity was not recorded for this collaboration.'
       : 'The occupied country identity has no recorded name at this hour.';
-    const label = named ? labelAt(hour)(item.tag) : { name: item.tag ?? 'Unidentified country', flagReason: reason, flagPending: false };
+    const label = named ? labelAt(hour)(item.tag) : { name: 'Country name unavailable', flagReason: reason, flagPending: false };
     return [{ label: `Country collaboration: ${label.name}`, countryFlag: label,
       value: item.raw === null ? 'Not recorded' : `${formatAmount(BigInt(item.raw) * 100n, 5, 5)}%` },
     { label: 'Collaboration read', value: item.readHour === null ? 'Not recorded' : formatDateTime(item.readHour) },

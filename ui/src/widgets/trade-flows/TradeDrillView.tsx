@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import DrillParts from '../../charts/drill/DrillParts';
 import type { DrillPart } from '../../charts/drill/DrillParts';
 import { dayLabel, drawBands, drawPlayhead } from '../../charts/draw';
+import { usNumber } from '../../charts/numberFormat';
 import { compactStack, compactStackExtent, forEachCompactStackSegment } from '../../charts/stack';
 import { heldStackSegment } from '../../charts/race/countryRace';
 import TimeChart from '../../charts/TimeChart';
@@ -93,7 +94,7 @@ export default function TradeDrill({ flows, trade, track, runtime, measure, from
     measure !== 'current' && missingGroupHours > 0 ? `${formatDays(missingGroupHours)} of the group's membership were not recorded; they are not counted.` : null]
     .filter(Boolean).join(' ') || undefined;
   return <div className="trade-drill">
-    <p className="drill-empty">{measureNote(measure)}{hour != null ? ` · ${dayLabel(hour)}` : ''}. {flows.length.toLocaleString('en-US')} exact trade contributors.</p>
+    <p className="drill-empty">{measureNote(measure)}{hour != null ? ` · ${dayLabel(hour)}` : ''}. {usNumber.format(flows.length)} exact trade contributors.</p>
     {identityNote && <p className="drill-empty">{identityNote}</p>}
     {!flows.length && <p className="drill-empty">No recorded contributors match this selection.</p>}
     {hour == null ? <p className="drill-empty">Click the history to choose a day.</p>
@@ -121,7 +122,7 @@ export default function TradeDrill({ flows, trade, track, runtime, measure, from
             icon: flow.resource.icon ?? undefined, swatch: colours.get(flow.resource.id), value: formatAmount(raw!, trade.reply.decimals, trade.reply.decimals), short: true })),
           { label: measure === 'total' ? 'Delivered total' : measure === 'average' ? 'Average per day' : 'Total per day',
             value: formatAmount(measureAmount(flows, measure, from, at), trade.reply.decimals, trade.reply.decimals), strong: true }],
-          note: `${Math.max(0, values.length - listed.length).toLocaleString('en-US')} more contributors available in the full list. Click to show this day.` };
+          note: `${usNumber.format(Math.max(0, values.length - listed.length))} more contributors available in the full list. Click to show this day.` };
         }} />
     </div>
   </div>;

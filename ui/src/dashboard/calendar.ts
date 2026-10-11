@@ -1,3 +1,5 @@
+import { usNumber } from '../charts/numberFormat.ts';
+
 // Keep this presentation conversion aligned with engine::cdate,
 // installed_content::save::GameDate::engine_hour and viewer::app::date. Game dates have
 // 365 days every year and display hours 01:00 through 24:00, not local time.
@@ -53,7 +55,7 @@ export function formatDate(date: GameDate, longMonth = false): string {
 export function formatDateTime(hour: number): string {
   const date = gameDate(hour);
   return date ? `${formatDate(date)} · ${formatTime(date.hour)}`
-    : isEngineHour(hour) ? `Hour ${hour.toLocaleString('en-US')}` : 'Unavailable date';
+    : isEngineHour(hour) ? `Hour ${usNumber.format(hour)}` : 'Unavailable date';
 }
 
 export function monthIndex(date: GameDate): number {

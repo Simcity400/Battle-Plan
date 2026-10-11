@@ -25,6 +25,7 @@ test('pair parts history retains signed rows, observed gaps and selected native 
   const ids = casualtyPairIds([original]);
   const model = pairHistory([original, { ...continued, observed: windows.slice(1), pairs: [...continued.pairs, ...replacement.pairs] }], ids);
   assert.equal(model.bands.length, 2);
+  assert.equal(pairHistory([original], ids).bands[0][0], model.bands[0][0], 'a window is decoded once, however many arrive after it');
   assert.equal(casualtyPairsAt(original, 105).flows[0].value, -12n);
   assert.equal(casualtyPairsAt(original, 105).flows[1].value, 0n);
   assert.equal(runAt(model.bands[0], 105)?.value, 0, 'a correction has no positive geometry');

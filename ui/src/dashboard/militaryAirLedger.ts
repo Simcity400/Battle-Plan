@@ -12,10 +12,14 @@ import { formatRatio } from '../charts/butterfly/layout.ts';
 import type { LabelAt } from '../charts/race/lines';
 import type { TooltipContent } from '../charts/tooltip';
 
+const signed128 = (value: bigint) => value >= -(1n << 127n) && value < (1n << 127n);
+// Below 39 characters a decimal is under 10^38 < 2^127, so only longer text is parsed.
 const exact128 = (value: unknown): value is string => typeof value === 'string' && /^(?:0|-?[1-9]\d*)$/.test(value)
-  && BigInt(value) >= -(1n << 127n) && BigInt(value) < (1n << 127n);
+  && (value.length < 39 || signed128(BigInt(value)));
 const optional = <T>(value: unknown, valid: (value: unknown) => value is T): value is T | null => value === null || valid(value);
 const text = (value: unknown): value is string => typeof value === 'string';
+/** Whether ordered, disjoint `spans` hold all of `span` in one of them. */
+const within = (span: Span, spans: readonly Span[]) => (runAt(spans, span.firstHour)?.lastHour ?? -Infinity) >= span.lastHour;
 
 /** Both products preserve the same exact prefix, date, endpoint and coverage rules. */
 function isMilitaryAirReply(value: unknown): value is MilitaryAirReply {
@@ -25,16 +29,18 @@ function isMilitaryAirReply(value: unknown): value is MilitaryAirReply {
     || !Array.isArray(value.warnings) || !value.warnings.every(text)) return false;
   const observed = value.observed, first = value.firstHour, lastHour = value.lastHour;
   if (observed.some(span => span.firstHour < first || span.lastHour > lastHour) || value.available !== (observed.length > 0)
-    || value.incomplete.some(span => !observed.some(read => read.firstHour <= span.firstHour && read.lastHour >= span.lastHour))) return false;
-  const countries = new Map<string, Span[]>();
+    || !value.incomplete.every(span => within(span, observed))) return false;
+  // Present spans by tag, then native identity.
+  const countries = new Map<string, Map<string, Span[]>>();
   for (const country of value.countries) {
     if (!object(country) || !opaqueTag(country.tag) || !text(country.identity) || !country.identity || !isOrderedSpans(country.present)
       || !optional(country.membership, isOrderedSpans)) return false;
-    const key = JSON.stringify([country.tag, country.identity]);
+    const identities = countries.get(country.tag) ?? new Map<string, Span[]>();
     const present = country.present;
-    if (countries.has(key) || present.some(span => !observed.some(read => read.firstHour <= span.firstHour && read.lastHour >= span.lastHour))
-      || country.membership?.some(span => !present.some(read => read.firstHour <= span.firstHour && read.lastHour >= span.lastHour))) return false;
-    countries.set(key, present);
+    if (identities.has(country.identity) || !present.every(span => within(span, observed))
+      || country.membership?.some(span => !within(span, present))) return false;
+    identities.set(country.identity, present);
+    countries.set(country.tag, identities);
   }
   const keys = new Set<string>();
   for (const leaf of value.leaves) {
@@ -46,7 +52,7 @@ function isMilitaryAirReply(value: unknown): value is MilitaryAirReply {
     const key = JSON.stringify([leaf.tag, leaf.identity, leaf.dealt, leaf.opponent, leaf.region, leaf.buildingId, leaf.buildingToken, leaf.state, leaf.cause]);
     if (keys.has(key)) return false;
     keys.add(key);
-    const present = leaf.tag === null ? observed : countries.get(JSON.stringify([leaf.tag, leaf.identity]));
+    const present = leaf.tag === null ? observed : countries.get(leaf.tag)?.get(leaf.identity as string);
     if (!present) return false;
     let last: number | null = null, read: number | null = null;
     for (const point of leaf.points) {

@@ -1,13 +1,22 @@
+import { usNumber } from '../../charts/numberFormat.ts';
 import { runAt, isOrderedSpans, spansCovered } from '../../charts/series.ts';
+import type { Span } from '../../charts/series';
 import { object, opaqueTag, signed32, unsigned64, int } from '../../dashboard/validation.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { CasualtyPairsReply } from '../../generated/dashboard';
 
 // Country-pair sums can exceed i64; preserve the native signed counters in BigInt.
+// Fewer than 39 digits always fit, so only the longest counters are parsed.
+const inRange = (value: bigint) => value >= -(1n << 127n) && value < (1n << 127n);
 const amount = (value: unknown): value is string => typeof value === 'string'
   && value.length <= 40
   && /^-?(0|[1-9]\d*)$/.test(value)
-  && BigInt(value) >= -(1n << 127n) && BigInt(value) < (1n << 127n);
+  && (value.length - (value[0] === '-' ? 1 : 0) < 39 || inRange(BigInt(value)));
+const append = (lists: Map<string, Span[]>, key: string, runs: readonly Span[]) => {
+  let list = lists.get(key);
+  if (!list) lists.set(key, list = []);
+  for (const run of runs) list.push(run);
+};
 
 export function validateCasualtyPairs(value: unknown): CasualtyPairsReply {
   const bad = () => { throw new Error('The casualty pairs reply is malformed.'); };
@@ -17,8 +26,8 @@ export function validateCasualtyPairs(value: unknown): CasualtyPairsReply {
     || !Array.isArray(value.pairs) || !Array.isArray(value.warnings) || !value.warnings.every(w => typeof w === 'string')) return bad();
   if ([...value.windows, ...value.observed].some(span => !signed32(span.firstHour) || !signed32(span.lastHour))) return bad();
   const keys = new Set<string>();
-  const endpoints = new Map<string, { firstHour: number; lastHour: number }[]>();
-  const identities = new Map<string, { firstHour: number; lastHour: number }[]>();
+  const endpoints = new Map<string, Span[]>();
+  const identities = new Map<string, Span[]>();
   for (const pair of value.pairs) {
     if (!object(pair) || typeof pair.identity !== 'string' || !pair.identity
       || !opaqueTag(pair.firstCountry) || !opaqueTag(pair.secondCountry) || pair.firstCountry === pair.secondCountry
@@ -26,9 +35,8 @@ export function validateCasualtyPairs(value: unknown): CasualtyPairsReply {
     const key = JSON.stringify([pair.identity, pair.firstCountry, pair.secondCountry]);
     if (keys.has(key)) return bad();
     keys.add(key);
-    const endpointsKey = JSON.stringify([pair.firstCountry, pair.secondCountry].sort(compareTags));
-    endpoints.set(endpointsKey, [...(endpoints.get(endpointsKey) ?? []), ...pair.runs]);
-    identities.set(pair.identity, [...(identities.get(pair.identity) ?? []), ...pair.runs]);
+    append(endpoints, JSON.stringify([pair.firstCountry, pair.secondCountry].sort(compareTags)), pair.runs);
+    append(identities, pair.identity, pair.runs);
     for (const run of pair.runs) {
       if (!signed32(run.firstHour) || !signed32(run.lastHour) || !signed32(run.readHour) || run.readHour > run.firstHour
         || typeof run.hourly !== 'boolean' || typeof run.incomplete !== 'boolean'
@@ -77,8 +85,9 @@ export function casualtyPairsAt(reply: CasualtyPairsReply, hour: number, include
   return { countries: [...countries].sort(compareTags), flows };
 }
 
+export const exactCount = (value: number | bigint) => usNumber.format(value);
 export const pairAmount = (flow: Pick<PairFlow, 'value' | 'incomplete'>) =>
-  `${flow.incomplete ? 'Recorded subtotal · ' : ''}${flow.value.toLocaleString('en-US')}`;
+  `${flow.incomplete ? 'Recorded subtotal · ' : ''}${exactCount(flow.value)}`;
 
 export function casualtyPairWindows(reply: CasualtyPairsReply | undefined, hour: number, following: boolean): number[] {
   const current = reply?.windows.findIndex(span => span.firstHour <= hour && hour <= span.lastHour) ?? -1;

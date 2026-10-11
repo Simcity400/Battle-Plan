@@ -30,7 +30,8 @@ test('the division template setting uses the complete virtual catalogue at 5000 
 test('catalogue search keeps saved absent choices removable and refuses unstorable choices', () => {
   const choices = contentChoices([{ value: 'present', label: 'Present' }, { value: 'bad token', label: 'Cannot save' }], ['absent']);
   const absent = filterContent(choices, 'absent')[0];
-  assert.equal(absent.label, 'absent (not in this campaign)');
+  assert.equal(absent.label, 'Saved choice unavailable');
+  assert.equal(absent.hint, 'Key: absent\nNot in this campaign.');
   assert.equal(absent.unavailable, undefined);
   assert.equal(toggleContentSet('absent', absent.value, Number.MAX_SAFE_INTEGER), '');
   assert.ok(choices.find(row => row.value === 'bad token')?.unavailable);

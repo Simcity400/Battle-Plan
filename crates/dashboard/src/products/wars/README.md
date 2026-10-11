@@ -61,9 +61,10 @@ an invented title. Stored text keeps the shared recording-language guard.
 `countryNames` is only a catalogue for measuring historical labels; it never
 fills a name, flag, roster or value at a missing hour.
 
-Cache by branch, viewpoint/native selection and content catalogue. Reuse
-unchanged structural inputs when only casualties change. The Rust-only relation
-membership feeds casualty breakdowns without another grouping algorithm. Counts
+Cache the most recently requested replies by branch, viewpoint/native selection
+and content catalogue. Reuse unchanged structural inputs when only casualties
+change. The Rust-only relation membership feeds casualty breakdowns without
+another grouping algorithm. Counts
 have no chosen ceiling; measure the complete reply against the shared
 `MAX_PRODUCT_REPLY_BYTES` and refuse excess bytes without shortening history.
 Indexed fast paths preserve the grouping properties checked in `tests.rs`; arbitrary

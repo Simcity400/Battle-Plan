@@ -17,7 +17,7 @@ function fakeClient() {
       requests.push(request);
       const flags = request.params.tags.filter(tag => tag !== 'NOFLAG')
         .map(tag => ({ tag, asset: `gfx/flags/medium/${tag}.tga`, width: 1, height: 1, pixels: [0, 0, 0, 255] }));
-      return { ...request, data: { branchId: request.params.branchId, hour: request.params.hour, size: 'medium', flags, warnings: [] } };
+      return { ...request, data: { branchId: request.params.branchId, hour: request.params.hour, size: request.params.size, flags, warnings: [] } };
     },
   } as unknown as DashboardClient;
   return { client, requests, productCalls: () => productCalls };
@@ -29,7 +29,7 @@ test('list flags load in bounded batches per observation hour and are never requ
   targets.push({ tag: 'NOFLAG', branchId: '1', hour: 100 });
   await loadListFlags(client, source, targets, signal());
   assert.deepEqual(requests.map(request => [request.params.hour, request.params.tags.length]), [[100, FLAG_BATCH], [100, 4], [200, 5]]);
-  assert.ok(requests.every(request => request.params.size === 'medium'));
+  assert.ok(requests.every(request => request.params.size === 'shield'));
   const store = flagStore(client);
   assert.equal(store.get(FlagStore.key('s', 'v', '1', 100, 'T0'))?.tag, 'T0');
   assert.equal(store.get(FlagStore.key('s', 'v', '1', 100, 'NOFLAG')), null);

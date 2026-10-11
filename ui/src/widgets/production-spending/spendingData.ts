@@ -143,7 +143,7 @@ export function productionSpendingItems(reply: ProductionSpendingReply, window: 
       path: [
         leaf.rocket ? { id: 'rocket', label: reply.rocketName ?? reply.rocketKey ?? 'Rocket sites (name unavailable)' }
           : { id: leaf.domain ?? UNRESOLVED_ARM, label: domainName(leaf.domain ?? UNRESOLVED_ARM) },
-        { id: leaf.typeKey, label: leaf.name || unresolvedTypeName(leaf.typeKey) },
+        { id: leaf.typeKey, label: leaf.name ?? unresolvedTypeName(leaf.typeKey) },
         { id: identity, label: variantNameAt(leaf.names, window.hour, leaf.variant) },
       ],
       value: amount.exact == null ? null : Number(amount.exact), exact: amount.exact,

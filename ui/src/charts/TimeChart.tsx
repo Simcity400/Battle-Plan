@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { Icon } from '../components/Icons';
+import { ZoomReset } from './ZoomReset';
 import { BADGE_STRIP, badgesAt, drawBadges, visibleBadges } from './badges';
 import type { EventBadge } from './badges';
 import { clipToPlot, dayLabel, drawAxes, drawCrosshair, drawPlayhead, drawSelection, VALUE_LABEL_GAP, valueLabelWidth } from './draw';
@@ -16,7 +16,7 @@ import { ChartPicks } from './pick';
 import type { ChartPick } from './pick';
 import { scheduler } from './scheduler';
 import type { FrameInfo, FrameTask } from './scheduler';
-import { backingSize, toLocal } from './surface';
+import { toLocal, watchCanvasSize } from './surface';
 import { CHART_LAYOUT, readTokens, subscribeTokens } from './tokens';
 import type { ChartTokens } from './tokens';
 import { hideTooltip, showTooltip, tooltipText } from './tooltip';
@@ -88,7 +88,7 @@ export interface TimeChartProps {
   keyHours?: readonly number[];
   /** Drawn after the plot, unclipped: end labels and markers. */
   overlay?: (ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens) => void;
-  /** The drawn time range, including zoom/pan, for labels dated to visible ends. */
+  /** The drawn time range, including zoom/pan, for labels dated to visible ends; called when it changes. */
   onViewChange?: (x: Range) => void;
   onContextMenu?: (hour: number, clientX: number, clientY: number) => void;
   /** A click (not a drag) on the plot picks that hour, e.g. to open or move a breakdown. */
@@ -108,9 +108,6 @@ const LABEL_MARGIN = 4;
 /** The narrowest time span a zoom may reach: two weeks. */
 const MIN_SPAN = 14 * 24;
 const BOX_THRESHOLD = 8;
-/** How long a click waits to see if it is the first of a double-click (which
- * resets the zoom instead of picking): Windows' default double-click time. */
-const DOUBLE_CLICK_MS = 500;
 
 /** What a pointer is over: the crosshair's hour, the hour it is about and any badges. */
 type Pointed = { hour: number; describes: number; badges: readonly EventBadge[] };
@@ -160,9 +157,11 @@ export default function TimeChart(props: TimeChartProps) {
     let view: ViewState = EMPTY_VIEW;
     // The badges last described, compared one by one (a count and range could repeat after a pan).
     let spokenFor: readonly EventBadge[] = [];
+    // The view last reported: a handler hears only a new range (or, when it changes, the current one).
+    let reported: { handler: (x: Range) => void; x: Range } | null = null;
     let eased: { x: [number, number]; y: [number, number] } | null = null;
     let frame: PlotFrame | null = null;
-    let device: { width: number; height: number } | null = null;
+    const surface = watchCanvasSize(element, () => wake());
     let pointer: { x: number; y: number; clientX: number; clientY: number } | null = null;
     let drag: Drag | null = null;
     // The extent the zoom belongs to: another branch or range starts unzoomed.
@@ -182,12 +181,8 @@ export default function TimeChart(props: TimeChartProps) {
 
     const draw = (info: FrameInfo): boolean => {
       const p = latest.current;
-      const layoutWidth = element.clientWidth;
-      const layoutHeight = element.clientHeight;
+      const { layoutWidth, layoutHeight, backing: size } = surface.read();
       if (!layoutWidth || !layoutHeight) return false;
-      const rect = element.getBoundingClientRect();
-      const size = backingSize({ layoutWidth, layoutHeight, rectWidth: rect.width, rectHeight: rect.height, devicePixelRatio: window.devicePixelRatio || 1,
-        devicePixelWidth: device?.width, devicePixelHeight: device?.height });
       if (element.width !== size.width) element.width = size.width;
       if (element.height !== size.height) element.height = size.height;
 
@@ -247,7 +242,10 @@ export default function TimeChart(props: TimeChartProps) {
       context.restore();
       if (p.strip && frame.strip) p.strip.draw(context, frame, tokens, { playhead: until });
       shown.current = { x, until };
-      p.onViewChange?.(x);
+      if (p.onViewChange && (p.onViewChange !== reported?.handler || x[0] !== reported.x[0] || x[1] !== reported.x[1])) {
+        reported = { handler: p.onViewChange, x };
+        p.onViewChange(x);
+      }
       if (p.playhead != null && p.playback === 'cursor') drawPlayhead(context, frame, tokens, p.playhead);
       if (p.badges) drawBadges(context, frame, tokens, p.badges, until);
       const drawn = p.badges ? visibleBadges(p.badges, frame.x, until) : [];
@@ -300,7 +298,11 @@ export default function TimeChart(props: TimeChartProps) {
         }
         // The keyboard hover's tooltip sits at the top of its crosshair; layout pixels
         // become screen pixels through the widget's Size zoom.
-        const point = pointed && pointer ? pointer : { clientX: rect.left + frame.toX(at.hour) * rect.width / layoutWidth, clientY: rect.top + (frame.plotTop + 8) * rect.height / layoutHeight };
+        let point: { clientX: number; clientY: number } | null = pointed ? pointer : null;
+        if (!point) {
+          const rect = element.getBoundingClientRect();
+          point = { clientX: rect.left + frame.toX(at.hour) * rect.width / layoutWidth, clientY: rect.top + (frame.plotTop + 8) * rect.height / layoutHeight };
+        }
         if (hovered.content) showTooltip(owner, hovered.content, point.clientX, point.clientY, hovered.key); else hideTooltip(owner);
         const text = hit?.by === 'keyboard' && hovered.content ? tooltipText(hovered.content) : keyText.current;
         if (text !== keyText.current) { keyText.current = text; setKeySpoken(text); }
@@ -334,23 +336,15 @@ export default function TimeChart(props: TimeChartProps) {
     const remove = scheduler.add(current);
     const unsubscribe = subscribeTokens(next => { tokens = next; wake(); });
 
-    let observer: ResizeObserver | null = null;
-    const resize = (entries: ResizeObserverEntry[]) => {
-      const box = entries[0]?.devicePixelContentBoxSize?.[0];
-      device = box ? { width: box.inlineSize, height: box.blockSize } : null;
-      wake();
-    };
-    try { observer = new ResizeObserver(resize); observer.observe(element, { box: 'device-pixel-content-box' }); }
-    catch { observer = new ResizeObserver(resize); observer.observe(element); }
-
     const local = (event: PointerEvent | WheelEvent | MouseEvent) => {
       const point = toLocal(event.clientX, event.clientY, element.getBoundingClientRect(), element.clientWidth, element.clientHeight);
       return { ...point, clientX: event.clientX, clientY: event.clientY };
     };
+    let secondPress = false;
     const down = (event: PointerEvent) => {
       hover.current = reduceHover(hover.current, { type: 'pointer-down' });
-      // The second press of a double-click never picks, however slow the double-click.
-      if (event.detail >= 2 && pendingPick) { clearTimeout(pendingPick); pendingPick = null; }
+      // A click picks at once; the second press of a double-click never picks again.
+      secondPress = event.detail >= 2;
       if (!frame || (event.button !== 0 && event.button !== 1)) return;
       const point = local(event);
       const zone = hitZone(point, frame);
@@ -358,7 +352,7 @@ export default function TimeChart(props: TimeChartProps) {
       const drawn = pickFrame.current;
       const badges = event.button === 0 && drawn?.props.badges ? badgesAt(point, drawn.context.frame, drawn.props.badges, drawn.context.until) : [];
       if (badges.length && drawn?.onPick) {
-        schedulePick(badges[0].hour);
+        if (!secondPress) pick(badges[0].hour);
         return;
       }
       if (!zone) return;
@@ -387,14 +381,9 @@ export default function TimeChart(props: TimeChartProps) {
       }
       wake();
     };
-    let pendingPick: ReturnType<typeof setTimeout> | null = null;
-    // Wait out a possible second click: a double-click resets the zoom instead.
-    const schedulePick = (hour: number, point?: { x: number; y: number }) => {
-      if (pendingPick) { clearTimeout(pendingPick); pendingPick = null; }
+    const pick = (hour: number, point?: { x: number; y: number }) => {
       const drawn = pickFrame.current;
-      if (!drawn) return;
-      const picked = point ? { ...drawn, context: { ...drawn.context, point } } : drawn;
-      pendingPick = setTimeout(() => { pendingPick = null; picks.pick(picked, hour); }, DOUBLE_CLICK_MS);
+      if (drawn) picks.pick(point ? { ...drawn, context: { ...drawn.context, point } } : drawn, hour);
     };
     const up = () => {
       const finished = drag;
@@ -405,7 +394,7 @@ export default function TimeChart(props: TimeChartProps) {
       } else if (finished?.mode === 'box' && frame && Math.abs(finished.y1 - finished.y0) <= BOX_THRESHOLD && latest.current.onPick) {
         const drawn = pickFrame.current;
         const pointed = drawn && pointedAt({ x: finished.x0, y: finished.y0 }, drawn.context.frame, drawn.props);
-        if (pointed) schedulePick(pointed.describes, !finished.timeOnly ? { x: finished.x0, y: finished.y0 } : undefined);
+        if (pointed && !secondPress) pick(pointed.describes, !finished.timeOnly ? { x: finished.x0, y: finished.y0 } : undefined);
       }
       wake();
     };
@@ -421,9 +410,10 @@ export default function TimeChart(props: TimeChartProps) {
       dispatch({ type: 'wheel', at: frame.hourAt(point.x), steps });
     };
     const doubleClick = (event: MouseEvent) => {
-      if (pendingPick) { clearTimeout(pendingPick); pendingPick = null; }
       if (!frame) return;
       const zone = hitZone(local(event), frame);
+      // Where a click picks, its first click already did: the axes and Reset zoom reset instead.
+      if (latest.current.onPick && (zone === 'plot' || zone === 'strip')) return;
       dispatch({ type: zone === 'x-axis' ? 'reset-x' : zone === 'y-axis' ? 'reset-y' : 'reset' });
     };
     const menu = (event: MouseEvent) => {
@@ -448,12 +438,11 @@ export default function TimeChart(props: TimeChartProps) {
     element.addEventListener('dblclick', doubleClick);
     element.addEventListener('contextmenu', menu);
     return () => {
-      remove(); unsubscribe(); observer?.disconnect(); hideTooltip(owner);
+      remove(); unsubscribe(); surface.disconnect(); hideTooltip(owner);
       element.removeEventListener('pointerdown', down);
       element.removeEventListener('pointermove', move);
       element.removeEventListener('pointerup', up);
       element.removeEventListener('pointercancel', cancel);
-      if (pendingPick) clearTimeout(pendingPick);
       element.removeEventListener('pointerleave', leave);
       element.removeEventListener('wheel', wheel);
       element.removeEventListener('dblclick', doubleClick);
@@ -537,7 +526,6 @@ export default function TimeChart(props: TimeChartProps) {
       aria-keyshortcuts={props.rows ? 'ArrowUp ArrowDown ArrowLeft ArrowRight Home End' : props.tooltip ? 'ArrowLeft ArrowRight Home End' : undefined} onKeyDown={keyDown} onBlur={clearKeyed} />
     <p id={`${owner}-events`} className="sr-only">{spoken ? `Events: ${spoken}.` : ''}</p>
     <p className="sr-only" aria-live="polite">{keySpoken}</p>
-    {zoomed && <button type="button" className="button small time-chart-reset" onClick={() => controls.current?.dispatch({ type: 'reset' })}>
-      <Icon name="refresh" />Reset zoom</button>}
+    {zoomed && <ZoomReset onReset={() => controls.current?.dispatch({ type: 'reset' })} />}
   </div>;
 }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Select } from '../../components/Select';
 import { useContextMenu } from '../../components/ContextMenu';
 import DrillParts from '../../charts/drill/DrillParts';
 import { dayLabel, drawLine, drawBands, drawPlayhead } from '../../charts/draw';
@@ -58,7 +59,7 @@ export default function TensionDrill({ model, runtime, track, active, options, e
   const visibleWanted = tensionVisibleParts(at?.parts ?? [], visible).flatMap(part => {
     const sample = samples.get(part.key); return sample ? [sample] : [];
   });
-  const flags = useCountryFlagsAt(runtime.client, track, visibleWanted, active, 'small', maxHours);
+  const flags = useCountryFlagsAt(runtime.client, track, visibleWanted, active, 'shield', maxHours);
   const colours = useMemo(() => {
     const known = [...samples].sort(([a], [b]) => a.localeCompare(b)).flatMap(([key, sample]) => {
       const style = styles.get(nameKey(sample.hour, sample.tag));
@@ -72,7 +73,7 @@ export default function TensionDrill({ model, runtime, track, active, options, e
   const countryLabel = (key: string) => {
     const sample = samples.get(key);
     const style = sample ? styles.get(nameKey(sample.hour, sample.tag)) : null;
-    return style && style !== FAILED_FACT ? style.name ?? sample!.tag : model.tagOf.get(key)!;
+    return style && style !== FAILED_FACT ? style.name ?? 'Country name unavailable' : 'Country name unavailable';
   };
   const layerColours = useMemo(() => keys.map(key => colours.get(key) ?? tokens.muted).concat(tokens.muted), [keys, colours, tokens.muted]);
   const history = useMemo(() => tensionDrillHistory(model, keys), [model, keys]);
@@ -118,7 +119,7 @@ export default function TensionDrill({ model, runtime, track, active, options, e
     <DrillParts virtual active={active} onVisible={onVisible} signedShares
       parts={at?.parts.map(part => {
         const sample = samples.get(part.key);
-        return { id: part.key, label: visibleSet.has(part.key) ? countryLabel(part.key) : model.tagOf.get(part.key)!,
+        return { id: part.key, label: visibleSet.has(part.key) ? countryLabel(part.key) : 'Country name unavailable',
           value: contributionPercent(model, part.raw), raw: BigInt(part.raw), text: exact(part.raw),
           shareText: tensionShareText(part.raw, at?.read.sumRaw ?? null), color: colours.get(part.key) ?? tokens.muted,
           icon: sample ? flags.get(nameKey(sample.hour, sample.tag)) : undefined };
@@ -130,12 +131,10 @@ export default function TensionDrill({ model, runtime, track, active, options, e
     <p className="drill-empty">World tension: {at ? formatTension(model, at.read.tensionRaw, model.tensionDecimals) : 'Not recorded'}.
       {at && ` Read ${formatDateTime(at.read.firstHour)}; world tension and country contributions are read once a day.`}
       {' '}Contributions keep their recorded signs and can exceed the game’s capped world tension.</p>
-    <label className="world-tension-cause">Recorded cause
-      <select value={selectedCause ?? ''} onChange={event => onCause(event.target.value === '' ? null : Number(event.target.value))}>
-        <option value="">No cause selected</option>
-        {model.reply.events.map((event, index) => <option key={index} value={index}>{dayLabel(event.hour)} · {event.reason}</option>)}
-      </select>
-    </label>
+    <div className="world-tension-cause">Recorded cause
+      <Select label="Recorded cause" value={selectedCause == null ? '' : String(selectedCause)} onChange={value => onCause(value === '' ? null : Number(value))}
+        options={[{ value: '', label: 'No cause selected' }, ...model.reply.events.map((event, index) => ({ value: String(index), label: `${dayLabel(event.hour)} · ${event.reason}` }))]} />
+    </div>
     {cause && <div className="drill-empty" role="group" aria-label="Selected recorded cause">
       <strong>{cause.reason}</strong><p>{formatDateTime(cause.hour)} · {cause.tag ?? 'Country not identified'}.</p>
       <p>Final contribution: {causeRead ? exact(causeRead.addedRaw) : 'Not yet recorded'}.
@@ -157,7 +156,7 @@ export default function TensionDrill({ model, runtime, track, active, options, e
         }));
         const countryRows = value.parts.map(part => {
           const sample = tipSamples.get(part.key);
-          const label = sample ? tooltipLabels.labelAt(sample.hour)(sample.tag) : { name: model.tagOf.get(part.key)!, flag: undefined };
+          const label = sample ? tooltipLabels.labelAt(sample.hour)(sample.tag) : { name: 'Country name unavailable', flag: undefined };
           return { label: label.name, countryFlag: sample ? label : undefined, swatch: colours.get(part.key) ?? tokens.muted, value: exact(part.raw) };
         });
         const rowKeys = new Map<TooltipRow, string>(countryRows.map((row, index) => [row, value.parts[index].key]));
@@ -166,7 +165,7 @@ export default function TensionDrill({ model, runtime, track, active, options, e
           ...(value.remainder !== '0' ? [{ label: 'Other / not identified', value: exact(value.remainder), swatch: tokens.muted }] : []),
           { label: 'Recorded contributions', value: exact(value.read.sumRaw), strong: true, divider: true },
           { label: 'World tension', value: formatTension(model, value.read.tensionRaw, model.tensionDecimals) },
-        ], note: `Read ${formatDateTime(value.read.firstHour)}; world tension and country contributions are read once a day.` }], viewport, { keep: 2 });
+        ] }], viewport, { keep: 2 });
         ask(fitted.rows.flatMap(row => {
           const key = rowKeys.get(row);
           const sample = key == null ? null : tipSamples.get(key);

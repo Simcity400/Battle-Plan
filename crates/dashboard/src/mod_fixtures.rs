@@ -438,7 +438,7 @@ fn idea_timeline_categories_come_from_the_mod_stack() {
             .collect::<Vec<_>>(),
         [
             ("mod_seat", Some("Seat"), false),
-            ("mod_councillor", Some("mod_councillor"), true)
+            ("mod_councillor", None, true)
         ]
     );
     assert_eq!(council.slots[0].laws, ["mod_open", "mod_closed"]);
@@ -488,16 +488,8 @@ fn ruling_party_ideologies_take_the_mod_s_names_and_colours() {
     assert_eq!(
         shown(&stack.politics(&[])),
         [
-            (
-                "democratic".to_owned(),
-                Some("democratic".to_owned()),
-                Some([10, 20, 30])
-            ),
-            (
-                "neutrality".to_owned(),
-                Some("neutrality".to_owned()),
-                Some([128, 128, 128])
-            ),
+            ("democratic".to_owned(), None, Some([10, 20, 30])),
+            ("neutrality".to_owned(), None, Some([128, 128, 128])),
             (
                 "technocracy".to_owned(),
                 Some("Technocracy".to_owned()),
@@ -1060,7 +1052,7 @@ fn content_check_exercises_every_product_and_names_exact_mod_fallbacks() {
         vec![Finding::new(
             Kind::Content,
             "focus mod_focus",
-            "localisation mod_focus is missing; the key is shown"
+            "localisation mod_focus is missing; title is unavailable"
         )]
     );
     assert_eq!(
@@ -1771,7 +1763,7 @@ fn an_iconless_focus_draws_the_engine_s_unknown_goal_or_says_it_cannot() {
     assert!(
         focus.findings[0]
             .message
-            .contains("mod_focus_desc is missing; the key is shown")
+            .contains("mod_focus_desc is missing; title is unavailable")
     );
     let layers = stack.catalogue(&[]).content.layers.clone();
     let live = Arc::new(Catalogue::of_layers(layers, "english").unwrap());
@@ -1783,7 +1775,7 @@ fn an_iconless_focus_draws_the_engine_s_unknown_goal_or_says_it_cannot() {
             &AtomicBool::new(false),
         )
         .unwrap();
-    assert_eq!(reply[0].description.as_deref(), Some("mod_focus_desc"));
+    assert_eq!(reply[0].description, None);
 }
 
 #[test]
@@ -2047,12 +2039,12 @@ fn corpus_separates_recording_context_country_names_and_technology_fallbacks() {
             crate::content_check::Finding::new(
                 Kind::Content,
                 "technology mod_tech",
-                "localisation mod_tech is missing; the key is shown"
+                "localisation mod_tech is missing; title is unavailable"
             ),
             crate::content_check::Finding::new(
                 Kind::Content,
                 "technology mod_tech",
-                "localisation mod_tech_desc is missing; the key is shown"
+                "localisation mod_tech_desc is missing; title is unavailable"
             ),
         ]
     );
@@ -2190,7 +2182,7 @@ fn live_catalogue_does_not_accumulate_product_findings() {
         assert!(
             politics
                 .localised(&format!("missing_mod_key_{index}"), catalogue::View::Plain)
-                .is_some()
+                .is_none()
         );
         live.note(Finding::new(
             Kind::Fallback,
@@ -2220,7 +2212,7 @@ fn live_catalogue_does_not_accumulate_product_findings() {
     )
     .unwrap();
     let (second, second_warnings) = fresh.catalogue(tokens, &AtomicBool::new(false)).unwrap();
-    assert_eq!(first[0].description.as_deref(), Some("mod_live_focus_desc"));
+    assert_eq!(first[0].description, None);
     assert_eq!(first[0].token, second[0].token);
     assert_eq!(first[0].description, second[0].description);
     assert_eq!(first[0].name, second[0].name);
@@ -2469,7 +2461,7 @@ fn corpus_checks_new_main_products_through_their_shared_preparation() {
             &[(
                 Kind::Content,
                 Some("building unnamed_works"),
-                "shown by its token",
+                "title is unavailable",
                 None,
             )],
             &[],
@@ -2565,7 +2557,7 @@ fn factory_missing_names_are_content_and_refused_text_stays_refused() {
     assert!(
         findings.iter().any(|finding| finding.kind == Kind::Content
             && finding.subject == "building unnamed_works"
-            && finding.message.contains("shown by its token")),
+            && finding.message.contains("title is unavailable")),
         "{findings:?}"
     );
     assert!(
@@ -2757,7 +2749,7 @@ fn every_shared_preparation_note_has_one_owner_and_its_producer_kind() {
             &crate::products::construction_log::ContentView {
                 layers,
                 sprites: &cat.sprites,
-                guis: &cat.guis,
+                guis: cat.guis().map_err(|error| error.to_string()),
                 gui_decode: &cat.gui_decode,
                 localise: &|key| cat.localised(key, crate::catalogue::View::Plain),
             },

@@ -665,8 +665,13 @@ impl<'a> ScriptedText<'a> {
         self.expand_in(text, &scopes)
     }
 
-    /// Organisation name in the fresh organisation/owner-FROM scope pair.
-    pub(crate) fn organisation_name(&self, reference: u64) -> Result<String, String> {
+    /// Organisation name before expansion: the localised text and the fresh
+    /// organisation/owner-FROM scope pair. Neither depends on the root, and
+    /// text without `[` expands to itself.
+    pub(crate) fn organisation_template(
+        &self,
+        reference: u64,
+    ) -> Result<(String, EventScopes), String> {
         let organisations = self
             .frame
             .complete::<tables::IndustrialOrganisations>()
@@ -706,7 +711,7 @@ impl<'a> ScriptedText<'a> {
             },
             EventScope::of(EventObject::Country(owner)),
         ]);
-        self.expand_in(&self.localise(key)?, &scopes)
+        Ok((self.localise(key)?, scopes))
     }
 
     /// Expand in the caller's event scopes, the first being the caller's own.

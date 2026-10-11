@@ -35,10 +35,32 @@ struct Renderer {
 
 static RENDERER: OnceLock<Result<Mutex<Renderer>, String>> = OnceLock::new();
 
+#[derive(Default)]
+struct Inputs {
+    map_size: OnceLock<Result<[u32; 2], String>>,
+    programs: Mutex<BTreeMap<Vec<u8>, Arc<ParsedProgram>>>,
+}
+
+type ParsedProgram = OnceLock<Result<Arc<program::Program>, String>>;
+
+/// Parse each resolved artwork program once, retaining reporting reads and refusals.
+pub fn program(layers: &ResolvedLayers, effect: &[u8]) -> Result<Arc<program::Program>, String> {
+    let inputs = layers.derived::<Inputs>();
+    let slot = {
+        let mut programs = inputs
+            .programs
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        Arc::clone(programs.entry(effect.to_vec()).or_default())
+    };
+    slot.get_or_init(|| program::read_reported(layers, effect).map(Arc::new))
+        .clone()
+}
+
 /// Executes the authored Up program with the native Sprite declaration and four-record strip.
 /// Sprite draws bind b0 to both stages, textures to the pixel stage and a triangle strip.
 pub fn render(layers: &ResolvedLayers, draw: Draw, decode: Decode) -> Result<Rgba8Image, String> {
-    let source = Arc::new(program::read_reported(layers, &draw.effect)?);
+    let source = program(layers, &draw.effect)?;
     let technique = source.technique("Up").ok_or_else(|| format!(
         "effect {:?} has no Up technique; a preceding program is unavailable to isolated artwork", source.effect
     ))?;
@@ -66,10 +88,16 @@ pub fn render(layers: &ResolvedLayers, draw: Draw, decode: Decode) -> Result<Rgb
 
 fn globals(layers: &ResolvedLayers, decode: Decode) -> Result<Vec<String>, String> {
     // Map shader constants use the provinces bitmap named by default.map.
-    let files = installed_content::terrain::read_default_map(layers).map_err(|e| e.to_string())?;
-    let path = files.file("provinces").map_err(|e| e.to_string())?;
-    let bytes = layers.read(&path).map_err(|e| e.to_string())?;
-    let size = installed_content::image::bmp::rgb_dimensions(&bytes).map_err(|e| e.to_string())?;
+    let inputs = layers.derived::<Inputs>();
+    let size = inputs
+        .map_size
+        .get_or_init(|| {
+            let files = installed_content::terrain::read_default_map(layers).map_err(|e| e.to_string())?;
+            let path = files.file("provinces").map_err(|e| e.to_string())?;
+            let bytes = layers.read(&path).map_err(|e| e.to_string())?;
+            installed_content::image::bmp::rgb_dimensions(&bytes).map_err(|e| e.to_string())
+        })
+        .clone()?;
     Ok(library::globals(size, decode))
 }
 
@@ -330,5 +358,64 @@ impl Renderer {
             height,
             pixels,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sprite_inputs_are_read_once_per_resolved_stack_and_keep_reporting_reads() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let scratch = crate::Scratch::new().unwrap();
+        let root = &scratch.0;
+        std::fs::create_dir_all(root.join("gfx/FX")).unwrap();
+        std::fs::create_dir(root.join("map")).unwrap();
+        std::fs::create_dir(root.join("outside")).unwrap();
+        let effect = "outside/synthetic.shader";
+        std::fs::write(root.join(effect), "VertexShader={MainCode V [[ float4 main(float3 p:POSITION):SV_POSITION {return float4(p,1);} ]]} PixelShader={MainCode P [[ float4 main():SV_TARGET {return 1;} ]]} Effect Up {VertexShader=V PixelShader=P}").unwrap();
+        std::fs::write(root.join("gfx/FX/defines_hlsl_dx11.fxh"), "").unwrap();
+        std::fs::write(
+            root.join("map/default.map"),
+            "definitions=synthetic.csv provinces=synthetic.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=height.bmp tree_definition=trees.bmp",
+        )
+        .unwrap();
+        let mut bitmap = vec![0; 54 + 24 * 3];
+        bitmap[..2].copy_from_slice(b"BM");
+        bitmap[10..14].copy_from_slice(&54_u32.to_le_bytes());
+        bitmap[14..18].copy_from_slice(&40_u32.to_le_bytes());
+        bitmap[18..22].copy_from_slice(&7_i32.to_le_bytes());
+        bitmap[22..26].copy_from_slice(&3_i32.to_le_bytes());
+        bitmap[26..28].copy_from_slice(&1_u16.to_le_bytes());
+        bitmap[28..30].copy_from_slice(&24_u16.to_le_bytes());
+        std::fs::write(root.join("map/synthetic.bmp"), bitmap).unwrap();
+        let layers = ResolvedLayers::from_folders(&[(root, &[][..])]).unwrap();
+        let reads = layers.report_uncovered_reads();
+        let first = program(&layers, effect.as_bytes()).unwrap();
+        let globals = super::globals(&layers, Decode::default()).unwrap();
+        std::fs::write(root.join(effect), "Effect Changed { }").unwrap();
+        std::fs::remove_file(root.join("map/synthetic.bmp")).unwrap();
+        assert!(Arc::ptr_eq(
+            &first,
+            &program(&layers.clone(), effect.as_bytes()).unwrap()
+        ));
+        assert_eq!(
+            super::globals(&layers.clone(), Decode::default()).unwrap(),
+            globals
+        );
+        assert!(
+            reads
+                .warning()
+                .is_some_and(|warning| warning.contains(effect))
+        );
+        let fresh = ResolvedLayers::from_folders(&[(root, &[][..])]).unwrap();
+        let _reads = fresh.report_uncovered_reads();
+        let replacement = program(&fresh, effect.as_bytes()).unwrap();
+        assert!(!Arc::ptr_eq(&first, &replacement));
+        assert!(replacement.technique("Up").is_none());
+        assert!(replacement.technique("Changed").is_some());
+        assert!(super::globals(&fresh, Decode::default()).is_err());
     }
 }

@@ -189,8 +189,10 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, cou
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const askedHover = useRef<number | null>(null);
   const [viewX, setViewX] = useState<readonly [number, number] | null>(null);
-  const captureView = useCallback((x: readonly [number, number]) => {
-    setViewX(previous => previous?.[0] === x[0] && previous[1] === x[1] ? previous : x);
+  // End labels floor the drawn range, so easing re-renders only when it reaches another hour.
+  const onViewChange = useCallback((x: readonly [number, number]) => {
+    const bounds: [number, number] = [Math.floor(x[0]), Math.floor(x[1])];
+    setViewX(before => before?.[0] === bounds[0] && before[1] === bounds[1] ? before : bounds);
   }, []);
   const styles = useCountryLineStyles(runtime.client, track, resolved.tags, styleAt, active);
   const known = styles.known;
@@ -252,7 +254,7 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, cou
   const hoverLabels = useCountryLabelsAt(runtime.client, track, hoverHour === null ? [] : series.map(item => ({ tag: item.tag, hour: hoverHour })), active);
   const labelAt = useCallback((hour: number) => (tag: string) => {
     const name = names.get(nameKey(hour, tag));
-    return { ...hoverLabels.labelAt(hour)(tag), name: typeof name === 'string' ? name : tag,
+    return { ...hoverLabels.labelAt(hour)(tag), name: typeof name === 'string' ? name : name === undefined ? 'Loading name…' : 'Country name unavailable',
       known: name === undefined ? undefined : typeof name === 'string', nameFailed: name === FAILED_FACT };
   }, [names, hoverLabels.labelAt]);
   const labels = { labelAt, revision: names.size + hoverLabels.revision };
@@ -354,7 +356,7 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, cou
         hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }}
         padding={{ right: options.endLabels ? CHART_LAYOUT.measureEndLabels : CHART_LAYOUT.right }} layers={layers} active={active} revision={`${head}:${data.branchId}:${series.length}:${viewport}:${labels.revision}:${ledger.data ? 'details' : ledger.error ?? 'loading'}`}
-        onViewChange={captureView}
+        onViewChange={onViewChange}
         keyHours={keyHours} pickOwner={pickOwner}
         formatValue={value => Math.abs(value) >= 1000 ? `${Math.round(value / 100) / 10}k` : String(Math.round(value))}
         snap={(hour, frame) => {

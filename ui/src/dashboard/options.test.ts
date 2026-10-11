@@ -111,13 +111,13 @@ test('a content set accepts more than sixteen long tokens through choosing, stor
 });
 
 test('settings sections keep one fixed order and appear only when they apply', () => {
-  const all = settingsSections(META, resolveOptions(FIELDS), true);
-  assert.deepEqual(all, ['campaign', 'countries', 'time', 'size', 'options', 'axes', 'reset']);
+  const all = settingsSections(META, resolveOptions(FIELDS));
+  assert.deepEqual(all, ['campaign', 'countries', 'time', 'size', 'options', 'axes']);
   assert.deepEqual(all, SETTINGS_SECTIONS.filter(section => all.includes(section)));
-  const plain = settingsSections({ ...META, data: false, history: false, options: undefined }, {}, false);
+  const plain = settingsSections({ ...META, data: false, history: false, options: undefined }, {});
   assert.deepEqual(plain, ['size']);
-  const world = settingsSections({ ...META, countrySelection: false }, resolveOptions(FIELDS), true);
-  assert.deepEqual(world, ['campaign', 'time', 'size', 'options', 'axes', 'reset']);
+  const world = settingsSections({ ...META, countrySelection: false }, resolveOptions(FIELDS));
+  assert.deepEqual(world, ['campaign', 'time', 'size', 'options', 'axes']);
 });
 
 function spec(extra: Partial<WidgetSpec> = {}): WidgetSpec {

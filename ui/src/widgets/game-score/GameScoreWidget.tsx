@@ -65,14 +65,14 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
   const onVisible = useCallback((rows: readonly ScoreRow[]) => setVisible(rows), []);
   const wanted = useMemo(() => (view === 'race' ? raceRows : visible).filter(row => gameScoreCountryKnown(row.identity))
     .map(row => ({ hour: row.hour, tag: row.tag })), [view, raceRows, visible]);
-  const flagReads = useCountryFactsRead(runtime.client, track, wanted, active, flagReadSpec('small'));
+  const flagReads = useCountryFactsRead(runtime.client, track, wanted, active, flagReadSpec('shield'));
   const columns = useMemo<readonly TableColumn<ScoreRow>[]>(() => data ? [
     { key: 'country', header: gameScoreLabel(data.labels, 'country'), label: gameScoreLabel(data.labels, 'country'), width: 'minmax(0, 2fr)',
       hint: data.hints.country,
       value: row => row.identity.name, renderMissing: true,
       render: row => {
         const cell = gameScoreCountryCell(row, (tag, at) => flagReads.get(nameKey(at, tag)));
-        return cell ? <CountryCell {...cell} /> : row.identity.name ?? row.tag;
+        return cell ? <CountryCell {...cell} /> : row.identity.name ?? 'Country name unavailable';
       } },
     ...SCORE_PARTS.map(part => ({ key: part, header: gameScoreLabel(data.labels, part), label: gameScoreLabel(data.labels, part), numeric: true, width: 'max-content', bar: 'visible' as const,
       hint: data.hints[part],

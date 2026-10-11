@@ -324,7 +324,7 @@ test('product-owned race looks preserve exact dated identity, empty names, color
   assert.equal(after.flag(tag), undefined, 'a pending current-hour flag never reuses the older flag');
   assert.deepEqual(requested, [[tag, 1], [tag, 2]]);
   const pending = gameScoreLooks(null, 2, flagAt);
-  assert.equal(pending.name(tag), tag);
+  assert.equal(pending.name(tag), 'Country name unavailable');
   assert.equal(pending.color(tag), null);
   assert.equal(pending.flag(tag), undefined);
   assert.equal(pending.matches(tag, 2), false);

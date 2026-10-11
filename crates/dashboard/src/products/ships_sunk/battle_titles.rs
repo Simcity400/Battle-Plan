@@ -426,7 +426,11 @@ impl Product for ShipsSunkBattleTitles {
                         } else {
                             let key = &geo.regions[region].name_key;
                             // Copy the template's name text, including its empty default.
-                            catalogue::localised(&cat.localisation, key, View::Plain)?
+                            cat.localised(key, View::Plain).ok_or_else(|| {
+                                format!(
+                                    "Region title {key} is unavailable in the recorded language"
+                                )
+                            })?
                         };
                         title(&cat, &name)
                     });

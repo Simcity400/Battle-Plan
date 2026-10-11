@@ -170,6 +170,66 @@ fn hourly_country_balances_do_not_retain_hourly_country_snapshots() {
 }
 
 #[test]
+fn spans_keep_only_the_person_rows_a_projection_reads() {
+    use replay::{frame::SharedView, rows::CharacterRow};
+    // Program 1 names scientist 73 of a 5000-character roster read anew each hour.
+    let frames: Vec<_> = (100..104)
+        .map(|hour| {
+            let mut frame = frame(hour, hour == 100, 1);
+            frame.tables[TableId::ProjectPrograms.index()] =
+                TableView::Complete(TableRows::ProjectPrograms(vec![ProjectProgramRow {
+                    id: 1,
+                    owner: 1,
+                    scientist: (73_u64 << 32) | u64::from(engine::ccharacter::REFERENCE_TYPE),
+                    ..Default::default()
+                }]))
+                .into();
+            frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(
+                (1..=5000)
+                    .map(|id| CharacterRow {
+                        id,
+                        ordinal: if id == 5000 { hour as u32 } else { 0 },
+                        ..Default::default()
+                    })
+                    .collect(),
+            ))
+            .into();
+            frame
+        })
+        .collect();
+    let source = source(
+        Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap(),
+        "1",
+    );
+    let cancelled = AtomicBool::new(false);
+    let scan = history::cached(&source, 1, &cancelled).unwrap();
+    // Each roster read still starts a span, but no span keeps the roster.
+    assert_eq!(scan.spans.len(), 4);
+    let views: Vec<_> = scan
+        .spans
+        .iter()
+        .map(|span| span.inputs.world_frame(1).tables[TableId::Characters.index()].clone())
+        .collect();
+    assert_eq!(
+        *views[0],
+        TableView::Complete(TableRows::Characters(vec![CharacterRow {
+            id: 73,
+            ..Default::default()
+        }]))
+    );
+    assert!(views.iter().all(|view| SharedView::ptr_eq(view, &views[0])));
+    let reply = project(&scan, &params(1).country(), None, None, &cancelled)
+        .unwrap()
+        .0;
+    let mut expected = Builder::default();
+    for frame in &frames {
+        expected.observe(frame, &params(1).tag, None);
+    }
+    assert_eq!(reply.people, expected.people);
+    assert_eq!(reply.people[0].id, Some(73));
+}
+
+#[test]
 fn verified_append_shares_prior_inputs_and_decodes_only_new_blocks() {
     let first =
         Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame(100, true, 5000)])]).unwrap();
@@ -387,7 +447,7 @@ fn content_readiness_changes_rename_cached_data_without_another_recording_scan()
         content: Some(options),
     };
     let ready = SpecialProjects::load(&source, &params(1), &context, &cancelled).unwrap();
-    assert_eq!(missing.presentations[0].name, "mod_project");
+    assert_eq!(missing.presentations[0].name, "Project name unavailable");
     assert_eq!(ready.presentations[0].name, "Prepared project");
     assert_eq!(
         SpecialProjects::load(&source, &params(2), &context, &cancelled)
@@ -404,7 +464,10 @@ fn content_readiness_changes_rename_cached_data_without_another_recording_scan()
         &cancelled,
     )
     .unwrap();
-    assert_eq!(missing_again.presentations[0].name, "mod_project");
+    assert_eq!(
+        missing_again.presentations[0].name,
+        "Project name unavailable"
+    );
     assert_eq!(decoded(&source), source.replay_ref().index.len());
 }
 

@@ -2,7 +2,7 @@
 use super::{CountryParams, LoadContext, Product, artwork};
 use crate::{
     Artwork, FocusEntry, FocusHistory, FocusOrder, FocusProgress, FocusSegment, Source,
-    metadata::validate_campaign,
+    metadata::{CountryKeys, validate_campaign},
 };
 use replay::{
     container::Replay,
@@ -73,6 +73,17 @@ impl FocusCache {
         tag: &str,
         cancelled: &AtomicBool,
     ) -> io::Result<(FocusHistory, Option<i32>)> {
+        self.get_observing(replay, branch, tag, cancelled, &mut |_| Ok(()))
+    }
+
+    fn get_observing(
+        &mut self,
+        replay: &Replay,
+        branch: u64,
+        tag: &str,
+        cancelled: &AtomicBool,
+        observe: &mut dyn FnMut(&DecodedFrame) -> io::Result<()>,
+    ) -> io::Result<(FocusHistory, Option<i32>)> {
         if cancelled.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
@@ -87,7 +98,14 @@ impl FocusCache {
             let entry = self.countries.remove(index).unwrap();
             self.countries.push_back(entry);
         } else {
-            let mut result = focus_branch(replay, branch, Some(tag), cancelled)?;
+            let mut result = focus_branch_observing(
+                replay,
+                branch,
+                Some(tag),
+                cancelled,
+                PROGRESS_BUDGET_BYTES,
+                observe,
+            )?;
             let history = result
                 .countries
                 .remove(tag)
@@ -145,6 +163,79 @@ pub fn focus_history(
         .ok_or_else(|| io::Error::other("No recorded focus history for this country"))
 }
 
+/// A successful read's accepted tags. Held focus tables and unchanged country
+/// keys repeat the same validation; only consecutive hours extend its runs.
+#[derive(Default)]
+struct HeldFocusRead {
+    views: Option<[ViewIdentity; 4]>,
+    keys: CountryKeys,
+    hour: Option<i32>,
+    tags: BTreeSet<String>,
+    repeatable: bool,
+}
+
+impl HeldFocusRead {
+    const TABLES: [TableId; 4] = [
+        TableId::Countries,
+        TableId::CountryLinks,
+        TableId::Focus,
+        TableId::CompletedFocuses,
+    ];
+
+    fn can_extend(&self, frame: &DecodedFrame, countries: &[replay::rows::CountryRow]) -> bool {
+        let Some([country_view, views @ ..]) = &self.views else {
+            return false;
+        };
+        self.repeatable
+            && self.hour.and_then(|hour| hour.checked_add(1)) == Some(frame.hour)
+            && views
+                .iter()
+                .zip(&Self::TABLES[1..])
+                .all(|(view, table)| view.is(&frame.tables[table.index()]))
+            && (country_view.is(&frame.tables[TableId::Countries.index()])
+                || self.keys.same(countries))
+    }
+
+    fn begin(&mut self, frame: &DecodedFrame, countries: &[replay::rows::CountryRow]) {
+        self.views = Some(Self::TABLES.map(|table| frame.tables[table.index()].identity()));
+        self.keys = CountryKeys::read(countries);
+        self.hour = Some(frame.hour);
+        self.tags.clear();
+        self.repeatable = true;
+    }
+
+    fn accept(&mut self, tag: &str) {
+        // Duplicate tags are processed in recorded row order. They may select
+        // different identities, so that read cannot extend as one held order.
+        self.repeatable &= self.tags.insert(tag.to_owned());
+    }
+
+    fn extend(&mut self, result: &mut FocusBranch, frame: &DecodedFrame) {
+        for tag in &self.tags {
+            let history = result
+                .countries
+                .get_mut(tag)
+                .expect("accepted focus history");
+            history
+                .segments
+                .last_mut()
+                .expect("accepted focus order")
+                .last_hour = frame.hour;
+            if result.progress_stopped.is_none() {
+                history
+                    .progress
+                    .last_mut()
+                    .expect("accepted focus progress")
+                    .last_hour = frame.hour;
+            }
+        }
+        self.hour = Some(frame.hour);
+        if let Some(views) = &mut self.views {
+            views[0] = frame.tables[TableId::Countries.index()].identity();
+        }
+    }
+}
+
 /// Scans one branch for `selected_tag`, or for every country when it is None.
 /// The memory budget applies to the scanned countries only.
 pub fn focus_branch(
@@ -170,6 +261,26 @@ pub(crate) fn focus_branch_within(
     cancelled: &AtomicBool,
     progress_budget: usize,
 ) -> io::Result<FocusBranch> {
+    focus_branch_observing(
+        replay,
+        branch,
+        selected_tag,
+        cancelled,
+        progress_budget,
+        &mut |_| Ok(()),
+    )
+}
+
+/// New selected-country order segments expose only already verified frames.
+/// The observer retains its own bounded projection, never a second frame list.
+fn focus_branch_observing(
+    replay: &Replay,
+    branch: u64,
+    selected_tag: Option<&str>,
+    cancelled: &AtomicBool,
+    progress_budget: usize,
+    observe: &mut dyn FnMut(&DecodedFrame) -> io::Result<()>,
+) -> io::Result<FocusBranch> {
     if cancelled.load(Ordering::Acquire) {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
@@ -189,169 +300,203 @@ pub(crate) fn focus_branch_within(
         progress_stopped: None,
     };
     let mut identities = BTreeMap::new();
+    let mut held_read = HeldFocusRead::default();
     let mut segment_count = 0;
     let mut progress_bytes = 0_usize;
-    for block in replay.index.iter().filter(|b| b.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "Focus request cancelled",
-            ));
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let frames = match replay.read_block_selected(block, &selected) {
-            Ok(frames) => frames,
-            Err(_) => continue,
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Focus request cancelled",
-                ));
-            }
-            let decoded = match decoder.advance(&frame) {
-                Ok(frame) => frame,
-                Err(_) => break,
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            let (Ok(countries), Ok(links), Ok(focuses), Ok(completed)) = (
-                decoded.complete::<tables::Countries>(),
-                decoded.complete::<tables::CountryLinks>(),
-                decoded.complete::<tables::Focus>(),
-                decoded.complete::<tables::CompletedFocuses>(),
-            ) else {
-                continue;
-            };
-            // Only the scanned countries' rows are indexed: a selected tag
-            // costs the same however many countries the frame holds.
-            let wanted: Vec<_> = countries
-                .iter()
-                .filter(|country| selected_tag.is_none_or(|tag| tag.as_bytes() == country.tag))
-                .filter_map(|country| {
-                    crate::metadata::mapped_slot(country, links)
-                        .ok()
-                        .map(|slot| (country, slot))
-                })
-                .collect();
-            if wanted.is_empty() {
-                continue;
-            }
-            let slots: BTreeSet<u32> = wanted.iter().map(|(_, slot)| *slot).collect();
-            let by_slot: BTreeMap<_, _> = focuses
-                .iter()
-                .filter_map(|focus| {
-                    links
-                        .binary_search_by_key(&focus.country, |l| l.id)
-                        .ok()
-                        .map(|i| (links[i].canonical_slot, focus))
-                })
-                .filter(|(slot, _)| slots.contains(slot))
-                .collect();
-            let owners: BTreeSet<u32> = by_slot.values().map(|focus| focus.country).collect();
-            let mut by_country: BTreeMap<_, Vec<_>> = BTreeMap::new();
-            for row in completed.iter().filter(|row| owners.contains(&row.country)) {
-                by_country.entry(row.country).or_default().push(row);
-            }
-            for rows in by_country.values_mut() {
-                rows.sort_by_key(|r| r.ordinal);
-            }
-            for (country, slot) in wanted {
-                let Some(focus) = by_slot.get(&slot) else {
-                    continue;
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|b| b.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "Focus request cancelled",
+                    ));
+                }
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let frames = match frames {
+                    Ok(frames) => frames,
+                    Err(_) => continue,
                 };
-                let rows = by_country
-                    .get(&focus.country)
-                    .map_or(&[][..], Vec::as_slice);
-                if !valid_order(rows, focus.completed_count) {
-                    continue;
-                }
-                let Ok(tag) = std::str::from_utf8(&country.tag) else {
-                    continue;
-                };
-                if tag.is_empty() || tag.len() > 512 {
-                    continue;
-                }
-                let identity = (slot, country.id);
-                let same_identity = identities.get(tag) == Some(&identity);
-                let history = result.countries.entry(tag.to_owned()).or_default();
-                let current = focus.current.as_deref().filter(|s| !s.is_empty());
-                let continuous = focus.continuous.as_deref().filter(|s| !s.is_empty());
-                // Progress changes once a day; runs never bridge a gap or an identity change.
-                match history.progress.last_mut() {
-                    Some(run)
-                        if result.progress_stopped.is_none()
-                            && same_identity
-                            && run.last_hour.checked_add(1) == Some(frame.hour)
-                            && run.progress_raw.parse::<i64>() == Ok(focus.progress) =>
-                    {
-                        run.last_hour = frame.hour;
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "Focus request cancelled",
+                        ));
                     }
-                    _ if result.progress_stopped.is_some() => {}
-                    _ if progress_bytes + PROGRESS_RUN_BYTES > progress_budget => {
-                        result.progress_stopped = Some(frame.hour);
+                    let decoded = match decoder.advance(&frame) {
+                        Ok(frame) => frame,
+                        Err(_) => break,
+                    };
+                    if validate_campaign(decoded, replay).is_err() {
+                        break;
                     }
-                    _ => {
-                        progress_bytes += PROGRESS_RUN_BYTES;
-                        history.progress.push(FocusProgress {
-                            first_hour: frame.hour,
-                            last_hour: frame.hour,
-                            progress_raw: focus.progress.to_string(),
-                        });
-                    }
-                }
-                if let Some(previous) = history.segments.last_mut() {
-                    let order = &previous.order;
-                    // Compare borrowed rows first: unchanged hours allocate no focus strings.
-                    if same_identity
-                        && previous.last_hour.checked_add(1) == Some(frame.hour)
-                        && order.current.as_ref().map(|s| s.as_bytes()) == current
-                        && order.continuous.as_ref().map(|s| s.as_bytes()) == continuous
-                        && order.paused == (focus.paused != 0)
-                        && order.completed.len() == rows.len()
-                        && order
-                            .completed
-                            .iter()
-                            .zip(rows)
-                            .all(|(a, b)| a.token.as_bytes() == b.token)
-                    {
-                        previous.last_hour = frame.hour;
+                    let (Ok(countries), Ok(links), Ok(focuses), Ok(completed)) = (
+                        decoded.complete::<tables::Countries>(),
+                        decoded.complete::<tables::CountryLinks>(),
+                        decoded.complete::<tables::Focus>(),
+                        decoded.complete::<tables::CompletedFocuses>(),
+                    ) else {
+                        continue;
+                    };
+                    if held_read.can_extend(decoded, countries) {
+                        held_read.extend(&mut result, decoded);
                         continue;
                     }
-                }
-                let mut order = FocusOrder {
-                    completed: ordered(rows, focus.completed_count)?,
-                    current: current.map(|s| String::from_utf8_lossy(s).into_owned()),
-                    continuous: continuous.map(|s| String::from_utf8_lossy(s).into_owned()),
-                    paused: focus.paused != 0,
-                };
-                if same_identity && let Some(previous) = history.segments.last() {
-                    date_completions(&mut order, &previous.order, frame.hour);
-                }
-                result.retained_bytes += 256
-                    + tag.len()
-                    + order.current.as_ref().map_or(0, String::len)
-                    + order.continuous.as_ref().map_or(0, String::len)
-                    + order
-                        .completed
+                    held_read.begin(decoded, countries);
+                    // Only the scanned countries' rows are indexed: a selected tag
+                    // costs the same however many countries the frame holds.
+                    let wanted: Vec<_> = countries
                         .iter()
-                        .map(|r| 64 + r.token.len())
-                        .sum::<usize>();
-                segment_count += 1;
-                if result.retained_bytes > 64 * 1024 * 1024 || segment_count > 100000 {
-                    return Err(io::Error::other("Focus history exceeds its memory budget"));
+                        .filter(|country| {
+                            selected_tag.is_none_or(|tag| tag.as_bytes() == country.tag)
+                        })
+                        .filter_map(|country| {
+                            crate::metadata::mapped_slot(country, links)
+                                .ok()
+                                .map(|slot| (country, slot))
+                        })
+                        .collect();
+                    if wanted.is_empty() {
+                        continue;
+                    }
+                    let slots: BTreeSet<u32> = wanted.iter().map(|(_, slot)| *slot).collect();
+                    let by_slot: BTreeMap<_, _> = focuses
+                        .iter()
+                        .filter_map(|focus| {
+                            links
+                                .binary_search_by_key(&focus.country, |l| l.id)
+                                .ok()
+                                .map(|i| (links[i].canonical_slot, focus))
+                        })
+                        .filter(|(slot, _)| slots.contains(slot))
+                        .collect();
+                    let mut new_selected_segment = false;
+                    for (country, slot) in wanted {
+                        let Some(focus) = by_slot.get(&slot) else {
+                            continue;
+                        };
+                        // Complete decoded tables have unique ascending (country, ordinal)
+                        // keys. Keep the raw focus owner: its alias need not equal the slot.
+                        let rows = completed_for_owner(completed, focus.country);
+                        if !valid_order(rows.iter(), focus.completed_count) {
+                            continue;
+                        }
+                        let Ok(tag) = std::str::from_utf8(&country.tag) else {
+                            continue;
+                        };
+                        if tag.is_empty() || tag.len() > 512 {
+                            continue;
+                        }
+                        held_read.accept(tag);
+                        let identity = (slot, country.id);
+                        let same_identity = identities.get(tag) == Some(&identity);
+                        let history = result.countries.entry(tag.to_owned()).or_default();
+                        let current = focus.current.as_deref().filter(|s| !s.is_empty());
+                        let continuous = focus.continuous.as_deref().filter(|s| !s.is_empty());
+                        // Lossy output differs from invalid raw bytes, so the normal
+                        // order comparison must still start a segment each hour.
+                        held_read.repeatable &= current
+                            .is_none_or(|bytes| std::str::from_utf8(bytes).is_ok())
+                            && continuous.is_none_or(|bytes| std::str::from_utf8(bytes).is_ok())
+                            && rows
+                                .iter()
+                                .all(|row| std::str::from_utf8(&row.token).is_ok());
+                        // Progress changes once a day; runs never bridge a gap or an identity change.
+                        match history.progress.last_mut() {
+                            Some(run)
+                                if result.progress_stopped.is_none()
+                                    && same_identity
+                                    && run.last_hour.checked_add(1) == Some(frame.hour)
+                                    && run.progress_raw.parse::<i64>() == Ok(focus.progress) =>
+                            {
+                                run.last_hour = frame.hour;
+                            }
+                            _ if result.progress_stopped.is_some() => {}
+                            _ if progress_bytes + PROGRESS_RUN_BYTES > progress_budget => {
+                                result.progress_stopped = Some(frame.hour);
+                            }
+                            _ => {
+                                progress_bytes += PROGRESS_RUN_BYTES;
+                                history.progress.push(FocusProgress {
+                                    first_hour: frame.hour,
+                                    last_hour: frame.hour,
+                                    progress_raw: focus.progress.to_string(),
+                                });
+                            }
+                        }
+                        if let Some(previous) = history.segments.last_mut() {
+                            let order = &previous.order;
+                            // Compare borrowed rows first: unchanged hours allocate no focus strings.
+                            if same_identity
+                                && previous.last_hour.checked_add(1) == Some(frame.hour)
+                                && order.current.as_ref().map(|s| s.as_bytes()) == current
+                                && order.continuous.as_ref().map(|s| s.as_bytes()) == continuous
+                                && order.paused == (focus.paused != 0)
+                                && order.completed.len() == rows.len()
+                                && order
+                                    .completed
+                                    .iter()
+                                    .zip(rows)
+                                    .all(|(a, b)| a.token.as_bytes() == b.token)
+                            {
+                                previous.last_hour = frame.hour;
+                                continue;
+                            }
+                        }
+                        let mut order = FocusOrder {
+                            completed: rows
+                                .iter()
+                                .map(|row| FocusEntry {
+                                    ordinal: row.ordinal,
+                                    token: String::from_utf8_lossy(&row.token).into_owned(),
+                                    completed_by_hour: None,
+                                })
+                                .collect(),
+                            current: current.map(|s| String::from_utf8_lossy(s).into_owned()),
+                            continuous: continuous.map(|s| String::from_utf8_lossy(s).into_owned()),
+                            paused: focus.paused != 0,
+                        };
+                        if same_identity && let Some(previous) = history.segments.last() {
+                            date_completions(&mut order, &previous.order, frame.hour);
+                        }
+                        result.retained_bytes += 256
+                            + tag.len()
+                            + order.current.as_ref().map_or(0, String::len)
+                            + order.continuous.as_ref().map_or(0, String::len)
+                            + order
+                                .completed
+                                .iter()
+                                .map(|r| 64 + r.token.len())
+                                .sum::<usize>();
+                        segment_count += 1;
+                        if result.retained_bytes > 64 * 1024 * 1024 || segment_count > 100000 {
+                            return Err(io::Error::other(
+                                "Focus history exceeds its memory budget",
+                            ));
+                        }
+                        history.segments.push(FocusSegment {
+                            first_hour: frame.hour,
+                            last_hour: frame.hour,
+                            order,
+                        });
+                        identities.insert(tag.to_owned(), identity);
+                        new_selected_segment = selected_tag.is_some();
+                    }
+                    if new_selected_segment {
+                        // scan_blocks hands out frames only after read_block_selected
+                        // has verified the whole block, including its checksum.
+                        observe(decoded)?;
+                    }
                 }
-                history.segments.push(FocusSegment {
-                    first_hour: frame.hour,
-                    last_hour: frame.hour,
-                    order,
-                });
-                identities.insert(tag.to_owned(), identity);
             }
-        }
-    }
+            Ok(())
+        },
+    )?;
     if cancelled.load(Ordering::Acquire) {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
@@ -407,40 +552,64 @@ pub(crate) struct FocusCompletion {
 pub(crate) struct FocusCompletionProjection {
     previous: BTreeMap<(u32, u32), FocusOrder>,
     views: Option<[ViewIdentity; 4]>,
+    /// The last read's country keys, and the refusals a read of the same tables repeats.
+    last_read: Option<(CountryKeys, BTreeMap<&'static str, usize>)>,
     #[cfg(test)]
     changed_frames: usize,
     pub observed: bool,
-    pub unavailable: BTreeMap<String, usize>,
+    pub unavailable: BTreeMap<&'static str, usize>,
 }
 
 impl FocusCompletionProjection {
-    fn refuse(&mut self, reason: impl Into<String>, count: usize) {
-        *self.unavailable.entry(reason.into()).or_default() += count;
+    fn refuse(&mut self, reason: &'static str, count: usize) {
+        *self.unavailable.entry(reason).or_default() += count;
+        if let Some((_, repeated)) = &mut self.last_read {
+            *repeated.entry(reason).or_default() += count;
+        }
     }
 
     pub(crate) fn observe(&mut self, frame: &DecodedFrame) -> Vec<FocusCompletion> {
         use crate::metadata::{TaggedCountry, link_slot, tagged_countries};
         const VIEWS: [TableId; 4] = [
+            TableId::Countries,
             TableId::Focus,
             TableId::CompletedFocuses,
-            TableId::Countries,
             TableId::CountryLinks,
         ];
-        if self.views.as_ref().is_some_and(|views| {
-            views
+        let countries = frame.complete::<tables::Countries>();
+        if let Some([country_view, views @ ..]) = &mut self.views
+            && views
                 .iter()
-                .zip(VIEWS)
+                .zip(&VIEWS[1..])
                 .all(|(view, table)| view.is(&frame.tables[table.index()]))
-        }) {
-            return Vec::new();
+        {
+            let view = &frame.tables[TableId::Countries.index()];
+            if country_view.is(view) {
+                return Vec::new();
+            }
+            // Hourly balances change Countries, of which this reads only the keys:
+            // the same keys read as the last read did, counting its refusals again.
+            if let (Ok(rows), Some((keys, repeated))) = (&countries, &self.last_read)
+                && keys.same(rows)
+            {
+                *country_view = view.identity();
+                for (reason, count) in repeated {
+                    *self.unavailable.entry(*reason).or_default() += count;
+                }
+                return Vec::new();
+            }
         }
         self.views = Some(VIEWS.map(|table| frame.tables[table.index()].identity()));
+        self.last_read = countries
+            .as_ref()
+            .ok()
+            .map(|rows| (CountryKeys::read(rows), BTreeMap::new()));
         #[cfg(test)]
         {
             self.changed_frames += 1;
         }
         let (Ok(countries), Ok(links), Ok(focuses), Ok(completed)) = (
-            frame.complete::<tables::Countries>(),
+            countries,
             frame.complete::<tables::CountryLinks>(),
             frame.complete::<tables::Focus>(),
             frame.complete::<tables::CompletedFocuses>(),
@@ -497,7 +666,7 @@ impl FocusCompletionProjection {
                 continue;
             };
             let rows = by_owner.get(&focus.country).map_or(&[][..], Vec::as_slice);
-            if !valid_order(rows, focus.completed_count) {
+            if !valid_order(rows.iter().copied(), focus.completed_count) {
                 self.refuse(
                     "Focus completion observation: completed order incomplete",
                     1,
@@ -563,10 +732,13 @@ impl FocusCompletionProjection {
                         .zip(&previous.completed)
                         .all(|(a, b)| a.token == b.token)
                 {
-                    self.refuse(
-                        "Focus completion observation: reset or reordered completion list has no event dates",
-                        1,
-                    );
+                    // Only a changed list resets: reading the same tables never repeats this.
+                    *self
+                        .unavailable
+                        .entry(
+                            "Focus completion observation: reset or reordered completion list has no event dates",
+                        )
+                        .or_default() += 1;
                 }
             }
             // Comparing an intact prefix across a gap can date only an upper
@@ -579,14 +751,40 @@ impl FocusCompletionProjection {
 
 /// Whether a country's completed focuses are whole and in order. Any number is
 /// valid: a modded tree may complete more focuses than any base game tree has.
-fn valid_order(rows: &[&replay::rows::CompletedFocusRow], count: i32) -> bool {
+fn valid_order<'a>(
+    rows: impl ExactSizeIterator<Item = &'a replay::rows::CompletedFocusRow>,
+    count: i32,
+) -> bool {
     count >= 0
         && count as usize == rows.len()
-        && rows.iter().enumerate().all(|(index, row)| {
+        && rows.enumerate().all(|(index, row)| {
             row.ordinal == index as u32 && !row.token.is_empty() && row.token.len() <= 512
         })
 }
 
+/// Borrow one raw owner's range from a complete, key-validated decoded table.
+fn completed_for_owner(
+    rows: &[replay::rows::CompletedFocusRow],
+    owner: u32,
+) -> &[replay::rows::CompletedFocusRow] {
+    let first = rows.partition_point(|row| completed_owner_key(row) < owner);
+    let remaining = &rows[first..];
+    let end = remaining.partition_point(|row| completed_owner_key(row) <= owner);
+    &remaining[..end]
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static COMPLETED_OWNER_INSPECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn completed_owner_key(row: &replay::rows::CompletedFocusRow) -> u32 {
+    #[cfg(test)]
+    COMPLETED_OWNER_INSPECTIONS.with(|count| count.set(count.get() + 1));
+    row.country
+}
+
+#[cfg(test)]
 fn ordered(rows: &[&replay::rows::CompletedFocusRow], count: i32) -> io::Result<Vec<FocusEntry>> {
     if count < 0 || count as usize != rows.len() {
         return Err(io::Error::other("Completed focus order is incomplete"));
@@ -620,6 +818,10 @@ pub struct NationalFocus;
 pub struct FocusReply {
     pub history: FocusHistory,
     pub artwork: Vec<Artwork>,
+    /// Country-independent text only; scoped titles still require dated reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub static_text: Option<Vec<Artwork>>,
     pub warnings: Vec<String>,
 }
 
@@ -627,6 +829,31 @@ pub struct FocusReply {
 pub struct State {
     artwork: Option<artwork::Context>,
     history: FocusCache,
+}
+
+/// Cold content preparation is independent of the verified recording scan.
+/// Join it before returning, while retaining the scan's refusal precedence.
+fn prepare_while_scanning<T>(
+    cancelled: &AtomicBool,
+    scan: impl FnOnce() -> io::Result<T>,
+    prepare: impl FnOnce() -> io::Result<()> + Send,
+) -> io::Result<T> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Focus request cancelled",
+        ));
+    }
+    let (scanned, prepared) = std::thread::scope(|scope| {
+        let preparation = scope.spawn(prepare);
+        let scanned = scan();
+        (scanned, preparation.join())
+    });
+    // Preparation did not run on a failed scan in the serial path. Its error
+    // or panic must not replace that scan's existing refusal.
+    let scanned = scanned?;
+    prepared.unwrap_or_else(|panic| std::panic::resume_unwind(panic))?;
+    Ok(scanned)
 }
 
 impl Product for NationalFocus {
@@ -648,11 +875,27 @@ impl Product for NationalFocus {
         let content = context.content()?;
         let state = source.state::<State>();
         let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-        let (history, progress_stopped) =
-            state
-                .history
-                .get(&source.replay(), params.branch(), &params.tag, cancelled)?;
-        let art = artwork::ensure(&mut state.artwork, source, content, artwork::Kind::Focus)?;
+        let replay = source.replay();
+        let State { history, artwork } = &mut *state;
+        let mut scan = || {
+            history.get_observing(
+                &replay,
+                params.branch(),
+                &params.tag,
+                cancelled,
+                &mut |frame| super::focus_artwork::retain_basic(source, frame, cancelled),
+            )
+        };
+        let (history, progress_stopped) = if artwork.is_none() {
+            prepare_while_scanning(cancelled, scan, || {
+                artwork::ensure(artwork, source, content, artwork::Kind::Focus).map(|_| ())
+            })?
+        } else {
+            let scanned = scan()?;
+            artwork::ensure(artwork, source, content, artwork::Kind::Focus)?;
+            scanned
+        };
+        let art = artwork.as_mut().expect("focus artwork context prepared");
         let tokens = history
             .segments
             .iter()
@@ -665,7 +908,8 @@ impl Product for NationalFocus {
                     .chain(segment.order.current.as_deref())
                     .chain(segment.order.continuous.as_deref())
             })
-            .collect();
+            .collect::<BTreeSet<_>>();
+        let (static_text, _) = art.text_catalogue(tokens.clone(), cancelled)?;
         let (artwork, mut warnings) = art.focus_metadata(tokens, cancelled)?;
         if let Some(hour) = progress_stopped {
             warnings.push(format!(
@@ -676,6 +920,7 @@ impl Product for NationalFocus {
         let reply = FocusReply {
             history,
             artwork,
+            static_text: Some(static_text),
             warnings,
         };
         super::check_reply_budget(&reply)?;

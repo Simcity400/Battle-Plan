@@ -22,8 +22,7 @@ pub enum SpendingGap {
     OwnerUnknown,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConstructionOutputRead {
     pub known_at: i32,
     pub since_hour: Option<i32>,
@@ -81,6 +80,8 @@ impl OutputScan {
             }
             _ => SpendingGap::ReadFailed,
         };
+        log.output_reads
+            .push((frame.hour, rows.is_none().then_some(unavailable_reason)));
         match (rows, self.unavailable) {
             (None, None) => {
                 self.unavailable = Some(log.output_unknown.len());
@@ -126,7 +127,11 @@ impl OutputScan {
             if project.end.is_some() {
                 apply_ending(project, row, frame.hour, self.restarted.contains(&id));
             }
-            project.output.push(ConstructionOutputRead {
+            let repair_ticks = row.map_or(0, |row| row.repair_ticks);
+            if repair_ticks > 0 && project.first_repair_tick.is_none() {
+                project.first_repair_tick = Some(frame.hour);
+            }
+            log.outputs[index].push(ConstructionOutputRead {
                 known_at: frame.hour,
                 since_hour: row.map(|row| row.since_hour),
                 construction_raw: row
@@ -137,7 +142,7 @@ impl OutputScan {
                     .map(|row| row.repair_raw.to_string()),
                 reason,
                 observed_since_creation: row.is_some_and(|row| row.observed_since_creation),
-                repair_ticks: row.map_or(0, |row| row.repair_ticks),
+                repair_ticks,
             });
         }
         if let Some(rows) = rows {
@@ -299,8 +304,7 @@ mod tests {
             assert!(project.unaccounted.is_empty());
             assert!(project.end.is_none());
             assert_eq!(project.possible, [by_read(1, 124, false)]);
-            let output = project
-                .output
+            let output = log.outputs[0]
                 .iter()
                 .find(|output| output.known_at == 124)
                 .unwrap();

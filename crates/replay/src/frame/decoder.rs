@@ -3,7 +3,7 @@ use super::{
     validate_delta, validate_rows, validate_singleton,
 };
 use crate::{Hour, codec::invalid, rows::TableId};
-use std::io;
+use std::{io, sync::LazyLock};
 
 #[derive(Default)]
 pub struct FrameDecoder {
@@ -79,10 +79,7 @@ impl FrameDecoder {
                 .as_ref()
                 .is_some_and(|selected| !selected[index])
             {
-                return TableView::Unavailable {
-                    reason: "Table not selected for reconstruction".into(),
-                }
-                .into();
+                return not_selected();
             }
             match apply_table(
                 table,
@@ -115,6 +112,17 @@ impl FrameDecoder {
         });
         Ok(self.current.as_ref().unwrap())
     }
+}
+
+/// One view shared by every unselected table of every hour.
+fn not_selected() -> SharedView {
+    static VIEW: LazyLock<SharedView> = LazyLock::new(|| {
+        TableView::Unavailable {
+            reason: "Table not selected for reconstruction".into(),
+        }
+        .into()
+    });
+    VIEW.clone()
 }
 
 /// An unchanged table is the previous hour's allocation, shared rather than

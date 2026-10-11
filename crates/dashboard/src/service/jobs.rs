@@ -1,9 +1,13 @@
-use super::{Inner, Lease, MAX_SOURCE_LEASES, Request};
+use super::{Inner, Lease, Request};
 use crate::{
     Source, SourceKey, map_settings,
     products::{self, ContentOptions, LoadContext},
     protocol::{CampaignMapSettings, replay_revision},
-    transport::{MapSettingsTarget, ProductRequest, SourceReply, bounded_json, bounded_text},
+    reply_cache,
+    transport::{
+        HistoryCacheReply, MapSettingsTarget, ProductRequest, SourceReply, bounded_json,
+        bounded_text,
+    },
 };
 use std::{
     collections::BTreeMap,
@@ -116,12 +120,26 @@ impl Inner {
     }
 
     pub(super) fn submit(&self, request: Arc<Request>, job: LoadJob) {
+        let interactive = match &job {
+            LoadJob::Product { body, .. } => {
+                products::find(&body.product).is_some_and(|product| product.interactive)
+            }
+            LoadJob::HistoryCache { .. } => true,
+            LoadJob::MapSettings(_) | LoadJob::Open(_) => false,
+        };
         let accepted = self
             .loader
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .as_ref()
-            .is_some_and(|loader| loader.send(job).is_ok());
+            .is_some_and(|lanes| {
+                let lane = if interactive {
+                    &lanes.interactive
+                } else {
+                    &lanes.history
+                };
+                lane.send(job).is_ok()
+            });
         if !accepted {
             self.error(request, "Dashboard data service is closing".into());
         }
@@ -275,6 +293,17 @@ impl Inner {
                     );
                     self.complete(request, result);
                 }
+                LoadJob::HistoryCache {
+                    request,
+                    clear,
+                    options,
+                } => {
+                    if request.cancelled() {
+                        continue;
+                    }
+                    let result = history_cache(&options, clear, &request.cancelled);
+                    self.complete(request, result);
+                }
                 LoadJob::Open(job) => {
                     if let Some(content) = self.content() {
                         self.map_settings
@@ -310,7 +339,7 @@ impl Inner {
             return;
         }
         match result {
-            Ok(source) if pending.leases.len() < MAX_SOURCE_LEASES => {
+            Ok(source) => {
                 if let Some(next) = pending.next_lease.checked_add(1) {
                     pending.next_lease = next;
                     let id = self.lease_id(next);
@@ -343,9 +372,6 @@ impl Inner {
                         .push_back((job.request, "Source lease identity exhausted".into()));
                 }
             }
-            Ok(_) => pending
-                .errors
-                .push_back((job.request, crate::transport::TOO_MANY_SOURCES.into())),
             Err(error) => pending
                 .errors
                 .push_back((job.request, bounded_text(&error, 2048))),
@@ -353,6 +379,23 @@ impl Inner {
         drop(pending);
         self.signal.notify();
     }
+}
+
+/// The history cache's size, after clearing it when asked.
+fn history_cache(
+    options: &installed_content::ResolveOptions,
+    clear: bool,
+    cancelled: &AtomicBool,
+) -> Result<String, String> {
+    let folder = reply_cache::folder(options);
+    if clear {
+        reply_cache::clear(&folder).map_err(|error| error.to_string())?;
+    }
+    let reply = HistoryCacheReply {
+        bytes: reply_cache::size(&folder),
+        limit: reply_cache::LIMIT,
+    };
+    bounded_json(&reply, cancelled)
 }
 
 pub(super) struct MapSettingsJob {
@@ -372,6 +415,11 @@ pub(super) struct OpenJob {
 
 pub(super) enum LoadJob {
     MapSettings(MapSettingsJob),
+    HistoryCache {
+        request: Arc<Request>,
+        clear: bool,
+        options: installed_content::ResolveOptions,
+    },
     Open(OpenJob),
     Product {
         request: Arc<Request>,

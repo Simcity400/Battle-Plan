@@ -25,11 +25,11 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { readAt, readNote } from '../../dashboard/reads';
+import { readAt } from '../../dashboard/reads';
 import type { ProductionLineDetailReply, ProductionLinesReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
 import { bandScale, breakdownTooltip, detailOf, efficiencyFraction, efficiencyPercent, factoryScale, finalTooltip, gapTooltip, historyLanes, iconImage, lineTooltip, linesAt, linesKnown,
-  organisationAt, organisationText, outputAt, outputTotal, productionLineKey, productionLineToken, stepTooltip, totalText, unreadNote, variantAt, variantName, weeklyOutput, weeklyText, windowOf, withNote } from './productionData';
+  organisationAt, organisationText, outputAt, outputTotal, productionLineKey, productionLineToken, stepTooltip, totalText, unreadNote, variantAt, variantName, weeklyOutput, weeklyText, windowOf } from './productionData';
 import type { LineAt, LineOrder, TooltipForms } from './productionData';
 import { useLineDetail, useProductionLines, useLineBreakdown, useProductionCountry } from './useProductionLines';
 import ProductionDrill from './ProductionDrill';
@@ -44,7 +44,6 @@ const stopRowEvent = <E,>(handler: (event: E) => void) => (event: E & { stopProp
 };
 
 /** How often lines are read, for the note under a value read earlier. */
-const CADENCE = 'production lines are read once a day.';
 
 /** One country's production lines. Live (following playback or a pinned moment):
  * the lines running then, like the game's production tab. Otherwise: one lane per
@@ -216,7 +215,7 @@ function LiveTable({ data, detail, hour, order, more, owner, active, hoursPerSec
   const rows = useRowMotion<LineAt>(items);
   const targets = useMemo(() => new Map<string, { at: LineAt; part: TableTipPart }>(items.flatMap(({ key, item }) =>
     (['line', 'efficiency', 'output'] as const).map(part => [tableTipKey(key, part), { at: item, part }] as const))), [items]);
-  const head = useMemo(() => ({ subtitle: dayLabel(hour), note: readNote(read, hour, CADENCE) }), [hour, read]);
+  const head = useMemo(() => ({ subtitle: dayLabel(hour) }), [hour]);
   const content = useCallback((key: string) => {
     const target = targets.get(key);
     if (!target) return null;
@@ -328,8 +327,7 @@ function History({ data, tag, extent, showEnded, active, hoursPerSecond, onMenu,
         if (!step && (line.betweenReads || (line.endedBy != null && hour >= line.endedBy))) return fitted(finalTooltip(data, line, hour, { subtitle: dayLabel(hour), note: missing }, dayLabel), height, full);
         // Not recorded then, or before it started: this hour's status, not the lane's at the end shown.
         if (!step) return gapTooltip(data, line, hour, dayLabel(hour), dayLabel, missing);
-        const read = readAt(data.reads, hour);
-        const head = { subtitle: dayLabel(hour), note: withNote(readNote(read, hour, CADENCE), missing) };
+        const head = { subtitle: dayLabel(hour), note: missing };
         // The window of reads behind this hour: asked for once the tooltip is built.
         const window = windowOf(data, hour);
         if (window !== hovered) queueMicrotask(() => onWant(window));

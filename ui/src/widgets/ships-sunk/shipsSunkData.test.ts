@@ -87,12 +87,31 @@ test('modded class chips and sea zone are supplied by content; missing labels st
   data.classes[0].name = null;
   assert.equal(shipClassName(data, data.rows[0]), 'Recorded design (recorded class)');
   data.rows[0].recordedNameIndex = null;
-  assert.equal(shipClassName(data, data.rows[0]), 'mod/sea vessel (class name not resolved)');
-  assert.match(shipClassName(data, data.rows[3]), /Class token 888.*not recorded/);
-  const unknownChoice = shipClassChoices(data, 'campaign').find(choice => choice.label.includes('888'))!;
+  assert.equal(shipClassName(data, data.rows[0]), 'Class name unavailable');
+  assert.equal(shipClassName(data, data.rows[3]), 'Class name unavailable');
+  const unknownChoice = shipClassChoices(data, 'campaign').find(choice => choice.hint === 'Key: 888')!;
   assert.equal(shipLogRows(data, 120, [unknownChoice.value], 'both', () => true, null, shipLogOrder(data), 'campaign').length, 1);
   assert.equal(shipLogRows(data, 120, [unknownChoice.value], 'both', () => true, null, shipLogOrder(data), 'other campaign').length, 0);
   assert.equal(shipTooltip(data, data.rows[0], 'Victim', 'Attacker').rows?.some(item => item.label === 'Combat reference' || item.label === 'Province'), false);
+});
+
+test('class titles preserve authored empty and key-equal text while duplicate filter values stay in hints', () => {
+  const data = fixture();
+  data.classes[0].name = '';
+  assert.equal(shipClassName(data, data.rows[0]), '');
+  assert.equal(shipClassChoices(data, 'campaign').find(choice => choice.value === 'mod/sea vessel')?.label, '');
+  data.classes[0].name = data.classes[0].key;
+  assert.equal(shipClassName(data, data.rows[0]), 'mod/sea vessel');
+  data.classes[0].name = null;
+  data.recordedNames[0] = '';
+  assert.equal(shipClassName(data, data.rows[0]), '', 'a known empty literal is independent of a missing content title');
+  data.rows.forEach(row => { row.recordedNameIndex = null; });
+  const choices = shipClassChoices(data, 'campaign');
+  assert.deepEqual(choices.map(choice => choice.label), ['Class name unavailable', 'Class name unavailable']);
+  assert.equal(new Set(choices.map(choice => choice.value)).size, 2);
+  assert.deepEqual(choices.map(choice => choice.hint), ['Key: mod/sea vessel', 'Key: 888']);
+  assert.equal(shipTooltip(data, data.rows[0], 'Victim', 'Attacker').rows.find(row => row.label === 'Class key')?.value, 'mod/sea vessel');
+  assert.doesNotMatch(shipDescription(data, data.rows[0], 'Victim', 'Attacker'), /mod\/sea vessel/);
 });
 
 test('non-hostile and assisted flags never read as ordinary hostile kills', () => {

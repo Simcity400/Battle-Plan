@@ -1,8 +1,10 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 /** Land army wording and request choices; country history mechanics live in the kit. */
 import { validCountryValues } from '../../charts/race/countryValues.ts';
 import type { CountryValuesModel, CountryValueAt } from '../../charts/race/countryValues';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { dayLabel } from '../../charts/draw.ts';
+import { usFiveDecimals, usNumber } from '../../charts/numberFormat.ts';
 import type { BoundTrack } from '../../dashboard/model';
 import { int, object, unsigned32 } from '../../dashboard/validation.ts';
 import { isOrderedSpans, isSpan } from '../../charts/series.ts';
@@ -135,18 +137,18 @@ export function armySizeRequest(branchId: string, resolved: { tags: readonly str
 }
 
 export const measureName = (measure: ArmyMeasure) => MEASURES.find(item => item.value === measure)!.label;
-export const formatArmyValue = (value: number) => value.toLocaleString('en-US', { maximumFractionDigits: 5 });
+export const formatArmyValue = (value: number) => usFiveDecimals.format(value);
 export function formatArmyRaw(raw: string, measure: ArmyMeasure): string {
   const value = BigInt(raw);
-  if (measure !== 'strength') return value.toLocaleString('en-US');
+  if (measure !== 'strength') return usNumber.format(value);
   const magnitude = value < 0n ? -value : value;
   const fraction = (magnitude % 100000n).toString().padStart(5, '0').replace(/0+$/, '');
-  return `${value < 0n ? '-' : ''}${(magnitude / 100000n).toLocaleString('en-US')}${fraction ? `.${fraction}` : ''}`;
+  return `${value < 0n ? '-' : ''}${usNumber.format(magnitude / 100000n)}${fraction ? `.${fraction}` : ''}`;
 }
 export const formatArmyPart = (at: CountryValueAt, index: number) =>
   at.values[index] === null ? 'Not known' : at.rawValues?.[index] != null
     ? formatArmyRaw(at.rawValues[index]!, 'battalions') : formatArmyValue(at.values[index]);
-export const typeName = (type: { key: string; name: string | null }) => type.name ?? type.key;
+export const typeName = (type: { key: string; name: string | null }) => contentTitle(type.name, type.key, 'Battalion group name unavailable');
 
 export function* armyTooltips(model: CountryValuesModel, name: string, at: CountryValueAt, hour: number, measure: ArmyMeasure,
   countFor: ArmyAttribution, colours: ReadonlyMap<string, string>): Generator<TooltipContent> {

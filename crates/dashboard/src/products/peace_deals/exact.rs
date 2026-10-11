@@ -87,7 +87,7 @@ struct Capture {
 struct TagRead {
     first_hour: i32,
     last_hour: i32,
-    tag: String,
+    tag: Tag,
     identity: (u32, u32),
 }
 #[derive(Default)]
@@ -95,7 +95,8 @@ pub(super) struct Observed {
     seen: HashSet<u64>,
     captures: Vec<Capture>,
     unobserved: Vec<HourSpan>,
-    reasons: HashSet<String>,
+    /// Ordered, so a reply's warnings do not depend on hashing.
+    reasons: std::collections::BTreeSet<String>,
     country_tags: HashMap<u32, Vec<TagRead>>,
 }
 impl Observed {
@@ -114,30 +115,19 @@ impl Observed {
         }
         self.reasons.insert(reason);
     }
+    /// `action_key` is this frame's `state_action_key`, read once per LexicalTokens view.
     pub(super) fn observe(
         &mut self,
         frame: &DecodedFrame,
-        country_tags: Option<&Arc<HashMap<u32, String>>>,
+        countries: Option<&CountryTags>,
         vps: Option<&HashMap<u32, i64>>,
+        action_key: Option<&str>,
     ) {
-        if let Some(tags) = country_tags {
-            let identities: HashMap<_, _> = frame
-                .complete::<tables::Countries>()
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|row| {
-                    Some((
-                        std::str::from_utf8(&row.tag).ok()?,
-                        (row.canonical_slot, row.id),
-                    ))
-                })
-                .collect();
+        if let Some(countries) = countries {
             // Retain every observed mapping without copying an unchanged map
             // for each hour. A missing read breaks each reference's run.
-            for (&raw, tag) in tags.iter() {
-                let Some(&identity) = identities.get(tag.as_str()) else {
-                    continue;
-                };
+            for (&raw, tag) in &countries.tags {
+                let identity = countries.identities[tag];
                 let reads = self.country_tags.entry(raw).or_default();
                 if let Some(last) = reads.last_mut().filter(|last| {
                     last.last_hour.checked_add(1) == Some(frame.hour)
@@ -174,19 +164,7 @@ impl Observed {
         let Some(rows) = rows else {
             return;
         };
-        let tokens = frame
-            .complete::<tables::LexicalTokens>()
-            .ok()
-            .map(|rows| {
-                rows.iter()
-                    .filter_map(|r| {
-                        std::str::from_utf8(&r.literal)
-                            .ok()
-                            .map(|name| (r.token, name.to_owned()))
-                    })
-                    .collect::<HashMap<_, _>>()
-            })
-            .unwrap_or_default();
+        let tokens = frame.complete::<tables::LexicalTokens>().ok();
         for row in rows {
             if !self.seen.insert(row.sequence) {
                 continue;
@@ -215,7 +193,7 @@ impl Observed {
                                 let reads = self.country_tags.get(&raw)?;
                                 let index = reads.partition_point(|read| read.first_hour <= hour);
                                 let read = reads.get(index.checked_sub(1)?)?;
-                                (hour <= read.last_hour).then(|| (raw, read.tag.clone()))
+                                (hour <= read.last_hour).then(|| (raw, read.tag.to_string()))
                             })
                             .collect()
                     })
@@ -239,7 +217,7 @@ impl Observed {
                                         PeaceTransferCountry {
                                             slot: read.identity.0,
                                             country_id: read.identity.1,
-                                            tag: read.tag.clone(),
+                                            tag: read.tag.to_string(),
                                             hour,
                                         },
                                     )
@@ -248,10 +226,16 @@ impl Observed {
                             .collect()
                     })
                     .unwrap_or_default(),
+                // LexicalTokens rows are keyed by token: unique and ascending.
                 tokens: row
                     .actions
                     .iter()
-                    .filter_map(|a| tokens.get(&a.token).cloned().map(|name| (a.token, name)))
+                    .filter_map(|a| {
+                        let tokens = tokens?;
+                        let index = tokens.binary_search_by_key(&a.token, |r| r.token).ok()?;
+                        let name = std::str::from_utf8(&tokens[index].literal).ok()?;
+                        Some((a.token, name.to_owned()))
+                    })
                     .collect(),
                 vps: vps.map(|vps| {
                     row.transfers
@@ -264,7 +248,7 @@ impl Observed {
                         .collect()
                 }),
                 vps_hour: vps.map(|_| frame.hour),
-                state_action_key: state_action_key(frame).ok(),
+                state_action_key: action_key.map(str::to_owned),
             });
         }
     }

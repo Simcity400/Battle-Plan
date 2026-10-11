@@ -350,6 +350,7 @@ pub fn apply(
     layers.layers.retain(|layer| !remove.contains(&layer.id));
     layers.finish()?;
     layers.visual = overlays;
+    layers.derived = Default::default();
     Ok(())
 }
 

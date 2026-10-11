@@ -2976,7 +2976,7 @@ fn air_superiority_faction_names_follow_native_operands_and_dictionary_reads() {
 }
 
 #[test]
-fn air_superiority_region_names_preserve_empty_results_and_native_key_fallbacks() {
+fn air_superiority_region_names_preserve_empty_results_and_distinguish_missing_keys() {
     engine::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -3042,13 +3042,13 @@ fn air_superiority_region_names_preserve_empty_results_and_native_key_fallbacks(
             .iter()
             .map(|region| (region.id, region.name.as_str()))
             .collect::<Vec<_>>(),
-        [(7000, ""), (7001, ""), (7002, "ABSENT")]
+        [(7000, ""), (7001, ""), (7002, "Region 7002")]
     );
     assert!(
         reply
             .warnings
             .iter()
-            .all(|warning| !warning.starts_with("Region "))
+            .any(|warning| warning.starts_with("Region 7002"))
     );
 }
 

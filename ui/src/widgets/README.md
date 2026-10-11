@@ -16,7 +16,7 @@ widgets/<name>/
 
 ## Contract
 
-- `WidgetProps` supplies spec, runtime, `active`, header slots and diagnostics. Widgets never open files, start clocks or read another widget's state.
+- `WidgetProps` supplies spec, runtime, `active`, header slots and diagnostics. Bodies mount after their frame, in turn (those near the viewport first, a few each animation frame), and `active` starts from the widget's visibility. Report warnings through [useDiagnostics](../dashboard/useDiagnostics.ts). Widgets never open files, start clocks or read another widget's state.
 - Read validated histories through [useProduct](../dashboard/products.ts), then look up playback locally. Windows/transient facts and client/request ownership follow the [data guide](../../README.md#data-and-identity).
 - Follow with `usePlaybackHour` and `resolveWindow`. Declare time modes/defaults; `history` controls the whole-campaign Live switch, while moment views can offer Pin. Store branch-relative offsets; missing is not zero.
 - The frame owns title, country chip, Live and gear. Portal summaries into `headerSlot`; semantic drills use `countryChip`/`countrySlot` at their displayed hour. Custom controls use `headerControls`.

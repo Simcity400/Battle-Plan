@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode, RefObject } from 'react';
 import { Icon } from '../../components/Icons';
 import { Popover, usePopover } from '../../components/Popover';
@@ -26,6 +26,15 @@ export default function DrillHost({ mode, open, title, day, following, canFollow
   const close = useRef({ onClose, returnFocus, open });
   close.current = { onClose, returnFocus, open };
   const popout = mode === 'popout';
+  // Opening starts the slide at once; the breakdown mounts a frame later, as it slides in,
+  // so however much it draws the click answers immediately.
+  const [mounted, setMounted] = useState(open);
+  useEffect(() => {
+    if (!open) { setMounted(false); return; }
+    if (mounted) return;
+    const frame = requestAnimationFrame(() => setMounted(true));
+    return () => cancelAnimationFrame(frame);
+  }, [open, mounted]);
   const requestClose = () => {
     const closingPanel = popout ? panelRef.current.popup.current : null;
     const { onClose, returnFocus } = close.current;
@@ -89,13 +98,13 @@ export default function DrillHost({ mode, open, title, day, following, canFollow
   if (popout) return <>
     {main}
     <Popover menu={panel} manual className="drill-popout" aria-label={title} onToggle={event => { if (event.newState === 'closed' && open) requestClose(); }}>
-      {open && <>{header}<div className="drill-body">{children}</div></>}
+      {open && <>{header}<div className="drill-body">{mounted && children}</div></>}
     </Popover>
   </>;
   return <div className="drill-host" data-open={open || undefined}>
     <div className="drill-face drill-main" inert={open}>{main}</div>
     <div className="drill-face drill-view" inert={!open} role="region" aria-label={title}>
-      {open && <>{header}<div className="drill-body">{children}</div></>}
+      {open && <>{header}<div className="drill-body">{mounted && children}</div></>}
     </div>
   </div>;
 }

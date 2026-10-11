@@ -65,6 +65,7 @@ pub struct CountryStyleReply {
 impl Product for CountryStyles {
     const KEY: &'static str = "country-styles";
     const CONTENT_DEPENDENT: bool = true;
+    const INTERACTIVE: bool = true;
     type Params = CountryStyleParams;
     type Reply = CountryStyleReply;
 
@@ -101,18 +102,22 @@ impl Product for CountryStyles {
             hour: params.hour,
             localisation: localisation.as_ref().ok().cloned(),
         };
-        let state = source.state::<StyleState>();
-        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-        let hour = match state
-            .recent
-            .iter()
-            .position(|(cached, _)| cached.matches(&key))
-        {
-            Some(index) => {
-                let entry = state.recent.remove(index);
-                state.recent.insert(0, entry);
-                Arc::clone(&state.recent[0].1)
-            }
+        let shared = source.state::<StyleState>();
+        let cached = {
+            let mut state = shared.lock().unwrap_or_else(|error| error.into_inner());
+            state
+                .recent
+                .iter()
+                .position(|(cached, _)| cached.matches(&key))
+                .map(|index| {
+                    let entry = state.recent.remove(index);
+                    state.recent.insert(0, entry);
+                    Arc::clone(&state.recent[0].1)
+                })
+        };
+        // The lock is not held while reading the recording, so other hours wait for nothing.
+        let hour = match cached {
+            Some(hour) => hour,
             None => {
                 if cancelled.load(Ordering::Acquire) {
                     return Err(invalid("Country style request cancelled"));
@@ -121,7 +126,8 @@ impl Product for CountryStyles {
                     .branch_id
                     .parse::<u64>()
                     .map_err(|_| invalid("Invalid country style branch"))?;
-                let frame = match source.replay().seek(branch, params.hour)? {
+                let tables = Some(&installed_content::country_names::TABLES[..]);
+                let frame = match source.replay().seek_selected(branch, params.hour, tables)? {
                     SeekResult::Frame(frame) => frame,
                     SeekResult::Gap { reason, .. } => {
                         return Err(invalid(format!(
@@ -130,6 +136,7 @@ impl Product for CountryStyles {
                     }
                 };
                 let hour = Arc::new(HourStyles::read(&frame, key.localisation.as_deref())?);
+                let mut state = shared.lock().unwrap_or_else(|error| error.into_inner());
                 state.recent.insert(0, (key, Arc::clone(&hour)));
                 state.recent.truncate(RECENT_HOURS);
                 hour

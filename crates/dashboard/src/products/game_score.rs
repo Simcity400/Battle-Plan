@@ -8,19 +8,20 @@ use super::{
     country_styles::HourStyles,
     fixed5_runs::{Fixed5State, NativeFixed5Run, push_fixed5},
     table_missing_reason,
+    war_casualties::same_name_rows,
 };
 use crate::{
     Source, catalogue, content, faction_names,
     metadata::{self, TaggedCountry, tagged_countries},
 };
-use installed_content::country_names::CountryNames;
+use installed_content::country_names::{self, CountryNames};
 use installed_content::{faction_templates::Catalog, localisation::Localisation};
 use replay::{
     container::Replay,
-    frame::{DecodedFrame, FrameDecoder},
+    frame::{DecodedFrame, FrameDecoder, SharedView, ViewIdentity},
     rows::{
-        AirWingGameScoreStatsRow, CountryFactoriesRow, CountryGameScoreInputRow, FactionMemberRow,
-        GameScoreAirSite, GameScoreMultiplierRow, TableId, tables,
+        AirWingGameScoreStatsRow, CountryFactoriesRow, CountryGameScoreInputRow, CountryRow,
+        FactionMemberRow, GameScoreAirSite, GameScoreMultiplierRow, TableId, tables,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -50,8 +51,8 @@ pub struct GameScoreMissing {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GameScoreAmount {
-    /// Signed native fixed5, preserved beyond JavaScript's integer precision.
-    pub raw: Option<String>,
+    /// Signed native fixed5.
+    pub raw: Option<i64>,
     pub missing: Option<GameScoreMissing>,
     /// Runs cover consecutive fresh hourly observations. When true, the supplying
     /// read is the queried hour inside the run, including equal-value rereads.
@@ -62,7 +63,7 @@ pub struct GameScoreAmount {
 impl GameScoreAmount {
     fn known(raw: i64, read_each_hour: bool) -> Self {
         Self {
-            raw: Some(raw.to_string()),
+            raw: Some(raw),
             missing: None,
             read_each_hour,
         }
@@ -88,7 +89,7 @@ impl GameScoreAmount {
         }
     }
     fn value(&self) -> Option<i64> {
-        self.raw.as_ref()?.parse().ok()
+        self.raw
     }
 }
 
@@ -468,8 +469,9 @@ fn air_score(
     row: &CountryGameScoreInputRow,
     slot: u32,
     multiplier: &GameScoreAmount,
-    wings: Option<&HashMap<u64, &AirWingGameScoreStatsRow>>,
-    registrations: Option<&HashMap<(u64, u32), &replay::rows::AirBaseRegistrationRow>>,
+    // Complete tables, whose rows ascend by their unique keys.
+    wings: Option<&[AirWingGameScoreStatsRow]>,
+    registrations: Option<&[replay::rows::AirBaseRegistrationRow]>,
 ) -> GameScoreAmount {
     match row.air_state {
         CountryGameScoreInputRow::AIR_ABSENT => return GameScoreAmount::known(0, true),
@@ -493,16 +495,26 @@ fn air_score(
                 table_missing_reason(frame, TableId::AirBaseRegistrations)
                     .unwrap_or_else(|| "AirBaseRegistrations join unavailable".into())
             })?;
-            let registration = registrations.get(&(site.base, slot)).ok_or_else(|| format!(
-                "accessible air base {} has no AirBaseRegistrations row for country slot {slot}", site.base))?;
+            let registration = registrations
+                .binary_search_by_key(&(site.base, slot), |entry| (entry.base, entry.slot))
+                .map(|index| &registrations[index])
+                .map_err(|_| {
+                    format!(
+                        "accessible air base {} has no AirBaseRegistrations row for country slot {slot}",
+                        site.base
+                    )
+                })?;
             for id in &registration.wings {
                 let wings = wings.ok_or_else(|| {
                     table_missing_reason(frame, TableId::AirWingGameScoreStats)
                         .unwrap_or_else(|| "AirWingGameScoreStats join unavailable".into())
                 })?;
-                let wing = wings.get(id).ok_or_else(|| {
-                    format!("air wing {id} has no recorded mission-1 score-stat companion")
-                })?;
+                let wing = wings
+                    .binary_search_by_key(id, |wing| wing.id)
+                    .map(|index| &wings[index])
+                    .map_err(|_| {
+                        format!("air wing {id} has no recorded mission-1 score-stat companion")
+                    })?;
                 let planes = wing.planes.ok_or_else(|| {
                     bytes_reason(&wing.planes_error, "air-wing plane count unreadable")
                 })?;
@@ -527,8 +539,8 @@ struct ScoreContext<'a> {
     frame: &'a DecodedFrame,
     multipliers: &'a GameScoreValues,
     input_refusal: Option<&'a str>,
-    wings: Option<&'a HashMap<u64, &'a AirWingGameScoreStatsRow>>,
-    registrations: Option<&'a HashMap<(u64, u32), &'a replay::rows::AirBaseRegistrationRow>>,
+    wings: Option<&'a [AirWingGameScoreStatsRow]>,
+    registrations: Option<&'a [replay::rows::AirBaseRegistrationRow]>,
 }
 
 impl ScoreContext<'_> {
@@ -658,11 +670,8 @@ fn faction_names_at(
                 )
                 .and_then(|text| catalogue::plain_text(&text));
                 let value = match resolved {
-                    Ok(name) if !name.is_empty() => (Some(name), None),
-                    result => {
-                        let reason = result
-                            .err()
-                            .unwrap_or_else(|| "Faction name has no plain display text".into());
+                    Ok(name) => (Some(name), None),
+                    Err(reason) => {
                         let kind = if std::str::from_utf8(&row.name).is_err()
                             || (row.name.is_empty() && (template.is_err() || recording_failure))
                         {
@@ -868,296 +877,308 @@ fn scan(
     reply.hints = score_hints(localisation, &mut warnings);
     let mut reasons = ReasonTable::default();
     let mut budget = 0_usize;
-    let mut previous: Option<(i32, Vec<replay::frame::SharedView>)> = None;
+    let mut previous: Option<(i32, Vec<ViewIdentity>)> = None;
     let mut previous_warnings = BTreeMap::<(GameScoreMissingKind, String), u64>::new();
     let language = &replay.identity.language;
     let recorded_language = language.strip_prefix("l_").unwrap_or(language);
     let mut empty_localisation = Localisation::default();
     empty_localisation.language = viewer_language.unwrap_or(recorded_language).to_owned();
     let mut lexical: Option<FactionLexical> = None;
+    let mut names: Option<HourNames<'_>> = None;
     let input_refusal = replay.format.table_refusal(TableId::CountryGameScoreInputs);
-    for block in replay
-        .index
-        .iter()
-        .filter(|block| block.branch == params.branch())
-    {
-        metadata::check_cancel(cancelled)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let frames = match replay.read_block_selected(block, &selected) {
-            Ok(frames) => frames,
-            Err(error) => {
-                *warnings
-                    .entry((
-                        GameScoreMissingKind::Recording,
-                        format!("Game score block unreadable: {error}"),
-                    ))
-                    .or_default() += 1;
-                continue;
-            }
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(crate::invalid("game_score request cancelled"));
-            }
-            let decoded = match decoder.advance(&frame) {
-                Ok(decoded) => decoded,
-                Err(error) => {
-                    *warnings
-                        .entry((
-                            GameScoreMissingKind::Recording,
-                            format!("Game score frame unreadable: {error}"),
-                        ))
-                        .or_default() += 1;
-                    break;
-                }
-            };
-            metadata::validate_campaign(decoded, replay)?;
-            reply.reads.push(frame.hour);
-            budget = budget
-                .checked_add(frame.hour.to_string().len())
-                .ok_or_else(oversized)?;
-            if budget > MAX_PRODUCT_REPLY_BYTES {
-                return Err(oversized());
-            }
-            // Table lifetimes, rather than a capture failure's text, establish
-            // whether runtime operands were part of this recording's contract.
-            let old = !TableId::CountryGameScoreInputs
-                .last_change()
-                .present(replay.format.version());
-            let (Ok(country_rows), Ok(links)) = (
-                decoded.complete::<tables::Countries>(),
-                decoded.complete::<tables::CountryLinks>(),
-            ) else {
-                let multipliers = multipliers_at(decoded, old, old_multipliers);
-                for amount in multipliers.amounts() {
-                    note_missing(amount.missing.as_ref(), &mut warnings);
-                }
-                reply.multipliers.push(
-                    frame.hour,
-                    &multipliers,
-                    false,
-                    &mut reasons,
-                    &mut budget,
-                )?;
-                *warnings
-                    .entry((
-                        GameScoreMissingKind::Recording,
-                        "Countries or CountryLinks is incomplete; country identities are unknown"
-                            .into(),
-                    ))
-                    .or_default() += 1;
-                previous = None;
-                continue;
-            };
-            if previous.as_ref().is_some_and(|(hour, views)| {
-                hour.checked_add(1) == Some(frame.hour)
-                    && views.iter().zip(selected).all(|(before, table)| {
-                        replay::frame::SharedView::ptr_eq(before, &decoded.tables[table.index()])
-                    })
-            }) {
-                for series in countries.values_mut() {
-                    series.scores.extend_equal(frame.hour);
-                    if let Some(last) = series.identity.last_mut()
-                        && last.last_hour.checked_add(1) == Some(frame.hour)
-                    {
-                        last.last_hour = frame.hour;
-                    }
-                }
-                reply.multipliers.extend_equal(frame.hour);
-                for (key, count) in &previous_warnings {
-                    *warnings.entry(key.clone()).or_default() += count;
-                }
-                if let Some(previous) = previous.as_mut() {
-                    previous.0 = frame.hour;
-                }
-                continue;
-            }
-            let mut frame_warnings = BTreeMap::new();
-            let multipliers = multipliers_at(decoded, old, old_multipliers);
-            reply
-                .multipliers
-                .push(frame.hour, &multipliers, false, &mut reasons, &mut budget)?;
-            for amount in multipliers.amounts() {
-                note_missing(amount.missing.as_ref(), &mut frame_warnings);
-            }
-            let input_rows = decoded.complete::<tables::CountryGameScoreInputs>().ok();
-            let inputs = unique_by_slot(input_rows.into_iter().flatten(), links, |row| row.country);
-            for row in input_rows.into_iter().flatten() {
-                if metadata::link_slot(links, row.country).is_none() {
-                    *frame_warnings.entry((GameScoreMissingKind::Recording, format!(
-                        "CountryGameScoreInputs country raw reference {} has no CountryLinks identity at this read", row.country))).or_default() += 1;
-                }
-            }
-            let factory_rows = decoded.complete::<tables::CountryFactories>().ok();
-            let factories =
-                unique_by_slot(factory_rows.into_iter().flatten(), links, |row| row.country);
-            let wings = decoded
-                .complete::<tables::AirWingGameScoreStats>()
-                .ok()
-                .map(|rows| {
-                    rows.iter()
-                        .map(|row| (row.id, row))
-                        .collect::<HashMap<_, _>>()
-                });
-            let registrations =
-                decoded
-                    .complete::<tables::AirBaseRegistrations>()
-                    .ok()
-                    .map(|rows| {
-                        rows.iter()
-                            .map(|row| ((row.base, row.slot), row))
-                            .collect::<HashMap<_, _>>()
-                    });
-            let members = decoded
-                .complete::<tables::FactionMembers>()
-                .ok()
-                .map(|rows| unique_by_slot(rows, links, |row| row.country));
-            if lexical.as_ref().is_none_or(|previous| {
-                !previous
-                    .tokens
-                    .matches(&decoded.tables[TableId::LexicalTokens.index()])
-            }) {
-                lexical = Some(FactionLexical::new(decoded));
-            }
-            let factions = lexical.as_ref().and_then(|lexical| {
-                faction_names_at(
-                    decoded,
-                    localisation,
-                    &empty_localisation,
-                    recorded_language,
-                    templates.as_ref().copied().map_err(Clone::clone),
-                    lexical,
-                )
-            });
-            let styles = HourStyles::read(decoded, None)?;
-            let names = CountryNames::read(decoded, localisation.unwrap_or(&empty_localisation));
-            for (tag, country) in tagged_countries(country_rows, links) {
-                let tag = match std::str::from_utf8(tag) {
-                    Ok(tag) => tag.to_owned(),
-                    Err(_) => {
-                        *frame_warnings
+    crate::blocks::scan_blocks(
+        replay,
+        replay
+            .index
+            .iter()
+            .filter(|block| block.branch == params.branch()),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                metadata::check_cancel(cancelled)?;
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let frames = match frames {
+                    Ok(frames) => frames,
+                    Err(error) => {
+                        *warnings
                             .entry((
                                 GameScoreMissingKind::Recording,
-                                format!(
-                                    "game_score country tag bytes {tag:02x?} refused: not UTF-8"
-                                ),
+                                format!("Game score block unreadable: {error}"),
                             ))
                             .or_default() += 1;
                         continue;
                     }
                 };
-                let (values, identity) = match country {
-                    TaggedCountry::Found(country, slot) => {
-                        let (faction, faction_missing) =
-                            faction(members.as_ref(), factions.as_ref(), slot);
-                        let style = styles.get(&tag);
-                        let (name, name_missing) = name_at(&names, slot);
-                        let color = style.and_then(|style| style.color);
-                        let color_missing = color.is_none().then(|| recording_missing(
-                            table_missing_reason(decoded, TableId::CountryAppearance)
-                                .unwrap_or_else(|| "CountryAppearance has no unambiguous colour for this country".into())));
-                        let identity = GameScoreIdentity {
-                            canonical_slot: Some(slot),
-                            native_country: Some(country.id),
-                            name,
-                            name_missing,
-                            color,
-                            color_missing,
-                            faction,
-                            faction_missing,
-                        };
-                        let context = ScoreContext {
-                            frame: decoded,
-                            multipliers: &multipliers,
-                            input_refusal: input_refusal.as_deref(),
-                            wings: wings.as_ref(),
-                            registrations: registrations.as_ref(),
-                        };
-                        (
-                            context.scores(
-                                inputs.rows.get(&slot).copied().flatten(),
-                                slot,
-                                factories.rows.get(&slot).copied().flatten(),
-                            ),
-                            identity,
-                        )
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(crate::invalid("game_score request cancelled"));
                     }
-                    _ => {
-                        let missing =
-                            recording_missing("Country identity is unresolved by CountryLinks");
-                        (
-                            unknown_values(&missing.reason),
-                            GameScoreIdentity {
-                                canonical_slot: None,
-                                native_country: None,
-                                name: None,
-                                name_missing: Some(missing.clone()),
-                                color: None,
-                                color_missing: Some(missing.clone()),
-                                faction: None,
-                                faction_missing: Some(missing),
-                            },
-                        )
+                    let decoded = match decoder.advance(&frame) {
+                        Ok(decoded) => decoded,
+                        Err(error) => {
+                            *warnings
+                                .entry((
+                                    GameScoreMissingKind::Recording,
+                                    format!("Game score frame unreadable: {error}"),
+                                ))
+                                .or_default() += 1;
+                            break;
+                        }
+                    };
+                    metadata::validate_campaign(decoded, replay)?;
+                    reply.reads.push(frame.hour);
+                    budget = budget
+                        .checked_add(frame.hour.to_string().len())
+                        .ok_or_else(oversized)?;
+                    if budget > MAX_PRODUCT_REPLY_BYTES {
+                        return Err(oversized());
                     }
-                };
-                for amount in values.amounts() {
-                    note_missing(amount.missing.as_ref(), &mut frame_warnings);
-                }
-                for missing in [
-                    identity.name_missing.as_ref(),
-                    identity.color_missing.as_ref(),
-                    identity.faction_missing.as_ref(),
-                    identity
-                        .faction
-                        .as_ref()
-                        .and_then(|faction| faction.name_missing.as_ref()),
-                ]
-                .into_iter()
-                .flatten()
-                {
-                    note_missing(Some(missing), &mut frame_warnings);
-                }
-                let series = countries
-                    .entry(tag.clone())
-                    .or_insert_with(|| GameScoreCountry {
-                        tag,
-                        identity: Vec::new(),
-                        scores: GameScoreSeries::default(),
+                    // Table lifetimes, rather than a capture failure's text, establish
+                    // whether runtime operands were part of this recording's contract.
+                    let old = !TableId::CountryGameScoreInputs
+                        .last_change()
+                        .present(replay.format.version());
+                    let (Ok(country_rows), Ok(links)) = (
+                        decoded.complete::<tables::Countries>(),
+                        decoded.complete::<tables::CountryLinks>(),
+                    ) else {
+                        let multipliers = multipliers_at(decoded, old, old_multipliers);
+                        for amount in multipliers.amounts() {
+                            note_missing(amount.missing.as_ref(), &mut warnings);
+                        }
+                        reply.multipliers.push(
+                            frame.hour,
+                            &multipliers,
+                            false,
+                            &mut reasons,
+                            &mut budget,
+                        )?;
+                        *warnings
+                        .entry((
+                            GameScoreMissingKind::Recording,
+                            "Countries or CountryLinks is incomplete; country identities are unknown"
+                                .into(),
+                        ))
+                        .or_default() += 1;
+                        previous = None;
+                        continue;
+                    };
+                    if previous.as_ref().is_some_and(|(hour, views)| {
+                        hour.checked_add(1) == Some(frame.hour)
+                            && views
+                                .iter()
+                                .zip(selected)
+                                .all(|(before, table)| before.is(&decoded.tables[table.index()]))
+                    }) {
+                        for series in countries.values_mut() {
+                            series.scores.extend_equal(frame.hour);
+                            if let Some(last) = series.identity.last_mut()
+                                && last.last_hour.checked_add(1) == Some(frame.hour)
+                            {
+                                last.last_hour = frame.hour;
+                            }
+                        }
+                        reply.multipliers.extend_equal(frame.hour);
+                        for (key, count) in &previous_warnings {
+                            *warnings.entry(key.clone()).or_default() += count;
+                        }
+                        if let Some(previous) = previous.as_mut() {
+                            previous.0 = frame.hour;
+                        }
+                        continue;
+                    }
+                    let mut frame_warnings = BTreeMap::new();
+                    let multipliers = multipliers_at(decoded, old, old_multipliers);
+                    reply.multipliers.push(
+                        frame.hour,
+                        &multipliers,
+                        false,
+                        &mut reasons,
+                        &mut budget,
+                    )?;
+                    for amount in multipliers.amounts() {
+                        note_missing(amount.missing.as_ref(), &mut frame_warnings);
+                    }
+                    let input_rows = decoded.complete::<tables::CountryGameScoreInputs>().ok();
+                    let inputs =
+                        unique_by_slot(input_rows.into_iter().flatten(), links, |row| row.country);
+                    for row in input_rows.into_iter().flatten() {
+                        if metadata::link_slot(links, row.country).is_none() {
+                            *frame_warnings.entry((GameScoreMissingKind::Recording, format!(
+                            "CountryGameScoreInputs country raw reference {} has no CountryLinks identity at this read", row.country))).or_default() += 1;
+                        }
+                    }
+                    let factory_rows = decoded.complete::<tables::CountryFactories>().ok();
+                    let factories =
+                        unique_by_slot(factory_rows.into_iter().flatten(), links, |row| {
+                            row.country
+                        });
+                    let wings = decoded.complete::<tables::AirWingGameScoreStats>().ok();
+                    let registrations = decoded.complete::<tables::AirBaseRegistrations>().ok();
+                    let members = decoded
+                        .complete::<tables::FactionMembers>()
+                        .ok()
+                        .map(|rows| unique_by_slot(rows, links, |row| row.country));
+                    if lexical.as_ref().is_none_or(|previous| {
+                        !previous
+                            .tokens
+                            .matches(&decoded.tables[TableId::LexicalTokens.index()])
+                    }) {
+                        lexical = Some(FactionLexical::new(decoded));
+                    }
+                    let factions = lexical.as_ref().and_then(|lexical| {
+                        faction_names_at(
+                            decoded,
+                            localisation,
+                            &empty_localisation,
+                            recorded_language,
+                            templates.as_ref().copied().map_err(Clone::clone),
+                            lexical,
+                        )
                     });
-                // A changed native identity starts a new score stretch even if values match.
-                let same_identity = series.identity.last().is_some_and(|run| {
-                    run.last_hour.checked_add(1) == Some(frame.hour)
-                        && run.value.canonical_slot == identity.canonical_slot
-                        && run.value.native_country == identity.native_country
-                });
-                series.scores.push(
-                    frame.hour,
-                    &values,
-                    !same_identity,
-                    &mut reasons,
-                    &mut budget,
-                )?;
-                push_run(
-                    &mut series.identity,
-                    frame.hour,
-                    identity,
-                    false,
-                    &mut budget,
-                )?;
+                    let styles = HourStyles::read(decoded, None)?;
+                    if names.as_ref().is_none_or(|read| !read.agrees(decoded)) {
+                        names = Some(HourNames::read(
+                            decoded,
+                            country_rows,
+                            localisation.unwrap_or(&empty_localisation),
+                        ));
+                    }
+                    let names = names.as_mut().expect("names agree with this hour");
+                    for (tag, country) in tagged_countries(country_rows, links) {
+                        let tag = match std::str::from_utf8(tag) {
+                            Ok(tag) => tag.to_owned(),
+                            Err(_) => {
+                                *frame_warnings
+                                .entry((
+                                    GameScoreMissingKind::Recording,
+                                    format!(
+                                        "game_score country tag bytes {tag:02x?} refused: not UTF-8"
+                                    ),
+                                ))
+                                .or_default() += 1;
+                                continue;
+                            }
+                        };
+                        let (values, identity) = match country {
+                            TaggedCountry::Found(country, slot) => {
+                                let (faction, faction_missing) =
+                                    faction(members.as_ref(), factions.as_ref(), slot);
+                                let style = styles.get(&tag);
+                                let (name, name_missing) = names.name(slot);
+                                let color = style.and_then(|style| style.color);
+                                let color_missing = color.is_none().then(|| recording_missing(
+                                table_missing_reason(decoded, TableId::CountryAppearance)
+                                    .unwrap_or_else(|| "CountryAppearance has no unambiguous colour for this country".into())));
+                                let identity = GameScoreIdentity {
+                                    canonical_slot: Some(slot),
+                                    native_country: Some(country.id),
+                                    name,
+                                    name_missing,
+                                    color,
+                                    color_missing,
+                                    faction,
+                                    faction_missing,
+                                };
+                                let context = ScoreContext {
+                                    frame: decoded,
+                                    multipliers: &multipliers,
+                                    input_refusal: input_refusal.as_deref(),
+                                    wings,
+                                    registrations,
+                                };
+                                (
+                                    context.scores(
+                                        inputs.rows.get(&slot).copied().flatten(),
+                                        slot,
+                                        factories.rows.get(&slot).copied().flatten(),
+                                    ),
+                                    identity,
+                                )
+                            }
+                            _ => {
+                                let missing = recording_missing(
+                                    "Country identity is unresolved by CountryLinks",
+                                );
+                                (
+                                    unknown_values(&missing.reason),
+                                    GameScoreIdentity {
+                                        canonical_slot: None,
+                                        native_country: None,
+                                        name: None,
+                                        name_missing: Some(missing.clone()),
+                                        color: None,
+                                        color_missing: Some(missing.clone()),
+                                        faction: None,
+                                        faction_missing: Some(missing),
+                                    },
+                                )
+                            }
+                        };
+                        for amount in values.amounts() {
+                            note_missing(amount.missing.as_ref(), &mut frame_warnings);
+                        }
+                        for missing in [
+                            identity.name_missing.as_ref(),
+                            identity.color_missing.as_ref(),
+                            identity.faction_missing.as_ref(),
+                            identity
+                                .faction
+                                .as_ref()
+                                .and_then(|faction| faction.name_missing.as_ref()),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        {
+                            note_missing(Some(missing), &mut frame_warnings);
+                        }
+                        let series =
+                            countries
+                                .entry(tag.clone())
+                                .or_insert_with(|| GameScoreCountry {
+                                    tag,
+                                    identity: Vec::new(),
+                                    scores: GameScoreSeries::default(),
+                                });
+                        // A changed native identity starts a new score stretch even if values match.
+                        let same_identity = series.identity.last().is_some_and(|run| {
+                            run.last_hour.checked_add(1) == Some(frame.hour)
+                                && run.value.canonical_slot == identity.canonical_slot
+                                && run.value.native_country == identity.native_country
+                        });
+                        series.scores.push(
+                            frame.hour,
+                            &values,
+                            !same_identity,
+                            &mut reasons,
+                            &mut budget,
+                        )?;
+                        push_run(
+                            &mut series.identity,
+                            frame.hour,
+                            identity,
+                            false,
+                            &mut budget,
+                        )?;
+                    }
+                    for (key, count) in &frame_warnings {
+                        *warnings.entry(key.clone()).or_default() += count;
+                    }
+                    previous_warnings = frame_warnings;
+                    // Holding the views would copy each one the decoder next updates.
+                    previous = Some((
+                        frame.hour,
+                        selected
+                            .iter()
+                            .map(|table| decoded.tables[table.index()].identity())
+                            .collect(),
+                    ));
+                }
             }
-            for (key, count) in &frame_warnings {
-                *warnings.entry(key.clone()).or_default() += count;
-            }
-            previous_warnings = frame_warnings;
-            previous = Some((
-                frame.hour,
-                selected
-                    .iter()
-                    .map(|table| decoded.tables[table.index()].clone())
-                    .collect(),
-            ));
-        }
-    }
+            Ok(())
+        },
+    )?;
     reply.countries = countries.into_values().collect();
     reply.reasons = reasons.entries;
     reply.score_warnings = warnings
@@ -1172,6 +1193,64 @@ fn scan(
         return Err(oversized());
     }
     Ok(reply)
+}
+
+/// Names read at the last hour whose naming operands changed, each resolved
+/// once. Holding that hour's views copies each at most once, at its next update.
+struct HourNames<'a> {
+    /// By `country_names::TABLES`; none when names are read every hour.
+    views: Vec<SharedView>,
+    names: CountryNames<'a>,
+    resolved: HashMap<u32, (Option<String>, Option<GameScoreMissing>)>,
+}
+
+impl<'a> HourNames<'a> {
+    fn read(
+        frame: &DecodedFrame,
+        countries: &[CountryRow],
+        localisation: &'a Localisation,
+    ) -> Self {
+        let names = CountryNames::read(frame, localisation);
+        // This scan does not read ReservedCountryNaming, so slot zero's refusal
+        // names its hour: names that can reach it are read every hour.
+        let hourly = countries.iter().any(|row| {
+            row.canonical_slot == 0
+                || names
+                    .operands(row.canonical_slot)
+                    .and_then(|input| input.as_ref().ok())
+                    .is_some_and(|input| input.overlord == Some(0))
+        });
+        let views = if hourly {
+            Vec::new()
+        } else {
+            country_names::TABLES
+                .iter()
+                .map(|table| frame.tables[table.index()].clone())
+                .collect()
+        };
+        Self {
+            views,
+            names,
+            resolved: HashMap::new(),
+        }
+    }
+
+    /// Whether `frame` agrees on every operand these names were read from.
+    fn agrees(&self, frame: &DecodedFrame) -> bool {
+        self.views.len() == country_names::TABLES.len()
+            && country_names::TABLES
+                .iter()
+                .zip(&self.views)
+                .all(|(table, view)| same_name_rows(*table, view, &frame.tables[table.index()]))
+    }
+
+    fn name(&mut self, slot: u32) -> (Option<String>, Option<GameScoreMissing>) {
+        let names = &self.names;
+        self.resolved
+            .entry(slot)
+            .or_insert_with(|| name_at(names, slot))
+            .clone()
+    }
 }
 
 fn name_at(names: &CountryNames<'_>, slot: u32) -> (Option<String>, Option<GameScoreMissing>) {
@@ -1294,11 +1373,8 @@ fn score_hints(
                     catalogue::localised_with(localisation, key, &[], catalogue::View::Scripted)
                 });
             let label = match resolved {
-                Ok(label) if !label.trim().is_empty() => label.trim().to_owned(),
-                other => {
-                    let reason = other
-                        .err()
-                        .unwrap_or_else(|| format!("localisation {key}: empty label"));
+                Ok(label) => label,
+                Err(reason) => {
                     *warnings
                         .entry((GameScoreMissingKind::Content, reason))
                         .or_default() += 1;

@@ -55,13 +55,13 @@ test('the breakdown lists the game tooltip lines, named in the viewer language o
   assert.equal(warSupport.recorded, false);
 });
 
-test('a formula term this list does not name still shows, by its key', () => {
+test('a formula term this list does not name retains exact facts with its key in hover details', () => {
   const extra: StabilityBreakdown = { ...GER, stability: { ...GER.stability, terms: [...GER.stability.terms, { term: 'futureTerm', valueRaw: '2000' }, { term: 'missingTerm', valueRaw: null }, { term: 'zeroTerm', valueRaw: '0' }] } };
   const { rows, unavailable } = breakdownRows(extra, 'stability', 5, 'Stability');
   assert.deepEqual(rows.slice(-4, -1), [
-    { label: 'futureTerm', value: '2000' },
-    { label: 'missingTerm', value: 'Not recorded', tone: 'muted' },
-    { label: 'zeroTerm', value: '0' },
+    { label: 'Formula term name unavailable', lookupKey: 'futureTerm', value: '2000' },
+    { label: 'Formula term name unavailable', lookupKey: 'missingTerm', value: 'Not recorded', tone: 'muted' },
+    { label: 'Formula term name unavailable', lookupKey: 'zeroTerm', value: '0' },
   ]);
   assert.equal(unavailable, true);
 });
@@ -78,13 +78,16 @@ test('lines that do not add up show the rest as its own part, and missing inputs
   assert.deepEqual(stale.rows.at(-2), { label: 'Modifiers', value: '+5.0%', tone: 'positive' });
 });
 
-test('a line is named by its label with what it is, else its recorded text, else its identity', () => {
+test('a line is named by its label with what it is, else its recorded text, else an unavailable title', () => {
   assert.deepEqual(lineName(line(1, 'idea', '1', { identity: 'x', label: 'Name' })), { name: 'Name', recorded: false });
   assert.deepEqual(lineName(line(1, 'idea', '1', { label: 'Blackouts', groupKind: 'national_spirit' })), { name: 'National spirit: Blackouts', recorded: false });
   assert.deepEqual(lineName(line(1, 'advisor', '1', { label: 'Hjalmar Schacht', group: 'Political Advisor' })), { name: 'Political Advisor: Hjalmar Schacht', recorded: false });
   assert.deepEqual(lineName(line(1, 'countryLeader', '1', { label: 'Iosif Stalin' })), { name: 'Country leader: Iosif Stalin', recorded: false });
   assert.deepEqual(lineName(line(1, 'unpaired', '1', { text: 'Game text' })), { name: 'Game text', recorded: true });
-  assert.deepEqual(lineName(line(1, 'idea', '1', { identity: 'x' })), { name: 'x', recorded: false });
+  assert.deepEqual(lineName(line(1, 'idea', '1', { identity: 'x' })), { name: 'Source name unavailable', recorded: false });
+  assert.deepEqual(lineName(line(1, 'idea', '1', { identity: 'x', label: '', text: 'Recorded title' })), { name: '', recorded: false });
+  assert.deepEqual(lineName(line(1, 'idea', '1', { identity: 'x', label: 'x', text: 'Recorded title' })), { name: 'x', recorded: false });
+  assert.deepEqual(lineName(line(1, 'unpaired', '1', { text: '' })), { name: '', recorded: true });
 });
 
 test('a long breakdown lists its largest lines and counts the rest, so it fits the window', () => {

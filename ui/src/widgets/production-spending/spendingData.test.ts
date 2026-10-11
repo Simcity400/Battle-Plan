@@ -124,7 +124,7 @@ test('Live looks up the playhead and Live off shows the whole branch at its fina
 test('mod content supplies the types and the shared engine classifiers supply top-level domains', () => {
   const items = productionSpendingItems(reply(), { from: null, hour: 148, end: 171 });
   assert.deepEqual(items.map(item => item.path.map(key => key.label)), [
-    ['Land', 'Clockwork walkers', 'Revised walker'], ['Air', 'Ornithopters', 'v/2'], ['Naval', 'mod_bathysphere', 'v/3'],
+    ['Land', 'Clockwork walkers', 'Revised walker'], ['Air', 'Ornithopters', 'v/2'], ['Naval', 'Equipment type name unavailable', 'v/3'],
   ]);
   const tree = groupTree(items, ROOT);
   assert.equal(tree.children.find(node => node.key === 'land')?.exact, 2000001n);
@@ -144,7 +144,7 @@ test('an unresolved type stays in the shared unresolved arm, named by its record
   const data = reply();
   data.leaves.push(leaf({ variant: 'v/unknown', typeKey: ':mod_missing_token', name: null, domain: null, names: [], runs: [known(100, 171, '250000')] }));
   const item = productionSpendingItems(data, { from: null, hour: 148, end: 171 }).at(-1)!;
-  assert.deepEqual(item.path.map(key => key.label), ['Type not resolved', 'mod_missing_token', 'v/unknown']);
+  assert.deepEqual(item.path.map(key => key.label), ['Type not resolved', 'Equipment type name unavailable', 'v/unknown']);
   assert.equal(item.path[0].id, 'unresolved');
   assert.equal(item.exact, 250000n);
 });

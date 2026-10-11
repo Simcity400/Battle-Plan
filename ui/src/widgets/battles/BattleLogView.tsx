@@ -17,6 +17,7 @@ import { usePlaybackSpeed } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { BattleRow, BattleWindow, BattleWarning, PlaceNamesReply } from '../../generated/dashboard';
 import BattleLog from './BattleLog';
 import { battleCountryRequests, battleJumpHour, battlePlaceRequests, namedBattles, battleWindowIndex, battleWindows, battleWarnings, shownBattleCensusHour } from './battleRows';
@@ -122,11 +123,10 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
   const warnings = useMemo(() => view === 'biggest' ? [...(ranking.data?.contentWarnings ?? NO_WARNINGS),
     ...(ranking.data?.warnings ?? []).map(w => `Hour ${w.hour}: ${w.reason} (${w.count})`)]
     : battleWarnings(history.data, first, shownHour ?? first), [view, ranking.data, history.data, first, shownHour]);
-  useEffect(() => {
-    onDiagnostics([...new Set([...(manifest.data?.contentWarnings ?? NO_WARNINGS), ...warnings,
-      ...(placeData.data?.warnings ?? NO_WARNINGS), ...(placeData.error ? [`Place names: ${placeData.error}`] : []), ...(adapter.diagnostics ?? NO_WARNINGS)])]);
-    return () => onDiagnostics(NO_WARNINGS);
-  }, [warnings, manifest.data, placeData.data, placeData.error, onDiagnostics, adapter.diagnostics]);
+  const diagnostics = useMemo(() => [...new Set([...(manifest.data?.contentWarnings ?? NO_WARNINGS), ...warnings,
+    ...(placeData.data?.warnings ?? NO_WARNINGS), ...(placeData.error ? [`Place names: ${placeData.error}`] : []), ...(adapter.diagnostics ?? NO_WARNINGS)])],
+  [warnings, manifest.data, placeData.data, placeData.error, adapter.diagnostics]);
+  useDiagnostics(onDiagnostics, diagnostics);
 
   if (!track) return <WidgetState kind="empty" icon={adapter.definition.icon} message={`Load a campaign to see its ${adapter.definition.title.toLowerCase()}.`} />;
   if (!window || !inBranch) return <WidgetState kind="unavailable" message="The chosen moment is outside this campaign branch." />;

@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
@@ -13,6 +14,7 @@ import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { usePlaybackSpeed } from '../../dashboard/playback';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useLeaderPortraits } from './portraits';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -26,7 +28,6 @@ import { useLeaderCountries, useLeaders } from './useLeaders';
 import './generals.css';
 
 const EMPTY: readonly LeaderRow[] = [];
-const NO_WARNINGS: string[] = [];
 const rowKey = (row: LeaderRow) => row.key;
 
 export default function GeneralsWidget(props: WidgetProps) {
@@ -61,8 +62,9 @@ export default function GeneralsWidget(props: WidgetProps) {
       playhead: widget.time.mode === 'follow' ? hour : null });
   }, [owner, runtime.clock, hour, widget.time.mode]);
   useEffect(() => { dispatch({ type: 'close' }); setDrillOwner(null); }, [owner]);
-  useEffect(() => { if (drill.breakdown == null) onDiagnostics([...new Set([...(data?.warnings ?? []), ...portraits.warnings])]); }, [data, drill.breakdown, onDiagnostics, JSON.stringify(portraits.warnings)]);
-  useEffect(() => () => onDiagnostics(NO_WARNINGS), [onDiagnostics]);
+  const diagnostics = useMemo(() => [...new Set([...(data?.warnings ?? []), ...portraits.warnings])], [data, portraits.warnings]);
+  // An open career reports its own warnings; closing it sends the leaderboard's again.
+  useDiagnostics(onDiagnostics, drill.breakdown == null ? diagnostics : null);
   const columns = useMemo<readonly TableColumn<LeaderRow>[]>(() => {
     return [
       { key: 'leader', header: 'Leader', label: 'Leader', sortable: false, width: 'minmax(190px, 2fr)', value: leaderName,
@@ -75,7 +77,7 @@ export default function GeneralsWidget(props: WidgetProps) {
         render: row => <Attributes values={row.value.components} maxima={attributeMaxima} names={attributeNames(row.value)} bars={options.cellBars === true} /> },
       { key: 'traits', header: 'Traits', label: 'Traits', sortable: false, width: '1.1fr', value: r => r.value.traits?.length,
         renderMissing: true, render: r => <span className="leader-traits">{r.value.traits == null ? <span className="leader-missing">Not recorded</span> : r.value.traits.map(token => {
-          const trait = r.traitCatalogue[token]; return trait?.icon ? <img key={token} src={trait.icon} alt={trait.name || trait.token} /> : <i key={token} aria-label={`${trait?.name || trait?.token || String(token)}: icon unavailable`}>?</i>;
+          const trait = r.traitCatalogue[token]; return trait?.icon ? <img key={token} src={trait.icon} alt={contentTitle(trait.name, trait.token, 'Trait name unavailable')} /> : <i key={token} aria-label={`${contentTitle(trait?.name, token, 'Trait name unavailable')}: icon unavailable`}>?</i>;
         })}</span> },
       { key: 'won', header: 'Won', label: 'Battles won', numeric: true, width: '64px', value: r => r.won, renderMissing: true,
         render: r => r.won ?? <span className="leader-missing" data-tooltip={data?.resultsMissing}>Result not recorded</span> },

@@ -1,9 +1,9 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { CountryGroupReply, CountryIdentityRun, HourSpan, MembershipRun, ProjectDate, ProjectEpisode, ProjectPresentation, SpecialProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
 import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout.ts';
 import { withoutHours } from '../../charts/timeline/runState.ts';
 import { clipToSpans, runAt, spansCovered } from '../../charts/series.ts';
 import { dayLabel } from '../../charts/draw.ts';
-import { readAt, readNote } from '../../dashboard/reads.ts';
 import type { TooltipContent } from '../../charts/tooltip.ts';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import type { CountrySelection } from '../../dashboard/model';
@@ -181,10 +181,10 @@ export function projectLanes(data: SpecialProjectsReply, hour: number, membershi
   });
 }
 
-export function projectTooltip(data: SpecialProjectsReply, card: ProjectCard, at: number, history = false): TooltipContent {
+export function projectTooltip(data: SpecialProjectsReply, card: ProjectCard, history = false): TooltipContent {
   const { project, run, info } = card;
   const rows = [
-    ...(!history ? [{ label: 'Type', value: info.specializationName ?? info.specialization ?? 'Not recorded' }] : []),
+    ...(!history ? [{ label: 'Type', value: contentTitle(info.specializationName, info.specialization, 'Type name unavailable') }] : []),
     { label: 'Scientist', value: scientistName(data, info) },
     { label: 'Started', value: projectDate(project.start) },
     run.state === 'completed' && run.completion && history ? { label: 'Completed', value: projectDate(run.completion) } : { label: 'Progress', value: `${run.progress}%` },
@@ -193,7 +193,7 @@ export function projectTooltip(data: SpecialProjectsReply, card: ProjectCard, at
   if (run.cancellation) rows.push({ label: 'Cancelled', value: projectDate(run.cancellation) });
   const missing = [info.iconMissing, data.people[info.scientist].missing, run.iterations === null ? 'ProjectHistory not recorded; iterations unknown.' : data.iterationTexts[run.iterations] == null ? 'Iteration localisation unavailable.' : null, info.scientistAsOf === null ? null : `Last assignment recorded ${dayLabel(info.scientistAsOf)}.`].filter(Boolean);
   return { title: info.name, icon: info.icon ?? undefined, rows,
-    note: [readNote(readAt(data.readHours, Math.min(at, run.lastHour)), at, 'projects are read once a day.'), ...missing].filter(Boolean).join(' ') || undefined };
+    note: missing.filter(Boolean).join(' ') || undefined };
 }
 
 /** The hovered observation, bounded by both the playhead and the drawn span. */
@@ -205,7 +205,7 @@ export function historyTooltip(data: SpecialProjectsReply, id: string, span: Tim
   const target = Math.min(hour, playhead, span?.lastHour ?? Infinity);
   const run = span && runAt(runs, target);
   if (!run) return { title: latest ? data.presentations[latest.presentation].name : 'Special project', rows: [{ label: 'Started', value: projectDate(project.start) }], note: 'This project was not recorded at this hour.' };
-  const tip = projectTooltip(data, { project, run, info: data.presentations[run.presentation] }, target, true);
+  const tip = projectTooltip(data, { project, run, info: data.presentations[run.presentation] }, true);
   const rows = [...tip.rows];
   // The span's observed end is separate from the value at the hovered read.
   if (span.positive && latest?.completion && !run.completion) rows.push({ label: 'Completed', value: projectDate(latest.completion) });

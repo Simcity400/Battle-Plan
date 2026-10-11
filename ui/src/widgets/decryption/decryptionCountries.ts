@@ -15,7 +15,7 @@ export interface CipherCountries { owner: ReturnType<CountryLabel>; target: Retu
 type Shown = CipherCountries & { row: RaceRow; hour: number };
 const sameIdentity = (a: RaceRow, b: RaceRow) => a.key === b.key && a.pair.ownerId === b.pair.ownerId && a.pair.targetId === b.pair.targetId && a.tags.firstHour === b.tags.firstHour
   && a.tags.ownerTag === b.tags.ownerTag && a.tags.targetTag === b.tags.targetTag;
-const missing = (id: string, tag: string | null): ReturnType<CountryLabel> => ({ name: tag ?? `Country ${id} (tag unavailable)` });
+const missing = (id: string, tag: string | null): ReturnType<CountryLabel> => ({ name: tag === null ? `Country ${id} (tag unavailable)` : 'Country name unavailable' });
 
 /** Exact sampled country reads, with one completed display pair held only inside
  * its native tag segment. The shared fact store owns requests and their cache. */

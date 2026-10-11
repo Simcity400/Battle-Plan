@@ -30,6 +30,8 @@ import type { PlaybackMode } from '../../charts/view';
 import { useCampaignSettings } from '../../dashboard/campaignSettings';
 import { factionNameAt } from '../../dashboard/factionNames';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { useFocusText } from '../national-focus/useFocusArtwork';
+import { FAILED_FACT } from '../../dashboard/countryFacts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { isMember, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
@@ -211,15 +213,23 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   }, [track, factionOverrides, markerTag, extent[0], extent[1], resolved.membership, markerGroups.data, markerIdeas.data, markerParties.data, markerFocus.data]); // eslint-disable-line react-hooks/exhaustive-deps
   // Other countries are named as the game showed them at each event's hour; until
   // (or where) that is not known, by their name in the recording's metadata.
-  const namesWanted = useMemo(() => {
-    const wanted: NameAt[] = [];
-    if (markerSources) stabilityMarkers({ ...markerSources, countryName: (other, hour) => { wanted.push({ hour, tag: other }); return other; } }, kinds);
-    return wanted;
+  const markerReads = useMemo(() => {
+    const countries: NameAt[] = [], focuses: NameAt[] = [];
+    if (markerSources) stabilityMarkers({ ...markerSources,
+      countryName: (other, hour) => { countries.push({ hour, tag: other }); return ''; },
+      focusName: (token, hour) => { focuses.push({ hour, tag: token }); return null; },
+    }, kinds);
+    return { countries, focuses };
   }, [markerSources, kinds]);
-  const namesAt = useCountryNamesAt(runtime.client, track, namesWanted, active);
+  const namesAt = useCountryNamesAt(runtime.client, track, markerReads.countries, active);
+  const focusText = useFocusText(runtime.client, track, markerTag ?? undefined, markerReads.focuses, active);
   const badges = useMemo(() => !track || !markerSources ? [] : stabilityMarkers({ ...markerSources,
-    countryName: (other, hour) => namesAt.get(nameKey(hour, other)) ?? track.source.metadata.countries.find(country => country.tag === other)?.name ?? other,
-  }, kinds), [track, markerSources, namesAt, kinds]);
+    countryName: (other, hour) => namesAt.get(nameKey(hour, other)) ?? track.source.metadata.countries.find(country => country.tag === other)?.name ?? 'Country name unavailable',
+    focusName: (token, hour) => {
+      const item = focusText.read.get(nameKey(hour, token));
+      return item && item !== FAILED_FACT ? item.artwork.name : undefined;
+    },
+  }, kinds), [track, markerSources, namesAt, focusText.read, kinds]);
   // The marker sources shown report their notes and failures, so a missing kind of event is never silent.
   const markerNotes = useMemo(() => markerTag ? ([
     ['wars and factions', markerGroups, kinds.has('wars') || kinds.has('factions')], ['laws and advisors', markerIdeas, kinds.has('government')],
@@ -300,11 +310,11 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
       ...(groups.error ? [`Country membership could not be loaded: ${groups.error}`] : []),
       ...(uncoloured.length ? [`Map colours unavailable for ${uncoloured.join(', ')}; shown in grey.`] : []),
       ...(breakdown.data?.warnings ?? []), ...(breakdown.error ? [`The breakdown could not be loaded: ${breakdown.error}`] : []),
-      ...markerNotes,
+      ...markerNotes, ...focusText.warnings,
       ...(partsRequests.length ? [...(joinedParts?.warnings ?? []), ...(parts.error ? [`The parts could not be loaded: ${parts.error}`] : [])] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, error, series, groups.data, groups.error, breakdown.data, breakdown.error, markerNotes, partsRequests.length, joinedParts, parts.error, onDiagnostics]);
+  }, [data, error, series, groups.data, groups.error, breakdown.data, breakdown.error, markerNotes, focusText.warnings, partsRequests.length, joinedParts, parts.error, onDiagnostics]);
   const menu = useContextMenu('Chart actions');
   const head = playhead ?? extent[1];
   // With the keyboard: while focus is in the widget, the breakdown of the read behind

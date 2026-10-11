@@ -1,4 +1,5 @@
 import { Popover, PopoverHeading, usePopover } from './Popover';
+import { Select } from './Select';
 import MapAppearance from './MapAppearance';
 import type { DashboardClient, DashboardSource } from '../dashboard/client';
 import type { ReactNode } from 'react';
@@ -39,12 +40,11 @@ export default function MapControls({ source, client, metadata, branchId, onBran
       </div>
       {open && <MapAppearance key={source ? `${source.id}:${source.revision}` : "empty"} source={source} client={client} viewId={viewId} />}
       {metadata && branch && <div className="map-menu-section map-recording-options">
-        {sessions.length > 1 && <label className="map-option-row"><span>Session</span><select aria-label="Recording session" value={branch.sessionId} onChange={event => { const next = metadata.branches.find(item => item.sessionId === event.currentTarget.value); if (next) onBranch(next.id); }}>
-          {sessions.map((session, index) => <option key={session} value={session}>Session {index + 1}</option>)}
-        </select></label>}
-        <label className="map-option-row"><span>Branch</span><select aria-label="Recording branch" value={branch.id} onChange={event => onBranch(event.currentTarget.value)}>
-          {metadata.branches.filter(item => item.sessionId === branch.sessionId).map((item, index) => <option key={item.id} value={item.id}>Branch {index + 1}</option>)}
-        </select></label>
+        {sessions.length > 1 && <div className="map-option-row"><span>Session</span><Select label="Recording session" value={branch.sessionId}
+          onChange={session => { const next = metadata.branches.find(item => item.sessionId === session); if (next) onBranch(next.id); }}
+          options={sessions.map((session, index) => ({ value: session, label: `Session ${index + 1}` }))} /></div>}
+        <div className="map-option-row"><span>Branch</span><Select label="Recording branch" value={branch.id} onChange={onBranch}
+          options={metadata.branches.filter(item => item.sessionId === branch.sessionId).map((item, index) => ({ value: item.id, label: `Branch ${index + 1}` }))} /></div>
         <small className="map-branch-range">{formatDateTime(branch.firstHour)}<br />to {formatDateTime(branch.lastHour)}</small>
         {branch.parentId && <small className="map-branch-range">Possible continuation of branch {branch.parentId}. Parentage is unconfirmed.</small>}
       </div>}

@@ -363,89 +363,103 @@ fn scan(
         TableId::OperativeMemberships,
     ];
     let mut history = History::default();
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Operative placement request cancelled",
-                ));
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, &replay).is_err() {
-                break;
-            }
-            let mut observation =
-                Observation::Unavailable(PlacementAvailability::TablesNotRecorded);
-            let is_read = operative_rows::membership_read(decoded);
-            if let Some(feature) = operative_rows::agency_feature(decoded) {
-                if !feature {
-                    observation = Observation::Unavailable(PlacementAvailability::FeatureAbsent);
-                } else if is_read
-                    && let (Ok(countries), Ok(links), Some(captured)) = (
-                        decoded.complete::<tables::Countries>(),
-                        decoded.complete::<tables::CountryLinks>(),
-                        recorded_operatives(decoded),
-                    )
-                {
-                    if catalogue.is_none()
-                        && !captured.is_empty()
-                        && let Some(content) = &context.content
-                    {
-                        catalogue = Some(crate::catalogue::catalogue(source, content)?);
+    crate::blocks::scan_blocks(
+        &replay,
+        replay.index.iter().filter(|block| block.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                let Ok(frames) = frames else {
+                    continue;
+                };
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "Operative placement request cancelled",
+                        ));
                     }
-                    let resolved = identities(countries, links)
-                        .ok_or_else(|| "Unresolved operative country catalogue".to_owned())
-                        .and_then(|countries| {
-                            resolve_rows(
-                                captured,
-                                &countries,
-                                links,
-                                catalogue.as_ref().map(|c| c.localisation.as_ref()),
-                                &mut warnings,
+                    let Ok(decoded) = decoder.advance(&frame) else {
+                        break;
+                    };
+                    if validate_campaign(decoded, &replay).is_err() {
+                        break;
+                    }
+                    let mut observation =
+                        Observation::Unavailable(PlacementAvailability::TablesNotRecorded);
+                    let is_read = operative_rows::membership_read(decoded);
+                    if let Some(feature) = operative_rows::agency_feature(decoded) {
+                        if !feature {
+                            observation =
+                                Observation::Unavailable(PlacementAvailability::FeatureAbsent);
+                        } else if is_read
+                            && let (Ok(countries), Ok(links), Some(captured)) = (
+                                decoded.complete::<tables::Countries>(),
+                                decoded.complete::<tables::CountryLinks>(),
+                                recorded_operatives(decoded),
                             )
-                        });
-                    match resolved {
-                        Ok(resolved) => {
-                            observation = Observation::Read(resolved);
-                        }
-                        Err(reason) => {
-                            warnings.insert(reason);
+                        {
+                            if catalogue.is_none()
+                                && !captured.is_empty()
+                                && let Some(content) = &context.content
+                            {
+                                catalogue = Some(crate::catalogue::catalogue(source, content)?);
+                            }
+                            let resolved = identities(countries, links)
+                                .ok_or_else(|| "Unresolved operative country catalogue".to_owned())
+                                .and_then(|countries| {
+                                    resolve_rows(
+                                        captured,
+                                        &countries,
+                                        links,
+                                        catalogue.as_ref().map(|c| c.localisation.as_ref()),
+                                        &mut warnings,
+                                    )
+                                });
+                            match resolved {
+                                Ok(resolved) => {
+                                    observation = Observation::Read(resolved);
+                                }
+                                Err(reason) => {
+                                    warnings.insert(reason);
+                                }
+                            }
+                        } else if !is_read
+                            && decoded.complete::<tables::OperativeMemberships>().is_ok()
+                        {
+                            // Complete held rows (including keyframes) retain the last
+                            // read's date. An unavailable/truncated table ends the hold,
+                            // including a scheduled failure with no measured walk.
+                            let projected = (|| {
+                                let countries =
+                                    decoded.complete::<tables::Countries>().map_err(|_| {
+                                        "Held operative country catalogue is unavailable".to_owned()
+                                    })?;
+                                let links =
+                                    decoded.complete::<tables::CountryLinks>().map_err(|_| {
+                                        "Held operative country links are unavailable".to_owned()
+                                    })?;
+                                let countries = identities(countries, links).ok_or_else(|| {
+                                    "Held operative country identities are unresolved".to_owned()
+                                })?;
+                                history.project(&countries)
+                            })();
+                            match projected {
+                                Ok(()) => observation = Observation::Hold,
+                                Err(reason) => {
+                                    warnings.insert(reason);
+                                }
+                            }
                         }
                     }
-                } else if !is_read && decoded.complete::<tables::OperativeMemberships>().is_ok() {
-                    // Complete held rows (including keyframes) retain the last
-                    // read's date. An unavailable/truncated table ends the hold,
-                    // including a scheduled failure with no measured walk.
-                    let projected = (|| {
-                        let countries = decoded.complete::<tables::Countries>().map_err(|_| {
-                            "Held operative country catalogue is unavailable".to_owned()
-                        })?;
-                        let links = decoded.complete::<tables::CountryLinks>().map_err(|_| {
-                            "Held operative country links are unavailable".to_owned()
-                        })?;
-                        let countries = identities(countries, links).ok_or_else(|| {
-                            "Held operative country identities are unresolved".to_owned()
-                        })?;
-                        history.project(&countries)
-                    })();
-                    match projected {
-                        Ok(()) => observation = Observation::Hold,
-                        Err(reason) => {
-                            warnings.insert(reason);
-                        }
-                    }
+                    history.update(frame.hour, observation);
                 }
             }
-            history.update(frame.hour, observation);
-        }
-    }
+            Ok(())
+        },
+    )?;
     Ok(OperativePlacementReply {
         branch_id: branch.to_string(),
         pairs: history.pairs.into_values().collect(),

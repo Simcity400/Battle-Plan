@@ -1,8 +1,10 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { runAt } from '../../charts/series.ts';
 import type { Run } from '../../charts/series';
 import { fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { fixedNumber, formatAmount, formatSigned } from '../../charts/valueAxis.ts';
+import { gbNumber, gbTwoSignificant } from '../../charts/numberFormat.ts';
 import { campaignToken } from '../../dashboard/chosen.ts';
 import type { ChoiceSource } from '../../dashboard/chosen';
 import { contentKey, setToken } from '../../dashboard/options.ts';
@@ -118,7 +120,7 @@ export const hasRecords = (reply: EquipmentStockpileReply) =>
 
 /** A variant's name as recorded at an hour, else its token or handle. */
 export const variantName = (variant: StockVariant, hour: number) =>
-  variantNameAt(variant.names, hour, variant.token || `Variant ${variant.id}`);
+    variantNameAt(variant.names, hour, `Variant ${variant.id}`);
 
 /** A variant row's key, as chips store it: its campaign (the kit's `campaignToken`),
  * handle and equipment token. A handle is the game's equipment id, so it names one
@@ -135,7 +137,7 @@ const typeKey = (variant: StockVariant) => variant.archetype ?? `${UNRESOLVED_MA
 /** The type's name: content's, else its key. */
 export function typeName(reply: EquipmentStockpileReply, key: string): string {
   const type = indexOf(reply).types.get(key);
-  if (type) return type.name ?? type.key;
+  if (type) return contentTitle(type.name, type.key, 'Equipment type name unavailable');
   return unresolvedTypeName(key);
 }
 
@@ -510,7 +512,7 @@ export function columnVars(labels: readonly string[], amounts: readonly string[]
 /** The groups as chips choose them: one line each. */
 export const groupChoices = (groups: readonly StockGroup[], noun: string): ChoiceSource => ({
   lines: key => groups.some(group => group.key === key) ? 1 : 0,
-  name: key => groups.find(group => group.key === key)?.label ?? key,
+  name: key => groups.find(group => group.key === key)?.label ?? 'Equipment group name unavailable',
   noun,
 });
 
@@ -584,7 +586,7 @@ export function stockChoices(groups: readonly StockGroup[], noun: string, drawab
       const group = chosenGroup(byRow, key);
       return group && drawable(group) ? 1 : 0;
     },
-    name: key => byRow.get(rowOf(key))?.label ?? key,
+    name: key => byRow.get(rowOf(key))?.label ?? 'Equipment name unavailable',
     noun,
   };
 }
@@ -673,8 +675,7 @@ export function formatPercent(share: number): string {
   const size = Math.abs(percent);
   // Whole per cent from one up; below it, two significant digits, so a nonzero share
   // never reads as 0%.
-  const text = size >= 1 || size === 0 ? Math.round(size).toLocaleString('en-GB')
-    : size.toLocaleString('en-GB', { maximumSignificantDigits: 2 });
+  const text = size >= 1 || size === 0 ? gbNumber.format(Math.round(size)) : gbTwoSignificant.format(size);
   return `${sign}${text}%`;
 }
 

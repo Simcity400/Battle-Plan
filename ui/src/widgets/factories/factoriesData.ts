@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 /** The Factories widget's data: the `country-factories` reply checked, and each
  * country's factories at an hour as the chosen count reads them. Every value is a
  * whole number of factories as the game shows it (the product truncates the
@@ -5,6 +6,7 @@
 import type { CountryRaceEntry } from '../../charts/race/countryRace';
 import type { Run } from '../../charts/series';
 import { runAt, runIndexAt, stretchStarts } from '../../charts/series.ts';
+import { usNumber } from '../../charts/numberFormat.ts';
 import { shownRuns } from '../../charts/race/lines.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import { validCountryIdentityRuns } from '../../dashboard/countryIdentity.ts';
@@ -182,11 +184,10 @@ export function mixBands(model: FactoryModel, tag: string, groups: readonly Fact
   return groups.map(group => shownRuns(countRuns(model, tag, groups, mode, group), membership, range));
 }
 
-/** A group's name: the game's names of the content buildings its flag counts,
- * else their content names, else the flag itself. */
+/** A group's localized building titles; missing titles remain explicitly unavailable. */
 export function groupName(group: FactoryGroupInfo): string {
-  if (!group.buildings.length) return group.flag;
-  return group.buildings.map(building => building.name ?? building.token).join(' · ');
+  if (!group.buildings.length) return 'Factory group name unavailable';
+  return group.buildings.map(building => contentTitle(building.name, building.token, 'Building name unavailable')).join(' · ');
 }
 
 /** The types the settings offer: every group the reply names, as its content names it. */
@@ -201,12 +202,12 @@ export function chosenGroups(model: FactoryModel, chosen: readonly string[]): Fa
   return picked.length ? picked : all;
 }
 
-const signed = (value: number) => value > 0 ? `+${value.toLocaleString('en-US')}` : value < 0 ? `−${Math.abs(value).toLocaleString('en-US')}` : '0';
+const signed = (value: number) => value > 0 ? `+${usNumber.format(value)}` : value < 0 ? `−${usNumber.format(Math.abs(value))}` : '0';
 /** A signed change and its tone: what it does to the count, so a recorded deduction
  * of −1 (a negative damaged total) reads +1, as it adds one. */
 const change = (effect: number): { text: string; tone?: TooltipRow['tone'] } =>
   ({ text: signed(effect), ...(effect < 0 ? { tone: 'negative' as const } : effect > 0 ? { tone: 'positive' as const } : {}) });
-export const formatCount = (value: number) => value < 0 ? `−${Math.abs(value).toLocaleString('en-US')}` : value.toLocaleString('en-US');
+export const formatCount = (value: number) => value < 0 ? `−${usNumber.format(Math.abs(value))}` : usNumber.format(value);
 
 /** The game's own breakdown of one group (its construction and top-bar tooltips):
  * Total, Owned, From occupation and what was added; then Damaged and what is

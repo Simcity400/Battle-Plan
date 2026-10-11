@@ -2,6 +2,7 @@ import type { RaidMetric, RaidTallyRun, RaidTallySeries, RaidsReply } from '../.
 import type { CountryRaceEntry, CountryRaceLine } from '../../charts/race/countryRace';
 import type { Span } from '../../charts/series';
 import { clipToSpans, runAt, runIndexAt, stretchStarts } from '../../charts/series.ts';
+import { usNumber } from '../../charts/numberFormat.ts';
 import { shownRuns } from '../../charts/race/lines.ts';
 import type { LabelAt } from '../../charts/race/lines';
 import type { TooltipContent } from '../../charts/tooltip';
@@ -13,7 +14,7 @@ import { SECONDARY_DASH } from '../../charts/palette.ts';
 export type TallyMetric = RaidMetric;
 export const tallyLabel = (metric: TallyMetric) => metric === 'both' ? 'Observed raids launched and succeeded'
   : metric === 'launched' ? 'Observed raid launches' : 'Observed raid successes';
-export const tallyValue = (value: number) => value.toLocaleString('en-US');
+export const tallyValue = (value: number) => usNumber.format(value);
 export const tallyCount = (value: number) => `${tallyValue(value)}+`;
 /** Scan::observe extends a tally run only after that country's successful read,
  * at the immediately following hour. Every included hour is its own exact read. */

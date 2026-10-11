@@ -18,8 +18,10 @@ Countries, campaign/follow/pin/range; line/marker toggles, end labels, fixed 0â€
 - Initial snapshots, gap boundaries and replacements are not events. Preserve observed bounds without inferred war declarers, founders or exact focus completions.
 - Picks use drawn country/measure curves; overlap/key choices hold the date and disable Follow/Pin until selection. Scope/numeric changes invalidate picks; label refresh retains them.
 - Drills keep signed parts, exact residuals and unknown totals within coverage/range/membership. Picking holds; Follow uses the aligned clock independently of parent time. Pin keeps country/measure and branch-relative day or Follow.
+- Source names preserve localized and literal empty text. Unnamed formula terms retain exact values with a neutral unavailable title and their key in hover details.
 - [Shared drill bindings](../country-measure/drillCountry.ts) save native slot/ID/origin. Parts follow only its aliases; headers use the body date. Invalid holders refuse bodies; older missing-holder pins stay neutral.
 - Mounted rows request flags; completed missing reads clear artwork. Keep full tooltip/event text accessible.
+- Focus markers share the text-only dated focus lookup. Country-dependent titles resolve at the completion's observed hour; static localized text appears while that read loads.
 
 ## Files
 

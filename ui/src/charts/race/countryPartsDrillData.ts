@@ -7,6 +7,7 @@ import { shownRuns } from './lines.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { pinPartsRace } from './partsRaceDrill.ts';
 import { runAt } from '../series.ts';
+import { usWhole } from '../numberFormat.ts';
 import { signed32, unsigned32 } from '../../dashboard/validation.ts';
 
 /** A native compact model supplies lookups and histories without expanding its samples. */
@@ -116,4 +117,4 @@ export function pinCountryParts(source: WidgetSpec, track: Pick<BoundTrack, 'id'
 export function countryPartsRemainder(at: CountryPartsAt | null): bigint | null {
   return at?.total == null ? null : BigInt(at.total) - at.values.reduce<bigint>((sum, value) => sum + BigInt(value ?? 0), 0n);
 }
-export const exactPartAmount = (value: number | bigint) => value.toLocaleString('en-US', { maximumFractionDigits: 0 });
+export const exactPartAmount = (value: number | bigint) => usWhole.format(value);

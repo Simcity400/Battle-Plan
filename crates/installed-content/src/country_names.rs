@@ -17,12 +17,23 @@ use std::collections::{BTreeMap, BTreeSet};
 use replay::{
     frame::{DecodedFrame, TableView},
     rows::{
-        CountryAppearanceRow, CountryLinkRow, CountryRow, ReservedCountryNamingRow, TableSchema,
-        tables,
+        CountryAppearanceRow, CountryLinkRow, CountryRow, ReservedCountryNamingRow, TableId,
+        TableSchema, tables,
     },
 };
 
 use crate::localisation::Localisation;
+
+/// Every table the resolver reads, for a reader that reconstructs only those.
+pub const TABLES: [TableId; 7] = [
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::CountryAppearance,
+    TableId::Politics,
+    TableId::PoliticalParties,
+    TableId::Autonomy,
+    TableId::ReservedCountryNaming,
+];
 
 /// One country's naming operands. Suffixes carry their leading underscore.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

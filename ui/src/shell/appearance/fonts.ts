@@ -1,39 +1,79 @@
 // Font choices are family names. The default is the system UI font, as in T3 Code
-// (Segoe UI on Windows); Inter is bundled and any installed font can be named. A
+// (Segoe UI on Windows); every named preset is bundled and any installed font can be named. A
 // chosen font always sits in front of the default stack so missing characters render.
 export const BUNDLED_FONT = 'Inter Variable';
 const FALLBACK_STACK = `-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif`;
+export const MONOSPACE_STACK = `'SF Mono', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace`;
 
-export interface FontPreset { family: string; label: string; note: string }
+export interface FontPreset { family: string; label: string; note: string; monospace?: boolean }
 
 export const FONT_PRESETS: readonly FontPreset[] = [
-  { family: '', label: 'System', note: 'Default: Segoe UI on Windows' },
+  { family: '', label: 'System', note: 'Platform default font' },
   { family: BUNDLED_FONT, label: 'Inter', note: 'Bundled with the app' },
-  { family: 'Segoe UI Variable Text', label: 'Segoe UI Variable', note: 'Windows 11 variable font' },
-  { family: 'Bahnschrift', label: 'Bahnschrift', note: 'Condensed, DIN-style' },
-  { family: 'Georgia', label: 'Georgia', note: 'Serif' },
-  { family: 'Cascadia Code', label: 'Cascadia Code', note: 'Monospace' },
+  { family: 'Roboto Variable', label: 'Roboto Sans', note: 'Bundled sans-serif font' },
+  { family: 'Roboto Condensed Variable', label: 'Condensed', note: 'Bundled condensed font' },
+  { family: 'Source Serif 4 Variable', label: 'Serif', note: 'Bundled Source Serif 4 font' },
+  { family: 'Cascadia Code Variable', label: 'Cascadia Code', note: 'Bundled monospace font', monospace: true },
 ];
+const bundledFamilies = new Set(FONT_PRESETS.map(preset => preset.family));
 
 /** The CSS stack for a family name ('' → system default). */
-export function fontStack(family: string): string {
-  const name = family.replace(/["'`;{}<>\\]/g, '').trim();
-  return name ? `'${name}', ${FALLBACK_STACK}` : FALLBACK_STACK;
+function familyNames(family: string): string[] {
+  return family.replace(/["'`;{}<>\\]/g, '').split(',').map(name => name.trim()).filter(Boolean);
+}
+function fontList(family: string): string {
+  return familyNames(family).map(name => /^(serif|sans-serif|monospace|system-ui|ui-monospace)$/i.test(name) ? name : `'${name}'`).join(', ');
+}
+export function fontStack(family: string, fallback = FALLBACK_STACK): string {
+  const list = fontList(family);
+  return list ? `${list}, ${fallback}` : fallback;
 }
 
 /** True when the browser renders `family` with its own glyphs rather than a fallback. */
 export function fontAvailable(family: string): boolean {
-  const name = family.replace(/["'`;{}<>\\]/g, '').trim();
-  if (!name || name === BUNDLED_FONT) return true;
+  const names = familyNames(family);
+  if (!names.length || names.some(name => bundledFamilies.has(name) || /^(serif|sans-serif|monospace|system-ui|ui-monospace)$/i.test(name))) return true;
   const context = document.createElement('canvas').getContext('2d');
-  if (!context) return true;
+  if (!context) return false;
   const sample = 'mmmmmmmmmmlli1WQ@#&0123456789';
   return ['monospace', 'serif', 'sans-serif'].some(generic => {
     context.font = `72px ${generic}`;
     const fallback = context.measureText(sample).width;
-    context.font = `72px '${name}', ${generic}`;
+    context.font = `72px ${fontList(family)}, ${generic}`;
     return context.measureText(sample).width !== fallback;
   });
+}
+
+/** Empty restores the default; custom names must resolve before being committed. */
+export function canUseFontFamily(family: string, installed: readonly string[] | null = null): boolean {
+  const name = family.trim();
+  return !name || familyNames(name).some(name => installed?.includes(name)) || fontAvailable(name);
+}
+
+/** Fixed-width roles accept matching glyph advances at regular, bold, and italic weights. */
+export function isMonospaceFamily(family: string): boolean {
+  const names = familyNames(family);
+  if (!names.length) return true;
+  const firstPreset = FONT_PRESETS.find(preset => preset.family === names[0]);
+  if (firstPreset) return !!firstPreset.monospace;
+  if (names.length === 1 && /^(monospace|ui-monospace)$/i.test(names[0])) return true;
+  const context = document.createElement('canvas').getContext('2d');
+  if (!context) return false;
+  return ['400', '700', 'italic 400', 'italic 700'].every(weight => {
+    context.font = `${weight} 32px ${fontList(family)}, monospace`;
+    const widths = ['i', 'M', 'W', '0', '@', '#', '.', ' '].map(glyph => context.measureText(glyph).width);
+    return widths[0] > 0 && widths.every(width => Number.isFinite(width) && Math.abs(width - widths[0]) < .01);
+  });
+}
+
+/** Concrete family used by the default stack, when the browser can name it. */
+export function defaultFontLabel(monospace = false): string {
+  const stack = monospace ? MONOSPACE_STACK : FALLBACK_STACK;
+  for (const name of familyNames(stack)) {
+    if (/^(monospace|system-ui|sans-serif|-apple-system|BlinkMacSystemFont)$/i.test(name)) continue;
+    if (fontAvailable(name)) return name;
+  }
+  return monospace ? 'System monospace' : 'System UI';
 }
 
 interface LocalFontData { family: string }

@@ -18,7 +18,8 @@ async function endpointAt(profile: string, signal: AbortSignal) {
       if (port && path) return `ws://127.0.0.1:${port}/${path.replace(/^\//, '')}`;
     } catch (error) {
       signal.throwIfAborted();
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'EBUSY') throw error;
     }
     await pause(50, undefined, { signal });
   }
@@ -57,6 +58,151 @@ function cdp(endpoint: string, method: string, params: Record<string, unknown> =
   });
 }
 
+function exited(child: ChildProcess) {
+  return child.exitCode != null || child.signalCode != null;
+}
+
+async function stopTreePid(pid: number) {
+  await new Promise<void>((done, reject) => {
+    const stop = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+    let output = '';
+    stop.stdout?.on('data', chunk => { output += String(chunk); });
+    stop.stderr?.on('data', chunk => { output += String(chunk); });
+    const timer = setTimeout(() => { stop.kill(); reject(new Error('Stopping owned Headless Edge tree timed out')); }, 5_000);
+    stop.once('error', error => { clearTimeout(timer); reject(error); });
+    stop.once('close', code => {
+      clearTimeout(timer);
+      if (code === 0) done();
+      else reject(new Error(`Stopping owned Headless Edge tree ${pid} failed (${code}): ${output.trim()}`));
+    });
+  });
+}
+
+async function stopOwnedTree(child: ChildProcess) {
+  if (exited(child) || child.pid == null) return;
+  if (process.platform !== 'win32') { child.kill('SIGKILL'); return; }
+  await stopTreePid(child.pid);
+}
+
+type OwnedEdgeProcess = { pid: number; parentId: number };
+
+async function ownedEdgeProcesses(profile: string, launcherPid: number | undefined, stop = false, browserPid: number | undefined = undefined): Promise<OwnedEdgeProcess[]> {
+  // A vanished launcher PID is insufficient: compatibility relaunches and
+  // descendants can keep this exact profile alive. Match whole arguments.
+  const script = `
+$ErrorActionPreference = 'Stop'
+$pattern = '(?:^|\\s)(?:"--user-data-dir={0}"|--user-data-dir="{0}"|--user-data-dir={0})(?:\\s|$)' -f [regex]::Escape($env:BATTLE_PLAN_CANVAS_PROFILE)
+$all = @(Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'")
+$owned = [System.Collections.Generic.HashSet[uint32]]::new()
+foreach ($entry in $all) {
+  if ($entry.CommandLine -match $pattern) { $null = $owned.Add($entry.ProcessId) }
+}
+do {
+  $added = $false
+  foreach ($entry in $all) {
+    if ($owned.Contains($entry.ParentProcessId) -and $owned.Add($entry.ProcessId)) { $added = $true }
+  }
+} while ($added)
+$handles = @{}
+$live = @(
+  foreach ($entry in $all) {
+    if (-not $owned.Contains($entry.ProcessId) -and $entry.ProcessId -ne [uint32]$env:BATTLE_PLAN_CANVAS_LAUNCHER) { continue }
+    $nativeProcess = Get-Process -Id $entry.ProcessId -ErrorAction SilentlyContinue
+    if ($nativeProcess -and -not $nativeProcess.HasExited) {
+      if (-not $owned.Contains($entry.ProcessId)) { throw 'Cannot verify the retained Edge launcher belongs to the owned profile' }
+      $null = $nativeProcess.Handle
+      $handles[$entry.ProcessId] = $nativeProcess
+      [pscustomobject]@{pid=$entry.ProcessId; parentId=$entry.ParentProcessId}
+    }
+  }
+)
+if ($env:BATTLE_PLAN_CANVAS_STOP -eq '1') {
+  $ids = [System.Collections.Generic.HashSet[uint32]]::new()
+  foreach ($entry in $live) { $null = $ids.Add($entry.pid) }
+  foreach ($root in $live) {
+    if ($ids.Contains($root.parentId)) { continue }
+    $nativeRoot = $handles[$root.pid]
+    if ($nativeRoot.HasExited) { continue }
+    $fresh = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $root.pid)
+    if (-not $fresh -or $fresh.CommandLine -notmatch $pattern) { throw 'Cannot verify an owned Edge tree root before stopping it' }
+    $start = [System.Diagnostics.ProcessStartInfo]::new('taskkill.exe', ('/PID ' + $root.pid + ' /T /F'))
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $stopper = [System.Diagnostics.Process]::Start($start)
+    if (-not $stopper.WaitForExit(5000)) { $stopper.Kill(); throw 'Stopping owned Edge tree timed out' }
+    $message = $stopper.StandardOutput.ReadToEnd() + $stopper.StandardError.ReadToEnd()
+    if ($stopper.ExitCode -ne 0 -and -not $nativeRoot.HasExited) {
+      throw ('Stopping owned Edge tree ' + $root.pid + ' failed (' + $stopper.ExitCode + '), launcher ' + $env:BATTLE_PLAN_CANVAS_LAUNCHER + ', browser ' + $env:BATTLE_PLAN_CANVAS_BROWSER + ': ' + $message.Trim())
+    }
+  }
+}
+ConvertTo-Json -InputObject $live -Compress
+`;
+  return new Promise((done, reject) => {
+    const query = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+      windowsHide: true,
+      env: { ...process.env, BATTLE_PLAN_CANVAS_PROFILE: profile, BATTLE_PLAN_CANVAS_LAUNCHER: String(launcherPid ?? 0), BATTLE_PLAN_CANVAS_STOP: stop ? '1' : '0', BATTLE_PLAN_CANVAS_BROWSER: String(browserPid ?? 0) },
+    });
+    let output = '', errors = '';
+    query.stdout?.on('data', chunk => { output += String(chunk); });
+    query.stderr?.on('data', chunk => { errors += String(chunk); });
+    const timer = setTimeout(() => { query.kill(); reject(new Error('Observing owned Headless Edge processes timed out')); }, 10_000);
+    query.once('error', error => { clearTimeout(timer); reject(error); });
+    query.once('close', code => {
+      clearTimeout(timer);
+      if (code !== 0) { reject(new Error(`Observing owned Headless Edge processes failed (${code}): ${errors.trim()}`)); return; }
+      try {
+        const processes: unknown = JSON.parse(output.trim());
+        assert.ok(Array.isArray(processes) && processes.every(row => Number.isSafeInteger(row.pid) && row.pid > 0 && Number.isSafeInteger(row.parentId)));
+        done(processes);
+      } catch (error) { reject(error); }
+    });
+  });
+}
+
+async function stopOwnedProfile(profile: string, launcherPid: number | undefined, browserPid: number | undefined) {
+  await ownedEdgeProcesses(profile, launcherPid, true, browserPid);
+}
+
+/** Observe shutdown before requesting it, and confirm exit before deleting a profile. */
+export async function stopBrowser(child: ChildProcess, requestClose: () => Promise<unknown>, forceStop: () => Promise<void> = () => stopOwnedTree(child), timeout = 5_000, verifyStopped: () => Promise<boolean> = async () => exited(child)) {
+  let closed!: () => void;
+  const stopped = new Promise<void>(done => { closed = done; child.once('close', closed); });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const wait = async () => {
+    try {
+      await Promise.race([stopped, new Promise<void>(done => { timer = setTimeout(done, timeout); })]);
+    } finally { clearTimeout(timer); }
+  };
+  let confirmed = false;
+  try {
+    if (exited(child) && await verifyStopped()) { confirmed = true; return; }
+    await requestClose().catch(() => {});
+    confirmed = await verifyStopped();
+    if (!confirmed) { await wait(); confirmed = await verifyStopped(); }
+    if (!confirmed) {
+      let failure: unknown;
+      try { await forceStop(); } catch (error) { failure = error; }
+      await wait();
+      // A graceful exit can race the PID-scoped force request. Its observed
+      // exit settles shutdown even if the force utility found no live process.
+      confirmed = await verifyStopped();
+      if (!confirmed && failure) throw failure;
+    }
+    assert.ok(confirmed, 'Headless Edge did not stop; its profile is retained');
+  } finally {
+    // The close promise can remain pending after a refused shutdown.
+    child.removeListener('close', closed);
+    if (confirmed && !exited(child)) {
+      // Native process-family absence is authoritative when Node's exit/pipe
+      // notification remains pending. Release only this stopped child's handles.
+      child.unref(); child.stdout?.destroy(); child.stderr?.destroy();
+    }
+  }
+}
+
 export async function canvasPage(code: string, gpu = false) {
   const edge = (process.env.BATTLE_PLAN_CANVAS_BROWSER ?? process.env.HOI4_CANVAS_BROWSER) ?? [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA]
     .filter((directory): directory is string => Boolean(directory))
@@ -91,11 +237,12 @@ addEventListener('unhandledrejection',event=>finish({error:String(event.reason)}
   });
   let endpoint = '';
   let child: ReturnType<typeof spawn> | undefined;
+  let browserPid: number | undefined;
   try {
     await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
     const address = server.address(); assert.ok(address && typeof address !== 'string');
     child = spawn(edge, ['--headless', ...(gpu ? ['--enable-gpu', '--ignore-gpu-blocklist', '--use-angle=d3d11'] : ['--disable-gpu']),
-      '--no-first-run', '--remote-debugging-port=0', `--user-data-dir=${profile}`], { windowsHide: true });
+      '--no-first-run', '--edge-skip-compat-layer-relaunch', '--remote-debugging-port=0', `--user-data-dir=${profile}`], { windowsHide: true });
     child.stdout?.resume(); child.stderr?.resume();
     endpoint = await browserStage(child, 'Edge startup', signal => endpointAt(profile, signal));
     const result = await browserStage(child, 'Canvas page', async () => {
@@ -104,22 +251,24 @@ addEventListener('unhandledrejection',event=>finish({error:String(event.reason)}
     }, 120_000);
     const error = result.error;
     assert.equal(error, undefined, error instanceof Error || typeof error === 'string' ? error : undefined);
+    const processes = await cdp(endpoint, 'SystemInfo.getProcessInfo');
+    const browser = (processes.processInfo as { type: string; id: number }[]).find(row => row.type === 'browser');
+    assert.ok(browser && Number.isSafeInteger(browser.id) && browser.id > 0, 'Edge must report its browser process identity');
+    browserPid = browser.id;
     const graphics = await cdp(endpoint, 'SystemInfo.getInfo').then(info => {
       const gpu = info.gpu as { devices: unknown; featureStatus: unknown; auxAttributes: { glRenderer?: string } };
       return { devices: gpu.devices, featureStatus: gpu.featureStatus, renderer: gpu.auxAttributes.glRenderer };
     });
     return { graphics, result };
   } finally {
-    if (endpoint) await cdp(endpoint, 'Browser.close').catch(() => {});
-    if (child && child.exitCode == null && child.signalCode == null) {
-      await new Promise<void>(done => {
-        const closed = () => { clearTimeout(timer); child!.removeListener('close', closed); done(); };
-        const timer = setTimeout(closed, 5_000);
-        child!.once('close', closed); child!.kill();
-      });
+    try {
+      if (child) await stopBrowser(child, async () => {
+        if (endpoint) await cdp(endpoint, 'Browser.close');
+      }, () => stopOwnedProfile(profile, exited(child!) ? undefined : child!.pid, browserPid), 5_000,
+      async () => (await ownedEdgeProcesses(profile, exited(child!) ? undefined : child!.pid)).length === 0);
+    } finally {
+      await new Promise<void>(done => { server.close(() => done()); server.closeAllConnections(); });
     }
-    await new Promise<void>(done => { server.close(() => done()); server.closeAllConnections(); });
-    assert.ok(!child || child.exitCode != null || child.signalCode != null, 'Headless Edge did not stop; its profile is retained');
     assert.ok(profile.startsWith(resolve(tmpdir()) + sep));
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }

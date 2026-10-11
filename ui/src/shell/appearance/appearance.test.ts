@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contrast, normalizeColor, oklchToRgb, parseColor, parseColorAlpha, rgbToOklch, toHex } from './color.ts';
-import { BUILT_IN_THEMES, contrastWarnings, cssVariable, deriveColors, themeRoles } from './themes.ts';
+import { BUILT_IN_THEMES, contrastColors, contrastWarnings, cssVariable, deriveColors, themeRoles } from './themes.ts';
 import { parseJsonc, parseThemeText, serializeTheme, uniqueThemeName } from './themeFile.ts';
 import { APPEARANCE_KEY, DEFAULT_APPEARANCE, loadAppearance, migrateLegacy, parseAppearance, resolveAppearance, saveAppearance } from './settings.ts';
 
@@ -125,7 +125,7 @@ test('unique theme names count upwards without clashing', () => {
 });
 
 test('appearance settings clamp, default and drop unknown themes', () => {
-  const parsed = parseAppearance({ scheme: 'purple', themes: { dark: 'missing', light: 'brass' }, glass: 12, radius: 99.6, motion: 'fast',
+  const parsed = parseAppearance({ scheme: 'purple', themes: { dark: 'missing', light: 'brass' }, glass: 12, radius: 99.6, motion: 'fast', headerFlag: 'huge',
     fonts: { interface: "Bahnschrift'; }", display: 7 }, backdrop: { kind: 'image', imageId: 'abc', dim: -5, blur: 12.4 },
     custom: [{ id: 'mine', name: '  Mine ', variants: { dark: BUILT_IN_THEMES[0].variants.dark } }, { id: 'signal', name: 'Clash', variants: {} }, 'junk'] });
   assert.equal(parsed.scheme, DEFAULT_APPEARANCE.scheme);
@@ -133,11 +133,50 @@ test('appearance settings clamp, default and drop unknown themes', () => {
   assert.equal(parsed.glass, 40);
   assert.equal(parsed.radius, 18);
   assert.equal(parsed.motion, 'system');
-  assert.deepEqual(parsed.fonts, { interface: 'Bahnschrift', display: '' });
+  assert.equal(parsed.headerFlag, 'native');
+  assert.equal(parseAppearance({ headerFlag: 'large' }).headerFlag, 'large');
+  assert.deepEqual(parsed.fonts, { interface: 'Bahnschrift', display: '', tables: '', diagnostics: '' });
   assert.deepEqual(parsed.backdrop, { kind: 'image', imageId: 'abc', dim: 0, blur: 12 });
   assert.deepEqual(parsed.custom.map(theme => [theme.id, theme.name, Object.keys(theme.variants)]), [['mine', 'Mine', ['dark']]]);
   assert.deepEqual(parseAppearance(null), DEFAULT_APPEARANCE);
   assert.equal(parseAppearance({ custom: parsed.custom, themes: { dark: 'mine' } }).themes.dark, 'mine');
+});
+
+test('contrast only softens text and borders below the unchanged 100% maximum', () => {
+  for (const mode of ['dark', 'light'] as const) {
+    const colors = BUILT_IN_THEMES[0].variants[mode]!;
+    assert.equal(contrastColors(colors, 100), colors);
+    assert.equal(contrastColors(colors, 200), colors);
+    const faded = contrastColors(colors, 50);
+    for (const role of ['text', 'muted'] as const) {
+      assert.ok(contrast(parseColor(faded[role])!, parseColor(colors.canvas)!) < contrast(parseColor(colors[role])!, parseColor(colors.canvas)!));
+    }
+    assert.equal(faded.border, `${colors.border}80`);
+    for (const role of ['canvas', 'chrome', 'surface', 'raised', 'overlay', 'accent'] as const) assert.equal(faded[role], colors[role]);
+  }
+});
+
+test('contrast defaults to 100%, rounds within 50–100%, and clamps older boosted preferences', () => {
+  assert.equal(DEFAULT_APPEARANCE.contrast, 100);
+  assert.equal(parseAppearance({}).contrast, 100);
+  assert.equal(parseAppearance({ contrast: 77 }).contrast, 75);
+  assert.equal(parseAppearance({ contrast: 78 }).contrast, 80);
+  assert.equal(parseAppearance({ contrast: 7 }).contrast, 50);
+  for (const contrast of [100, 105, 150, 200, 999]) assert.equal(parseAppearance({ contrast }).contrast, 100);
+  assert.equal(parseAppearance({ contrast: '120' }).contrast, 100);
+});
+
+test('sidebar icon colours restore independently and reject unknown or invalid entries', () => {
+  const parsed = parseAppearance({ sidebarIcons: { analytics: '#ABC', map: 'rgb(10 20 30)', settings: 'invalid', folders: '#ffcc00', 'page-custom': '#f80', missing: '#123456' } });
+  assert.deepEqual(parsed.sidebarIcons, { analytics: '#aabbcc', map: '#0a141e', folders: '#ffcc00', 'page-custom': '#ff8800' });
+  assert.deepEqual(parseAppearance({}).sidebarIcons, {});
+  assert.deepEqual(parseAppearance({ sidebarIcons: ['#ff0000'] }).sidebarIcons, {});
+  const storage = memoryStorage();
+  assert.equal(saveAppearance(parsed, storage), null);
+  assert.deepEqual(loadAppearance(storage).settings.sidebarIcons, parsed.sidebarIcons);
+  parsed.sidebarIcons = {};
+  saveAppearance(parsed, storage);
+  assert.equal(loadAppearance(storage).settings.sidebarIcons.analytics, undefined);
 });
 
 test('the first appearance format migrates presets to the default and keeps customised palettes', () => {

@@ -222,10 +222,14 @@ fn dated_repairs(project: &ConstructionProject, reads: &[i32], spans: &mut Vec<L
 pub(crate) fn leaves(log: &ScannedLog, tag: &str) -> (Vec<SpendingLeaf>, u32) {
     let mut grouped: BTreeMap<LeafKey, LeafParts> = BTreeMap::new();
     let mut before = 0;
-    for project in log.projects.iter().filter(|project| project.tag == tag) {
+    for (project, output) in log
+        .projects
+        .iter()
+        .zip(&log.outputs)
+        .filter(|(project, _)| project.tag == tag)
+    {
         before += u32::from(
-            project
-                .output
+            output
                 .first()
                 .is_some_and(|read| read.since_hour.is_some() && !read.observed_since_creation),
         );
@@ -239,7 +243,7 @@ pub(crate) fn leaves(log: &ScannedLog, tag: &str) -> (Vec<SpendingLeaf>, u32) {
             let mut unknown: Vec<SpendingUnknown> = Vec::new();
             let mut last = 0_i128;
             let mut repair_ticks = 0;
-            for read in &project.output {
+            for read in output {
                 let raw = if repair {
                     &read.repair_raw
                 } else {

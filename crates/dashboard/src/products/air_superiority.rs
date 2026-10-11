@@ -1219,10 +1219,13 @@ fn resolve_names(
         warnings.extend(regions.notes);
         let mut names = BTreeMap::new();
         for (id, definition) in regions.regions {
-            match catalogue::localised(&loc, &definition.name_key, catalogue::View::Plain) {
-                // The region name uses template text without a success gate:
-                // empty text survives, and a missing localisation key is copied
-                // instead of a region-id label.
+            match (definition.name_key.is_empty() || loc.get(&definition.name_key).is_some())
+                .then_some(())
+                .ok_or_else(|| "localized title is absent from the recorded language".to_owned())
+                .and_then(|_| {
+                    catalogue::localised(&loc, &definition.name_key, catalogue::View::Plain)
+                }) {
+                // Successful empty text remains distinct from a missing title.
                 Ok(name) => {
                     names.insert(id, name);
                 }

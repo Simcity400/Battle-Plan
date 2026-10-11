@@ -80,6 +80,7 @@ pub mod special_projects;
 pub mod stability_parts;
 pub mod subjects;
 pub mod supply_health;
+pub mod technology_artwork;
 pub mod territory;
 pub mod territory_breakdown;
 pub mod trade_flows;
@@ -94,7 +95,10 @@ use installed_content::ResolveOptions;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use ts_rs::TS;
 
-use crate::{Source, transport::bounded_json};
+use crate::{
+    Source, reply_cache,
+    transport::{MAX_REPLY_BYTES, bounded_json},
+};
 
 /// Leave room for the lease envelope and escaped product JSON inside the
 /// transport's complete-response bound. History products share this reserve.
@@ -161,6 +165,7 @@ reply_warnings!(
     air_force::AirForceReply,
     autonomy::AutonomyReply,
     construction_log::ConstructionLogReply,
+    construction_log::ConstructionLogManifestReply,
     construction_spending::ConstructionSpendingReply,
     country_experience::ExperienceReply,
     country_factories::CountryFactoriesReply,
@@ -198,6 +203,7 @@ reply_warnings!(
     naval_losses::NavalLossesReply,
     occupation_trend::OccupationTrendReply,
     occupied_states::OccupiedStatesReply,
+    occupied_states::OccupiedStatesManifestReply,
     party_history::PartyHistoryReply,
     politics_ledger::PoliticsLedgerReply,
     peace_deals::PeaceDealsReply,
@@ -208,6 +214,7 @@ reply_warnings!(
     production_spending::ProductionSpendingReply,
     raids::RaidsReply,
     research::ResearchReply,
+    technology_artwork::TechnologyArtworkReply,
     resource_balance::ResourceBalanceReply,
     scoreboard::ScoreboardReply,
     ships_sunk::ShipsSunkReply,
@@ -228,6 +235,9 @@ pub trait Product: 'static {
     const KEY: &'static str;
     /// Whether any reply field reads localisation, artwork or content definitions.
     const CONTENT_DEPENDENT: bool;
+    /// Whether it answers a hover or label at one hour (one block at most): served on its
+    /// own threads, so a whole-recording scan never delays it.
+    const INTERACTIVE: bool = false;
     type Params: DeserializeOwned + TS + 'static;
     type Reply: Serialize + TS + ReplyWarnings + 'static;
 
@@ -390,6 +400,7 @@ struct Envelope<'a, T: Serialize> {
 pub struct Registered {
     pub key: &'static str,
     pub content_dependent: bool,
+    pub interactive: bool,
     pub load:
         fn(&Source, &str, serde_json::Value, &LoadContext, &AtomicBool) -> Result<String, String>,
     pub types: fn() -> Vec<String>,
@@ -399,6 +410,7 @@ const fn register<P: Product>() -> Registered {
     Registered {
         key: P::KEY,
         content_dependent: P::CONTENT_DEPENDENT,
+        interactive: P::INTERACTIVE,
         load: load_json::<P>,
         types: types::<P>,
     }
@@ -411,21 +423,54 @@ fn load_json<P: Product>(
     context: &LoadContext,
     cancelled: &AtomicBool,
 ) -> Result<String, String> {
-    let params: P::Params = serde_json::from_value(params)
+    let request = params;
+    let params = P::Params::deserialize(&request)
         .map_err(|error| format!("Invalid {} request: {error}", P::KEY))?;
     P::validate(&params).map_err(str::to_owned)?;
-    let mut data =
-        P::load(source, &params, context, cancelled).map_err(|error| error.to_string())?;
-    source.append_content_warnings(data.warnings_mut());
-    bounded_json(
+    crate::metadata::check_cancel(cancelled).map_err(|error| error.to_string())?;
+    // Whole-recording replies persist between sessions; hover answers are quicker to compute.
+    let entry = (!P::INTERACTIVE)
+        .then(|| reply_cache::Entry::new(source, P::KEY, P::CONTENT_DEPENDENT, &request, context))
+        .flatten();
+    let mut reply = bounded_json(
         &Envelope {
             source_id: lease_id,
             revision: &source.key().revision,
             product: P::KEY,
-            data,
+            data: (),
         },
         cancelled,
-    )
+    )?;
+    // The data serializes last.
+    reply.truncate(reply.len() - "null}".len());
+    // Content read outside the recorded coverage is reported on every reply, so
+    // no reply is served from or kept on disk while any is.
+    let stored = entry
+        .as_ref()
+        .filter(|_| !source.reads_uncovered())
+        .and_then(reply_cache::Entry::get);
+    let data = match stored {
+        Some(data) => data,
+        None => {
+            let mut data =
+                P::load(source, &params, context, cancelled).map_err(|error| error.to_string())?;
+            source.append_content_warnings(data.warnings_mut());
+            let data = bounded_json(&data, cancelled)?;
+            if let Some(entry) = &entry
+                && !source.reads_uncovered()
+            {
+                entry.put(&data);
+            }
+            data
+        }
+    };
+    if reply.len() + data.len() + 1 > MAX_REPLY_BYTES {
+        return Err("Projected response exceeds the transport byte budget".into());
+    }
+    reply.reserve_exact(data.len() + 1);
+    reply.push_str(&data);
+    reply.push('}');
+    Ok(reply)
 }
 
 fn types<P: Product>() -> Vec<String> {
@@ -438,6 +483,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<national_focus::NationalFocus>(),
     register::<focus_artwork::FocusArtwork>(),
     register::<research::Research>(),
+    register::<technology_artwork::TechnologyArtwork>(),
     register::<country_flags::CountryFlags>(),
     register::<army_size::ArmySize>(),
     register::<supply_health::SupplyHealth>(),
@@ -481,6 +527,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<air_superiority::AirSuperiority>(),
     register::<raids::Raids>(),
     register::<occupied_states::OccupiedStates>(),
+    register::<occupied_states::OccupiedStatesManifest>(),
     register::<occupation_trend::OccupationTrend>(),
     register::<country_experience::CountryExperience>(),
     register::<idea_history::IdeaHistory>(),
@@ -503,6 +550,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<world_tension::WorldTension>(),
     register::<autonomy::Autonomy>(),
     register::<construction_log::ConstructionLog>(),
+    register::<construction_log::ConstructionLogManifest>(),
     register::<equipment_losses::EquipmentLosses>(),
     register::<military_air_ledger::MilitaryAirLedger>(),
     register::<ships_sunk::ShipsSunk>(),
@@ -594,6 +642,23 @@ mod tests {
                 .find(|line| line.starts_with("export const CONTENT_PRODUCTS"))
                 .unwrap();
             assert!(declaration.contains(&format!("{:?}", product.key)));
+        }
+    }
+
+    #[test]
+    fn browser_interactive_products_match_service_admission() {
+        let contract = crate::typescript_contract();
+        let declaration = contract
+            .lines()
+            .find(|line| line.starts_with("export const INTERACTIVE_PRODUCTS"))
+            .expect("browser admission needs the service's product lanes");
+        for product in PRODUCTS {
+            assert_eq!(
+                declaration.contains(&format!("{:?}", product.key)),
+                product.interactive,
+                "{} admission differs between browser and service",
+                product.key
+            );
         }
     }
 

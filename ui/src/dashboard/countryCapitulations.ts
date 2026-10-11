@@ -19,7 +19,7 @@ export function countryCapitulationBadges(groups: Pick<CountryGroupReply, 'capit
       || country.membership && !runAt(country.membership, event.hour)) continue;
     const rows = badges.get(event.tag) ?? [];
     if (!badges.has(event.tag)) badges.set(event.tag, rows);
-    rows.push({ hour: event.hour, glyph: '\u00d7', label: `${event.tag} capitulated`, capitulationTag: event.tag });
+    rows.push({ hour: event.hour, glyph: '\u00d7', label: 'Country capitulated', capitulationTag: event.tag });
   }
   return badges;
 }

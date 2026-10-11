@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
 import type { Artwork, CategoryInfo, IdeaHistoryReply, IdeaInfo, IdeaSpan } from '../../generated/dashboard';
 
@@ -35,14 +36,14 @@ export function lanesFor(reply: IdeaHistoryReply, category: CategoryInfo, styles
     const base = { id: `${item.token}:${item.firstHour}`, firstHour: item.firstHour, lastHour: item.lastHour, shade };
     if (item.character) {
       const look = holders.get(holder(item.token, item.character.id, item.character.token, item.character.name));
-      return look ? { ...base, label: look.name ?? item.token, icon: look.icon ?? undefined } : { ...base, label: UNIDENTIFIED_HOLDER };
+      return look ? { ...base, label: look.name ?? 'Holder name unavailable', icon: look.icon ?? undefined } : { ...base, label: UNIDENTIFIED_HOLDER };
     }
     const look = art.get(item.token);
-    return { ...base, label: look?.name ?? item.token, icon: look?.icon ?? undefined };
+    return { ...base, label: contentTitle(look?.name, item.token, 'Idea name unavailable'), icon: look?.icon ?? undefined };
   };
   const lanes: TimelineLane[] = [];
   for (const slot of category.slots) {
-    const label = slot.name ?? slot.token;
+    const label = contentTitle(slot.name, slot.token, 'Slot name unavailable');
     // The seat the recording gave a span comes first; content's slot otherwise.
     const held = reply.spans.filter(item => (item.slot ?? infos.get(item.token)?.slot) === slot.token).sort((a, b) => a.firstHour - b.firstHour);
     if (!slot.character) {

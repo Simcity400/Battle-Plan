@@ -1193,101 +1193,111 @@ pub(super) fn extend_days_anchored(
         .rev()
         .flat_map(|segment| segment.days.values().rev())
         .find_map(|sample| sample.key_read.clone());
-    for (index, block) in blocks.iter().enumerate().skip(cache.segments.len()) {
-        check_cancel(cancelled)?;
-        let mut segment = DaySegment::default();
-        let tables = if base.is_some() {
-            DAY_TABLES
-        } else {
-            MOMENT_TABLES
-        };
-        #[cfg(test)]
-        let started = cache
-            .measurements
-            .as_ref()
-            .map(|_| std::time::Instant::now());
-        let mut frames = replay
-            .read_block_selected(block, tables)?
-            .into_iter()
-            .peekable();
-        #[cfg(test)]
-        if let (Some(measurements), Some(started)) = (&mut cache.measurements, started) {
-            measurements.wire += started.elapsed();
-        }
-        let mut decoder = day_decoder(tables);
-        // Consume each payload after its update; large blocks do not retain all
-        // delta allocations while indexing later hours.
-        while let Some(frame) = frames.next() {
-            check_cancel(cancelled)?;
-            #[cfg(test)]
-            let started = cache
-                .measurements
-                .as_ref()
-                .map(|_| std::time::Instant::now());
-            let decoded = decoder.advance(&frame)?;
-            #[cfg(test)]
-            if let (Some(measurements), Some(started)) = (&mut cache.measurements, started) {
-                measurements.decode += started.elapsed();
-            }
-            validate_campaign(decoded, replay)?;
-            if let Some(aux) = reads.observe(&frame, decoded, base.is_none())? {
-                match segment.auxiliary.last_mut() {
-                    Some((_, end, old))
-                        if end.checked_add(1) == Some(frame.hour) && Arc::ptr_eq(old, &aux) =>
-                    {
-                        *end = frame.hour
-                    }
-                    _ => segment.auxiliary.push((frame.hour, frame.hour, aux)),
+    let tables = if base.is_some() {
+        DAY_TABLES
+    } else {
+        MOMENT_TABLES
+    };
+    let first = cache.segments.len();
+    crate::blocks::scan_blocks(
+        replay,
+        blocks[first..].iter().copied(),
+        tables,
+        cancelled,
+        |pending| {
+            for (index, (_, frames)) in (first..).zip(pending) {
+                check_cancel(cancelled)?;
+                let mut segment = DaySegment::default();
+                #[cfg(test)]
+                let started = cache
+                    .measurements
+                    .as_ref()
+                    .map(|_| std::time::Instant::now());
+                let mut frames = frames?.into_iter().peekable();
+                #[cfg(test)]
+                if let (Some(measurements), Some(started)) = (&mut cache.measurements, started) {
+                    measurements.wire += started.elapsed();
                 }
-            }
-            let next = frames
-                .peek()
-                .map(|next| next.hour)
-                .or_else(|| blocks.get(index + 1).map(|next| next.first_hour));
-            if next
-                .is_none_or(|next| next.div_euclid(DAY_HOURS) != frame.hour.div_euclid(DAY_HOURS))
-            {
-                let mut sample = reads.snapshot(
-                    decoded,
-                    groups,
-                    (cache.viewpoint.as_deref(), cache.viewpoint_country),
-                    (&mut *sides, &mut *indices),
-                    &anchors,
-                    base,
-                )?;
-                if let Some(read) = sample.key_read.as_mut() {
-                    if let Some(previous) = last_key_read
+                let mut decoder = day_decoder(tables);
+                // Consume each payload after its update; large blocks do not retain all
+                // delta allocations while indexing later hours.
+                while let Some(frame) = frames.next() {
+                    check_cancel(cancelled)?;
+                    #[cfg(test)]
+                    let started = cache
+                        .measurements
                         .as_ref()
-                        .filter(|previous| previous.as_ref() == read.as_ref())
+                        .map(|_| std::time::Instant::now());
+                    let decoded = decoder.advance(&frame)?;
+                    #[cfg(test)]
+                    if let (Some(measurements), Some(started)) = (&mut cache.measurements, started)
                     {
-                        *read = Arc::clone(previous);
+                        measurements.decode += started.elapsed();
                     }
-                    last_key_read = Some(Arc::clone(read));
+                    validate_campaign(decoded, replay)?;
+                    if let Some(aux) = reads.observe(&frame, decoded, base.is_none())? {
+                        match segment.auxiliary.last_mut() {
+                            Some((_, end, old))
+                                if end.checked_add(1) == Some(frame.hour)
+                                    && Arc::ptr_eq(old, &aux) =>
+                            {
+                                *end = frame.hour
+                            }
+                            _ => segment.auxiliary.push((frame.hour, frame.hour, aux)),
+                        }
+                    }
+                    let next = frames
+                        .peek()
+                        .map(|next| next.hour)
+                        .or_else(|| blocks.get(index + 1).map(|next| next.first_hour));
+                    if next.is_none_or(|next| {
+                        next.div_euclid(DAY_HOURS) != frame.hour.div_euclid(DAY_HOURS)
+                    }) {
+                        let mut sample = reads.snapshot(
+                            decoded,
+                            groups,
+                            (cache.viewpoint.as_deref(), cache.viewpoint_country),
+                            (&mut *sides, &mut *indices),
+                            &anchors,
+                            base,
+                        )?;
+                        if let Some(read) = sample.key_read.as_mut() {
+                            if let Some(previous) = last_key_read
+                                .as_ref()
+                                .filter(|previous| previous.as_ref() == read.as_ref())
+                            {
+                                *read = Arc::clone(previous);
+                            }
+                            last_key_read = Some(Arc::clone(read));
+                        }
+                        segment
+                            .days
+                            .insert(frame.hour.div_euclid(DAY_HOURS), Arc::new(sample));
+                    }
+                    #[cfg(test)]
+                    segment.built_hours.push(frame.hour);
+                    #[cfg(test)]
+                    let started = cache
+                        .measurements
+                        .as_ref()
+                        .map(|_| std::time::Instant::now());
+                    drop(frame);
+                    #[cfg(test)]
+                    if let (Some(measurements), Some(started)) = (&mut cache.measurements, started)
+                    {
+                        measurements.wire += started.elapsed();
+                    }
                 }
-                segment
-                    .days
-                    .insert(frame.hour.div_euclid(DAY_HOURS), Arc::new(sample));
+                if let Some(base) = base {
+                    segment.auxiliary = base.segments[index].auxiliary.clone();
+                    reads.regions.extend(&base.regions);
+                    reads.theatres.clone_from(&base.theatres);
+                }
+                segments.push(Arc::new(segment));
             }
-            #[cfg(test)]
-            segment.built_hours.push(frame.hour);
-            #[cfg(test)]
-            let started = cache
-                .measurements
-                .as_ref()
-                .map(|_| std::time::Instant::now());
-            drop(frame);
-            #[cfg(test)]
-            if let (Some(measurements), Some(started)) = (&mut cache.measurements, started) {
-                measurements.wire += started.elapsed();
-            }
-        }
-        if let Some(base) = base {
-            segment.auxiliary = base.segments[index].auxiliary.clone();
-            reads.regions.extend(&base.regions);
-            reads.theatres.clone_from(&base.theatres);
-        }
-        segments.push(Arc::new(segment));
-    }
+            Ok(())
+        },
+    )?;
     // All fallible work is local. A failed extension drops its side/read changes
     // and segments without changing published indices or truncating old reads.
     for segment in segments {
@@ -1337,56 +1347,65 @@ pub(super) fn scan_window_measured(
     let mut reads = DayReads::default();
     // Include the preceding daily slot to date carried theatre membership.
     let read_first = first.saturating_sub(DAY_HOURS);
-    for block in replay.index.iter().filter(|block| {
-        block.branch == branch && block.first_hour <= last && block.last_hour >= read_first
-    }) {
-        let started = measurements.as_ref().map(|_| std::time::Instant::now());
-        let frames = replay.read_block_selected(block, MOMENT_TABLES)?;
-        if let (Some(measurements), Some(started)) = (&mut measurements, started) {
-            measurements.wire += started.elapsed();
-        }
-        let mut decoder = day_decoder(MOMENT_TABLES);
-        for frame in frames {
-            check_cancel(cancelled)?;
-            if frame.hour > last {
-                break;
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|block| {
+            block.branch == branch && block.first_hour <= last && block.last_hour >= read_first
+        }),
+        MOMENT_TABLES,
+        cancelled,
+        |blocks| {
+            for (_, frames) in blocks {
+                let started = measurements.as_ref().map(|_| std::time::Instant::now());
+                let frames = frames?;
+                if let (Some(measurements), Some(started)) = (&mut measurements, started) {
+                    measurements.wire += started.elapsed();
+                }
+                let mut decoder = day_decoder(MOMENT_TABLES);
+                for frame in frames {
+                    check_cancel(cancelled)?;
+                    if frame.hour > last {
+                        break;
+                    }
+                    let started = measurements.as_ref().map(|_| std::time::Instant::now());
+                    let decoded = decoder.advance(&frame)?;
+                    if let (Some(measurements), Some(started)) = (&mut measurements, started) {
+                        measurements.decode += started.elapsed();
+                    }
+                    validate_campaign(decoded, replay)?;
+                    reads.observe_tables(&frame, decoded, true);
+                    if frame.hour < first {
+                        continue;
+                    }
+                    let mut sample = snapshot_score_read(
+                        decoded,
+                        reads.scores.view(),
+                        SideRead {
+                            groups,
+                            anchors,
+                            keep_keys: false,
+                            cached: Some(&mut reads.rosters),
+                        },
+                        (
+                            (params.mode == Some(AirMode::Viewpoint))
+                                .then_some(params.viewpoint.as_deref())
+                                .flatten(),
+                            params.viewpoint_country == Some(true),
+                        ),
+                        (&mut sides, &mut indices),
+                    )?;
+                    apply_auxiliary(&mut sample, &reads.auxiliary.value);
+                    samples.push(sample);
+                    let started = measurements.as_ref().map(|_| std::time::Instant::now());
+                    drop(frame);
+                    if let (Some(measurements), Some(started)) = (&mut measurements, started) {
+                        measurements.wire += started.elapsed();
+                    }
+                }
             }
-            let started = measurements.as_ref().map(|_| std::time::Instant::now());
-            let decoded = decoder.advance(&frame)?;
-            if let (Some(measurements), Some(started)) = (&mut measurements, started) {
-                measurements.decode += started.elapsed();
-            }
-            validate_campaign(decoded, replay)?;
-            reads.observe_tables(&frame, decoded, true);
-            if frame.hour < first {
-                continue;
-            }
-            let mut sample = snapshot_score_read(
-                decoded,
-                reads.scores.view(),
-                SideRead {
-                    groups,
-                    anchors,
-                    keep_keys: false,
-                    cached: Some(&mut reads.rosters),
-                },
-                (
-                    (params.mode == Some(AirMode::Viewpoint))
-                        .then_some(params.viewpoint.as_deref())
-                        .flatten(),
-                    params.viewpoint_country == Some(true),
-                ),
-                (&mut sides, &mut indices),
-            )?;
-            apply_auxiliary(&mut sample, &reads.auxiliary.value);
-            samples.push(sample);
-            let started = measurements.as_ref().map(|_| std::time::Instant::now());
-            drop(frame);
-            if let (Some(measurements), Some(started)) = (&mut measurements, started) {
-                measurements.wire += started.elapsed();
-            }
-        }
-    }
+            Ok(())
+        },
+    )?;
     Ok((samples, sides))
 }
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
 import Timeline from '../../charts/timeline/Timeline';
@@ -13,14 +13,13 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackSpeed } from '../../dashboard/playback';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { careerCountryFacts, careerLanes, leaderAt, leaderName, careerEmptyEntry, recordedSince } from '../generals/generalsData';
 import { LeaderIdentity } from '../generals/LeaderIdentity';
 import { useLeaderPortraits } from '../generals/portraits';
 import { useLeaders } from '../generals/useLeaders';
 import { OPTIONS } from './definition';
 import '../generals/generals.css';
-
-const NO_WARNINGS: string[] = [];
 
 /** One view for the leaderboard drill and the standalone career widget. */
 export default function CareerView({ reference, hour, onPick, widget, runtime, active, onDiagnostics }: WidgetProps & {
@@ -46,7 +45,8 @@ export default function CareerView({ reference, hour, onPick, widget, runtime, a
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const viewportHeight = useViewportHeight();
   const menu = useContextMenu('Leader career actions');
-  useEffect(() => { onDiagnostics([...new Set([...(data?.warnings ?? []), ...portraits.warnings])]); return () => onDiagnostics(NO_WARNINGS); }, [data, onDiagnostics, JSON.stringify(portraits.warnings)]);
+  const diagnostics = useMemo(() => [...new Set([...(data?.warnings ?? []), ...portraits.warnings])], [data, portraits.warnings]);
+  useDiagnostics(onDiagnostics, diagnostics);
   const tooltip = useCallback<NonNullable<Parameters<typeof Timeline>[0]['tooltip']>>((lane, span, h) => {
     if (!data || !leader) return null;
     const hovered = leaderAt(data, leader, h);

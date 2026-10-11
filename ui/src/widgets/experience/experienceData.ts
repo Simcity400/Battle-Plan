@@ -1,7 +1,6 @@
 import type { CountryIdentityRun, ExperienceRead, ExperienceReply } from '../../generated/dashboard';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
-import { readNote } from '../../dashboard/reads.ts';
 import { clipToSpans, lineEndHour, runAt } from '../../charts/series.ts';
 import type { Run, Span } from '../../charts/series';
 import { fitTooltip } from '../../charts/tooltip.ts';
@@ -40,7 +39,6 @@ const gainRaw = (raw: unknown, dayHours: number): raw is string => typeof raw ==
   && BigInt(raw) <= BigInt(dayHours) * ((1n << 63n) - 1n);
 const isValues = (value: unknown, raw: (value: unknown) => boolean) => object(value)
   && BRANCHES.every(branch => raw(value[`${branch}Raw`]));
-const CADENCE = 'experience is read once a day.';
 const DECIMALS = 2;
 
 const isRead = (value: unknown, dayHours: number): value is ExperienceRead => {
@@ -88,10 +86,10 @@ export const formatExperience = (raw: string, scale: number, measure: Experience
   : formatAmount(rescale(raw, scale, DECIMALS), DECIMALS, DECIMALS);
 
 export type ExperienceNameRead = string | null | undefined | typeof FAILED_FACT;
-/** Names belong to their dated read; an opaque tag identifies an unnamed country. */
-export function experienceName(tag: string, name: ExperienceNameRead): string {
+/** Names belong to their dated read; missing titles retain their read status. */
+export function experienceName(_tag: string, name: ExperienceNameRead): string {
   if (typeof name === 'string') return name;
-  return `${tag} (${name === undefined ? 'name loading' : name === FAILED_FACT ? 'name request failed' : 'name not recorded'})`;
+  return `Country (${name === undefined ? 'name loading' : name === FAILED_FACT ? 'name request failed' : 'name not recorded'})`;
 }
 
 /** Date an end label to the actual last drawn value, including an earlier holder
@@ -179,18 +177,17 @@ export function experienceTooltip(reply: Pick<ExperienceReply, 'scale' | 'dayHou
     return date == null ? [] : [date];
   }));
   const date = dates.size === 1 ? [...dates][0] : hour;
-  const notes = new Set<string>(['Experience is read once a day.']);
+  const notes = new Set<string>();
   const rows = countries.flatMap<TooltipRow>((country, index) => {
     const read = reads[index];
     const named: ReturnType<CountryLabel> = country.identityKnown === false
-      ? { name: country.tag, known: false, flagPending: false, flagReason: 'The country identity was not recorded at this hour.' }
+      ? { name: 'Country name unavailable', known: false, flagPending: false, flagReason: 'The country identity was not recorded at this hour.' }
       : label(country.tag);
     if (named.nameFailed) notes.add(`${country.tag}: the country name request failed at this hour.`);
     else if (named.known === false) notes.add(`${country.tag}: the country name was not recorded at this hour.`);
-    else if (named.known === undefined && named.name === country.tag) notes.add(`${country.tag}: the country name is loading.`);
+    else if (named.known === undefined) notes.add(`${country.tag}: the country name is loading.`);
     if (!read) return [{ label: named.name, countryFlag: named, value: country.recorded ? 'Not recorded at this time' : 'Not in this recording', tone: 'muted' }];
-    const dating = readNote(read.readHour, hour, CADENCE);
-    if (dating) notes.add(countries.length === 1 ? dating : `${named.name}: ${dating}`);
+    if (dates.size > 1) notes.add(`${named.name}: Read ${formatDateTime(read.readHour)}.`);
     if (measure === 'change' && read.change == null) notes.add('No read exactly a day earlier in the same unbroken recorded stretch of this country.');
     if (measure === 'gain' && read.gain == null) notes.add(`The preceding ${reply.dayHours} hours were not fully observed for this country, so daily gain is not recorded.`);
     return branches.map<TooltipRow>((branch, branchIndex) => {

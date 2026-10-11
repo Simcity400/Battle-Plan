@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { ExperienceRead, ExperienceReply } from '../../generated/dashboard';
 import { clipToSpans, runAt, segments } from '../../charts/series.ts';
+import { formatDateTime } from '../../dashboard/calendar.ts';
 import { tooltipText } from '../../charts/tooltip.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { definition, OPTIONS } from './definition.ts';
@@ -91,8 +92,7 @@ test('amounts rescale with the supplied scale once, including signed changes and
 test('tooltips date the original read after range and membership clipping, and name countries at hover', () => {
   const tip = experienceTooltip(REPLY, countries(130, 140), BRANCHES, 'change', 135, label, 2000);
   assert.match(tooltipText(tip), /Recorded country: Army −1/);
-  assert.match(tip.note ?? '', /Read /);
-  assert.match(tip.note ?? '', /read once a day/);
+  assert.doesNotMatch(tip.note ?? '', /Read |read once a day/);
   assert.match(tip.note ?? '', /24 hours earlier/);
   assert.match(tip.note ?? '', /spent.*cap/);
   assert.equal(tip.rows[0].countryFlag?.flag, 'flag-at-hover');
@@ -168,7 +168,7 @@ test('experience end names belong to the last drawn holder and never a later nam
   assert.equal(experienceLineEnd('opaque!tag', reads, runs, 'army', 'banked', 150, 160, named), null);
   for (const [value, status] of [[undefined, 'name loading'], [null, 'name not recorded'], [FAILED_FACT, 'name request failed']] as const) {
     const unavailable = experienceLineEnd('opaque!tag', reads, runs, 'army', 'banked', 100, 160, () => value)!;
-    assert.equal(unavailable.name, `opaque!tag (${status})`);
+    assert.equal(unavailable.name, `Country (${status})`);
     assert.equal(experienceName('opaque!tag', value), unavailable.name);
     assert.equal(unavailable.raw, '0');
   }
@@ -194,7 +194,7 @@ test('renamed held values keep the supplying read date in their tooltip', () => 
     readHours: series.reads.map(read => read.readHour), colours, recorded: true }));
   const tip = experienceTooltip(reply, plotted, ['army'], 'banked', 115, label, 2000);
   assert.equal(tip.title, experienceTooltip(REPLY, countries().slice(0, 1), ['army'], 'banked', 115, label, 2000).title);
-  assert.match(tip.note ?? '', /Read/);
+  assert.doesNotMatch(tip.note ?? '', /Read/);
   assert.equal(tip.rows[0].value, '1');
   reply.series[0].identities![0].countryId = -1;
   assert.throws(() => validateExperienceReply(reply), /malformed/);
@@ -270,4 +270,20 @@ test('experience holder projection keeps all 5000 synthetic identities', () => {
     readHours: [0], colours, recorded: true }));
   assert.equal(experienceHolderCount(plotted), 5000);
   assert.equal(experienceHolders(plotted).length, 5000);
+});
+
+
+test('staggered comparison reads retain each supplying date beside exact values', () => {
+  const plotted = [100, 104].map((hour, index) => ({ tag: ['A', 'B'][index],
+    reads: [read(hour, 120, [index === 0 ? '32768' : '65536', '0', '0'], null, true)],
+    readHours: [hour], colours, recorded: true }));
+  const tip = experienceTooltip(REPLY, plotted, ['army'], 'banked', 110, tag => ({ name: `Country ${tag}`, known: true }), 2000);
+  assert.equal(tip.title, formatDateTime(110));
+  assert.deepEqual(tip.rows.map(row => row.value), ['1', '2']);
+  assert.ok(tip.note?.includes(`Country A: Read ${formatDateTime(100)}.`));
+  assert.ok(tip.note?.includes(`Country B: Read ${formatDateTime(104)}.`));
+  const gap = experienceTooltip(REPLY, [{ ...plotted[0], reads: [] }, plotted[1]], ['army'], 'banked', 110,
+    tag => ({ name: `Country ${tag}`, known: true }), 2000);
+  assert.equal(gap.rows[0].value, 'Not recorded at this time');
+  assert.doesNotMatch(gap.note ?? '', /Country A: Read/);
 });

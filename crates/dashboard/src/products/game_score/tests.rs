@@ -100,7 +100,7 @@ fn amount_at(
         .find(|run| run.first_hour <= hour && hour <= run.last_hour)
         .expect("score read at requested hour");
     GameScoreAmount {
-        raw: run.value_at(hour).map(|raw| raw.to_string()),
+        raw: run.value_at(hour),
         missing: run.missing.map(|index| reply.reasons[index].clone()),
         read_each_hour: run.read_each_hour,
     }
@@ -309,8 +309,8 @@ fn game_score_known_absent_empty_unreadable_and_missing_wings_are_distinct() {
         wings: vec![70],
         ..Default::default()
     };
-    let registrations = HashMap::from([((40, 7), &registration)]);
-    let missing = air_score(&base, &row, 7, &multipliers.air, None, Some(&registrations));
+    let registrations = std::slice::from_ref(&registration);
+    let missing = air_score(&base, &row, 7, &multipliers.air, None, Some(registrations));
     assert_eq!(missing.value(), None);
     assert!(
         missing
@@ -322,7 +322,7 @@ fn game_score_known_absent_empty_unreadable_and_missing_wings_are_distinct() {
     row.first_sites[0].access = GameScoreAirSite::ACCESS_UNKNOWN;
     row.first_sites[0].error = b"air access unreadable".to_vec();
     assert_eq!(
-        air_score(&base, &row, 7, &multipliers.air, None, Some(&registrations))
+        air_score(&base, &row, 7, &multipliers.air, None, Some(registrations))
             .missing
             .unwrap()
             .reason,
@@ -979,6 +979,70 @@ fn game_score_faction_names_share_literal_and_bound_template_rules_at_each_hour(
 }
 
 #[test]
+fn game_score_faction_names_preserve_known_empty_text() {
+    let templates =
+        crate::catalogue::tests::loaded_templates("empty={} localised_empty={name=EMPTY_NAME}");
+    let localisation =
+        crate::catalogue::tests::loaded("l_english:\n EMPTY_NAME:0 \"\"\n NAME:0 \"NAME\"\n");
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![
+                faction_frame(100, b"", None),
+                faction_frame(101, b"", Some((17, b"empty"))),
+                faction_frame(102, b"", Some((18, b"localised_empty"))),
+                faction_frame(103, b"NAME", None),
+            ],
+        )],
+    )
+    .unwrap();
+    let reply = scan(
+        &replay,
+        &BranchParams {
+            branch_id: "1".into(),
+        },
+        Some(&localisation),
+        Ok(templates.as_ref()),
+        None,
+        &mut || content_multipliers(Err("unused")),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let identities = &reply.countries[0].identity;
+    assert_eq!(identities.len(), 2);
+    assert_eq!(
+        (identities[0].first_hour, identities[0].last_hour),
+        (100, 102)
+    );
+    assert_eq!(
+        identities[0]
+            .value
+            .faction
+            .as_ref()
+            .unwrap()
+            .name
+            .as_deref(),
+        Some("")
+    );
+    assert_eq!(
+        identities[1]
+            .value
+            .faction
+            .as_ref()
+            .unwrap()
+            .name
+            .as_deref(),
+        Some("NAME")
+    );
+    assert!(
+        identities
+            .iter()
+            .all(|run| run.value.faction.as_ref().unwrap().name_missing.is_none())
+    );
+}
+
+#[test]
 fn game_score_faction_name_failures_keep_stable_recording_and_content_reasons() {
     let templates = crate::catalogue::tests::loaded_templates("demo={name=NAME}");
     let localisation = crate::catalogue::tests::loaded("l_english:\n NAME:0 \"Pact\"\n");
@@ -1164,6 +1228,40 @@ fn game_score_static_subject_name_does_not_need_unused_overlord_naming_rows() {
         Some("Plain subject name")
     );
     assert!(country.identity[0].value.name_missing.is_none());
+}
+
+#[test]
+fn game_score_names_are_read_again_only_for_changed_operands_or_slot_zero() {
+    let localisation = Localisation::default();
+    let mut first = frame(100);
+    identity_tables(&mut first, 9001, b"");
+    let countries = first.complete::<tables::Countries>().unwrap();
+    let names = HourNames::read(&first, countries, &localisation);
+    let mut balance = first.clone();
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *balance.tables[TableId::Countries.index()]
+    {
+        rows[0].political_power_raw = Some(2);
+    }
+    assert!(names.agrees(&balance));
+    let mut cosmetic = first.clone();
+    identity_tables(&mut cosmetic, 9001, b"COS");
+    assert!(!names.agrees(&cosmetic));
+    // Slot zero's refusal names its hour, so its subject's name is read every hour.
+    let mut subject = first.clone();
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *subject.tables[TableId::CountryLinks.index()]
+    {
+        rows[0].canonical_slot = 0;
+    }
+    if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *subject.tables[TableId::CountryAppearance.index()]
+    {
+        rows[0].overlord = 11;
+    }
+    let countries = subject.complete::<tables::Countries>().unwrap();
+    let names = HourNames::read(&subject, countries, &localisation);
+    assert!(!names.agrees(&subject));
 }
 
 fn scale_score_frame(count: u32) -> DecodedFrame {
@@ -1759,6 +1857,31 @@ fn game_score_plain_headers_keep_localised_sort_text_only_as_hints() {
         !warnings
             .keys()
             .any(|(_, reason)| reason.contains("ENDGAME_SORT_FACTION"))
+    );
+}
+
+#[test]
+fn game_score_sort_hints_preserve_empty_whitespace_and_key_equal_text() {
+    let localisation = crate::catalogue::tests::loaded(
+        "l_english:\n ENDGAME_SORT_ARMY:0 \"\"\n ENDGAME_SORT_AIR:0 \"   \"\n ENDGAME_SORT_PROVINCE:0 \"ENDGAME_SORT_PROVINCE\"\n",
+    );
+    let mut warnings = BTreeMap::new();
+    let hints = score_hints(Some(&localisation), &mut warnings);
+    assert_eq!(hints["army"], "");
+    assert_eq!(hints["air"], "   ");
+    assert_eq!(hints["land"], "ENDGAME_SORT_PROVINCE");
+    for key in [
+        "ENDGAME_SORT_ARMY",
+        "ENDGAME_SORT_AIR",
+        "ENDGAME_SORT_PROVINCE",
+    ] {
+        assert!(warnings.keys().all(|(_, reason)| !reason.contains(key)));
+    }
+    assert!(!hints.contains_key("total"));
+    assert!(
+        warnings
+            .keys()
+            .any(|(_, reason)| reason.contains("ENDGAME_SORT_SCORE"))
     );
 }
 

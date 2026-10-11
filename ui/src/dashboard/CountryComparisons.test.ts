@@ -11,7 +11,7 @@ test('country comparison headers retain neutral missing flags and request only m
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'comparison-header-flags', enforce: 'pre',
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
-        if (path.endsWith('/dashboard/CountryComparisons.tsx')) return source.replace(/import \{ [^}]+ \} from 'react';/,
+        if (path.endsWith('/dashboard/CountryComparisons.tsx') || path.endsWith('/dashboard/useDiagnostics.ts')) return source.replace(/import \{ [^}]+ \} from 'react';/,
           'const useEffect = () => {}, useMemo = build => build(), useRef = current => ({ current }), useState = value => [value, () => {}];');
         if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = () => {};';
         if (path.endsWith('/dashboard/comparisonCountries.ts')) return `export const useComparisonCountries = () => ({

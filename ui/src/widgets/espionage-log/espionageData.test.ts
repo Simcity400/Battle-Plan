@@ -63,7 +63,7 @@ test('mod operation names and art survive content choices and tooltips without a
   assert.equal(refused.types[0].name, 'Opération des étoiles');
   assert.match(refused.warnings.at(-1)!, /mod operation\/été.*\(1\)/);
   const unnamed = fixture(); unnamed.types[0].name = null;
-  assert.equal(operationChoices(unnamed)[0].label, 'Unknown operation type (mod operation/été)');
+  assert.equal(operationChoices(unnamed)[0].label, 'Operation name unavailable');
 });
 
 test('preparation and launch remain one operation without leaking its future start', () => {
@@ -154,7 +154,7 @@ test('a missing definition name is a recording gap and later lexical data is nev
   const early = operationRows(reply, 11, filter)[0];
   const known = operationRows(reply, 12, filter)[0];
   assert.equal(early.item.typeKey, null);
-  assert.equal(operationTooltip(reply, early, tag => tag ?? 'Unknown')[0].title, 'Operation type not recorded');
+  assert.equal(operationTooltip(reply, early, tag => tag ?? 'Unknown')[0].title, 'Operation name unavailable');
   assert.equal(operationTooltip(reply, known, tag => tag ?? 'Unknown')[0].title, 'Opération des étoiles');
   assert.equal(known.id, early.id);
   assert.ok(reply.types.every(type => !type.key.startsWith('?')));
@@ -291,7 +291,7 @@ test('completion-only operations retain the exact date, sequence and stored flag
   assert.equal(tooltip.note, 'Ending read Hour 25. Earlier operation values not recorded.');
   assert.equal(operationRows(recorded, 25, { ...filter, from: 23 }).length, 0);
   reply.operations[0].end!.typeKey = null;
-  assert.equal(operationTooltip(validateEspionageLogReply(reply), operationRows(reply, 25, filter)[0], tag => tag ?? 'Unknown')[0].title, 'Operation type not recorded');
+  assert.equal(operationTooltip(validateEspionageLogReply(reply), operationRows(reply, 25, filter)[0], tag => tag ?? 'Unknown')[0].title, 'Operation name unavailable');
   reply.completionsAvailable = [];
   assert.throws(() => validateEspionageLogReply(reply), /unrecorded completion read/);
   reply.completionsAvailable = [{ firstHour: 25, lastHour: 30 }];
@@ -411,8 +411,8 @@ test('known empty operation names remain empty in rows, choices and tooltips', (
   assert.equal(operationChoices(checked)[0].label, '');
   assert.equal(operationTooltip(checked, operationRows(checked, 18, filter)[0], () => 'Synthetic')[0].title, '');
   reply.types[0].name = null;
-  assert.equal(operationName(reply.types[0]), `Unknown operation type (${reply.types[0].key})`);
-  assert.equal(operationName(undefined), 'Operation type not recorded');
+  assert.equal(operationName(reply.types[0]), 'Operation name unavailable');
+  assert.equal(operationName(undefined), 'Operation name unavailable');
 });
 
 test('ending values use the actual supplying read before a clipped daily window', () => {

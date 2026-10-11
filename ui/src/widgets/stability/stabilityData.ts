@@ -1,3 +1,4 @@
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { NATIONAL_SPIRIT_TYPE } from '../national-spirits/spiritsData.ts';
 import type { Run } from '../../charts/series';
 import { runAt } from '../../charts/series.ts';
@@ -73,15 +74,15 @@ export function zoomRange(shown: readonly [number, number] | null): [number, num
 
 /** A formula term's label, as the tooltip names it. */
 export function termLabel(measure: Measure, term: string): string {
-  return TERMS[measure].find(item => item.term === term)?.label ?? term;
+  return TERMS[measure].find(item => item.term === term)?.label ?? 'Formula term name unavailable';
 }
 
 /** A tree line's name: the viewer-language label content gives it, prefixed
  * with what it is (a national spirit, a law's or advisor's slot, the leader),
- * else the game's own recorded text, else its script identity. */
+ * else the game's own recorded text, else an explicit unavailable title. */
 export function lineName(line: BreakdownLine): { name: string; recorded: boolean } {
-  if (line.text && !line.label) return { name: line.text, recorded: true };
-  const name = line.label ?? (line.identity || 'Unnamed source');
+  if (line.text != null && line.label == null) return { name: line.text, recorded: true };
+  const name = contentTitle(line.label, line.identity, 'Source name unavailable');
   const prefix = line.groupKind === NATIONAL_SPIRIT_TYPE ? 'National spirit'
     : line.group ?? (line.kind === 'countryLeader' ? 'Country leader' : line.kind === 'ideology' ? 'Ideology' : null);
   return { name: prefix ? `${prefix}: ${name}` : name, recorded: false };
@@ -134,14 +135,14 @@ export function breakdownRows(breakdown: StabilityBreakdown, measure: Measure, d
     if (term.valueRaw === '0' && item.term !== 'base') continue;
     rows.push({ label: item.label, value: formatPercent(term.valueRaw, decimals, true), tone: tone(term.valueRaw) });
   }
-  // A term the product sends that this list does not name still shows, by its key.
+  // Unknown formula terms keep their exact facts and expose keys in hover details.
   for (const term of formula.terms) {
     if (TERMS[measure].some(item => item.term === term.term)) continue;
     if (term.valueRaw == null) {
-      rows.push({ label: term.term, value: 'Not recorded', tone: 'muted' });
+      rows.push({ label: termLabel(measure, term.term), lookupKey: term.term, value: 'Not recorded', tone: 'muted' });
       unavailable = true;
     } else {
-      rows.push({ label: term.term, value: term.valueRaw });
+      rows.push({ label: termLabel(measure, term.term), lookupKey: term.term, value: term.valueRaw });
     }
   }
   if (formula.clampRaw != null && formula.clampRaw !== '0') rows.push({ label: 'Limited to the allowed range', value: formatPercent(formula.clampRaw, decimals, true), tone: 'muted' });

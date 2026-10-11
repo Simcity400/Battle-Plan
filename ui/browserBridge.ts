@@ -98,6 +98,11 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     signal.addEventListener('abort', cancel, { once: true });
     process.stdin.write(line);
   });
+  /** A bridge built before `source` last changed may exit on the command it adds. */
+  const requireBridge = async (source: string, message: string) => {
+    const binary = await stat(path.join(root, '.cargo-target/debug/dashboard-bridge.exe'));
+    if (binary.mtimeMs < (await stat(path.join(root, source))).mtimeMs) throw new Error(message);
+  };
   const withinRoot = async (relative: string) => {
     if (importedPaths.has(relative)) return { target: await realpath(relative) };
     if (!recordingsRoot) throw new Error('Choose a replay folder in Settings.');
@@ -206,10 +211,12 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
             if (!(/\.(?:battleplan|hoi4replay)$/i.test(location.target)) || !(await stat(location.target)).isFile()) throw new Error('Choose a .battleplan recording');
             command = { type: 'open', path: location.target, revision: '' };
           } else if (input.type === 'mapSettings') {
-            const binary = await stat(path.join(root, '.cargo-target/debug/dashboard-bridge.exe'));
-            const source = await stat(path.join(root, 'crates/dashboard/src/map_settings.rs'));
-            if (binary.mtimeMs < source.mtimeMs) throw new Error('Map settings are unavailable in this server version. The local data bridge needs updating.');
+            await requireBridge('crates/dashboard/src/map_settings.rs', 'Map settings are unavailable in this server version. The local data bridge needs updating.');
             command = { type: 'mapSettings', sourceId: input.sourceId, revision: input.revision, settings: input.settings ?? null, target: input.target ?? { scope: 'campaign' } };
+          } else if (input.type === 'historyCache') {
+            if (typeof input.clear !== 'boolean') throw new Error('Invalid history cache request');
+            await requireBridge('crates/dashboard/src/reply_cache.rs', 'Widget history is unavailable in this server version. The local data bridge needs updating.');
+            command = { type: 'historyCache', clear: input.clear };
           } else if (input.type === 'product') {
             command = { type: 'product', request: input.request };
           } else if (input.type === 'release') {

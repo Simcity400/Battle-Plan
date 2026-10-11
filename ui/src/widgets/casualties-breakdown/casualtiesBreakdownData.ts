@@ -1,3 +1,4 @@
+import { usNumber } from '../../charts/numberFormat.ts';
 import { isOrderedSpans, runAt, spansCovered } from '../../charts/series.ts';
 import { CATEGORY_LIMIT } from '../../charts/palette.ts';
 import { stackEdges } from '../../charts/stack.ts';
@@ -79,7 +80,7 @@ export function lossesAt(reply: CasualtyBreakdownReply, hour: number): LossSnaps
   return { identity: country.identity, rows, total: rows.reduce((sum, row) => sum + row.value, 0n),
     incomplete: country.incomplete || rows.some(row => row.incomplete) };
 }
-export const exactLosses = (value: bigint) => value.toLocaleString('en');
+export const exactLosses = (value: bigint) => usNumber.format(value);
 export const lossText = (row: LossRow) => `${row.incomplete ? 'Recorded subtotal: ' : ''}${row.value < 0n ? 'Correction: ' : ''}${exactLosses(row.value)}`;
 export const warKey = (row: Pick<LossRow, 'warId'>) => row.warId ?? '\u0001unidentified';
 
@@ -112,6 +113,15 @@ export function breakdownWindows(reply: CasualtyBreakdownReply | null | undefine
   if (index < 0) return [];
   return [index, ...(following && index + 1 < reply.windows.length ? [index + 1] : [])];
 }
+
+/** Only the time-chart viewport requests history blocks. At the default full
+ * branch extent they all load; zooming releases the blocks no longer shown. */
+export const viewWindows = (windows: readonly HourSpan[], range: readonly [number, number] | null) =>
+  windows.flatMap((span, index) => !range || span.firstHour <= range[1] && range[0] <= span.lastHour ? [index] : []);
+/** A drawn range replaces the held one only when it reaches other blocks, so
+ * zoom and pan easing do not re-render the widget every frame. */
+export const viewChange = (windows: readonly HourSpan[], range: readonly [number, number]) => (before: readonly [number, number] | null) =>
+  before && `${viewWindows(windows, before)}` === `${viewWindows(windows, range)}` ? before : range;
 
 /** The parts-over-time chart reuses the shared stack renderer. Fold only its
  * palette presentation; all signed native lifetimes remain in the detail table. */

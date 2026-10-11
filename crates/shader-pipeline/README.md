@@ -55,6 +55,11 @@ The CPU cache is `%LOCALAPPDATA%/HOI4Replay/shader-cache/v2/<sha256>.json`. Keys
 
 Once cells serialize identical in-process requests; cross-process races leave a complete valid entry. Failures stay in memory only, so a newly installed compiler retries on the next content load/process. GPU objects remain device-local and key the complete pass/sampler state. Change the ABI when generated code, compiler or translation meaning changes; do not copy an old payload into a new ABI.
 
+Isolated artwork retains parsed effect sources and map dimensions once per
+resolved content stack. It uses the same recorded reads and diagnostics for
+cache hits; icons do not reread the province bitmap for each draw. Stack clones
+share these inputs, and a replacement stack or cosmetic overlay has fresh inputs.
+
 ## Compiler and packaging
 
 Discovery uses explicit `BATTLE_PLAN_SHADER_COMPILER` or exactly the sibling `shader-tools/dxc/dxc.exe`; there is no PATH/SDK search or runtime download. `dxc --version` must match the pin in [lib.rs](src/lib.rs), also named by the cache ABI. Discovery runs on the first cache miss, once per content load. Missing/wrong compilers and launch/DLL/compiler failures name the technique; cached programs remain usable.

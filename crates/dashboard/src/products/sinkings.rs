@@ -1,5 +1,6 @@
 //! One cached branch scan for Ships sunk log and Naval losses. Equipment losses
 //! can adopt this scan in a follow-up; its independent consumer is unchanged.
+//! Its frames also build the branch's country histories, kept for every product.
 //!
 //! Each entry carries its event hour. Daily pruning deletes entries whose event
 //! hour + NNavy.NAVAL_COMBAT_RESULT_TIMEOUT_YEARS * 0x2238 is <= now,
@@ -9,8 +10,8 @@
 //! Identical entries are legitimate. After a break, surviving multiset increases
 //! can be recovered by their event hour. Events born and pruned entirely during
 //! the break cannot be counted from this vector. Runtime retention identifies
-//! possible loss spans. A hit on branch A waits behind a scan of branch B under
-//! the cache lock.
+//! possible loss spans. Scans of one branch take turns; a hit never waits on
+//! another branch's scan.
 //!
 //! Convoy counts merge by (month, killer, owner) and add a signed i32 count.
 //! Pruning removes months strictly older than current month -
@@ -19,7 +20,7 @@
 
 use super::{
     country_groups::HourSpan,
-    country_history::{Identity, observe_identity},
+    country_history::{self, HistoryScan, Identity, RecordedHistories, observe_identity},
 };
 use crate::{
     Source,
@@ -30,14 +31,14 @@ use crate::{
 };
 use replay::{
     container::Replay,
-    frame::{DecodedFrame, FrameDecoder, SharedView, TableView},
+    frame::{DecodedFrame, FrameDecoder, SharedView, TableView, ViewIdentity},
     rows::{SunkConvoyRow, SunkShipEntry, TableId, TableRows, tables},
 };
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -104,6 +105,8 @@ pub struct Scanned {
     pub uncertain_convoy_owners: BTreeMap<Identity, Vec<(i32, i32)>>,
     pub uncertain_convoy_killers: BTreeMap<Identity, Vec<(i32, i32)>>,
     pub unresolved: BTreeSet<u32>,
+    /// The branch's country histories, from the frames `scan_histories` reads.
+    pub(crate) histories: Arc<RecordedHistories>,
 }
 
 /// Every recorded field participates, including attribution and presence flags.
@@ -353,6 +356,47 @@ struct CountryCache {
     holders: Vec<(String, Identity)>,
     tags: HashMap<u32, String>,
     empty: HashMap<u32, String>,
+    /// The last hour with country tables, and the hour every holder's identity
+    /// and tag run reach but are not yet written.
+    hour: Option<i32>,
+    extend_to: Option<i32>,
+}
+
+impl CountryCache {
+    /// Writes the deferred hours, as each would have extended every holder and tag run.
+    fn extend(
+        &mut self,
+        out: &mut Scanned,
+        history: &mut HashMap<u32, Vec<TagRun>>,
+        identities: &mut HashMap<String, IdentityTrack>,
+    ) {
+        let Some(hour) = self.extend_to.take() else {
+            return;
+        };
+        for (tag, identity) in &self.holders {
+            identities
+                .get_mut(tag)
+                .expect("country identity")
+                .step(Some(*identity), hour);
+            out.segments
+                .get_mut(tag)
+                .and_then(|spans| spans.last_mut())
+                .expect("country segment")
+                .last_hour = hour;
+            out.country_identities
+                .get_mut(tag)
+                .and_then(|spans| spans.last_mut())
+                .expect("country identity span")
+                .last_hour = hour;
+        }
+        for raw in self.tags.keys() {
+            history
+                .get_mut(raw)
+                .and_then(|runs| runs.last_mut())
+                .expect("country tag run")
+                .last = hour;
+        }
+    }
 }
 
 pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scanned> {
@@ -385,99 +429,105 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
     let mut raw_history = HashMap::<u32, Vec<TagRun>>::new();
     let mut identities = HashMap::<String, IdentityTrack>::new();
     let mut country_cache = CountryCache::default();
-    let mut dictionary: Option<SharedView> = None;
+    let mut histories = HistoryScan::new(false, &[]);
+    let mut dictionary: Option<ViewIdentity> = None;
     let mut blocks: Vec<_> = replay.index.iter().filter(|b| b.branch == branch).collect();
     blocks.sort_unstable_by_key(|b| b.first_hour);
     let mut next = i64::from(first_hour);
-    for block in blocks {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "Naval sinkings cancelled",
-            ));
-        }
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for frame in frames {
+    crate::blocks::scan_blocks(replay, blocks, &selected, cancelled, |blocks| {
+        for (_, frames) in blocks {
             if cancelled.load(Ordering::Acquire) {
                 return Err(io::Error::new(
                     io::ErrorKind::Interrupted,
                     "Naval sinkings cancelled",
                 ));
             }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            let hour = decoded.hour;
-            if i64::from(hour) < next
-                || replay
-                    .gaps
-                    .iter()
-                    .any(|g| g.branch == branch && g.first_hour <= hour && hour <= g.last_hour)
-            {
+            let Ok(frames) = frames else {
                 continue;
-            }
-            if next < i64::from(hour) {
-                out.missing(&mut track, next as i32, hour - 1);
-            }
-            let tags = countries(
-                decoded,
-                &mut out,
-                &mut raw_history,
-                &mut identities,
-                &mut country_cache,
-            );
-            let view = &decoded.tables[TableId::LexicalTokens.index()];
-            if !dictionary
-                .as_ref()
-                .is_some_and(|last| SharedView::ptr_eq(last, view))
-                && let Ok(rows) = decoded.complete::<tables::LexicalTokens>()
-            {
-                dictionary = Some(view.clone());
-                for row in rows {
-                    if let Ok(text) = std::str::from_utf8(&row.literal) {
-                        out.tokens
-                            .entry(row.token)
-                            .or_insert_with(|| text.to_owned());
+            };
+            let mut decoder = FrameDecoder::for_tables(&selected);
+            for frame in frames {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "Naval sinkings cancelled",
+                    ));
+                }
+                let Ok(decoded) = decoder.advance(&frame) else {
+                    break;
+                };
+                if validate_campaign(decoded, replay).is_err() {
+                    break;
+                }
+                // Before the skips below: `scan_histories` reads exactly these frames.
+                histories.observe(decoded);
+                let hour = decoded.hour;
+                if i64::from(hour) < next
+                    || replay
+                        .gaps
+                        .iter()
+                        .any(|g| g.branch == branch && g.first_hour <= hour && hour <= g.last_hour)
+                {
+                    continue;
+                }
+                if next < i64::from(hour) {
+                    out.missing(&mut track, next as i32, hour - 1);
+                }
+                let tags = countries(
+                    decoded,
+                    &mut out,
+                    &mut raw_history,
+                    &mut identities,
+                    &mut country_cache,
+                );
+                let view = &decoded.tables[TableId::LexicalTokens.index()];
+                if !dictionary.as_ref().is_some_and(|last| last.is(view))
+                    && let Ok(rows) = decoded.complete::<tables::LexicalTokens>()
+                {
+                    dictionary = Some(view.identity());
+                    for row in rows {
+                        if let Ok(text) = std::str::from_utf8(&row.literal) {
+                            out.tokens
+                                .entry(row.token)
+                                .or_insert_with(|| text.to_owned());
+                        }
                     }
                 }
+                let ships = decoded.complete::<tables::SunkShips>();
+                if let Ok([_]) = ships
+                    && slot_read(&decoded.metrics, TableId::SunkShips, hour)
+                {
+                    track.ships(&mut out, &decoded.tables[TableId::SunkShips.index()], hour);
+                } else if !matches!(ships, Ok([_])) || !track.ship_open {
+                    append_span(&mut out.ship_unread, hour, hour);
+                    append_span(
+                        &mut out.ship_breaks,
+                        out.last_ship_read.map_or(hour, |h| h.saturating_add(1)),
+                        hour,
+                    );
+                    track.ship_open = false;
+                }
+                let convoys = decoded.complete::<tables::SunkConvoys>();
+                if let Ok(rows) = convoys
+                    && slot_read(&decoded.metrics, TableId::SunkConvoys, hour)
+                {
+                    track.convoys(&mut out, rows, hour, tags);
+                } else if convoys.is_err() || !track.convoy_open {
+                    append_span(&mut out.convoy_unread, hour, hour);
+                    append_span(
+                        &mut out.convoy_breaks,
+                        out.last_convoy_read.map_or(hour, |h| h.saturating_add(1)),
+                        hour,
+                    );
+                    track.convoy_open = false;
+                }
+                next = i64::from(hour) + 1;
             }
-            let ships = decoded.complete::<tables::SunkShips>();
-            if let Ok([_]) = ships
-                && slot_read(&decoded.metrics, TableId::SunkShips, hour)
-            {
-                track.ships(&mut out, &decoded.tables[TableId::SunkShips.index()], hour);
-            } else if !matches!(ships, Ok([_])) || !track.ship_open {
-                append_span(&mut out.ship_unread, hour, hour);
-                append_span(
-                    &mut out.ship_breaks,
-                    out.last_ship_read.map_or(hour, |h| h.saturating_add(1)),
-                    hour,
-                );
-                track.ship_open = false;
-            }
-            let convoys = decoded.complete::<tables::SunkConvoys>();
-            if let Ok(rows) = convoys
-                && slot_read(&decoded.metrics, TableId::SunkConvoys, hour)
-            {
-                track.convoys(&mut out, rows, hour, tags);
-            } else if convoys.is_err() || !track.convoy_open {
-                append_span(&mut out.convoy_unread, hour, hour);
-                append_span(
-                    &mut out.convoy_breaks,
-                    out.last_convoy_read.map_or(hour, |h| h.saturating_add(1)),
-                    hour,
-                );
-                track.convoy_open = false;
-            }
-            next = i64::from(hour) + 1;
         }
-    }
+        Ok(())
+    })?;
+    country_cache.extend(&mut out, &mut raw_history, &mut identities);
+    out.histories = Arc::new(histories.finish());
     if next <= i64::from(last_hour) {
         out.missing(&mut track, next as i32, last_hour);
     }
@@ -574,6 +624,16 @@ fn countries<'a>(
     let Ok(changed) = cache.links.update(decoded) else {
         return &cache.empty;
     };
+    let hour = decoded.hour;
+    // The same holders an hour later continue every identity and tag run they
+    // reached. Write that once, when the holders change, a break comes or the scan ends.
+    if !changed && cache.hour.and_then(|last| last.checked_add(1)) == Some(hour) {
+        cache.hour = Some(hour);
+        cache.extend_to = Some(hour);
+        return &cache.tags;
+    }
+    cache.extend(out, history, identities);
+    cache.hour = Some(hour);
     if changed {
         let rows = decoded
             .complete::<tables::Countries>()
@@ -629,37 +689,37 @@ fn countries<'a>(
             out.segments.get_mut(tag).expect("country segments"),
             identities.get_mut(tag).expect("country identity"),
             *identity,
-            decoded.hour,
+            hour,
         );
         let spans = out
             .country_identities
             .get_mut(tag)
             .expect("country identity spans");
         if contiguous {
-            spans.last_mut().expect("country identity span").last_hour = decoded.hour;
+            spans.last_mut().expect("country identity span").last_hour = hour;
         } else {
             spans.push(CountryIdentitySpan {
-                first_hour: decoded.hour,
-                last_hour: decoded.hour,
+                first_hour: hour,
+                last_hour: hour,
                 identity: *identity,
             });
         }
     }
     for (raw, tag) in &cache.tags {
-        let Some(identity) = out.identity(tag, decoded.hour) else {
+        let Some(identity) = out.identity(tag, hour) else {
             continue;
         };
         let runs = history.entry(*raw).or_default();
         if let Some(run) = runs.last_mut()
             && run.tag == *tag
             && run.identity == identity
-            && run.last.checked_add(1) == Some(decoded.hour)
+            && run.last.checked_add(1) == Some(hour)
         {
-            run.last = decoded.hour;
+            run.last = hour;
         } else {
             runs.push(TagRun {
-                first: decoded.hour,
-                last: decoded.hour,
+                first: hour,
+                last: hour,
                 tag: tag.clone(),
                 identity,
             });
@@ -734,6 +794,8 @@ pub(crate) struct HistoryLoss {
 #[derive(Default)]
 struct Cache {
     entries: Vec<(u64, Arc<Scanned>)>,
+    /// One scan of a branch at a time, outside the cache lock.
+    gates: BTreeMap<u64, Arc<Mutex<()>>>,
 }
 
 pub(crate) struct Retention {
@@ -850,11 +912,31 @@ pub fn cached(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Resul
         ));
     }
     let state = source.state::<Cache>();
-    let mut cache = state.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((_, scanned)) = cache.entries.iter().find(|(id, _)| *id == branch) {
-        return Ok(Arc::clone(scanned));
+    let lock = || state.lock().unwrap_or_else(|e| e.into_inner());
+    let hit = |cache: &Cache| {
+        cache
+            .entries
+            .iter()
+            .find(|(id, _)| *id == branch)
+            .map(|(_, scanned)| Arc::clone(scanned))
+    };
+    let gate = {
+        let mut cache = lock();
+        if let Some(scanned) = hit(&cache) {
+            return Ok(scanned);
+        }
+        Arc::clone(cache.gates.entry(branch).or_default())
+    };
+    // A failed or cancelled scan publishes nothing and frees the next request.
+    let _scan = gate.lock().unwrap_or_else(|e| e.into_inner());
+    let found = hit(&lock());
+    if let Some(scanned) = found {
+        return Ok(scanned);
     }
-    let scanned = Arc::new(scan(source.replay_ref(), branch, cancelled)?);
+    let mut scanned = scan(source.replay_ref(), branch, cancelled)?;
+    scanned.histories = country_history::share(source, branch, scanned.histories);
+    let scanned = Arc::new(scanned);
+    let mut cache = lock();
     cache.entries.push((branch, Arc::clone(&scanned)));
     // Retain the last two scanned branches, matching Country factories.
     if cache.entries.len() > 2 {

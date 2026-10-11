@@ -20,6 +20,42 @@ pub struct FuelConsumptionRead {
     pub positive_daily_raw: [String; 3],
     pub reasons: [Option<String>; 3],
 }
+/// A [`FuelConsumptionRead`] as exact integers; only replies format them.
+#[derive(Clone, Debug)]
+pub(super) struct RawConsumption {
+    first_hour: i32,
+    pub(super) last_hour: i32,
+    starts_segment: bool,
+    pub(super) segment_start_hour: i32,
+    country: u32,
+    country_instance: Option<u32>,
+    /// Each family's native daily sum, or why it is unknown.
+    native_daily: [Result<i64, Arc<str>>; 3],
+    known_daily: [i128; 3],
+    positive_daily: [i128; 3],
+}
+impl From<&RawConsumption> for FuelConsumptionRead {
+    fn from(read: &RawConsumption) -> Self {
+        Self {
+            first_hour: read.first_hour,
+            last_hour: read.last_hour,
+            starts_segment: read.starts_segment,
+            segment_start_hour: read.segment_start_hour,
+            country: read.country.to_string(),
+            country_instance: read.country_instance,
+            native_daily_raw: read
+                .native_daily
+                .each_ref()
+                .map(|daily| daily.as_ref().ok().map(i64::to_string)),
+            known_daily_raw: read.known_daily.map(|value| value.to_string()),
+            positive_daily_raw: read.positive_daily.map(|value| value.to_string()),
+            reasons: read
+                .native_daily
+                .each_ref()
+                .map(|daily| daily.as_ref().err().map(|reason| reason.to_string())),
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FuelConsumptionReply {
@@ -265,60 +301,52 @@ pub(super) fn summary_of(
     hour: i32,
     segment: i32,
     starts: bool,
-) -> FuelConsumptionRead {
-    let mut result = FuelConsumptionRead {
+    reasons: &mut Reasons,
+) -> RawConsumption {
+    let mut known = [0_i128; 3];
+    let mut positive = [0_i128; 3];
+    let native_daily = match pack_of(row, hour) {
+        Err(reason) => {
+            let reason = reasons.intern(&reason);
+            std::array::from_fn(|_| Err(Arc::clone(&reason)))
+        }
+        Ok(pack) => {
+            // native_rates orders Army/Navy/Air; the established Fuel consumers order
+            // Army/Air/Navy. No new arithmetic law lives in the product.
+            let rates = pack.native_rates();
+            let rates = [rates[0], rates[2], rates[1]];
+            let causes = [&pack.army_reason, &pack.air_reason, &pack.navy_reason];
+            let native = std::array::from_fn(|index| {
+                rates[index]
+                    .map(engine::fuel_demand::daily_required)
+                    .map_err(|message| {
+                        reasons.intern(&reason(causes[index]).unwrap_or_else(|| message.into()))
+                    })
+            });
+            for row in occurrences(pack) {
+                if let Ok(rate) = row.rate {
+                    let value = i128::from(engine::fuel_demand::daily_required(rate));
+                    known[row.kind as usize] += value;
+                    positive[row.kind as usize] += value.max(0);
+                }
+            }
+            native
+        }
+    };
+    RawConsumption {
         first_hour: hour,
         last_hour: hour,
         starts_segment: starts,
         segment_start_hour: segment,
-        country: row.country.to_string(),
+        country: row.country,
         country_instance: match row.country_instance {
             replay::rows::Recorded::Value(value) => value,
             _ => None,
         },
-        native_daily_raw: [None, None, None],
-        known_daily_raw: ["0".into(), "0".into(), "0".into()],
-        positive_daily_raw: ["0".into(), "0".into(), "0".into()],
-        reasons: [None, None, None],
-    };
-    let pack = match pack_of(row, hour) {
-        Ok(pack) => pack,
-        Err(reason) => {
-            result.reasons = std::array::from_fn(|_| Some(reason.clone()));
-            return result;
-        }
-    };
-    // native_rates orders Army/Navy/Air; the established Fuel consumers order
-    // Army/Air/Navy. No new arithmetic law lives in the product.
-    let rates = pack.native_rates();
-    for (index, native) in [rates[0], rates[2], rates[1]].into_iter().enumerate() {
-        match native {
-            Ok(rate) => {
-                result.native_daily_raw[index] =
-                    Some(engine::fuel_demand::daily_required(rate).to_string())
-            }
-            Err(message) => {
-                result.reasons[index] = reason(match index {
-                    0 => &pack.army_reason,
-                    1 => &pack.air_reason,
-                    _ => &pack.navy_reason,
-                })
-                .or_else(|| Some(message.into()))
-            }
-        }
+        native_daily,
+        known_daily: known,
+        positive_daily: positive,
     }
-    let mut known = [0_i128; 3];
-    let mut positive = [0_i128; 3];
-    for row in occurrences(pack) {
-        if let Ok(rate) = row.rate {
-            let value = i128::from(engine::fuel_demand::daily_required(rate));
-            known[row.kind as usize] += value;
-            positive[row.kind as usize] += value.max(0);
-        }
-    }
-    result.known_daily_raw = known.map(|value| value.to_string());
-    result.positive_daily_raw = positive.map(|value| value.to_string());
-    result
 }
 
 fn stored_name(
@@ -413,7 +441,7 @@ fn warnings(reasons: impl IntoIterator<Item = String>) -> Vec<String> {
 fn summary_at<'a>(
     branch: &'a ScannedBranch,
     params: &FuelAwardsParams,
-) -> io::Result<&'a FuelConsumptionRead> {
+) -> io::Result<&'a RawConsumption> {
     branch
         .countries
         .get(&params.tag)
@@ -425,7 +453,8 @@ fn summary_at<'a>(
                 .map(|index| &country.consumption[index])
         })
         .filter(|read| {
-            read.country == params.country && read.country_instance == Some(params.country_instance)
+            read.country.to_string() == params.country
+                && read.country_instance == Some(params.country_instance)
         })
         .ok_or_else(|| {
             crate::invalid("Current fuel consumption actor or supplying read was not recorded")
@@ -451,11 +480,13 @@ impl Product for CountryFuelConsumption {
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
         let branch = scanned(source, params.branch(), cancelled)?;
-        let reads = branch
+        let reads: Vec<_> = branch
             .countries
             .get(&params.tag)
-            .map(|country| country.consumption.clone())
-            .unwrap_or_default();
+            .into_iter()
+            .flat_map(|country| &country.consumption)
+            .map(FuelConsumptionRead::from)
+            .collect();
         let warnings = warnings(
             reads
                 .iter()
@@ -501,7 +532,7 @@ impl Product for CountryFuelDemand {
             .parse()
             .map_err(|error: std::num::ParseIntError| crate::invalid(error.to_string()))?;
         let scanned = scanned(source, branch, cancelled)?;
-        let read = summary_at(&scanned, params)?.clone();
+        let read = FuelConsumptionRead::from(summary_at(&scanned, params)?);
         let raw = detail::basis_reads(source, branch, params.hour, cancelled)?;
         let pack =
             pack_of(detail::authenticated(&raw, params)?, params.hour).map_err(crate::invalid)?;
@@ -684,7 +715,7 @@ fn unknown(first_hour: i32, last_hour: i32, reason: String) -> FuelDemandRun {
 fn actor_consumption<'a>(
     summary: &'a ScannedBranch,
     basis: &FuelAwardsParams,
-) -> Vec<(&'a str, &'a FuelConsumptionRead)> {
+) -> Vec<(&'a str, &'a RawConsumption)> {
     let mut reads: Vec<_> = summary
         .actor_tags(&basis.country, basis.country_instance)
         .flat_map(|tag| {
@@ -692,7 +723,7 @@ fn actor_consumption<'a>(
                 .consumption
                 .iter()
                 .filter(|read| {
-                    read.country == basis.country
+                    read.country.to_string() == basis.country
                         && read.country_instance == Some(basis.country_instance)
                 })
                 .map(move |read| (tag.as_str(), read))

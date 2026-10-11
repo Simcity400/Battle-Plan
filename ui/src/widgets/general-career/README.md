@@ -8,7 +8,7 @@
 
 **Notable behaviour:**
 
-- Full references retain careers across country transfers. Countries narrow choices rather than cutting the chosen history. Defined empty names stay empty; only absent names use token/character fallback. Dated owner facts never borrow another holder's flag.
+- Full references retain careers across country transfers. Countries narrow choices rather than cutting the chosen history. Defined empty names stay empty; absent names show unavailable wording. Dated owner facts never borrow another holder's flag.
 - Initial skill/trait holdings say **Held before**; gains after missing reads say **First observed**. Missing trait reads cannot manufacture a second holding date. Content defines ranks, stars/skill ceilings and artwork.
 - Commands use recorded formation references and stored names; overlapping commands get separate subrows. Missing name reads do not end a command. Older captures expose their explicit fleet-name/idle-command limits.
 - Fought means observed battles since the leader's first recorded hour. Known wins/losses use native links; undecided battles stay unresolved and zero decided battles have no win rate. Native participation/result dates become visible only after their own supplying reads.

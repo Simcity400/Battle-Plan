@@ -233,7 +233,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                                 // A scripted trigger's own text is
                                 // empty, the template receives inversion == operand.
                                 let frame = installed_content::trigger_keys::frame(template);
-                                if let Some(why) = self.evaluator.enter_frame(&frame) {
+                                if let Some(why) = self.evaluator.enter_frame(frame) {
                                     return Err(why);
                                 }
                                 let result =

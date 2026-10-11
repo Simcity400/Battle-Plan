@@ -101,7 +101,7 @@ test('actual dated lane and hover hooks retain flag metadata and empty names wit
     assert.equal(lane.country(visible[0]).flagPending, true);
     assert.equal(lane.country(tags[4999]).flagPending, false, 'sorting-only names do not request artwork');
     const firstFlag = flagCalls(a.calls)[0];
-    assert.deepEqual(firstFlag.input.params, { branchId: 'branch', hour: 10, tags: visible, size: 'medium' });
+    assert.deepEqual(firstFlag.input.params, { branchId: 'branch', hour: 10, tags: visible, size: 'shield' });
     renderLane(10, [...visible].reverse()); fixture.commit();
     assert.equal(flagCalls(a.calls).length, 1);
     assert.equal(firstFlag.signal.aborted, false, 're-ranking retains the exact supplying read');
@@ -119,7 +119,7 @@ test('actual dated lane and hover hooks retain flag metadata and empty names wit
     assert.equal(namedLane.country(visible[0]).name, '', 'wording does not replace authored empty names');
     assert.equal(namedLane.country(visible[1]).name, wording.missing);
     assert.equal(namedLane.country(visible[1]).known, false);
-    assert.equal(renderLane(10).country(visible[1]).name, visible[1], 'default wording remains unchanged');
+    assert.equal(renderLane(10).country(visible[1]).name, 'Country name unavailable', 'a missing localized name never promotes its tag to a title');
     assert.equal(lane.country(visible[2]).flagReason, 'No readable flag was returned for this country at this hour.');
     now += 1000;
     renderLane(20); fixture.commit(); renderLane(20); fixture.commit(); await settle(); lane = renderLane(20);
@@ -138,7 +138,7 @@ test('actual dated lane and hover hooks retain flag metadata and empty names wit
     now += 1000;
     renderLane(50); fixture.commit(); lane = renderLane(50); fixture.commit();
     assert.equal(lane.country(visible[0]).flagPending, false);
-    assert.equal(lane.country(visible[0]).name, visible[0]);
+    assert.equal(lane.country(visible[0]).name, 'Country name unavailable');
     assert.equal(lane.country(visible[0]).known, false, 'a gap clears held name status');
     now += 1000;
     renderLane(51); fixture.commit(); renderLane(51); fixture.commit(); await settle();
@@ -186,7 +186,7 @@ test('actual dated lane and hover hooks retain flag metadata and empty names wit
     assert.equal(renderAlias(11).country('A').known, true);
     const delayed = atHour('country-flags', 11);
     let alias = renderAlias(20); // The 400ms sample still belongs to the old A.
-    assert.equal(alias.country('A').name, 'A');
+    assert.equal(alias.country('A').name, 'Country name unavailable');
     assert.equal(alias.country('A').known, false, 'a throttled sample cannot certify the new holder');
     assert.equal(alias.country('A').flag, undefined);
     assert.equal(alias.country('A').flagPending, false, 'an uncertified sample is not a request for the new holder');
@@ -199,7 +199,7 @@ test('actual dated lane and hover hooks retain flag metadata and empty names wit
     renderAlias(21); fixture.commit(); renderAlias(21); fixture.commit(); await settle();
     assert.equal(timers.size, 0);
     alias = renderAlias(21);
-    assert.equal(alias.country('A').name, 'A');
+    assert.equal(alias.country('A').name, 'Loading name…');
     assert.equal(alias.country('A').flag, undefined);
     assert.equal(alias.country('A').flagPending, true);
     assert.equal(renderAlias(21, segmentAt, wording).country('A').name, wording.pending, 'seventh-slot identity remains callable with eighth-slot wording');
@@ -208,7 +208,7 @@ test('actual dated lane and hover hooks retain flag metadata and empty names wit
     assert.equal(renderAlias(21).country('A').name, 'Former C');
     assert.equal(renderAlias(21).country('A').flag, 'data:synthetic-9');
     alias = renderAlias(10); // Backward seek while the future holder's sample is still shown.
-    assert.equal(alias.country('A').name, 'A');
+    assert.equal(alias.country('A').name, 'Country name unavailable');
     assert.equal(alias.country('A').flag, undefined);
     fixture.commit(); now += 1000;
     renderAlias(9); fixture.commit(); renderAlias(9); fixture.commit(); await settle(); answerAlias(9, 'Original A', 7); await settle();
@@ -221,47 +221,102 @@ test('actual dated lane and hover hooks retain flag metadata and empty names wit
     assert.equal(renderAlias(52).country('A').flag, 'data:synthetic-9');
     const unknown = (_tag: string, _hour: number): number | null => null;
     alias = renderAlias(52, unknown);
-    assert.equal(alias.country('A').name, 'A', 'unavailable identity evidence does not certify a known tag');
+    assert.equal(alias.country('A').name, 'Country name unavailable', 'unavailable identity evidence does not certify a known tag');
     assert.equal(alias.country('A').flag, undefined);
     assert.equal(alias.country('A').flagPending, false);
     fixture.unmount();
 
     const hoverTransport = transport();
     const fallback = (tag: string) => ({ name: `Current ${tag}`, known: true, nameFailed: false, flag: 'current-flag', flagPending: false, flagReason: 'Current reason' });
-    const renderHover = (missing?: string) => { cursor = 0; return hovers.useHoverLabels(hoverTransport.client, track, true, fallback, missing); };
+    const renderHover = (missing?: string) => { cursor = 0; return hovers.useHoverLabels(hoverTransport.client, track, true, fallback, missing, () => 0); };
     let hover = renderHover(); fixture.commit();
     hover.ask(10, visible); await settle(); hover = renderHover(); fixture.commit(); await settle();
-    const hoverFlag = flagCalls(hoverTransport.calls)[0];
+    const hourOf = (call: ReturnType<typeof transport>['calls'][number]) => (call.input.params as { hour: number }).hour;
+    const hoverFlag = flagCalls(hoverTransport.calls).find(call => hourOf(call) === 10)!;
     hover.ask(10, [...visible].reverse()); await settle(); hover = renderHover(); fixture.commit();
     assert.equal(hoverFlag.signal.aborted, false);
-    assert.equal(flagCalls(hoverTransport.calls).length, 1);
-    assert.equal(hover.labelAt(10)(visible[0]).flag, 'current-flag');
+    assert.deepEqual(flagCalls(hoverTransport.calls).map(hourOf).sort((a, b) => a - b), [0, 10], 'reordering asks nothing new; the sampled hour is read beside it');
+    assert.equal(hover.labelAt(10)(visible[0]).flag, undefined);
     assert.equal(hover.labelAt(10)(visible[0]).flagPending, true);
-    assert.equal(hover.labelAt(10)(visible[0]).known, true, 'the known pending fallback keeps its status');
+    assert.equal(hover.labelAt(10)(visible[0]).known, undefined, 'only a dated sample can establish a pending name');
     assert.deepEqual(hover.labelAt(11)(visible[0]), fallback(visible[0]));
     assert.deepEqual(hover.labelAt(10)(tags[4999]), fallback(tags[4999]));
     const pendingRevision = hover.revision;
     hoverFlag.answer({ flags: [image(visible[0])], unavailable: [{ tag: visible[1], reason: 'Native texture unreadable' }] });
-    hoverTransport.calls.find(call => call.input.product === 'country-styles')!.answer({ styles: [{ tag: visible[0], name: '', color: null }] });
+    hoverTransport.calls.find(call => call.input.product === 'country-styles' && hourOf(call) === 10)!.answer({ styles: [{ tag: visible[0], name: '', color: null }] });
     await settle(); hover = renderHover();
     assert.deepEqual(hover.labelAt(10)(visible[0]), { name: '', known: true, nameFailed: false, flag: 'data:synthetic-7', flagPending: false, flagReason: undefined });
     assert.equal(hover.labelAt(10)(visible[1]).flagReason, 'Native texture unreadable');
     assert.equal(renderHover(wording.missing).labelAt(10)(visible[1]).name, wording.missing);
     assert.equal(renderHover(wording.missing).labelAt(10)(visible[1]).known, false);
-    assert.equal(renderHover().labelAt(10)(visible[1]).name, visible[1]);
+    assert.equal(renderHover().labelAt(10)(visible[1]).name, 'Country name unavailable');
     assert.equal(renderHover(wording.missing).labelAt(10)(visible[0]).name, '');
     assert.equal(hover.labelAt(10)(visible[2]).flagPending, false);
     assert.notEqual(hover.revision, pendingRevision);
     hover.ask(20, visible); await settle(); renderHover(); fixture.commit(); await settle();
-    flagCalls(hoverTransport.calls).at(-1)!.fail(); await settle(); hover = renderHover();
+    flagCalls(hoverTransport.calls).find(call => hourOf(call) === 20)!.fail(); await settle(); hover = renderHover();
     assert.equal(hover.labelAt(20)(visible[0]).flag, undefined);
     assert.equal(hover.labelAt(20)(visible[0]).flagReason, 'The flag request failed.');
     hoverTransport.calls.find(call => call.input.product === 'country-styles' && (call.input.params as { hour: number }).hour === 20)!.fail();
     await settle();
     assert.equal(renderHover(wording.missing).labelAt(20)(visible[0]).name, wording.missing);
     assert.equal(renderHover(wording.missing).labelAt(20)(visible[0]).nameFailed, true);
-    assert.equal(renderHover().labelAt(20)(visible[0]).name, visible[0], 'existing failed-read defaults are unchanged');
+    assert.equal(renderHover().labelAt(20)(visible[0]).name, 'Country name unavailable', 'a failed name read does not show its country tag');
     assert.deepEqual(hover.labelAt(10)(visible[0]), fallback(visible[0]), 'a different supplying hour never borrows this answer');
+    flagCalls(hoverTransport.calls).find(call => hourOf(call) === 0)!.answer({ flags: [image(visible[0])], unavailable: [] });
+    hoverTransport.calls.find(call => call.input.product === 'country-styles' && hourOf(call) === 0)!.answer({ styles: [{ tag: visible[0], name: 'Sampled', color: null }] });
+    hover.ask(30, visible); await settle(); renderHover(); fixture.commit(); await settle(); hover = renderHover();
+    assert.equal(hover.labelAt(30)(visible[0]).name, 'Sampled', 'an hour still being read shows its sampled look at once');
+    assert.equal(hover.labelAt(30)(visible[0]).flag, 'data:synthetic-7');
+    hover.ask(60, visible); await settle(); renderHover(); fixture.commit(); await settle(); hover = renderHover();
+    assert.deepEqual([hover.labelAt(60)(visible[0]).name, hover.labelAt(60)(visible[0]).flag], ['Loading name\u2026', undefined],
+      'a sample before a gap is never held after it');
+    fixture.unmount();
+
+    // Unknown continuity cannot borrow an earlier sample or the chart's current look.
+    const unproven = transport();
+    const renderUnproven = () => { cursor = 0; return hovers.useHoverLabels(unproven.client, track, true, fallback); };
+    let unknownHover = renderUnproven(); fixture.commit();
+    unknownHover.ask(10, ['A']); await settle(); renderUnproven(); fixture.commit(); await settle();
+    unknownHover = renderUnproven();
+    assert.deepEqual(unproven.calls.map(hourOf), [10, 10], 'without identity evidence only the exact hour is read');
+    assert.equal(unknownHover.labelAt(10)('A').name, 'Loading name\u2026');
+    assert.equal(unknownHover.labelAt(10)('A').known, undefined);
+    assert.equal(unknownHover.labelAt(10)('A').flag, undefined);
+    fixture.unmount();
+
+    // 100 distinct segment starts plus hour 700 must all be admitted, with 5000 contributors.
+    const many = transport(), largeTrack = { ...track, branch: { ...track.branch, lastHour: 1000, gaps: [] } };
+    const starts = new Map(tags.map((tag, index) => [tag, index % 100 + 1]));
+    const manySegment = (tag: string) => starts.get(tag) ?? null;
+    const renderMany = () => { cursor = 0; return hovers.useHoverLabels(many.client, largeTrack, true, fallback, undefined, manySegment); };
+    let manyHover = renderMany(); fixture.commit();
+    manyHover.ask(700, tags); await settle(); renderMany(); fixture.commit(); await settle();
+    let answered = 0, peakStyles = 0, peakFlags = 0;
+    for (let pass = 0; pass < 1000; pass++) {
+      const going = many.calls.slice(answered);
+      peakStyles = Math.max(peakStyles, going.filter(call => call.input.product === 'country-styles').length);
+      peakFlags = Math.max(peakFlags, going.filter(call => call.input.product === 'country-flags').length);
+      if (!going.length) break;
+      answered = many.calls.length;
+      for (const call of going) {
+        const { tags: requested, hour } = call.input.params as { tags: string[]; hour: number };
+        call.answer(call.input.product === 'country-styles'
+          ? { styles: requested.map(tag => ({ tag, name: hour === 700 ? `Exact ${tag}` : `Sample ${tag}`, color: null })) }
+          : { flags: [], unavailable: requested.map(tag => ({ tag, reason: `No synthetic flag at ${hour}` })) });
+      }
+      await settle();
+    }
+    manyHover = renderMany();
+    for (const product of ['country-styles', 'country-flags']) {
+      const calls = many.calls.filter(call => call.input.product === product);
+      assert.equal(new Set(calls.map(hourOf)).size, 101, `${product} retains every distinct wanted date`);
+      const exact = calls.filter(call => hourOf(call) === 700).flatMap(call => (call.input.params as { tags: string[] }).tags);
+      assert.equal(new Set(exact).size, 5000, `${product} eventually reads the exact hovered hour for every contributor`);
+    }
+    assert.ok(peakStyles <= 2 && peakFlags <= 2, 'date admission does not increase either fact queue concurrency');
+    assert.equal(manyHover.labelAt(700)(tags[4999]).name, `Exact ${tags[4999]}`);
+    assert.equal(manyHover.labelAt(700)(tags[4999]).flagReason, 'No synthetic flag at 700');
   } finally {
     fixture.unmount(); Date.now = dateNow; await vite.close(); delete host.__countryLabelHooks;
   }

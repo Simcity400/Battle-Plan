@@ -152,7 +152,7 @@ test('the mounted Fuel country chooser pins its original actor and restores Foll
             'const [headerSlot, setHeaderSlot] = useState<HTMLSpanElement | null>(globalThis.__fuelCountryMount.summarySlot);')
           .replace('const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(null);',
             'const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(globalThis.__fuelCountryMount.slot);');
-        if (path.endsWith('/fuel/FuelWidget.tsx') || path.endsWith('/dashboard/comparisonCountries.ts'))
+        if (path.endsWith('/fuel/FuelWidget.tsx') || path.endsWith('/dashboard/comparisonCountries.ts') || path.endsWith('/dashboard/useDiagnostics.ts'))
           return source.replace("from 'react'", "from 'fuel-country-hooks'").replace("from 'react-dom'", "from 'fuel-country-portals'");
         if (path.endsWith('/supply-health/SupplyHealthWidget.tsx')) return source.replace("from 'react-dom'", "from 'fuel-country-portals'");
       },
@@ -230,7 +230,7 @@ test('the mounted Fuel country chooser pins its original actor and restores Foll
     const header = () => renderToStaticMarkup(createElement(Grid, { template, runtime: headerRuntime, editing: false, onLayouts() {}, onApply() {}, onRemove() {} }));
     const pinnedFrame = header();
     assert.doesNotMatch(pinnedFrame, /DEFAULT_COUNTRY_CHIP/);
-    assert.match(pinnedFrame, /<\/h2><\/div><span class="dash-widget-country-slot"><\/span>/,
+    assert.match(pinnedFrame, /<\/h2><\/div><button[^>]*class="dash-widget-country-button"[^>]*><span class="dash-widget-country-slot"><\/span><svg[^>]*class="dash-widget-country-chevron"/,
       'the chip target follows the long title and is outside its clipped h2');
     assert.equal(state.bodyCountrySlot, state.slot, 'actual Grid and WidgetBody hand the separate country slot to the registered body');
     assert.equal(state.bodyHeaderSlot, state.summarySlot, 'the existing title-summary slot remains independent');

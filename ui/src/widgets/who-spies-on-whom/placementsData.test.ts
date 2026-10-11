@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import type { CountryGroupReply, OperativePlacementReply } from '../../generated/dashboard';
 import { countryNodeId, placementChord, placementChordMemo, placementTooltip, placementsAt, OTHER_ID, rankedCountries, placementTotals, selectPlacements, validatePlacementsReply } from './placementsData.ts';
 import { tooltipText } from '../../charts/tooltip.ts';
-import { formatDateTime } from '../../dashboard/calendar.ts';
 import { createWidget } from '../../dashboard/model.ts';
 import '../definitions.ts';
 
@@ -44,7 +43,7 @@ test('validates a modded opaque pair, retains counts and names and the later equ
   const chord = placementChord(placementsAt(r, 12).placements, 12, 12, labels, () => 'recorded-color', 'muted');
   const tip = placementTooltip({ kind: 'flow', id: chord.data.flows[0].id }, chord)!;
   assert.equal(tip.title, 'Recorded Mod | spy has 2 operatives in Recorded renamed target');
-  assert.match(tooltipText(tip), /Modded Alice; Renamed operative; Read .*operative placements are read once a day\./);
+  assert.match(tooltipText(tip), /Modded Alice; Renamed operative$/);
 });
 test('a complete read holds through unread hours with its read date and daily note', () => {
   const r = validatePlacementsReply(reply());
@@ -55,8 +54,8 @@ test('a complete read holds through unread hours with its read date and daily no
     assert.equal(current.placements[0].count, 2);
     const chord = placementChord(current.placements, 12, current.read!, labels, () => 'recorded-color', 'muted');
     const tip = placementTooltip({ kind: 'flow', id: chord.data.flows[0].id }, chord)!;
-    assert.equal(tip.note, `Read ${formatDateTime(10)}; operative placements are read once a day.`);
-    assert.match(tooltipText(tip), /Modded Alice; Renamed operative; Read .*operative placements are read once a day\./);
+    assert.equal(tip.note, undefined);
+    assert.match(tooltipText(tip), /Modded Alice; Renamed operative$/);
   }
   assert.equal(placementsAt(r, 17).read, 15);
 });

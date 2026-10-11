@@ -1,27 +1,42 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { fontStack } from './fonts';
+import { typographyVariables } from './typography';
 import { loadAppearance, resolveAppearance, saveAppearance } from './settings';
 import type { AppearanceSettings, ResolvedAppearance } from './settings';
-import { cssVariable, themeRoles } from './themes';
+import { contrastColors, cssVariable, themeRoles } from './themes';
 import type { ThemeColors, ThemeMode } from './themes';
 import { getBackdrop } from './backdrops';
 import { APPEARANCE_EVENT } from './events';
+import { SIDEBAR_ICONS, sidebarIconIds } from './sidebarIcons';
 
-const darkQuery = () => window.matchMedia('(prefers-color-scheme: dark)');
-const motionQuery = () => window.matchMedia('(prefers-reduced-motion: reduce)');
-function useMedia(query: () => MediaQueryList): boolean {
-  return useSyncExternalStore(listener => { const list = query(); list.addEventListener('change', listener); return () => list.removeEventListener('change', listener); },
-    () => query().matches, () => false);
+/** A media query as an external store. Its list and functions are made once, so a render
+ * neither queries nor resubscribes. */
+function mediaStore(query: string) {
+  let list: MediaQueryList | undefined;
+  const media = () => list ??= window.matchMedia(query);
+  return {
+    matches: () => media().matches,
+    subscribe: (listener: () => void) => { media().addEventListener('change', listener); return () => media().removeEventListener('change', listener); },
+  };
+}
+const dark = mediaStore('(prefers-color-scheme: dark)');
+const motion = mediaStore('(prefers-reduced-motion: reduce)');
+function useMedia(store: ReturnType<typeof mediaStore>): boolean {
+  return useSyncExternalStore(store.subscribe, store.matches, () => false);
 }
 
 /** Writes the resolved appearance onto the root as CSS variables and data attributes. */
-export function applyAppearance(root: HTMLElement, settings: AppearanceSettings, resolved: ResolvedAppearance, colors: ThemeColors = resolved.colors, mode: ThemeMode = resolved.mode): void {
+export function applyAppearance(root: HTMLElement, settings: AppearanceSettings, resolved: ResolvedAppearance, themed: ThemeColors = resolved.colors, mode: ThemeMode = resolved.mode): void {
+  const colors = contrastColors(themed, settings.contrast);
   for (const role of themeRoles) root.style.setProperty(cssVariable(role), colors[role]);
+  for (const id of sidebarIconIds) root.style.setProperty(`--sidebar-icon-${id}`, settings.sidebarIcons[id] ?? SIDEBAR_ICONS[id][mode]);
   root.style.setProperty('--glass', `${settings.glass}%`);
   root.style.setProperty('--glass-blur', settings.glass >= 100 ? '0px' : `${Math.round(12 + (100 - settings.glass) * 0.2)}px`);
   root.style.setProperty('--radius', `${settings.radius}px`);
-  root.style.setProperty('--font-ui', fontStack(settings.fonts.interface));
-  root.style.setProperty('--font-display', fontStack(settings.fonts.display || settings.fonts.interface));
+  for (const [name, value] of Object.entries(typographyVariables(settings.fonts, settings.typography))) root.style.setProperty(name, value);
+  root.style.fontSize = `${settings.typography.sizes.interface}px`;
+  if (settings.typography.smoothing) root.style.setProperty('-webkit-font-smoothing', 'antialiased');
+  else root.style.removeProperty('-webkit-font-smoothing');
+  root.dataset.wordWrap = String(settings.typography.wordWrap);
   root.style.setProperty('--backdrop-dim', `${settings.backdrop.dim}%`);
   root.style.setProperty('--backdrop-blur', `${settings.backdrop.blur}px`);
   root.style.colorScheme = mode;
@@ -29,6 +44,7 @@ export function applyAppearance(root: HTMLElement, settings: AppearanceSettings,
   root.dataset.theme = resolved.theme.id;
   root.dataset.motion = resolved.reducedMotion ? 'reduced' : 'full';
   root.dataset.backdrop = settings.backdrop.kind;
+  root.dataset.headerFlag = settings.headerFlag;
   root.dataset.chartMotion = settings.charts.motion;
   root.dataset.countryColours = settings.charts.countryColours;
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', colors.chrome);
@@ -39,7 +55,7 @@ export function applyAppearance(root: HTMLElement, settings: AppearanceSettings,
 /** Apply the saved appearance before React renders, so the first frame is already themed. */
 export function applySavedAppearance(): void {
   const { settings } = loadAppearance();
-  applyAppearance(document.documentElement, settings, resolveAppearance(settings, darkQuery().matches, motionQuery().matches));
+  applyAppearance(document.documentElement, settings, resolveAppearance(settings, dark.matches(), motion.matches()));
 }
 
 export interface ThemePreview { colors: ThemeColors; mode: ThemeMode }
@@ -51,8 +67,8 @@ export function useAppearance() {
   const [notice, setNotice] = useState<string | null>(initial.warning);
   const [preview, setPreview] = useState<ThemePreview | null>(null);
   const [backdropImage, setBackdropImage] = useState<string | null>(null);
-  const systemDark = useMedia(darkQuery);
-  const systemReduced = useMedia(motionQuery);
+  const systemDark = useMedia(dark);
+  const systemReduced = useMedia(motion);
   const resolved = useMemo(() => resolveAppearance(settings, systemDark, systemReduced), [settings, systemDark, systemReduced]);
 
   useLayoutEffect(() => {

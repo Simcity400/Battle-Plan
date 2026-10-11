@@ -296,6 +296,14 @@ test('bombing parts retain exact corrections, selectable positive history and co
     assert.deepEqual(state.history!.extent, [10, 20]);
     state.datePicker!.onChange(16.9); assert.deepEqual(picked, [16]);
     props.hour = 9; render(); assert.equal(state.history!.layers[0].extent!([10, 20]), null);
+    props.hour = 16;
+    props.data = { ...state.data, buildings: [
+      { id: 'factory', name: null, missing: 'Synthetic absent localization' },
+      { id: 'correction', name: '', missing: null },
+    ] };
+    render();
+    assert.equal(state.parts!.parts.find(part => part.id === 'factory')!.label, 'Building name unavailable');
+    assert.equal(state.parts!.parts.find(part => part.id === 'correction')!.label, '');
   } finally { await vite.close(); delete globals.__airDrill; }
 });
 
@@ -335,4 +343,48 @@ test('bombing Drill follows the shared clock from a campaign view and rejects re
     state.butterfly!.onSelect(state.butterfly!.items[0], 'left'); render();
     state.hour = -983; render(); assert.equal(state.bombing!.hour, 17, 'a missing live read keeps the breakdown mounted');
   } finally { await vite.close(); delete globals.__airDrill; }
+});
+
+test('bombing sunburst uses content titles and hover keys while exact recorded damage remains independent', async () => {
+  const state: { data?: { states: { stateId: number; name: string | null; missing: string | null }[] }; error?: string;
+    sunburst?: import('../charts/sunburst/Sunburst').SunburstProps } = { data: { states: [{ stateId: 7, name: 'Dated mod state', missing: null }] } };
+  const globals = globalThis as typeof globalThis & { __bombingTitles?: typeof state };
+  globals.__bombingTitles = state;
+  const vite = await server({ ...common,
+    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
+    '/dashboard/products.ts': 'export const useProduct = () => globalThis.__bombingTitles;',
+    '/charts/sunburst/Sunburst.tsx': 'export default props => { globalThis.__bombingTitles.sunburst = props; return null; };',
+  });
+  try {
+    const View = (await vite.ssrLoadModule('/ui/src/dashboard/BombingBreakdown.tsx')).default;
+    const data = validateMilitaryAirReply(bombingData());
+    const props = { data, track: fixture().track, runtime: { client: {}, clock: {} }, tag: 'B', identity: '1:9',
+      from: 10, hour: 16, end: 20, dealt: false, active: true, options: {} };
+    const render = () => renderToStaticMarkup(createElement(View, props));
+    render();
+    const parts = () => state.sunburst!.items;
+    const factory = () => parts().find(item => item.path[0].id === 'building:factory')!;
+    assert.equal(factory().path[0].label, 'Factory');
+    assert.equal(factory().path[1].label, 'Dated mod state');
+    const exact = factory().exact;
+    props.data = { ...data, buildings: [{ id: 'factory', name: null, missing: 'Synthetic absent localization' },
+      { id: 'correction', name: '', missing: null }] };
+    render();
+    assert.equal(factory().path[0].label, 'Building name unavailable');
+    assert.equal(factory().exact, exact, 'missing content text does not change recorded damage');
+    assert.match(factory().note!, /Key: factory/);
+    assert.match(factory().note!, /Synthetic absent localization/);
+    assert.equal(parts().find(item => item.path[0].id === 'building:correction')!.path[0].label, '');
+    props.data = { ...data, buildings: [{ id: 'factory', name: 'factory', missing: null }] };
+    render();
+    assert.equal(factory().path[0].label, 'factory', 'an authored title identical to its key remains authoritative');
+    state.data = { states: [{ stateId: 7, name: '', missing: null }] };
+    render();
+    assert.equal(factory().path[1].label, '');
+    state.data = undefined;
+    render();
+    assert.equal(factory().path[1].label, 'State name not recorded');
+    assert.equal(factory().exact, exact);
+    assert.match(factory().note!, /Loading the dated state name/);
+  } finally { await vite.close(); delete globals.__bombingTitles; }
 });
