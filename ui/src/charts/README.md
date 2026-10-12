@@ -54,6 +54,8 @@ Tooltips retain dated metadata/full `spoken` text. Tooltips carry no read-cadenc
 
 Logs separate identity/supplying `revealedHour` from displayed dates. Measured cards use layout pixels and `anchorRows` for stable scrolling. Hold only wanted pages/keyboard destinations; backward seeks remove future cards immediately, and late pages cannot reclaim dismissed tooltips.
 
+Log row windows use the scroller's outer layout height, keeping overscan membership stable when a row adds a horizontal scrollbar. Scroll bounds and keyboard movement use the usable client height; one retained viewport observer reports size changes without depending on the height it publishes.
+
 ## Adding or changing a chart
 
 1. Reuse a kit above. Keep validation, content meaning and wording in widgets; share content-neutral helpers here.

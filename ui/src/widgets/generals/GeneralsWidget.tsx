@@ -29,6 +29,12 @@ import './generals.css';
 
 const EMPTY: readonly LeaderRow[] = [];
 const rowKey = (row: LeaderRow) => row.key;
+// Artwork and labels rebuild cells without changing the table's sort identity.
+const skillValue = (row: LeaderRow) => row.value.skill;
+const wonValue = (row: LeaderRow) => row.won;
+const lostValue = (row: LeaderRow) => row.lost;
+const unresolvedValue = (row: LeaderRow) => row.unresolved;
+const winRateValue = (row: LeaderRow) => row.winRate;
 
 export default function GeneralsWidget(props: WidgetProps) {
   const { widget, runtime, active, onDiagnostics, setOption } = props;
@@ -69,7 +75,7 @@ export default function GeneralsWidget(props: WidgetProps) {
     return [
       { key: 'leader', header: 'Leader', label: 'Leader', sortable: false, width: 'minmax(190px, 2fr)', value: leaderName,
         render: row => data && <LeaderIdentity art={portraits.at(row)} row={row} country={row.value.owner ? labelAt(row.hour)(row.value.owner) : { name: 'Owner not recorded' }} /> },
-      { key: 'skill', header: 'Skill', label: 'Skill', width: '92px', value: r => r.value.skill,
+      { key: 'skill', header: 'Skill', label: 'Skill', width: '92px', value: skillValue,
         renderMissing: true, render: r => <SkillStars level={r.value.skill} maximum={r.value.maximumSkill} /> },
       { key: 'attributes', header: <AttributesHeader names={attributeMaxima.map((_, i) =>
           [...new Set(rows.map(row => attributeNames(row.value)[i]))].join(' / ') || 'Name not recorded')} />,
@@ -80,15 +86,15 @@ export default function GeneralsWidget(props: WidgetProps) {
           const trait = r.traitCatalogue[token]; const name = contentTitle(trait?.name, trait?.token ?? token, 'Trait name unavailable');
           return trait?.icon ? <img key={token} src={trait.icon} alt={name} /> : <span className="leader-trait-chip" key={token}>{name}</span>;
         })}</span> },
-      { key: 'won', header: 'Won', label: 'Battles won', numeric: true, width: '64px', value: r => r.won, renderMissing: true,
+      { key: 'won', header: 'Won', label: 'Battles won', numeric: true, width: '64px', value: wonValue, renderMissing: true,
         render: r => r.won ?? <span className="leader-missing" data-tooltip="Result not recorded">—</span> },
-      { key: 'lost', header: 'Lost', label: 'Battles lost', numeric: true, width: '64px', value: r => r.lost, renderMissing: true,
+      { key: 'lost', header: 'Lost', label: 'Battles lost', numeric: true, width: '64px', value: lostValue, renderMissing: true,
         render: r => r.lost ?? <span className="leader-missing" data-tooltip="Result not recorded">—</span> },
-      { key: 'unresolved', header: 'Unresolved', label: 'Unresolved battles', numeric: true, width: '88px', value: r => r.unresolved,
+      { key: 'unresolved', header: 'Unresolved', label: 'Unresolved battles', numeric: true, width: '88px', value: unresolvedValue,
         render: r => <span data-tooltip="Battles with no known result.">{r.unresolved}</span> },
       { key: 'fought', header: 'Fought', label: 'Fought', sortable: false, numeric: true, width: '64px', value: r => r.fought, renderMissing: true,
         render: r => <span data-tooltip={recordedSince(r.career, data!.firstHour)}>{r.fought}</span> },
-      { key: 'winRate', header: 'Win %', label: 'Win rate among decided battles', numeric: true, width: '56px', value: r => r.winRate, renderMissing: true,
+      { key: 'winRate', header: 'Win %', label: 'Win rate among decided battles', numeric: true, width: '56px', value: winRateValue, renderMissing: true,
         render: r => r.winRate == null ? <span className="leader-missing" data-tooltip={r.won == null ? "Result not recorded" : "No battles with known results."}>—</span> : <span data-tooltip="Win rate among decided battles">{Math.round(r.winRate)}%</span> },
     ];
   }, [data, labelAt, portraits, attributeMaxima, options.cellBars, rows]);

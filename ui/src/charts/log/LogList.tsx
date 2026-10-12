@@ -64,8 +64,8 @@ export interface LogListProps<T> {
 
 const EMPTY_ROWS: readonly LogRow<never>[] = [];
 /** An unchanged viewport keeps its state, so re-placing the rows never re-renders for nothing. */
-const viewAt = (top: number, height: number, width: number) => (before: { top: number; height: number; width: number }) =>
-  before.top === top && before.height === height && before.width === width ? before : { top, height, width };
+const viewAt = (top: number, height: number, width: number, outerHeight: number) => (before: { top: number; height: number; width: number; outerHeight: number }) =>
+  before.top === top && before.height === height && before.width === width && before.outerHeight === outerHeight ? before : { top, height, width, outerHeight };
 
 /** A log: HTML rows newest first, each with its date,
  * that flash in as playback reaches them and glide when their order changes
@@ -84,7 +84,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
   // A callback ref: the scroller comes and goes with the rows (an empty log has
   // none), and each one is measured and observed as it attaches.
   const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
-  const [view, setView] = useState({ top: 0, height: 0, width: 0 });
+  const [view, setView] = useState({ top: 0, height: 0, width: 0, outerHeight: 0 });
   const [active, setActive] = useState<string | null>(null);
   const [pending, setPending] = useState<{ pageKey: string; offset: number } | null>(null);
   const [spoken, setSpoken] = useState('');
@@ -122,15 +122,15 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
   // Keep exact logical pixels for wheel and keyboard movement even when the
   // browser rounds a much smaller native scrollTop to its layout precision.
   const scrollPosition = useRef({ logical: 0, physical: 0 });
-  const setLogicalTop = useCallback((requested: number, height = scroller?.clientHeight ?? view.height) => {
+  const setLogicalTop = useCallback((requested: number, height = scroller?.clientHeight ?? 0) => {
     if (!scroller) return;
     const space = scrollGeometry(totalHeight, height);
     const top = Math.max(0, Math.min(space.logicalRange, requested));
     scroller.scrollTop = physicalScroll(space, top);
     scrollPosition.current = { logical: top, physical: scroller.scrollTop };
     if (priorLayout.current) priorLayout.current.top = top;
-    setView(viewAt(top, height, scroller.clientWidth));
-  }, [scroller, totalHeight, view.height]);
+    setView(viewAt(top, height, scroller.clientWidth, scroller.offsetHeight));
+  }, [scroller, totalHeight]);
   const readScroll = useCallback((element: HTMLDivElement) => {
     const height = element.clientHeight;
     const space = scrollGeometry(totalHeight, height);
@@ -138,7 +138,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
       ? Math.min(space.logicalRange, scrollPosition.current.logical) : logicalScroll(space, element.scrollTop);
     scrollPosition.current = { logical: top, physical: element.scrollTop };
     if (priorLayout.current) priorLayout.current.top = top;
-    setView(viewAt(top, height, element.clientWidth));
+    setView(viewAt(top, height, element.clientWidth, element.offsetHeight));
   }, [totalHeight]);
   useLayoutEffect(() => {
     const previous = priorLayout.current;
@@ -332,7 +332,10 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
     if (destination) focusTarget(destination);
   };
 
-  const [start, end] = pages ? logPageRange(offsets, view.top, view.height, density) : visibleRange(offsets, view.top, view.height);
+  // A mounted overscan row can create a horizontal scrollbar. Window by the
+  // outer box so that scrollbar cannot remove its own row and oscillate; scroll
+  // bounds and keyboard movement still use the usable client height.
+  const [start, end] = pages ? logPageRange(offsets, view.top, view.outerHeight, density) : visibleRange(offsets, view.top, view.outerHeight);
   const entryHistory = useRef<{ seen: ReadonlySet<string>; entering: ReadonlySet<string> }>({ seen: new Set(), entering: new Set() });
   const visibleEntries = useMemo(() => {
     // Preserve the initial-render rule of useRowMotion: already-present rows

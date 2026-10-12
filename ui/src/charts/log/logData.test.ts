@@ -412,7 +412,7 @@ test('card focus and delayed page navigation preserve reached tooltip ownership'
     const flush = () => { for (const frame of frames.splice(0)) frame(); };
     let nodes = render();
     let list = nodes.find(node => node.props.role === 'listbox')!;
-    const scroller = { scrollTop: 0, clientHeight: 200, clientWidth: 400, contains: (node: unknown) => node === chip,
+    const scroller = { scrollTop: 0, clientHeight: 200, offsetHeight: 200, clientWidth: 400, contains: (node: unknown) => node === chip,
       querySelector: () => ({ getBoundingClientRect: () => ({ right: 400, top: 0, height: 100 }) }),
       focus(): void { page.activeElement = scroller; (list.props.onFocus as (event: unknown) => void)({ target: scroller, currentTarget: scroller }); } };
     ((list.props.ref ?? list.ref) as (node: unknown) => void)(scroller);
