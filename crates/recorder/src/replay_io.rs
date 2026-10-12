@@ -294,6 +294,26 @@ fn finalize_campaign(
     witness: Option<&TerminalWitness>,
     progress: &dyn Fn() -> std::io::Result<()>,
 ) -> Result<PathBuf> {
+    finalize_campaign_with_publisher(
+        campaign_dir,
+        paths,
+        replay_dir,
+        process_context,
+        witness,
+        progress,
+        |replay, destination| replay.write_atomic_with(destination, |_| progress()),
+    )
+}
+
+fn finalize_campaign_with_publisher(
+    campaign_dir: &Path,
+    paths: &[(u32, PathBuf)],
+    replay_dir: &Path,
+    process_context: &mut Option<(SessionId, u32, u64, u64)>,
+    witness: Option<&TerminalWitness>,
+    progress: &dyn Fn() -> std::io::Result<()>,
+    publish: impl FnOnce(&Replay, &Path) -> std::io::Result<()>,
+) -> Result<PathBuf> {
     let started = Instant::now();
     let mut spool_bytes = 0_u64;
     let mut segments = Vec::with_capacity(paths.len());
@@ -485,10 +505,12 @@ fn finalize_campaign(
         )
         .map_err(|error| failure(&destination, error))?
     };
-    if !unchanged {
-        replay
-            .write_atomic_with(&destination, |_| progress())
+    if unchanged {
+        // Matching bytes can survive a rename whose durability flush failed.
+        replay::publication::sync_file(&destination)
             .map_err(|error| failure(&destination, error))?;
+    } else {
+        publish(&replay, &destination).map_err(|error| failure(&destination, error))?;
     }
     progress().map_err(|error| failure(&destination, error))?;
     let ready_seconds = started.elapsed().as_secs_f64();
@@ -1462,6 +1484,145 @@ mod tests {
             last_hour: Some(21),
         }));
         base
+    }
+
+    #[test]
+    fn repeat_finalization_retries_post_rename_durability_without_rewriting() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, allocation_records, allocation_test_directory,
+        };
+        use replay::container::AtomicPublisher;
+        use std::{io, os::windows::ffi::OsStrExt, os::windows::fs::OpenOptionsExt};
+        use windows_sys::Win32::{
+            Foundation::GENERIC_WRITE,
+            Storage::FileSystem::{
+                DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
+                FILE_SHARE_WRITE,
+            },
+        };
+
+        // Keep the real recording writes, temp sync and POSIX rename. Fail at
+        // the first post-rename flush, leaving the complete revision visible.
+        struct FailPostRenameFlush<'a> {
+            destination: &'a Path,
+            temporary: PathBuf,
+        }
+        impl AtomicPublisher for FailPostRenameFlush<'_> {
+            type Writer = fs::File;
+
+            fn create(&mut self) -> io::Result<fs::File> {
+                fs::File::create(&self.temporary)
+            }
+
+            fn sync(&mut self, writer: &mut fs::File) -> io::Result<()> {
+                writer.sync_all()
+            }
+
+            fn replace(&mut self, writer: fs::File) -> io::Result<()> {
+                drop(writer);
+                let file = fs::OpenOptions::new()
+                    .access_mode(DELETE | GENERIC_WRITE)
+                    .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+                    .open(&self.temporary)?;
+                let target: Vec<_> = std::path::absolute(self.destination)?
+                    .as_os_str()
+                    .encode_wide()
+                    .chain(Some(0))
+                    .collect();
+                assert!(replay::publication::posix_replace(&file, &target)?);
+                Err(io::Error::other("injected post-rename flush failure"))
+            }
+        }
+
+        let directory = allocation_test_directory("post-rename-durability");
+        let session = directory.join("session");
+        let output = directory.join("output");
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        let campaign = session.join(name);
+        fs::create_dir_all(&campaign).unwrap();
+        fs::create_dir(&output).unwrap();
+        let records = allocation_records();
+        let spool: Vec<_> = records
+            .iter()
+            .flat_map(|record| replay::spool::encode_record(record).unwrap())
+            .collect();
+        let spool_path = campaign.join("spool.0000.h4s");
+        fs::write(&spool_path, &spool).unwrap();
+        let destination = output.join(format!("{name}.battleplan"));
+        let mut old_records = records[..4].to_vec();
+        for record in &mut old_records {
+            match record {
+                Record::SessionStart(session) => session.id = 6,
+                Record::BranchStart(branch) => {
+                    branch.id = 8;
+                    branch.session = 6;
+                }
+                Record::Frame(frame) => frame.branch = 8,
+                Record::Control(ControlRecord::ClockWitness { session, .. }) => *session = 6,
+                _ => unreachable!(),
+            }
+        }
+        let old = Replay::from_records(ALLOCATION_CAMPAIGN.to_vec(), &[old_records]).unwrap();
+        old.write_atomic(&destination).unwrap();
+        let mut temporary = destination.as_os_str().to_owned();
+        temporary.push(".tmp");
+        let temporary = PathBuf::from(temporary);
+        let error = finalize_campaign_with_publisher(
+            &campaign,
+            &segment_paths(&campaign).unwrap(),
+            &output,
+            &mut None,
+            None,
+            &|| Ok(()),
+            |replay, path| {
+                replay.publish_with(
+                    &mut FailPostRenameFlush {
+                        destination: path,
+                        temporary: temporary.clone(),
+                    },
+                    |_| Ok(()),
+                )
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("injected post-rename flush failure"));
+        let bytes = fs::read(&destination).unwrap();
+        let expected = old.append(&[records]).unwrap();
+        assert_eq!(bytes, expected.bytes());
+        assert_ne!(bytes, old.bytes());
+        assert!(!temporary.exists());
+        let modified = fs::metadata(&destination).unwrap().modified().unwrap();
+
+        // Either unavailable flush handle must prevent recovery from reporting
+        // success. The old matching-revision path succeeds under both locks.
+        for path in [&destination, &output] {
+            let held = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(path)
+                .unwrap();
+            assert!(finalize_session(&session, &output).is_err());
+            assert_eq!(fs::read(&destination).unwrap(), bytes);
+            assert_eq!(
+                fs::metadata(&destination).unwrap().modified().unwrap(),
+                modified
+            );
+            assert!(!temporary.exists());
+            drop(held);
+        }
+        assert_eq!(
+            finalize_session(&session, &output).unwrap(),
+            vec![destination.clone()],
+        );
+        assert_eq!(fs::read(&destination).unwrap(), bytes);
+        assert_eq!(
+            fs::metadata(&destination).unwrap().modified().unwrap(),
+            modified
+        );
+        assert_eq!(fs::read(&spool_path).unwrap(), spool);
+        assert!(!temporary.exists());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

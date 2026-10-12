@@ -1563,3 +1563,7 @@ fn format97_replay_opens_seeks_and_decodes_selected_and_parallel_blocks() {
 }
 #[path = "compatibility_tests.rs"]
 mod compatibility_tests;
+
+#[cfg(windows)]
+#[path = "publication_tests.rs"]
+mod publication_tests;

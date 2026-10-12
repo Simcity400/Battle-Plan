@@ -13,6 +13,7 @@ The shared recording contract: rows, tables, frames, sample provenance, branches
 | [codec.rs](src/codec.rs), [value.rs](src/value.rs), [fixed_point.rs](src/fixed_point.rs) | Bounded encoding, native representations and exact arithmetic. |
 | [frame.rs](src/frame.rs), [frame/](src/frame/) | Updates, baselines, keyframes, sample origins and frame wire encoding. |
 | [container.rs](src/container.rs), [branches.rs](src/branches.rs) | Indexed compressed blocks, seek/read APIs and branch identity. |
+| [publication.rs](src/publication.rs) | Shared Windows POSIX rename and durable recording replacement. |
 | [spool.rs](src/spool.rs), [witness.rs](src/witness.rs) | Versioned CRC records, durability and terminal failure evidence. |
 | [identity.rs](src/identity.rs), [fixed_layout.rs](src/fixed_layout.rs) | Content identity and consumers of fixed modifier/token layouts. |
 | [acceptance.rs](src/acceptance.rs) | Synthetic capture/recovery campaign; `DOMAIN_TABLES` and direct fixtures cover every table exactly once. |
@@ -50,7 +51,11 @@ Event feed actions keep event dates separate from supplying reads; incomplete hi
 
 Identity stores ordered layer hashes and coverage policy, not assets or machine paths. [installed-content](../installed-content/README.md) resolves content. Older supported policies retain their verification roots; newer-only reads produce uncovered-read notes, and unsupported policies are refused.
 
-Finalization uses two streaming spool passes and compresses blocks before the shared decoder size bound. Split hours become self-contained keyframes with original metrics and sample hours; an oversized frame or a split with a truncated table is refused by name. Allocation and I/O failures abort finalization and retain the spool. Repeated finalization compares complete decoded values, availability and metrics before leaving an existing replay unchanged.
+Finalization uses two streaming spool passes and compresses blocks before the shared decoder size bound. Split hours become self-contained keyframes with original metrics and sample hours; an oversized frame or a split with a truncated table is refused by name. Allocation and I/O failures abort finalization and retain the spool. Repeated finalization compares complete decoded values, availability and metrics, then syncs the matching destination file and parent directory before acknowledging success without changing recording bytes or modification time. A sync failure retains the spool and reports failure.
+
+Recording publication writes and syncs a `<destination>.tmp` sibling before atomic replacement; one publisher owns that fixed sibling at a time. On Windows, POSIX rename replaces a recording while readers hold it with `FILE_SHARE_READ | FILE_SHARE_DELETE`. Held readers keep the complete old revision until close; new opens see the complete new revision. A reader without delete sharing blocks publication with a sharing error. Unsupported rename errors alone select `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`; open readers can block that fallback. The rename syscall and unsupported-volume policy are shared with collector status publication.
+
+POSIX publication acquires writable source and parent-directory handles before rename, then flushes the renamed file and common parent directory before returning success. An access or pre-rename error preserves the destination. A post-rename flush error reports failure with the complete new revision already visible. The writable handles require appropriate directory permissions and can briefly block new deny-write readers until flushing completes. Process termination after temp sync leaves the old destination; after rename it leaves the new destination. These process-crash checks do not establish power-loss durability.
 
 ## Compatibility and recovery
 

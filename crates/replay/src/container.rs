@@ -1053,11 +1053,17 @@ impl Replay {
             .is_some_and(|position| self.verified[position].load(Ordering::Acquire))
     }
 
+    /// Publish a synced sibling atomically. On Windows, delete-sharing readers
+    /// keep the old revision while new opens see the replacement. Unsupported
+    /// volumes use classic replacement, which open readers may block.
+    /// A flush error after POSIX rename reports failure with the new file visible.
     pub fn write_atomic(&self, destination: &Path) -> io::Result<()> {
         self.write_atomic_with(destination, |_| Ok(()))
     }
 
-    /// Fault checkpoints happen before replacement; failure leaves the destination untouched.
+    /// Fault checkpoints happen before replacement; checkpoint failure leaves
+    /// the destination untouched. Publication itself can fail after rename if
+    /// the renamed file or parent directory cannot be flushed.
     pub fn write_atomic_with(
         &self,
         destination: &Path,
@@ -1152,29 +1158,7 @@ fn temporary_path(destination: &Path) -> PathBuf {
 
 #[cfg(windows)]
 fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-    };
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let destination: Vec<u16> = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    // The source is a closed, fully synced sibling file on the same volume.
-    if unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    } == 0
-    {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    crate::publication::replace_file(source, destination)
 }
 
 #[cfg(not(windows))]

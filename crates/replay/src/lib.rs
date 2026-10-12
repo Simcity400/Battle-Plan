@@ -13,6 +13,8 @@ pub mod frame;
 pub mod identity;
 pub mod naval_mission_derive;
 mod peace_rows;
+#[cfg(windows)]
+pub mod publication;
 pub mod rows;
 pub mod sliced;
 pub mod spool;

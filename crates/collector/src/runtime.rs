@@ -36,10 +36,9 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, HMODULE, WAIT_OBJECT_0},
     Storage::FileSystem::{
-        CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL, FILE_RENAME_INFO, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, FileRenameInfoEx, GetFileSizeEx,
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING,
-        SetFileInformationByHandle,
+        CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, GetFileSizeEx, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        MoveFileExW, OPEN_EXISTING,
     },
     System::{
         LibraryLoader::{FreeLibraryAndExitThread, GetModuleFileNameW, GetModuleHandleW},
@@ -343,9 +342,6 @@ fn status_rename_retry_delay(error: &io::Error, elapsed: Duration) -> Option<Dur
         .map(|remaining| remaining.min(Duration::from_millis(1)))
 }
 
-/// `FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS`.
-const RENAME_REPLACE_POSIX: u32 = 0x1 | 0x2;
-
 /// Atomically replace `target` with `source` using POSIX rename semantics:
 /// the new name takes effect even while a reader holds the old file open with
 /// delete sharing, which a classic `MoveFileExW` replace refuses with
@@ -366,35 +362,7 @@ fn posix_replace(source: &[u16], target: &[u16]) -> io::Result<bool> {
         return Err(io::Error::last_os_error());
     }
     let file = unsafe { File::from_raw_handle(handle) };
-    // The name excludes its terminator; the struct keeps one u16 for it.
-    let name = &target[..target.len() - 1];
-    let header = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
-    let size = header + std::mem::size_of_val(name) + 2;
-    let mut buffer = vec![0u64; size.div_ceil(8)];
-    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-    let result = unsafe {
-        (*info).Anonymous.Flags = RENAME_REPLACE_POSIX;
-        (*info).RootDirectory = std::ptr::null_mut();
-        (*info).FileNameLength = std::mem::size_of_val(name) as u32;
-        std::ptr::copy_nonoverlapping(
-            name.as_ptr(),
-            std::ptr::addr_of_mut!((*info).FileName).cast::<u16>(),
-            name.len(),
-        );
-        let ok = SetFileInformationByHandle(
-            file.as_raw_handle(),
-            FileRenameInfoEx,
-            info.cast(),
-            size as u32,
-        );
-        let error = io::Error::last_os_error();
-        if ok != 0 { Ok(true) } else { Err(error) }
-    };
-    match result {
-        // Volumes without POSIX rename (FAT, older NTFS drivers) report these.
-        Err(error) if matches!(error.raw_os_error(), Some(1 | 50 | 87)) => Ok(false),
-        other => other,
-    }
+    replay::publication::posix_replace(&file, target)
 }
 
 /// Set once a status directory reports that POSIX rename is unsupported
