@@ -363,7 +363,7 @@ export default function App() {
       <header className="shell-header">
         <div className="shell-campaign-controls" ref={setPlaybackHost} hidden={tab === 'settings'} />
         {tab === 'settings' && <nav className="shell-location" aria-label="Location"><span>Settings</span><Icon name="chevron-right" /><strong aria-current="page">{sectionLabel}</strong></nav>}
-        {tab !== 'settings' && <RecordingNotice partial={metadata?.partial} />}
+        {tab !== 'settings' && <RecordingNotice partial={metadata?.partial} path={metadata?.path} />}
         {pageStorageWarning && <div className="notice warning shell-page-storage-warning" role="status">{pageStorageWarning}</div>}
       </header>
 

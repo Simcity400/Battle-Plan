@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { normalizeColor } from '../shell/appearance/color.ts';
+import { opaqueTag } from './validation.ts';
 
 /** Faction settings, kept with the app (never in the recording). A faction colour the
  * user sets applies in every campaign (`shared`, keyed by the faction's identity,
@@ -12,7 +13,7 @@ export interface FactionStyle { colour?: string; name?: string }
 export interface FactionColourSet { id: string; name: string; entries: { faction: string; colour: string; name?: string }[] }
 export interface CampaignSettings {
   version: 1;
-  campaigns: Record<string, { factions: Record<string, FactionStyle> }>;
+  campaigns: Record<string, { factions: Record<string, FactionStyle>; flag?: string }>;
   /** Colours chosen for every campaign, by faction identity (`factionIdentity`). */
   shared: Record<string, { colour: string }>;
   sets: FactionColourSet[];
@@ -74,7 +75,7 @@ export function parseCampaignSettings(input: unknown): CampaignSettings {
       const parsed = safeKey(id, /^\d{1,20}$/) ? style(entry) : null;
       if (parsed && (parsed.colour || parsed.name)) factions[id] = parsed;
     }
-    campaigns[key] = { factions };
+    campaigns[key] = { factions, ...(opaqueTag(value.flag) ? { flag: value.flag } : {}) };
   }
   const shared: CampaignSettings['shared'] = {};
   for (const [key, value] of Object.entries(object(input.shared) ? input.shared : {}).slice(0, MAX_FACTIONS * 4)) {
@@ -133,7 +134,16 @@ export function setFactionStyle(settings: CampaignSettings, campaign: string, fa
   }
   if (next.name !== undefined) { if (text(next.name)) next.name = next.name.trim(); else delete next.name; }
   if (next.colour || next.name) factions[faction] = next; else delete factions[faction];
-  return { ...settings, campaigns: { ...settings.campaigns, [campaign]: { factions } } };
+  return { ...settings, campaigns: { ...settings.campaigns, [campaign]: { ...settings.campaigns[campaign], factions } } };
+}
+
+/** A recorded tag overrides the sidebar flag; null follows the shown country. */
+export function setCampaignFlag(settings: CampaignSettings, campaign: string, tag: string | null): CampaignSettings {
+  if (!safeKey(campaign, /^[0-9a-f]{1,128}$/) || tag !== null && !opaqueTag(tag)) return settings;
+  if (!(campaign in settings.campaigns) && Object.keys(settings.campaigns).length >= MAX_CAMPAIGNS) return settings;
+  const entry = { ...(settings.campaigns[campaign] ?? { factions: {} }) };
+  if (tag === null) delete entry.flag; else entry.flag = tag;
+  return { ...settings, campaigns: { ...settings.campaigns, [campaign]: entry } };
 }
 
 /** Saves a campaign's chosen colours as a named set, keyed by faction name. */
@@ -185,7 +195,7 @@ export function saveCampaignSettings(settings: CampaignSettings, storage?: Stora
     (storage ?? localStorage).setItem(KEY, JSON.stringify(safe));
     return null;
   } catch {
-    return 'Faction colours could not be saved on this device; they apply until the app closes.';
+    return 'Campaign settings could not be saved on this device; they apply until the app closes.';
   }
 }
 

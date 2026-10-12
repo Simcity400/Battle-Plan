@@ -26,6 +26,7 @@ test('frame subtitles identify only campaigns different from the sidebar and war
     }] });
   try {
     const { default: Grid } = await vite.ssrLoadModule('/ui/src/dashboard/DashboardGrid.tsx') as typeof import('./DashboardGrid');
+    const { saveRecordingNames, setRecordingName } = await vite.ssrLoadModule('/ui/src/dashboard/recordingNames.ts') as typeof import('./recordingNames.ts');
     const tracks = ['one', 'two'].map(roleId => ({ id: `track-${roleId}`, roleId, label: roleId,
       branch: { id: 'branch', firstHour: 0, lastHour: 100 },
       source: { path: `${roleId}.battleplan`, metadata: { countries: [], branches: [] } } })) as unknown as BoundTrack[];
@@ -49,6 +50,10 @@ test('frame subtitles identify only campaigns different from the sidebar and war
     assert.doesNotMatch(render(), /dash-widget-subtitle/, 'one current campaign needs no subtitle');
     runtime.tracks = tracks;
     widget.trackIds = ['track-two'];
+    assert.match(render(), /dash-widget-subtitle">two</);
+    saveRecordingNames(setRecordingName({}, 'TWO.battleplan', 'Weekend campaign'), { getItem: () => null, setItem() {} });
+    assert.match(render(), /dash-widget-subtitle">Weekend campaign</);
+    saveRecordingNames({}, { getItem: () => null, setItem() {} });
     assert.match(render(), /dash-widget-subtitle">two</);
     runtime.tracks = [tracks[1]];
     assert.match(render(), /dash-widget-subtitle">two</, 'a different campaign is named even when it is the only loaded track');

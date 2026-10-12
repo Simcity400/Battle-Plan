@@ -9,7 +9,7 @@ import WidgetState from '../components/WidgetState';
 import type { MapOptions } from '../shell/api';
 import { createWidget, GRID_COLUMNS, widgetAtDefault } from './model';
 import { resolveWidgetCampaign } from './campaigns';
-import { recordingName } from '../shell/api';
+import { recordingDisplayName, useRecordingNames } from './recordingNames';
 import type { Breakpoint, DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import { widgetDefinition } from './definitions';
 import type { WidgetRuntime } from './definitions';
@@ -87,6 +87,7 @@ const Body = memo(WidgetBody);
 
 /** Common chrome for every widget: header, drag grip, settings and the scaled body. */
 function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: Omit<Props, 'onLayouts'> & { widget: WidgetSpec }) {
+  const names = useRecordingNames();
   const element = useRef<HTMLElement>(null);
   // Null until the body mounts in its turn, then whether the widget is near the viewport.
   // Server rendering has no observer and renders the body at once.
@@ -148,7 +149,7 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
       {editing && <span className="dash-drag-grip" data-tooltip="Drag to move" aria-hidden="true"><Icon name="grip" /></span>}
       <span className="dash-widget-icon" aria-hidden="true"><Icon name={definition?.icon ?? 'grid'} /></span>
       <div className="dash-widget-title"><h2>{widget.title}<span className="dash-widget-summary" ref={slots.header} /></h2>
-        {source && <span className="dash-widget-subtitle">{recordingName(source.path).replace(/\.(?:battleplan|hoi4replay)$/i, '')}</span>}</div>
+        {source && <span className="dash-widget-subtitle">{recordingDisplayName(source.path, names)}</span>}</div>
       {definition?.data !== false && definition?.countrySelection !== false && <WidgetCountryControl widget={widget} template={template} runtime={runtime} onApply={onApply}>
         <CountryChip widget={widget} runtime={runtime} active={active === true} onSlot={slots.country} /></WidgetCountryControl>}
       <div className="dash-widget-actions">

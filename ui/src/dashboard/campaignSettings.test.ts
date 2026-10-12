@@ -1,13 +1,46 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applyColourSet, chosenColour, factionIdentity, loadCampaignSettings, MAX_FACTIONS, parseCampaignSettings, saveCampaignSettings, saveColourSet,
-  setFactionColour, setFactionStyle } from './campaignSettings.ts';
+  setCampaignFlag, setFactionColour, setFactionStyle } from './campaignSettings.ts';
 import { FACTION_APART, factionColours } from '../charts/factionColours.ts';
 import { parseColor, rgbToOklch } from '../shell/appearance/color.ts';
 import { categoricalPalette, distance } from '../charts/palette.ts';
 
 const memory = () => { const values = new Map<string, string>(); return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } }; };
 const FACTIONS = [{ id: '12', name: 'Axis' }, { id: '3', name: 'Allies' }, { id: '40', name: null }];
+
+test('campaign flags preserve opaque recorded tags and faction settings through save, edit and clear', () => {
+  const legacy = parseCampaignSettings({ version: 1, campaigns: { ab: { factions: { 3: { colour: '#123456', name: 'Friends' } } } }, sets: [] });
+  assert.equal(legacy.campaigns.ab.flag, undefined);
+  let settings = setCampaignFlag(legacy, 'ab', 'mod-country-long-tag');
+  const storage = memory();
+  assert.equal(saveCampaignSettings(settings, storage), null);
+  settings = loadCampaignSettings(storage);
+  assert.equal(settings.campaigns.ab.flag, 'mod-country-long-tag');
+  assert.deepEqual(settings.campaigns.ab.factions, legacy.campaigns.ab.factions);
+  settings = setFactionStyle(settings, 'ab', '4', { colour: '#abcdef' });
+  assert.equal(settings.campaigns.ab.flag, 'mod-country-long-tag', 'writing faction settings must retain the flag');
+  settings = setCampaignFlag(settings, 'ab', null);
+  assert.equal(settings.campaigns.ab.flag, undefined);
+  assert.deepEqual(settings.campaigns.ab.factions, { 3: { colour: '#123456', name: 'Friends' }, 4: { colour: '#abcdef' } });
+});
+
+test('campaign flag validation drops malformed flags while preserving factions', () => {
+  for (const flag of ['', '\0', 'mod\0country', null, undefined, 3, {}, []]) {
+    const settings = parseCampaignSettings({ version: 1, campaigns: { ab: { flag, factions: { 3: { colour: '#123456' } } } } });
+    assert.deepEqual(settings.campaigns.ab, { factions: { 3: { colour: '#123456' } } });
+    if (flag !== null) assert.equal(setCampaignFlag(settings, 'ab', flag as string), settings);
+  }
+});
+
+test('campaign flags accept complete long tags and whitespace exactly as recorded', () => {
+  for (const flag of ['x'.repeat(5000), '   ', ' mod-country ']) {
+    const settings = setCampaignFlag(parseCampaignSettings(undefined), 'ab', flag);
+    const storage = memory();
+    assert.equal(saveCampaignSettings(settings, storage), null);
+    assert.equal(loadCampaignSettings(storage).campaigns.ab.flag, flag);
+  }
+});
 
 test('faction styles are stored per campaign, validated and cleared', () => {
   let settings = parseCampaignSettings(undefined);

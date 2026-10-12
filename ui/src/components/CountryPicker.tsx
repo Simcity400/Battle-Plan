@@ -132,12 +132,12 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     const branch = source.metadata.branches.find((branch) => branch.id === witness?.observedBranchId) ?? source.metadata.branches[0];
     return { sourceId: source.id, revision: source.revision, branchId: branch.id,
       hour: witness?.observedBranchId === branch.id ? witness.observedHour ?? branch.firstHour : branch.firstHour };
-  }, [source, selected]);
+  }, [source?.id, source?.revision, source?.metadata.branches, selected]); // eslint-disable-line react-hooks/exhaustive-deps
   const live = (choiceReads !== undefined || (!field || !!allowedTags) && !!flagAt) && !!source;
   const headerContext = useMemo(() => choiceReads !== undefined ? source && headerRead
     ? { sourceId: source.id, revision: source.revision, branchId: headerRead.branchId, hour: headerRead.hour } : null
     : live ? { sourceId: source!.id, revision: source!.revision, branchId: flagAt!.branchId, hour: flagAt!.hour } : flagContext,
-    [choiceReads !== undefined, source, headerRead?.branchId, headerRead?.hour, live, flagAt?.branchId, flagAt?.hour, flagContext]);
+    [choiceReads !== undefined, source?.id, source?.revision, headerRead?.branchId, headerRead?.hour, live, flagAt?.branchId, flagAt?.hour, flagContext]); // eslint-disable-line react-hooks/exhaustive-deps
   const headerIdentity = choiceReads !== undefined ? JSON.stringify([sourceKey, displayHeaderTag, headerTag, headerSize, headerContext?.branchId, headerContext?.hour])
     : `${sourceKey}:${headerTag}:${headerSize}`;
   const headerKey = `${headerIdentity}:${headerContext?.branchId}:${headerContext?.hour}`;
@@ -191,7 +191,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
       if (!controller.signal.aborted) setFlagState(previous => ({ context: nameContext, loads: previous.context === nameContext ? previous.loads : 0, error: String(error) }));
     });
     return () => controller.abort();
-  }, [source, sourceKey, client, visibleTargets, retry, nameContext]);
+  }, [sourceKey, client, visibleTargets, retry, nameContext]); // eslint-disable-line react-hooks/exhaustive-deps
   useLayoutEffect(() => {
     if (open && list.current) setView(listView(list.current.scrollTop, list.current.clientHeight || LIST_HEIGHT));
   }, [open]);

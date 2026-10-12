@@ -1,5 +1,6 @@
 import type { PartialRecording } from '../generated/dashboard';
 import { formatDateTime } from '../dashboard/calendar';
+import { recordingDisplayName, recordingNameTooltip, useRecordingNames } from '../dashboard/recordingNames';
 
 export function partialRecordingText(partial: PartialRecording): string {
   const failed = partial.failedHour === null ? '' : ` · ${formatDateTime(partial.failedHour)} not recorded`;
@@ -7,9 +8,10 @@ export function partialRecordingText(partial: PartialRecording): string {
 }
 
 /** The loaded recording's terminal notice stays visible through playback and tab changes. */
-export function RecordingNotice({ partial }: { partial?: PartialRecording | null }) {
+export function RecordingNotice({ partial, path }: { partial?: PartialRecording | null; path?: string }) {
+  const names = useRecordingNames();
   return partial ? <div className="notice warning shell-recording-notice" role="status">
-    <span>{partialRecordingText(partial)}</span>
+    <span>{path && <><strong data-tooltip={recordingNameTooltip(path, names)}>{recordingDisplayName(path, names)}</strong> · </>}{partialRecordingText(partial)}</span>
   </div> : null;
 }
 

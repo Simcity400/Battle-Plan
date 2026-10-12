@@ -7,7 +7,9 @@ import { createServer } from 'vite';
 // Node strips TypeScript but needs the UI toolchain to compile JSX.
 const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null } });
 const { RecordingNotice, PartialRecordingBadge, partialRecordingText } =
-  await vite.ssrLoadModule('/ui/src/shell/recordingNotice.tsx').finally(() => vite.close()) as typeof import('./recordingNotice.tsx');
+  await vite.ssrLoadModule('/ui/src/shell/recordingNotice.tsx') as typeof import('./recordingNotice.tsx');
+const { saveRecordingNames, setRecordingName } =
+  await vite.ssrLoadModule('/ui/src/dashboard/recordingNames.ts').finally(() => vite.close()) as typeof import('../dashboard/recordingNames.ts');
 
 test('partial recording has a persistent warning notice naming the failure and known hour', () => {
   const partial = { sessionId: '7', reason: 'collector allocation failed', failedHour: 1000 };
@@ -35,4 +37,16 @@ test('idle failure says partial without inventing an unrecorded hour; healthy re
   assert.equal(partialRecordingText(partial), 'Partial recording · collector allocation failed');
   assert.equal(renderToStaticMarkup(createElement(RecordingNotice, { partial: null })), '');
   assert.equal(renderToStaticMarkup(createElement(RecordingNotice)), '');
+});
+
+test('the recording notice shows the display name and falls back to the file name when cleared', () => {
+  const path = 'C:/Original.battleplan', partial = { sessionId: '7', reason: 'The game closed.', failedHour: null };
+  const markup = () => renderToStaticMarkup(createElement(RecordingNotice, { partial, path }));
+  saveRecordingNames(setRecordingName({}, path, 'Weekend campaign'), { getItem: () => null, setItem() {} });
+  assert.match(markup(), /<strong[^>]*>Weekend campaign<\/strong>/);
+  assert.match(markup(), /data-tooltip="Weekend campaign · Original.battleplan"/);
+  assert.match(markup(), /Partial recording · The game closed\./);
+  saveRecordingNames({}, { getItem: () => null, setItem() {} });
+  assert.match(markup(), /<strong[^>]*>Original<\/strong>/);
+  assert.doesNotMatch(markup(), /Weekend campaign/);
 });

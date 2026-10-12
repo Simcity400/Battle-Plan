@@ -34,8 +34,9 @@ export function defaultAfterUnload(current: string | null, removed: string, load
   return current === removed ? loaded.find(id => id !== removed) ?? null : current;
 }
 
+export const normalizeCampaignPath = (path: string) => path.replaceAll('\\', '/').toLowerCase()
+  .replace(/^\/\/\?\/unc\//, '//').replace(/^\/\/\?\//, '');
+
 export function sameCampaignPath(first: string, second: string): boolean {
-  const normalize = (path: string) => path.replaceAll('\\', '/').toLowerCase()
-    .replace(/^\/\/\?\/unc\//, '//').replace(/^\/\/\?\//, '');
-  return normalize(first) === normalize(second);
+  return normalizeCampaignPath(first) === normalizeCampaignPath(second);
 }
