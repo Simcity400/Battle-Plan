@@ -3,6 +3,7 @@ use super::{
     validate_delta, validate_rows, validate_singleton,
 };
 use crate::{Hour, codec::invalid, rows::TableId};
+use engine::allocation;
 use std::{io, sync::LazyLock};
 
 #[derive(Default)]
@@ -72,7 +73,11 @@ impl FrameDecoder {
                 })
             })
             .unwrap_or_else(|| std::array::from_fn(|_| None));
+        let mut allocation_failure = None;
         let tables = std::array::from_fn(|index| {
+            if allocation_failure.is_some() {
+                return not_selected();
+            }
             let table = TableId::ALL[index];
             if self
                 .selected
@@ -98,12 +103,22 @@ impl FrameDecoder {
                     }
                     view
                 }
-                Err(error) => TableView::Unavailable {
-                    reason: error.to_string(),
+                Err(error) => {
+                    if allocation::is_allocation_error(&error) {
+                        allocation_failure = Some(error);
+                        not_selected()
+                    } else {
+                        TableView::Unavailable {
+                            reason: error.to_string(),
+                        }
+                        .into()
+                    }
                 }
-                .into(),
             }
         });
+        if let Some(error) = allocation_failure {
+            return Err(error);
+        }
         self.current = Some(DecodedFrame {
             branch: frame.branch,
             hour: frame.hour,
@@ -137,7 +152,7 @@ fn apply_table(
     match update {
         TableUpdate::Snapshot(values) => {
             validate_complete(table, values, hour)?;
-            Ok(TableView::Complete(values.clone()).into())
+            Ok(TableView::Complete(values.try_clone_validated()?).into())
         }
         TableUpdate::Truncated { rows, missing } => {
             validate_rows(table, rows)?;
@@ -145,7 +160,7 @@ fn apply_table(
                 return Err(invalid("truncated table has no missing rows"));
             }
             Ok(TableView::Truncated {
-                rows: rows.clone(),
+                rows: rows.try_clone_validated()?,
                 missing: *missing,
             }
             .into())
@@ -155,7 +170,7 @@ fn apply_table(
                 return Err(invalid("unavailable table needs a reason"));
             }
             Ok(TableView::Unavailable {
-                reason: reason.clone(),
+                reason: allocation::string(reason)?,
             }
             .into())
         }

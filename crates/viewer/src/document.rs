@@ -740,6 +740,7 @@ impl Document {
         texture_quality: u8,
     ) -> io::Result<Self> {
         let mut warnings = replay.compatibility_gaps();
+        warnings.extend(replay.warnings.iter().cloned());
         engine::executable_tables::initialize(&options.game_dir)?;
         if let Some(replay::spool::ControlRecord::Partial { reason, .. }) = replay.partial() {
             warnings.push(format!("Partial recording: {reason}"));

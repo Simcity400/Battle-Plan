@@ -824,12 +824,17 @@ fn compact_trailer_controls_preserve_order_duplicates_and_session_context() {
         &replay.index,
     )
     .unwrap();
-    assert!(
-        Replay::open(invalid_trailer)
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("unknown session")
+    let damaged = Replay::open(invalid_trailer).unwrap();
+    assert!(damaged.controls.is_empty());
+    assert_eq!(damaged.damaged_parts, 1);
+    assert_eq!(
+        damaged.warnings,
+        ["Unreadable controls: replay control refers to an unknown session"]
+    );
+    assert_eq!(damaged.index, replay.index);
+    assert_eq!(
+        damaged.read_block(&damaged.index[0]).unwrap(),
+        replay.read_block(&replay.index[0]).unwrap()
     );
 }
 
@@ -1020,13 +1025,17 @@ fn parallel_map_keeps_input_order() {
         on_worker: &|| {},
     };
     let items: Vec<u32> = (0..5_000).collect();
-    let out = parallel_map(&items, &parallel, |item| u64::from(*item) * 7);
+    let out = parallel_map(&items, &parallel, |item| u64::from(*item) * 7).unwrap();
     assert!(
         out.iter()
             .enumerate()
             .all(|(at, value)| *value == at as u64 * 7)
     );
-    assert!(parallel_map(&[] as &[u32], &parallel, |item| *item).is_empty());
+    assert!(
+        parallel_map(&[] as &[u32], &parallel, |item| *item)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -1049,7 +1058,7 @@ fn parallel_payloads_report_the_first_bad_frame_in_position_order() {
     payloads[40].truncate(3);
     payloads[9].push(0);
     let slices: Vec<&[u8]> = payloads.iter().map(Vec::as_slice).collect();
-    let sequential = decode_payloads(&slices, None, FormatVersion::CURRENT);
+    let sequential = decode_payloads(&slices, None, FormatVersion::CURRENT).unwrap();
     let parallel = decode_payloads(
         &slices,
         Some(&Parallel {
@@ -1057,7 +1066,8 @@ fn parallel_payloads_report_the_first_bad_frame_in_position_order() {
             on_worker: &|| {},
         }),
         FormatVersion::CURRENT,
-    );
+    )
+    .unwrap();
     let first_error = |results: &[io::Result<Frame>]| {
         results
             .iter()
@@ -1160,28 +1170,9 @@ fn a_seek_that_stops_early_still_refuses_a_block_broken_after_its_hour() {
 }
 
 #[test]
-fn hostile_extents_raw_lengths_and_concatenated_frames_are_refused() {
+fn hostile_extents_raw_lengths_and_concatenated_frames_become_gaps() {
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2])]).unwrap();
-    let mut index = replay.index.clone();
-    index[0].offset = u64::MAX;
-    assert!(
-        Replay::open(rebuild(
-            &replay,
-            replay.bytes()[..replay.trailer_start].into(),
-            &index
-        ))
-        .is_err()
-    );
-    index = replay.index.clone();
-    index[0].raw_length = MAX_BLOCK_RAW_BYTES as u64 + 1;
-    assert!(
-        Replay::open(rebuild(
-            &replay,
-            replay.bytes()[..replay.trailer_start].into(),
-            &index
-        ))
-        .is_err()
-    );
+    let mut index;
     index = replay.index.clone();
     index[0].raw_length = 4;
     let short = Replay::open(rebuild(
@@ -1515,6 +1506,175 @@ fn every_interrupted_append_preserves_previous_file_byte_for_byte() {
 }
 
 #[test]
+fn recovered_recordings_refuse_every_rewrite_and_append_without_touching_the_file() {
+    let healthy = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2])]).unwrap();
+    assert!(!healthy.needed_recovery());
+    let directory =
+        std::env::temp_dir().join(format!("battle-plan-refuse-rewrite-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let destination = directory.join("existing.battleplan");
+    let next = records(2, &[3]);
+    let segments = [(
+        0,
+        Recovery {
+            records: next.clone(),
+            format: Some(FormatVersion::CURRENT),
+            valid_bytes: 0,
+            damage: None,
+        },
+    )];
+    let message = "This recording is damaged, so it can't be added to; start a new file.";
+    for case in ["skipped-index", "unindexed", "checksum", "withheld-control"] {
+        let mut bytes = healthy.bytes().to_vec();
+        match case {
+            "skipped-index" => {
+                let mut index = healthy.index.clone();
+                index[0].raw_length = 3;
+                bytes = rebuild(&healthy, bytes[..healthy.trailer_start].into(), &index);
+            }
+            "unindexed" => {
+                let mut prefix = bytes[..healthy.trailer_start].to_vec();
+                prefix.extend_from_slice(b"unindexed");
+                bytes = rebuild(&healthy, prefix, &healthy.index);
+            }
+            "checksum" => *bytes.last_mut().unwrap() ^= 1,
+            "withheld-control" => {
+                bytes.truncate(healthy.trailer_start);
+                finish_file(
+                    &mut bytes,
+                    &healthy.sessions,
+                    &healthy.branches,
+                    &healthy.gaps,
+                    &[ControlRecord::Detach {
+                        session: 99,
+                        last_hour: None,
+                    }],
+                    &[],
+                    &healthy.index,
+                )
+                .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let recovered = Replay::open(bytes.clone()).unwrap();
+        assert!(recovered.needed_recovery(), "{case}");
+        assert_eq!(
+            recovered
+                .append(std::slice::from_ref(&next))
+                .err()
+                .unwrap()
+                .to_string(),
+            message,
+            "{case}"
+        );
+        assert_eq!(
+            recovered
+                .append_recovered(&segments)
+                .err()
+                .unwrap()
+                .to_string(),
+            message,
+            "{case}"
+        );
+        assert_eq!(
+            recovered
+                .append_recovered_with(&segments, |_, _, _| panic!("must not observe new frames"))
+                .err()
+                .unwrap()
+                .to_string(),
+            message,
+            "{case}"
+        );
+        assert_eq!(
+            recovered
+                .append_recovered_with_reader(
+                    &segments,
+                    |_, _| panic!("must not read new frames"),
+                    |_, _, _| panic!("must not observe new frames")
+                )
+                .err()
+                .unwrap()
+                .to_string(),
+            message,
+            "{case}"
+        );
+        let mut publisher = MemoryPublisher::new(&bytes);
+        // Returning the damage error proves refusal happens before create.
+        publisher.fail_create = true;
+        assert_eq!(
+            recovered
+                .publish_with(&mut publisher, |_| panic!("must not publish"))
+                .unwrap_err()
+                .to_string(),
+            message,
+            "{case}"
+        );
+        assert_eq!(publisher.existing, bytes, "{case}");
+        std::fs::write(&destination, &bytes).unwrap();
+        assert_eq!(
+            recovered
+                .write_atomic(&destination)
+                .unwrap_err()
+                .to_string(),
+            message,
+            "{case}"
+        );
+        assert_eq!(std::fs::read(&destination).unwrap(), bytes, "{case}");
+        assert!(!temporary_path(&destination).exists(), "{case}");
+        assert_eq!(
+            Replay::open(bytes.clone())
+                .unwrap()
+                .add_recovery_notes(&[])
+                .err()
+                .unwrap()
+                .to_string(),
+            message,
+            "{case}"
+        );
+        assert_eq!(
+            recovered.into_history().err().unwrap().to_string(),
+            message,
+            "{case}"
+        );
+    }
+    std::fs::remove_file(destination).unwrap();
+    std::fs::remove_dir(directory).unwrap();
+}
+
+#[test]
+fn recorded_gap_and_table_diagnostics_are_not_shortened() {
+    let reason = "recorded message: ".to_owned() + &"\u{e9}".repeat(2048);
+    let mut input = records(1, &[1]);
+    let Record::Frame(frame) = &mut input[2] else {
+        unreachable!()
+    };
+    frame.tables[TableId::WorldTension.index()] = TableUpdate::Unavailable {
+        reason: reason.clone(),
+    };
+    input.push(Record::Gap(Gap {
+        branch: 1,
+        first_hour: 2,
+        last_hour: 3,
+        reason: reason.clone(),
+    }));
+    let replay = Replay::from_records(CAMPAIGN.into(), &[input]).unwrap();
+    let SeekResult::Gap { reason: actual, .. } = replay.seek(1, 2).unwrap() else {
+        panic!("expected recorded gap")
+    };
+    assert_eq!(actual, reason);
+    let SeekResult::Frame(frame) = replay.seek(1, 1).unwrap() else {
+        panic!("expected readable frame")
+    };
+    assert_eq!(
+        frame
+            .complete::<crate::rows::tables::WorldTension>()
+            .unwrap_err()
+            .to_string(),
+        format!("hour 1 WorldTension is unavailable: {reason}")
+    );
+}
+
+#[test]
 fn format97_replay_opens_seeks_and_decodes_selected_and_parallel_blocks() {
     let hours = (1..=64).collect::<Vec<_>>();
     let current = Replay::from_records(CAMPAIGN.into(), &[records(1, &hours)]).unwrap();
@@ -1563,6 +1723,462 @@ fn format97_replay_opens_seeks_and_decodes_selected_and_parallel_blocks() {
 }
 #[path = "compatibility_tests.rs"]
 mod compatibility_tests;
+#[path = "security_tests.rs"]
+mod security_tests;
+
+#[test]
+fn invalid_index_entries_are_skipped_without_changing_readable_blocks() {
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, &[1, 2]), records(2, &[100, 101])],
+    )
+    .unwrap();
+    for case in [
+        "offset",
+        "overflow",
+        "zero-length",
+        "overlap",
+        "raw-short",
+        "raw-large",
+        "hours",
+        "hour-span",
+        "unknown-branch",
+        "overlapping-hours",
+    ] {
+        let mut index = replay.index.clone();
+        match case {
+            "offset" => index[1].offset = u64::MAX,
+            "overflow" => index[1].length = u64::MAX,
+            "zero-length" => index[1].length = 0,
+            "overlap" => index[1].offset = index[0].offset,
+            "raw-short" => index[1].raw_length = 3,
+            "raw-large" => index[1].raw_length = MAX_BLOCK_RAW_BYTES as u64 + 1,
+            "hours" => index[1].last_hour = index[1].first_hour - 1,
+            "hour-span" => index[1].last_hour = index[1].first_hour + KEYFRAME_INTERVAL as i32,
+            "unknown-branch" => index[1].branch = 99,
+            "overlapping-hours" => {
+                index[1].branch = index[0].branch;
+                index[1].first_hour = index[0].first_hour;
+                index[1].last_hour = index[0].last_hour;
+            }
+            _ => unreachable!(),
+        }
+        let damaged = Replay::open(rebuild(
+            &replay,
+            replay.bytes()[..replay.trailer_start].into(),
+            &index,
+        ))
+        .unwrap();
+        assert_eq!(damaged.index, replay.index[..1], "{case}");
+        assert_eq!(
+            damaged.read_block(&damaged.index[0]).unwrap(),
+            replay.read_block(&replay.index[0]).unwrap(),
+            "{case}"
+        );
+        assert!(
+            matches!(damaged.seek(2, 100).unwrap(), SeekResult::Gap { .. }),
+            "{case}"
+        );
+        assert_eq!(damaged.damaged_parts, 2, "{case}");
+        assert!(
+            damaged
+                .warnings
+                .iter()
+                .any(|reason| reason.contains("Skipped block")),
+            "{case}"
+        );
+        if !matches!(
+            case,
+            "hours" | "hour-span" | "unknown-branch" | "overlapping-hours"
+        ) {
+            assert_eq!(damaged.gaps.last().unwrap().first_hour, 100);
+            assert_eq!(damaged.damaged_range, Some((100, 101)));
+        }
+    }
+}
+
+#[test]
+fn readable_trailers_warn_for_checksum_and_trailing_bytes_and_preserve_partial_status() {
+    let mut input = records(1, &[1, 2]);
+    input.push(Record::Control(ControlRecord::Partial {
+        session: 1,
+        reason: "synthetic terminal failure".into(),
+        failed_hour: None,
+    }));
+    let replay = Replay::from_records(CAMPAIGN.into(), &[input]).unwrap();
+    for case in ["checksum", "trailing"] {
+        let mut bytes = replay.bytes().to_vec();
+        if case == "checksum" {
+            *bytes.last_mut().unwrap() ^= 1;
+        } else {
+            let footer = bytes.len() - FOOTER_SIZE;
+            let mut tail = bytes.split_off(footer);
+            bytes.extend_from_slice(b"extra");
+            tail[12..20]
+                .copy_from_slice(&((footer - replay.trailer_start + 5) as u64).to_le_bytes());
+            tail[20..24]
+                .copy_from_slice(&crc32fast::hash(&bytes[replay.trailer_start..]).to_le_bytes());
+            bytes.extend(tail);
+        }
+        let length = bytes.len() as u64;
+        assert_eq!(
+            Replay::read_partial_from(&mut std::io::Cursor::new(&bytes), length)
+                .unwrap()
+                .as_ref(),
+            replay.partial()
+        );
+        let damaged = Replay::open(bytes).unwrap();
+        assert_eq!(damaged.partial(), replay.partial());
+        assert_eq!(damaged.index, replay.index);
+        assert_eq!(
+            damaged.read_block(&damaged.index[0]).unwrap(),
+            replay.read_block(&replay.index[0]).unwrap()
+        );
+        assert_eq!(damaged.damaged_parts, 0);
+        assert_eq!(damaged.warnings.len(), 1);
+    }
+}
+
+#[test]
+fn a_skipped_first_index_entry_compacts_and_preserves_later_blocks() {
+    let healthy = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 721, 1441])]).unwrap();
+    let mut index = healthy.index.clone();
+    index[0].raw_length = 3;
+    let recovered = Replay::open(rebuild(
+        &healthy,
+        healthy.bytes()[..healthy.trailer_start].to_vec(),
+        &index,
+    ))
+    .unwrap();
+    assert_eq!(recovered.index, healthy.index[1..]);
+    assert_eq!(recovered.damaged_parts, 2);
+    assert_eq!(recovered.damaged_range, Some((1, 1)));
+    for (actual, expected) in recovered.index.iter().zip(&healthy.index[1..]) {
+        assert_eq!(
+            recovered.read_block(actual).unwrap(),
+            healthy.read_block(expected).unwrap()
+        );
+    }
+}
+
+#[test]
+fn readable_index_survives_unindexed_bytes_and_conflicting_controls() {
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2])]).unwrap();
+    let expected = replay.read_block(&replay.index[0]).unwrap();
+    let mut prefix = replay.bytes()[..replay.trailer_start].to_vec();
+    prefix.extend_from_slice(b"unindexed");
+    let damaged = Replay::open(rebuild(&replay, prefix, &replay.index)).unwrap();
+    assert_eq!(damaged.read_block(&damaged.index[0]).unwrap(), expected);
+    assert_eq!(damaged.damaged_parts, 1);
+    assert_eq!(damaged.damaged_range, None);
+    assert!(
+        damaged
+            .warnings
+            .iter()
+            .any(|reason| reason.contains("unindexed"))
+    );
+    let mut bytes = replay.bytes()[..replay.trailer_start].to_vec();
+    finish_file(
+        &mut bytes,
+        &replay.sessions,
+        &replay.branches,
+        &[Gap {
+            branch: 99,
+            first_hour: 100,
+            last_hour: 100,
+            reason: "synthetic missing context".into(),
+        }],
+        &[],
+        &[],
+        &replay.index,
+    )
+    .unwrap();
+    let damaged = Replay::open(bytes).unwrap();
+    assert!(damaged.gaps.is_empty());
+    assert_eq!(damaged.damaged_parts, 1);
+    assert!(
+        damaged
+            .warnings
+            .iter()
+            .any(|reason| reason.contains("Unreadable gap metadata"))
+    );
+    assert_eq!(damaged.read_block(&damaged.index[0]).unwrap(), expected);
+    for session in [1, 99] {
+        let partial = ControlRecord::Partial {
+            session,
+            reason: "synthetic failure".into(),
+            failed_hour: None,
+        };
+        let controls = if session == 1 {
+            vec![partial.clone(), partial]
+        } else {
+            vec![partial]
+        };
+        let mut bytes = replay.bytes()[..replay.trailer_start].to_vec();
+        finish_file(
+            &mut bytes,
+            &replay.sessions,
+            &replay.branches,
+            &replay.gaps,
+            &controls,
+            &[],
+            &replay.index,
+        )
+        .unwrap();
+        let length = bytes.len() as u64;
+        assert_eq!(
+            Replay::read_partial_from(&mut std::io::Cursor::new(&bytes), length).unwrap(),
+            None
+        );
+        let damaged = Replay::open(bytes).unwrap();
+        assert!(damaged.controls.is_empty());
+        assert_eq!(damaged.damaged_parts, 1);
+        assert!(
+            damaged
+                .warnings
+                .iter()
+                .any(|reason| reason.contains("Unreadable controls"))
+        );
+        assert_eq!(damaged.read_block(&damaged.index[0]).unwrap(), expected);
+    }
+}
+
+#[test]
+fn each_unindexed_region_counts_once_without_inventing_dates() {
+    let healthy = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 721])]).unwrap();
+    let mut prefix = healthy.bytes()[..healthy.header_end].to_vec();
+    let mut index = healthy.index.clone();
+    for block in &mut index {
+        prefix.extend_from_slice(b"unindexed");
+        let compressed =
+            &healthy.bytes()[block.offset as usize..(block.offset + block.length) as usize];
+        block.offset = prefix.len() as u64;
+        prefix.extend_from_slice(compressed);
+    }
+    prefix.extend_from_slice(b"unindexed tail");
+    let recovered = Replay::open(rebuild(&healthy, prefix, &index)).unwrap();
+    assert_eq!(recovered.damaged_parts, 3);
+    assert_eq!(recovered.damaged_range, None);
+    assert!(recovered.gaps.is_empty());
+    assert_eq!(recovered.warnings.len(), 3);
+    for (actual, expected) in recovered.index.iter().zip(&healthy.index) {
+        assert_eq!(
+            recovered.read_block(actual).unwrap(),
+            healthy.read_block(expected).unwrap()
+        );
+    }
+}
+
+#[test]
+fn invalid_length_prefixed_trailer_records_are_skipped_and_framing_stays_strict() {
+    let base = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2])]).unwrap();
+    let gaps = [
+        Gap {
+            branch: 1,
+            first_hour: 3,
+            last_hour: 4,
+            reason: "bad".into(),
+        },
+        Gap {
+            branch: 1,
+            first_hour: 5,
+            last_hour: 6,
+            reason: "good".into(),
+        },
+    ];
+    let controls = [
+        ControlRecord::GapSummary {
+            session: 1,
+            dropped_frames: 2,
+            reason: "bad".into(),
+        },
+        ControlRecord::Partial {
+            session: 1,
+            reason: "bad".into(),
+            failed_hour: None,
+        },
+        ControlRecord::Detach {
+            session: 1,
+            last_hour: Some(2),
+        },
+    ];
+    let notes = [
+        RecoveryNote {
+            session: Some(1),
+            segment: 0,
+            valid_bytes: 10,
+            reason: "bad".into(),
+        },
+        RecoveryNote {
+            session: Some(1),
+            segment: 1,
+            valid_bytes: 20,
+            reason: "good".into(),
+        },
+    ];
+    let mut healthy = base.bytes()[..base.trailer_start].to_vec();
+    finish_file(
+        &mut healthy,
+        &base.sessions,
+        &base.branches,
+        &gaps,
+        &controls,
+        &notes,
+        &base.index,
+    )
+    .unwrap();
+    let footer = healthy.len() - FOOTER_SIZE;
+    let mut trailer = Decoder::new(&healthy[base.trailer_start..footer]);
+    trailer.take(4).unwrap();
+    let mut lists = Vec::new();
+    for _ in 0..5 {
+        let count = trailer.count(4).unwrap();
+        let mut ranges = Vec::new();
+        for _ in 0..count {
+            let length = trailer.u32().unwrap() as usize;
+            let start = footer - trailer.remaining();
+            trailer.take(length).unwrap();
+            ranges.push(start..start + length);
+        }
+        lists.push(ranges);
+    }
+    for case in [
+        "reversed-gap",
+        "blank-gap",
+        "zero-summary",
+        "blank-partial",
+        "unknown-control",
+        "blank-recovery",
+    ] {
+        let mut bytes = healthy.clone();
+        let (list, record, warning) = match case {
+            "reversed-gap" | "blank-gap" => (2, 0, "Unreadable gap record"),
+            "zero-summary" | "unknown-control" => (3, 0, "Unreadable control record"),
+            "blank-partial" => (3, 1, "Unreadable control record"),
+            "blank-recovery" => (4, 0, "Unreadable recovery note record"),
+            _ => unreachable!(),
+        };
+        let range = &lists[list][record];
+        match case {
+            "reversed-gap" => {
+                bytes[range.start + 12..range.start + 16].copy_from_slice(&2_i32.to_le_bytes())
+            }
+            "zero-summary" => bytes[range.start + 9..range.start + 17].fill(0),
+            "blank-partial" => bytes[range.start + 13..range.start + 16].fill(b' '),
+            "unknown-control" => bytes[range.start] = 255,
+            _ => bytes[range.end - 3..range.end].fill(b' '),
+        }
+        let crc = crc32fast::hash(&bytes[base.trailer_start..footer]);
+        bytes[footer + 20..].copy_from_slice(&crc.to_le_bytes());
+        let partial =
+            Replay::read_partial_from(&mut std::io::Cursor::new(&bytes), bytes.len() as u64)
+                .unwrap();
+        assert_eq!(
+            partial.as_ref(),
+            if case == "blank-partial" {
+                None
+            } else {
+                Some(&controls[1])
+            },
+            "{case}"
+        );
+        let recovered = Replay::open(bytes).unwrap();
+        assert_eq!(recovered.damaged_parts, 1, "{case}");
+        assert_eq!(recovered.damaged_range, None, "{case}");
+        assert_eq!(recovered.warnings.len(), 1, "{case}");
+        assert!(recovered.warnings[0].starts_with(warning), "{case}");
+        assert_eq!(
+            recovered.gaps,
+            if list == 2 {
+                gaps[1..].to_vec()
+            } else {
+                gaps.to_vec()
+            },
+            "{case}"
+        );
+        assert_eq!(
+            recovered.controls,
+            controls
+                .iter()
+                .enumerate()
+                .filter(|(position, _)| list != 3 || *position != record)
+                .map(|(_, control)| control.clone())
+                .collect::<Vec<_>>(),
+            "{case}"
+        );
+        assert_eq!(
+            recovered.recovery_notes,
+            if list == 4 {
+                notes[1..].to_vec()
+            } else {
+                notes.to_vec()
+            },
+            "{case}"
+        );
+        assert_eq!(recovered.index, base.index, "{case}");
+        assert_eq!(
+            recovered.read_block(&recovered.index[0]).unwrap(),
+            base.read_block(&base.index[0]).unwrap(),
+            "{case}"
+        );
+    }
+    for list in [0, 1, 2, 3, 4] {
+        let mut bytes = healthy.clone();
+        let range = &lists[list][0];
+        bytes[range.start - 4..range.start].copy_from_slice(&u32::MAX.to_le_bytes());
+        let crc = crc32fast::hash(&bytes[base.trailer_start..footer]);
+        bytes[footer + 20..].copy_from_slice(&crc.to_le_bytes());
+        assert!(
+            Replay::read_partial_from(&mut std::io::Cursor::new(&bytes), bytes.len() as u64)
+                .is_err()
+        );
+        assert!(Replay::open(bytes).is_err());
+    }
+}
+
+#[test]
+fn noncontiguous_branches_and_sessions_warn_without_losing_valid_blocks() {
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[
+            records(1, &[1, 1 + KEYFRAME_INTERVAL as i32]),
+            records(2, &[100]),
+        ],
+    )
+    .unwrap();
+    assert_eq!(replay.index.len(), 3);
+    let mut prefix = replay.bytes()[..replay.header_end].to_vec();
+    let order = [0, 2, 1];
+    let mut index = Vec::new();
+    for position in order {
+        let mut block = replay.index[position].clone();
+        let compressed =
+            &replay.bytes()[block.offset as usize..(block.offset + block.length) as usize];
+        block.offset = prefix.len() as u64;
+        prefix.extend_from_slice(compressed);
+        index.push(block);
+    }
+    let modified = Replay::open(rebuild(&replay, prefix, &index)).unwrap();
+    assert_eq!(modified.damaged_parts, 0);
+    assert!(
+        modified
+            .warnings
+            .iter()
+            .any(|reason| reason.contains("branch blocks are not contiguous"))
+    );
+    assert!(
+        modified
+            .warnings
+            .iter()
+            .any(|reason| reason.contains("session blocks are not contiguous"))
+    );
+    for (new, old) in order.into_iter().enumerate() {
+        assert_eq!(
+            modified.read_block(&modified.index[new]).unwrap(),
+            replay.read_block(&replay.index[old]).unwrap()
+        );
+    }
+}
 
 #[cfg(windows)]
 #[path = "publication_tests.rs"]

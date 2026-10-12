@@ -20,7 +20,8 @@ use replay::{
 };
 
 use crate::{
-    BranchMetadata, CountryMetadata, PartialRecording, RecordingGap, ReplayMetadata, invalid,
+    BranchMetadata, CountryMetadata, DamagedRecording, PartialRecording, RecordingGap,
+    ReplayMetadata, invalid,
 };
 
 const MAX_WARNINGS: usize = 32;
@@ -32,11 +33,7 @@ pub fn read(
     cancelled: &AtomicBool,
 ) -> io::Result<ReplayMetadata> {
     check_cancel(cancelled)?;
-    let branches = replay
-        .branches
-        .iter()
-        .map(|branch| branch_metadata(replay, branch))
-        .collect();
+    let branches = read_branches(replay, cancelled)?;
     let mut metadata = ReplayMetadata {
         path: path.to_string_lossy().into_owned(),
         name: path
@@ -45,93 +42,144 @@ pub fn read(
             .to_string_lossy()
             .into_owned(),
         format: replay.format.version(),
-        campaign_key: crate::map_settings::campaign_key(replay),
+        campaign_key: crate::map_settings::try_campaign_key(replay)?,
         branches,
         countries: Vec::new(),
         player_country_id: None,
         content_verified: replay.content_verified(),
-        partial: replay.partial().and_then(partial_recording),
+        partial: replay
+            .partial()
+            .map(partial_recording)
+            .transpose()?
+            .flatten(),
+        damaged: (!replay.warnings.is_empty()).then(|| DamagedRecording {
+            parts: replay.damaged_parts,
+            first_hour: replay.damaged_range.map(|range| range.0),
+            last_hour: replay.damaged_range.map(|range| range.1),
+            reasons: Vec::new(),
+        }),
         warnings: replay.compatibility_gaps(),
     };
     if !metadata.content_verified {
         warn(&mut metadata.warnings, "The recorder did not verify the content identity. The dashboard reads recorded values only and does not verify local game assets.".into());
     }
+    for warning in &replay.warnings {
+        if let Some(damaged) = &mut metadata.damaged {
+            warn(&mut damaged.reasons, warning.clone());
+        }
+        warn(&mut metadata.warnings, warning.clone());
+    }
     let mut known = HashSet::new();
     for branch in &replay.branches {
-        check_cancel(cancelled)?;
-        let mut catalogue = Catalogue::default();
-        let mut player_country_id = None;
-        let mut warnings = Vec::new();
-        let Some(block) = replay.index.iter().find(|block| block.branch == branch.id) else {
-            continue;
-        };
-        // Only the tables the catalogue reads, up to its first complete country table.
-        let mut decoder = FrameDecoder::for_tables(&CATALOGUE_TABLES);
-        let read = replay.visit_block(block, Some(&CATALOGUE_TABLES), |frame| {
+        // A branch's first readable block supplies its catalogue; an unreadable
+        // block becomes a gap and the next is tried. Later blocks are read on demand.
+        for block in replay
+            .index
+            .iter()
+            .filter(|block| block.branch == branch.id)
+        {
             check_cancel(cancelled)?;
-            let decoded = match decoder.advance(&frame).and_then(|decoded| {
+            let mut catalogue = Catalogue::default();
+            let mut player_country_id = None;
+            // Only the tables the catalogue reads, up to its first complete country table.
+            let mut decoder = FrameDecoder::for_tables(&CATALOGUE_TABLES);
+            let read = replay.visit_block(block, Some(&CATALOGUE_TABLES), |frame| {
+                check_cancel(cancelled)?;
+                let decoded = decoder.advance(&frame)?;
                 validate_campaign(decoded, replay)?;
-                Ok(decoded)
-            }) {
-                Ok(decoded) => decoded,
-                Err(error) => {
-                    warn(
-                        &mut warnings,
-                        format!("Branch {} catalogue: {error}", branch.id),
-                    );
-                    return Ok(false);
+                let (rows, links) = match country_tables(decoded) {
+                    Ok(tables) => tables,
+                    Err(error) if engine::allocation::is_allocation_error(&error) => {
+                        return Err(error);
+                    }
+                    Err(_) => return Ok(true),
+                };
+                catalogue.observe(rows, links, branch.id, frame.hour)?;
+                player_country_id = player_slot(decoded, links)?.map(|slot| slot.to_string());
+                Ok(false)
+            });
+            if let Err(error) = read {
+                check_cancel(cancelled)?;
+                if engine::allocation::is_allocation_error(&error) {
+                    return Err(error);
                 }
-            };
-            let Ok((rows, links)) = country_tables(decoded) else {
-                return Ok(true);
-            };
-            catalogue.observe(rows, links, branch.id, frame.hour);
-            player_country_id = player_slot(decoded, links).map(|slot| slot.to_string());
-            Ok(false)
-        });
-        if let Err(error) = read {
-            check_cancel(cancelled)?;
-            warn(
-                &mut metadata.warnings,
-                format!("Branch {} initial block is unreadable: {error}", branch.id),
-            );
-            continue;
+                let reason = replay::codec::try_format(format_args!(
+                    "Branch {} block {} – {} is unreadable: {}",
+                    branch.id,
+                    block.first_hour,
+                    block.last_hour,
+                    replay::codec::diagnostic_text(&error.to_string())
+                ))?;
+                let branch_metadata = metadata
+                    .branches
+                    .iter_mut()
+                    .find(|entry| entry.id == branch.id.to_string())
+                    .unwrap();
+                engine::allocation::reserve(&mut branch_metadata.gaps, 1)?;
+                branch_metadata.gaps.push(RecordingGap {
+                    first_hour: block.first_hour,
+                    last_hour: block.last_hour,
+                    reason: reason.clone(),
+                });
+                damage(
+                    &mut metadata,
+                    1,
+                    Some((block.first_hour, block.last_hour)),
+                    reason,
+                );
+                continue;
+            }
+            if metadata.player_country_id.is_none() {
+                metadata.player_country_id = player_country_id;
+            }
+            let countries = catalogue.finish(&mut metadata.warnings)?;
+            merge_countries(&mut metadata.countries, &mut known, countries)?;
+            break;
         }
-        for warning in warnings {
-            warn(&mut metadata.warnings, warning);
-        }
-        if metadata.player_country_id.is_none() {
-            metadata.player_country_id = player_country_id;
-        }
-        let countries = catalogue.finish(&mut metadata.warnings);
-        merge_countries(&mut metadata.countries, &mut known, countries);
     }
     check_cancel(cancelled)?;
     Ok(metadata)
 }
 
+fn damage(metadata: &mut ReplayMetadata, parts: usize, range: Option<(i32, i32)>, reason: String) {
+    let damaged = metadata
+        .damaged
+        .get_or_insert_with(DamagedRecording::default);
+    damaged.parts += parts;
+    if let Some((first, last)) = range {
+        damaged.first_hour = Some(damaged.first_hour.map_or(first, |hour| hour.min(first)));
+        damaged.last_hour = Some(damaged.last_hour.map_or(last, |hour| hour.max(last)));
+    }
+    warn(&mut damaged.reasons, reason.clone());
+    warn(&mut metadata.warnings, reason);
+}
+
 /// The terminal marker is separate from gaps: an unknown failed hour has none.
-pub fn partial_recording(control: &replay::spool::ControlRecord) -> Option<PartialRecording> {
+pub fn partial_recording(
+    control: &replay::spool::ControlRecord,
+) -> io::Result<Option<PartialRecording>> {
     let replay::spool::ControlRecord::Partial {
         session,
         reason,
         failed_hour,
     } = control
     else {
-        return None;
+        return Ok(None);
     };
-    Some(PartialRecording {
-        session_id: session.to_string(),
-        reason: reason.clone(),
+    Ok(Some(PartialRecording {
+        session_id: replay::codec::try_format(format_args!("{session}"))?,
+        reason: engine::allocation::string(reason)?,
         failed_hour: *failed_hour,
-    })
+    }))
 }
 
 /// Lists terminal metadata without reading or inflating recorded frame blocks.
 pub fn read_partial_recording(path: &Path) -> io::Result<Option<PartialRecording>> {
-    Ok(Replay::read_partial(path)?
+    Replay::read_partial(path)?
         .as_ref()
-        .and_then(partial_recording))
+        .map(partial_recording)
+        .transpose()
+        .map(Option::flatten)
 }
 
 pub fn country_tables(frame: &DecodedFrame) -> io::Result<(&[CountryRow], &[CountryLinkRow])> {
@@ -398,8 +446,6 @@ pub fn tagged_countries_indexed<'a>(
     tagged
 }
 
-/// The recording client's stored viewpoint, including an observer's selected
-/// country. Multiplayer roster order never identifies the local client.
 /// The tables the catalogue reads from each branch's first frames.
 const CATALOGUE_TABLES: [TableId; 4] = [
     TableId::Campaign,
@@ -408,11 +454,20 @@ const CATALOGUE_TABLES: [TableId; 4] = [
     TableId::LocalPlayer,
 ];
 
-fn player_slot(frame: &DecodedFrame, links: &[CountryLinkRow]) -> Option<u32> {
-    let [player] = frame.complete::<tables::LocalPlayer>().ok()? else {
-        return None;
+/// The local player's slot; no player when the table is not complete. Only an
+/// allocation failure is an error.
+fn player_slot(frame: &DecodedFrame, links: &[CountryLinkRow]) -> io::Result<Option<u32>> {
+    let players = match frame.complete::<tables::LocalPlayer>() {
+        Ok(players) => players,
+        Err(error) if engine::allocation::is_allocation_error(&error) => return Err(error),
+        Err(_) => return Ok(None),
     };
-    link_slot(links, player.viewing_country()?)
+    let [player] = players else {
+        return Ok(None);
+    };
+    Ok(player
+        .viewing_country()
+        .and_then(|country| link_slot(links, country)))
 }
 
 /// Identical campaign guard to Replay::seek, including intermediate frames.
@@ -474,97 +529,109 @@ pub(crate) fn branch_bounds(replay: &Replay, branch: &BranchStart) -> (i32, i32)
     (first, last)
 }
 
-fn branch_metadata(replay: &Replay, branch: &BranchStart) -> BranchMetadata {
-    let (first, last) = branch_bounds(replay, branch);
-    let (parent_id, parent_hour) = match branch.parent {
-        Parentage::Unknown => (None, None),
-        Parentage::Probable { branch, hour } => (Some(branch.to_string()), Some(hour)),
-    };
-    let sample_boundary = replay
-        .sessions
-        .iter()
-        .find(|session| session.id == branch.session)
-        .expect("Replay::open validated branch session")
-        .sample_boundary
-        .name()
-        .to_owned();
-    BranchMetadata {
-        id: branch.id.to_string(),
-        session_id: branch.session.to_string(),
-        first_hour: first,
-        last_hour: last,
-        parent_id,
-        parent_hour,
-        sample_boundary,
-        gaps: replay
-            .gaps
+fn read_branches(replay: &Replay, cancelled: &AtomicBool) -> io::Result<Vec<BranchMetadata>> {
+    let mut branches = engine::allocation::vec(replay.branches.len())?;
+    for branch in &replay.branches {
+        check_cancel(cancelled)?;
+        let (first_hour, last_hour) = branch_bounds(replay, branch);
+        let (parent_id, parent_hour) = match branch.parent {
+            Parentage::Unknown => (None, None),
+            Parentage::Probable { branch, hour } => (Some(branch.to_string()), Some(hour)),
+        };
+        let session = replay
+            .sessions
             .iter()
-            .filter(|gap| gap.branch == branch.id)
-            .map(|gap| RecordingGap {
+            .find(|session| session.id == branch.session)
+            .ok_or_else(|| invalid("branch refers to an unknown session"))?;
+        let mut gaps = Vec::new();
+        for gap in replay.gaps.iter().filter(|gap| gap.branch == branch.id) {
+            engine::allocation::reserve(&mut gaps, 1)?;
+            gaps.push(RecordingGap {
                 first_hour: gap.first_hour,
                 last_hour: gap.last_hour,
-                reason: gap.reason.clone(),
-            })
-            .collect(),
+                reason: engine::allocation::string(&gap.reason)?,
+            });
+        }
+        branches.push(BranchMetadata {
+            id: branch.id.to_string(),
+            session_id: branch.session.to_string(),
+            first_hour,
+            last_hour,
+            parent_id,
+            parent_hour,
+            sample_boundary: engine::allocation::string(session.sample_boundary.name())?,
+            gaps,
+        });
     }
+    Ok(branches)
 }
 
 #[derive(Default)]
 pub(crate) struct Catalogue {
-    rows: BTreeMap<u32, CountryMetadata>,
+    rows: Vec<CountryMetadata>,
     bad_mapping: bool,
 }
 
 impl Catalogue {
-    fn observe_mapped(&mut self, row: &CountryRow, slot: Option<u32>, branch: BranchId, hour: i32) {
-        let Some(slot) = slot else {
-            self.bad_mapping = true;
-            return;
-        };
-        self.rows.entry(slot).or_insert_with(|| CountryMetadata {
-            id: slot.to_string(),
-            tag: short_text(&String::from_utf8_lossy(&row.tag), 512),
-            // Named by `Source::name_countries` once game content is known.
-            name: short_text(&String::from_utf8_lossy(&row.tag), 512),
-            observed_branch_id: branch.to_string(),
-            observed_hour: hour,
-        });
-    }
-
     fn observe(
         &mut self,
         rows: &[CountryRow],
         links: &[CountryLinkRow],
         branch: BranchId,
         hour: i32,
-    ) {
+    ) -> io::Result<()> {
+        // The first complete country read supplies this branch's catalogue.
+        // Index borrowed rows, then allocate just the admitted output countries.
+        let mut first = HashMap::new();
         for row in rows {
-            self.observe_mapped(row, mapped_slot(row, links).ok(), branch, hour);
+            let Ok(slot) = mapped_slot(row, links) else {
+                self.bad_mapping = true;
+                continue;
+            };
+            if !first.contains_key(&slot) {
+                engine::allocation::reserve_map(&mut first, 1)?;
+                first.insert(slot, row);
+            }
         }
+        self.rows = engine::allocation::vec(first.len())?;
+        for (slot, row) in first {
+            let tag = String::from_utf8_lossy(&row.tag[..row.tag.len().min(512 + 3)]);
+            self.rows.push(CountryMetadata {
+                id: slot.to_string(),
+                tag: short_text(&tag, 512),
+                // Named by Source::name_countries once game content is known.
+                name: short_text(&tag, 512),
+                observed_branch_id: branch.to_string(),
+                observed_hour: hour,
+            });
+        }
+        Ok(())
     }
 
-    pub(crate) fn finish(self, warnings: &mut Vec<String>) -> Vec<CountryMetadata> {
+    pub(crate) fn finish(mut self, warnings: &mut Vec<String>) -> io::Result<Vec<CountryMetadata>> {
         if self.bad_mapping {
             warn(warnings, "Some country rows have missing or conflicting CountryLinks mappings and are excluded from the catalogue.".into());
         }
-        self.rows.into_values().collect()
+        // Canonical slot IDs are decimal without leading zeroes.
+        self.rows
+            .sort_unstable_by(|a, b| a.id.len().cmp(&b.id.len()).then_with(|| a.id.cmp(&b.id)));
+        Ok(self.rows)
     }
 }
 
-/// One entry per (slot, tag): a country that keeps its identity across branches
-/// is listed once, at its first observation in branch order, so the catalogue
-/// scales with countries rather than countries x branches. Every consumer looks
-/// countries up by slot or tag and takes the first match, which this keeps.
 fn merge_countries(
     merged: &mut Vec<CountryMetadata>,
     known: &mut HashSet<(String, String)>,
     countries: Vec<CountryMetadata>,
-) {
+) -> io::Result<()> {
     for country in countries {
+        engine::allocation::reserve_set(known, 1)?;
         if known.insert((country.id.clone(), country.tag.clone())) {
+            engine::allocation::reserve(merged, 1)?;
             merged.push(country);
         }
     }
+    Ok(())
 }
 
 pub(crate) fn warn(warnings: &mut Vec<String>, message: String) {
@@ -627,7 +694,7 @@ mod local_player_tests {
                 country: 101,
                 ..Default::default()
             }]));
-        assert_eq!(player_slot(&frame, &links), None);
+        assert_eq!(player_slot(&frame, &links).unwrap(), None);
         for (country, observer_country, expected) in [
             (102, 0, Some(9)),
             (0, 101, Some(7)),
@@ -639,7 +706,7 @@ mod local_player_tests {
                     country,
                     observer_country,
                 }]));
-            assert_eq!(player_slot(&frame, &links), expected);
+            assert_eq!(player_slot(&frame, &links).unwrap(), expected);
         }
     }
 }

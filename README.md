@@ -42,6 +42,29 @@ The [dashboard architecture](docs/dashboard.md) explains how recordings become d
 |---|---|
 | [Foreign-unwind fixture](tools/tap-foreign-unwind/README.md) | Out-of-game C++ and SEH checks for the production Tap. |
 
+## Recording and dependency checks
+
+Shared recordings are untrusted input. The [replay reader](crates/replay/README.md)
+validates container and compressed-block framing and uses checked growth; the
+[dashboard](crates/dashboard/README.md) isolates failed requests. Synthetic
+[cargo-fuzz targets](fuzz/README.md) exercise opening, partial trailers, blocks,
+frames and recording metadata without a game installation.
+
+Run dependency checks after lockfile/dependency changes and before releases:
+
+```powershell
+cargo install cargo-deny --locked
+cargo deny check advisories
+npm.cmd run audit:ui
+```
+
+[deny.toml](deny.toml) uses the RustSec database with no ignored advisories.
+Vulnerabilities fail the check; review other advisory notices. The npm check audits
+the root lockfile's UI runtime and development dependencies against the registry.
+Both require network access for current advisory data. Review fixes and run the
+affected checks before updating dependencies; audit results do not validate the
+recording reader or replace fuzzing.
+
 ## License
 
 Battle Plan is free software under the [MIT License](LICENSE).

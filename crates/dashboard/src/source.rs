@@ -88,6 +88,10 @@ impl Source {
         &self.path
     }
 
+    pub fn campaign_key(&self) -> &str {
+        &self.metadata.campaign_key
+    }
+
     pub fn replay(&self) -> Arc<Replay> {
         Arc::clone(&self.replay)
     }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
+import { formatDateTime } from '../dashboard/calendar.ts';
 
 // Node strips TypeScript but needs the UI toolchain to compile JSX.
 const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null } });
@@ -37,6 +38,31 @@ test('idle failure says partial without inventing an unrecorded hour; healthy re
   assert.equal(partialRecordingText(partial), 'Partial recording · collector allocation failed');
   assert.equal(renderToStaticMarkup(createElement(RecordingNotice, { partial: null })), '');
   assert.equal(renderToStaticMarkup(createElement(RecordingNotice)), '');
+});
+
+test('damage notice names skipped parts and their known date range', () => {
+  const damaged = { parts: 2, firstHour: 1000, lastHour: 1002, reasons: ['block checksum mismatch'] };
+  const html = renderToStaticMarkup(createElement(RecordingNotice, { damaged }));
+  assert.match(html, /class="notice warning shell-recording-notice"/);
+  assert.ok(html.includes(`Damaged or modified recording · 2 parts couldn&#x27;t be read · ${formatDateTime(1000)} – ${formatDateTime(1002)}`));
+  assert.doesNotMatch(html, /block checksum mismatch/);
+  const unknown = renderToStaticMarkup(createElement(RecordingNotice, { damaged: { ...damaged, parts: 1, firstHour: null, lastHour: null } }));
+  assert.match(unknown, /1 part couldn&#x27;t be read<\/span>/);
+  const changed = renderToStaticMarkup(createElement(RecordingNotice, { damaged: { ...damaged, parts: 0, firstHour: null, lastHour: null } }));
+  assert.match(changed, />Damaged or modified recording<\/span>/);
+});
+
+test('damage and partial status share one banner and one Damaged pill with technical reasons', () => {
+  const damaged = { parts: 1, firstHour: null, lastHour: null, reasons: ['Branch 1 Countries: invalid row'] };
+  const partial = { sessionId: '7', reason: 'collector allocation failed', failedHour: null };
+  const notice = renderToStaticMarkup(createElement(RecordingNotice, { damaged, partial }));
+  assert.equal((notice.match(/shell-recording-notice/g) ?? []).length, 1);
+  assert.match(notice, /couldn&#x27;t be read · Partial recording · collector allocation failed/);
+  const badge = renderToStaticMarkup(createElement(PartialRecordingBadge, { damaged, partial }));
+  assert.equal((badge.match(/class="pill warning"/g) ?? []).length, 1);
+  assert.match(badge, />Damaged<\/span>/);
+  assert.match(badge, /Branch 1 Countries: invalid row/);
+  assert.match(badge, /Partial recording · collector allocation failed/);
 });
 
 test('the recording notice shows the display name and falls back to the file name when cleared', () => {

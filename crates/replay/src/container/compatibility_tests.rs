@@ -6,6 +6,7 @@ use crate::{
         compatibility::{HISTORY, LastChange, PROVEN_FROM, RECORDER_INPUTS_FORMAT},
     },
 };
+use std::collections::BTreeSet;
 
 fn legacy_rows(table: TableId, hour: Hour, format: FormatVersion) -> TableRows {
     match table {

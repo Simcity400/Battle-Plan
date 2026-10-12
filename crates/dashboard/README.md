@@ -188,6 +188,20 @@ reader-owned notes in product checks.
 
 ## Service and limits
 
+Recording files use the standard filesystem reader. Metadata grows country
+catalogues fallibly and propagates allocation failures. Product read-ahead uses
+checked block storage and fallible worker creation; failed admission stops and
+joins already-started readers.
+
+Each loader job catches Rust unwinding across opening, country naming, metadata,
+product loading and reply creation. A panic becomes that request's error and the
+loader continues; synchronous source opening has the same boundary. Block
+decode workers retain their own panic isolation. This boundary requires an
+unwinding Rust build and cannot catch native C memory faults or process aborts.
+The [recording fuzz targets](../../fuzz/README.md) exercise metadata and native
+block decoding with synthetic input; the root [dependency checks](../../README.md#recording-and-dependency-checks)
+cover RustSec and npm advisories.
+
 `Service` shares sources by canonical path and revision and issues independently
 releasable leases; `open_map` uses the same sources. An outdated expected revision
 is refused. A new revision uses a separate source and caches. Every product reply
@@ -235,6 +249,19 @@ Capacity errors use `transport::TRANSIENT_ERROR_NAMES` and its shared classifier
 the generated frontend contract exports the same names. They decide no country
 fact and can be retried. Other errors remain failures until an explicit retry or
 content/configuration change, never successful empty data.
+
+Opening reads only each branch's first readable block, and only the catalogue
+tables, as far as its first complete country table. An unreadable block there
+becomes a branch gap and the next block is tried. Metadata reports the parts the
+reader skipped or found unreadable while opening, their known hour range and
+bounded reasons, including readable trailer checksum failures. Damage elsewhere is
+found when playback reaches it: unreadable blocks are gaps and failed tables are
+unavailable. Campaign keys
+use checked hexadecimal allocation. Metadata retrieval and country naming use
+ordinary clones. Recorded gap reasons, partial notices and table availability
+diagnostics remain exact; only generated damage diagnostics use bounded excerpts.
+Failed opens return a plain damaged-recording or insufficient-memory sentence
+followed by the technical reason for bug reports.
 
 ## Check a change
 

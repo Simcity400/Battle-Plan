@@ -16,6 +16,84 @@ use std::time::Duration;
 /// hanging; only a hang guard, never a timing check.
 const HANG_GUARD: Duration = Duration::from_secs(120);
 
+#[test]
+fn panicking_recording_requests_report_errors_and_leave_loaders_running() {
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    for stage in ["open", "metadata", "product"] {
+        let id = format!("panic-{stage}");
+        let request = service.inner.begin(id.clone()).unwrap();
+        service.inner.submit(
+            Arc::clone(&request),
+            LoadJob::Fixture {
+                request,
+                run: Box::new(move || panic!("synthetic {stage} panic")),
+            },
+        );
+        assert!(matches!(
+            receive.recv_timeout(HANG_GUARD).unwrap(),
+            DataEvent::Error { id: failed, message } if failed == id && message.contains("Dashboard request failed")
+        ));
+        assert!(!service.inner.closed.load(Ordering::Acquire));
+    }
+    // Use the real open/metadata path and then a real product after those panics.
+    let (_, folder) = crate::catalogue::tests::folder_catalogue(&[]);
+    let path = folder.0.join("after-panic.battleplan");
+    let valid = Replay::from_records(
+        crate::test_fixtures::CAMPAIGN.into(),
+        &[crate::test_fixtures::records(
+            1,
+            vec![crate::test_fixtures::source(1, 0, Some(1))],
+        )],
+    )
+    .unwrap();
+    std::fs::write(&path, valid.bytes()).unwrap();
+    service.dispatch(DataCommand::Open {
+        id: "valid-open".into(),
+        path: path.to_string_lossy().into_owned(),
+        revision: crate::protocol::replay_revision(&path).unwrap(),
+    });
+    let mut json = String::new();
+    loop {
+        match receive.recv_timeout(HANG_GUARD).unwrap() {
+            DataEvent::Chunk {
+                id, fragment, last, ..
+            } => {
+                assert_eq!(id, "valid-open");
+                json.push_str(&fragment);
+                if last {
+                    break;
+                }
+            }
+            event => panic!("unexpected open event: {event:?}"),
+        }
+    }
+    let opened: SourceReply = serde_json::from_str(&json).unwrap();
+    assert!(service.source(&opened.id).is_ok());
+    service.dispatch(DataCommand::Product {
+        id: "valid-product".into(),
+        request: ProductRequest {
+            source_id: opened.id,
+            revision: opened.revision,
+            product: "country-groups".into(),
+            params: serde_json::json!({"branchId": "1"}),
+        },
+    });
+    loop {
+        match receive.recv_timeout(HANG_GUARD).unwrap() {
+            DataEvent::Chunk { id, last, .. } => {
+                assert_eq!(id, "valid-product");
+                if last {
+                    break;
+                }
+            }
+            event => panic!("unexpected product event: {event:?}"),
+        }
+    }
+    assert!(!service.inner.closed.load(Ordering::Acquire));
+    service.shutdown();
+}
+
 /// A valid in-memory source needs a session identity, but no map assets,
 /// recorded tables or file I/O for these ownership tests.
 fn source() -> Arc<Source> {
@@ -553,5 +631,72 @@ fn air_superiority_source_cache_fork_never_blocks_another_path() {
         opened.unwrap().is_ok(),
         "a product clone must not hold the sources lock"
     );
+    service.shutdown();
+}
+
+#[test]
+fn damaged_opens_use_sidebar_sentences_and_valid_opens_keep_their_metadata() {
+    let (_, folder) = crate::catalogue::tests::folder_catalogue(&[]);
+    let valid = Replay::from_records(
+        crate::test_fixtures::CAMPAIGN.into(),
+        &[crate::test_fixtures::records(
+            1,
+            vec![crate::test_fixtures::source(1, 0, Some(1))],
+        )],
+    )
+    .unwrap();
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    for (name, bytes) in [
+        ("magic", {
+            let mut bytes = valid.bytes().to_vec();
+            bytes[0] ^= 255;
+            bytes
+        }),
+        ("truncated", valid.bytes()[..5].to_vec()),
+        ("declared-size", {
+            let mut bytes = valid.bytes().to_vec();
+            let footer = bytes.len() - 24;
+            bytes[footer + 12..footer + 20].copy_from_slice(&u64::MAX.to_le_bytes());
+            bytes
+        }),
+    ] {
+        let path = folder.0.join(format!("{name}.battleplan"));
+        std::fs::write(&path, bytes).unwrap();
+        let error = service.open_map(&path, None).err().unwrap();
+        assert!(
+            error.starts_with(
+                "This recording is damaged or isn't a Battle Plan recording. Details: "
+            ),
+            "{name}: {error}"
+        );
+    }
+    let path = folder.0.join("valid.battleplan");
+    std::fs::write(&path, valid.bytes()).unwrap();
+    let source = service.open_map(&path, None).unwrap();
+    let expected = crate::metadata::read(
+        &Arc::new(valid),
+        &path.canonicalize().unwrap(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(source.metadata()).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+    let mut bytes = source.replay_ref().bytes().to_vec();
+    *bytes.last_mut().unwrap() ^= 1;
+    let path = folder.0.join("modified-crc.battleplan");
+    std::fs::write(&path, bytes).unwrap();
+    let modified = service.open_map(&path, None).unwrap();
+    let metadata = modified.metadata();
+    assert!(metadata.damaged.is_some());
+    assert!(
+        metadata
+            .warnings
+            .iter()
+            .any(|reason| reason.contains("trailer CRC mismatch"))
+    );
+    assert_eq!(metadata.countries, source.metadata().countries);
+    assert_eq!(metadata.branches, source.metadata().branches);
     service.shutdown();
 }

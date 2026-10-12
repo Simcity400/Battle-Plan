@@ -468,6 +468,9 @@ fn finalize_campaign_with_publisher(
     };
     let replay = if destination.exists() {
         let previous = open(&destination)?;
+        previous
+            .require_undamaged()
+            .map_err(|error| failure(&destination, error))?;
         if previous.campaign_id != id {
             return Err(failure(
                 &destination,
@@ -1484,6 +1487,36 @@ mod tests {
             last_hour: Some(21),
         }));
         base
+    }
+
+    #[test]
+    fn finalization_refuses_recovered_destination_and_preserves_spool_and_file() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, allocation_records, allocation_test_directory,
+        };
+        let directory = allocation_test_directory("damaged-destination");
+        let session = directory.join("session");
+        let output = directory.join("output");
+        let campaign = session.join(std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap());
+        fs::create_dir_all(&campaign).unwrap();
+        let spool: Vec<_> = allocation_records()
+            .iter()
+            .flat_map(|record| replay::spool::encode_record(record).unwrap())
+            .collect();
+        let path = campaign.join("spool.0000.h4s");
+        fs::write(&path, &spool).unwrap();
+        let paths = finalize_session(&session, &output).unwrap();
+        let mut damaged = fs::read(&paths[0]).unwrap();
+        *damaged.last_mut().unwrap() ^= 1;
+        fs::write(&paths[0], &damaged).unwrap();
+        assert!(open(&paths[0]).unwrap().needed_recovery());
+        let error = finalize_session(&session, &output).unwrap_err();
+        assert!(
+            error.contains("This recording is damaged, so it can't be added to; start a new file.")
+        );
+        assert_eq!(fs::read(&paths[0]).unwrap(), damaged);
+        assert_eq!(fs::read(path).unwrap(), spool);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

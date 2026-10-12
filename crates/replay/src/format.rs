@@ -12,6 +12,25 @@ use std::io;
 /// Preserved when the score family is disabled for a recording session.
 pub const GAME_SCORE_DISABLED_REASON: &str = "game score capture disabled at attachment";
 
+/// A record layout the recording's format predates. It refuses the whole file
+/// by name; readers that recover damaged records must not withhold it as damage.
+#[derive(Debug)]
+struct LayoutRefusal(String);
+
+impl std::fmt::Display for LayoutRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for LayoutRefusal {}
+
+pub fn is_layout_refusal(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<LayoutRefusal>())
+}
+
 /// A recording version inside the proven compatibility horizon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FormatVersion(u16);
@@ -60,10 +79,13 @@ impl FormatVersion {
     pub fn require(self, kind: RecordKind) -> io::Result<()> {
         let change = kind.last_change();
         if self.0 < change.format {
-            Err(invalid(format!(
-                "{kind:?} layout changed at format {}; this recording is format {}",
-                change.format, self.0
-            )))
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                LayoutRefusal(format!(
+                    "{kind:?} layout changed at format {}; this recording is format {}",
+                    change.format, self.0
+                )),
+            ))
         } else {
             Ok(())
         }

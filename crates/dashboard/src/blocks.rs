@@ -80,7 +80,19 @@ pub fn scan_blocks<'a, R>(
     cancelled: &AtomicBool,
     scan: impl FnOnce(&mut dyn Iterator<Item = BlockRead<'a>>) -> io::Result<R>,
 ) -> io::Result<R> {
-    let blocks: Vec<_> = blocks.into_iter().collect();
+    let blocks = blocks.into_iter();
+    let (minimum, maximum) = blocks.size_hint();
+    let mut collected = Vec::new();
+    if maximum == Some(minimum) {
+        collected = engine::allocation::vec(minimum)?;
+        collected.extend(blocks);
+    } else {
+        for block in blocks {
+            engine::allocation::reserve(&mut collected, 1)?;
+            collected.push(block);
+        }
+    }
+    let blocks = collected;
     #[cfg(test)]
     SCANNED_BLOCKS.with_borrow_mut(|scanned| {
         scanned.extend(blocks.iter().map(|block| block.offset));
@@ -90,7 +102,7 @@ pub fn scan_blocks<'a, R>(
             taken: 0,
             handed: 0,
             stop: false,
-            reads: blocks.iter().map(|_| None).collect(),
+            reads: engine::allocation::default_vec(blocks.len())?,
         }),
         changed: Condvar::new(),
     };
@@ -108,17 +120,17 @@ pub fn scan_blocks<'a, R>(
         } else {
             AHEAD
         };
+        // Install before spawning: a refused worker must wake and join those already running.
+        let _stop = Stop(&ahead);
         for _ in 0..readers.min(blocks.len().saturating_sub(1)) {
-            scope.spawn(|| {
+            thread::Builder::new().spawn_scoped(scope, || {
                 while let Some(position) = ahead.take(cancelled) {
                     let result = read(position);
                     ahead.lock().reads[position] = Some(result);
                     ahead.changed.notify_all();
                 }
-            });
+            })?;
         }
-        // Stops the readers however the scan ends, a panic included.
-        let _stop = Stop(&ahead);
         scan(&mut std::iter::from_fn(|| {
             let mut state = ahead.lock();
             let position = state.handed;

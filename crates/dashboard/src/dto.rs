@@ -24,7 +24,19 @@ pub struct ReplayMetadata {
     pub content_verified: bool,
     /// The capture stopped after the verified prefix; independent of gap coverage.
     pub partial: Option<PartialRecording>,
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub damaged: Option<DamagedRecording>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DamagedRecording {
+    pub parts: usize,
+    pub first_hour: Option<i32>,
+    pub last_hour: Option<i32>,
+    pub reasons: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]

@@ -753,7 +753,7 @@ impl Product for EquipmentStockpile {
         Ok(EquipmentStockpileReply {
             branch_id: params.branch_id.clone(),
             tag: params.tag.clone(),
-            campaign_key: crate::map_settings::campaign_key(&source.replay()),
+            campaign_key: engine::allocation::string(source.campaign_key())?,
             decimals: equipment::EQUIPMENT_DECIMALS,
             types,
             variants,

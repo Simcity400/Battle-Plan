@@ -19,11 +19,19 @@ pub fn sample_counts() -> Vec<u32> {
 }
 
 pub fn campaign_key(replay: &replay::container::Replay) -> String {
-    replay
-        .campaign_id
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    try_campaign_key(replay).expect("campaign key allocation failed")
+}
+
+pub fn try_campaign_key(replay: &replay::container::Replay) -> io::Result<String> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let length = engine::allocation::mul(replay.campaign_id.len(), 2)?;
+    let mut key = engine::allocation::vec(length)?;
+    for byte in &replay.campaign_id {
+        key.push(HEX[(byte >> 4) as usize]);
+        key.push(HEX[(byte & 15) as usize]);
+    }
+    // The alphabet above is ASCII, so this moves the allocation without copying.
+    Ok(String::from_utf8(key).expect("hexadecimal is ASCII"))
 }
 
 #[derive(Default)]

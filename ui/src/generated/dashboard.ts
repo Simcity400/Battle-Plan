@@ -22,12 +22,13 @@ contentVerified: boolean,
 /**
  * The capture stopped after the verified prefix; independent of gap coverage.
  */
-partial: PartialRecording | null, warnings: Array<string>, };
+partial: PartialRecording | null, damaged?: DamagedRecording | null, warnings: Array<string>, };
 export type PartialRecording = { sessionId: string, reason: string,
 /**
  * No hour is inferred for an idle or status failure.
  */
 failedHour: number | null, };
+export type DamagedRecording = { parts: number, firstHour: number | null, lastHour: number | null, reasons: Array<string>, };
 export type BranchMetadata = { id: string, sessionId: string,
 /**
  * Includes missing leading/trailing hours. This range is not a count of frames.

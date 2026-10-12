@@ -11,6 +11,7 @@ use crate::{
 };
 use std::{
     collections::BTreeMap,
+    panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, Weak,
@@ -39,6 +40,24 @@ impl Sources {
     }
 }
 
+/// The first sentence is suitable for the sidebar; retain the technical reason
+/// after it for bug reports. Cancellation and ordinary filesystem errors keep
+/// their existing meaning.
+fn recording_open_error(error: std::io::Error) -> String {
+    let sentence = if engine::allocation::is_allocation_error(&error) {
+        "There isn't enough memory to open this recording."
+    } else if matches!(
+        error.kind(),
+        std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
+    ) {
+        "This recording is damaged or isn't a Battle Plan recording."
+    } else {
+        return error.to_string();
+    };
+    replay::codec::try_format(format_args!("{sentence} Details: {error}"))
+        .unwrap_or_else(|_| sentence.to_owned())
+}
+
 impl Inner {
     pub(super) fn content(&self) -> Option<ContentOptions> {
         self.content
@@ -50,6 +69,15 @@ impl Inner {
     /// Duplicate opens share a per-revision gate. Disk reads and opted-in cache
     /// inheritance never hold the global sources lock.
     pub(super) fn open(
+        &self,
+        path: &Path,
+        expected: Option<&str>,
+        cancelled: &AtomicBool,
+    ) -> Result<Arc<Source>, String> {
+        request_result(|| self.open_inner(path, expected, cancelled))
+    }
+
+    fn open_inner(
         &self,
         path: &Path,
         expected: Option<&str>,
@@ -79,7 +107,7 @@ impl Inner {
             let gate = sources.open_gate(cache_key.clone());
             (gate, previous)
         };
-        let _opening = gate.lock().map_err(|error| error.to_string())?;
+        let _opening = gate.lock().unwrap_or_else(|error| error.into_inner());
         self.check_open(cancelled)?;
         let key = {
             let mut sources = self.sources.lock().map_err(|error| error.to_string())?;
@@ -95,8 +123,7 @@ impl Inner {
                 revision,
             }
         };
-        let source =
-            Arc::new(Source::open(key, path, cancelled).map_err(|error| error.to_string())?);
+        let source = Arc::new(Source::open(key, path, cancelled).map_err(recording_open_error)?);
         if let Some(previous) = previous {
             source.inherit_append_states(&previous);
         }
@@ -126,6 +153,8 @@ impl Inner {
             }
             LoadJob::HistoryCache { .. } => true,
             LoadJob::MapSettings(_) | LoadJob::Open(_) => false,
+            #[cfg(test)]
+            LoadJob::Fixture { .. } => false,
         };
         let accepted = self
             .loader
@@ -157,12 +186,11 @@ impl Inner {
         if request.cancelled() {
             return Err("Cancelled".into());
         }
-        let replay = source.as_ref().map(|source| source.replay());
-        let campaign = replay
+        let campaign = source
             .as_ref()
-            .map(|replay| map_settings::campaign_key(replay))
+            .map(|source| source.campaign_key())
             .unwrap_or_default();
-        let key = target.key(&campaign).map_err(str::to_owned)?;
+        let key = target.key(campaign).map_err(str::to_owned)?;
         let mut settings = settings;
         {
             let mut store = self.map_settings.lock().map_err(|e| e.to_string())?;
@@ -223,6 +251,7 @@ impl Inner {
                 .save(key.clone(), settings)
                 .map_err(|e| e.to_string())?;
         }
+        let replay = source.as_ref().map(|source| source.replay_ref());
         let recorded_mods = replay
             .as_ref()
             .into_iter()
@@ -262,58 +291,71 @@ impl Inner {
             if self.closed.load(Ordering::Acquire) {
                 return;
             }
-            match job {
-                LoadJob::MapSettings(job) => {
-                    let request = Arc::clone(&job.request);
-                    let result = self.map_settings_job(job);
-                    self.complete(request, result);
-                }
-                LoadJob::Product {
-                    request,
-                    lease_id,
-                    source,
-                    body,
-                } => {
-                    if request.cancelled() {
-                        continue;
-                    }
-                    let Some(product) = products::find(&body.product) else {
-                        self.error(request, format!("Unknown data product: {}", body.product));
-                        continue;
-                    };
-                    let context = LoadContext {
-                        content: self.content(),
-                    };
-                    let result = (product.load)(
-                        &source,
-                        &lease_id,
-                        body.params,
-                        &context,
-                        &request.cancelled,
-                    );
-                    self.complete(request, result);
-                }
-                LoadJob::HistoryCache {
-                    request,
-                    clear,
-                    options,
-                } => {
-                    if request.cancelled() {
-                        continue;
-                    }
-                    let result = history_cache(&options, clear, &request.cancelled);
-                    self.complete(request, result);
-                }
-                LoadJob::Open(job) => {
-                    if let Some(content) = self.content() {
-                        self.map_settings
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .configure_game(&content.options.user_dir);
-                    }
-                    self.open_job(job);
-                }
+            let request = Arc::clone(job.request());
+            let result = request_result(|| {
+                self.run_job(job);
+                Ok(())
+            });
+            if let Err(error) = result {
+                self.error(request, error);
             }
+        }
+    }
+
+    fn run_job(&self, job: LoadJob) {
+        match job {
+            LoadJob::MapSettings(job) => {
+                let request = Arc::clone(&job.request);
+                let result = self.map_settings_job(job);
+                self.complete(request, result);
+            }
+            LoadJob::Product {
+                request,
+                lease_id,
+                source,
+                body,
+            } => {
+                if request.cancelled() {
+                    return;
+                }
+                let Some(product) = products::find(&body.product) else {
+                    self.error(request, format!("Unknown data product: {}", body.product));
+                    return;
+                };
+                let context = LoadContext {
+                    content: self.content(),
+                };
+                let result = (product.load)(
+                    &source,
+                    &lease_id,
+                    body.params,
+                    &context,
+                    &request.cancelled,
+                );
+                self.complete(request, result);
+            }
+            LoadJob::HistoryCache {
+                request,
+                clear,
+                options,
+            } => {
+                if request.cancelled() {
+                    return;
+                }
+                let result = history_cache(&options, clear, &request.cancelled);
+                self.complete(request, result);
+            }
+            LoadJob::Open(job) => {
+                if let Some(content) = self.content() {
+                    self.map_settings
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .configure_game(&content.options.user_dir);
+                }
+                self.open_job(job);
+            }
+            #[cfg(test)]
+            LoadJob::Fixture { run, .. } => run(),
         }
     }
 
@@ -381,6 +423,11 @@ impl Inner {
     }
 }
 
+fn request_result<T>(read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    catch_unwind(AssertUnwindSafe(read))
+        .unwrap_or_else(|_| Err("Dashboard request failed while reading the recording".into()))
+}
+
 /// The history cache's size, after clearing it when asked.
 fn history_cache(
     options: &installed_content::ResolveOptions,
@@ -414,6 +461,11 @@ pub(super) struct OpenJob {
 }
 
 pub(super) enum LoadJob {
+    #[cfg(test)]
+    Fixture {
+        request: Arc<Request>,
+        run: Box<dyn FnOnce() + Send>,
+    },
     MapSettings(MapSettingsJob),
     HistoryCache {
         request: Arc<Request>,
@@ -427,4 +479,42 @@ pub(super) enum LoadJob {
         source: Arc<Source>,
         body: ProductRequest,
     },
+}
+
+impl LoadJob {
+    fn request(&self) -> &Arc<Request> {
+        match self {
+            Self::MapSettings(job) => &job.request,
+            Self::Open(job) => &job.request,
+            Self::HistoryCache { request, .. } | Self::Product { request, .. } => request,
+            #[cfg(test)]
+            Self::Fixture { request, .. } => request,
+        }
+    }
+}
+
+#[cfg(test)]
+mod recording_error_tests {
+    use super::*;
+    use std::io;
+
+    #[test]
+    fn recording_open_errors_start_with_a_plain_sentence_and_keep_details() {
+        for kind in [io::ErrorKind::InvalidData, io::ErrorKind::UnexpectedEof] {
+            assert_eq!(
+                recording_open_error(io::Error::new(kind, "synthetic reason")),
+                "This recording is damaged or isn't a Battle Plan recording. Details: synthetic reason"
+            );
+        }
+        let error = recording_open_error(io::Error::from(io::ErrorKind::OutOfMemory));
+        assert!(error.starts_with("There isn't enough memory to open this recording. Details: "));
+        assert_eq!(
+            recording_open_error(io::Error::new(io::ErrorKind::Interrupted, "cancelled")),
+            "cancelled"
+        );
+        assert_eq!(
+            recording_open_error(io::Error::new(io::ErrorKind::PermissionDenied, "access")),
+            "access"
+        );
+    }
 }

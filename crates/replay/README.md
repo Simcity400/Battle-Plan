@@ -59,6 +59,43 @@ POSIX publication acquires writable source and parent-directory handles before r
 
 ## Compatibility and recovery
 
+Container extents and collection counts are checked against their byte backing.
+Trailer buffers reserve their actual byte extents fallibly. Whole-block
+inflation reserves the declared raw length exactly, within the decoder's existing
+raw-byte bound, and decompresses directly into that storage. Reused frame payload
+buffers grow fallibly with the native geometric allocation policy and reuse
+initialized storage. Mismatched inflated lengths remain errors. Index storage, verification flags,
+frame collections and parallel decode results use checked allocation. Frame
+counts and hours must fit their recorded block range; row copies during baseline
+reconstruction return allocation errors and copy admitted snapshot rows without
+repeating nested validation. Cancellation and allocation failure stop streamed
+reads without draining the remaining block; selected seeks return these errors,
+while actual recording damage retains gap recovery. Generated damage diagnostic
+excerpts are bounded before fallible formatting; recorded messages and values
+remain lossless.
+
+Partial metadata can be read through `Replay::read_partial_from` from a seekable
+stream with its actual length; it validates that length before reading the
+trailer. A checksum failure or extra trailer bytes produce read-time warnings
+when the metadata remains readable. Invalid indexed blocks are skipped, with
+known hours recorded as gaps; remaining blocks retain their original bytes.
+Conflicting session/branch context and undecodable header/trailer framing still
+refuse the recording. Invalid gap, control and recovery-note records are withheld
+at their length boundaries with warnings and damage counts. Record-list framing
+remains strict. Recordings that needed read-time recovery cannot be continued,
+appended to or rewritten; recorded partial captures and spool recovery notes alone
+do not prevent writing.
+Blocks admit exactly one zstd frame, retain the decoder
+window and raw-byte bounds and refuse trailing data. Ordinary damage retains the
+existing named block/table refusal and recovery boundaries. These checks change
+neither the wire format nor historical table admission.
+
+The independent [fuzz package](../../fuzz/README.md) exercises all these reader
+entry points with generated synthetic seeds. Its guide describes nightly,
+cargo-fuzz and native C sanitizer setup. Run dependency advisories through the
+root [cargo-deny configuration](../../deny.toml) after dependency changes and
+before releases.
+
 Update affected readers, writers and consumers together when bytes or recorded meanings change. A branch's format is provisional **main + 1**. Allocate new TableIds densely after main's catalog; reconcile/renumber provisional additions at merge. Never reuse or shift published IDs, including retired entries.
 
 Writers emit only the current format. Older recordings still open when today's readers decode unchanged contracts correctly within the proven [compatibility history](src/rows/compatibility.rs). Refuse changed layouts/meanings at their affected scope: a table becomes unavailable by name; incompatible file headers/framing refuse the file. Age alone must not reject an unchanged contract. Add no migrations, translations or old row decoders.

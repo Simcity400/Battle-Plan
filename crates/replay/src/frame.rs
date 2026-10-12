@@ -312,20 +312,23 @@ impl DecodedFrame {
     pub fn complete<T: TableSchema>(&self) -> io::Result<&[T::Row]> {
         let table = T::ID;
         match &*self.tables[table.index()] {
-            TableView::Complete(rows) => rows.rows::<T>().ok_or_else(|| {
-                crate::codec::invalid(format!(
-                    "hour {} {table:?} contains another table's rows",
+            TableView::Complete(rows) => match rows.rows::<T>() {
+                Some(rows) => Ok(rows),
+                None => Err(crate::codec::invalid(crate::codec::try_format(
+                    format_args!("hour {} {table:?} contains another table's rows", self.hour),
+                )?)),
+            },
+            TableView::Truncated { missing, .. } => Err(crate::codec::invalid(
+                crate::codec::try_format(format_args!(
+                    "hour {} {table:?} is truncated ({missing} missing rows)",
                     self.hour
-                ))
-            }),
-            TableView::Truncated { missing, .. } => Err(crate::codec::invalid(format!(
-                "hour {} {table:?} is truncated ({missing} missing rows)",
-                self.hour
-            ))),
-            TableView::Unavailable { reason } => Err(crate::codec::invalid(format!(
-                "hour {} {table:?} is unavailable: {reason}",
-                self.hour
-            ))),
+                ))?,
+            )),
+            TableView::Unavailable { reason } => {
+                Err(crate::codec::invalid(crate::codec::try_format(
+                    format_args!("hour {} {table:?} is unavailable: {reason}", self.hour),
+                )?))
+            }
         }
     }
 }

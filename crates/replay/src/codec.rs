@@ -2,6 +2,32 @@
 
 use std::io;
 
+/// Diagnostic excerpts never copy a recording-sized string. Data itself is
+/// preserved; only the diagnostic shown to a caller is shortened.
+pub fn diagnostic_text(text: &str) -> &str {
+    let mut end = text.len().min(1024);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// Formatting with checked growth, including errors whose fields are recorded.
+pub fn try_format(args: std::fmt::Arguments<'_>) -> io::Result<String> {
+    struct Writer(String);
+    impl std::fmt::Write for Writer {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            engine::allocation::reserve_string(&mut self.0, text.len())
+                .map_err(|_| std::fmt::Error)?;
+            self.0.push_str(text);
+            Ok(())
+        }
+    }
+    let mut writer = Writer(String::new());
+    std::fmt::write(&mut writer, args).map_err(|_| engine::allocation::oom())?;
+    Ok(writer.0)
+}
+
 pub fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }

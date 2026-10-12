@@ -381,6 +381,8 @@ pub struct ArmyOrderRow {
 
 pub trait RowCodec: Default + Clone + Eq {
     fn try_clone(&self) -> io::Result<Self>;
+    /// Copy admitted rows without repeating their key/nested validation.
+    fn try_clone_validated(&self) -> io::Result<Self>;
     fn encoded_bound(&self) -> io::Result<usize>;
     fn snapshot_bytes(&self) -> io::Result<usize>;
     const KEY_BITS: u32;
@@ -542,6 +544,13 @@ macro_rules! define_tables {
                 Ok(match self { $(Self::$table(rows) => {
                     let mut owned = allocation::vec(rows.len())?;
                     for row in rows { owned.push(RowCodec::try_clone(row)?); }
+                    Self::$table(owned)
+                }),+ })
+            }
+            pub(crate) fn try_clone_validated(&self) -> io::Result<Self> {
+                Ok(match self { $(Self::$table(rows) => {
+                    let mut owned = allocation::vec(rows.len())?;
+                    for row in rows { owned.push(RowCodec::try_clone_validated(row)?); }
                     Self::$table(owned)
                 }),+ })
             }
@@ -1578,6 +1587,10 @@ macro_rules! typed_codec {
             fn try_clone(&self) -> io::Result<Self> {
                 self.check_key_fields()?;
                 check_native_key(self.key(), Self::KEY_BITS)?;
+                self.try_clone_validated()
+            }
+            #[allow(clippy::field_reassign_with_default)]
+            fn try_clone_validated(&self) -> io::Result<Self> {
                 let $key_name = self.key();
                 let mut row = $initial;
                 $(row.$($field)+ = NativeValue::try_clone(&self.$($field)+)?;)+
@@ -2330,6 +2343,34 @@ mod production_modifier_rows;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validated_copy_does_not_repeat_admission_validation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CHECKS: AtomicUsize = AtomicUsize::new(0);
+        #[derive(Clone, Default, PartialEq, Eq)]
+        struct CountedRow {
+            key: u32,
+            text: Vec<u8>,
+        }
+        typed_codec!(CountedRow, 32, |row| row.key as u128,
+        |key| Self { key: key as u32, ..Default::default() },
+        { 0 => (text): Bytes }, |row| {
+            CHECKS.fetch_add(1, Ordering::Relaxed);
+            if row.text.is_empty() { return Err(invalid("synthetic missing text")); }
+            Ok(())
+        });
+        let row = CountedRow {
+            key: 1,
+            text: b"synthetic".to_vec(),
+        };
+        CHECKS.store(0, Ordering::Relaxed);
+        row.check_key_fields().unwrap();
+        let copy = row.try_clone_validated().unwrap();
+        assert_eq!(copy.text, row.text);
+        assert_eq!(CHECKS.load(Ordering::Relaxed), 1);
+        assert!(CountedRow::default().try_clone().is_err());
+    }
 
     #[test]
     fn table_ids_are_dense_unique_and_round_trip() {

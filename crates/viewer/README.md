@@ -39,6 +39,10 @@ Diagnostics default off. F3/header saves the choice; `--diagnostics` enables one
 
 Partial recordings play verified prefixes with always-visible failure status; only known failed hours become gaps. Readable older recordings distinguish missing fields from zero/empty and refuse only dependent features.
 
+Readable damaged recordings use the shared replay reader's warnings and gaps.
+Trailer warnings remain visible in map diagnostics; unreadable blocks show gaps
+through the existing playback path.
+
 ## Playback, threading and frame budgets
 
 [hours.rs](src/hours.rs) builds simulation layers off frames, with read-ahead standalone/source-shared widget decoding and one bounded pool per native root. Views cancel independently. [parallel.rs](src/parallel.rs) preserves input order at process parallelism; raid batches borrow idle builder turns.

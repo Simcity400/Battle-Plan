@@ -1,0 +1,54 @@
+[package]
+name = "battle-plan-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.96"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+crc32fast = "1"
+zstd = "0.13"
+replay = { path = "../crates/replay" }
+dashboard = { path = "../crates/dashboard" }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "open_recording"
+path = "fuzz_targets/open_recording.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "partial_trailer"
+path = "fuzz_targets/partial_trailer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "read_blocks"
+path = "fuzz_targets/read_blocks.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dashboard_metadata"
+path = "fuzz_targets/dashboard_metadata.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "seed-corpus"
+path = "seed_corpus.rs"
+test = false
+doc = false
+bench = false

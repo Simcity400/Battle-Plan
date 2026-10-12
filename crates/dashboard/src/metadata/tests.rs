@@ -53,8 +53,123 @@ fn initial_catalogue_discards_countries_and_player_when_block_verification_fails
         metadata
             .warnings
             .iter()
-            .any(|line| line.contains("initial block is unreadable"))
+            .any(|line| line.contains("is unreadable"))
     );
+}
+
+#[test]
+fn catalogue_campaign_failure_becomes_a_gap_and_tries_the_next_block() {
+    let next_hour = 100 + replay::KEYFRAME_INTERVAL as i32;
+    let recording = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![source(1, 100, Some(1)), source(1, next_hour, Some(2))],
+        )],
+    )
+    .unwrap();
+    assert_eq!(recording.index.len(), 2);
+    let block = &recording.index[0];
+    let mut frame = recording.read_block(block).unwrap().remove(0);
+    frame.tables[TableId::Campaign.index()] =
+        TableUpdate::Snapshot(TableRows::Campaign(vec![replay::rows::CampaignRow {
+            id: b"different synthetic campaign".to_vec(),
+        }]));
+    let mut payload = Vec::new();
+    frame.encode(&mut payload).unwrap();
+    let mut raw = 1_u32.to_le_bytes().to_vec();
+    raw.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    raw.extend(payload);
+    let compressed = zstd::encode_all(raw.as_slice(), 3).unwrap();
+    let replay = Arc::new(
+        Replay::open(replace_block(&recording, 0, &compressed, raw.len() as u64)).unwrap(),
+    );
+    let metadata = super::read(
+        &replay,
+        Path::new("memory.battleplan"),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(metadata.countries.len(), 1);
+    assert_eq!(metadata.countries[0].observed_hour, next_hour);
+    assert_eq!(metadata.branches[0].gaps.len(), 1);
+    let gap = &metadata.branches[0].gaps[0];
+    assert_eq!((gap.first_hour, gap.last_hour), (100, 100));
+    assert!(
+        gap.reason
+            .contains("frame campaign identity differs from replay header")
+    );
+    let damaged = metadata.damaged.as_ref().unwrap();
+    assert_eq!(damaged.parts, 1);
+    assert_eq!(
+        (damaged.first_hour, damaged.last_hour),
+        (Some(100), Some(100))
+    );
+    assert!(damaged.reasons[0].contains("frame campaign identity differs from replay header"));
+    assert_eq!(replay.index.len(), 2);
+    assert_eq!(
+        replay.read_block(&replay.index[1]).unwrap(),
+        recording.read_block(&recording.index[1]).unwrap()
+    );
+}
+
+#[test]
+fn catalogue_checked_allocation_failures_propagate_instead_of_becoming_success() {
+    const CHILD: &str = "BATTLE_PLAN_METADATA_ALLOCATION_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "metadata::tests::catalogue_checked_allocation_failures_propagate_instead_of_becoming_success", "--nocapture"])
+            .env(CHILD, "1").output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    thread_local! {
+        static ATTEMPTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        static FAIL_AT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    }
+    fn fail_allocation() -> bool {
+        let attempt = ATTEMPTS.get() + 1;
+        ATTEMPTS.set(attempt);
+        FAIL_AT.get() == Some(attempt)
+    }
+    let replay = Arc::new(
+        Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(1, vec![source(1, 100, Some(1))])],
+        )
+        .unwrap(),
+    );
+    let read = || {
+        super::read(
+            &replay,
+            Path::new("memory.battleplan"),
+            &AtomicBool::new(false),
+        )
+    };
+    // Initialize shared views and verify the block before counting checked growth.
+    read().unwrap();
+    engine::allocation::set_stop_hook(Some(fail_allocation));
+    let healthy = read();
+    engine::allocation::set_stop_hook(None);
+    healthy.unwrap();
+    let attempts = ATTEMPTS.get();
+    assert!(attempts > 0);
+    for ordinal in 1..=attempts {
+        ATTEMPTS.set(0);
+        FAIL_AT.set(Some(ordinal));
+        engine::allocation::set_stop_hook(Some(fail_allocation));
+        let result = read();
+        engine::allocation::set_stop_hook(None);
+        assert_eq!(
+            result.unwrap_err().kind(),
+            io::ErrorKind::OutOfMemory,
+            "checked allocation {ordinal}"
+        );
+    }
 }
 
 #[test]
@@ -913,4 +1028,245 @@ fn a_table_is_read_by_its_slot_or_timing_and_a_deferred_intel_walk_proves_nothin
     // The shared economy read can be charged to an hourly anchor instead.
     assert!(slot_read(&walked(&[]), TableId::CountryFuel, fuel));
     assert!(slot_read(&walked(&[]), TableId::LogisticsEquipment, slot));
+}
+
+#[test]
+fn recorded_gap_and_partial_reasons_and_campaign_identity_stay_exact() {
+    use replay::{
+        branches::Gap,
+        spool::{ControlRecord, Record},
+    };
+    let campaign = vec![0xa5; 1024 * 1024];
+    let reason = "synthetic gap".to_owned() + &"\u{e9}".repeat(1024 * 1024);
+    let mut input = records(1, vec![source(1, 100, Some(1))]);
+    input.retain(|record| !matches!(record, Record::Frame(_)));
+    input.push(Record::Gap(Gap {
+        branch: 1,
+        first_hour: 100,
+        last_hour: 101,
+        reason: reason.clone(),
+    }));
+    input.push(Record::Control(ControlRecord::Partial {
+        session: 1,
+        reason: reason.clone(),
+        failed_hour: None,
+    }));
+    let replay = Arc::new(Replay::from_records(campaign.clone(), &[input]).unwrap());
+    let metadata = super::read(
+        &replay,
+        Path::new("memory.battleplan"),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(metadata.branches[0].gaps[0].reason, reason);
+    assert_eq!(metadata.partial.as_ref().unwrap().reason, reason);
+    assert_eq!(
+        super::partial_recording(replay.partial().unwrap())
+            .unwrap()
+            .unwrap()
+            .reason,
+        reason
+    );
+    assert_eq!(replay.gaps[0].reason, reason);
+    assert_eq!(replay.campaign_id, campaign);
+    assert_eq!(metadata.campaign_key.len(), campaign.len() * 2);
+    assert!(
+        metadata
+            .campaign_key
+            .as_bytes()
+            .chunks_exact(2)
+            .all(|pair| pair == b"a5")
+    );
+}
+
+#[test]
+fn damage_after_the_initial_catalogue_reports_a_gap_and_preserves_good_data() {
+    let recording = Replay::from_records(
+        CAMPAIGN.into(),
+        &[
+            records(1, vec![source(1, 100, Some(1))]),
+            records(2, vec![source(2, 200, Some(2))]),
+        ],
+    )
+    .unwrap();
+    let expected = match recording.seek(1, 100).unwrap() {
+        replay::container::SeekResult::Frame(frame) => frame,
+        other => panic!("{other:?}"),
+    };
+    for case in [
+        "checksum",
+        "frame-count",
+        "trailing-frame",
+        "raw-length",
+        "index-length",
+        "zstd-magic",
+    ] {
+        let mut bytes = recording.bytes().to_vec();
+        let block = &recording.index[1];
+        let start = block.offset as usize;
+        let end = (block.offset + block.length) as usize;
+        match case {
+            "checksum" => bytes[end - 1] ^= 1,
+            "zstd-magic" => bytes[start] ^= 1,
+            "frame-count" | "trailing-frame" => {
+                let compressed = if case == "frame-count" {
+                    zstd::encode_all(u32::MAX.to_le_bytes().as_slice(), 3).unwrap()
+                } else {
+                    // A second complete zstd frame inside the declared block.
+                    [bytes[start..end].to_vec(), bytes[start..end].to_vec()].concat()
+                };
+                bytes = replace_last_block(
+                    &recording,
+                    &compressed,
+                    if case == "frame-count" {
+                        4
+                    } else {
+                        block.raw_length
+                    },
+                );
+            }
+            "raw-length" | "index-length" => {
+                let footer = bytes.len() - 24;
+                let index = footer - 40;
+                let field = if case == "raw-length" { 32 } else { 24 };
+                let value = if case == "raw-length" {
+                    block.raw_length + 1
+                } else {
+                    u64::MAX
+                };
+                bytes[index + field..index + field + 8].copy_from_slice(&value.to_le_bytes());
+                repair_trailer_crc(&mut bytes);
+            }
+            _ => unreachable!(),
+        }
+        let replay = Arc::new(Replay::open(bytes).unwrap());
+        let metadata = super::read(
+            &replay,
+            Path::new("modified.battleplan"),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let damaged = metadata.damaged.as_ref().unwrap();
+        assert_eq!(
+            damaged.parts,
+            if case == "index-length" { 2 } else { 1 },
+            "{case}"
+        );
+        assert_eq!(
+            (damaged.first_hour, damaged.last_hour),
+            (Some(200), Some(200)),
+            "{case}"
+        );
+        assert!(!damaged.reasons.is_empty());
+        assert!(!metadata.warnings.is_empty());
+        assert_eq!(metadata.branches[1].gaps.len(), 1, "{case}");
+        assert!(matches!(
+            replay.seek(2, 200).unwrap(),
+            replay::container::SeekResult::Gap { .. }
+        ));
+        let replay::container::SeekResult::Frame(actual) = replay.seek(1, 100).unwrap() else {
+            panic!("good hour lost: {case}")
+        };
+        assert_eq!(actual, expected, "{case}");
+        assert!(
+            metadata
+                .countries
+                .iter()
+                .all(|country| country.observed_branch_id == "1")
+        );
+    }
+}
+
+fn repair_trailer_crc(bytes: &mut [u8]) {
+    let footer = bytes.len() - 24;
+    let start = u64::from_le_bytes(bytes[footer + 4..footer + 12].try_into().unwrap()) as usize;
+    let crc = crc32fast::hash(&bytes[start..footer]);
+    bytes[footer + 20..].copy_from_slice(&crc.to_le_bytes());
+}
+
+fn replace_last_block(replay: &Replay, compressed: &[u8], raw_length: u64) -> Vec<u8> {
+    replace_block(replay, replay.index.len() - 1, compressed, raw_length)
+}
+
+fn replace_block(replay: &Replay, position: usize, compressed: &[u8], raw_length: u64) -> Vec<u8> {
+    let old = replay.bytes();
+    let footer = old.len() - 24;
+    let trailer = u64::from_le_bytes(old[footer + 4..footer + 12].try_into().unwrap()) as usize;
+    let block = &replay.index[position];
+    let mut bytes = old[..block.offset as usize].to_vec();
+    bytes.extend_from_slice(compressed);
+    bytes.extend_from_slice(&old[(block.offset + block.length) as usize..trailer]);
+    let new_trailer = bytes.len();
+    bytes.extend_from_slice(&old[trailer..]);
+    let new_footer = bytes.len() - 24;
+    let index = new_footer - 40 * (replay.index.len() - position);
+    bytes[index + 24..index + 32].copy_from_slice(&(compressed.len() as u64).to_le_bytes());
+    bytes[index + 32..index + 40].copy_from_slice(&raw_length.to_le_bytes());
+    for later in position + 1..replay.index.len() {
+        let index = new_footer - 40 * (replay.index.len() - later);
+        let offset = new_trailer as u64 + replay.index[later].offset - trailer as u64;
+        bytes[index + 16..index + 24].copy_from_slice(&offset.to_le_bytes());
+    }
+    bytes[new_footer + 4..new_footer + 12].copy_from_slice(&(new_trailer as u64).to_le_bytes());
+    repair_trailer_crc(&mut bytes);
+    bytes
+}
+
+#[test]
+fn malformed_table_after_the_catalogue_is_found_by_playback_not_by_opening() {
+    let recording = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![source(1, 100, Some(1)), source(1, 101, Some(1))],
+        )],
+    )
+    .unwrap();
+    let mut frames = recording.read_block(&recording.index[0]).unwrap();
+    frames[1].tables[TableId::Countries.index()] = TableUpdate::Unchanged { baseline: 99 };
+    let mut raw = (frames.len() as u32).to_le_bytes().to_vec();
+    for frame in frames {
+        let mut payload = Vec::new();
+        frame.encode(&mut payload).unwrap();
+        raw.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        raw.extend(payload);
+    }
+    let compressed = zstd::encode_all(raw.as_slice(), 3).unwrap();
+    let replay = Arc::new(
+        Replay::open(replace_last_block(
+            &recording,
+            &compressed,
+            raw.len() as u64,
+        ))
+        .unwrap(),
+    );
+    let metadata = super::read(
+        &replay,
+        Path::new("table.battleplan"),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    // Opening reads only the catalogue's first hours, as before; the table
+    // fails where playback reaches it, and the rest of that hour stays exact.
+    assert!(metadata.damaged.is_none());
+    assert!(metadata.branches[0].gaps.is_empty());
+    let replay::container::SeekResult::Frame(actual) = replay.seek(1, 101).unwrap() else {
+        panic!("table damage lost entire hour")
+    };
+    let replay::container::SeekResult::Frame(expected) = recording.seek(1, 101).unwrap() else {
+        panic!("fixture hour unavailable")
+    };
+    assert!(
+        matches!(&*actual.tables[TableId::Countries.index()], TableView::Unavailable { reason } if reason.contains("baseline"))
+    );
+    for table in TableId::ALL
+        .into_iter()
+        .filter(|table| *table != TableId::Countries)
+    {
+        assert_eq!(
+            actual.tables[table.index()],
+            expected.tables[table.index()],
+            "{table:?}"
+        );
+    }
 }

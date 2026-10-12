@@ -136,6 +136,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
         const isDefault = campaign.id === defaultId;
         const source = bindings[campaign.id]?.source;
         const partial = source?.metadata.partial;
+        const damaged = source?.metadata.damaged;
         const tag = (source ? settings.campaigns[source.metadata.campaignKey]?.flag : undefined) ?? countryTags[campaign.id] ?? null;
         const country = tag ? source?.metadata.countries.find(item => item.tag === tag)?.name : undefined;
         return <div className="loaded-campaign" role="listitem" key={campaign.id}>
@@ -146,7 +147,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
             data-tooltip={[recordingNameTooltip(campaign.path, names), country, partial && partialRecordingText(partial)].filter(Boolean).join(' · ')} onClick={() => onDefault(campaign.id)}>
             {source ? <SourceFlag client={client} source={source} tag={tag} /> : <span className="campaign-loading"><span className="spinner" /></span>}
             <span>{displayName(campaign.path)}</span>
-            <PartialRecordingBadge partial={partial} />
+            <PartialRecordingBadge partial={partial} damaged={damaged} />
           </button>}
           {source && !(renaming && sameCampaignPath(renaming, campaign.path)) && <button type="button" className="icon-button small campaign-unload" aria-label={`Unload ${displayName(campaign.path)}`} data-tooltip="Unload"
             onClick={() => onUnload(campaign.id)}><Icon name="close" /></button>}

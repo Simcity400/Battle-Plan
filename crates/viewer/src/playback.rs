@@ -903,3 +903,38 @@ pub(crate) mod tests {
         assert!(!playback.step().unwrap());
     }
 }
+
+#[cfg(test)]
+mod damaged_recording_tests {
+    use super::*;
+
+    #[test]
+    fn modified_trailer_and_damaged_blocks_open_and_keep_later_playback_exact() {
+        let recording = tests::fixture();
+        let expected = match recording.seek(1, 820).unwrap() {
+            SeekResult::Frame(frame) => frame,
+            other => panic!("{other:?}"),
+        };
+        for corrupt_block in [false, true] {
+            let mut bytes = recording.bytes().to_vec();
+            *bytes.last_mut().unwrap() ^= 1;
+            if corrupt_block {
+                let first = &recording.index[0];
+                bytes[(first.offset + first.length - 1) as usize] ^= 1;
+            }
+            let replay = Replay::open(bytes).unwrap();
+            assert!(
+                replay
+                    .warnings
+                    .iter()
+                    .any(|reason| reason.contains("trailer CRC mismatch"))
+            );
+            let mut playback = Playback::new(replay).unwrap();
+            if corrupt_block {
+                assert!(matches!(playback.current(), Current::Gap { .. }));
+            }
+            playback.seek(1, 820).unwrap();
+            assert_eq!(playback.frame().unwrap(), expected.as_ref());
+        }
+    }
+}
