@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryMetadata } from '../shell/api';
 import type { DashboardSource } from './client';
-import { bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate, pinTime, rebaseWidget, recordingEndTime, resolveWindow } from './model.ts';
+import { bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate, pinTime, rebaseWidget, recordingEndTime, resolveWindow, widgetAtDefault } from './model.ts';
 import { setOption } from './options.ts';
 import type { OptionField } from './options';
 import { parseTemplate } from './storage.ts';
@@ -160,4 +160,16 @@ test('previews show each campaign at its end, where widgets have data', () => {
   assert.deepEqual(recordingEndTime({ timeModes: ['follow', 'pin'], scope: 'history' }, tracks),
     { mode: 'pin', windows: { a: { firstOffset: 0, lastOffset: 8_900 }, b: { firstOffset: 0, lastOffset: 10 } } });
   assert.equal(recordingEndTime({ timeModes: ['follow'], scope: 'moment' }, tracks), null);
+});
+
+test('a widget is at its default only when a reset would change nothing visible', () => {
+  const widget = createWidget('army-size', 'main', 'army');
+  assert.equal(widgetAtDefault(widget, 'main'), true);
+  assert.equal(widgetAtDefault({ ...widget, options: { view: 'race' } }, 'main'), true, 'a stored default value changes nothing');
+  assert.equal(widgetAtDefault({ ...widget, trackIds: ['other'] }, 'main'), true, 'a widget following the sidebar ignores stale tracks');
+  for (const changed of [{ ...widget, title: 'My army' }, { ...widget, contentScale: 90 }, { ...widget, options: { view: 'lines' } },
+    { ...widget, time: { mode: 'follow' } } as typeof widget, { ...widget, campaign: 'tracks', trackIds: ['other'] } as typeof widget,
+    // Saved by a newer version: unsupported here, and a reset restores a supported one.
+    { ...widget, configVersion: widget.configVersion + 1 }])
+    assert.equal(widgetAtDefault(changed, 'main'), false, JSON.stringify(changed));
 });

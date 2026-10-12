@@ -8,7 +8,7 @@ import type { useSidebarIconMenu } from './appearance/SidebarIconMenu';
 import { isSidebarIconId } from './appearance/sidebarIcons';
 
 /** Analytics in the sidebar: its pages, added with +, renamed or deleted from a right-click
- * menu (or the context-menu key; F2 renames) and reordered by dragging or the Move up / Move down menu actions. */
+ * menu (or the context-menu key; F2 renames) and reordered by dragging, or Alt+Up / Alt+Down. */
 export default function AnalyticsNav({ pages, page, active, disabled, onChoose, onPages, onDelete, iconMenu }: {
   pages: PageEntry[]; page: PageId; active: boolean; disabled: boolean;
   iconMenu: Pick<ReturnType<typeof useSidebarIconMenu>, 'colour' | 'items'>;
@@ -33,10 +33,6 @@ export default function AnalyticsNav({ pages, page, active, disabled, onChoose, 
   };
   const actions = (entry: PageEntry, button: HTMLButtonElement, x: number, y: number) => contextMenu.open(x, y, [
     { label: 'Rename', icon: 'edit', run: () => setRenaming(entry.id) },
-    { label: 'Move up', icon: 'chevron-up', disabled: pages[0].id === entry.id,
-      run: () => { const index = pages.findIndex(page => page.id === entry.id); if (index > 0) onPages(movePage(pages, index, index - 1)); } },
-    { label: 'Move down', icon: 'chevron-down', disabled: pages[pages.length - 1].id === entry.id,
-      run: () => { const index = pages.findIndex(page => page.id === entry.id); if (index < pages.length - 1) onPages(movePage(pages, index, index + 2)); } },
     ...(isSidebarIconId(entry.id) ? iconMenu.items(entry.id, button, entry.label) : []),
     { label: 'Delete', icon: 'trash', disabled: pages.length < 2, hint: pages.length < 2 ? 'Keep at least one page' : undefined, run: () => onDelete(entry.id) },
   ]);
@@ -57,6 +53,11 @@ export default function AnalyticsNav({ pages, page, active, disabled, onChoose, 
         onContextMenu={event => { event.preventDefault(); actions(entry, event.currentTarget, event.clientX, event.clientY); }}
         onKeyDown={event => {
           if (event.key === 'F2') { event.preventDefault(); setRenaming(entry.id); }
+          else if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+            event.preventDefault();
+            const to = event.key === 'ArrowUp' ? index - 1 : index + 2;
+            if (to >= 0 && to <= pages.length) onPages(movePage(pages, index, to));
+          }
           else if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
             event.preventDefault();
             const box = event.currentTarget.getBoundingClientRect();

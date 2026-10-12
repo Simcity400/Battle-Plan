@@ -7,7 +7,7 @@ import 'react-resizable/css/styles.css';
 import { Icon } from '../components/Icons';
 import WidgetState from '../components/WidgetState';
 import type { MapOptions } from '../shell/api';
-import { createWidget, GRID_COLUMNS } from './model';
+import { createWidget, GRID_COLUMNS, widgetAtDefault } from './model';
 import { resolveWidgetCampaign } from './campaigns';
 import { recordingName } from '../shell/api';
 import type { Breakpoint, DashboardTemplate, GridLayouts, WidgetSpec } from './model';
@@ -128,8 +128,11 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
     if (options) onApply({ ...widget, options }, true);
   }, [definition, widget, onApply]);
   const saveOption = useCallback((key: string, value: OptionValue) => saveOptions({ [key]: value }), [saveOptions]);
-  const reset = definition ? () => {
-    onApply(createWidget(widget.kind, template.tracks[0].id, widget.id), true);
+  // A layout without tracks has no default widget to return to.
+  const defaultTrack = template.tracks[0]?.id;
+  const reset = definition && defaultTrack !== undefined
+    && !(widgetAtDefault(widget, defaultTrack) && mapOptions.country === null && mapOptions.fog) ? () => {
+    onApply(createWidget(widget.kind, defaultTrack, widget.id), true);
     setMapOptions({ country: null, fog: true });
   } : undefined;
   const effective = resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId);

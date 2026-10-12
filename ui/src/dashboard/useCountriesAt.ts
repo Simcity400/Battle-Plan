@@ -22,7 +22,7 @@ export const STYLES: FactSpec<CountryStyle> = {
   params: (branchId, hour, tags) => ({ branchId, hour, tags }),
   extract: data => new Map((data as CountryStyleReply).styles.map(style => [style.tag, style] as const)),
 };
-export const FLAGS = flagReadSpec('shield');
+export const FLAGS = flagReadSpec('panel');
 
 /** A country as a lane names it: its name and flag. */
 export type CountryAt = CountryLabel;

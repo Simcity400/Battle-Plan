@@ -192,7 +192,7 @@ export type FocusArtworkReply = { branchId: string, hour: number, tag: string, i
 export type ResearchReply = { history: ResearchHistory, artwork: Array<Artwork>, warnings: Array<string>, };
 export type TechnologyArtworkParams = { tokens: Array<string>, };
 export type TechnologyArtworkReply = { items: Array<Artwork>, warnings: Array<string>, };
-export type CountryFlagSize = "full" | "medium" | "small" | "shield";
+export type CountryFlagSize = "full" | "medium" | "small" | "shield" | "panel";
 export type CountryFlagImage = { tag: string, asset: string, width: number, height: number,
 /**
  * Straight-alpha RGBA bytes, at most 128 pixels on the longer side.

@@ -32,8 +32,8 @@ export function drawRaceGrid(ctx: CanvasRenderingContext2D, layout: RaceLayout, 
   ctx.textBaseline = 'top';
   for (const tick of ticks) {
     const x = crisp(valueX(layout, min, max, tick));
-    ctx.beginPath(); ctx.moveTo(x, layout.top); ctx.lineTo(x, layout.bottom); ctx.stroke();
-    ctx.fillText(format(tick, ticks), x, layout.bottom + 6);
+    ctx.beginPath(); ctx.moveTo(x, layout.view.top); ctx.lineTo(x, layout.view.bottom); ctx.stroke();
+    ctx.fillText(format(tick, ticks), x, layout.view.bottom + 6);
   }
   ctx.restore();
 }
@@ -108,13 +108,13 @@ export function drawRaceBar(ctx: CanvasRenderingContext2D, layout: RaceLayout, t
 /** The moment shown as a large, faint date in the plot's lower right corner, under
  * the bars (the race widgets' date overlay, off by default). */
 export function drawDateOverlay(ctx: CanvasRenderingContext2D, layout: RaceLayout, tokens: ChartTokens, text: string): void {
-  const size = Math.max(tokens.fontSize.title, Math.min(64, (layout.right - layout.left) / 6, (layout.bottom - layout.top) / 3));
+  const size = Math.max(tokens.fontSize.title, Math.min(64, (layout.right - layout.left) / 6, (layout.view.bottom - layout.view.top) / 3));
   ctx.save();
   ctx.font = font(tokens, size, 800);
   ctx.fillStyle = tokens.text;
   ctx.globalAlpha = 0.08;
   ctx.textAlign = 'right';
   ctx.textBaseline = 'alphabetic';
-  ctx.fillText(text, layout.right, layout.bottom - 8, layout.right - layout.left);
+  ctx.fillText(text, layout.right, layout.view.bottom - 8, layout.right - layout.left);
   ctx.restore();
 }

@@ -94,7 +94,7 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
           : <span className="aces-flag aces-country-missing" role="img" aria-label="Country not recorded" data-tooltip="Country not recorded" />}
         {aceCallsign(row) ? `“${aceCallsign(row)}”` : ''}
       </small></div>; } },
-    { key: 'wing', header: 'Wing · aircraft', label: 'Wing and aircraft', sortable: false, width: 'minmax(0, 1fr)', value: () => null, renderMissing: true,
+    { key: 'wing', header: 'Wing · aircraft', label: 'Wing and aircraft', sortable: false, width: 'minmax(var(--table-name-min), 1fr)', value: () => null, renderMissing: true,
       render: row => <div className="aces-wing"><span title={wingName(row)}>{wingName(row)}</span><small title={aircraftName(row)}>{aircraftName(row)}</small></div> },
     { ...SORT_CHOICES[0], label: 'Status', header: 'Status', width: 'var(--military-status-column)', value: row => row.ace.firstSeen,
       render: row => <small className="aces-status">{aceStatus(row)}</small> },

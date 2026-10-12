@@ -13,7 +13,7 @@ function elements(value: any): Node[] {
   return [value, ...elements(value.props.children)];
 }
 
-test('page context menu supports keyboard reordering and disables moves at the ends', async () => {
+test('pages reorder by drag or Alt+arrow keys, not from the page menu', async () => {
   let items: MenuItem[] = [];
   const fixture = { open: (_x: number, _y: number, next: MenuItem[]) => { items = next; } };
   const host = globalThis as typeof globalThis & { __pageMenu?: typeof fixture };
@@ -39,21 +39,19 @@ test('page context menu supports keyboard reordering and disables moves at the e
       assert.ok(prevented);
       return items;
     };
-    const action = (label: string) => { const item = items.find(item => item.label === label); assert.ok(item, label); return item; };
-    openMenu('b');
-    assert.equal(action('Move up').disabled, false);
-    action('Move up').run();
+    const press = (id: string, key: string) => {
+      const row = elements(render()).find(node => node.type === 'button' && node.props.children?.some?.((child: any) => child?.props?.children === id))!;
+      row.props.onKeyDown({ key, altKey: true, preventDefault() {} });
+    };
+    assert.deepEqual(openMenu('b').map(item => item.label), ['Rename', 'Delete'], 'the page menu has no move actions');
+    press('b', 'ArrowUp');
     assert.deepEqual(pages.map(page => page.label), ['b', 'a', 'c']);
-    openMenu('b');
-    assert.equal(action('Move up').disabled, true);
-    action('Move up').run();
-    assert.deepEqual(pages.map(page => page.label), ['b', 'a', 'c']);
-    action('Move down').run();
+    press('b', 'ArrowUp');
+    assert.deepEqual(pages.map(page => page.label), ['b', 'a', 'c'], 'the first page cannot move up');
+    press('b', 'ArrowDown');
     assert.deepEqual(pages.map(page => page.label), ['a', 'b', 'c']);
-    openMenu('c');
-    assert.equal(action('Move down').disabled, true);
-    action('Move down').run();
-    assert.deepEqual(pages.map(page => page.label), ['a', 'b', 'c']);
+    press('c', 'ArrowDown');
+    assert.deepEqual(pages.map(page => page.label), ['a', 'b', 'c'], 'the last page cannot move down');
     pages = Array.from({ length: 40 }, (_, index) => ({ id: `page-${index}`, label: `Page ${index}` }));
     const list = elements(render()).find(node => node.props.className === 'sidebar-page-list');
     assert.ok(list, 'long page lists have their own scroll container');

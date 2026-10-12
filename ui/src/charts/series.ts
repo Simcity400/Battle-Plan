@@ -119,14 +119,22 @@ export function segments(runs: readonly Run[], from: number, to: number): Run[][
 }
 
 /** Points along one segment about every `stepPx` pixels, always including both
- * ends. Each sample takes the exact recorded value at its hour, and any peak or dip
- * between two samples is kept too, so a short spike is drawn rather than skipped. */
+ * ends. Between the ends, samples sit on a fixed grid of hours a power of two apart,
+ * counted from hour 0, not spread evenly between the ends: a line growing during
+ * playback, or seen through a sliding window, keeps every sample it had, so only its
+ * ends move instead of the whole curve reshaping each frame. As the scale changes the
+ * grid only halves or doubles, keeping the samples on both grids. Each sample takes
+ * the exact recorded value at its hour, and any peak or dip between two samples is
+ * kept too, so a short spike is drawn rather than skipped. */
 export function samplePoints(segment: readonly Run[], toX: (hour: number) => number, toY: (value: number) => number, stepPx = 12): Point[] {
   if (!segment.length) return [];
   const first = segment[0].firstHour;
   const last = segment.at(-1)!.lastHour;
   const pixels = Math.abs(toX(last) - toX(first));
-  const count = Math.max(1, Math.round(pixels / stepPx));
+  const every = last > first && pixels > 0 ? 2 ** Math.max(0, Math.round(Math.log2(stepPx * (last - first) / pixels))) : 1;
+  const hours = [first];
+  for (let hour = (Math.floor(first / every) + 1) * every; hour < last; hour += every) hours.push(hour);
+  if (last > first) hours.push(last);
   const points: Point[] = [];
   const push = (hour: number, value: number) => {
     const x = toX(hour);
@@ -134,8 +142,7 @@ export function samplePoints(segment: readonly Run[], toX: (hour: number) => num
   };
   let index = 0;
   let previous: number | null = null;
-  for (let step = 0; step <= count; step++) {
-    const hour = Math.round(first + (last - first) * (step / count));
+  for (const hour of hours) {
     const skipped: Run[] = [];
     while (index < segment.length - 1 && hour > segment[index].lastHour) skipped.push(segment[index++]);
     const run = segment[index];

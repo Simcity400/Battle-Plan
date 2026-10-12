@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { typographyVariables } from './typography';
 import { loadAppearance, resolveAppearance, saveAppearance } from './settings';
-import type { AppearanceSettings, ResolvedAppearance } from './settings';
+import type { AppearanceSettings, Backdrop, ResolvedAppearance } from './settings';
 import { contrastColors, cssVariable, themeRoles } from './themes';
 import type { ThemeColors, ThemeMode } from './themes';
 import { getBackdrop } from './backdrops';
@@ -31,19 +31,22 @@ export function applyAppearance(root: HTMLElement, settings: AppearanceSettings,
   for (const id of sidebarIconIds) root.style.setProperty(`--sidebar-icon-${id}`, settings.sidebarIcons[id] ?? SIDEBAR_ICONS[id][mode]);
   root.style.setProperty('--glass', `${settings.glass}%`);
   root.style.setProperty('--glass-blur', settings.glass >= 100 ? '0px' : `${Math.round(12 + (100 - settings.glass) * 0.2)}px`);
+  // The sidebar and top bar were 0.8 × glass + 20 opaque and blurred as the glass was:
+  // in their own opacity that blur is 12 + (100 − opacity) × 0.25.
+  root.style.setProperty('--chrome-opacity', `${settings.chromeGlass}%`);
+  root.style.setProperty('--chrome-blur', settings.chromeGlass >= 100 ? '0px' : `${Math.round(12 + (100 - settings.chromeGlass) * 0.25)}px`);
   root.style.setProperty('--radius', `${settings.radius}px`);
   for (const [name, value] of Object.entries(typographyVariables(settings.fonts, settings.typography))) root.style.setProperty(name, value);
   root.style.fontSize = `${settings.typography.sizes.interface}px`;
   if (settings.typography.smoothing) root.style.setProperty('-webkit-font-smoothing', 'antialiased');
   else root.style.removeProperty('-webkit-font-smoothing');
   root.dataset.wordWrap = String(settings.typography.wordWrap);
-  root.style.setProperty('--backdrop-dim', `${settings.backdrop.dim}%`);
-  root.style.setProperty('--backdrop-blur', `${settings.backdrop.blur}px`);
   root.style.colorScheme = mode;
   root.dataset.mode = mode;
   root.dataset.theme = resolved.theme.id;
   root.dataset.motion = resolved.reducedMotion ? 'reduced' : 'full';
-  root.dataset.backdrop = settings.backdrop.kind;
+  // Panels in the main view frost whatever backdrop is behind them there.
+  root.dataset.backdrop = settings.workspaceBackdrop.kind === 'same' ? settings.backdrop.kind : settings.workspaceBackdrop.kind;
   root.dataset.headerFlag = settings.headerFlag;
   root.dataset.chartMotion = settings.charts.motion;
   root.dataset.countryColours = settings.charts.countryColours;
@@ -60,13 +63,25 @@ export function applySavedAppearance(): void {
 
 export interface ThemePreview { colors: ThemeColors; mode: ThemeMode }
 
+/** The stored image a backdrop shows, once it has loaded; null for other kinds. */
+function useBackdropImage(backdrop: Backdrop<string>): string | null {
+  const [image, setImage] = useState<string | null>(null);
+  const imageId = backdrop.kind === 'image' ? backdrop.imageId : null;
+  useEffect(() => {
+    if (!imageId) { setImage(null); return; }
+    let current = true;
+    void getBackdrop(imageId).then(entry => { if (current) setImage(entry?.image ?? null); }).catch(() => { if (current) setImage(null); });
+    return () => { current = false; };
+  }, [imageId]);
+  return image;
+}
+
 export function useAppearance() {
   const [initial] = useState(loadAppearance);
   const [settings, setSettings] = useState(initial.settings);
   const latest = useRef(settings);
   const [notice, setNotice] = useState<string | null>(initial.warning);
   const [preview, setPreview] = useState<ThemePreview | null>(null);
-  const [backdropImage, setBackdropImage] = useState<string | null>(null);
   const systemDark = useMedia(dark);
   const systemReduced = useMedia(motion);
   const resolved = useMemo(() => resolveAppearance(settings, systemDark, systemReduced), [settings, systemDark, systemReduced]);
@@ -80,13 +95,8 @@ export function useAppearance() {
     return () => cancelAnimationFrame(frame);
   }, [settings, resolved, preview]);
 
-  const imageId = settings.backdrop.kind === 'image' ? settings.backdrop.imageId : null;
-  useEffect(() => {
-    if (!imageId) { setBackdropImage(null); return; }
-    let current = true;
-    void getBackdrop(imageId).then(entry => { if (current) setBackdropImage(entry?.image ?? null); }).catch(() => { if (current) setBackdropImage(null); });
-    return () => { current = false; };
-  }, [imageId]);
+  const backdropImage = useBackdropImage(settings.backdrop);
+  const workspaceImage = useBackdropImage(settings.workspaceBackdrop);
 
   const update = useCallback((change: (previous: AppearanceSettings) => AppearanceSettings) => {
     const next = change(latest.current);
@@ -95,7 +105,7 @@ export function useAppearance() {
     setNotice(saveAppearance(next));
   }, []);
 
-  return { settings, resolved, update, notice, preview, setPreview, backdropImage };
+  return { settings, resolved, update, notice, preview, setPreview, backdropImage, workspaceImage };
 }
 
 export type Appearance = ReturnType<typeof useAppearance>;

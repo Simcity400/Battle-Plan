@@ -1,6 +1,7 @@
 import { newId } from '../shell/ids.ts';
 import type { DashboardSource } from './client';
 import { widgetDefinition } from './definitions.ts';
+import { resolveOptions } from './options.ts';
 import type { WidgetOptions } from './options';
 import { pageDefinition } from './pages.ts';
 import type { PageId } from './pages.ts';
@@ -73,6 +74,15 @@ export function createWidget(kind: WidgetKind, trackId: string, id: string = new
     trackIds: [trackId], countries: definition.defaultCountries ?? (definition.countries?.all ? { kind: 'all' } : { kind: 'selected' }),
     time: { mode: definition.defaultTime }, contentScale: 100,
   };
+}
+
+/** Whether resetting the widget would change nothing anyone can see: its settings version,
+ * title, zoom, countries, time and every option already match a new widget of its kind. */
+export function widgetAtDefault(widget: WidgetSpec, trackId: string): boolean {
+  const fields = widgetDefinition(widget.kind)?.options;
+  const shown = (spec: WidgetSpec) => ({ configVersion: spec.configVersion, title: spec.title, contentScale: spec.contentScale ?? 100, countries: spec.countries, time: spec.time,
+    campaign: spec.campaign ?? 'default', trackIds: spec.campaign === 'tracks' ? spec.trackIds : null, options: resolveOptions(fields, spec.options) });
+  return stableJson(shown(widget)) === stableJson(shown(createWidget(widget.kind, trackId, widget.id)));
 }
 
 /** A page's designed arrangement (empty for a page the user added); narrow screens stack its widgets in reading order. */

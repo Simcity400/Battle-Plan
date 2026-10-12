@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { contrast, normalizeColor, oklchToRgb, parseColor, parseColorAlpha, rgbToOklch, toHex } from './color.ts';
 import { BUILT_IN_THEMES, contrastColors, contrastWarnings, cssVariable, deriveColors, themeRoles } from './themes.ts';
 import { parseJsonc, parseThemeText, serializeTheme, uniqueThemeName } from './themeFile.ts';
-import { APPEARANCE_KEY, DEFAULT_APPEARANCE, loadAppearance, migrateLegacy, parseAppearance, resolveAppearance, saveAppearance } from './settings.ts';
+import { APPEARANCE_KEY, DEFAULT_APPEARANCE, LIMITS, loadAppearance, migrateLegacy, parseAppearance, resolveAppearance, saveAppearance } from './settings.ts';
 
 const hex = /^#[0-9a-f]{6}$/;
 function memoryStorage(entries: Record<string, string> = {}) {
@@ -131,6 +131,7 @@ test('appearance settings clamp, default and drop unknown themes', () => {
   assert.equal(parsed.scheme, DEFAULT_APPEARANCE.scheme);
   assert.deepEqual(parsed.themes, { dark: 'carbon', light: 'brass' });
   assert.equal(parsed.glass, 40);
+  assert.equal(parsed.chromeGlass, 52, 'the sidebar and top bar keep the opacity they had with that glass');
   assert.equal(parsed.radius, 18);
   assert.equal(parsed.motion, 'system');
   assert.equal(parsed.headerFlag, 'native');
@@ -212,4 +213,68 @@ test('HSV conversion round-trips for the colour picker', async () => {
     assert.equal(toHex(hsvToRgb(rgbToHsv(parseColor(value)!))), value);
   }
   assert.deepEqual(rgbToHsv({ r: 0, g: 0, b: 255 }), { h: 240, s: 1, v: 1 });
+});
+
+test('the sidebar and top bar glass is set apart from the main view glass', async () => {
+  assert.equal(parseAppearance({ glass: 60, chromeGlass: 95 }).chromeGlass, 95);
+  assert.equal(parseAppearance({ glass: 60, chromeGlass: 12 }).chromeGlass, 40);
+  assert.equal(parseAppearance({ glass: 78 }).chromeGlass, DEFAULT_APPEARANCE.chromeGlass, 'the default keeps today’s look');
+  const { createServer } = await import('vite');
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false } });
+  try {
+    const { applyAppearance } = await vite.ssrLoadModule('/ui/src/shell/appearance/useAppearance.ts') as typeof import('./useAppearance');
+    const values = new Map<string, string>();
+    const root = { dataset: {}, style: { setProperty: (name: string, value: string) => { values.set(name, value); }, removeProperty() {} } } as unknown as HTMLElement;
+    const settings = { ...DEFAULT_APPEARANCE, glass: 60, chromeGlass: 100 };
+    const page = globalThis as { document?: unknown };
+    page.document = { querySelector: () => null, documentElement: null };
+    try { applyAppearance(root, settings, resolveAppearance(settings, false, false)); } finally { delete page.document; }
+    assert.equal(values.get('--glass'), '60%');
+    assert.equal(values.get('--glass-blur'), '20px');
+    assert.equal(values.get('--chrome-opacity'), '100%');
+    assert.equal(values.get('--chrome-blur'), '0px', 'a solid sidebar and top bar need no blur');
+    // Every glass saved before keeps the sidebar and top bar exactly as its single setting drew them.
+    for (let glass = LIMITS.glass[0]; glass <= LIMITS.glass[1]; glass++) {
+      const migrated = parseAppearance({ glass, backdrop: { kind: 'image', imageId: 'saved' } });
+      page.document = { querySelector: () => null, documentElement: null };
+      try { applyAppearance(root, migrated, resolveAppearance(migrated, false, false)); } finally { delete page.document; }
+      assert.ok(Math.abs(parseFloat(values.get('--chrome-opacity')!) - (glass * 0.8 + 20)) < 1e-9, `opacity for glass ${glass}`);
+      assert.equal(values.get('--chrome-blur'), values.get('--glass-blur'), `blur for glass ${glass}`);
+    }
+  } finally { await vite.close(); }
+});
+
+test('the main view has its own backdrop, or shows the sidebar and top bar’s through it', async () => {
+  assert.deepEqual(DEFAULT_APPEARANCE.workspaceBackdrop.kind, 'same', 'nothing changes until a main view backdrop is chosen');
+  const own = parseAppearance({ backdrop: { kind: 'image', imageId: 'window' }, workspaceBackdrop: { kind: 'image', imageId: 'main', dim: 20, blur: 99 } });
+  assert.deepEqual(own.workspaceBackdrop, { kind: 'image', imageId: 'main', dim: 20, blur: 40 });
+  assert.equal(own.backdrop.imageId, 'window', 'each keeps its own image');
+  assert.equal(parseAppearance({ workspaceBackdrop: { kind: 'video' } }).workspaceBackdrop.kind, 'same');
+  assert.equal(parseAppearance({ backdrop: { kind: 'same' } }).backdrop.kind, DEFAULT_APPEARANCE.backdrop.kind, 'the window always has a backdrop of its own');
+  const { createServer } = await import('vite');
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false } });
+  try {
+    const { applyAppearance } = await vite.ssrLoadModule('/ui/src/shell/appearance/useAppearance.ts') as typeof import('./useAppearance');
+    const { default: Backdrop } = await vite.ssrLoadModule('/ui/src/shell/appearance/Backdrop.tsx') as typeof import('./Backdrop');
+    const dataset: Record<string, string> = {};
+    const root = { dataset, style: { setProperty() {}, removeProperty() {} } } as unknown as HTMLElement;
+    const page = globalThis as { document?: unknown };
+    page.document = { querySelector: () => null, documentElement: null };
+    try {
+      for (const [workspace, frosted] of [['same', 'ambient'], ['image', 'image'], ['solid', 'solid']] as const) {
+        const settings = { ...DEFAULT_APPEARANCE, backdrop: { ...DEFAULT_APPEARANCE.backdrop, kind: 'ambient' as const },
+          workspaceBackdrop: { ...DEFAULT_APPEARANCE.workspaceBackdrop, kind: workspace } };
+        applyAppearance(root, settings, resolveAppearance(settings, false, false));
+        assert.equal(dataset.backdrop, frosted, 'main view panels frost the backdrop behind them');
+      }
+    } finally { delete page.document; }
+    const layer = renderToStaticMarkup(createElement(Backdrop, { className: 'is-workspace', image: 'data:image/png;base64,AA==',
+      backdrop: { kind: 'image', imageId: 'main', dim: 20, blur: 6 } }));
+    assert.match(layer, /class="app-backdrop is-workspace" data-kind="image"/);
+    assert.match(layer, /--backdrop-dim:20%;--backdrop-blur:6px/, 'each layer carries its own dim and blur');
+    assert.match(layer, /app-backdrop-image/);
+    assert.doesNotMatch(renderToStaticMarkup(createElement(Backdrop, { image: null, backdrop: { ...DEFAULT_APPEARANCE.backdrop, kind: 'ambient' } })), /app-backdrop-image/);
+  } finally { await vite.close(); }
 });

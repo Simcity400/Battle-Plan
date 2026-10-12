@@ -103,7 +103,8 @@ function SizeStepper({ widget, onChange }: { widget: WidgetSpec; onChange: (widg
   return <div className="setting-row"><SettingLabel label="Zoom" hint="Text, icons and charts inside this widget" />
     <div className="size-stepper" role="group" aria-label="Widget size">
       <button type="button" className="icon-button small" aria-label="Smaller" disabled={scale <= WIDGET_CONTENT_SCALES[0]} onClick={() => step(-1)}><Icon name="minus" /></button>
-      <button type="button" className="size-stepper-value" aria-label={`Size ${scale}%, reset to 100%`} data-tooltip="Reset to 100%" onClick={() => onChange({ ...widget, contentScale: 100 })}>{scale}%</button>
+      {scale === 100 ? <span className="size-stepper-value" aria-label={`Size ${scale}%`}>{scale}%</span>
+        : <button type="button" className="size-stepper-value" aria-label={`Size ${scale}%, reset to 100%`} data-tooltip="Reset to 100%" onClick={() => onChange({ ...widget, contentScale: 100 })}>{scale}%</button>}
       <button type="button" className="icon-button small" aria-label="Larger" disabled={scale >= WIDGET_CONTENT_SCALES.at(-1)!} onClick={() => step(1)}><Icon name="plus" /></button>
     </div></div>;
 }

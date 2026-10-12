@@ -5,8 +5,8 @@ import { DEFAULT_APPEARANCE, parseAppearance, loadAppearance, saveAppearance } f
 
 const fonts = { interface: 'Inter Variable', display: 'Source Serif 4 Variable', tables: 'Cascadia Code Variable', diagnostics: 'Consolas' };
 test('typography defaults and role-specific ranges survive unreadable preferences', () => {
-  assert.deepEqual(parseTypography(null), { advanced: false, sizes: { interface: 16, display: 14, tables: 13, diagnostics: 12 }, smoothing: true, wordWrap: true });
-  assert.deepEqual(parseTypography({ sizes: { interface: 99, display: 1, tables: 18.9, diagnostics: -9 } }).sizes, { interface: 20, display: 12, tables: 18, diagnostics: 8 });
+  assert.deepEqual(parseTypography(null), { advanced: false, sizes: { interface: 16, display: 14, diagnostics: 12 }, smoothing: true, wordWrap: true });
+  assert.deepEqual(parseTypography({ sizes: { interface: 99, display: 1, tables: 18.9, diagnostics: -9 } }).sizes, { interface: 20, display: 12, diagnostics: 8 }, 'a saved table size is dropped');
   assert.deepEqual(parseTypography({ sizes: { interface: NaN, display: Infinity, tables: '11' } }).sizes, DEFAULT_TYPOGRAPHY.sizes);
 });
 test('older two-family preferences keep their fonts and reveal a saved headings override', () => {
@@ -16,18 +16,18 @@ test('older two-family preferences keep their fonts and reveal a saved headings 
   assert.equal(parseAppearance({ fonts: { interface: 'Arial' } }).typography.advanced, false);
   assert.equal(parseAppearance({ fonts, typography: { advanced: false } }).typography.advanced, false);
 });
-test('Simple diagnostics inherit Monospace; Advanced uses independent diagnostics preferences', () => {
-  const sizes = { interface: 20, display: 18, tables: 16, diagnostics: 9 };
+test('tables follow the interface font unless given their own; diagnostics stay monospace outside Advanced', () => {
+  const sizes = { interface: 20, display: 18, diagnostics: 9 };
   for (const advanced of [false, true]) {
     const settings = parseAppearance({ fonts, typography: { ...DEFAULT_TYPOGRAPHY, sizes, advanced } });
     const variables = typographyVariables(settings.fonts, settings.typography);
     assert.equal(settings.typography.advanced, advanced);
-    assert.equal(variables['--font-size-mono'], '16px');
-    assert.equal(variables['--font-size-diagnostics'], advanced ? '9px' : '16px');
+    assert.equal(variables['--font-size-tables'], undefined, 'tables take the interface text size');
+    assert.equal(variables['--font-size-diagnostics'], advanced ? '9px' : '12px');
     assert.equal(variables['--font-size-display'], '18px');
-    assert.match(variables['--font-mono'], /^'Cascadia Code Variable'/);
+    assert.match(variables['--font-tables'], /^'Cascadia Code Variable'/);
     if (advanced) assert.match(variables['--font-diagnostics'], /^'Consolas'/);
-    else assert.equal(variables['--font-diagnostics'], variables['--font-mono']);
+    else assert.match(variables['--font-diagnostics'], /monospace$/, 'a table font does not change diagnostics outside Advanced');
     assert.match(variables['--font-display'], /^'Source Serif 4 Variable'/);
     assert.equal(variables['--type-sm'], '15px');
   }
@@ -35,6 +35,8 @@ test('Simple diagnostics inherit Monospace; Advanced uses independent diagnostic
   assert.equal(defaults['--font-display'], defaults['--font-ui']);
   assert.doesNotMatch(defaults['--font-diagnostics'], /Cascadia/);
   assert.equal(defaults['--font-size-diagnostics'], '12px');
+  const unset = typographyVariables({ ...fonts, tables: '' }, DEFAULT_TYPOGRAPHY);
+  assert.equal(unset['--font-tables'], unset['--font-ui'], 'tables match the charts by default');
 });
 test('Simple preserves advanced overrides and switching back restores them', () => {
   const settings = parseAppearance({ ...DEFAULT_APPEARANCE, fonts: { ...fonts, interface: 'Missing, Arial, sans-serif' }, typography: { advanced: false, sizes: { interface: 17, display: 19, tables: 15, diagnostics: 8 }, smoothing: false, wordWrap: false } });
@@ -44,7 +46,7 @@ test('Simple preserves advanced overrides and switching back restores them', () 
   assert.deepEqual(loadAppearance(storage).settings, settings);
   const restored = loadAppearance(storage).settings;
   assert.equal(restored.typography.advanced, false);
-  assert.equal(typographyVariables(restored.fonts, restored.typography)['--font-size-diagnostics'], '15px');
+  assert.equal(typographyVariables(restored.fonts, restored.typography)['--font-size-diagnostics'], '12px', 'Simple diagnostics keep their own default size');
   const advanced = { ...restored, typography: { ...restored.typography, advanced: true } };
   assert.equal(saveAppearance(advanced, storage), null);
   assert.deepEqual(loadAppearance(storage).settings, advanced);

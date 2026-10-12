@@ -17,6 +17,7 @@ import type { ThemeDraft } from './appearance/ThemeEditor';
 import { BUILT_IN_THEMES } from './appearance/themes';
 import { uniqueThemeName } from './appearance/themeFile';
 import type { Appearance } from './appearance/useAppearance';
+import type { BranchChoice } from '../dashboard/Dashboard';
 import './settings.css';
 
 export type SettingsSection = 'folders' | 'appearance' | 'graphics' | 'diagnostics';
@@ -25,7 +26,7 @@ export const settingsSections: { id: SettingsSection; label: string; icon: IconN
   { id: 'folders', label: 'Folders', icon: 'folder', description: 'Where the game, your Paradox user files and your recordings live.' },
   { id: 'appearance', label: 'Appearance', icon: 'palette', description: 'Themes, backdrop, glass and typography. Saved on this device.' },
   { id: 'graphics', label: 'Map graphics', icon: 'map', description: 'Defaults for every campaign map. Campaigns and individual map widgets can override them.' },
-  { id: 'diagnostics', label: 'Diagnostics', icon: 'info', description: 'Map diagnostics, recording coverage and the most recent native map report.' },
+  { id: 'diagnostics', label: 'Diagnostics', icon: 'info', description: 'How complete the open recording is, and tools for when the map misbehaves.' },
 ];
 
 /** A search result: a section, and the row to reveal by element id or by its visible label. */
@@ -40,9 +41,10 @@ const searchItems: SettingsTarget[] = [
   { section: 'appearance', title: 'Themes', id: 'appearance-themes', keywords: 'theme palette colours colors accent' },
   { section: 'appearance', title: 'Import theme', id: 'appearance-themes', keywords: 'vs code vscode json file paste' },
   { section: 'appearance', title: 'Create theme', id: 'appearance-themes', keywords: 'custom editor colour color' },
-  { section: 'appearance', title: 'Backdrop', id: 'appearance-backdrop', keywords: 'background image wallpaper glow ambient' },
+  { section: 'appearance', title: 'Backdrop', id: 'appearance-backdrop', keywords: 'background image wallpaper glow ambient sidebar top bar main view' },
   { section: 'appearance', title: 'Contrast', id: 'appearance-contrast', keywords: 'colours colors borders text readability' },
-  { section: 'appearance', title: 'Glass', id: 'appearance-glass', keywords: 'blur opacity transparency frosted' },
+  { section: 'appearance', title: 'Main view glass', id: 'appearance-glass', keywords: 'glass blur opacity transparency frosted panels widgets' },
+  { section: 'appearance', title: 'Sidebar and top bar glass', id: 'appearance-chrome-glass', keywords: 'glass blur opacity transparency frosted sidebar header top bar' },
   { section: 'appearance', title: 'Corner radius', id: 'appearance-radius', keywords: 'rounding rounded corners' },
   { section: 'appearance', title: 'Motion', id: 'appearance-motion', keywords: 'animation reduced transitions' },
   { section: 'appearance', title: 'Chart motion', id: 'appearance-chart-motion', keywords: 'charts animation easing playback smooth cinematic snappy' },
@@ -58,9 +60,9 @@ const searchItems: SettingsTarget[] = [
   ...[...MAP_OPTION_LABELS.slice(0, 2), ...VIDEO_OPTION_LABELS, ...MAP_OPTION_LABELS.slice(2)]
     .map(title => ({ section: 'graphics' as const, title, keywords: title === MAP_OPTION_LABELS[0] ? 'msaa' : title === VIDEO_OPTION_LABELS[1] ? 'zoom ui size' : title === VIDEO_OPTION_LABELS[2] ? 'counters icons labels size gui_scale' : 'map graphics' })),
   { section: 'graphics', title: 'Visual mods', keywords: 'mods artwork' },
-  { section: 'diagnostics', title: 'Show diagnostics on maps', id: 'diagnostics-overlay', keywords: 'stats limitations warnings debug overlay f3' },
-  { section: 'diagnostics', title: 'Recording', id: 'diagnostics-recording', keywords: 'gaps branches coverage format' },
-  { section: 'diagnostics', title: 'Native map', id: 'diagnostics-map', keywords: 'viewer report' },
+  { section: 'diagnostics', title: 'Technical overlay', id: 'diagnostics-overlay', keywords: 'diagnostics stats frame rate debug overlay f3 map' },
+  { section: 'diagnostics', title: 'Recording', id: 'diagnostics-recording', keywords: 'gaps branches coverage complete stopped early notes missing' },
+  { section: 'diagnostics', title: 'Map problems', id: 'diagnostics-map', keywords: 'map report viewer problems errors' },
 ];
 
 function search(query: string): SettingsTarget[] {
@@ -137,10 +139,10 @@ export function SettingsNav({ section, onBack, onSection, onTarget, disabled }: 
   </>;
 }
 
-export default function Settings({ section, target, onTargetShown, appearance, library, client, native, metadata, folders, folderError, onFoldersChange, onResetPages }: {
+export default function Settings({ section, target, onTargetShown, appearance, library, client, native, metadata, branch, folders, folderError, onFoldersChange, onResetPages }: {
   section: SettingsSection; target: SettingsTarget | null; onTargetShown: () => void;
-  folders: ContentFolders | null; folderError: string | null; onFoldersChange: (folders: ContentFolders) => void; native: DesktopState | null; metadata: ReplayMetadata | null;
-  library: ReplayLibraryState; client: DashboardClient; appearance: Appearance; onResetPages: () => void;
+  folders: ContentFolders | null; folderError: string | null; onFoldersChange: (folders: ContentFolders) => void; native: DesktopState | null; metadata: ReplayMetadata | null; branch: BranchChoice | null;
+  library: ReplayLibraryState; client: DashboardClient; appearance: Appearance; onResetPages?: (() => void) | null;
 }) {
   const page = useRef<HTMLDivElement>(null);
   const [editor, setEditor] = useState<ThemeDraft | null>(null);
@@ -199,28 +201,30 @@ export default function Settings({ section, target, onTargetShown, appearance, l
             <MapAppearance key={`${folders?.game ?? ''}:${folders?.user ?? ''}`} global source={null} client={client} userFolder={folders?.user} />
           </div>
         </SettingsBlock>}
-        {section === 'diagnostics' && <MapDiagnostics native={native} metadata={metadata} />}
+        {section === 'diagnostics' && <MapDiagnostics native={native} metadata={metadata} branch={branch} />}
       </div>
     </div>
     {editor && <ThemeEditor key={editor.id ?? 'new'} draft={editor} onSave={saveTheme} onClose={() => setEditor(null)} onPreview={appearance.setPreview} />}
   </div>;
 }
 
-/** Restores the built-in analytics pages and every page's layout; a second click confirms. */
-function ResetPages({ onReset }: { onReset: () => void }) {
+/** Restores the built-in analytics pages and every page's layout; a second click confirms.
+ * Without `onReset` the pages and layouts are already the defaults, so there is no button;
+ * null while that is still being worked out. */
+function ResetPages({ onReset }: { onReset?: (() => void) | null }) {
   const [confirming, setConfirming] = useState(false);
-  const [done, setDone] = useState(false);
   useEffect(() => {
-    if (!confirming && !done) return;
-    const timer = setTimeout(() => { setConfirming(false); setDone(false); }, 4000);
+    if (!confirming) return;
+    const timer = setTimeout(() => setConfirming(false), 4000);
     return () => clearTimeout(timer);
-  }, [confirming, done]);
+  }, [confirming]);
   return <SettingsBlock id="appearance-pages" title="Analytics pages">
     <div className="settings-row"><span className="settings-row-text"><strong>Reset to defaults</strong>
-      <small>Restores the built-in pages with their names, order and widget layouts, and removes pages you added. Loaded recordings stay open.</small></span>
-      <button type="button" className={`button small${confirming ? ' is-danger' : ''}`} onClick={() => {
-        if (!confirming) { setConfirming(true); setDone(false); return; }
-        onReset(); setConfirming(false); setDone(true);
-      }}><Icon name={done ? 'check' : 'refresh'} />{confirming ? 'Click again to reset' : done ? 'Reset' : 'Reset to defaults'}</button></div>
+      <small>{onReset ? 'Restores the built-in pages with their names, order and widget layouts, and removes pages you added. Loaded recordings stay open.'
+        : onReset === null ? 'Checking your pages and layouts…' : 'Your pages and layouts are the defaults.'}</small></span>
+      {onReset && <button type="button" className={`button small${confirming ? ' is-danger' : ''}`} onClick={() => {
+        if (!confirming) { setConfirming(true); return; }
+        onReset(); setConfirming(false);
+      }}><Icon name="refresh" />{confirming ? 'Click again to reset' : 'Reset to defaults'}</button>}</div>
   </SettingsBlock>;
 }

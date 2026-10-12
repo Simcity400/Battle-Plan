@@ -10,8 +10,9 @@ import { Icon } from '../components/Icons';
 import type { DashboardClient, DashboardSource } from './client';
 import { addGridItem, addGridItemBelow, bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate, MAX_WIDGETS, mergeViewPreferences, rebaseWidget, seekPositionFor, stableJson } from './model';
 import type { DashboardTemplate, GridLayouts, WidgetSpec } from './model';
-import type { PageId } from './pages';
-import { droppedTagWarning, loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseTemplate, parseTemplateWithNotes, saveLayouts } from './storage';
+import { keptPageStates } from './pages';
+import type { PageEntry, PageId } from './pages';
+import { droppedTagWarning, layoutsUnsaved, loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseTemplate, parseTemplateWithNotes, saveLayouts } from './storage';
 import type { LayoutLibrary } from './storage';
 import { PlaybackController } from './playback';
 import { widgetDefinition } from './definitions';
@@ -29,9 +30,17 @@ import { hasMapOverlay, isMapOverlay } from '../shell/mapOverlays';
 import type { Campaign } from './campaigns';
 import { followMapPlayback } from './mapPlayback';
 
-interface Props { page: PageId; resetToken: number; library: ReplayLibraryState; path: string | null; client: DashboardClient; onPrimaryPath?: (path: string | null) => void; active?: boolean; mapActive?: boolean; mapSwitching?: boolean; mapReady?: boolean; onMetadata: (metadata: ReplayMetadata | null) => void; onMapError?: (error: string | null) => void; playbackHost?: HTMLElement | null; campaignHost?: HTMLElement | null; onOpenReady?: (open: (() => void) | null) => void }
+interface Props { page: PageId; resetToken: number; library: ReplayLibraryState; path: string | null; client: DashboardClient; onPrimaryPath?: (path: string | null) => void; active?: boolean; mapActive?: boolean; mapSwitching?: boolean; mapReady?: boolean; onMetadata: (metadata: ReplayMetadata | null) => void;
+  /** The branch the shown campaign plays, and how to play another; null without one. */
+  onBranch?: (branch: BranchChoice | null) => void; onMapError?: (error: string | null) => void;
+  /** Whether any page has layout changes not yet saved, which resetting the pages discards. */
+  onUnsaved?: (unsaved: boolean) => void;
+  /** The pages that exist; what a deleted page kept while not shown is dropped. */
+  pages?: readonly PageEntry[]; playbackHost?: HTMLElement | null; campaignHost?: HTMLElement | null; onOpenReady?: (open: (() => void) | null) => void }
 
-export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, onMetadata, onMapError, playbackHost, campaignHost, onOpenReady }: Props) {
+export interface BranchChoice { id: string; choose: (branchId: string) => void }
+
+export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, onMetadata, onBranch, onMapError, onUnsaved, pages, playbackHost, campaignHost, onOpenReady }: Props) {
   const [restored] = useState(() => loadLayouts(undefined, page));
   const [library, setLibrary] = useState(restored.library);
   // The page whose layouts are shown; it trails `page` until the swap below runs.
@@ -96,6 +105,22 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const saveButton = saveMenu.trigger;
   const editButton = useRef<HTMLButtonElement>(null);
   const dirty = useMemo(() => stableJson(includeCampaigns(draftTemplate, campaigns)) !== stableJson(includeCampaigns(selectedLayout.template, campaigns)), [draftTemplate, selectedLayout.template, campaigns]);
+  // A deleted page's kept layouts and draft go with it.
+  const pageList = pages?.map(entry => entry.id).join('\n');
+  useEffect(() => {
+    if (pageList === undefined) return;
+    const existing = pageList.split('\n');
+    for (const id of [...pageStates.current.keys()]) if (!existing.includes(id)) pageStates.current.delete(id);
+  }, [pageList]);
+  // Unsaved changes on the shown page or any page kept aside, for Settings' page reset.
+  const unsaved = useMemo(() => layoutsUnsaved([{ library, template: draftTemplate },
+    ...keptPageStates(pageStates.current, shownPage, pageList?.split('\n') ?? [...pageStates.current.keys()])], template => includeCampaigns(template, campaigns)),
+  [library, draftTemplate, shownPage, campaigns, pageList]);
+  useEffect(() => { onUnsaved?.(unsaved); }, [unsaved, onUnsaved]);
+  useEffect(() => () => onUnsaved?.(false), [onUnsaved]);
+  // Resetting the arrangement would change nothing when the draft already is the page's default.
+  const layoutAtDefault = useMemo(() => stableJson(includeCampaigns(draftTemplate, campaigns))
+    === stableJson(includeCampaigns({ ...defaultTemplate(shownPage), name: draftTemplate.name }, campaigns)), [draftTemplate, campaigns, shownPage]);
   const [actionError, setActionError] = useState<string | null>(null);
   const viewport = useRef<HTMLDivElement>(null);
   const mounted = useRef(false);
@@ -364,6 +389,12 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     if (index >= 0) { clock.stop(); setSelectedBranches(previous => ({ ...previous, [trackId]: index })); }
   }, [tracks, clock]);
 
+  const shownTrack = tracks.find(track => track.roleId === defaultRoleId);
+  useEffect(() => onBranch?.(shownTrack ? { id: shownTrack.branch.id, choose: branchId => onMapBranch(shownTrack.id, branchId) } : null),
+    // The track object changes with every rebind; its identity and branch are what the choice names.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [shownTrack?.id, shownTrack?.branch.id, onMapBranch, onBranch]);
+
   const recordings = replayLibrary.files;
   const requestSeek = useCallback((trackId: string, rawHour: number) => {
     const track = tracks.find(item => item.id === trackId);
@@ -408,9 +439,9 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
           const widget = { ...createWidget(kind, template.tracks[0].id), ...initial };
           update((previous) => ({ ...previous, widgets: [...previous.widgets, widget], layouts: addGridItem(previous.layouts, widget) }));
         }} /></span>
-        <button type="button" className="icon-button header-reset toolbar-slot" data-shown={editing || undefined} aria-label="Reset layout" data-tooltip="Reset arrangement to default" onClick={() => {
+        {!layoutAtDefault && <button type="button" className="icon-button header-reset toolbar-slot" data-shown={editing || undefined} aria-label="Reset layout" data-tooltip="Reset arrangement to default" onClick={() => {
           update(() => ({ ...defaultTemplate(shownPage), name: template.name })); saveMenu.popup.current?.hidePopover();
-        }}><Icon name="refresh" /></button>
+        }}><Icon name="refresh" /></button>}
         <button type="button" className="icon-button" aria-label="Cancel layout changes" data-tooltip="Discard layout changes" onClick={() => {
           setTemplate(selectedLayout.template); setEditing(false); saveMenu.popup.current?.hidePopover(); editButton.current?.focus();
         }}><Icon name="close" /></button>

@@ -376,8 +376,8 @@
 .size-stepper { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px var(--line); }
 .size-stepper .icon-button { width: 26px; height: 26px; }
 .size-stepper .icon-button svg { width: 14px; height: 14px; }
-.size-stepper-value { min-width: 48px; height: 26px; padding: 0 4px; border: 0; border-radius: var(--r-xs); background: transparent; color: var(--text); font-size: 0.75rem; font-weight: 600; font-variant-numeric: tabular-nums; }
-.size-stepper-value:hover { background: var(--hover); }
+.size-stepper-value { display: inline-grid; place-items: center; min-width: 48px; height: 26px; padding: 0 4px; border: 0; border-radius: var(--r-xs); background: transparent; color: var(--text); font-size: 0.75rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+button.size-stepper-value:hover { background: var(--hover); }
 .dash-widget-country > svg { width: 14px; height: 14px; flex: none; color: var(--muted); }
 
 /* Styled flags already carry the content's mask and overlay. Keep the whole artwork visible. */

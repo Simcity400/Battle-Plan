@@ -116,7 +116,8 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   const displayHeaderTag = addLabel ? null : selected?.tag ?? selectedTag;
   const headerRead = displayHeaderTag ? choiceRead(displayHeaderTag) : null;
   const headerTag = choiceReads === undefined ? displayHeaderTag : headerRead?.tag ?? null;
-  const headerSize: CountryFlagSize = 'shield';
+  // Only the top bar's own country button keeps the game's shading; flags in panels use it evened out.
+  const headerSize: CountryFlagSize = field ? 'panel' : 'shield';
   const flags = flagStore(client);
   const countryAt = (country: CountryOption) => choiceReads !== undefined ? choiceRead(country.tag)
     : allowedTags && flagAt ? { tag: country.tag, ...flagAt }

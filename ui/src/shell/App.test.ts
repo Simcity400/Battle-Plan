@@ -45,13 +45,14 @@ for (const scenario of ['peek', 'storage'] as const) test(scenario === 'peek'
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
     getItem: (key: string) => values.get(key) ?? null,
     setItem: (key: string, value: string) => { if (quota && key === 'hoi4-replay.analytics-pages.v1') throw new Error('quota'); values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
   } });
   const replacements: Record<string, string> = {
     '/shell/api.ts': `export const desktopAvailable = true; export const errorMessage = String;
       export const selectNativeView = async () => {}; export const openReplay = async () => {}; export const mapAction = async () => {};`,
     '/shell/useNativeViewer.ts': `export const useDesktopState = () => ({ state: { ready: true, running: true, viewer: { path: 'synthetic' } }, error: null });
       export const useMapSurface = (...args) => globalThis.__shellFixture.mapSurface(...args);`,
-    '/shell/appearance/useAppearance.ts': 'export const useAppearance = () => ({ settings: { backdrop: { kind: "none" } } });',
+    '/shell/appearance/useAppearance.ts': 'export const useAppearance = () => ({ settings: { backdrop: { kind: "none" }, workspaceBackdrop: { kind: "same" } } });',
     '/shell/appearance/SidebarIconMenu.tsx': 'export const useSidebarIconMenu = () => ({ menu: null });',
     '/shell/appearance/Backdrop.tsx': 'export default () => null;',
     '/shell/Settings.tsx': `export default function Settings() {} export function SettingsNav() {}
@@ -59,7 +60,7 @@ for (const scenario of ['peek', 'storage'] as const) test(scenario === 'peek'
     '/dashboard/nativeClient.ts': 'export const nativeDashboardClient = {};',
     '/dashboard/browserClient.ts': 'export const browserDashboardClient = {};',
     '/dashboard/replayLibrary.ts': 'export const useReplayLibrary = () => ({});',
-    '/dashboard/storage.ts': 'export const clearLayouts = () => {};',
+    // Layout storage stays real: Settings checks the default layouts before the dashboard has loaded.
     '/dashboard/contentRevision.ts': 'export const contentRevision = () => ({ observe() {} });',
     '/shell/diagnosticsSetting.ts': 'export const useDiagnosticsShortcut = () => {};',
   };
@@ -105,6 +106,7 @@ for (const scenario of ['peek', 'storage'] as const) test(scenario === 'peek'
 
     } else {
       navigation().props.onPages([...navigation().props.pages, { id: 'page-added', label: 'Added' }]); render();
+      assert.equal(dashboard().props.pages, navigation().props.pages, 'the dashboard knows which pages exist, so a deleted page drops its kept draft');
       const notice = warning();
       assert.ok(notice, 'failed saves warn in the active view');
       assert.equal(notice.props.role, 'status');
@@ -115,9 +117,17 @@ for (const scenario of ['peek', 'storage'] as const) test(scenario === 'peek'
       find(node => node.props.id === 'tab-settings').props.onClick();
       await new Promise(resolve => setImmediate(resolve)); render();
       assert.equal(find(node => node.props.className === 'app-shell').props['data-tab'], 'settings');
+      // The dashboard has not loaded its widgets: Settings neither offers a reset nor claims defaults yet.
+      assert.equal(find(node => 'onResetPages' in node.props).props.onResetPages, null);
+      await vite.ssrLoadModule('/ui/src/widgets/definitions.ts'); render();
+      assert.equal(typeof find(node => 'onResetPages' in node.props).props.onResetPages, 'function', 'an added page differs from the defaults');
       assert.equal(warning().props.children, notice.props.children, 'changing tabs cannot clear the storage warning');
       find(node => 'onResetPages' in node.props).props.onResetPages(); render();
       assert.equal(warning().props.children, notice.props.children, 'failed reset saves also warn');
+      assert.equal(find(node => 'onResetPages' in node.props).props.onResetPages, undefined, 'default pages and layouts offer no reset');
+      dashboard().props.onUnsaved(true); render();
+      assert.equal(typeof find(node => 'onResetPages' in node.props).props.onResetPages, 'function', 'an unsaved layout edit is not the default');
+      dashboard().props.onUnsaved(false); render();
       find(node => 'onBack' in node.props).props.onBack();
       await new Promise(resolve => setImmediate(resolve)); render();
       assert.ok(warning());

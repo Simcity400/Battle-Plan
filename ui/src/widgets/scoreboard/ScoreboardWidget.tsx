@@ -67,7 +67,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const nameWanted = useMemo(() => sort.column === 'country' ? rows.map(row => ({ hour: row.hour, tag: row.tag })) : [], [rows, sort.column]);
   const names = useCountryNamesAt(runtime.client, track, nameWanted, active);
   const columns = useMemo<readonly TableColumn<ScoreboardRow>[]>(() => [
-    { key: 'country', header: 'Country', label: 'Country', width: 'minmax(0, 2fr)',
+    { key: 'country', header: 'Country', label: 'Country', width: 'minmax(var(--table-name-min), 2fr)',
       hint: resolved.top != null ? 'Top countries, sorted by name.' : undefined,
       value: row => names.get(nameKey(row.hour, row.tag)) ?? null, renderMissing: true,
       render: row => <CountryCell {...labelAt(row.hour)(row.tag)} /> },

@@ -8,7 +8,7 @@ import { BUILT_IN_THEMES, themeColors } from './themes';
 import type { ThemeDefinition, ThemeMode } from './themes';
 import { parseThemeText, serializeTheme, uniqueThemeName } from './themeFile';
 import { CONTRAST_STEP, LIMITS, MAX_CUSTOM_THEMES } from './settings';
-import type { AppearanceSettings as Settings, BackdropKind, ChartMotion, ColorScheme, CountryColours, HeaderFlag, MotionPreference } from './settings';
+import type { AppearanceSettings as Settings, Backdrop, BackdropKind, ChartMotion, ColorScheme, CountryColours, HeaderFlag, MotionPreference } from './settings';
 import { deleteBackdrop, importBackdrop, listBackdrops } from './backdrops';
 import type { BackdropImage } from './backdrops';
 import TypographySettings from './TypographySettings';
@@ -104,34 +104,65 @@ function ImportTheme({ disabled, onImport }: { disabled: boolean; onImport: (tex
   </>;
 }
 
-function BackdropLibrary({ selected, onSelect, onRemoved }: { selected: string | null; onSelect: (id: string) => void; onRemoved: (id: string) => void }) {
+/** The images stored on this device, shared by every backdrop that can show one. */
+function useBackdropLibrary(onRemoved: (id: string) => void) {
   const [items, setItems] = useState<BackdropImage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => { let current = true; void listBackdrops().then(list => { if (current) setItems(list); }, cause => { if (current) { setItems([]); setError(String(cause?.message ?? cause)); } }); return () => { current = false; }; }, []);
-  const add = async (file: File | undefined) => {
+  const add = async (file: File | undefined, onAdded: (id: string) => void) => {
     if (!file) return;
     setBusy(true); setError(null);
-    try { const entry = await importBackdrop(file); setItems(previous => [...(previous ?? []), entry]); onSelect(entry.id); }
+    try { const entry = await importBackdrop(file); setItems(previous => [...(previous ?? []), entry]); onAdded(entry.id); }
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
   };
+  const remove = (id: string) => void deleteBackdrop(id).then(() => { setItems(previous => previous?.filter(entry => entry.id !== id) ?? null); onRemoved(id); })
+    .catch(cause => setError(cause instanceof Error ? cause.message : String(cause)));
+  return { items, error, busy, add, remove };
+}
+
+function BackdropLibrary({ library: { items, error, busy, add, remove }, selected, onSelect }: {
+  library: ReturnType<typeof useBackdropLibrary>; selected: string | null; onSelect: (id: string) => void;
+}) {
   return <>
     <div className="backdrop-grid">
       {items?.map(item => <div key={item.id} className="backdrop-thumb" data-selected={item.id === selected || undefined}>
         <button type="button" style={{ backgroundImage: `url("${item.thumbnail}")` }} aria-pressed={item.id === selected} aria-label={`Use ${item.name}`} onClick={() => onSelect(item.id)} />
         {item.id === selected && <span className="backdrop-check"><Icon name="check" /></span>}
         <button type="button" className="icon-button small backdrop-remove" aria-label={`Remove ${item.name}`} data-tooltip="Remove"
-          onClick={() => { void deleteBackdrop(item.id).then(() => { setItems(previous => previous?.filter(entry => entry.id !== item.id) ?? null); onRemoved(item.id); })
-            .catch(cause => setError(cause instanceof Error ? cause.message : String(cause))); }}><Icon name="trash" /></button>
+          onClick={() => remove(item.id)}><Icon name="trash" /></button>
       </div>)}
       <label className={`backdrop-add${busy ? ' is-busy' : ''}`}>
-        <input type="file" accept="image/*" hidden disabled={busy} onChange={event => { void add(event.currentTarget.files?.[0]); event.currentTarget.value = ''; }} />
+        <input type="file" accept="image/*" hidden disabled={busy} onChange={event => { void add(event.currentTarget.files?.[0], onSelect); event.currentTarget.value = ''; }} />
         {busy ? <span className="spinner" /> : <Icon name="image" />}<span>{busy ? 'Importing…' : 'Add image'}</span>
       </label>
     </div>
     {error && <p className="map-menu-error" role="alert">{error}</p>}
     {items !== null && <p className="field-hint">Images are resized to at most 2560 pixels and stored on this device only.</p>}
+  </>;
+}
+
+const BACKDROP_KINDS: readonly { value: BackdropKind; label: string; icon: IconName }[] = [
+  { value: 'ambient', label: 'Ambient', icon: 'sparkle' }, { value: 'solid', label: 'Solid', icon: 'layers' }, { value: 'image', label: 'Image', icon: 'image' }];
+
+/** One backdrop's kind, and for an image its picture, dim and blur. */
+function BackdropFields<Kind extends string>({ label, hint, kinds, value, library, onChange }: {
+  label: string; hint: string; kinds: readonly { value: Kind; label: string; icon: IconName }[]; value: Backdrop<Kind>;
+  library: ReturnType<typeof useBackdropLibrary>; onChange: (change: Partial<Backdrop<Kind>>) => void;
+}) {
+  return <>
+    <div className="settings-row"><span className="settings-row-text"><strong>{label}</strong><small>{hint}</small></span>
+      <Segmented<Kind> label={label} value={value.kind} onChange={kind => onChange({ kind })} options={kinds} /></div>
+    {value.kind === 'image' && <>
+      <div className="settings-group-body">
+        <BackdropLibrary library={library} selected={value.imageId} onSelect={imageId => onChange({ imageId })} />
+      </div>
+      <SliderRow label="Dim" hint="Darkens or lightens the image toward the canvas colour." value={value.dim} min={LIMITS.dim[0]} max={LIMITS.dim[1]} unit="%"
+        onChange={dim => onChange({ dim })} />
+      <SliderRow label="Blur" hint="Softens the image." value={value.blur} min={LIMITS.blur[0]} max={LIMITS.blur[1]} unit="px"
+        onChange={blur => onChange({ blur })} />
+    </>}
   </>;
 }
 
@@ -168,6 +199,12 @@ export default function AppearanceSettings({ appearance, onEdit, searchTarget }:
     say(`Deleted “${theme.name}”.`);
   };
   const setBackdrop = (change: Partial<Settings['backdrop']>) => update(previous => ({ ...previous, backdrop: { ...previous.backdrop, ...change } }));
+  const setWorkspaceBackdrop = (change: Partial<Settings['workspaceBackdrop']>) =>
+    update(previous => ({ ...previous, workspaceBackdrop: { ...previous.workspaceBackdrop, ...change } }));
+  // A removed image leaves every backdrop that showed it.
+  const library = useBackdropLibrary(id => update(previous => ({ ...previous,
+    backdrop: previous.backdrop.imageId === id ? { ...previous.backdrop, imageId: null } : previous.backdrop,
+    workspaceBackdrop: previous.workspaceBackdrop.imageId === id ? { ...previous.workspaceBackdrop, imageId: null } : previous.workspaceBackdrop })));
   const schemeColors = (mode: ThemeMode) => themeColors(themes.find(theme => theme.id === settings.themes[mode]), mode);
   const current = themes.find(theme => theme.id === settings.themes[resolved.mode]) ?? BUILT_IN_THEMES[0];
 
@@ -197,24 +234,19 @@ export default function AppearanceSettings({ appearance, onEdit, searchTarget }:
     </SettingsBlock>
 
     <SettingsBlock id="appearance-backdrop" title="Backdrop">
-      <div className="settings-row"><span className="settings-row-text"><strong>Background</strong><small>The backdrop behind panels and the sidebar.</small></span>
-        <Segmented<BackdropKind> label="Backdrop" value={settings.backdrop.kind} onChange={kind => setBackdrop({ kind })}
-          options={[{ value: 'ambient', label: 'Ambient', icon: 'sparkle' }, { value: 'solid', label: 'Solid', icon: 'layers' }, { value: 'image', label: 'Image', icon: 'image' }]} /></div>
-      {settings.backdrop.kind === 'image' && <>
-        <div className="settings-group-body">
-          <BackdropLibrary selected={settings.backdrop.imageId} onSelect={imageId => setBackdrop({ kind: 'image', imageId })}
-            onRemoved={id => { if (settings.backdrop.imageId === id) setBackdrop({ imageId: null }); }} />
-        </div>
-        <SliderRow label="Dim" hint="Darkens or lightens the image toward the canvas colour." value={settings.backdrop.dim} min={LIMITS.dim[0]} max={LIMITS.dim[1]} unit="%" onChange={dim => setBackdrop({ dim })} />
-        <SliderRow label="Blur" hint="Softens the image behind the interface." value={settings.backdrop.blur} min={LIMITS.blur[0]} max={LIMITS.blur[1]} unit="px" onChange={blur => setBackdrop({ blur })} />
-      </>}
+      <BackdropFields label="Sidebar and top bar" hint="Also behind the main view while that uses the same." kinds={BACKDROP_KINDS}
+        value={settings.backdrop} library={library} onChange={setBackdrop} />
+      <BackdropFields<BackdropKind | 'same'> label="Main view" hint="Behind the widgets and pages." value={settings.workspaceBackdrop} library={library}
+        onChange={setWorkspaceBackdrop} kinds={[{ value: 'same', label: 'Same', icon: 'link' }, ...BACKDROP_KINDS]} />
     </SettingsBlock>
 
     <SettingsBlock id="appearance-interface" title="Interface">
       <SliderRow id="appearance-contrast" label="Contrast" hint="Soften text and borders. 100% uses the theme’s full contrast."
         value={settings.contrast} min={LIMITS.contrast[0]} max={LIMITS.contrast[1]} step={CONTRAST_STEP} unit="%" onChange={contrast => update(previous => ({ ...previous, contrast }))} />
-      <SliderRow id="appearance-glass" label="Glass" hint="Panel opacity. 100% makes panels solid." value={settings.glass} min={LIMITS.glass[0]} max={LIMITS.glass[1]} unit="%"
+      <SliderRow id="appearance-glass" label="Main view glass" hint="Opacity of widgets and panels. 100% makes them solid." value={settings.glass} min={LIMITS.glass[0]} max={LIMITS.glass[1]} unit="%"
         onChange={glass => update(previous => ({ ...previous, glass }))} />
+      <SliderRow id="appearance-chrome-glass" label="Sidebar and top bar glass" hint="Opacity of the sidebar and top bar. 100% makes them solid." value={settings.chromeGlass}
+        min={LIMITS.chromeGlass[0]} max={LIMITS.chromeGlass[1]} unit="%" onChange={chromeGlass => update(previous => ({ ...previous, chromeGlass }))} />
       <SliderRow id="appearance-radius" label="Corner radius" hint="Rounding of panels, menus and controls." value={settings.radius} min={LIMITS.radius[0]} max={LIMITS.radius[1]} unit="px"
         onChange={radius => update(previous => ({ ...previous, radius }))} />
       <div className="settings-row" id="appearance-motion"><span className="settings-row-text"><strong>Motion</strong><small>Interface animations. System follows your device’s preference.</small></span>

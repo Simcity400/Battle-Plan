@@ -106,6 +106,12 @@ export function savePages(pages: PageEntry[], storage?: PageStorage): string | n
   catch { return 'Your pages apply for this session. This device could not save them.'; }
 }
 
+/** What each page other than the shown one kept while it was not shown, for the pages that
+ * still exist: a deleted page's kept draft is gone with it. */
+export function keptPageStates<T>(states: ReadonlyMap<PageId, T>, shown: PageId, pages: readonly PageId[]): T[] {
+  return [...states].filter(([id]) => id !== shown && pages.includes(id)).map(([, state]) => state);
+}
+
 /** Moves the page at `from` so it lands before the page now at `to` (`to` may be the length). */
 export function movePage(pages: PageEntry[], from: number, to: number): PageEntry[] {
   const next = [...pages];

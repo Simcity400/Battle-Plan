@@ -11,12 +11,15 @@ import { Icon } from '../components/Icons';
 import type { IconName } from '../components/Icons';
 import { defaultPages, loadPages, savePages } from '../dashboard/pages';
 import type { PageEntry, PageId } from '../dashboard/pages';
-import { clearLayouts } from '../dashboard/storage';
+import { clearLayouts, layoutsAtDefault } from '../dashboard/storage';
+import { widgetDefinitions } from '../dashboard/definitions';
+import { stableJson } from '../dashboard/model';
 import AnalyticsNav from './AnalyticsNav';
 import BrandMark from '../components/BrandMark';
 import { useDesktopState, useMapSurface } from './useNativeViewer';
 import { nativeDashboardClient } from '../dashboard/nativeClient';
 import { browserDashboardClient } from '../dashboard/browserClient';
+import type { BranchChoice } from '../dashboard/Dashboard';
 import Settings, { SettingsNav, settingsSections } from './Settings';
 import type { SettingsSection, SettingsTarget } from './Settings';
 import { useAppearance } from './appearance/useAppearance';
@@ -190,9 +193,23 @@ export default function App() {
     choosePage(next[0].id);
     setLayoutReset(count => count + 1);
   };
+  // Default layouts are built from the widgets' plain definitions, which load with the
+  // dashboard; Settings opened first loads them itself, off the startup path.
+  const [widgetsLoading, setWidgetsLoading] = useState<'loading' | 'loaded' | 'failed'>('loading');
+  const [layoutsUnsaved, setLayoutsUnsaved] = useState(false);
+  useEffect(() => {
+    if (tab !== 'settings' || widgetDefinitions().length) return;
+    import('../widgets/definitions').then(() => setWidgetsLoading('loaded'), () => setWidgetsLoading('failed'));
+  }, [tab]);
+  /** Null while the default layouts cannot be known yet; undefined when everything is at its default. */
+  const pagesReset = (): (() => void) | null | undefined => {
+    if (!widgetDefinitions().length) return widgetsLoading === 'failed' ? resetPages : null;
+    return !layoutsUnsaved && stableJson(pages) === stableJson(defaultPages()) && pages.every(entry => layoutsAtDefault(entry.id)) ? undefined : resetPages;
+  };
   const [playbackHost, setPlaybackHost] = useState<HTMLDivElement | null>(null);
   const [campaignHost, setCampaignHost] = useState<HTMLDivElement | null>(null);
   const [metadata, setMetadata] = useState<ReplayMetadata | null>(null);
+  const [branch, setBranch] = useState<BranchChoice | null>(null);
   const [browserFolders, setBrowserFolders] = useState<ContentFolders | null>(null);
   const [folderError, setFolderError] = useState<string | null>(null);
   const setupChecked = useRef(false);
@@ -298,6 +315,7 @@ export default function App() {
     }
   }
 
+  const workspaceBackdrop = appearance.settings.workspaceBackdrop;
   const nativeReady = native.state?.ready && native.state.running;
 
   const openSettings = (section: SettingsSection, target: SettingsTarget | null = null) => {
@@ -310,7 +328,7 @@ export default function App() {
   return (
     <div className={`app-shell${sidebar.resizing ? ' is-resizing' : ''}`} data-sidebar={sidebar.peek ? 'peek' : sidebar.hidden ? 'hidden' : 'shown'} data-tab={tab}
       style={{ '--sidebar-width': sidebar.hidden ? '0px' : `${sidebar.width}px`, '--sidebar-peek-width': `${sidebar.width}px` } as CSSProperties}>
-      <Backdrop kind={appearance.settings.backdrop.kind} image={appearance.backdropImage} />
+      <Backdrop backdrop={appearance.settings.backdrop} image={appearance.backdropImage} />
       <div ref={peekOverlay} popover="manual" className="sidebar-peek-overlay" aria-hidden="true" />
       {sidebar.hidden && <div className="sidebar-edge" aria-hidden="true" onPointerEnter={sidebar.openPeek} />}
       <aside ref={sidebar.aside} className="sidebar" aria-label="Battle Plan navigation" inert={sidebar.hidden && !sidebar.peek}
@@ -350,8 +368,10 @@ export default function App() {
       </header>
 
       <main className="workspace" ref={content}>
+        {workspaceBackdrop.kind !== 'same' && <Backdrop className="is-workspace" backdrop={{ ...workspaceBackdrop, kind: workspaceBackdrop.kind }} image={appearance.workspaceImage} />}
         <section id="panel-settings" aria-label="Settings" tabIndex={-1} className="settings-panel" hidden={tab !== 'settings'}>
-          {tab === 'settings' && <Settings section={settingsSection} target={settingsTarget} onTargetShown={clearSettingsTarget} folders={folders} folderError={folderError} onFoldersChange={value => { setBrowserFolders(value); setFolderError(null); }} native={native.state} metadata={metadata} library={replayLibrary} client={client} appearance={appearance} onResetPages={resetPages} />}
+          {tab === 'settings' && <Settings section={settingsSection} target={settingsTarget} onTargetShown={clearSettingsTarget} folders={folders} folderError={folderError} onFoldersChange={value => { setBrowserFolders(value); setFolderError(null); }} native={native.state} metadata={metadata} branch={branch} library={replayLibrary} client={client} appearance={appearance}
+            onResetPages={pagesReset()} />}
         </section>
         <section id="panel-map" aria-labelledby="tab-map" tabIndex={-1}
           className="map-panel" hidden={tab !== 'map'}>
@@ -391,7 +411,7 @@ export default function App() {
         <section id="panel-analytics" aria-labelledby="tab-analytics" tabIndex={-1}
           className="analytics-panel" hidden={tab !== 'analytics'}>
           <Suspense fallback={<div className="panel-loading" role="status"><span className="spinner" />Loading overview…</div>}>
-            <Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} onMetadata={setMetadata} onMapError={setActionError} playbackHost={playbackHost} />
+            <Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} onMetadata={setMetadata} onBranch={setBranch} onMapError={setActionError} onUnsaved={setLayoutsUnsaved} pages={pages} playbackHost={playbackHost} />
           </Suspense>
         </section>
       </main>

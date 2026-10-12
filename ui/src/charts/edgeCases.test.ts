@@ -46,6 +46,25 @@ test('a one-hour spike between samples is drawn, not skipped', () => {
   assert.ok(points.every((point, index) => index === 0 || point.x > points[index - 1].x), 'points stay in order');
 });
 
+test('a line growing during playback keeps its samples, so only its tip moves', () => {
+  const runs = Array.from({ length: 300 }, (_, index) => ({ firstHour: index * 10, lastHour: index * 10 + 9, value: (index * 37) % 23 }));
+  // The hours sampled up to `until` with the plot `width` px across `[0, span]`.
+  const sampled = (until: number, span: number, width = 600) => samplePoints(segments(runs, 0, until)[0], hour => hour * width / span, value => value)
+    .map(point => Math.round(point.x * span / width * 1e6) / 1e6);
+  // Grow to now: the line fills the plot, which rescales every frame.
+  const before = sampled(1500, 1500);
+  const grown = sampled(1507, 1507);
+  const settled = before.filter(hour => hour < 1400);
+  assert.ok(settled.length > 20);
+  assert.deepEqual(grown.slice(0, settled.length), settled);
+  // A fixed axis with the line drawing in towards the playhead.
+  const fixed = sampled(1500, 3000);
+  assert.deepEqual(sampled(1503, 3000).slice(0, fixed.length - 2), fixed.slice(0, -2));
+  // About one sample every 12 px: a power-of-two grid is within a factor of √2 of it.
+  const rising = samplePoints(runs.map((run, index) => ({ ...run, value: index })), hour => hour * 600 / 2999, value => value);
+  assert.ok(rising.length >= 50 / Math.SQRT2 && rising.length <= 50 * Math.SQRT2 + 2, `${rising.length} samples`);
+});
+
 test('greys take the categorical colour for their position, not a random hue', () => {
   const background = parseColor('#16181d')!;
   const [first, second] = nudgeApart([parseColor('#808080')!, parseColor('#7f7f7f')!], background);

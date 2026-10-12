@@ -9,6 +9,7 @@ import { SettingsBlock } from './AppearanceSettings';
 import { FONT_PRESETS, canUseFontFamily, defaultFontLabel, fontStack, isMonospaceFamily } from './fonts';
 import { discoverInstalledFonts, useFontDiscovery } from './fontDiscovery';
 import { DEFAULT_TYPOGRAPHY, FONT_SIZE_LIMITS } from './typography';
+import type { SizedRole } from './typography';
 import type { FontRole } from './typography';
 import type { Appearance } from './useAppearance';
 
@@ -59,7 +60,7 @@ function FontOptions({ label, families, value, placeholder, focusSearch, onPick 
 
 function FontPicker({ id, label, hint, value, placeholder, onChange, installed, onListFonts, role, size, onSize, onReset, preview, monospace = false }: {
   id?: string; label: string; hint: string; value: string; placeholder: string; onChange: (value: string) => void; installed: string[] | null; onListFonts: () => void;
-  role: FontRole; size: number; onSize: (size: number) => void; onReset: () => void; preview?: ReactNode; monospace?: boolean;
+  role: FontRole; size?: number; onSize: (size: number) => void; onReset: () => void; preview?: ReactNode; monospace?: boolean;
 }) {
   const listId = useId();
   const menu = usePopover();
@@ -98,11 +99,13 @@ function FontPicker({ id, label, hint, value, placeholder, onChange, installed, 
     }
     setText(family); setSettled(true); setMessage(null); onChange(family); menu.close();
   };
-  const [min, max] = FONT_SIZE_LIMITS[role];
-  const changed = !!value || size !== DEFAULT_TYPOGRAPHY.sizes[role];
+  // Tables have no size of their own: they take the interface's.
+  const sized = role === 'tables' ? null : role;
+  const [min, max] = sized ? FONT_SIZE_LIMITS[sized] : [0, -1];
+  const changed = !!value || (!!sized && size !== DEFAULT_TYPOGRAPHY.sizes[sized]);
   return <div className="font-setting" id={id}>
     <div className="settings-row font-row">
-    <span className="settings-row-text"><strong>{label}{changed && <button type="button" className="icon-button small font-reset" aria-label={`Reset ${label.toLowerCase()}`} data-tooltip="Reset font and size"
+    <span className="settings-row-text"><strong>{label}{changed && <button type="button" className="icon-button small font-reset" aria-label={`Reset ${label.toLowerCase()}`} data-tooltip={sized ? 'Reset font and size' : 'Reset font'}
       onClick={() => { setText(''); setSettled(true); setMessage(null); onReset(); }}><Icon name="refresh" /></button>}</strong><small>{hint}</small></span>
     <div className="font-picker">
       <div className="font-controls"><div className="font-input" ref={anchor}>
@@ -118,8 +121,8 @@ function FontPicker({ id, label, hint, value, placeholder, onChange, installed, 
         }} />
         <button ref={menu.trigger} type="button" className="icon-button small font-dropdown-trigger" aria-label={`Choose ${label.toLowerCase()}`} aria-haspopup="listbox" aria-expanded={menu.open} aria-controls={listId}
           onClick={() => menu.open ? menu.close() : openFonts()}><Icon name="chevron-down" /></button></>}
-      </div><div className="font-size-control"><Select label={`${label} size`} value={String(size)} onChange={value => onSize(Number(value))}
-        options={Array.from({ length: max - min + 1 }, (_, i) => ({ value: String(min + i), label: `${min + i} px` }))} /></div></div>
+      </div>{sized && <div className="font-size-control"><Select label={`${label} size`} value={String(size)} onChange={value => onSize(Number(value))}
+        options={Array.from({ length: max - min + 1 }, (_, i) => ({ value: String(min + i), label: `${min + i} px` }))} /></div>}</div>
       <Popover menu={menu} id={listId} className="font-menu" aria-label={label}>
         {menu.open && <FontOptions label={label} families={families} value={value} placeholder={placeholder} focusSearch={focusOptions.current}
           onPick={pick} />}
@@ -149,11 +152,12 @@ export default function TypographySettings({ appearance, searchTarget }: { appea
     }
   }, [searchTarget, isMac, update]);
   const row = (role: FontRole, label: string, hint: string, preview: ReactNode, monospace = false) => <FontPicker key={role}
-    id={`appearance-${role}-font`} role={role} label={label} hint={hint} value={settings.fonts[role]} size={typography.sizes[role]} preview={preview} monospace={monospace}
-    placeholder={role === 'display' ? settings.fonts.interface || defaults.ui : monospace ? defaults.mono : defaults.ui} installed={fonts} onListFonts={discover}
+    id={`appearance-${role}-font`} role={role} label={label} hint={hint} value={settings.fonts[role]} size={role === 'tables' ? undefined : typography.sizes[role]} preview={preview} monospace={monospace}
+    placeholder={role === 'display' || role === 'tables' ? settings.fonts.interface || defaults.ui : monospace ? defaults.mono : defaults.ui} installed={fonts} onListFonts={discover}
     onChange={family => update(previous => ({ ...previous, fonts: { ...previous.fonts, [role]: family } }))}
     onSize={size => update(previous => ({ ...previous, typography: { ...previous.typography, sizes: { ...previous.typography.sizes, [role]: size } } }))}
-    onReset={() => update(previous => ({ ...previous, fonts: { ...previous.fonts, [role]: '' }, typography: { ...previous.typography, sizes: { ...previous.typography.sizes, [role]: DEFAULT_TYPOGRAPHY.sizes[role] } } }))} />;
+    onReset={() => update(previous => ({ ...previous, fonts: { ...previous.fonts, [role]: '' }, typography: role === 'tables' ? previous.typography
+      : { ...previous.typography, sizes: { ...previous.typography.sizes, [role]: DEFAULT_TYPOGRAPHY.sizes[role as SizedRole] } } }))} />;
   const headings = <div className="font-preview-headings"><h2>Campaign overview</h2><span>Research and production</span></div>;
   const diagnostics = <pre className="font-preview-diagnostics">{`Playback ready\nSamples: 12345    Coverage: complete\nFrame: 16.7 ms   Cache: 128 MiB`}</pre>;
   const changed = Object.values(settings.fonts).some(Boolean) || JSON.stringify({ ...typography, advanced: false }) !== JSON.stringify(DEFAULT_TYPOGRAPHY);
@@ -164,8 +168,7 @@ export default function TypographySettings({ appearance, searchTarget }: { appea
   </>}>
     {row('interface', 'Interface font', 'Menus, labels and controls.', typography.advanced ? null : <>{headings}<div className="font-preview-interface"><span>Example campaign · 12 Mar · 14:00</span><button type="button" className="button small">Preview control</button></div></>)}
     {typography.advanced && row('display', 'Headings font', 'Page headings, country names and widget titles.', headings)}
-    {row('tables', typography.advanced ? 'Tables font' : 'Monospace font', typography.advanced ? 'Data tables and numeric readouts.' : 'Tables, numeric readouts and diagnostics.',
-      <><TypographyTablePreview />{!typography.advanced && diagnostics}</>, true)}
+    {row('tables', 'Tables font', 'Data tables. Empty uses the interface font, as charts do.', <TypographyTablePreview />)}
     {typography.advanced && row('diagnostics', 'Diagnostics font', 'Technical reports and recording diagnostics.', diagnostics, true)}
     {typography.advanced && isMac && <label className="settings-row" id="appearance-font-smoothing">
       <span className="settings-row-text"><strong>Font smoothing</strong><small>Use thinner grayscale text smoothing instead of the macOS default.</small></span>

@@ -53,7 +53,7 @@ const DESCRIBED = 24;
 type Label = CountryFlagLook & { name: string; color: readonly [number, number, number] | null };
 type TradeNode = FlowNode & { trade: { selection: TradeSelection; node: SideNode; links: readonly SideLink[]; hour: number; from: number } };
 type TradeLink = FlowLink & { trade: { selection: TradeSelection; link: SideLink; source: SideNode; target: SideNode; hour: number; from: number } };
-const FLAGS = flagReadSpec('shield');
+const FLAGS = flagReadSpec('panel');
 const ALL_CONTRIBUTORS: TradeSelection = { kind: 'all' };
 
 /** Who sells what to whom: a Sankey of sellers to buyers, one

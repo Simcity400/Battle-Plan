@@ -61,3 +61,33 @@ test('unavailable saved choices hide tokens, retain readable labels and remain i
     assert.doesNotMatch(selected, /Largest resource|setting-label-info/);
   } finally { delete host.__optionFieldsRender; await vite.close(); }
 });
+
+test('a number saves as soon as it is legal, as the other settings do; partial text waits for the box to be left', async () => {
+  const host = globalThis as typeof globalThis & { __numberInput?: { onChange: (event: unknown) => void; onBlur: () => void } };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'capture-number-input', enforce: 'pre',
+      transform(source, id) {
+        if (!id.replaceAll('\\', '/').endsWith('/dashboard/settings/OptionFields.tsx')) return;
+        return source.replace('<input type="number"', '<CapturedNumber type="number"')
+          + '\nfunction CapturedNumber(props) { globalThis.__numberInput = props; return <input {...props} />; }';
+      },
+    }] });
+  try {
+    const { OptionFields } = await vite.ssrLoadModule('/ui/src/dashboard/settings/OptionFields.tsx') as typeof import('./OptionFields');
+    const type = (field: OptionField, saved: number | null, typed: string) => {
+      const changes: OptionValue[] = [];
+      renderToStaticMarkup(createElement(OptionFields, { fields: [field], values: { [field.key]: saved }, onChange: (_key: string, value: OptionValue) => changes.push(value) }));
+      host.__numberInput!.onChange({ currentTarget: { value: typed } });
+      return changes;
+    };
+    const window: OptionField = { key: 'windowDays', section: 'time', label: 'Window length', kind: 'number', min: 7, max: 3650, step: 1, unit: 'days', default: 365 };
+    const axis: OptionField = { key: 'yMax', section: 'axes', label: 'Value axis to', kind: 'number', min: -1e9, max: 1e9, step: 1, default: null };
+    // A step up or a typed number saves at once.
+    assert.deepEqual(type(window, 365, '366'), [366]);
+    assert.deepEqual(type(axis, null, '-40'), [-40]);
+    // Not yet legal: below the least, empty or unchanged text saves nothing while typing.
+    assert.deepEqual(type(window, 365, '3'), []);
+    assert.deepEqual(type(axis, 10, ''), []);
+    assert.deepEqual(type(axis, 10, '10'), []);
+  } finally { delete host.__numberInput; await vite.close(); }
+});

@@ -13,6 +13,9 @@ import { linearTicks, logTicks, thinLogTicks } from './valueAxis.ts';
  * from the tokens and works in layout pixels. */
 
 export const font = (tokens: ChartTokens, size: number, weight = 400) => `${weight} ${size}px ${tokens.font}`;
+/** A bar's name and value weights; table cells use the same, so the two read alike. */
+export const LABEL_WEIGHT = 500;
+export const VALUE_WEIGHT = 600;
 const crisp = (value: number) => Math.round(value) + 0.5;
 
 export function tracePath(ctx: CanvasRenderingContext2D, commands: readonly PathCommand[]): void {

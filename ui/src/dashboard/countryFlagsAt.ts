@@ -103,7 +103,7 @@ export function flagReadMetadata(read: FlagRead | null | undefined | typeof FAIL
  * keyed by `nameKey`, held and released as `useCountryFactsAt` holds names. A flag
  * the recording does not give at its hour is absent: nothing shows in its place. */
 export function useCountryFlagsAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
-  size: CountryFlagSize = 'shield', maxHours = MAX_NAME_HOURS, attempt = 0): ReadonlyMap<string, string> {
+  size: CountryFlagSize = 'panel', maxHours = MAX_NAME_HOURS, attempt = 0): ReadonlyMap<string, string> {
   return useCountryFactsAt(client, track, wanted, active, flagSpec(size), maxHours, attempt);
 }
 
@@ -121,7 +121,7 @@ export type CountryLabel = (tag: string) => { name: string; flag?: string; known
 export function useCountryLabelsAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
   maxHours = MAX_NAME_HOURS) {
   const names = useCountryNamesRead(client, track, wanted, active, maxHours);
-  const flags = useCountryFactsRead(client, track, wanted, active, flagReadSpec('shield'), maxHours);
+  const flags = useCountryFactsRead(client, track, wanted, active, flagReadSpec('panel'), maxHours);
   const labelAt = useCallback((hour: number): CountryLabel => tag => {
     const name = names.get(nameKey(hour, tag));
     const flag = flags.get(nameKey(hour, tag));

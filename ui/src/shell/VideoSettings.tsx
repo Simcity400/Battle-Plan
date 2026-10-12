@@ -3,8 +3,8 @@ import { Select } from '../components/Select';
 import { invoke } from '@tauri-apps/api/core';
 import { desktopAvailable, errorMessage } from './api';
 import { Icon } from '../components/Icons';
-
-interface VideoOptions { useGameSettings: boolean; uiScale: number; vsync: boolean; mapUiScale: number | null }
+import { sameDisplay } from './videoOptions';
+import type { VideoOptions } from './videoOptions';
 interface VideoReply { settings: VideoOptions; gameSettings: VideoOptions | null; gameSettingsError: string | null; gameMapUiScale: number | null; mapUiScaleChoices: number[] }
 
 const VSYNC = 'VSync';
@@ -30,8 +30,10 @@ export function useVideoSettings(enabled: boolean, userFolder?: string) {
   }, [enabled, retry, userFolder]);
   return {
     draft, error, gameError: reply?.gameSettingsError, gameMapUiScale: reply?.gameMapUiScale ?? null, mapUiScaleChoices: reply?.mapUiScaleChoices ?? [],
-    dirty: !!draft && JSON.stringify(draft) !== JSON.stringify(reply?.settings),
+    dirty: !!draft && !sameDisplay(draft, reply?.settings),
     canReset: !!reply?.gameSettings,
+    /** The display settings already are the game's own, so reverting would change nothing. */
+    atGame: !!reply?.gameSettings && sameDisplay(draft, reply.gameSettings),
     update: (value: Partial<VideoOptions>) => { if (draft) setDraft({ ...draft, ...value, useGameSettings: false }); },
     reset: () => { if (reply?.gameSettings) setDraft(reply.gameSettings); },
     cancel: () => setDraft(reply?.settings ?? null),

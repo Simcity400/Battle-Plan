@@ -61,10 +61,10 @@ export default function AgencyComparisonWidget({ widget, runtime, active, onDiag
   const sortingNames = useMemo(() => sort.column === 'country' ? rows.map(row => ({ hour: row.hour, tag: row.tag })) : [], [rows, sort.column]);
   const names = useCountryNamesAt(runtime.client, track, sortingNames, active);
   const columns = useMemo<readonly TableColumn<AgencyRow>[]>(() => [
-    { key: 'country', header: 'Country', label: 'Country', width: 'minmax(0, 2fr)',
+    { key: 'country', header: 'Country', label: 'Country', width: 'minmax(var(--table-name-min), 2fr)',
       value: row => names.get(nameKey(row.hour, row.tag)) ?? 'Country name unavailable',
       render: row => <CountryCell {...labelAt(row.hour)(row.tag)} /> },
-    { key: 'agency', header: 'Agency', label: 'Agency', renderMissing: true, width: 'minmax(0, 2fr)',
+    { key: 'agency', header: 'Agency', label: 'Agency', renderMissing: true, width: 'minmax(var(--table-name-min), 2fr)',
       value: row => row.value.name, render: row => <span title={row.value.name ?? 'Unknown'}>{row.value.name ?? 'Unknown'}</span> },
     { key: 'upgrades', header: 'Agency upgrades', label: 'Agency upgrades', numeric: true, renderMissing: true, width: 'max-content',
       value: row => row.value.upgrades.nonnegativeLevelSum === null ? null : BigInt(row.value.upgrades.nonnegativeLevelSum),

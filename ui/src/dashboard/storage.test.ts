@@ -1,13 +1,40 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultTemplate, WIDGET_CONTENT_SCALES } from './model.ts';
-import { loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseLayoutLibraryWithNotes, parseTemplate, saveLayouts } from './storage.ts';
+import { layoutsAtDefault, layoutsUnsaved, loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseLayoutLibraryWithNotes, parseTemplate, saveLayouts } from './storage.ts';
 import '../widgets/definitions.ts';
 
 function memoryStorage() {
   const values = new Map<string, string>();
   return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
 }
+
+test('a page is at its default until its saved layouts differ from the designed arrangement', () => {
+  const storage = memoryStorage();
+  assert.equal(layoutsAtDefault('overview', storage), true, 'nothing saved');
+  const { library } = loadLayouts(storage, 'overview');
+  saveLayouts(library, storage, 'overview');
+  assert.equal(layoutsAtDefault('overview', storage), true, 'a saved copy of the default');
+  const [first] = library.layouts;
+  const widgets = first.template.widgets.map((widget, index) => index ? widget : { ...widget, title: 'Renamed' });
+  assert.equal(saveLayouts({ ...library, layouts: [{ ...first, template: { ...first.template, widgets } }] }, storage, 'overview'), null);
+  assert.equal(layoutsAtDefault('overview', storage), false, 'a renamed widget');
+  assert.equal(layoutsAtDefault('politics', storage), true, 'each page is judged on its own');
+  // Unreadable saved layouts open the default with a warning; a reset is what clears them.
+  storage.values.set('hoi4-replay.workspace-layouts.v1.politics', '{not json');
+  assert.notEqual(loadLayouts(storage, 'politics').warning, null);
+  assert.equal(layoutsAtDefault('politics', storage), false, 'unreadable saved layouts');
+});
+
+test('a layout change not yet saved, on the shown page or one kept aside, counts as unsaved', () => {
+  const { library } = loadLayouts(memoryStorage(), 'overview');
+  const saved = library.layouts[0].template;
+  const edited = { ...saved, widgets: saved.widgets.slice(1) };
+  assert.equal(layoutsUnsaved([{ library, template: saved }]), false);
+  assert.equal(layoutsUnsaved([{ library, template: edited }]), true, 'a widget removed in Edit without saving');
+  assert.equal(layoutsUnsaved([{ library, template: saved }, { library, template: edited }]), true, 'another page kept its unsaved edit');
+  assert.equal(layoutsUnsaved([{ library, template: { ...saved } }], template => ({ ...template, name: 'merged' })), false, 'merged the same way, equal');
+});
 
 test('saved Territory faction counts follow its uncapped definition without changing shared validation', () => {
   const template = defaultTemplate();

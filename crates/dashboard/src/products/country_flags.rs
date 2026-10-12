@@ -4,7 +4,8 @@
 //! layers, so a mod's flags and its cosmetic or ideology variants win exactly as
 //! they did in the game. Files decode as the engine's `DecodeFlagTga` does, at
 //! the cell sizes the content's defines give. `Shield` also applies the sprite
-//! the recorded top bar's `player_flag` button names.
+//! the recorded top bar's `player_flag` button names; `Panel` applies it with the
+//! overlay's edge shading evened out, for flags drawn inside the dashboard's panels.
 
 use super::{LoadContext, Product, recorded_rows, validate_tag};
 use crate::{Source, catalogue::Catalogue, content, invalid};
@@ -39,6 +40,10 @@ pub enum CountryFlagSize {
     Small,
     /// The large flag as the game's top bar draws it through `GFX_shield_medium`.
     Shield,
+    /// The top bar's shield with its overlay's broad edge shading evened out to
+    /// the overlay's centre, keeping its texture: a presentation choice for flags
+    /// drawn inside panels, not a game rendering.
+    Panel,
 }
 
 impl CountryFlagSize {
@@ -46,7 +51,7 @@ impl CountryFlagSize {
     /// same country's large flag rather than to no flag.
     pub(crate) fn sets(self) -> &'static [FlagSet] {
         match self {
-            Self::Full | Self::Shield => &[FlagSet::Normal],
+            Self::Full | Self::Shield | Self::Panel => &[FlagSet::Normal],
             Self::Medium => &[FlagSet::Medium, FlagSet::Normal],
             Self::Small => &[FlagSet::Small],
         }
@@ -210,8 +215,11 @@ impl Product for CountryFlags {
             };
             style.map_err(invalid)
         };
-        let shield = (params.size == CountryFlagSize::Shield)
-            .then(|| load_shield().map_err(|error| error.to_string()));
+        let shield = matches!(
+            params.size,
+            CountryFlagSize::Shield | CountryFlagSize::Panel
+        )
+        .then(|| load_shield().map_err(|error| error.to_string()));
         state.contexts[0].reply(
             params,
             shield
@@ -244,6 +252,8 @@ type CachedShield = (
 pub(crate) struct ShieldStyle {
     mask: Rgba8Image,
     overlay: Option<Rgba8Image>,
+    /// The overlay as `Panel` draws it, evened once per content stack.
+    even_overlay: Option<Rgba8Image>,
     pub(crate) warnings: Vec<String>,
 }
 
@@ -271,17 +281,19 @@ impl ShieldStyle {
         if shield.texture2.is_empty() {
             return Err(invalid(format!("{name} declares no mask texture")));
         }
+        let overlay = if shield.texture1.is_empty() {
+            None
+        } else {
+            Some(crate::catalogue::gui_texture(
+                &content.layers,
+                &shield.texture1,
+                decode,
+            )?)
+        };
         Ok(Self {
             mask: crate::catalogue::gui_texture(&content.layers, &shield.texture2, decode)?,
-            overlay: if shield.texture1.is_empty() {
-                None
-            } else {
-                Some(crate::catalogue::gui_texture(
-                    &content.layers,
-                    &shield.texture1,
-                    decode,
-                )?)
-            },
+            even_overlay: overlay.as_ref().map(even_overlay),
+            overlay,
             warnings,
         })
     }
@@ -468,6 +480,55 @@ fn resize(image: &Rgba8Image, width: u32, height: u32) -> Rgba8Image {
     Rgba8Image {
         width,
         height,
+        pixels,
+    }
+}
+
+/// The overlay's coverage averaged over a window a quarter of its shorter side:
+/// broad enough to follow the edge shading, narrow enough to leave the weave.
+const EVEN_WINDOW_DIVISOR: u32 = 4;
+
+/// `overlay` with its coverage scaled so every area matches the overlay's centre.
+/// The vignette that darkens a flag's edges goes; the fine texture keeps its
+/// proportions. Colours are unchanged.
+fn even_overlay(overlay: &Rgba8Image) -> Rgba8Image {
+    let (width, height) = (overlay.width as usize, overlay.height as usize);
+    let radius = (overlay.width.min(overlay.height) / EVEN_WINDOW_DIVISOR).max(1) as usize;
+    // Summed-area table of alpha, one row and column of zeros in front.
+    let mut sums = vec![0_u64; (width + 1) * (height + 1)];
+    for y in 0..height {
+        for x in 0..width {
+            sums[(y + 1) * (width + 1) + x + 1] =
+                u64::from(overlay.pixels[(y * width + x) * 4 + 3])
+                    + sums[y * (width + 1) + x + 1]
+                    + sums[(y + 1) * (width + 1) + x]
+                    - sums[y * (width + 1) + x];
+        }
+    }
+    let mean = |x: usize, y: usize| {
+        let (left, top) = (x.saturating_sub(radius), y.saturating_sub(radius));
+        let (right, bottom) = ((x + radius + 1).min(width), (y + radius + 1).min(height));
+        let total = sums[bottom * (width + 1) + right] + sums[top * (width + 1) + left]
+            - sums[top * (width + 1) + right]
+            - sums[bottom * (width + 1) + left];
+        total as f64 / ((right - left) * (bottom - top)) as f64
+    };
+    let centre = mean(width / 2, height / 2);
+    let mut pixels = overlay.pixels.clone();
+    for y in 0..height {
+        for x in 0..width {
+            let local = mean(x, y);
+            if local > 0.0 {
+                let alpha = &mut pixels[(y * width + x) * 4 + 3];
+                *alpha = (f64::from(*alpha) * centre / local)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    Rgba8Image {
+        width: overlay.width,
+        height: overlay.height,
         pixels,
     }
 }
@@ -778,7 +839,15 @@ impl FlagContext {
             match found {
                 FlagSearch::Found { asset, image } => {
                     let image = match shield_style {
-                        Some(style) => shield(&image, &style.mask, style.overlay.as_ref()),
+                        Some(style) => shield(
+                            &image,
+                            &style.mask,
+                            if request.size == CountryFlagSize::Panel {
+                                style.even_overlay.as_ref()
+                            } else {
+                                style.overlay.as_ref()
+                            },
+                        ),
                         None => {
                             let (width, height) = bounded(image.width, image.height, MAX_FLAG_EDGE);
                             resize(&image, width, height)
@@ -1340,6 +1409,7 @@ mod tests {
             [FlagSet::Medium, FlagSet::Normal]
         );
         assert_eq!(CountryFlagSize::Shield.sets(), [FlagSet::Normal]);
+        assert_eq!(CountryFlagSize::Panel.sets(), [FlagSet::Normal]);
         assert_eq!(bounded(82, 52, 128), (82, 52));
     }
 
@@ -1377,6 +1447,55 @@ mod tests {
     }
 
     #[test]
+    fn panel_overlay_loses_its_edge_shading_and_keeps_its_texture() {
+        // A 16x16 overlay: alpha 150 within two pixels of the edge, otherwise a
+        // weave alternating 40 and 60 around a centre mean of 50.
+        let mut pixels = Vec::new();
+        for y in 0..16_u32 {
+            for x in 0..16_u32 {
+                let edge = x.min(y).min(15 - x).min(15 - y) < 2;
+                let alpha = if edge {
+                    150
+                } else if (x + y) % 2 == 0 {
+                    40
+                } else {
+                    60
+                };
+                pixels.extend_from_slice(&[10, 10, 10, alpha]);
+            }
+        }
+        let overlay = Rgba8Image {
+            width: 16,
+            height: 16,
+            pixels,
+        };
+        let even = even_overlay(&overlay);
+        let alpha = |image: &Rgba8Image, x: u32, y: u32| {
+            u32::from(image.pixels[((y * 16 + x) * 4 + 3) as usize])
+        };
+        for (x, y) in [(0, 0), (0, 8), (15, 15)] {
+            assert!(
+                alpha(&even, x, y) * 5 < alpha(&overlay, x, y) * 3,
+                "the dark edge at ({x}, {y}) is evened out"
+            );
+        }
+        assert_eq!(
+            (alpha(&even, 7, 8), alpha(&even, 8, 8)),
+            (alpha(&overlay, 7, 8), alpha(&overlay, 8, 8)),
+            "the centre's texture is unchanged"
+        );
+        assert!(
+            alpha(&even, 5, 4) > alpha(&even, 4, 4),
+            "the weave keeps its contrast"
+        );
+        assert_eq!(
+            &even.pixels[..3],
+            &overlay.pixels[..3],
+            "colours are unchanged"
+        );
+    }
+
+    #[test]
     fn flag_params_default_to_full_and_reject_paths_and_unbounded_batches() {
         let mut value = serde_json::json!({ "branchId": "1", "hour": 0, "tags": ["GER"] });
         let params: CountryFlagParams = serde_json::from_value(value.clone()).unwrap();
@@ -1388,6 +1507,7 @@ mod tests {
         for (name, size) in [
             ("medium", CountryFlagSize::Medium),
             ("shield", CountryFlagSize::Shield),
+            ("panel", CountryFlagSize::Panel),
         ] {
             value["size"] = serde_json::json!(name);
             let params: CountryFlagParams = serde_json::from_value(value.clone()).unwrap();

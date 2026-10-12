@@ -15,7 +15,6 @@ import { compareTags } from '../../dashboard/tagOrder.ts';
 import { stackEdges } from '../stack.ts';
 import type { Edge } from '../stack';
 import { linearTicks } from '../valueAxis.ts';
-import { usNumber } from '../numberFormat.ts';
 
 /** Pointer and keyboard activation share the same optional row callback. */
 export function selectRaceRow(key: string | null, trigger: string, select?: (key: string) => void): boolean {
@@ -231,9 +230,14 @@ export function raceMoving(state: RaceState): boolean {
 export interface RaceLayout {
   /** The bars' baseline (after the label column) and the plot's right edge. */
   left: number; right: number;
+  /** Where the first row starts and the last row ends, scrolled with the rows: past
+   * `view` when the rows need more room than the chart has. */
   top: number; bottom: number;
   /** One row's height, and a bar's thickness in it (at most 20 px, style A). */
   slot: number; thickness: number;
+  /** The plot as seen, which does not scroll: the grid and value axis are drawn on it,
+   * and only rows inside it are drawn or hit. */
+  view: { top: number; bottom: number };
 }
 
 /** Room under the bars for the value axis' labels. */
@@ -244,38 +248,35 @@ export const MAX_THICKNESS = 20;
 /** The least height of a row: its 14 px flag and 12 px name with room between rows,
  * so rows never overlap however many are asked for. */
 export const MIN_SLOT = 20;
-/** The line under the rows saying how many more there are than fit. */
-export const MORE_LINE = 18;
 
-/** How many of `wanted` rows fit a chart `height` px tall at no less than
- * [`MIN_SLOT`] each, and how many do not. When not all fit, a line under the rows
- * ([`MORE_LINE`]) says so. A race shows its leaders rather than scroll: it is read
- * at a glance while it plays, and a scroll position fighting the re-ranking would
- * hide the very rows that move. */
-export function fitRows(height: number, wanted: number): { rows: number; hidden: number } {
-  const room = Math.max(0, height - TOP - RACE_AXIS);
-  const want = Math.max(1, Math.floor(wanted));
-  if (want * MIN_SLOT <= room) return { rows: want, hidden: 0 };
-  const rows = Math.max(1, Math.floor((room - MORE_LINE) / MIN_SLOT));
-  return { rows, hidden: want - rows };
+/** The height `rows` rows need at their least height, with the room above them and
+ * the value axis under them. A chart shorter than this scrolls its rows. */
+export const raceHeight = (rows: number) => TOP + Math.max(1, Math.floor(rows)) * MIN_SLOT + RACE_AXIS;
+
+/** The layout for `slots` rows in a chart `height` px tall, scrolled down `scroll` px:
+ * the label column (flag and name), the room kept at the right for the value label at
+ * a bar's tip, and the slots sharing the plot's height. Rows are never less than
+ * [`MIN_SLOT`]: when the slots need more room they scroll under the fixed `view`.
+ * The scroll ends at the last of the `rows` drawn, so slots kept for entries that are
+ * not there leave no empty rows to scroll into; `scroll` is kept within them. */
+export function raceLayout(width: number, height: number, slots: number, labelWidth: number, valueWidth: number, scroll = 0, rows = slots): RaceLayout {
+  const count = Math.max(1, Math.floor(slots));
+  const view = { top: TOP, bottom: Math.max(TOP + 1, height - RACE_AXIS) };
+  const slot = Math.max(MIN_SLOT, (view.bottom - view.top) / count);
+  const drawn = Math.max(1, Math.floor(rows));
+  const top = view.top - Math.max(0, Math.min(scroll, TOP + drawn * slot + RACE_AXIS - height));
+  return { left: labelWidth, right: Math.max(labelWidth + 1, width - valueWidth), top, bottom: top + slot * drawn, slot,
+    thickness: Math.max(2, Math.min(MAX_THICKNESS, slot * 0.52)), view };
 }
 
-/** Where the "+N more" line's middle sits: in the room kept for it under the value
- * axis' labels (which take [`RACE_AXIS`] under the rows), so the two never overlap. */
-export const moreLineY = (layout: RaceLayout) => layout.bottom + RACE_AXIS + MORE_LINE / 2;
+/** Whether a row centred at `centre` shows in the view at all. */
+export const rowInView = (layout: RaceLayout, centre: number) =>
+  centre + layout.slot / 2 >= layout.view.top && centre - layout.slot / 2 <= layout.view.bottom;
 
-/** The line under the rows when `hidden` entries do not fit. */
-export const moreText = (hidden: number) => `+${usNumber.format(hidden)} more: make the widget taller or show fewer countries`;
-
-/** The layout for `rows` rows: the label column (flag and name), the room kept at
- * the right for the value label at a bar's tip, and `reserve` px kept under the rows
- * (the "+N more" line). */
-export function raceLayout(width: number, height: number, rows: number, labelWidth: number, valueWidth: number, reserve = 0): RaceLayout {
-  const top = TOP;
-  const bottom = Math.max(top + 1, height - RACE_AXIS - reserve);
-  const slot = (bottom - top) / Math.max(1, rows);
-  return { left: labelWidth, right: Math.max(labelWidth + 1, width - valueWidth), top, bottom, slot, thickness: Math.max(2, Math.min(MAX_THICKNESS, slot * 0.52)) };
-}
+/** Whether a row is seen where it is or where it is gliding to, so one passing the
+ * view's edge while re-ranking still counts. */
+export const rowSeen = (layout: RaceLayout, row: Pick<RaceRow, 'y' | 'target'>) =>
+  rowInView(layout, rowCentre(layout, row.y)) || rowInView(layout, rowCentre(layout, row.target));
 
 /** A row's vertical centre. */
 export const rowCentre = (layout: RaceLayout, y: number) => layout.top + y * layout.slot + layout.slot / 2;
@@ -307,9 +308,10 @@ export function barRectangle(row: RaceRow, layout: RaceLayout, min: number, max:
 /** The row under a point, among rows still in the race: the topmost drawn whose bar
  * rectangle holds the point (two bars overlap while they swap places, and a longer
  * one may show past the tip of a shorter one drawn over it), else the one whose
- * slot's band covers it, nearest first; null over none. `min` and `max` are the
- * axis the bars are drawn on. */
+ * slot's band covers it, nearest first; null over none, and outside the view, where
+ * rows scrolled away are not drawn. `min` and `max` are the axis the bars are drawn on. */
 export function rowAt(rows: readonly RaceRow[], layout: RaceLayout, point: { x: number; y: number }, min: number, max: number): RaceRow | null {
+  if (point.y < layout.view.top || point.y > layout.view.bottom) return null;
   const live = paintOrder(rows).filter(row => row.phase !== 'leaving').reverse();
   const onBar = live.find(row => {
     const bar = barRectangle(row, layout, min, max);

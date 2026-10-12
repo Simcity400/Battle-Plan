@@ -157,7 +157,7 @@ export function FactionColoursEditor({ client, source }: { client: DashboardClie
             const name = event.currentTarget.value.trim();
             if (name !== (style?.name ?? '')) save(setFactionStyle(settings, campaign, faction.id, name ? { name } : { name: undefined }));
           }} />
-        {(set || style?.name) && <button type="button" className="icon-button small" aria-label={scope === 'campaign' ? 'Use the default colour and name in this campaign' : 'Use the default colour in every campaign'}
+        {(set || scope === 'campaign' && style?.name) && <button type="button" className="icon-button small" aria-label={scope === 'campaign' ? 'Use the default colour and name in this campaign' : 'Use the default colour in every campaign'}
           data-tooltip="Reset" onClick={() => {
             const cleared = setFactionColour(settings, scope, campaign, faction.id, identity(faction.id), null);
             save(scope === 'campaign' ? setFactionStyle(cleared, campaign, faction.id, null) : cleared);

@@ -61,7 +61,7 @@ test('dated labels forward the hour limit to both reads and distinguish pending,
         assert.equal(call.args[call.kind === 'names' ? 4 : 5], limit ?? MAX_NAME_HOURS);
       }
       assert.equal((calls[1].args[4] as { product: string }).product, 'country-flags');
-      assert.deepEqual((calls[1].args[4] as { params: (branch: string, hour: number, tags: string[]) => unknown }).params('synthetic-branch', 10, ['named']), { branchId: 'synthetic-branch', hour: 10, tags: ['named'], size: 'shield' });
+      assert.deepEqual((calls[1].args[4] as { params: (branch: string, hour: number, tags: string[]) => unknown }).params('synthetic-branch', 10, ['named']), { branchId: 'synthetic-branch', hour: 10, tags: ['named'], size: 'panel' });
     }
   } finally { delete host.__labelFixture; }
 });

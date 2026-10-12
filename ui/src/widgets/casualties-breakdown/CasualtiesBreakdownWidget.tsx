@@ -88,7 +88,7 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   // Artwork follows the table viewport, including a removed enemy's last
   // observed holder. A replacement under its tag cannot supply its old flag.
   const flagFacts = useMemo(() => visible.map(row => ({ tag: row.enemyTag, hour: row.enemyHour })), [visible]);
-  const flags = useCountryFactsRead(runtime.client, track, flagFacts, active && open, flagReadSpec('shield'));
+  const flags = useCountryFactsRead(runtime.client, track, flagFacts, active && open, flagReadSpec('panel'));
   const items = useMemo(() => lossItems(snapshot, end, (tag, hour) => names.get(nameKey(hour, tag)) ?? 'Country name unavailable'), [snapshot, end, names]);
   const levels = [options.warLevel !== false, options.enemyLevel !== false];
   const chartReplies = useMemo(() => chartWindows.flatMap(index => histories.data.has(index) ? [histories.data.get(index)!] : []),

@@ -35,7 +35,6 @@ export function useSidebarIconMenu(appearance: Appearance) {
       picker.trigger.current = button;
       picker.openAt(() => button.isConnected ? button.getBoundingClientRect() : null);
     } },
-    { label: 'Reset icon colour', icon: 'refresh', disabled: !appearance.settings.sidebarIcons[id], run: () => setColour(id, null) },
   ];
   const open = (event: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement>) => {
     if (event.defaultPrevented) return;
@@ -57,8 +56,8 @@ export function useSidebarIconMenu(appearance: Appearance) {
     <Popover menu={picker} className="color-picker sidebar-icon-picker" aria-label="Sidebar icon colour">
       {editing && <>
         <div className="ui-popover-heading"><strong>{label} icon</strong><div className="ui-popover-actions">
-          <button type="button" className="icon-button ui-popover-action" aria-label="Reset icon colour" data-tooltip="Reset to default"
-            onClick={() => setColour(editing, null)}><Icon name="refresh" /></button>
+          {appearance.settings.sidebarIcons[editing] && <button type="button" className="icon-button ui-popover-action" aria-label="Reset icon colour"
+            data-tooltip="Reset to default" onClick={() => setColour(editing, null)}><Icon name="refresh" /></button>}
           <button type="button" className="icon-button ui-popover-action" aria-label="Close icon colour picker" onClick={picker.close}><Icon name="close" /></button>
         </div></div>
         {picker.open && <ColorPicker value={value} onChange={colour => setColour(editing, colour)} swatches={[...new Set(sidebarIconIds.map(id => defaultSidebarIcon(id)[mode]))]} />}

@@ -45,6 +45,9 @@ export default function MapAppearance({ source, client, global = false, viewId, 
   useEffect(() => () => saveRequest.current?.abort(), []);
   const mapDirty = !!reply && !!draft && JSON.stringify(reply.settings) !== JSON.stringify(draft);
   const dirty = mapDirty || (global && video.dirty);
+  // Reverting is offered only while something differs from what it reverts to.
+  const graphicsCustom = !!draft && !!reply && (!global || !!reply.gameGraphics) && !draft.useGameGraphics;
+  const videoCustom = global && video.canReset && !video.atGame;
   const selected = draft?.visualMods ?? reply?.inheritedSettings.visualMods ?? reply?.recordedMods ?? [];
   const mods = [...(reply?.mods ?? []), ...selected.filter(id => !reply?.mods.some(mod => mod.id === id)).map(id => ({ id, name: id.replace(/^mod\//, ''), reason: 'No longer installed' }))]
     .filter(mod => mod.name.toLowerCase().includes(query.trim().toLowerCase()));
@@ -84,7 +87,9 @@ export default function MapAppearance({ source, client, global = false, viewId, 
         onChange={event => { if (draft) setDraft({ ...draft, useGameGraphics: false, graphics: { ...draft.graphics, [key]: event.currentTarget.checked } }); }} /></label>;
     })}</div>
     </div>
-    <button type="button" className="map-menu-action graphics-reset" disabled={busy || !(draft && reply && (!global || reply.gameGraphics)) && !(global && video.canReset)} onClick={() => { if (draft && reply && (!global || reply.gameGraphics)) setDraft({ ...draft, useGameGraphics: true, graphics: reply.inheritedSettings.graphics }); if (global) video.reset(); }}>{global ? 'Revert to the game settings' : `Use ${parentLabel}`}</button>
+    {(graphicsCustom || videoCustom) && <button type="button" className="map-menu-action graphics-reset" disabled={busy}
+      onClick={() => { if (graphicsCustom) setDraft({ ...draft!, useGameGraphics: true, graphics: reply!.inheritedSettings.graphics }); if (videoCustom) video.reset(); }}>
+      {global ? 'Revert to the game settings' : `Use ${parentLabel}`}</button>}
     {global && reply?.gameGraphicsError && <p className="map-menu-note">Game graphics settings unavailable: {reply.gameGraphicsError}</p>}
     {global && video.gameError && <p className="map-menu-note">Display defaults unavailable: {video.gameError}</p>}
     {global && video.error && <p className="map-menu-error" role="alert">{video.error} <button type="button" className="button quiet" onClick={video.retry}>Retry</button></p>}

@@ -29,7 +29,7 @@ test('list flags load in bounded batches per observation hour and are never requ
   targets.push({ tag: 'NOFLAG', branchId: '1', hour: 100 });
   await loadListFlags(client, source, targets, signal());
   assert.deepEqual(requests.map(request => [request.params.hour, request.params.tags.length]), [[100, FLAG_BATCH], [100, 4], [200, 5]]);
-  assert.ok(requests.every(request => request.params.size === 'shield'));
+  assert.ok(requests.every(request => request.params.size === 'panel'), 'flags in panels use the evened shield');
   const store = flagStore(client);
   assert.equal(store.get(FlagStore.key('s', 'v', '1', 100, 'T0'))?.tag, 'T0');
   assert.equal(store.get(FlagStore.key('s', 'v', '1', 100, 'NOFLAG')), null);

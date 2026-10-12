@@ -9,9 +9,9 @@ import type { WidgetRuntime } from './definitions';
 test('frame subtitles identify only campaigns different from the sidebar and warnings use the resolved campaign', async () => {
   const replacements: Record<string, string> = {
     '/dashboard/widgets.tsx': 'export const WidgetBody = () => null;',
-    '/dashboard/WidgetSettingsMenu.tsx': 'export default () => null;',
-    '/dashboard/definitions.ts': `export const widgetDefinition = kind => ({ icon: 'grid', data: kind !== 'decoration',
-      history: true, countrySelection: false, timeModes: ['follow', 'campaign'] });`,
+    '/dashboard/WidgetSettingsMenu.tsx': 'export default props => { globalThis.__frameReset = props.onReset; return null; };',
+    '/dashboard/definitions.ts': `export const widgetDefinition = kind => ({ icon: 'grid', data: kind !== 'decoration', version: 1, title: 'Synthetic',
+      history: true, countrySelection: false, timeModes: ['follow', 'campaign'], defaultTime: 'follow', defaultCountries: { kind: 'tags', tags: [] } });`,
     '/dashboard/campaignSettings.ts': 'export const useCampaignSettings = () => ({ campaigns: {} });',
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: { factions: [{ id: '42', name: null,
       nameReason: 'Synthetic native naming refusal', names: [{ firstHour: 0, lastHour: 100, name: null, reason: 'Synthetic native naming refusal' }] }] } });`,
@@ -35,6 +35,11 @@ test('frame subtitles identify only campaigns different from the sidebar and war
     const template = { tracks, widgets: [widget], layouts: {} } as unknown as DashboardTemplate;
     const render = () => renderToStaticMarkup(createElement(Grid, { template, runtime, editing: false,
       onApply() {}, onRemove() {}, onLayouts() {} }));
+    const frame = globalThis as typeof globalThis & { __frameReset?: () => void };
+    render(); assert.equal(frame.__frameReset, undefined, 'a widget already at its defaults offers no reset');
+    widget.title = 'Renamed'; render(); assert.equal(typeof frame.__frameReset, 'function');
+    widget.title = 'Synthetic'; widget.contentScale = 125; render(); assert.equal(typeof frame.__frameReset, 'function');
+    delete widget.contentScale;
     assert.doesNotMatch(render(), /dash-widget-subtitle|dash-inline-warning/, 'default mode ignores stale saved tracks');
     assert.match(render(), /data-tooltip="Show whole campaign"/);
     widget.trackIds = ['track-one'];
@@ -107,5 +112,5 @@ test('frame subtitles identify only campaigns different from the sidebar and war
       countries: { kind: 'group', group: { type: 'faction', id: '42' }, membership: 'hour', aggregate: false } }, runtime, active: false }));
     assert.match(faction, /Unnamed faction/);
     assert.doesNotMatch(faction, /Synthetic native naming refusal|data-tooltip=/);
-  } finally { await vite.close(); }
+  } finally { await vite.close(); delete (globalThis as { __frameReset?: unknown }).__frameReset; }
 });

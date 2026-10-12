@@ -1,10 +1,10 @@
 /* Shared style-5 Scoreboard measures; its colours come from the active theme. */
-.chart-table { --table-comfortable-height: 34px; --table-compact-height: 25px; --table-header-min-height: 26px; --table-header-height: var(--table-header-min-height); --table-muted-opacity: .55; --table-row-height: var(--table-comfortable-height); --table-cell-y: 7px; --table-font: var(--font-size-mono); --table-rank-width: 44px; min-height: 0; height: 100%; overflow: auto; padding: 0 6px 8px; }
-.chart-table.is-compact { --table-row-height: var(--table-compact-height); --table-cell-y: 3px; --table-font: var(--font-size-mono); }
-.chart-table table { display: grid; width: 100%; min-width: 0; border-collapse: collapse; font-family: var(--font-mono); font-size: var(--table-font); }
+.chart-table { --table-comfortable-height: 28px; --table-compact-height: 22px; --table-header-min-height: 24px; --table-header-height: var(--table-header-min-height); --table-muted-opacity: .55; --table-row-height: var(--table-comfortable-height); --table-cell-y: 4px; --table-font: var(--type-sm); --table-rank-width: 44px; /* Names keep this much before a narrow table scrolls sideways. */ --table-name-min: 9em; min-height: 0; height: 100%; overflow: auto; padding: 0 6px 8px; }
+.chart-table.is-compact { --table-row-height: var(--table-compact-height); --table-cell-y: 2px; --table-font: var(--type-sm); }
+.chart-table table { display: grid; width: 100%; min-width: 0; border-collapse: collapse; font-family: var(--font-tables); font-size: var(--table-font); }
 .chart-table thead { position: sticky; top: 0; z-index: 2; background: var(--surface); }
 .chart-table tr { display: grid; grid-template-columns: var(--table-columns); }
-.chart-table th { min-width: 0; height: var(--table-header-height); padding: 0 12px; align-content: center; text-align: start; color: var(--muted); font-size: calc(var(--font-size-mono) * 12 / 13); font-weight: 500; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chart-table th { min-width: 0; height: var(--table-header-height); padding: 0 8px; align-content: center; text-align: start; color: var(--muted); font-size: var(--type-xs); font-weight: 500; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chart-table th button { display: inline; width: 100%; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: none; text-align: inherit; color: inherit; font: inherit; }
 .table-natural { display: inline-block; width: max-content; white-space: nowrap; }
 .chart-table th[aria-sort='ascending'], .chart-table th[aria-sort='descending'] { color: var(--text); }
@@ -12,16 +12,18 @@
 .chart-table tbody { display: block; position: relative; }
 .chart-table tbody tr { position: absolute; inset: 0 0 auto; height: var(--table-row-height); border-bottom: 1px solid color-mix(in srgb, var(--border) 35%, transparent); }
 .chart-table tbody tr:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
-.chart-table td { min-width: 0; min-height: 0; padding: var(--table-cell-y) 12px; align-content: center; line-height: 1.46; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Names and values take the bar charts' label and value weights, so a table reads like the chart beside it. */
+.chart-table td { min-width: 0; min-height: 0; padding: var(--table-cell-y) 8px; align-content: center; line-height: 1.46; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chart-table.is-compact td { line-height: 1.5; }
+.chart-table td.is-numeric { font-weight: 600; }
 .chart-table .is-numeric, .chart-table .table-rank { font-variant-numeric: tabular-nums; }
 .chart-table .align-start { text-align: start; }
 .chart-table .align-end { text-align: end; }
-.chart-table .table-rank { color: var(--muted); text-align: start; overflow: visible; }
+.chart-table .table-rank { color: var(--muted); font-weight: 400; text-align: start; overflow: visible; }
 .chart-table tbody tr.is-muted { filter: grayscale(1); opacity: var(--table-muted-opacity); }
 .chart-table tbody tr.is-muted.is-leaving { opacity: 0; }
 .chart-table tbody tr.is-activatable { cursor: pointer; }
-.table-delta { font-size: calc(var(--font-size-mono) * 10 / 13); margin-left: 4px; }
+.table-delta { font-size: calc(var(--type-xs) * 10 / 11); margin-left: 4px; }
 .table-delta.is-positive { color: var(--positive); }
 .table-delta.is-negative { color: var(--error); }
 .table-cell { position: relative; display: inline-block; min-width: 64px; }
@@ -34,8 +36,6 @@
 .chart-table tr:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; }
 @media (prefers-reduced-motion: reduce) { .chart-table .moving-row { transition: none; animation: none; } }
 
-/* Cell details inherit table typography independently from interface sizing. */
-.chart-table { --type-xs: calc(var(--font-size-mono) * 11 / 13); --type-sm: calc(var(--font-size-mono) * 12 / 13); --type-md: var(--font-size-mono); --type-lg: calc(var(--font-size-mono) * 14 / 13); }
 .chart-table.is-wrapped tbody tr { height: auto; min-height: var(--table-row-height); }
 .chart-table.is-wrapped td { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
 .chart-table.is-wrapped .table-country > span { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }

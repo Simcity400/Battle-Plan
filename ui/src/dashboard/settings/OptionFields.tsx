@@ -5,10 +5,12 @@ import type { ReactNode } from 'react';
 import { ChipSet } from '../../components/ChipSet';
 import ContentSetPicker from '../../components/ContentSetPicker';
 import { Segmented } from '../../components/Segmented';
-import { contentSet, storableToken, toggleContentSet, UNSTORABLE, validOption } from '../options';
+import { contentSet, storableToken, toggleContentSet, UNSTORABLE } from '../options';
 import type { OptionField, OptionValue } from '../options';
 import type { OptionChoices } from '../definitions';
 import { contentTitleHint } from '../contentTitles';
+import { leaveNumber, numberText, receiveNumber, typeNumber } from './numberDraft';
+import type { NumberDraft, NumberStep } from './numberDraft';
 
 /** Short choice lists are a segmented row; longer ones a drop-down. */
 const SEGMENTED_MAX = 4;
@@ -64,21 +66,18 @@ function OptionRow({ field, value, choices, onChange }: {
   }
 }
 
-/** Keeps a typed number local and saves it on blur or Enter when it is legal; an
- * empty box means automatic when the field allows it. */
+/** Saves a typed or stepped number as soon as it is legal, as every other setting saves
+ * at once. Text that is not a legal number yet (empty, a lone minus, out of range) stays
+ * in the box until it is left: then an empty box means automatic when the field allows
+ * it, and anything else returns to the saved number. */
 function NumberRow({ field, value, caption, onChange }: {
   field: Extract<OptionField, { kind: 'number' }>; value: number | null; caption: ReactNode; onChange: (value: OptionValue) => void;
 }) {
-  const [text, setText] = useState(value == null ? '' : String(value));
-  useEffect(() => setText(value == null ? '' : String(value)), [value]);
-  const commit = () => {
-    const raw = text.trim();
-    if (raw === '') { if (field.default === null && value !== null) onChange(null); else setText(value == null ? '' : String(value)); return; }
-    const number = Number(raw);
-    if (validOption(field, number)) { if (number !== value) onChange(number); } else setText(value == null ? '' : String(value));
-  };
+  const [draft, setDraft] = useState<NumberDraft>({ text: numberText(value) });
+  useEffect(() => setDraft(current => receiveNumber(current, value)), [value]);
+  const apply = (step: NumberStep) => { setDraft(step.draft); if (step.save !== undefined) onChange(step.save); };
   return <label className="setting-row">{caption}
-    <span className="option-number"><input type="number" min={field.min} max={field.max} step={field.step} value={text}
-      placeholder={field.default === null ? 'Auto' : undefined} onChange={event => setText(event.currentTarget.value)}
-      onBlur={commit} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} />{field.unit && <small>{field.unit}</small>}</span></label>;
+    <span className="option-number"><input type="number" min={field.min} max={field.max} step={field.step} value={draft.text}
+      placeholder={field.default === null ? 'Auto' : undefined} onChange={event => apply(typeNumber(field, draft, event.currentTarget.value, value))}
+      onBlur={() => apply(leaveNumber(field, draft, value))} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} />{field.unit && <small>{field.unit}</small>}</span></label>;
 }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { barExtent, barLength, barParts, barRectangle, fitRows, keyedEntry, MIN_SLOT, MORE_LINE, moreLineY, moreText, paintOrder, partTotal, RACE_AXIS, raceLayout, raceMax, raceMoving, raceText, rankItems, rowAt, rowCentre, stepRace, MAX_THICKNESS, RACE_LEAVE_MS } from './race.ts';
+import { barExtent, barLength, barParts, barRectangle, keyedEntry, MIN_SLOT, paintOrder, partTotal, RACE_AXIS, raceHeight, raceLayout, raceMax, raceMoving, raceText, rankItems, rowAt, rowCentre, rowInView, rowSeen, stepRace, MAX_THICKNESS, RACE_LEAVE_MS } from './race.ts';
 import type { RaceItem, RaceRow, RaceState } from './race';
 import { drawRaceBar } from './draw.ts';
 import { tokensFromValues } from '../tokens.ts';
@@ -240,26 +240,56 @@ test('hovering finds the bar drawn on top while two rows swap places', () => {
   assert.equal(hover([{ ...upper, phase: 'leaving' }, lower], 150, 157), 'lower');
 });
 
-test('rows keep a height that fits their flag and name, and the rest are counted under them', () => {
-  // Top 30 in 330 px: 14 rows of at least 20 px, and a line saying 16 more.
-  assert.deepEqual(fitRows(330, 30), { rows: 14, hidden: 16 });
-  const layout = raceLayout(400, 330, 14, 100, 40, MORE_LINE);
-  assert.ok(layout.slot >= MIN_SLOT, `${layout.slot}`);
-  assert.ok(layout.bottom + MORE_LINE <= 330 - 22);
-  // All fit: no line.
-  assert.deepEqual(fitRows(330, 10), { rows: 10, hidden: 0 });
-  assert.ok(raceLayout(400, 330, 10, 100, 40).slot >= MIN_SLOT);
-  // A tiny chart still shows its leader.
-  assert.deepEqual(fitRows(40, 5), { rows: 1, hidden: 4 });
-  assert.equal(moreText(16), '+16 more: make the widget taller or show fewer countries');
-  // 30 countries in 400 × 330: the tick labels sit from 6 px under the rows over
-  // their 22 px; the line has its own 18 px under them, inside the chart.
-  const tall = raceLayout(400, 330, fitRows(330, 30).rows, 100, 40, MORE_LINE);
-  assert.equal(tall.bottom, 290);
-  const ticks = [tall.bottom + 6, tall.bottom + RACE_AXIS];
-  const line = [moreLineY(tall) - MORE_LINE / 2, moreLineY(tall) + MORE_LINE / 2];
-  assert.ok(line[0] >= ticks[1], `line ${line} under ticks ${ticks}`);
-  assert.ok(line[1] <= 330);
+test('rows keep a height that fits their flag and name; rows that need more room scroll under a fixed axis', () => {
+  // All 10 fit in 330 px: they share the plot, which does not scroll.
+  assert.equal(raceHeight(10), 8 + 10 * MIN_SLOT + RACE_AXIS);
+  const fits = raceLayout(400, 330, 10, 100, 40, 50);
+  assert.deepEqual([fits.top, fits.bottom, fits.slot], [8, 308, 30]);
+  assert.deepEqual(fits.view, { top: 8, bottom: 308 });
+  // Top 30 in 330 px: every row at its least height, scrolling 300 px past the view.
+  const top = raceLayout(400, 330, 30, 100, 40);
+  assert.equal(top.slot, MIN_SLOT);
+  assert.equal(raceHeight(30) - 330, 300);
+  assert.deepEqual([top.top, top.bottom], [8, 608]);
+  // The grid and tick labels stay put under the view whatever the scroll.
+  const scrolled = raceLayout(400, 330, 30, 100, 40, 120);
+  assert.deepEqual(scrolled.view, top.view);
+  assert.deepEqual([scrolled.top, scrolled.bottom], [8 - 120, 608 - 120]);
+  // At the end of the scroll the last row ends at the view's bottom; past it is kept there.
+  const end = raceLayout(400, 330, 30, 100, 40, 1000);
+  assert.equal(end.bottom, end.view.bottom);
+  assert.equal(rowCentre(end, 29), end.view.bottom - MIN_SLOT / 2);
+  // Only rows in the view are drawn and hit: a row scrolled under the axis labels is neither.
+  const state = stepRace(null, Array.from({ length: 30 }, (_, index) => item(`r${index}`, 30 - index)), 0, 16, 100);
+  assert.equal(rowInView(top, rowCentre(top, 14)), true);
+  assert.equal(rowInView(top, rowCentre(top, 16)), false);
+  assert.equal(rowAt(state.rows, top, { x: 50, y: top.view.bottom + 10 }, state.min, state.max), null);
+  assert.equal(rowAt(state.rows, scrolled, { x: 50, y: rowCentre(scrolled, 20) }, state.min, state.max)?.key, 'r20');
+  // A tiny chart scrolls its leader into view rather than hiding it.
+  assert.equal(raceLayout(400, 40, 5, 100, 40, 1000).bottom, 40 - RACE_AXIS);
+  // Top 30 with only 20 entries: the scroll ends at the 20th row, not 10 empty slots later.
+  const fewer = raceLayout(400, 330, 30, 100, 40, 1000, 20);
+  assert.equal(fewer.slot, MIN_SLOT);
+  assert.deepEqual([fewer.top, fewer.bottom], [8 - (raceHeight(20) - 330), fewer.view.bottom]);
+  // Top 30 with 12 entries: they fit at their least height, so nothing scrolls.
+  assert.equal(raceLayout(400, 330, 30, 100, 40, 100, 12).top, 8);
+});
+
+test('a row is seen where it is or where it is gliding to, and not once scrolled away', () => {
+  // 30 rows in 330 px, scrolled 300 px: rows 15 to 29 are in view.
+  const layout = raceLayout(400, 330, 30, 100, 40, 300);
+  assert.equal(rowSeen(layout, { y: 0, target: 0 }), false, 'the first row, reached with Home, has scrolled away');
+  assert.equal(rowSeen(layout, { y: 20, target: 20 }), true);
+  assert.equal(rowSeen(layout, { y: 2, target: 18 }), true, 'gliding into view');
+  assert.equal(rowSeen(layout, { y: 18, target: 2 }), true, 'gliding out of view');
+});
+
+test('a race of 5,000 entries reaches its last row by scrolling', () => {
+  const layout = raceLayout(800, 400, 5000, 120, 40, raceHeight(5000));
+  assert.equal(layout.slot, MIN_SLOT);
+  assert.equal(rowInView(layout, rowCentre(layout, 4999)), true);
+  assert.equal(rowInView(layout, rowCentre(layout, 0)), false);
+  assert.equal(layout.top, layout.view.bottom - 5000 * MIN_SLOT);
 });
 
 test('the axis ends a little past the longest bar, hatched parts included', () => {

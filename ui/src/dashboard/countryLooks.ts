@@ -59,7 +59,7 @@ const STYLES: FactSpec<CountryStyle & { warnings?: readonly string[] }> = {
     return new Map(reply.styles.map(style => [style.tag, { ...style, warnings: reply.warnings }] as const));
   },
 };
-const FLAGS = flagReadSpec('shield');
+const FLAGS = flagReadSpec('panel');
 
 export interface CountryLooks {
   /** Native diagnostics from current completed style reads. */

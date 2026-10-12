@@ -1,4 +1,4 @@
-import { defaultTemplate, GRID_COLUMNS, MAX_WIDGETS, migrateWidget, WIDGET_CONTENT_SCALES } from './model.ts';
+import { defaultTemplate, GRID_COLUMNS, MAX_WIDGETS, migrateWidget, stableJson, WIDGET_CONTENT_SCALES } from './model.ts';
 import { parseStoredOptions } from './options.ts';
 import type { Breakpoint, CountryGroup, CountrySelection, DashboardTemplate, GridItem, GridLayouts, OffsetWindow, SourceRole, TrackSpec, WidgetSpec, WidgetTime } from './model';
 import { widgetDefinition } from './definitions.ts';
@@ -180,8 +180,30 @@ export function droppedTagWarning(count: number): string | null {
 /** Overview keeps the original key, so layouts saved before pages existed stay on it. */
 const libraryKey = (page: PageId) => page === 'overview' ? LIBRARY_KEY : `${LIBRARY_KEY}.${page}`;
 
+const defaultLibrary = (page: PageId): LayoutLibrary =>
+  ({ version: 1, activeId: 'default', layouts: [{ id: 'default', template: { ...defaultTemplate(page), name: 'Default layout' } }] });
+
+/** Whether a page opens exactly as designed: nothing saved, or saved layouts equal to its
+ * default. Saved layouts that could not be restored whole are not: a reset clears them. */
+export function layoutsAtDefault(page: PageId, storage?: LayoutStorage): boolean {
+  const { library, warning } = loadLayouts(storage, page);
+  return warning === null && stableJson(library) === stableJson(parseLayoutLibrary(defaultLibrary(page)));
+}
+
+/** Whether any page has a layout change it has not saved: its draft, shown or kept while
+ * another page is shown, differs from its saved active layout. `merge` adds what both
+ * sides share before comparing (the loaded campaigns). */
+export function layoutsUnsaved(pages: Iterable<{ library: LayoutLibrary; template: DashboardTemplate }>,
+  merge: (template: DashboardTemplate) => DashboardTemplate = template => template): boolean {
+  for (const { library, template } of pages) {
+    const active = library.layouts.find(entry => entry.id === library.activeId)?.template;
+    if (!active || stableJson(merge(template)) !== stableJson(merge(active))) return true;
+  }
+  return false;
+}
+
 export function loadLayouts(storage?: LayoutStorage, page: PageId = 'overview'): { library: LayoutLibrary; warning: string | null; droppedTags: number } {
-  const fallback: LayoutLibrary = { version: 1, activeId: 'default', layouts: [{ id: 'default', template: { ...defaultTemplate(page), name: 'Default layout' } }] };
+  const fallback = defaultLibrary(page);
   try {
     const target = storage ?? localStorage;
     const raw = target.getItem(libraryKey(page));

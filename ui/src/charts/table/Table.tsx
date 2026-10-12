@@ -61,10 +61,10 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   const activeTip = useRef<{ key: string; origin: 'pointer' | 'keyboard'; x: number; y: number } | null>(null);
   const [localSort, setLocalSort] = useState<Sort | null>(null);
   const { tableSize, tableFont, wrapping } = useMemo(() => {
-    if (typeof document === 'undefined' || typeof getComputedStyle !== 'function') return { tableSize: 13, tableFont: 'monospace', wrapping: true };
+    if (typeof document === 'undefined' || typeof getComputedStyle !== 'function') return { tableSize: 12, tableFont: 'sans-serif', wrapping: true };
     const rootStyle = getComputedStyle(document.documentElement);
-    return { tableSize: parseFloat(rootStyle.getPropertyValue('--font-size-mono')) || 13,
-      tableFont: rootStyle.getPropertyValue('--font-mono'), wrapping: document.documentElement.dataset.wordWrap !== 'false' };
+    return { tableSize: parseFloat(rootStyle.getPropertyValue('--type-sm')) || 12,
+      tableFont: rootStyle.getPropertyValue('--font-tables'), wrapping: document.documentElement.dataset.wordWrap !== 'false' };
   }, [tokens]);
   const widthScope = JSON.stringify([density, tableFont, tableSize, wrapping, columns.map(column => [column.key, column.label, column.width])]);
   const [natural, setNatural] = useState<{ scope: string; widths: ReadonlyMap<string, number> }>({ scope: widthScope, widths: new Map() });
@@ -114,7 +114,8 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     const comfortable = parseFloat(css.getPropertyValue('--table-comfortable-height'));
     const compact = parseFloat(css.getPropertyValue('--table-compact-height'));
     const base = rowHeight != null && Number.isFinite(rowHeight) && rowHeight > 0 ? rowHeight : comfortable;
-    const measuredHeight = densityRowHeight(base, density, compact / comfortable) * tableSize / 13;
+    // The stylesheet's row heights are for 12px text, the default interface's --type-sm.
+    const measuredHeight = densityRowHeight(base, density, compact / comfortable) * tableSize / 12;
     const headerHeight = Math.max(parseFloat(css.getPropertyValue('--table-header-min-height')), tableSize * 1.5 + 6);
     const measure = () => {
       const top = element.scrollTop, height = element.clientHeight, width = element.clientWidth;
@@ -275,7 +276,7 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     ? <span className="table-natural" data-table-natural={column.key}>{content}</span> : content;
   return <div ref={scroll} className={`chart-table${density === 'compact' ? ' is-compact' : ''}${wrapping ? ' is-wrapped' : ''}${measuring ? ' is-measuring' : ''}`}
     style={{ '--table-columns': grid, '--table-row-height': view.rowHeight > 0 ? `${view.rowHeight}px` : undefined,
-      '--table-header-height': `${view.headerHeight || 26}px`, '--table-cell-y': rowHeight == null ? undefined : '0px', '--row-glide': `${glideMs}ms`, '--table-bar-glide': tokens.reducedMotion ? '0ms' : '300ms' } as CSSProperties}
+      '--table-header-height': `${view.headerHeight || 24}px`, '--table-cell-y': rowHeight == null ? undefined : '0px', '--row-glide': `${glideMs}ms`, '--table-bar-glide': tokens.reducedMotion ? '0ms' : '300ms' } as CSSProperties}
     onWheel={() => { focusAnchor.current = false; }} onPointerDown={() => { focusAnchor.current = false; }}
     onScroll={event => { const element = event.currentTarget; const top = element.scrollTop; bottomAnchor.current = element.scrollHeight - element.clientHeight - top < 1; setView(before => before.top === top ? before : { ...before, top }); }} onPointerLeave={() => { if (activeTip.current?.origin === 'pointer') clearTip(); }}>
     <table aria-label={label} aria-rowcount={ordered.length + 1}>

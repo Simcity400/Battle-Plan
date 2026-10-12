@@ -101,7 +101,7 @@ test('actual dated lane and hover hooks retain flag metadata and empty names wit
     assert.equal(lane.country(visible[0]).flagPending, true);
     assert.equal(lane.country(tags[4999]).flagPending, false, 'sorting-only names do not request artwork');
     const firstFlag = flagCalls(a.calls)[0];
-    assert.deepEqual(firstFlag.input.params, { branchId: 'branch', hour: 10, tags: visible, size: 'shield' });
+    assert.deepEqual(firstFlag.input.params, { branchId: 'branch', hour: 10, tags: visible, size: 'panel' });
     renderLane(10, [...visible].reverse()); fixture.commit();
     assert.equal(flagCalls(a.calls).length, 1);
     assert.equal(firstFlag.signal.aborted, false, 're-ranking retains the exact supplying read');
