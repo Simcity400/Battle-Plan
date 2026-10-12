@@ -18,6 +18,7 @@ Each component's README describes its layout, concepts and local rules.
 | [shader-pipeline](crates/shader-pipeline/README.md) | Native shader compiler, persistent cache and GPU pass binding. |
 | [viewer](crates/viewer/README.md) | Native map rendering, playback, game-derived visuals and image export. |
 | [dashboard](crates/dashboard/README.md) | Widget data products, data service, host/viewer protocol and frontend types. |
+| [wire](crates/wire/README.md) | Binary query replies, validating readers, shape contracts and synthetic cross-language fixtures. |
 | [desktop](crates/desktop/README.md) | Tauri host, application setup, packaging and native viewer lifecycle. |
 | [UI](ui/README.md) | React interface, navigation, layouts, playback and widgets. |
 
