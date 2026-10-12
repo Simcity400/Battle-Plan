@@ -10,3 +10,4 @@ Read the [README](README.md) and the README of each component you change.
 - Tests must fail on the old behaviour. READMEs describe what exists now (no history or status).
 - Recorder changes need the fresh-save oracle ([recorder guide](crates/recorder/README.md)); never waive a save difference.
 - Installed content are read-only. Keep captures, recordings and scratch files out of Git.
+- Sub-agents are not allowed to run any cargo commands unless specifically requested.
