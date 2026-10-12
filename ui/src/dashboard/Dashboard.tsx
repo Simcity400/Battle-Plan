@@ -21,6 +21,7 @@ import { MapViewsStore } from './geometry';
 import { useSourceRoles } from './sources';
 import { PlaybackCountryPicker, PlaybackStrip } from './controls';
 import ReplayLibraryMenu from './ReplayLibraryMenu';
+import { useCompactedCampaignReload } from './compactedCampaigns';
 import type { ReplayLibraryState } from './replayLibrary';
 import DashboardGrid from './DashboardGrid';
 import './dashboard.css';
@@ -306,6 +307,9 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     }
     return source ? id : null;
   }, [roles.open, roles.remove, roles.bindings, draftTemplate, template.tracks, clock]);
+
+  const reloadCompactedCampaign = useCallback((campaign: Campaign) => openCampaign(campaign.path, campaign.label, undefined, true), [openCampaign]);
+  useCompactedCampaignReload(client, campaigns, reloadCompactedCampaign);
 
   /** Points a widget at the default campaign (null) or a recording. A recording that is not
    * loaded yet is opened once and shared, exactly as from the sidebar. */

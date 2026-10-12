@@ -37,6 +37,15 @@ export function validateProductReply<T>(reply: ProductReply<T>, request: Product
 export interface ReplayFile { path: string; name: string; folder: string; partial?: import('../generated/dashboard').PartialRecording | null }
 export interface ReplayLibrary { folder: string | null; files: ReplayFile[] }
 
+export type RecordingCompression = 'fast' | 'small';
+export interface RecorderSettings { compression: RecordingCompression }
+export interface CompactionProgress {
+  running: boolean; gameRunning: boolean; total: number; completed: number;
+  compacted: number; skipped: number; bytesSaved: number; current: string | null;
+  blocksTotal: number; blocksCompleted: number;
+  unchanged: { path: string; reason: string }[];
+}
+
 export interface DashboardMapView {
   options?: MapOptions;
   id: string;
@@ -88,6 +97,17 @@ export interface DashboardClient {
   setReplayFolder?(folder: string): Promise<ReplayLibrary>;
   chooseReplayFolder?(initial?: string): Promise<string | null>;
   chooseRecording?(): Promise<string | null>;
+  recorderSettings?(): Promise<RecorderSettings>;
+  setRecordingCompression?(compression: RecordingCompression): Promise<RecorderSettings>;
+  /** Starts an offline job, even with Fast selected or with the game running. */
+  compactRecording?(path: string): Promise<CompactionProgress>;
+  compactReplayFolder?(): Promise<CompactionProgress>;
+  /** Reports only the current/last manual job; automatic work keeps its own activity. */
+  compactionProgress?(): Promise<CompactionProgress>;
+  /** Emitted when a manual attempt leaves a changed recording revision. */
+  onRecordingCompacted?(callback: (path: string) => void): Promise<() => void>;
+  /** This revision was compacted or verified already as small as it gets. */
+  recordingCompacted?(path: string): Promise<boolean>;
   setMapViews(views: DashboardMapView[]): Promise<void>;
   onMapStates(callback: (states: DashboardMapState[]) => void): Promise<() => void>;
 }

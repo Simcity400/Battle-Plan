@@ -33,6 +33,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
   const [picking, setPicking] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const editingPath = useRef<string | null>(null);
   const contextMenu = useContextMenu('Campaign actions');
@@ -62,6 +63,12 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
     const source = campaign ? bindings[campaign.id]?.source : null;
     return [
       { label: 'Rename', icon: 'edit', run: () => beginRename(path) },
+      ...(client.compactRecording ? [{ label: 'Compact', run: () => {
+        setActionError(null); setActionNotice(null);
+        void client.compactRecording!(path).then(progress => {
+          setActionNotice(`Compaction started. See Settings for progress and results.${progress.gameRunning ? ' The game is running; compacting may slow it briefly.' : ''}`);
+        }, error => setActionError(error instanceof Error ? error.message : String(error)));
+      } }] : []),
       ...(source && campaign && button ? [
         { label: 'Change flag', run: () => { setFlagCampaign(campaign.id); flagMenu.trigger.current = button; flagMenu.openAt(() => button.getBoundingClientRect()); } },
         ...(settings.campaigns[source.metadata.campaignKey]?.flag ? [{ label: "Use the shown country's flag", run: () => saveFlag(source.metadata.campaignKey, null) }] : []),
@@ -127,6 +134,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
         data-tooltip={client.chooseRecording ? 'Open a recording' : 'Open recordings in the desktop app'}
         onClick={() => { void pickRecording(); }}>{picking ? <span className="spinner" /> : <Icon name="plus" />}</button></div>
     {pickError && <p className="dash-inline-warning" role="alert">{pickError}</p>}
+    {actionNotice && <p className="settings-help" role="status">{actionNotice}</p>}
     {actionError && <p className="dash-inline-warning" role="alert">{actionError}</p>}
     <label className="sidebar-search"><Icon name="search" />
       <input type="search" aria-label="Search recordings" placeholder="Find a campaign…" value={query} onFocus={() => { void library.refresh(); }}

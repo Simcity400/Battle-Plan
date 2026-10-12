@@ -10,6 +10,7 @@ import MapAppearance, { MAP_OPTION_LABELS } from '../components/MapAppearance';
 import { VIDEO_OPTION_LABELS } from './VideoSettings';
 import GameFolderSettings from './GameFolderSettings';
 import HistoryCacheSetting from './HistoryCacheSetting';
+import RecordingCompressionSetting from './RecordingCompressionSetting';
 import type { ContentFolders, DesktopState, ReplayMetadata } from './api';
 import AppearanceSettings, { newThemeId, SettingsBlock } from './appearance/AppearanceSettings';
 import ThemeEditor from './appearance/ThemeEditor';
@@ -36,6 +37,8 @@ const searchItems: SettingsTarget[] = [
   { section: 'folders', title: 'Game installation', keywords: 'game folder install steam path' },
   { section: 'folders', title: 'Paradox user folder', keywords: 'documents mods user path' },
   { section: 'folders', title: 'Replay folder', keywords: 'recordings library replays path' },
+  { section: 'folders', title: 'Recording compression', id: 'folders-compression', keywords: 'recorder fast small size storage disk' },
+  { section: 'folders', title: 'Compact existing recordings', id: 'folders-compact', keywords: 'compress compact all size storage disk' },
   { section: 'folders', title: 'Widget history', id: 'folders-history', keywords: 'cache storage disk space size clear history' },
   { section: 'appearance', title: 'Colour scheme', id: 'appearance-scheme', keywords: 'color dark light system mode' },
   { section: 'appearance', title: 'Themes', id: 'appearance-themes', keywords: 'theme palette colours colors accent' },
@@ -189,6 +192,8 @@ export default function Settings({ section, target, onTargetShown, appearance, l
           </SettingsBlock>
           <SettingsBlock id="folders-recordings" title="Recordings">
             <ReplayFolderSetting compact library={library} client={client} />
+            {client.recorderSettings && client.setRecordingCompression && client.compactReplayFolder && client.compactionProgress &&
+              <RecordingCompressionSetting client={client} folder={library.folder} />}
           </SettingsBlock>
           {folderError && <p className="map-menu-error" role="alert">{folderError}</p>}
           {client.historyCache && <SettingsBlock id="folders-history" title="Widget history">

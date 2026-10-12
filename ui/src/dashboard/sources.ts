@@ -14,7 +14,7 @@ export function useSourceRoles(client: DashboardClient) {
   const mounted = useRef(false);
   const lifetime = useRef(new EffectLifetime());
 
-  const release = useCallback((source: DashboardSource) => { forgetProducts(client, source.id); void client.releaseSource(source.id).catch(() => {}); }, [client]);
+  const release = useCallback(async (source: DashboardSource) => { forgetProducts(client, source.id); await client.releaseSource(source.id).catch(() => {}); }, [client]);
   const remove = useCallback((roleId: string) => {
     controllers.current.get(roleId)?.abort();
     controllers.current.delete(roleId);
@@ -30,9 +30,9 @@ export function useSourceRoles(client: DashboardClient) {
     controllers.current.set(roleId, controller);
     const old = sources.current.get(roleId);
     sources.current.delete(roleId);
-    if (old) release(old);
     setBindings((previous) => ({ ...previous, [roleId]: { source: null, loading: true, error: null } }));
     try {
+      if (old) await release(old);
       const source = await client.openSource(path, controller.signal);
       if (!mounted.current || controller.signal.aborted || controllers.current.get(roleId) !== controller) { release(source); return null; }
       sources.current.set(roleId, source);

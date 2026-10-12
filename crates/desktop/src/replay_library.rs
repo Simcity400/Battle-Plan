@@ -4,7 +4,7 @@ use tauri::WebviewWindow;
 
 #[derive(Serialize)]
 pub struct ReplayFile {
-    path: String,
+    pub(super) path: String,
     name: String,
     folder: String,
     partial: Option<dashboard::PartialRecording>,
@@ -12,7 +12,7 @@ pub struct ReplayFile {
 #[derive(Serialize)]
 pub struct ReplayLibrary {
     folder: Option<String>,
-    files: Vec<ReplayFile>,
+    pub(super) files: Vec<ReplayFile>,
 }
 #[derive(Serialize, Deserialize)]
 struct Settings {
@@ -27,16 +27,26 @@ fn settings_path() -> Result<PathBuf, String> {
     Ok(base.join("battle-plan").join("replay-folder.json"))
 }
 
-fn scan(folder: &Path) -> Result<ReplayLibrary, String> {
+pub(super) fn scan(folder: &Path) -> Result<ReplayLibrary, String> {
+    scan_with(folder, || Ok(()))
+}
+
+pub(super) fn scan_with(
+    folder: &Path,
+    mut checkpoint: impl FnMut() -> Result<(), String>,
+) -> Result<ReplayLibrary, String> {
+    checkpoint()?;
     let root =
         std::fs::canonicalize(folder).map_err(|e| format!("Cannot read replay folder: {e}"))?;
     let mut pending = vec![root.clone()];
     let mut files = Vec::new();
     let mut visited = 0;
     while let Some(directory) = pending.pop() {
+        checkpoint()?;
         for entry in
             std::fs::read_dir(&directory).map_err(|e| format!("Cannot read replay folder: {e}"))?
         {
+            checkpoint()?;
             let entry = entry.map_err(|e| e.to_string())?;
             visited += 1;
             if visited > 50_000 {
@@ -57,6 +67,7 @@ fn scan(folder: &Path) -> Result<ReplayLibrary, String> {
                     .extension()
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("battleplan") || ext.eq_ignore_ascii_case("hoi4replay"))
             {
+                checkpoint()?;
                 files.push(ReplayFile {
                     partial: dashboard::metadata::read_partial_recording(&path)
                         .ok()
@@ -76,11 +87,24 @@ fn scan(folder: &Path) -> Result<ReplayLibrary, String> {
             }
         }
     }
+    checkpoint()?;
     files.sort_by_cached_key(|file| format!("{}/{}", file.folder, file.name).to_lowercase());
     Ok(ReplayLibrary {
         folder: Some(root.to_string_lossy().into_owned()),
         files,
     })
+}
+
+pub(super) fn configured_folder() -> Result<Option<PathBuf>, String> {
+    match std::fs::read(settings_path()?) {
+        Ok(bytes) => {
+            let settings: Settings =
+                serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+            Ok(Some(PathBuf::from(settings.folder)))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 #[tauri::command]
@@ -164,6 +188,40 @@ pub async fn choose_recording(window: WebviewWindow) -> Result<Option<String>, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_interrupts_a_scan_between_recording_metadata_reads() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4-library-cancel-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        for number in 0..10 {
+            std::fs::write(
+                root.join(format!("{number}.battleplan")),
+                b"synthetic listing",
+            )
+            .unwrap();
+        }
+        let mut checks = 0;
+        let error = scan_with(&root, || {
+            checks += 1;
+            if checks == 6 {
+                Err("synthetic cancellation".into())
+            } else {
+                Ok(())
+            }
+        })
+        .err()
+        .unwrap();
+        assert_eq!(error, "synthetic cancellation");
+        assert_eq!(checks, 6, "the rest of the library was not scanned");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn library_lists_nested_replays_without_decoding_them() {

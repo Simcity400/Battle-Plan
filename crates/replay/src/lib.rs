@@ -15,6 +15,7 @@ pub mod naval_mission_derive;
 mod peace_rows;
 #[cfg(windows)]
 pub mod publication;
+pub mod recorder_settings;
 pub mod rows;
 pub mod sliced;
 pub mod spool;

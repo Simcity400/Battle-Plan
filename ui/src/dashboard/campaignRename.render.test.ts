@@ -16,6 +16,8 @@ test('display names leave dashboard campaign paths, source metadata and layout t
   } };
   let opens = 0;
   let releases = 0;
+  let nextSource = source;
+  let compacted: ((path: string) => void) | undefined;
   const fixture = {
     useState(initial: any) { const index = cursor++; if (!(index in slots)) slots[index] = typeof initial === 'function' ? initial() : initial;
       return [slots[index], (value: any) => { slots[index] = typeof value === 'function' ? value(slots[index]) : value; }]; },
@@ -41,7 +43,7 @@ test('display names leave dashboard campaign paths, source metadata and layout t
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'recording-rename-fixture', enforce: 'pre',
       transform(source, id) {
         const file = id.replaceAll('\\', '/');
-        if (file.endsWith('/dashboard/Dashboard.tsx') || file.endsWith('/dashboard/sources.ts')) return source
+        if (file.endsWith('/dashboard/Dashboard.tsx') || file.endsWith('/dashboard/sources.ts') || file.endsWith('/dashboard/compactedCampaigns.ts')) return source
           .replace(/import \{[^\n]+\} from 'react';/, 'const { useState, useRef, useCallback, useMemo, useEffect, useLayoutEffect } = globalThis.__renameFixture;')
           .replace("import { createPortal } from 'react-dom';", 'const createPortal = value => value;');
         return Object.entries(replacements).find(([suffix]) => file.endsWith(suffix))?.[1];
@@ -53,7 +55,8 @@ test('display names leave dashboard campaign paths, source metadata and layout t
     const { default: Dashboard } = await vite.ssrLoadModule('/ui/src/dashboard/Dashboard.tsx');
     let metadata: any = null;
     const props: any = { page: 'overview', resetToken: 0, path: null, client: { available: true,
-      openSource: async () => { opens++; return source; }, releaseSource: async () => { releases++; }, product: async () => { throw new Error('unexpected product'); } },
+      onRecordingCompacted: async (callback: (path: string) => void) => { compacted = callback; return () => {}; },
+      openSource: async () => { opens++; return nextSource; }, releaseSource: async () => { releases++; }, product: async () => { throw new Error('unexpected product'); } },
       library: { files: [] }, campaignHost: {}, active: true, onMetadata: (value: any) => { metadata = value; },
     };
     let nodes: Element[] = [];
@@ -76,6 +79,14 @@ test('display names leave dashboard campaign paths, source metadata and layout t
     assert.ok(!JSON.stringify(layout()).includes('Weekend campaign'));
     assert.ok(!('onRenamed' in sidebar().props));
     assert.equal(opens, 1); assert.equal(releases, 0);
+    const campaignId = sidebar().props.campaigns[0].id;
+    nextSource = { ...source, id: 'lease-2', revision: 'revision-2' };
+    compacted!(source.path); render();
+    await new Promise(resolve => setImmediate(resolve)); render(); render();
+    assert.equal(opens, 2); assert.equal(releases, 1, 'manual compaction uses the existing source reconnect path');
+    assert.equal(sidebar().props.campaigns[0].id, campaignId, 'the loaded campaign keeps its slot');
+    assert.equal(sidebar().props.bindings[campaignId].source.revision, 'revision-2');
+    assert.deepEqual(layout(), before, 'refreshing recording bytes leaves the authored layout intact');
   } finally {
     await vite.close(); delete host.__renameFixture;
     if (documentBefore) Object.defineProperty(globalThis, 'document', documentBefore); else Reflect.deleteProperty(globalThis, 'document');

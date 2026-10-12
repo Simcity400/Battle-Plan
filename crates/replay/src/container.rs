@@ -23,6 +23,11 @@ const HEADER_MAGIC: &[u8; 4] = b"H4RP";
 const TRAILER_MAGIC: &[u8; 4] = b"H4TR";
 const FOOTER_MAGIC: &[u8; 4] = b"H4FT";
 const FOOTER_SIZE: usize = 24;
+mod compaction;
+pub use compaction::{
+    CompactionOutcome, CompactionResult, CompactionStage, ReplayRevision, compact, compact_with,
+    replay_revision,
+};
 // A decoder allocation bound, not a campaign-size or frame-count limit.
 // V1E branch 6 held 720 valid frames (~5.95 GB raw) between keyframes;
 // writers must close smaller independently decodable blocks before this bound.
@@ -730,7 +735,25 @@ impl Replay {
             engine::allocation::reserve(&mut warnings, 1)?;
             warnings.push("trailer CRC mismatch".into());
         }
-        let mut header = Decoder::new(&bytes[..trailer_start]);
+        let mut replay = Self::open_metadata(
+            &bytes[..trailer_start],
+            trailer_bytes,
+            trailer_start,
+            warnings,
+        )?;
+        replay.bytes = bytes;
+        Ok(replay)
+    }
+
+    /// Shared metadata validation for in-memory readers and file compaction;
+    /// `warnings` carries what the caller already found (a trailer checksum failure).
+    fn open_metadata(
+        header_bytes: &[u8],
+        trailer_bytes: &[u8],
+        trailer_start: usize,
+        mut warnings: Vec<String>,
+    ) -> io::Result<Self> {
+        let mut header = Decoder::new(header_bytes);
         expect_magic(&mut header, HEADER_MAGIC)?;
         let format = FormatVersion::read(header.u16()?)?;
         let keyframe_interval = header.u32()?;
@@ -745,7 +768,7 @@ impl Replay {
         let mut identity_decoder = Decoder::new(&identity_bytes);
         let identity = Identity::decode(&mut identity_decoder)?;
         identity_decoder.finish()?;
-        let header_end = trailer_start - header.remaining();
+        let header_end = header_bytes.len() - header.remaining();
         let mut trailer = Decoder::new(trailer_bytes);
         expect_magic(&mut trailer, TRAILER_MAGIC)?;
         let sessions = decode_list(&mut trailer, SessionStart::decode)?;
@@ -825,8 +848,12 @@ impl Replay {
         let partial_control = controls
             .iter()
             .position(|control| matches!(control, ControlRecord::Partial { .. }));
+        let mut verified = engine::allocation::vec(index.len())?;
+        for _ in &index {
+            verified.push(AtomicBool::new(false));
+        }
         Ok(Self {
-            bytes,
+            bytes: Vec::new(),
             format,
             campaign_id,
             identity,
@@ -839,7 +866,7 @@ impl Replay {
             warnings,
             damaged_parts,
             damaged_range,
-            verified: engine::allocation::map_slice(&index, |_| AtomicBool::new(false))?,
+            verified,
             index,
             header_end,
             trailer_start,
@@ -1321,12 +1348,12 @@ fn temporary_path(destination: &Path) -> PathBuf {
 }
 
 #[cfg(windows)]
-fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
     crate::publication::replace_file(source, destination)
 }
 
 #[cfg(not(windows))]
-fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
     std::fs::rename(source, destination)?;
     if let Some(parent) = destination.parent() {
         std::fs::File::open(parent)?.sync_all()?;

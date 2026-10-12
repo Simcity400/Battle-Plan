@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod compaction;
 mod dashboard_service;
 mod native;
 mod replay_library;
@@ -145,6 +146,7 @@ fn main() {
     }
     let app = tauri::Builder::default()
         .manage(video::VideoState::default())
+        .manage(compaction::CompactionHost::default())
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main")
                 && let Err(error) = video::restore(&window)
@@ -153,6 +155,9 @@ fn main() {
                     .0
                     .lock()
                     .map_err(|e| std::io::Error::other(e.to_string()))? = Err(error);
+            }
+            if let Err(error) = app.state::<compaction::CompactionHost>().start() {
+                eprintln!("Automatic compaction could not start: {error}");
             }
             Ok(())
         })
@@ -174,6 +179,13 @@ fn main() {
             replay_library::set_replay_folder,
             replay_library::choose_replay_folder,
             replay_library::choose_recording,
+            compaction::recorder_settings,
+            compaction::set_recording_compression,
+            compaction::compact_recording,
+            compaction::compact_replay_folder,
+            compaction::compaction_progress,
+            compaction::recording_compaction_status,
+            compaction::set_compaction_recording_open,
             open_replay,
             seek_map,
             dashboard_service::dashboard_open_source,
@@ -192,6 +204,7 @@ fn main() {
         ) {
             app.state::<DashboardService>().shutdown();
             app.state::<NativeHost>().shutdown();
+            app.state::<compaction::CompactionHost>().shutdown();
         }
     });
 }

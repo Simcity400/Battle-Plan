@@ -71,7 +71,9 @@ pub(crate) fn posix_replace_with(
     }
 }
 
-pub(crate) fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
+/// Durably replace `destination` with the closed, synced sibling `source`, even
+/// while delete-sharing readers hold the destination open.
+pub fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
     replace_file_with(source, destination, posix_replace, || Ok(()))
 }
 

@@ -3954,6 +3954,8 @@ version = "0.1.0"
 dependencies = [
  "crc32fast",
  "engine",
+ "serde",
+ "serde_json",
  "windows-sys 0.61.2",
  "zstd",
 ]
@@ -3965,6 +3967,7 @@ dependencies = [
  "dashboard",
  "engine",
  "installed-content",
+ "replay",
  "rfd",
  "serde",
  "serde_json",

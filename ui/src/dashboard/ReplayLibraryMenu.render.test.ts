@@ -193,3 +193,28 @@ test('a manually picked recording retains its path and file name when its archiv
   assert.deepEqual(view.loads, Array(2).fill(['C:/elsewhere/Picked.battleplan', 'Picked.battleplan', 'new']));
   assert.deepEqual(view.renames, []); assert.deepEqual(view.updates, []);
 }));
+
+
+test('Compact is offered for loaded and archived recordings only when supported, and works while the game runs', async () => fixture(async view => {
+  for (const row of [view.loaded, view.archived]) assert.ok(!view.menu(row()).some((item: MenuItem) => item.label === 'Compact'));
+  const calls: string[] = [];
+  view.props.client.compactRecording = async (path: string) => { calls.push(path); return { running: true, gameRunning: true }; };
+  view.render();
+  view.menu().find((item: MenuItem) => item.label === 'Compact').run(); await settle(); view.render();
+  view.menu(view.archived()).find((item: MenuItem) => item.label === 'Compact').run(); await settle(); view.render();
+  assert.deepEqual(calls, [view.source.path, 'C:/recordings/Archive.battleplan']);
+  assert.equal(view.chosen(), 0, 'loaded campaigns stay open');
+  assert.ok(view.find((node: Element) => node.props.role === 'status').props.children.includes('may slow it briefly'));
+  for (const row of [view.loaded, view.archived]) {
+    row().props.onKeyDown(view.event(row(), 'F10', true));
+    assert.ok(view.items().some((item: MenuItem) => item.label === 'Compact'));
+  }
+  view.props.client.compactRecording = async () => { throw new Error('Compaction is already running'); };
+  view.render(); view.menu().find((item: MenuItem) => item.label === 'Compact').run(); await settle(); view.render();
+  assert.equal(view.find((node: Element) => node.props.role === 'alert').props.children, 'Compaction is already running');
+  view.props.client.compactRecording = async () => ({ running: true, gameRunning: false });
+  view.render(); view.menu(view.archived()).find((item: MenuItem) => item.label === 'Compact').run(); await settle(); view.render();
+  assert.ok(!view.find((node: Element) => node.props.role === 'status').props.children.includes('may slow it briefly'));
+  delete view.props.client.compactRecording; view.render();
+  for (const row of [view.loaded, view.archived]) assert.ok(!view.menu(row()).some((item: MenuItem) => item.label === 'Compact'));
+}));

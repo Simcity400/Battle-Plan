@@ -514,7 +514,10 @@ mod tests {
         let mut bytes = Vec::new();
         empty_array.encode(&mut bytes).unwrap();
         assert!(bytes.is_empty());
-        assert_eq!(<[i64; 0]>::decode(&mut Decoder::new(&[])).unwrap(), []);
+        assert_eq!(
+            <[i64; 0]>::decode(&mut Decoder::new(&[])).unwrap(),
+            [0_i64; 0]
+        );
 
         Vec::<[u8; 0]>::new().encode(&mut bytes).unwrap();
         assert_eq!(bytes, [0; 4]);
