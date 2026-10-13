@@ -19,7 +19,7 @@ import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { countryCapitulationBadges, countryCapitulationRows } from '../../dashboard/countryCapitulations';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
-import DatedCountryChip from '../../dashboard/DatedCountryChip';
+import DatedCountryChip, { ChooseCountryChip } from '../../dashboard/DatedCountryChip';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveCountries } from '../../dashboard/groups';
 import { groupNumbers } from '../../dashboard/groupsReply';
@@ -218,11 +218,15 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
       </WindowedRows>}
       {menu.menu}
     </> : null);
-  const neutralHeader = pinned && countrySlot && (problem !== undefined || choices !== null)
-    ? createPortal(<DatedCountryChip label={null} hour={window ? drillAt : null}
+  // Unpinned (a catalogue card), the header names the country the body opened or was given, once it has one.
+  const hasOrigin = Object.hasOwn(widget.options ?? {}, 'drillOriginHour');
+  const unchosen = !hasOrigin && drillTag === null;
+  const neutralHeader = pinned && countrySlot && (problem !== undefined || choices !== null || unchosen)
+    ? createPortal(unchosen ? <ChooseCountryChip /> : <DatedCountryChip label={null} hour={window ? drillAt : null}
       reason="Selected country unavailable." />, countrySlot) : null;
   const breakdown = <SupplyBreakdown runtime={runtime} track={track} active={active} options={options} extent={extent}
-    countrySlot={pinned && problem === undefined && choices === null ? countrySlot : null} headerSelection={savedSelection}
+    countrySlot={pinned && problem === undefined && choices === null && !unchosen ? countrySlot : null}
+    headerSelection={hasOrigin || drillTag === null ? savedSelection : { tag: drillTag, hour: originHour }}
     playhead={drillPlayhead} tag={drillTag} hour={drillAt} originHour={originHour} following={drill.follow} pinned={pinned}
     onPick={hour => active && dispatchDrill({ type: 'pick', hour })} onFollow={follow} onWarnings={setDrillWarnings} />;
   const choice = choices && track ? <div className="parts-race-details">

@@ -50,7 +50,8 @@ test('registered saved native-actor bodies supply country headers at their displ
     defaults: [] as number[], products: [] as { client: unknown; request: { sourceId: string; revision: string; product: string } }[],
     race: undefined as CountryRaceViewProps | undefined, charts: [] as TimeChartProps[],
     butterfly: undefined as { items: { row: unknown }[]; onSelect: (item: unknown, side: string) => void } | undefined,
-    host: undefined as { onPin?: () => void } | undefined, added: [] as WidgetSpec[] };
+    host: undefined as { onPin?: () => void } | undefined, added: [] as WidgetSpec[],
+    picker: undefined as { onChange: (tag: string | null) => void } | undefined };
   const globals = globalThis as typeof globalThis & { __savedActorHeaders?: typeof state };
   globals.__savedActorHeaders = state;
   // Preserve each real body's hook cells and effects; replace only transport,
@@ -114,7 +115,7 @@ test('registered saved native-actor bodies supply country headers at their displ
     '/charts/drill/DrillParts.tsx': 'export default () => null;',
     '/charts/sunburst/Sunburst.tsx': 'export default () => null;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
-    '/components/CountryPicker.tsx': 'export default () => null;',
+    '/components/CountryPicker.tsx': 'export default props => { globalThis.__savedActorHeaders.picker = props; return null; };',
     '/dashboard/BombingDrill.tsx': 'export default () => null;',
     '/charts/butterfly/index.ts': 'export const ButterflyChart = props => { globalThis.__savedActorHeaders.butterfly = props; return null; };',
     '/charts/drill/DrillHost.tsx': `import { createElement } from 'react'; export default props => {
@@ -279,7 +280,13 @@ test('registered saved native-actor bodies supply country headers at their displ
       unmount(); neutral({ ...pinned, time: { mode: 'pin', windows: {} } });
       const rawOptions = { ...pinned.options };
       delete rawOptions.drillOriginHour; delete rawOptions.holder;
-      neutral({ ...pinned, options: rawOptions });
+      // Without its origin the breakdown is unpinned: its header follows what the body shows.
+      if (kind === 'army-size') {
+        unmount(); state.picker = undefined; render({ ...pinned, options: rawOptions });
+        assert.ok(state.picker, 'this Army body asks which holder to open');
+        assert.match(renderToStaticMarkup(countryPortal()!.chip), />Choose a country</); unmount();
+      } else if (kind === 'supply-health') { unmount(); expectDate({ ...pinned, options: rawOptions }, 12, 'X'); unmount(); }
+      else neutral({ ...pinned, options: rawOptions });
       const invalid = { ...pinned, options: { ...pinned.options, ...(kind === 'air-kills-losses' || kind === 'bombing-damage-breakdown'
         ? { holder: JSON.stringify(['another-campaign', '1', 'X', 'B']) } : { drillOriginHour: 21 }) } };
       unmount(); neutral(invalid); assert.ok(countryPortal(), 'a loaded malformed witness has an explicit neutral portal');
@@ -354,6 +361,21 @@ test('registered saved native-actor bodies supply country headers at their displ
         unmount(); assert.match(render({ ...main, options: { show } }), />Alpha</, 'illegal show normalizes to MAIN');
         assert.equal(countryPortal(), undefined);
       }
+    }
+    // A catalogue card asks for a country until one is chosen in its body, then names it at the body's date.
+    for (const [kind, key] of [['army-size', 'view=breakdown'], ['supply-health', 'show=breakdown']]) {
+      const variant = registry.widgetDefinition(kind as WidgetSpec['kind'])!.variants!.find(item => item.key === key)!;
+      const card = { ...model.createWidget(kind as WidgetSpec['kind'], 'track', 'card-' + kind), ...variant.initial, campaign: 'tracks' as const,
+        countries: { kind: 'tags' as const, tags: ['X', 'Y'] }, time: { mode: 'follow' as const } };
+      state.hour = 17; unmount(); state.picker = undefined;
+      render(card);
+      const chip = renderToStaticMarkup(countryPortal()!.chip);
+      assert.match(chip, />Choose a country</, kind + ' card asks for a country before one is chosen');
+      assert.doesNotMatch(chip, /Unavailable/);
+      const picker = state.picker as { onChange: (tag: string | null) => void } | undefined;
+      assert.ok(picker, kind + ' card offers its countries in the body');
+      picker.onChange('Y'); expectDate(card, 17, 'Y');
+      assert.equal(card.options?.drillOriginHour, undefined, 'choosing in the body writes no pin');
     }
   } finally { await vite.close(); delete globals.__savedActorHeaders; }
 });

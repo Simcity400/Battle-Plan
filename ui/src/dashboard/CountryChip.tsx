@@ -8,10 +8,19 @@ import { useCountryGroups } from './useCountryGroups';
 import { resolveWidgetCampaign } from './campaigns';
 import { selectedTags } from './countrySelection';
 import type { WidgetCountryChipProps } from './definitions';
+import { ChooseCountryChip } from './DatedCountryChip';
 
 /** Parts breakdowns publish the holder and date shown by their body here. */
 export function PartsCountryChip(props: WidgetCountryChipProps) {
   return props.widget.options?.show === 'breakdown' ? <span className="dash-widget-country-slot" ref={props.onSlot} /> : <CountryChip {...props} />;
+}
+
+/** A one-country breakdown's header. Pin as widget saves the country it pinned in the
+ * option `pin`, and the body names that holder here at its displayed date. An unpinned
+ * breakdown, such as a catalogue card's, whose body offers no country to choose, asks
+ * for one here. */
+export function breakdownCountryChip({ widget, onSlot }: WidgetCountryChipProps, pin: string) {
+  return Object.hasOwn(widget.options ?? {}, pin) ? <span className="dash-widget-country-slot" ref={onSlot} /> : <ChooseCountryChip />;
 }
 
 /** The widget header's country: flag and name, with "+N" when it shows several.

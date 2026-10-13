@@ -26,13 +26,15 @@ const EXPLAINS_A_CONTROL = new Set([
 ]);
 
 const root = fileURLToPath(new URL('.', import.meta.url));
+// Rust-generated contracts (wire shapes, field paths, product names) never reach a player.
+const generated = join(root, 'generated');
 const ERROR_CALLEES = new Set(['Error', 'TypeError', 'RangeError']);
 type Node = { type: string; start: number; [key: string]: unknown };
 
 function sources(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
     const path = join(dir, entry.name);
-    if (entry.isDirectory()) return sources(path);
+    if (entry.isDirectory()) return path === generated ? [] : sources(path);
     return /\.tsx?$/.test(entry.name) && !/\.(test|d)\.tsx?$/.test(entry.name) ? [path] : [];
   });
 }
@@ -79,7 +81,7 @@ test('player-facing text never talks about how the recording was captured', () =
   assert.deepEqual(found, [], `${found.length} player-facing strings use recorder language`);
 });
 
-test('the guard reads JSX text, attributes and templates, but not errors, logs or object keys', () => {
+test('the guard reads JSX text, attributes and templates, but not errors, logs, object keys or generated contracts', () => {
   const texts = playerTexts(`
     const a = <p className="observation" title="Click for more">Read through 1936 {x}</p>;
     const b = \`as read at \${hour}\`;
@@ -87,4 +89,8 @@ test('the guard reads JSX text, attributes and templates, but not errors, logs o
     console.warn('native country');
     const c = { 'supplying read': 1 };`, 'tsx').map(item => item.text);
   assert.deepEqual(texts.filter(text => RECORDER_TALK.some(pattern => pattern.test(text))), ['Click for more', 'Read through 1936', 'as read at ']);
+  const checked = sources(root).map(path => relative(root, path).replaceAll('\\', '/'));
+  assert.ok(checked.includes('dashboard/CountryChip.tsx'), 'ordinary sources are checked');
+  assert.ok(readdirSync(generated).some(name => name.endsWith('.ts')));
+  assert.ok(!checked.some(path => path.startsWith('generated/')), 'generated contracts are skipped');
 });

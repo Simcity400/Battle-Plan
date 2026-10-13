@@ -1,4 +1,4 @@
-import CountryChip from '../../dashboard/CountryChip';
+import CountryChip, { breakdownCountryChip } from '../../dashboard/CountryChip';
 import type { WidgetCountryChipProps } from '../../dashboard/definitions';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -12,5 +12,5 @@ export function nuclearCountrySelection(widget: WidgetSpec, track: BoundTrack | 
 }
 
 export default function NuclearCountryChip(props: WidgetCountryChipProps) {
-  return resolveOptions(OPTIONS, props.widget.options).show === 'breakdown' ? <span className="dash-widget-country-slot" ref={props.onSlot} /> : <CountryChip {...props} />;
+  return resolveOptions(OPTIONS, props.widget.options).show === 'breakdown' ? breakdownCountryChip(props, 'drillOriginHour') : <CountryChip {...props} />;
 }

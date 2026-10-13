@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createElement } from 'react';
-import type { ComponentProps } from 'react';
+import type { ComponentProps, ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -93,7 +93,7 @@ test('actual Supply picks and standalone selection require recorded identity whi
   const run = { firstHour: 10, lastHour: 10, startsSegment: true, noSupply: 1, strained: 0, inSupply: 0 };
   type Action = Parameters<typeof reducePartsRaceDrill>[1];
   const actions: Action[] = [], effects: (() => void)[] = [];
-  const portals: { label: unknown; hour: number | null; reason: string | null }[] = [];
+  const portals: { label: unknown; hour: number | null; reason: string | null }[] = [], portalled: ReactElement[] = [];
   const host = globalThis as typeof globalThis & {
     __supplyIdentityReply?: SupplyHealthReply;
     __supplyIdentityChart?: ComponentProps<typeof StackedShareChart>;
@@ -101,11 +101,11 @@ test('actual Supply picks and standalone selection require recorded identity whi
     __supplyIdentityEffect?: (effect: () => void) => void;
     __supplyIdentityDispatch?: (action: Action) => void;
     __supplyIdentityDrill?: Parameters<typeof reducePartsRaceDrill>[0];
-    __supplyCountryPortal?: (chip: { props: (typeof portals)[number] }) => null;
+    __supplyCountryPortal?: (chip: ReactElement<(typeof portals)[number]>) => null;
   };
   host.__supplyIdentityEffect = effect => { effects.push(effect); };
   host.__supplyIdentityDispatch = action => { actions.push(action); };
-  host.__supplyCountryPortal = chip => { portals.push(chip.props); return null; };
+  host.__supplyCountryPortal = chip => { portals.push(chip.props); portalled.push(chip); return null; };
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__supplyIdentityReply, retry() {} });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ retry() {} });',
@@ -197,9 +197,10 @@ test('actual Supply picks and standalone selection require recorded identity whi
     assert.ok(chooser, 'a renamed holder and the replacement using its old tag require an explicit actor choice');
     const reducer = await vite.ssrLoadModule('/ui/src/charts/race/partsRaceDrill.ts') as typeof import('../../charts/race/partsRaceDrill.ts');
     host.__supplyIdentityDrill = reducer.reducePartsRaceDrill(reducer.CLOSED_PARTS_RACE, chooser);
-    portals.length = 0;
+    portals.length = 0; portalled.length = 0;
     assert.match(renderToStaticMarkup(createElement(Widget, props)), /Choose a country for/);
-    assert.deepEqual(portals, [{ label: null, hour: 11, reason: 'Selected country unavailable.' }]);
+    assert.equal(portalled.length, 1);
+    assert.match(renderToStaticMarkup(portalled[0]), />Choose a country</, 'an unpinned breakdown asks for a country while its body does');
     host.__supplyIdentityDrill = undefined;
     props.widget.time = { mode: 'pin', windows: { main: { firstOffset: 1, lastOffset: 1 } } };
     for (const origin of ['10', 10.5, null, 8, 12]) {

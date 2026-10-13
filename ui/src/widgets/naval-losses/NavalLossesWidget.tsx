@@ -9,7 +9,7 @@ import { dayLabel } from '../../charts/draw';
 import { runAt } from '../../charts/series';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import WidgetState from '../../components/WidgetState';
-import DatedCountryChip from '../../dashboard/DatedCountryChip';
+import DatedCountryChip, { ChooseCountryChip } from '../../dashboard/DatedCountryChip';
 import CountryRaceView from '../../charts/race/CountryRaceView';
 import { partColours } from '../../charts/race/countryRace';
 import { useChartTokens } from '../../charts/useChartTokens';
@@ -238,8 +238,9 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
   const headerLabel = headerWanted.length ? headerLabelAt(selectedHour)(headerWanted[0].tag) : null;
   const headerReason = drillState ? 'This breakdown is unavailable at this hour.'
     : !headerKnown ? 'Country unavailable at this time.' : null;
-  const header = countrySlot && pinned && kind === 'both' && createPortal(
-    <DatedCountryChip label={headerLabel} hour={track ? selectedHour : null} reason={headerReason} />, countrySlot);
+  // Unpinned (a catalogue card), the header asks for a country until the body opens one.
+  const header = countrySlot && pinned && kind === 'both' && createPortal(!restoreOrigin && !drillTag ? <ChooseCountryChip />
+    : <DatedCountryChip label={headerLabel} hour={track ? selectedHour : null} reason={headerReason} />, countrySlot);
   const chooserRead = drill.choices && data ? navalReadHour(data, selectedHour, kind) : null;
   const chooserReads = useMemo(() => navalChoiceReads(model, drill.choices?.tags ?? [], selectedHour, kind, track?.branch.id ?? ''),
     [model, drill.choices?.tags, selectedHour, kind, track?.branch.id]);

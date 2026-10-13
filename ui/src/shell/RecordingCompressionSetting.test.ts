@@ -98,7 +98,7 @@ test('compression settings persist through the native client and manual folder c
       ] };
     timer!(); await tick(); render();
     assert.equal(compact().props.disabled, false);
-    assert.equal(compactionSummary(progress), 'Checked 5 of 5 recordings · Saved 2.0 MB · 4 left unchanged');
+    assert.equal(compactionSummary(progress), 'Checked 5 of 5 recordings Â· Saved 2.0 MB Â· 4 left unchanged');
 
     for (const reason of ['Busy; try again later', 'Still being recorded', 'Already as small as it gets', 'Changed while compacting; original kept']) {
       assert.ok(nodes.some(element => element.type === 'li' && element.props.children.join('').includes(reason)));

@@ -324,5 +324,31 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
       assert.equal(state.portals.length, 0, 'ordinary main/comparison headers keep their country roots during an inline drill');
       assert.deepEqual(changes, [], 'local choices, history and Follow never write layout preferences');
     });
+    await context.test('a catalogue breakdown card asks for a country, then names the one chosen in its body', () => {
+      const variant = registry.widgetDefinition('naval-losses').variants.find((item: { key: string }) => item.key === 'show=parts');
+      const card: WidgetSpec = { ...original, id: 'card', ...variant.initial, countries: { kind: 'tags', tags: ['mod A', 'new B'] }, time: { mode: 'follow' } };
+      const template: DashboardTemplate = { version: 1, name: 'Naval card', alignment: 'calendar', roles: [], tracks: [], widgets: [card], layouts: {} };
+      const changes: WidgetSpec[] = [];
+      const frame = () => {
+        for (let pass = 0; pass < 12; pass++) {
+          state.cursor = 0; state.dirty = false; state.detail = undefined; state.picker = undefined; state.portals = [];
+          renderToStaticMarkup(createElement(Grid, { template, runtime: props.runtime,
+            editing: false, onLayouts() {}, onApply: next => changes.push(next), onRemove() {} }));
+          for (const effect of state.effects.splice(0)) effect();
+          if (!state.dirty && !state.effects.length) return;
+        }
+        assert.fail('the catalogue card did not settle its mounted effects');
+      };
+      const header = () => { assert.equal(state.portals.length, 1); return renderToStaticMarkup(state.portals[0].child); };
+      state.reply = reply; state.labels = { [JSON.stringify([112, 'new B'])]: { name: 'Native B at 112', flag: '/B112.svg', known: true, flagPending: false } };
+      unmount(); state.hour = 112; frame();
+      assert.equal(state.detail, undefined, 'two countries open the chooser');
+      assert.match(header(), />Choose a country</); assert.doesNotMatch(header(), /Unavailable/);
+      state.picker!.onChange('new B'); frame();
+      assert.equal(state.detail!.mix!.tag, 'new B');
+      assert.ok(header().includes('Native B at 112')); assert.ok(header().includes('src="/B112.svg"'));
+      assert.ok(header().includes('As of ' + formatDateTime(112)));
+      assert.equal(card.options!.drillOriginOffset, undefined); assert.deepEqual(changes, [], 'choosing in the body writes no pin');
+    });
   } finally { unmount(); await vite.close(); delete globals.__navalPinLifecycle; }
 });

@@ -67,6 +67,14 @@ fn click(exists: bool, opening: bool, closed_recently: bool) -> Click {
     }
 }
 
+/// Whether losing focus closes the panel: only once it has shown and held
+/// focus, and not while a native dialog owns it. The hidden window loses focus
+/// before it shows when the click came from the hidden-icons flyout, whose
+/// closing hands focus back to the previous window; that is not clicking away.
+fn closes_on_focus_loss(shown: bool, focused: bool, dialog: bool) -> bool {
+    shown && focused && !dialog
+}
+
 /// Left click on the tray icon: open the panel, or close it when open.
 pub fn toggle(app: &AppHandle, anchor: Rect) {
     let window = app.get_webview_window(LABEL);
@@ -179,8 +187,10 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
         WindowEvent::Focused(true) => state(&handle).focused = true,
         WindowEvent::Focused(false) => {
             let close = {
-                let state = state(&handle);
-                state.focused && !state.dialog
+                let mut state = state(&handle);
+                let close = closes_on_focus_loss(state.shown, state.focused, state.dialog);
+                state.focused = false;
+                close
             };
             if close && let Some(window) = handle.get_webview_window(LABEL) {
                 let _ = window.destroy();
@@ -282,5 +292,17 @@ mod tests {
         assert_eq!(click(false, false, true), Click::Ignore);
         assert_eq!(click(true, false, false), Click::Close);
         assert_eq!(click(false, false, false), Click::Open);
+    }
+
+    #[test]
+    fn focus_lost_before_the_panel_shows_does_not_close_it() {
+        // Opened from the hidden-icons flyout: focus returns to the previous
+        // window while the panel is still hidden.
+        assert!(!closes_on_focus_loss(false, true, false));
+        // Shown and focused, then clicking away closes it.
+        assert!(closes_on_focus_loss(true, true, false));
+        // A native dialog taking focus, or a panel that never held focus, stays.
+        assert!(!closes_on_focus_loss(true, true, true));
+        assert!(!closes_on_focus_loss(true, false, false));
     }
 }

@@ -1,4 +1,4 @@
-import { CountryFlagUrl } from '../components/CountryFlag';
+import { CountryFlag, CountryFlagUrl } from '../components/CountryFlag';
 import { formatDateTime } from './calendar';
 import type { CountryLabel } from './countryFlagsAt';
 
@@ -16,4 +16,9 @@ export default function DatedCountryChip({ label, hour, reason }: {
       reason={qualified ? label?.flagReason ?? undefined : undefined} pending={qualified ? label?.flagPending : undefined} />
     <span>{named && qualified ? label!.name : loading ? 'Loading…' : 'Unavailable'}</span>
   </span>;
+}
+
+/** The header of a breakdown that has no country yet: an unchosen selection. */
+export function ChooseCountryChip() {
+  return <span className="dash-widget-country"><CountryFlag /><span>Choose a country</span></span>;
 }

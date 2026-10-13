@@ -10,8 +10,8 @@ export function savedSize(bytes: number): string {
 
 export function compactionSummary(progress: CompactionProgress): string {
   const done = `${progress.completed} of ${progress.total} recordings`;
-  const skipped = progress.skipped ? ` · ${progress.skipped} left unchanged` : '';
-  return `${progress.running ? 'Compacting' : 'Checked'} ${done} · Saved ${savedSize(progress.bytesSaved)}${skipped}`;
+  const skipped = progress.skipped ? ` Â· ${progress.skipped} left unchanged` : '';
+  return `${progress.running ? 'Compacting' : 'Checked'} ${done} Â· Saved ${savedSize(progress.bytesSaved)}${skipped}`;
 }
 
 /** Recorder preferences stay in native settings; the recorder compacts automatically, this app on request. */
