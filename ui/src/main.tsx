@@ -11,8 +11,11 @@ import App from './shell/App';
 import Tooltip from './components/Tooltip';
 import TooltipLayer from './charts/TooltipLayer';
 import { applySavedAppearance } from './shell/appearance/useAppearance';
+import { desktopAvailable } from './shell/api';
+import { shareRecordingPreferences } from './shell/recordingPreferences';
 
 applySavedAppearance();
+if (desktopAvailable) void shareRecordingPreferences().catch(error => console.error('Recording names and flags stay on this device:', error));
 const root = document.getElementById('root');
 if (!root) throw new Error('The desktop application root is missing.');
 createRoot(root).render(<StrictMode><App /><Tooltip /><TooltipLayer /></StrictMode>);

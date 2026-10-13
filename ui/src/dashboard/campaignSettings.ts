@@ -202,6 +202,11 @@ export function saveCampaignSettings(settings: CampaignSettings, storage?: Stora
 const snapshot = () => (current ??= loadCampaignSettings());
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 
+/** The settings in effect: the last saved, including a save this device refused to store. */
+export function currentCampaignSettings(storage?: Storage): CampaignSettings {
+  return current ??= loadCampaignSettings(storage);
+}
+
 export function useCampaignSettings(): CampaignSettings {
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }

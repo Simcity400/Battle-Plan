@@ -6,3 +6,9 @@ export const usFiveDecimals = new Intl.NumberFormat('en-US', { maximumFractionDi
 export const gbNumber = new Intl.NumberFormat('en-GB');
 export const gbTwoSignificant = new Intl.NumberFormat('en-GB', { maximumSignificantDigits: 2 });
 export const enTwoDecimals = new Intl.NumberFormat('en', { maximumFractionDigits: 2 });
+
+/** Whole megabytes rounded up, or gigabytes to one decimal from 1 GB. */
+export function formatMegabytes(bytes: number): string {
+  const megabytes = Math.ceil(bytes / 2 ** 20);
+  return megabytes < 1024 ? `${megabytes} MB` : `${+(megabytes / 1024).toFixed(1)} GB`;
+}

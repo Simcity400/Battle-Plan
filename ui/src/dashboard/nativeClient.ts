@@ -45,16 +45,9 @@ async function request<T>(
   }
 }
 
-const retainedPaths = new Map<string, string>();
 async function releaseSource(sourceId: string): Promise<void> {
   if (!desktopAvailable) return;
   await invoke('dashboard_release_source', { sourceId });
-  const path = retainedPaths.get(sourceId);
-  if (path !== undefined) {
-    retainedPaths.delete(sourceId);
-    try { await invoke('set_compaction_recording_open', { path, open: false }); }
-    catch (error) { retainedPaths.set(sourceId, path); throw error; }
-  }
 }
 
 export const nativeDashboardClient: DashboardClient = {
@@ -84,18 +77,9 @@ export const nativeDashboardClient: DashboardClient = {
 
   async openSource(path, signal): Promise<DashboardSource> {
     if (signal.aborted) throw cancelled();
-    // Retain before opening, including pending opens, so automatic work cannot
-    // change the revision between opening metadata and installing the binding.
-    await invoke('set_compaction_recording_open', { path, open: true });
-    try {
-      const source = await request<SourceReply>('dashboard_open_source', () => ({ path }), signal,
-        late => invoke('dashboard_release_source', { sourceId: late.id }));
-      retainedPaths.set(source.id, path);
-      return { id: source.id, path: source.path, revision: source.revision, metadata: { ...source.metadata, revision: source.revision } };
-    } catch (error) {
-      await invoke('set_compaction_recording_open', { path, open: false });
-      throw error;
-    }
+    const source = await request<SourceReply>('dashboard_open_source', () => ({ path }), signal,
+      late => invoke('dashboard_release_source', { sourceId: late.id }));
+    return { id: source.id, path: source.path, revision: source.revision, metadata: { ...source.metadata, revision: source.revision } };
   },
 
   product<T>(query: import('./client').ProductRequest, signal: AbortSignal) {

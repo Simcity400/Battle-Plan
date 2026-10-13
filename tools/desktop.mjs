@@ -54,6 +54,9 @@ try {
   } });
   await run(process.execPath, [cli, mode, "--config", hooks, ...(mode === "build" ? ["--no-bundle"] : []), ...process.argv.slice(3)], path.join(root, "crates", "desktop"));
   if (mode === "build") {
+    // Battle Plan Recorder ships beside the replay app, embeds the same frontend build
+    // and injects the collector from its own folder.
+    await run("cargo", ["build", "-p", "recorder-app", "-p", "collector", "--release", "--features", "recorder-app/custom-protocol"]);
     const release = path.join(root, ".cargo-target", "release");
     await copyFile(path.join(root, "LICENSE"), path.join(release, "LICENSE"));
     await cp(path.join(root, "LICENSES"), path.join(release, "LICENSES"), { recursive: true });

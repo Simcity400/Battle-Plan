@@ -1,6 +1,6 @@
 # recorder
 
-Passive CLI to verify HOI4, inject/monitor/detach the collector and finalize `.battleplan` files. Offline commands inspect, compare text saves and read metrics.
+Passive CLI to verify HOI4, inject/monitor/detach the collector and finalize `.battleplan` files. Offline commands inspect, compare text saves and read metrics. The library's `controller` runs the same capture in-process for the [Battle Plan Recorder](../recorder-app/README.md) tray program.
 
 Attachment prepares the process-wide executable tables from the verified process executable before injection. Offline save and movement comparisons prepare the same tables from their selected installation. Inspection and finalization use recording metadata without loading an installation.
 
@@ -8,9 +8,10 @@ Attachment prepares the process-wide executable tables from the verified process
 
 | File | Responsibility |
 |---|---|
-| [main.rs](src/main.rs), [recording.rs](src/recording.rs) | CLI, process discovery, attach/refresh/detach and completion. `recording::usage` owns options. |
+| [lib.rs](src/lib.rs), [main.rs](src/main.rs), [recording.rs](src/recording.rs) | CLI, process discovery, attach/refresh/detach, discard and completion. `recording::usage` owns options. |
+| [controller.rs](src/controller.rs) | The in-process capture API (stop/discard control, stages, outcome, admission per campaign and per load, and target folder), the read-only campaign probe (campaign, hour and load signal, and the game folder it runs from), a session's recorded content identity and plain problem text. |
 | [windows.rs](src/windows.rs) | Windows process, memory, module and event operations. |
-| [replay_io.rs](src/replay_io.rs) | Recovery, finalization, append and inspection. |
+| [replay_io.rs](src/replay_io.rs) | Recovery, finalization (publishing only a Battle Plan Recorder session's admitted loads), the admission record, append and inspection. |
 | [oracle.rs](src/oracle.rs), [oracle/](src/oracle/) | Save joins, native evidence and unsaved limitations; [report.rs](src/oracle/report.rs) owns coverage reporting. |
 | [movement_oracle.rs](src/movement_oracle.rs), [metrics.rs](src/metrics.rs) | Live movement-map comparison and offline interval metrics. |
 
@@ -37,9 +38,9 @@ $userDirectory = Join-Path $captureRoot 'smoke-profile'
 
 Pass paths as separate quoted arguments/variables. `record` discovers the installation from the process, has no `--game-dir` option and prints its selected Paradox user directory. Without `--out`, recording and its control commands use `HOI4Replay\captures` under `LOCALAPPDATA`, or the user's temporary directory when that variable is absent or empty. Movement reports default to its `movement_oracle` subdirectory. Keep captures and reports outside Git.
 
-Coordinate ownership before attaching. Use one game and one recording controller; multiple game processes, unsupported executable hashes and an already-loaded collector are refused. Never detach or stop another owner's session. The recorder never pauses, saves or sends input to the game.
+Coordinate ownership before attaching. Use one game and one recording controller (this CLI or Battle Plan Recorder, not both); multiple game processes, unsupported executable hashes and an already-loaded collector are refused. Never detach or stop another owner's session. The recorder never pauses, saves or sends input to the game.
 
-Game exit finalizes and, without `--once`, waits for another process. Ctrl+C detaches/finalizes/exits. Another terminal can target your session's output directory:
+Game exit finalizes and, without `--once`, waits for another process. Ctrl+C detaches/finalizes/exits. While attached, `record` reads the collector's `status.json` once a minute to print it; Battle Plan Recorder's in-process capture also reads it every two seconds for its panel and campaign admission. Another terminal can target your session's output directory:
 
 ```powershell
 & $recorder detach --out $capture
@@ -179,6 +180,10 @@ After confirmed collector absence or game exit, set `$sessionDirectory` to a ret
 ```powershell
 & $recorder finalize $sessionDirectory --out $capture
 ```
+
+A session the user discarded in Battle Plan Recorder keeps only its `completed.json` (with `"discarded": true`); its spool, copied collector and evidence are removed after collector absence or game exit is proved, and `finalize` refuses it. Discard never touches a recording the session would have continued.
+
+A Battle Plan Recorder session publishes only the loads it admitted. Before the collector starts it writes `bin/recorder.json`, which marks the session, and `admitted.json`, which lists the load it attaches for when there is one. It rewrites `admitted.json` atomically as each load is decided: an admitted load with the campaign, the collector's load signal and the folder the session publishes into, and a refused load with its reason (`off`, `elsewhere`, or `settings` when the recorder settings couldn't be read or updated), kept only for reporting. When the session saves, after the drain and before finalizing, it reads the spool's clock witnesses once and decides every load in it that was never asked about, in load order across campaigns by clock witness time (every campaign's witnesses share the session's clock). Every `finalize` of such a session (after a crash, repeated, or after a collector failure) publishes the same thing: for each campaign, the recovered spool's branches whose load is admitted. A branch's load is the first load signal its clock witnesses carry; the branch a validated failure witness names takes the witness's load signal when it failed before its first clock witness. Other branches (their starts, gaps, frames, clock witnesses and the controls after them) are left out, and their frames are passed over when frames are read. A failure witness is applied only when the spool's last branch, and the load that failed, are admitted; otherwise the published hours end cleanly before it. Each load left out is returned and listed under `omitted` in `completed.json`, with its campaign, load signal (null when unidentified), hours, and reason (`off`, `elsewhere`, `settings` or `not_admitted`); finalization prints them too. A session that spooled hours is never recorded as `nothing_recorded`, even when none of them are published. A marked session whose `admitted.json` is missing or unreadable refuses finalization, so nothing is published. The spool always stays in the session folder. Sessions without the marker, including every command-line session, publish every load as before.
 
 Recovery validates [terminal evidence](../replay/src/witness.rs), identity/context and committed spool bounds before keeping CRC-valid prefixes. Only attributable attempted hours become gaps; missing context invents no hour/branch. Invalid evidence and unsupported spools remain on disk with a refusal. Repeated finalization must preserve an existing good replay. An existing replay that needed read-time recovery is refused before finalization compares or appends; start a new file instead.
 

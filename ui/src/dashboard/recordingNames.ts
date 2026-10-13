@@ -2,7 +2,9 @@ import { useSyncExternalStore } from 'react';
 import { normalizeCampaignPath } from './campaigns.ts';
 import { object } from './validation.ts';
 
-/** Recording names belong to this device's UI settings, never to files or layouts. */
+/** Recording names are display labels, never part of files or layouts. The desktop app
+ * keeps them in the recorder's shared settings, so Battle Plan Recorder shows the same names;
+ * the browser keeps them in this device's UI settings. */
 export type RecordingNames = Record<string, string>;
 const KEY = 'battle-plan.recording-names.v1';
 // The same storage budget as campaign settings; names have no individual length limit.
@@ -49,13 +51,52 @@ export function loadRecordingNames(storage?: Storage): RecordingNames {
   } catch { return {}; }
 }
 
-let current: RecordingNames | null = null;
-const listeners = new Set<() => void>();
+/** Names to set, by normalized recording path; `null` clears that recording's name. */
+export type RecordingNameChanges = Record<string, string | null>;
 
-/** Saves and updates every view; a refused save still applies for this session. */
-export function saveRecordingNames(names: RecordingNames, storage?: Storage): string | null {
+/** The names `after` sets or clears relative to `before`. */
+export function recordingNameChanges(before: RecordingNames, after: RecordingNames): RecordingNameChanges {
+  const changes: RecordingNameChanges = {};
+  for (const [path, name] of Object.entries(after)) if (before[path] !== name) changes[path] = name;
+  for (const path of Object.keys(before)) if (!Object.hasOwn(after, path)) changes[path] = null;
+  return changes;
+}
+
+let current: RecordingNames | null = null;
+let shared: ((changes: RecordingNameChanges) => Promise<void>) | null = null;
+const listeners = new Set<() => void>();
+const notify = () => { for (const listener of listeners) listener(); };
+
+/** Use the recorder's shared settings for names. Names saved on this device fill in
+ * any the shared settings lack, once; they then leave this device's storage. Every
+ * later save sends only the names it changes, so a rename made meanwhile in the game
+ * Recorder's settings is never overwritten. */
+export async function shareRecordingNames(stored: unknown, save: (changes: RecordingNameChanges) => Promise<void>,
+  storage?: Pick<globalThis.Storage, 'getItem' | 'setItem' | 'removeItem'>): Promise<void> {
+  const local = loadRecordingNames(storage), sharedNames = parseRecordingNames(stored);
+  const merged = { ...local, ...sharedNames };
+  if (Object.keys(local).length) {
+    const missing = recordingNameChanges(sharedNames, merged);
+    if (Object.keys(missing).length) await save(missing);
+    (storage ?? localStorage).removeItem(KEY);
+  }
+  shared = save;
+  current = merged;
+  notify();
+}
+
+/** Saves and updates every view; a refused save still applies for this session. With
+ * shared settings the save completes later and `report` hears its outcome. */
+export function saveRecordingNames(names: RecordingNames, storage?: Storage, report?: (error: string | null) => void): string | null {
+  const before = snapshot();
   current = names;
-  for (const listener of listeners) listener();
+  notify();
+  if (shared) {
+    const changes = recordingNameChanges(before, names);
+    if (!Object.keys(changes).length) { report?.(null); return null; }
+    void shared(changes).then(() => report?.(null), () => report?.('Recording names could not be saved; they apply until the app closes.'));
+    return null;
+  }
   try {
     const raw = JSON.stringify(names);
     if (raw.length > MAX_RECORDING_NAMES_STORAGE) throw new Error('Recording names exceed the settings storage budget.');

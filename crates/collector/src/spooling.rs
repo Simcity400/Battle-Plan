@@ -1569,6 +1569,65 @@ fn needs_retry(tables: &[TableInput; TABLE_COUNT]) -> bool {
     })
 }
 
+/// The country the recording client views and the operands that pick its flag
+/// (own tag, cosmetic tag, original-or-own tag, ruling ideology group), copied
+/// from committed rows for the recorder's panel. The status omits it while any
+/// of those rows is unavailable.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+struct ViewedFlag {
+    tag: String,
+    cosmetic: String,
+    original: Option<String>,
+    group: String,
+}
+
+impl ViewedFlag {
+    fn same(&self, operands: &replay::country_flags::FlagOperands<'_>) -> bool {
+        self.tag == operands.tag
+            && self.cosmetic == operands.cosmetic
+            && self.original.as_deref() == operands.original
+            && self.group == operands.group
+    }
+
+    fn copy(operands: &replay::country_flags::FlagOperands<'_>) -> io::Result<Self> {
+        Ok(Self {
+            tag: engine::allocation::string(operands.tag)?,
+            cosmetic: engine::allocation::string(operands.cosmetic)?,
+            original: operands
+                .original
+                .map(engine::allocation::string)
+                .transpose()?,
+            group: engine::allocation::string(operands.group)?,
+        })
+    }
+}
+
+/// The viewed country's flag operands from the encoder's committed baselines.
+fn viewed_flag(encoder: &FrameEncoder) -> Option<replay::country_flags::FlagOperands<'_>> {
+    replay::country_flags::viewed_country(
+        encoder.committed::<tables::LocalPlayer>()?.1,
+        encoder.committed::<tables::CountryLinks>()?.1,
+        encoder.committed::<tables::Countries>()?.1,
+        encoder.committed::<tables::CountryAppearance>()?.1,
+        encoder.committed::<tables::Politics>()?.1,
+        encoder.committed::<tables::PoliticalParties>()?.1,
+    )
+    .ok()
+}
+
+/// Keep the published viewed country current, copying only when it changes.
+fn set_viewed(
+    slot: &mut Option<ViewedFlag>,
+    operands: Option<replay::country_flags::FlagOperands<'_>>,
+) -> io::Result<()> {
+    match operands {
+        None => *slot = None,
+        Some(operands) if slot.as_ref().is_some_and(|current| current.same(&operands)) => {}
+        Some(operands) => *slot = Some(ViewedFlag::copy(&operands)?),
+    }
+    Ok(())
+}
+
 struct Statistics {
     game_score: crate::extended::game_score::Work,
     country_rosters: crate::extended::country_counters::RosterWork,
@@ -1592,6 +1651,8 @@ struct Statistics {
     hours: u64,
     campaign: Option<String>,
     last_hour: Option<i32>,
+    /// The recording client's viewed country, for the recorder's panel.
+    player: Option<ViewedFlag>,
     total_ns: u64,
     callback: Distribution,
     table_ns: [u64; TABLE_COUNT],
@@ -1655,6 +1716,7 @@ impl Default for Statistics {
             hours: 0,
             campaign: None,
             last_hour: None,
+            player: None,
             total_ns: 0,
             callback: Distribution::default(),
             table_ns: [0; TABLE_COUNT],
@@ -2405,6 +2467,13 @@ impl Processor {
         self.retry_full |= retry_full;
         self.unknown_pending = 0;
         self.suppress_origin = false;
+        // The status names the viewed country's flag operands from rows just
+        // committed; nothing is read from the game for it.
+        let viewed = self
+            .campaigns
+            .get_mut(&id)
+            .and_then(|campaign| viewed_flag(&campaign.encoder));
+        set_viewed(&mut self.stats.player, viewed)?;
         let stats = &mut self.stats;
         stats.hours += 1;
         stats.campaign = Some(engine::allocation::string(&id)?);
@@ -2722,6 +2791,7 @@ impl Processor {
                 (family.name, stats.slices[index].status(self.session.qpc_frequency).join(status!({"owner": DebugValue(family.owner)})))
             })),
             "campaign": &stats.campaign, "hours": stats.hours, "last_hour": stats.last_hour,
+            "player": &stats.player,
             "total_ns": stats.total_ns, "p50_ns": callback.p50_ns, "p95_ns": callback.p95_ns,
             "callback_work": callback_work,
             "callback_work_scope": "cumulative per-hour game-thread acquisition body wall inside the hook since attach (the block before the trampoline), excluding the original native tick; equals acquisition_work.collect_wait_ns per hour. Drops, failed frames and unattributed startup callbacks excluded; sampled asynchronously after decode, not a CPU counter or exact partition with native_tick_work",
@@ -3414,6 +3484,44 @@ mod tests {
     use replay::container::{Replay, SeekResult};
     use replay::frame::DecodedFrame;
     use replay::rows::{Recorded, TableId};
+
+    #[test]
+    fn the_viewed_country_is_published_from_committed_rows_and_copied_only_on_change() {
+        use replay::country_flags::FlagOperands;
+        // No committed rows: nothing to publish.
+        assert_eq!(viewed_flag(&FrameEncoder::new()), None);
+        let germany = FlagOperands {
+            tag: "mod-country-long-tag",
+            cosmetic: "",
+            original: Some("mod-country-long-tag"),
+            group: "synthetic_group",
+        };
+        let mut slot = None;
+        set_viewed(&mut slot, Some(germany)).unwrap();
+        assert_eq!(
+            serde_json::to_value(&slot).unwrap(),
+            json!({"tag":"mod-country-long-tag","cosmetic":"","original":"mod-country-long-tag","group":"synthetic_group"})
+        );
+        // The same operands an hour later keep the copied text.
+        let copied = slot.as_ref().unwrap().tag.as_ptr();
+        set_viewed(&mut slot, Some(germany)).unwrap();
+        assert_eq!(slot.as_ref().unwrap().tag.as_ptr(), copied);
+        // A new cosmetic tag or ruling group replaces it; an unread original stays unknown.
+        let changed = FlagOperands {
+            cosmetic: "variants/red",
+            original: None,
+            ..germany
+        };
+        set_viewed(&mut slot, Some(changed)).unwrap();
+        assert_eq!(slot.as_ref().unwrap().cosmetic, "variants/red");
+        assert_eq!(
+            serde_json::to_value(&slot).unwrap()["original"],
+            Value::Null
+        );
+        // Unavailable rows withdraw it rather than keep a stale country.
+        set_viewed(&mut slot, None).unwrap();
+        assert_eq!(slot, None);
+    }
 
     #[test]
     fn war_snapshot_work_only_counts_sampled_passes_and_keeps_capacity_scope() {

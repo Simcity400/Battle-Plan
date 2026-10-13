@@ -4,6 +4,7 @@ pub mod branches;
 pub mod cadence;
 pub mod codec;
 pub mod container;
+pub mod country_flags;
 pub mod eta_derive;
 pub mod event_feed_rows;
 pub mod fixed_layout;

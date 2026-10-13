@@ -13,7 +13,7 @@ import { useContextMenu } from '../components/ContextMenu';
 import type { MenuItem } from '../components/ContextMenu';
 import { Popover, PopoverHeading, usePopover } from '../components/Popover';
 import CountryPicker from '../components/CountryPicker';
-import { saveCampaignSettings, setCampaignFlag, useCampaignSettings } from './campaignSettings';
+import { saveCampaignFlag, useCampaignFlags } from './campaignFlags';
 
 const ARCHIVE_OPEN_KEY = 'hoi4-replay.sidebar.archive-open';
 // The archive shows recent rows first; the rest stay behind Show more, a page at a time.
@@ -39,7 +39,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
   const contextMenu = useContextMenu('Campaign actions');
   const flagMenu = usePopover('start');
   const [flagCampaign, setFlagCampaign] = useState<string | null>(null);
-  const settings = useCampaignSettings();
+  const flags = useCampaignFlags();
   const names = useRecordingNames();
   const displayName = (path: string) => recordingDisplayName(path, names);
   const flagSource = flagCampaign ? bindings[flagCampaign]?.source : null;
@@ -50,7 +50,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
   const commitRename = (path: string, draft: string) => {
     if (!editingPath.current || !sameCampaignPath(editingPath.current, path)) return;
     cancelRename();
-    setActionError(saveRecordingNames(setRecordingName(names, path, draft)));
+    setActionError(saveRecordingNames(setRecordingName(names, path, draft), undefined, setActionError));
   };
   const renameInput = (path: string) => <input className="campaign-rename" aria-label="Recording name" defaultValue={displayName(path)} autoFocus
     onFocus={event => event.currentTarget.select()} onBlur={event => commitRename(path, event.currentTarget.value)}
@@ -58,7 +58,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
       if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); }
       else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancelRename(); }
     }} />;
-  const saveFlag = (campaignKey: string, tag: string | null) => setActionError(saveCampaignSettings(setCampaignFlag(settings, campaignKey, tag)));
+  const saveFlag = (campaignKey: string, tag: string | null) => setActionError(saveCampaignFlag(campaignKey, tag, setActionError));
   const actions = (path: string, campaign?: Campaign, button?: HTMLButtonElement): MenuItem[] => {
     const source = campaign ? bindings[campaign.id]?.source : null;
     return [
@@ -71,7 +71,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
       } }] : []),
       ...(source && campaign && button ? [
         { label: 'Change flag', run: () => { setFlagCampaign(campaign.id); flagMenu.trigger.current = button; flagMenu.openAt(() => button.getBoundingClientRect()); } },
-        ...(settings.campaigns[source.metadata.campaignKey]?.flag ? [{ label: "Use the shown country's flag", run: () => saveFlag(source.metadata.campaignKey, null) }] : []),
+        ...(flags[source.metadata.campaignKey] ? [{ label: "Use the shown country's flag", run: () => saveFlag(source.metadata.campaignKey, null) }] : []),
         { label: 'Unload', icon: 'close' as const, run: () => onUnload(campaign.id) },
       ] : []),
     ];
@@ -145,7 +145,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
         const source = bindings[campaign.id]?.source;
         const partial = source?.metadata.partial;
         const damaged = source?.metadata.damaged;
-        const tag = (source ? settings.campaigns[source.metadata.campaignKey]?.flag : undefined) ?? countryTags[campaign.id] ?? null;
+        const tag = (source ? flags[source.metadata.campaignKey] : undefined) ?? countryTags[campaign.id] ?? null;
         const country = tag ? source?.metadata.countries.find(item => item.tag === tag)?.name : undefined;
         return <div className="loaded-campaign" role="listitem" key={campaign.id}>
           {renaming && sameCampaignPath(renaming, campaign.path) ? renameInput(campaign.path) : <button type="button" className="sidebar-row campaign-row" disabled={!source} aria-current={isDefault ? 'true' : undefined}
@@ -180,7 +180,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
       <PopoverHeading title="Campaign flag" menu={flagMenu} />
       {flagMenu.open && flagSource && <CountryPicker key={flagSource.id} inline client={client} source={flagSource} countries={flagSource.metadata.countries}
         allowedTags={flagSource.metadata.countries.map(country => country.tag)} playerCountryId={flagSource.metadata.playerCountryId}
-        selectedTag={settings.campaigns[flagSource.metadata.campaignKey]?.flag ?? (flagCampaign ? countryTags[flagCampaign] : null) ?? null}
+        selectedTag={flags[flagSource.metadata.campaignKey] ?? (flagCampaign ? countryTags[flagCampaign] : null) ?? null}
         onChange={tag => {
           if (tag && flagSource.metadata.countries.some(country => country.tag === tag)) saveFlag(flagSource.metadata.campaignKey, tag);
           flagMenu.close();

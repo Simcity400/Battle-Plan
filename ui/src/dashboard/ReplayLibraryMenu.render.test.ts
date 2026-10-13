@@ -60,7 +60,10 @@ async function fixture(run: (view: any) => Promise<void>) {
         if (file.endsWith('/components/CountryPicker.tsx')) return 'export default function CountryPicker() {}';
         if (file.endsWith('/dashboard/campaignSettings.ts')) return source
           .replace("import { useSyncExternalStore } from 'react';", 'const useSyncExternalStore = () => globalThis.__campaignMenu.settings;')
+          .replace('return current ??= loadCampaignSettings(storage);', 'return globalThis.__campaignMenu.settings;')
           .replace('const safe = parseCampaignSettings(settings);', 'return globalThis.__campaignMenu.save(parseCampaignSettings(settings)); const safe = parseCampaignSettings(settings);');
+        if (file.endsWith('/dashboard/campaignFlags.ts')) return source.replace("import { useMemo, useSyncExternalStore } from 'react';",
+          'const useSyncExternalStore = (_subscribe, snapshot) => snapshot(); const useMemo = compute => compute();');
         if (file.endsWith('/dashboard/recordingNames.ts')) return source
           .replace("import { useSyncExternalStore } from 'react';", 'const useSyncExternalStore = () => globalThis.__campaignMenu.names;')
           .replace('current = names;', 'globalThis.__campaignMenu.saveNames(names); current = names;');

@@ -12,6 +12,7 @@ use replay::{
 use serde_json::{Value, json};
 use std::{
     cell::Cell,
+    collections::BTreeSet,
     ffi::{OsStr, OsString},
     fs::{self, File},
     path::{Path, PathBuf},
@@ -30,10 +31,143 @@ use windows_sys::Win32::{
     },
 };
 
-static STOP: AtomicBool = AtomicBool::new(false);
-unsafe extern "system" fn control(kind: u32) -> i32 {
+/// Stop and discard requests for a capture. The command line's console
+/// handler owns one; the tray recorder owns one per capture.
+#[derive(Debug, Default)]
+pub struct Control {
+    stop: AtomicBool,
+    discard: AtomicBool,
+}
+
+impl Control {
+    pub const fn new() -> Self {
+        Self {
+            stop: AtomicBool::new(false),
+            discard: AtomicBool::new(false),
+        }
+    }
+
+    /// Ask the capture to detach. `discard` drops this session's capture
+    /// instead of saving it; only an explicit user choice may set it.
+    pub fn stop(&self, discard: bool) {
+        // The choice is visible before the stop that acts on it.
+        self.discard.store(discard, Ordering::Release);
+        self.stop.store(true, Ordering::Release);
+    }
+
+    pub fn stopping(&self) -> bool {
+        self.stop.load(Ordering::Acquire)
+    }
+
+    pub fn discarding(&self) -> bool {
+        self.discard.load(Ordering::Acquire)
+    }
+
+    /// Clear both requests before the next capture.
+    pub fn reset(&self) {
+        self.stop.store(false, Ordering::Release);
+        self.discard.store(false, Ordering::Release);
+    }
+}
+
+/// What a capture is doing, for a controller that shows it.
+#[derive(Debug)]
+pub enum Stage<'a> {
+    /// Verifying the game and its content, injecting and preparing history.
+    Preparing,
+    /// The collector is sampling into `session`. `status` is its latest
+    /// readable publication, delivered about every two seconds.
+    Recording {
+        session: &'a Path,
+        status: Option<&'a Value>,
+    },
+    /// Collector absence or game exit is proven and the spool is being
+    /// finalized. `records` counts finalization work done so far.
+    Saving { records: u64 },
+}
+
+/// The end of one capture.
+#[derive(Debug, Default)]
+pub struct CaptureOutcome {
+    /// A stop was requested (by the controller or the collector), rather than
+    /// the game exiting on its own.
+    pub detach_requested: bool,
+    pub process_exited: bool,
+    /// Recordings written or appended by this session.
+    pub replays: Vec<PathBuf>,
+    /// The session was discarded at the user's request; nothing was published.
+    pub discarded: bool,
+    /// The session ended because the controller refused a load, not because
+    /// of a stop or the game exiting.
+    pub rerouted: bool,
+    /// Loads the session left out of its recordings; their hours stay in the
+    /// session folder.
+    pub omitted: Vec<Omission>,
+}
+
+/// Asks whether a load of a campaign is recorded; the flag says this session's
+/// spool already holds the campaign's hours from an earlier load.
+pub type AdmitLoad<'a> = dyn Fn(&str, bool) -> Result<(), Refusal> + 'a;
+
+/// Why a Battle Plan Recorder session does not record a load.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The campaign does not record automatically, and Record was not pressed for it.
+    Off,
+    /// The load belongs in another recording: its campaign's own folder, or a new file.
+    Elsewhere,
+    /// The recorder settings could not be read or updated, so neither whether
+    /// the campaign records nor its folder is known.
+    Settings,
+}
+
+impl Refusal {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Elsewhere => "elsewhere",
+            Self::Settings => "settings",
+        }
+    }
+
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        match text {
+            "off" => Some(Self::Off),
+            "elsewhere" => Some(Self::Elsewhere),
+            "settings" => Some(Self::Settings),
+            _ => None,
+        }
+    }
+}
+
+/// A load a Battle Plan Recorder session left out of its recordings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Omission {
+    pub campaign: String,
+    /// The collector's load signal; `None` for hours whose load no clock
+    /// witness identified.
+    pub load: Option<i64>,
+    /// Hours it recorded.
+    pub hours: u64,
+    /// Why; `None` when it was never admitted (never asked about, or unidentified).
+    pub refusal: Option<Refusal>,
+}
+
+impl Omission {
+    pub(crate) fn to_json(&self) -> Value {
+        json!({
+            "campaign": self.campaign,
+            "load": self.load,
+            "hours": self.hours,
+            "reason": self.refusal.map_or("not_admitted", Refusal::as_str),
+        })
+    }
+}
+
+static CONSOLE: Control = Control::new();
+unsafe extern "system" fn console_control(kind: u32) -> i32 {
     if kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT {
-        STOP.store(true, Ordering::Release);
+        CONSOLE.stop(false);
         1
     } else {
         0
@@ -53,7 +187,7 @@ struct Options {
 
 #[cfg(feature = "alloc-fault-injection")]
 #[derive(Debug, PartialEq, Eq)]
-struct AllocationFault {
+pub(crate) struct AllocationFault {
     phase: String,
     ordinal: u64,
     after_hours: u64,
@@ -163,13 +297,10 @@ fn parse_options(command: &str, args: Vec<OsString>) -> Result<Options, String> 
     Ok(options)
 }
 
+/// The capture root without `--out`: the recordings folder Battle Plan Recorder and
+/// Battle Plan use when none was chosen.
 pub(crate) fn default_capture_directory() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .filter(|directory| !directory.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("HOI4Replay")
-        .join("captures")
+    replay::recorder_settings::default_save_folder()
 }
 
 pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
@@ -223,6 +354,12 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
         "refresh" => request_refresh(&options.output),
         "finalize" => {
             let session = session.ok_or_else(usage)?;
+            if session_discarded(&session) {
+                return Err(format!(
+                    "{} was discarded; there is nothing to finalize",
+                    session.display()
+                ));
+            }
             let (process_exited, expected) = ensure_finalizable(&session)?;
             let _lock = finalization_lock(&options.output)?;
             if let Some(witness) = replay_io::read_failure_witness(&session)? {
@@ -231,43 +368,61 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
                 {
                     return Err("collector failure witness belongs to a different process session; spool retained".into());
                 }
-                publish_failure_status(&session, &witness)?;
-                let mut issues = vec!["collector allocation failed".to_owned()];
-                let paths = match replay_io::finalize_session_outcome(&session, &options.output) {
-                    Ok((paths, errors)) => {
-                        issues.extend(
-                            errors
-                                .into_iter()
-                                .map(|error| format!("replay finalization failed: {error}")),
-                        );
-                        paths
-                    }
-                    Err(error) => {
-                        issues.push(format!("replay finalization failed: {error}"));
-                        Vec::new()
-                    }
-                };
-                write_json(
-                    &session.join("completed.json"),
-                    &json!({
-                        "replays":paths,"detach_requested":true,"detached":!process_exited,
-                        "process_exited":process_exited,"drain_complete":witness.drain_complete,
-                        "capture_failed":true,"failure_code":"allocation_failed",
-                        "failed_hour":witness.failed_hour,"partial":true,
-                        "issues":issues,"warnings":[],
-                    }),
-                )?;
-                return Err(format!(
-                    "recording completion is partial: {}; spool retained at {}",
-                    issues.join("; "),
-                    session.display()
-                ));
+                return finalize_failed_session(
+                    &session,
+                    &options.output,
+                    &witness,
+                    process_exited,
+                );
             }
             replay_io::finalize_session(&session, &options.output)?;
             Ok(())
         }
         _ => Err(usage()),
     }
+}
+
+/// `finalize` of a session whose collector failed: publish what recovery
+/// allows, then record the partial completion. A Battle Plan Recorder session's
+/// admission record is never rewritten here, so repeating it publishes the
+/// same admitted loads.
+fn finalize_failed_session(
+    session: &Path,
+    output: &Path,
+    witness: &TerminalWitness,
+    process_exited: bool,
+) -> Result<(), String> {
+    publish_failure_status(session, witness)?;
+    let mut issues = vec!["collector allocation failed".to_owned()];
+    let finalized = match replay_io::finalize_session_outcome(session, output) {
+        Ok(finalized) => finalized,
+        Err(error) => {
+            issues.push(format!("replay finalization failed: {error}"));
+            replay_io::Finalized::default()
+        }
+    };
+    issues.extend(
+        finalized
+            .errors
+            .iter()
+            .map(|error| format!("replay finalization failed: {error}")),
+    );
+    let omitted: Vec<_> = finalized.omitted.iter().map(Omission::to_json).collect();
+    write_json(
+        &session.join("completed.json"),
+        &json!({
+            "replays":finalized.replays,"detach_requested":true,"detached":!process_exited,
+            "process_exited":process_exited,"drain_complete":witness.drain_complete,
+            "capture_failed":true,"failure_code":"allocation_failed",
+            "failed_hour":witness.failed_hour,"partial":true,
+            "issues":issues,"warnings":[],"omitted":omitted,
+        }),
+    )?;
+    Err(format!(
+        "recording completion is partial: {}; spool retained at {}",
+        issues.join("; "),
+        session.display()
+    ))
 }
 
 /// `inspect <replay> --characters <substring> --hour <n> --branch <id>`, the
@@ -304,22 +459,27 @@ fn inspect_characters(args: &[OsString]) -> Result<(), String> {
     )
 }
 
-fn checked_single_game() -> Result<Option<u32>, String> {
+pub(crate) const TWO_GAMES: &str =
+    "two hoi4.exe processes are unsupported; no second process will be recorded";
+pub(crate) const UNSUPPORTED_BUILD: &str = "unsupported game build";
+pub(crate) const COLLECTOR_LOADED: &str =
+    "collector.dll is already loaded in this process; detach its recorder first";
+
+pub(crate) fn checked_single_game() -> Result<Option<u32>, String> {
     match windows::games()?.as_slice() {
         [] => Ok(None),
         [pid] => Ok(Some(*pid)),
-        _ => {
-            Err("two hoi4.exe processes are unsupported; no second process will be recorded".into())
-        }
+        _ => Err(TWO_GAMES.into()),
     }
 }
 
 fn record(options: Options) -> Result<(), String> {
     unsafe {
-        SetConsoleCtrlHandler(Some(control), 1);
+        SetConsoleCtrlHandler(Some(console_control), 1);
     }
     let user = options
         .user
+        .clone()
         .map(Ok)
         .unwrap_or_else(resolve_user_directory)?;
     let user = user.canonicalize().map_err(|e| {
@@ -331,54 +491,239 @@ fn record(options: Options) -> Result<(), String> {
     println!("Paradox user folder: {}", user.display());
     println!("Waiting for hoi4.exe. Recording is passive; Ctrl+C detaches and finalizes.");
     loop {
-        if STOP.load(Ordering::Acquire) {
+        if CONSOLE.stopping() {
             return Ok(());
         }
         let Some(pid) = checked_single_game()? else {
             std::thread::sleep(Duration::from_secs(2));
             continue;
         };
-        #[cfg(feature = "alloc-fault-injection")]
-        let detached = capture(
-            pid,
-            &options.output,
-            &user,
-            options.game_score,
-            options.operation_outcomes,
-            options.politics_capture,
-            options.alloc_fault.as_ref(),
-        )?;
-        #[cfg(not(feature = "alloc-fault-injection"))]
-        let detached = capture(
-            pid,
-            &options.output,
-            &user,
-            options.game_score,
-            options.operation_outcomes,
-            options.politics_capture,
-        )?;
-        if detached || options.once || STOP.load(Ordering::Acquire) {
+        let outcome = capture(pid, &cli_capture(&options, &user), &CONSOLE, &|_| {})?;
+        if outcome.detach_requested || options.once || CONSOLE.stopping() {
             return Ok(());
         }
         println!("Waiting for the next game process.");
     }
 }
 
-fn capture(
+/// Where and what one capture records.
+pub(crate) struct CaptureOptions<'a> {
+    /// The capture root: session folders and the active record.
+    pub output: &'a Path,
+    /// Where prior history is read and finished recordings are published.
+    pub target: &'a Path,
+    pub user: &'a Path,
+    pub game_score: bool,
+    pub operation_outcomes: bool,
+    pub politics_capture: bool,
+    /// A session that reached no spool (the game closed at its menu, say) ends
+    /// quietly instead of as a failed finalization.
+    pub nothing_recorded_is_ok: bool,
+    /// Read the collector's status every two seconds for `Stage::Recording`
+    /// and admission. The command line reads it only to print, once a minute.
+    pub live_status: bool,
+    /// Whether a load the game names may be recorded in this session, asked
+    /// once per load, live and again at save for loads the spool identifies
+    /// that were never asked about; the flag says this session's spool already
+    /// holds the campaign's hours from an earlier load. Each admitted load is
+    /// recorded in the session folder as it is admitted, and only admitted
+    /// loads are ever published. A live refusal ends the session. `None` (the
+    /// command line) publishes every load.
+    pub admit: Option<&'a AdmitLoad<'a>>,
+    /// The campaign the game has loaded right now and its load signal, read
+    /// without the collector. Only these, the spool at save, and `opening`
+    /// name loads for admission.
+    pub loaded: Option<&'a dyn Fn() -> Option<(String, i64)>>,
+    /// The load this session attaches for, already chosen by the controller:
+    /// admitted before the collector starts.
+    pub opening: Option<(&'a str, i64)>,
+    #[cfg(feature = "alloc-fault-injection")]
+    pub alloc_fault: Option<&'a AllocationFault>,
+}
+
+/// The command line's capture: the capture root is also the publication folder,
+/// every campaign is recorded, and status is read only to print it.
+fn cli_capture<'a>(options: &'a Options, user: &'a Path) -> CaptureOptions<'a> {
+    CaptureOptions {
+        output: &options.output,
+        target: &options.output,
+        user,
+        game_score: options.game_score,
+        operation_outcomes: options.operation_outcomes,
+        politics_capture: options.politics_capture,
+        nothing_recorded_is_ok: false,
+        live_status: false,
+        admit: None,
+        loaded: None,
+        opening: None,
+        #[cfg(feature = "alloc-fault-injection")]
+        alloc_fault: options.alloc_fault.as_ref(),
+    }
+}
+
+/// The loads a Battle Plan Recorder session admitted. Each load the game names is
+/// asked about once and, when admitted, recorded in the session folder before
+/// anything depends on it.
+struct Admission<'a> {
+    session: &'a Path,
+    target: &'a Path,
+    seen: BTreeSet<(String, i64)>,
+    admitted: replay_io::Admissions,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Decision {
+    /// Asked about before.
+    Seen,
+    /// Admitted and recorded.
+    Admitted,
+    /// Refused: the session ends and the load is never published.
+    Refused,
+}
+
+impl<'a> Admission<'a> {
+    fn new(session: &'a Path, target: &'a Path) -> Self {
+        Self {
+            session,
+            target,
+            seen: BTreeSet::new(),
+            admitted: replay_io::Admissions::default(),
+        }
+    }
+
+    /// The load the session attaches for, chosen by the controller: admitted
+    /// without asking again, before the collector starts.
+    fn admit_opening(&mut self, campaign: &str, load: i64) -> Result<(), String> {
+        self.seen.insert((campaign.to_owned(), load));
+        self.admitted
+            .admit(self.session, self.target, campaign, load)
+    }
+
+    /// Ask once per load. `recorded` (asked only for a new load) says the
+    /// session's spool already holds the campaign's hours from an earlier
+    /// load. Fails when an admitted load cannot be recorded; it is then not
+    /// published. A refusal's reason is kept only to report what was left out.
+    fn check(
+        &mut self,
+        campaign: &str,
+        load: i64,
+        recorded: impl FnOnce() -> bool,
+        admit: &dyn Fn(&str, bool) -> Result<(), Refusal>,
+    ) -> Result<Decision, String> {
+        if !self.seen.insert((campaign.to_owned(), load)) {
+            return Ok(Decision::Seen);
+        }
+        match admit(campaign, recorded()) {
+            Ok(()) => {
+                self.admitted
+                    .admit(self.session, self.target, campaign, load)?;
+                Ok(Decision::Admitted)
+            }
+            Err(refusal) => {
+                if let Err(error) =
+                    self.admitted
+                        .refuse(self.session, self.target, campaign, load, refusal)
+                {
+                    eprintln!(
+                        "Load {load} of campaign {campaign}: its refusal could not be recorded: {error}"
+                    );
+                }
+                Ok(Decision::Refused)
+            }
+        }
+    }
+
+    /// At save, once nothing is being captured: ask about each load the spool
+    /// identifies that was never asked about (one that recorded and ended
+    /// between polls, when the game closed or Stop was pressed), by the same rule
+    /// and in spool order.
+    fn check_spooled(
+        &mut self,
+        admit: &dyn Fn(&str, bool) -> Result<(), Refusal>,
+    ) -> Result<(), String> {
+        for (campaign, load) in replay_io::spooled_loads(self.session)? {
+            let campaign_dir = self.session.join(&campaign);
+            self.check(
+                &campaign,
+                load,
+                || replay_io::recorded_before_load(&campaign_dir, load),
+                admit,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// When capture reads the collector's status: once a minute to print it, and
+/// with `live` (Battle Plan Recorder) every two seconds for its stage callback and
+/// admission. The command line is never live.
+struct StatusReads {
+    live: bool,
+    next_print: Instant,
+    next_live: Instant,
+}
+
+impl StatusReads {
+    const PRINT: Duration = Duration::from_secs(60);
+    const LIVE: Duration = Duration::from_secs(2);
+
+    fn new(live: bool, now: Instant) -> Self {
+        Self {
+            live,
+            next_print: now,
+            next_live: now,
+        }
+    }
+
+    /// Whether a printed read is due at `now`, scheduling the next one.
+    fn print_due(&mut self, now: Instant) -> bool {
+        let due = now >= self.next_print;
+        if due {
+            self.next_print = now + Self::PRINT;
+        }
+        due
+    }
+
+    /// Whether a live read is due at `now`.
+    fn live_due(&self, now: Instant) -> bool {
+        self.live && now >= self.next_live
+    }
+
+    /// A live read finished at `now`.
+    fn live_read(&mut self, now: Instant) {
+        self.next_live = now + Self::LIVE;
+    }
+}
+
+pub(crate) fn capture(
     pid: u32,
-    output: &Path,
-    user: &Path,
-    game_score: bool,
-    operation_outcomes: bool,
-    politics_capture: bool,
-    #[cfg(feature = "alloc-fault-injection")] alloc_fault: Option<&AllocationFault>,
-) -> Result<bool, String> {
+    options: &CaptureOptions<'_>,
+    control: &Control,
+    stage: &dyn Fn(Stage<'_>),
+) -> Result<CaptureOutcome, String> {
+    let CaptureOptions {
+        output,
+        target,
+        user,
+        game_score,
+        operation_outcomes,
+        politics_capture,
+        nothing_recorded_is_ok,
+        live_status,
+        admit,
+        loaded,
+        opening,
+        #[cfg(feature = "alloc-fault-injection")]
+        alloc_fault,
+    } = *options;
+    stage(Stage::Preparing);
+    fs::create_dir_all(target).map_err(|error| failure_text(target, error))?;
     let process = Process::open(pid, true)?;
     let mut executable = File::open(&process.path).map_err(|e| e.to_string())?;
     let exe = hash_executable(&mut executable).map_err(|e| e.to_string())?;
     if !PINNED_BUILD.matches(&exe) {
         return Err(format!(
-            "unsupported game build; wanted {} bytes / {}; found {} bytes / {}. Nothing recorded.",
+            "{UNSUPPORTED_BUILD}; wanted {} bytes / {}; found {} bytes / {}. Nothing recorded.",
             PINNED_BUILD.exe_size,
             hex(&PINNED_BUILD.exe_sha256),
             exe.size,
@@ -396,9 +741,7 @@ fn capture(
             .file_name()
             .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("collector.dll"))
     }) {
-        return Err(
-            "collector.dll is already loaded in this process; detach its recorder first".into(),
-        );
+        return Err(COLLECTOR_LOADED.into());
     }
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -444,8 +787,11 @@ fn capture(
             }
             next_discovery = Instant::now() + Duration::from_secs(2);
         }
-        if STOP.load(Ordering::Acquire) {
-            return Ok(true);
+        if control.stopping() {
+            return Ok(CaptureOutcome {
+                detach_requested: true,
+                ..CaptureOutcome::default()
+            });
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -498,7 +844,16 @@ fn capture(
     let cancel_file = bin.join("collector.cancel");
     let expected_mounts = &content.expected_mounts;
     create_failure_witness(&directory, session.id, session.process_start_time)?;
-    let config = json!({"session_id":session.id,"output_dir":directory,"replay_dir":output,"session_start":session_bytes,"ready_event":ready_name,"detach_event":detach_name,"done_event":done_name,"cancel_file":cancel_file,"content_order_note":content.order_note,"expected_mounts":expected_mounts,"mod_descriptors":content.mod_descriptors,"game_score":game_score,"operation_outcomes":operation_outcomes,"politics_capture":politics_capture});
+    let mut admission = Admission::new(&directory, target);
+    if admit.is_some() {
+        // Before the collector starts: a Battle Plan Recorder session publishes only
+        // the loads this record will list, starting with the one it attaches for.
+        replay_io::begin_admissions(&directory, target)?;
+        if let Some((campaign, load)) = opening {
+            admission.admit_opening(campaign, load)?;
+        }
+    }
+    let config = json!({"session_id":session.id,"output_dir":directory,"replay_dir":target,"session_start":session_bytes,"ready_event":ready_name,"detach_event":detach_name,"done_event":done_name,"cancel_file":cancel_file,"content_order_note":content.order_note,"expected_mounts":expected_mounts,"mod_descriptors":content.mod_descriptors,"game_score":game_score,"operation_outcomes":operation_outcomes,"politics_capture":politics_capture});
     #[cfg(feature = "alloc-fault-injection")]
     let config = fault_config(config, alloc_fault);
     write_json(&bin.join("collector.json"), &config)?;
@@ -519,7 +874,7 @@ fn capture(
     checked_single_game()?
         .filter(|&found| found == pid)
         .ok_or("game changed before injection")?;
-    process.inject(&dll, || STOP.load(Ordering::Acquire))?;
+    process.inject(&dll, || control.stopping())?;
     let error_path = bin.join("collector.error.txt");
     let deadline = Instant::now() + Duration::from_secs(120);
     let mut next_progress = Instant::now() + Duration::from_secs(10);
@@ -538,7 +893,7 @@ fn capture(
         if Instant::now() >= deadline {
             return Err("collector readiness timed out; detach requested; spool retained".into());
         }
-        if STOP.load(Ordering::Acquire) {
+        if control.stopping() {
             detach.set()?;
         }
         if Instant::now() >= next_progress {
@@ -553,12 +908,19 @@ fn capture(
         &json!({"recorder_pid":std::process::id(),"game_pid":pid,"session_id":session.id,"process_start_time":process.start_time,"session_dir":directory,"dll":dll,"detach_event":detach_name,"done_event":done_name}),
     )?;
     println!("Recording process {pid}. Spool: {}", directory.display());
-    let mut next_status = Instant::now();
+    let status_path = directory.join("status.json");
+    stage(Stage::Recording {
+        session: &directory,
+        status: None,
+    });
+    let mut status_reads = StatusReads::new(live_status, Instant::now());
+    let mut admission_failures = Vec::new();
+    let mut rerouted = false;
     let mut requested_detach = false;
     let mut second_reported = false;
     let mut next_discovery = Instant::now();
     loop {
-        requested_detach |= STOP.load(Ordering::Acquire) || detach.handle.signaled()?;
+        requested_detach |= control.stopping() || detach.handle.signaled()?;
         if process.handle.signaled()? {
             break;
         }
@@ -588,9 +950,46 @@ fn capture(
             second_reported = second;
             next_discovery = Instant::now() + Duration::from_secs(2);
         }
-        if Instant::now() >= next_status {
-            print_status(&directory.join("status.json"));
-            next_status = Instant::now() + Duration::from_secs(60);
+        if status_reads.print_due(Instant::now()) {
+            print_status(&status_path);
+        }
+        if status_reads.live_due(Instant::now()) {
+            let status = read_status(&status_path);
+            // Only a load the game names (campaign and load signal) is asked
+            // about, usually while it is still paused; the collector's status
+            // naming a campaign never is. Hours of a load not admitted, asked
+            // about too late or never, are never published.
+            if let Some(admit) = admit
+                && let Some((campaign, load)) = loaded.and_then(|loaded| loaded())
+            {
+                let recorded = || replay_io::recorded_before_load(&directory.join(&campaign), load);
+                match admission.check(&campaign, load, recorded, admit) {
+                    Ok(Decision::Refused) => {
+                        println!(
+                            "Load {load} of campaign {campaign} is not recorded in this session; detaching."
+                        );
+                        requested_detach = true;
+                        rerouted = true;
+                    }
+                    Ok(Decision::Admitted | Decision::Seen) => {}
+                    Err(error) => {
+                        eprintln!(
+                            "Load {load} of campaign {campaign} could not be admitted: {error}"
+                        );
+                        admission_failures.push(error);
+                        requested_detach = true;
+                    }
+                }
+                if requested_detach {
+                    detach.set()?;
+                    break;
+                }
+            }
+            stage(Stage::Recording {
+                session: &directory,
+                status: status.as_ref(),
+            });
+            status_reads.live_read(Instant::now());
         }
         if error_path.exists() {
             detach.set()?;
@@ -621,14 +1020,56 @@ fn capture(
     // The collector can fail while draining, after signaling was requested. Its
     // files become terminal evidence only after unload or process termination.
     let process_exited = process.handle.signaled()?;
-    print_status(&directory.join("status.json"));
-    requested_detach |= STOP.load(Ordering::Acquire) || detach.handle.signaled()?;
+    print_status(&status_path);
+    requested_detach |= control.stopping() || detach.handle.signaled()?;
+    if control.discarding() {
+        // The user chose Discard. Nothing from this session is finalized, so a
+        // recording it would have continued keeps exactly its earlier contents.
+        if process_exited {
+            println!("Game process exited; discarding this session.");
+        } else {
+            println!(
+                "Collector absence confirmed in the running game process; discarding this session."
+            );
+        }
+        write_json(
+            &directory.join("completed.json"),
+            &json!({
+                "replays":[],"discarded":true,"detach_requested":requested_detach,
+                "detached":!process_exited,"process_exited":process_exited,
+                "partial":false,"issues":[],"warnings":[],
+            }),
+        )?;
+        remove_active(&active, &directory)?;
+        discard_session(&directory)?;
+        return Ok(CaptureOutcome {
+            detach_requested: requested_detach,
+            process_exited,
+            replays: Vec::new(),
+            discarded: true,
+            rerouted,
+            omitted: Vec::new(),
+        });
+    }
+    // Saving, with the game no longer captured: a load that recorded and ended
+    // between polls (the game closing, or Stop) is asked about now by the same
+    // rule, so a wanted load is never left out for being brief.
+    if let Some(admit) = admit
+        && let Err(error) = admission.check_spooled(admit)
+    {
+        admission_failures.push(error);
+    }
     let mut outcome = terminal_outcome(
         &directory,
         session.id,
         session.process_start_time,
         requested_detach,
         process_exited,
+    );
+    outcome.issues.extend(
+        admission_failures
+            .into_iter()
+            .map(|error| format!("a load could not be admitted, so it is not published: {error}")),
     );
     if process_exited {
         println!("Game process exited; recovering the flushed spool.");
@@ -659,31 +1100,62 @@ fn capture(
             .issues
             .push(format!("incomplete status publication failed: {error}"));
     }
-    let _lock = finalization_lock(output)?;
-    let progress = FinalizationProgress::new(&directory)?;
-    let finalized = match outcome.recovery_allowed.then(|| {
-        replay_io::finalize_session_outcome_with_progress(&directory, output, &|| {
+    // Nothing recorded means no spooled hours at all. Hours left out of the
+    // recordings are reported by finalization, never as nothing recorded.
+    if nothing_recorded_is_ok
+        && outcome.recovery_allowed
+        && outcome.issues.is_empty()
+        && outcome.witness.is_none()
+        && matches!(replay_io::has_campaign_spools(&directory), Ok(false))
+    {
+        println!("Nothing was recorded in this session.");
+        write_json(
+            &directory.join("completed.json"),
+            &json!({
+                "replays":[],"nothing_recorded":true,"detach_requested":requested_detach,
+                "detached":!process_exited,"process_exited":process_exited,
+                "drain_complete":outcome.drain_complete,"capture_failed":false,
+                "partial":false,"issues":[],"warnings":outcome.warnings,
+            }),
+        )?;
+        remove_active(&active, &directory)?;
+        return Ok(CaptureOutcome {
+            detach_requested: requested_detach,
+            process_exited,
+            replays: Vec::new(),
+            discarded: false,
+            rerouted,
+            omitted: Vec::new(),
+        });
+    }
+    let _lock = finalization_lock(target)?;
+    stage(Stage::Saving { records: 0 });
+    let saving = |records| stage(Stage::Saving { records });
+    let progress = FinalizationProgress::new(&directory, &saving)?;
+    let (finalized, omitted) = match outcome.recovery_allowed.then(|| {
+        replay_io::finalize_session_outcome_with_progress(&directory, target, &|| {
             progress.advance()
         })
     }) {
-        Some(Ok((paths, errors))) => {
+        Some(Ok(done)) => {
             outcome.issues.extend(
-                errors
+                done.errors
                     .into_iter()
                     .map(|error| format!("replay finalization failed: {error}")),
             );
-            paths
+            (done.replays, done.omitted)
         }
         Some(Err(error)) => {
             outcome
                 .issues
                 .push(format!("replay finalization failed: {error}"));
-            Vec::new()
+            (Vec::new(), Vec::new())
         }
-        None => Vec::new(),
+        None => (Vec::new(), Vec::new()),
     };
     let completed = json!({
         "replays":finalized,
+        "omitted":omitted.iter().map(Omission::to_json).collect::<Vec<_>>(),
         "detach_requested":requested_detach,
         "detached":!process_exited,
         "process_exited":process_exited,
@@ -696,14 +1168,7 @@ fn capture(
         "warnings":outcome.warnings,
     });
     write_json(&directory.join("completed.json"), &completed)?;
-    // The active file is this recorder's own control record, outside the repository.
-    if fs::read(&active)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .is_some_and(|value| value["session_dir"] == json!(directory))
-    {
-        fs::remove_file(&active).map_err(|e| e.to_string())?;
-    }
+    remove_active(&active, &directory)?;
     if !outcome.issues.is_empty() {
         return Err(format!(
             "recording completion is partial: {}; recoverable spool retained at {}",
@@ -711,7 +1176,65 @@ fn capture(
             directory.display()
         ));
     }
-    Ok(requested_detach)
+    Ok(CaptureOutcome {
+        detach_requested: requested_detach,
+        process_exited,
+        replays: finalized,
+        discarded: false,
+        rerouted,
+        omitted,
+    })
+}
+
+/// The active file is this recorder's own control record, outside the repository.
+fn remove_active(active: &Path, directory: &Path) -> Result<(), String> {
+    if fs::read(active)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .is_some_and(|value| value["session_dir"] == json!(directory))
+    {
+        fs::remove_file(active).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Remove a discarded session's spool, copied collector and evidence, keeping
+/// only its completion record. Call only after collector absence or game exit.
+fn discard_session(directory: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(directory).map_err(|error| failure_text(directory, error))? {
+        let entry = entry.map_err(|error| failure_text(directory, error))?;
+        if entry.file_name() == "completed.json" {
+            continue;
+        }
+        let path = entry.path();
+        let removed = if entry
+            .file_type()
+            .map_err(|error| failure_text(&path, error))?
+            .is_dir()
+        {
+            fs::remove_dir_all(&path)
+        } else {
+            fs::remove_file(&path)
+        };
+        removed.map_err(|error| format!("discard {}: {error}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn failure_text(path: &Path, error: impl std::fmt::Display) -> String {
+    format!("{}: {error}", path.display())
+}
+
+/// Whether the session's completion record says the user discarded it.
+fn session_discarded(directory: &Path) -> bool {
+    read_status(&directory.join("completed.json")).is_some_and(|value| value["discarded"] == true)
+}
+
+/// A JSON publication, when it exists and parses.
+fn read_status(path: &Path) -> Option<Value> {
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
 
 #[derive(Debug)]
@@ -1163,17 +1686,20 @@ fn progress_stamp(directory: &Path) -> (Option<SystemTime>, Option<SystemTime>) 
 }
 struct FinalizationProgress<'a> {
     directory: &'a Path,
+    /// Told the record count whenever it is published.
+    observe: &'a dyn Fn(u64),
     records: Cell<u64>,
     last_write: Cell<Instant>,
 }
 impl<'a> FinalizationProgress<'a> {
-    fn new(directory: &'a Path) -> Result<Self, String> {
+    fn new(directory: &'a Path, observe: &'a dyn Fn(u64)) -> Result<Self, String> {
         write_json(
             &directory.join("finalization-progress.json"),
             &json!({"recorder_pid": std::process::id(), "records": 0u64}),
         )?;
         Ok(Self {
             directory,
+            observe,
             records: Cell::new(0),
             last_write: Cell::new(Instant::now()),
         })
@@ -1188,6 +1714,7 @@ impl<'a> FinalizationProgress<'a> {
             )
             .map_err(std::io::Error::other)?;
             self.last_write.set(now);
+            (self.observe)(self.records.get());
         }
         Ok(())
     }
@@ -1236,7 +1763,7 @@ fn destruction_refusal(status: &Value) -> Option<(u64, &str)> {
     Some((refusal["site_index"].as_u64()?, refusal["reason"].as_str()?))
 }
 
-fn write_json(path: &Path, value: &Value) -> Result<(), String> {
+pub(crate) fn write_json(path: &Path, value: &Value) -> Result<(), String> {
     let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
     fs::write(
         &temporary,
@@ -1406,6 +1933,8 @@ pub(crate) fn resolve_user_directory() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use replay::container::Replay;
+    use std::{cell::RefCell, collections::BTreeMap};
 
     #[test]
     fn detach_wait_follows_progress_past_the_old_total_deadline_and_detects_stalls() {
@@ -1814,6 +2343,509 @@ mod tests {
         );
         let completed = json!({"partial":false,"issues":[],"detach_requested":false,"detached":false,"process_exited":true,"drain_complete":null});
         assert!(!completed_detach(&completed).unwrap());
+    }
+
+    #[test]
+    fn control_requests_discard_only_when_asked_and_resets_between_captures() {
+        let control = Control::new();
+        assert!(!control.stopping() && !control.discarding());
+        control.stop(false);
+        assert!(control.stopping() && !control.discarding());
+        control.reset();
+        assert!(!control.stopping() && !control.discarding());
+        control.stop(true);
+        assert!(control.stopping() && control.discarding());
+        control.reset();
+        assert!(!control.stopping() && !control.discarding());
+    }
+
+    fn published_hours(path: &Path) -> Vec<(replay::BranchId, replay::Hour)> {
+        let replay = Replay::open(fs::read(path).unwrap()).unwrap();
+        replay
+            .index
+            .iter()
+            .flat_map(|block| replay.read_block(block).unwrap())
+            .map(|frame| (frame.branch, frame.hour))
+            .collect()
+    }
+
+    #[test]
+    fn admission_asks_once_per_load_and_records_each_decision_on_disk() {
+        use crate::test_support::allocation_test_directory;
+        const KEPT: &str = "00000000-0000-4000-8000-000000000001";
+        const REFUSED: &str = "00000000-0000-4000-8000-000000000002";
+        let root = allocation_test_directory("admission-record");
+        let session = root.join("session");
+        let target = root.join("target");
+        replay_io::begin_admissions(&session, &target).unwrap();
+        let on_disk = || replay_io::session_admissions(&session).unwrap().unwrap();
+        let calls = Cell::new(0);
+        let refuse_reload = Cell::new(false);
+        let admit = |campaign: &str, _recorded: bool| -> Result<(), Refusal> {
+            calls.set(calls.get() + 1);
+            if campaign == REFUSED {
+                Err(Refusal::Off)
+            } else if refuse_reload.get() {
+                Err(Refusal::Elsewhere)
+            } else {
+                Ok(())
+            }
+        };
+        let mut admission = Admission::new(&session, &target);
+        assert_eq!(
+            admission.check(KEPT, 1, || false, &admit),
+            Ok(Decision::Admitted)
+        );
+        // On disk the moment it is admitted.
+        let first = BTreeMap::from([(KEPT.to_owned(), BTreeSet::from([1]))]);
+        assert_eq!(on_disk().loads, first);
+        assert_eq!(
+            admission.check(REFUSED, 1, || false, &admit),
+            Ok(Decision::Refused)
+        );
+        // Each load is asked once: a later change of choice does not end a
+        // session that already admitted it, and a refusal is not repeated.
+        assert_eq!(
+            admission.check(REFUSED, 1, || unreachable!(), &admit),
+            Ok(Decision::Seen)
+        );
+        assert_eq!(
+            admission.check(KEPT, 1, || unreachable!(), &admit),
+            Ok(Decision::Seen)
+        );
+        assert_eq!(calls.get(), 2);
+        // Another load of the admitted campaign is asked again; refused, it is
+        // never admitted, so never published, and its reason is kept.
+        refuse_reload.set(true);
+        assert_eq!(
+            admission.check(KEPT, 2, || true, &admit),
+            Ok(Decision::Refused)
+        );
+        let record = on_disk();
+        assert_eq!(record.loads, first);
+        assert_eq!(
+            record.refused,
+            BTreeMap::from([
+                ((REFUSED.to_owned(), 1), Refusal::Off),
+                ((KEPT.to_owned(), 2), Refusal::Elsewhere),
+            ])
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_opening_load_is_admitted_before_the_collector_starts() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, allocation_records, allocation_test_directory,
+            write_campaign_spool,
+        };
+        let root = allocation_test_directory("opening-load");
+        let session = root.join("session");
+        let target = root.join("target");
+        let campaign = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        replay_io::begin_admissions(&session, &target).unwrap();
+        let mut admission = Admission::new(&session, &target);
+        admission.admit_opening(campaign, FIRST_LOAD).unwrap();
+        // On disk before any hour is spooled, and never asked about again.
+        assert_eq!(
+            replay_io::session_admissions(&session)
+                .unwrap()
+                .unwrap()
+                .loads,
+            BTreeMap::from([(campaign.to_owned(), BTreeSet::from([FIRST_LOAD]))])
+        );
+        let ask = |_: &str, _: bool| -> Result<(), Refusal> { unreachable!() };
+        assert_eq!(
+            admission.check(campaign, FIRST_LOAD, || unreachable!(), &ask),
+            Ok(Decision::Seen)
+        );
+        // the game closed before the first poll: the load still publishes.
+        write_campaign_spool(&session, &allocation_records());
+        admission.check_spooled(&ask).unwrap();
+        let paths = replay_io::finalize_session(&session, &target).unwrap();
+        assert_eq!(published_hours(&paths[0]), [(9, 2), (9, 3), (9, 4)]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Attached at the game's menu with automatic recording on, a load
+    /// records and the game closes (or Stop is pressed) before the first probe.
+    #[test]
+    fn a_brief_load_never_probed_is_admitted_at_save_and_published() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, allocation_records, allocation_test_directory,
+            write_campaign_spool,
+        };
+        let root = allocation_test_directory("brief-load");
+        let session = root.join("session");
+        let output = root.join("replays");
+        let campaign = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        replay_io::begin_admissions(&session, &output).unwrap();
+        let mut admission = Admission::new(&session, &output);
+        write_campaign_spool(&session, &allocation_records());
+        let asked = RefCell::new(Vec::new());
+        let admit = |campaign: &str, recorded: bool| -> Result<(), Refusal> {
+            asked.borrow_mut().push((campaign.to_owned(), recorded));
+            Ok(())
+        };
+        admission.check_spooled(&admit).unwrap();
+        assert_eq!(asked.into_inner(), [(campaign.to_owned(), false)]);
+        assert_eq!(
+            replay_io::session_admissions(&session)
+                .unwrap()
+                .unwrap()
+                .loads,
+            BTreeMap::from([(campaign.to_owned(), BTreeSet::from([FIRST_LOAD]))])
+        );
+        let finalized =
+            replay_io::finalize_session_outcome_with_progress(&session, &output, &|| Ok(()))
+                .unwrap();
+        assert!(finalized.errors.is_empty() && finalized.omitted.is_empty());
+        assert_eq!(
+            published_hours(&finalized.replays[0]),
+            [(9, 2), (9, 3), (9, 4)]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A is admitted, then reloads and records hours, and the game closes before
+    /// the next probe. At save the reload is asked by the same rule: with
+    /// automatic recording turned off for A it is left out, and after New
+    /// file it belongs in a new file. Either way it is reported, with why.
+    #[test]
+    fn a_reload_that_ends_before_its_probe_is_asked_at_save_by_the_same_rule() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, allocation_test_directory, two_load_records,
+            write_campaign_spool,
+        };
+        let campaign = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        for refusal in [Refusal::Off, Refusal::Elsewhere] {
+            let root = allocation_test_directory(&format!("reload-at-save-{}", refusal.as_str()));
+            let session = root.join("session");
+            let output = root.join("replays");
+            replay_io::begin_admissions(&session, &output).unwrap();
+            let mut admission = Admission::new(&session, &output);
+            admission.admit_opening(campaign, FIRST_LOAD).unwrap();
+            write_campaign_spool(&session, &two_load_records());
+            let admit = |_: &str, recorded: bool| -> Result<(), Refusal> {
+                if recorded { Err(refusal) } else { Ok(()) }
+            };
+            admission.check_spooled(&admit).unwrap();
+            let finalized =
+                replay_io::finalize_session_outcome_with_progress(&session, &output, &|| Ok(()))
+                    .unwrap();
+            assert!(finalized.errors.is_empty(), "{:?}", finalized.errors);
+            assert_eq!(
+                published_hours(&finalized.replays[0]),
+                [(9, 2), (9, 3), (9, 4)]
+            );
+            assert_eq!(
+                finalized.omitted,
+                [Omission {
+                    campaign: campaign.to_owned(),
+                    load: Some(RELOAD),
+                    hours: 2,
+                    refusal: Some(refusal),
+                }]
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    /// Record pressed at the menu with automatic recording off. Campaign A
+    /// loads and records first, then campaign B, and the game closes before any
+    /// probe; B's UUID sorts before A's. Save-time decisions follow load
+    /// order, so Record belongs to A.
+    #[test]
+    fn save_time_decisions_follow_load_order_across_campaigns() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, allocation_records, allocation_test_directory,
+            write_campaign_spool,
+        };
+        use replay::spool::{ControlRecord, Record};
+        const LATER: &str = "00000000-0000-4000-8000-000000000001";
+        let first = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        assert!(LATER < first, "the later campaign's UUID sorts first");
+        let root = allocation_test_directory("load-order");
+        let session = root.join("session");
+        let output = root.join("replays");
+        write_campaign_spool(&session, &allocation_records());
+        // B: its own branch and load, witnessed after all of A's hours.
+        let later: Vec<_> = allocation_records()
+            .into_iter()
+            .map(|mut record| {
+                match &mut record {
+                    Record::BranchStart(branch) => branch.id = 12,
+                    Record::Frame(frame) => frame.branch = 12,
+                    Record::Control(ControlRecord::ClockWitness {
+                        qpc, load_signal, ..
+                    }) => {
+                        *qpc += 10_000;
+                        *load_signal = Some(31);
+                    }
+                    _ => {}
+                }
+                record
+            })
+            .collect();
+        let spool: Vec<u8> = later
+            .iter()
+            .flat_map(|record| replay::spool::encode_record(record).unwrap())
+            .collect();
+        fs::create_dir_all(session.join(LATER)).unwrap();
+        fs::write(session.join(LATER).join("spool.0000.h4s"), spool).unwrap();
+        assert_eq!(
+            replay_io::first_spooled_campaign(&session).as_deref(),
+            Some(first)
+        );
+        // Record pressed: the first campaign asked about records; others are off.
+        let chosen: RefCell<Option<String>> = RefCell::new(None);
+        let admit = |campaign: &str, _: bool| -> Result<(), Refusal> {
+            let mut chosen = chosen.borrow_mut();
+            let pressed = chosen.get_or_insert_with(|| campaign.to_owned()).as_str() == campaign;
+            if pressed { Ok(()) } else { Err(Refusal::Off) }
+        };
+        replay_io::begin_admissions(&session, &output).unwrap();
+        let mut admission = Admission::new(&session, &output);
+        admission.check_spooled(&admit).unwrap();
+        assert_eq!(chosen.borrow().as_deref(), Some(first));
+        let finalized =
+            replay_io::finalize_session_outcome_with_progress(&session, &output, &|| Ok(()))
+                .unwrap();
+        assert!(finalized.errors.is_empty(), "{:?}", finalized.errors);
+        assert_eq!(
+            published_hours(&finalized.replays[0]),
+            [(9, 2), (9, 3), (9, 4)]
+        );
+        assert_eq!(
+            finalized.omitted,
+            [Omission {
+                campaign: LATER.to_owned(),
+                load: Some(31),
+                hours: 3,
+                refusal: Some(Refusal::Off),
+            }]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// New file is pending and the campaign's first recording is still only
+    /// this session's spool. The reload, unpaused before the check, is refused;
+    /// then detach times out (or the recorder crashes), so only a later
+    /// `finalize` publishes.
+    #[test]
+    fn a_refused_reload_stays_unpublished_when_the_session_never_completes() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, allocation_records, allocation_test_directory,
+            two_load_records, write_campaign_spool,
+        };
+        let root = allocation_test_directory("refused-reload-unfinished");
+        let session = root.join("session");
+        let output = root.join("replays");
+        let campaign = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        // New file starts a new recording for a load that follows recorded hours.
+        let admit = |_: &str, recorded: bool| -> Result<(), Refusal> {
+            if recorded {
+                Err(Refusal::Elsewhere)
+            } else {
+                Ok(())
+            }
+        };
+        let recorded = |load| replay_io::recorded_before_load(&session.join(campaign), load);
+        replay_io::begin_admissions(&session, &output).unwrap();
+        let mut admission = Admission::new(&session, &output);
+        write_campaign_spool(&session, &allocation_records());
+        assert_eq!(
+            admission.check(campaign, FIRST_LOAD, || recorded(FIRST_LOAD), &admit),
+            Ok(Decision::Admitted)
+        );
+        write_campaign_spool(&session, &two_load_records());
+        assert_eq!(
+            admission.check(campaign, RELOAD, || recorded(RELOAD), &admit),
+            Ok(Decision::Refused)
+        );
+        assert!(!session.join("completed.json").exists());
+        let paths = replay_io::finalize_session(&session, &output).unwrap();
+        assert_eq!(published_hours(&paths[0]), [(9, 2), (9, 3), (9, 4)]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Attached to a paused campaign, the probe admits its load before the
+    /// collector names the campaign, and New file is chosen once recording
+    /// starts. Polls name only loads, so nothing uses the choice up until the
+    /// reload, which starts the new recording; the first load publishes alone.
+    #[test]
+    fn new_file_chosen_after_the_first_load_waits_for_the_reload() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, allocation_records, allocation_test_directory,
+            two_load_records, write_campaign_spool,
+        };
+        let root = allocation_test_directory("new-file-after-first-load");
+        let session = root.join("session");
+        let output = root.join("replays");
+        let campaign = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        // New file as the tray applies it: used up by the next load asked
+        // about, which starts a new recording when it follows recorded hours.
+        let new_file = Cell::new(false);
+        let admit = |_: &str, recorded: bool| -> Result<(), Refusal> {
+            if new_file.replace(false) && recorded {
+                Err(Refusal::Elsewhere)
+            } else {
+                Ok(())
+            }
+        };
+        let recorded = |load| replay_io::recorded_before_load(&session.join(campaign), load);
+        replay_io::begin_admissions(&session, &output).unwrap();
+        let mut admission = Admission::new(&session, &output);
+        assert_eq!(
+            admission.check(campaign, FIRST_LOAD, || recorded(FIRST_LOAD), &admit),
+            Ok(Decision::Admitted)
+        );
+        write_campaign_spool(&session, &allocation_records());
+        new_file.set(true);
+        // Later polls name the same load: nothing is asked, so New file waits.
+        assert_eq!(
+            admission.check(campaign, FIRST_LOAD, || recorded(FIRST_LOAD), &admit),
+            Ok(Decision::Seen)
+        );
+        assert!(new_file.get());
+        write_campaign_spool(&session, &two_load_records());
+        assert_eq!(
+            admission.check(campaign, RELOAD, || recorded(RELOAD), &admit),
+            Ok(Decision::Refused)
+        );
+        assert!(!new_file.get());
+        let finalized =
+            replay_io::finalize_session_outcome_with_progress(&session, &output, &|| Ok(()))
+                .unwrap();
+        assert!(finalized.errors.is_empty(), "{:?}", finalized.errors);
+        assert_eq!(
+            published_hours(&finalized.replays[0]),
+            [(9, 2), (9, 3), (9, 4)]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn repeated_finalization_of_a_failed_session_publishes_exactly_its_admitted_loads() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, allocation_test_directory, allocation_witness,
+            two_load_records, write_campaign_spool,
+        };
+        let root = allocation_test_directory("failed-session-admissions");
+        let session = root.join("session");
+        let output = root.join("replays");
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        let campaign = write_campaign_spool(&session, &two_load_records());
+        let committed = fs::metadata(campaign.join("spool.0000.h4s")).unwrap().len();
+        // The collector failed during the reload, which was never admitted.
+        let mut witness = allocation_witness(committed);
+        witness.branch = Some(10);
+        witness.load_signal = Some(RELOAD);
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        replay_io::begin_admissions(&session, &output).unwrap();
+        replay_io::Admissions::default()
+            .admit(&session, &output, name, FIRST_LOAD)
+            .unwrap();
+        // Each `finalize` rewrites the completion record; the admitted load,
+        // and only it, publishes every time, unchanged, and the record keeps
+        // the load it left out.
+        let recording = output.join(format!("{name}.battleplan"));
+        let mut published: Option<Vec<u8>> = None;
+        for _ in 0..2 {
+            let error = finalize_failed_session(&session, &output, &witness, true).unwrap_err();
+            assert!(error.contains("partial"), "{error}");
+            assert_eq!(published_hours(&recording), [(9, 2), (9, 3), (9, 4)]);
+            let bytes = fs::read(&recording).unwrap();
+            assert!(
+                published
+                    .replace(bytes.clone())
+                    .is_none_or(|previous| previous == bytes)
+            );
+            let completed: Value =
+                serde_json::from_slice(&fs::read(session.join("completed.json")).unwrap()).unwrap();
+            assert_eq!(
+                completed["omitted"],
+                json!([{"campaign": name, "load": RELOAD, "hours": 2, "reason": "not_admitted"}])
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_command_line_reads_status_once_a_minute_and_the_tray_every_two_seconds() {
+        let start = Instant::now();
+        let reads = |live| {
+            let mut schedule = StatusReads::new(live, start);
+            let (mut printed, mut live_reads) = (0, 0);
+            // Two minutes of the capture loop's 100 ms polls.
+            for step in 0..1_200 {
+                let now = start + Duration::from_millis(100 * step);
+                printed += u32::from(schedule.print_due(now));
+                if schedule.live_due(now) {
+                    live_reads += 1;
+                    schedule.live_read(now);
+                }
+            }
+            (printed, live_reads)
+        };
+        assert_eq!(reads(false), (2, 0));
+        assert_eq!(reads(true), (2, 60));
+        let options = parse_options("record", vec!["--out".into(), "captures".into()]).unwrap();
+        let user = PathBuf::from("user");
+        let capture = cli_capture(&options, &user);
+        assert!(!capture.live_status);
+        assert!(capture.admit.is_none() && capture.loaded.is_none());
+        assert_eq!(capture.target, capture.output);
+    }
+
+    #[test]
+    fn discarded_session_keeps_only_its_completion_record_and_refuses_finalization() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4-discard-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let session = root.join("sessions").join("7-1");
+        let campaign = session.join("00000000-0000-4000-8000-000000000000");
+        fs::create_dir_all(session.join("bin")).unwrap();
+        fs::create_dir_all(&campaign).unwrap();
+        fs::write(session.join("bin/collector.dll"), b"synthetic").unwrap();
+        fs::write(campaign.join("spool.0001.h4s"), b"synthetic").unwrap();
+        fs::write(session.join(WITNESS_FILE_NAME), b"synthetic").unwrap();
+        write_json(&session.join("status.json"), &json!({"session":7})).unwrap();
+        // An earlier recording of the campaign sits beside the sessions folder.
+        let earlier = root.join("00000000-0000-4000-8000-000000000000.battleplan");
+        fs::write(&earlier, b"earlier recording").unwrap();
+        let active = root.join("active.json");
+        write_json(&active, &json!({"session_dir": session})).unwrap();
+        assert!(!session_discarded(&session));
+        write_json(
+            &session.join("completed.json"),
+            &json!({"replays":[],"discarded":true,"partial":false,"issues":[]}),
+        )
+        .unwrap();
+        remove_active(&active, &session).unwrap();
+        discard_session(&session).unwrap();
+        let left: Vec<_> = fs::read_dir(&session)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["completed.json"]);
+        assert!(!active.exists());
+        assert_eq!(fs::read(&earlier).unwrap(), b"earlier recording");
+        assert!(session_discarded(&session));
+        let error = command(vec![
+            "finalize".into(),
+            session.clone().into_os_string(),
+            "--out".into(),
+            root.clone().into_os_string(),
+        ])
+        .unwrap_err();
+        assert!(error.contains("discarded"), "{error}");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -60,7 +60,7 @@ test('manual compaction reloads open campaigns for either entry point and waits 
   } finally { delete globals.__compactedCampaignFixture; await vite.close(); }
 });
 
-test('native source retention precedes opening and follows release, including failed or cancelled opens', async () => {
+test('opening and releasing native sources sends only dashboard commands, including failed or cancelled opens', async () => {
   const calls: [string, any][] = [];
   let failOpen = false;
   let pendingOpen: ((reply: unknown) => void) | undefined;
@@ -89,21 +89,20 @@ test('native source retention precedes opening and follows release, including fa
   try {
     const { nativeDashboardClient: client } = await vite.ssrLoadModule('/ui/src/dashboard/nativeClient.ts');
     const source = await client.openSource(path, new AbortController().signal);
-    assert.deepEqual(calls[0], ['set_compaction_recording_open', { path, open: true }]);
-    assert.equal(calls[1][0], 'dashboard_open_source');
-    await Promise.all([client.releaseSource(source.id), client.releaseSource(source.id)]);
-    assert.equal(calls.filter(([command]) => command === 'set_compaction_recording_open').length, 2, 'duplicate releases remove one retention');
-    assert.deepEqual(calls.slice(-2), [['dashboard_release_source', { sourceId: 'lease' }], ['set_compaction_recording_open', { path, open: false }]]);
+    assert.deepEqual(calls.map(([command]) => command), ['dashboard_open_source']);
+    await client.releaseSource(source.id);
+    assert.deepEqual(calls.at(-1), ['dashboard_release_source', { sourceId: 'lease' }]);
     failOpen = true;
     await assert.rejects(client.openSource(path, new AbortController().signal), /synthetic open failure/);
-    assert.deepEqual(calls.at(-1), ['set_compaction_recording_open', { path, open: false }]);
     failOpen = false; delayOpen = true;
     const controller = new AbortController();
     const opening = client.openSource(path, controller.signal);
     await tick(); controller.abort();
     pendingOpen!({ id: 'late', path, revision: 'new', metadata: {} });
     await assert.rejects(opening, { name: 'AbortError' });
-    assert.deepEqual(calls.slice(-2), [['dashboard_release_source', { sourceId: 'late' }], ['set_compaction_recording_open', { path, open: false }]]);
+    assert.deepEqual(calls.at(-1), ['dashboard_release_source', { sourceId: 'late' }]);
+    // The recorder compacts automatically; the app keeps no open-recording retention for it.
+    assert.ok(calls.every(([command]) => command.startsWith('dashboard_')), JSON.stringify(calls));
   } finally { delete globals.__compactionNativeFixture; await vite.close(); }
 });
 

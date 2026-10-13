@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { loadCampaignSettings } from './campaignSettings.ts';
-import { MAX_RECORDING_NAMES_STORAGE, loadRecordingNames, parseRecordingNames, recordingDisplayName, recordingNameMatches,
-  recordingNameTooltip, saveRecordingNames, setRecordingName } from './recordingNames.ts';
+import { MAX_RECORDING_NAMES_STORAGE, loadRecordingNames, parseRecordingNames, recordingDisplayName, recordingNameChanges,
+  recordingNameMatches, recordingNameTooltip, saveRecordingNames, setRecordingName, shareRecordingNames } from './recordingNames.ts';
+import type { RecordingNameChanges, RecordingNames } from './recordingNames.ts';
 
 const memory = () => { const values = new Map<string, string>(); return { values, getItem: (key: string) => values.get(key) ?? null,
   setItem: (key: string, value: string) => { values.set(key, value); } }; };
@@ -80,4 +81,49 @@ test('the complete settings storage budget is accepted; excess and device failur
   assert.match(saveRecordingNames(setRecordingName(names, path, `${names['c:/recordings/original.battleplan']}x`), storage)!, /could not be saved/);
   assert.deepEqual(loadRecordingNames(storage), names, 'a refused save leaves the last persisted names intact');
   assert.match(saveRecordingNames({}, { getItem: () => null, setItem: () => { throw new Error('full'); } })!, /until the app closes/);
+});
+
+test('name changes list only the recordings whose names were set or cleared', () => {
+  const before = { 'c:/a.battleplan': 'A', 'c:/b.battleplan': 'B', 'c:/c.battleplan': 'C' };
+  assert.deepEqual(recordingNameChanges(before, { 'c:/a.battleplan': 'A', 'c:/b.battleplan': 'Renamed', 'c:/d.battleplan': 'D' }),
+    { 'c:/b.battleplan': 'Renamed', 'c:/c.battleplan': null, 'c:/d.battleplan': 'D' });
+  assert.deepEqual(recordingNameChanges(before, { ...before }), {});
+});
+
+// Last in this file: sharing changes where every later save goes.
+test('desktop names move once into the shared settings, and each save there sends only what it changes', async () => {
+  const key = 'battle-plan.recording-names.v1';
+  const values = new Map<string, string>([[key, JSON.stringify({ 'C:/recordings/Local.battleplan': 'Local name',
+    'C:/recordings/Only here.battleplan': 'Only on this device' })]]);
+  const storage = { getItem: (item: string) => values.get(item) ?? null, setItem: (item: string, value: string) => { values.set(item, value); },
+    removeItem: (item: string) => { values.delete(item); } };
+  const saved: RecordingNameChanges[] = [];
+  const save = async (changes: RecordingNameChanges) => { saved.push(changes); };
+  const stored = { 'c:/recordings/shared.battleplan': 'Shared name', 'c:/recordings/local.battleplan': 'Shared wins' };
+  await shareRecordingNames(stored, save, storage);
+  // Only the name the shared settings lack is sent; the shared one wins where both exist.
+  assert.deepEqual(saved, [{ 'c:/recordings/only here.battleplan': 'Only on this device' }]);
+  assert.equal(values.has(key), false, 'this device no longer holds the names');
+  const names: RecordingNames = { ...stored, 'c:/recordings/only here.battleplan': 'Only on this device' };
+  const reports: (string | null)[] = [];
+  // A rename sends that one recording's name, never the rest of this session's names, so
+  // a name Battle Plan Recorder's settings gained meanwhile survives.
+  const renamed = setRecordingName(names, 'C:/recordings/Shared.battleplan', 'Renamed');
+  assert.equal(saveRecordingNames(renamed, storage, error => reports.push(error)), null);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(saved.at(-1), { 'c:/recordings/shared.battleplan': 'Renamed' });
+  assert.equal(saveRecordingNames(setRecordingName(renamed, 'C:/recordings/Local.battleplan', ''), storage, error => reports.push(error)), null);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(saved.at(-1), { 'c:/recordings/local.battleplan': null });
+  assert.deepEqual(reports, [null, null]);
+  assert.equal(values.size, 0, 'nothing is written to this device');
+  // A later start finds nothing on this device to move.
+  await shareRecordingNames(stored, save, storage);
+  assert.equal(saved.length, 3);
+  // A failed shared save is reported; the name still applies for this session.
+  await shareRecordingNames({}, async () => { throw new Error('denied'); }, storage);
+  const failures: (string | null)[] = [];
+  assert.equal(saveRecordingNames({ 'c:/recordings/shared.battleplan': 'Kept' }, storage, error => failures.push(error)), null);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match(failures[0]!, /could not be saved/);
 });

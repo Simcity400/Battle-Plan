@@ -7,7 +7,7 @@ use replay::{
     rows::{CampaignRow, ClockRow, TableId, TableRows},
     spool::Record,
 };
-use std::{cell::Cell, fs};
+use std::{fs, time::Duration};
 
 struct Fixture(PathBuf);
 impl Fixture {
@@ -93,130 +93,37 @@ impl Drop for Fixture {
 }
 
 #[test]
-fn automatic_requires_small_game_and_recorder_exit_and_manual_ignores_both() {
-    let fixture = Fixture::new();
-    let before = fs::read(&fixture.0).unwrap();
-    for (preference, game, recorder) in [
-        (RecordingCompression::Fast, false, false),
-        (RecordingCompression::Fast, true, false),
-        (RecordingCompression::Small, true, false),
-        (RecordingCompression::Small, false, true),
-    ] {
-        let error = compact_in_environment(
-            &fixture.0,
-            true,
-            || Ok((preference, game, recorder)),
-            |_, _| panic!("ineligible automatic work started"),
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert_eq!(fs::read(&fixture.0).unwrap(), before);
-    }
-    assert!(
-        compact_in_environment(
-            &fixture.0,
-            true,
-            || Ok((RecordingCompression::Small, false, false)),
-            |_, _| Ok(())
-        )
-        .is_ok()
+fn the_app_never_compacts_on_its_own() {
+    // The recorder compacts after the game closes; starting the app only loads hints.
+    let host = CompactionHost::default();
+    host.start().unwrap();
+    assert!(host.0.workers.lock().unwrap().is_empty());
+    assert!(!host.0.active.load(Ordering::Acquire));
+    assert_eq!(
+        *host.0.progress.lock().unwrap(),
+        CompactionProgress::default()
     );
-    for preference in [RecordingCompression::Fast, RecordingCompression::Small] {
-        let calls = Cell::new(0);
-        let result = compact_in_environment(
-            &fixture.0,
-            false,
-            || {
-                calls.set(calls.get() + 1);
-                Ok((preference, true, true))
-            },
-            |_, _| Ok(()),
-        )
-        .unwrap();
-        assert!(matches!(
-            result.outcome,
-            CompactionOutcome::AlreadySmall | CompactionOutcome::Compacted
-        ));
-        assert_eq!(
-            calls.get(),
-            0,
-            "manual work never consults the automatic gate"
-        );
-    }
+}
+
+#[test]
+fn manual_compaction_runs_whatever_the_preference_game_or_recorder() {
+    let fixture = Fixture::new();
+    let inner = Inner::default();
+    let result = compact_in_host(&inner, &fixture.0, |_| Ok(())).unwrap();
+    assert!(matches!(
+        result.outcome,
+        CompactionOutcome::AlreadySmall | CompactionOutcome::Compacted
+    ));
     fixture.clean();
 }
 
 #[test]
-fn new_game_recorder_or_fast_preference_cancels_automatic_work_promptly_and_cleans_candidate() {
-    for new_environment in [
-        (RecordingCompression::Small, true, false),
-        (RecordingCompression::Small, false, true),
-        (RecordingCompression::Fast, false, false),
-    ] {
-        let fixture = Fixture::new();
-        let before = fs::read(&fixture.0).unwrap();
-        let changed = Cell::new(false);
-        let verified = Cell::new(false);
-        let error = compact_in_environment(
-            &fixture.0,
-            true,
-            || {
-                Ok(if changed.get() {
-                    new_environment
-                } else {
-                    (RecordingCompression::Small, false, false)
-                })
-            },
-            |stage, _| {
-                if stage == CompactionStage::TempCreated {
-                    changed.set(true);
-                    thread::sleep(Duration::from_millis(260));
-                }
-                if stage == CompactionStage::Verified {
-                    verified.set(true);
-                }
-                Ok(())
-            },
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert!(
-            !verified.get(),
-            "stop at the next streaming checkpoint, before verification completes"
-        );
-        assert_eq!(fs::read(&fixture.0).unwrap(), before);
-        fixture.clean();
-    }
-}
-
-#[test]
-fn automatic_checkpoints_do_not_overwrite_manual_results_and_manual_requests_cancel_them() {
+fn manual_checkpoints_report_block_progress() {
     let inner = Inner::default();
-    let manual = CompactionProgress {
-        total: 3,
-        completed: 3,
-        compacted: 1,
-        bytes_saved: 1234,
-        unchanged: vec![CompactionFailure {
-            path: "synthetic".into(),
-            reason: "Busy; try again later".into(),
-        }],
-        ..Default::default()
-    };
-    *inner.progress.lock().unwrap() = manual.clone();
-    checkpoint(&inner, true, CompactionStage::Started { blocks: 10 }).unwrap();
-    checkpoint(&inner, true, CompactionStage::BlockWritten(5)).unwrap();
-    assert_eq!(*inner.progress.lock().unwrap(), manual);
-    inner.manual_active.store(true, Ordering::Release);
-    assert_eq!(
-        checkpoint(&inner, true, CompactionStage::BeforeReplace)
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::Interrupted
-    );
-    assert_eq!(*inner.progress.lock().unwrap(), manual);
-    checkpoint(&inner, false, CompactionStage::Started { blocks: 2 }).unwrap();
-    assert_eq!(inner.progress.lock().unwrap().blocks_total, 2);
+    checkpoint(&inner, CompactionStage::Started { blocks: 10 }).unwrap();
+    checkpoint(&inner, CompactionStage::BlockWritten(5)).unwrap();
+    let progress = inner.progress.lock().unwrap().clone();
+    assert_eq!((progress.blocks_total, progress.blocks_completed), (10, 6));
 }
 
 #[test]
@@ -274,115 +181,22 @@ fn manual_results_report_every_unchanged_outcome_without_size_increases() {
 }
 
 #[test]
-fn loaded_recordings_skip_automatic_work_but_remain_manually_compactable() {
-    let fixture = Fixture::new();
-    let inner = Inner::default();
-    inner
-        .loaded
-        .lock()
-        .unwrap()
-        .insert(store::key(&fixture.0), 1);
-    let before = fs::read(&fixture.0).unwrap();
-    let error = compact_in_host(
-        &inner,
-        &fixture.0,
-        true,
-        || Ok((RecordingCompression::Small, false, false)),
-        |_| Ok(()),
-    )
-    .unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-    assert_eq!(fs::read(&fixture.0).unwrap(), before);
-    compact_in_host(
-        &inner,
-        &fixture.0,
-        false,
-        || panic!("manual work checked the recorder/game/preference"),
-        |_| Ok(()),
-    )
-    .unwrap();
-    assert!(is_loaded(&inner, &fixture.0));
-    fixture.clean();
-}
-
-#[test]
-fn opening_a_recording_cancels_automatic_frame_work() {
-    let fixture = Fixture::new();
-    let inner = Inner::default();
-    let before = fs::read(&fixture.0).unwrap();
-    let error = compact_in_host(
-        &inner,
-        &fixture.0,
-        true,
-        || Ok((RecordingCompression::Small, false, false)),
-        |stage| {
-            if matches!(stage, CompactionStage::FrameEncoded { frame: 0, .. }) {
-                inner
-                    .loaded
-                    .lock()
-                    .unwrap()
-                    .insert(store::key(&fixture.0), 1);
-            }
-            Ok(())
-        },
-    )
-    .unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-    assert_eq!(fs::read(&fixture.0).unwrap(), before);
-    fixture.clean();
-}
-
-#[test]
-fn game_start_during_frame_verification_stops_before_the_next_frame() {
-    let fixture = Fixture::new();
-    let before = fs::read(&fixture.0).unwrap();
-    let game = Cell::new(false);
-    let frames = Cell::new(0);
-    let error = compact_in_environment(
-        &fixture.0,
-        true,
-        || Ok((RecordingCompression::Small, game.get(), false)),
-        |stage, _| {
-            if matches!(stage, CompactionStage::FrameVerified { .. }) {
-                frames.set(frames.get() + 1);
-                game.set(true);
-                thread::sleep(Duration::from_millis(260));
-            }
-            Ok(())
-        },
-    )
-    .unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-    assert_eq!(frames.get(), 1);
-    assert_eq!(fs::read(&fixture.0).unwrap(), before);
-    fixture.clean();
-}
-
-#[test]
 fn closed_app_cancels_frame_work_and_library_traversal() {
     let fixture = Fixture::new();
     let inner = Inner::default();
     let before = fs::read(&fixture.0).unwrap();
-    let error = compact_in_host(
-        &inner,
-        &fixture.0,
-        false,
-        || panic!("manual environment check"),
-        |stage| {
-            if matches!(stage, CompactionStage::FrameEncoded { frame: 0, .. }) {
-                inner.closed.store(true, Ordering::Release);
-            }
-            Ok(())
-        },
-    )
+    let error = compact_in_host(&inner, &fixture.0, |stage| {
+        if matches!(stage, CompactionStage::FrameEncoded { frame: 0, .. }) {
+            inner.closed.store(true, Ordering::Release);
+        }
+        Ok(())
+    })
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-    let mut checked = Instant::now();
-    let error = crate::replay_library::scan_with(fixture.0.parent().unwrap(), || {
-        scan_checkpoint(&inner, false, &mut checked)
-    })
-    .err()
-    .unwrap();
+    let error =
+        crate::replay_library::scan_with(fixture.0.parent().unwrap(), || scan_checkpoint(&inner))
+            .err()
+            .unwrap();
     assert!(error.contains("cancelled"));
     assert_eq!(fs::read(&fixture.0).unwrap(), before);
     fixture.clean();

@@ -871,6 +871,27 @@ fn shared_partial_and_unavailable_clear_baselines_until_a_complete_snapshot() {
 }
 
 #[test]
+fn committed_rows_follow_the_last_complete_sample_and_clear_with_its_loss() {
+    let table = TableId::Countries;
+    let mut encoder = FrameEncoder::new();
+    assert!(encoder.committed::<tables::Countries>().is_none());
+    let first = source(1, 0);
+    let rows = first.complete::<tables::Countries>().unwrap().to_vec();
+    encoder.encode(first, true).unwrap();
+    assert_eq!(
+        encoder.committed::<tables::Countries>(),
+        Some((0, rows.as_slice()))
+    );
+    // A failed read leaves no committed rows to stand for the current hour.
+    let mut failed = shared_input(source(1, 1));
+    failed.tables[table.index()] = TableInput::Sampled(TableView::Unavailable {
+        reason: "synthetic read failure".into(),
+    });
+    encoder.encode_input(failed, false).unwrap();
+    assert!(encoder.committed::<tables::Countries>().is_none());
+}
+
+#[test]
 fn shared_validation_is_atomic_and_preserves_existing_comparison_tokens() {
     let mut encoder = FrameEncoder::new();
     encoder

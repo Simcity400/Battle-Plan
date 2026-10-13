@@ -619,6 +619,45 @@ fn history_preserves_exact_hours_and_parentage_across_blocks_and_sessions() {
 }
 
 #[test]
+fn trailer_hour_span_covers_every_branch_without_reading_blocks() {
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, &[5, 9, 721]), records(2, &[3, 4])],
+    )
+    .unwrap();
+    let length = replay.bytes().len() as u64;
+    let (partial, span) =
+        Replay::read_trailer_summary(&mut std::io::Cursor::new(replay.bytes()), length).unwrap();
+    assert!(partial.is_none());
+    assert_eq!(span, Some((3, 721)));
+    // Block payloads are not read: damaging one leaves the span readable.
+    let mut damaged = replay.bytes().to_vec();
+    let block = replay.index[0].offset as usize;
+    damaged[block + 8] ^= 0xff;
+    assert_eq!(
+        Replay::read_trailer_summary(&mut std::io::Cursor::new(&damaged), length)
+            .unwrap()
+            .1,
+        Some((3, 721))
+    );
+    // The checksum is left to full opening: damage the index entries do not
+    // read leaves the span readable, as the trailer's terminal notice is.
+    let trailer_byte = length as usize - FOOTER_SIZE - 1;
+    damaged[trailer_byte] ^= 0xff;
+    assert_eq!(
+        Replay::read_trailer_summary(&mut std::io::Cursor::new(&damaged), length)
+            .unwrap()
+            .1,
+        Some((3, 721))
+    );
+    // A trailer that cannot be read is refused rather than guessed.
+    let footer = length as usize - FOOTER_SIZE;
+    let trailer = u64::from_le_bytes(damaged[footer + 4..footer + 12].try_into().unwrap()) as usize;
+    damaged[trailer] ^= 0xff;
+    assert!(Replay::read_trailer_summary(&mut std::io::Cursor::new(&damaged), length).is_err());
+}
+
+#[test]
 fn history_resumes_last_written_branch_and_checks_actual_session_metadata() {
     let mut input = records(1, &[1, 3]);
     input.push(Record::BranchStart(BranchStart {

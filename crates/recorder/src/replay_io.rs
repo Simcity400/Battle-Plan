@@ -19,7 +19,12 @@ use replay::{
     witness::{TerminalWitness, WITNESS_BYTES, WITNESS_FILE_NAME},
 };
 
+use crate::recording::{Omission, Refusal};
+
 type Result<T> = std::result::Result<T, String>;
+/// The replay a campaign published, if any, and each load left out with its
+/// load signal and recorded hours.
+type CampaignOutcome = (Option<PathBuf>, Vec<(Option<i64>, u64)>);
 
 const ALLOCATION_GAP_REASON: &str = "collector allocation failed";
 
@@ -41,10 +46,16 @@ fn finalization_metadata(mut record: Record) -> std::io::Result<Record> {
 struct FinalizationFrames {
     paths: BTreeMap<u32, (PathBuf, usize)>,
     current: Option<(u32, RecordReader<fs::File>)>,
+    /// Branches of loads that are not published; their frames are passed over.
+    skipped: BTreeSet<BranchId>,
 }
 
 impl FinalizationFrames {
-    fn new(paths: &[(u32, PathBuf)], segments: &[(u32, Recovery)]) -> Self {
+    fn new(
+        paths: &[(u32, PathBuf)],
+        segments: &[(u32, Recovery)],
+        skipped: BTreeSet<BranchId>,
+    ) -> Self {
         Self {
             paths: paths
                 .iter()
@@ -56,6 +67,7 @@ impl FinalizationFrames {
                 })
                 .collect(),
             current: None,
+            skipped,
         }
     }
 
@@ -75,6 +87,9 @@ impl FinalizationFrames {
         let reader = &mut self.current.as_mut().unwrap().1;
         while let Some(record) = reader.next_record()? {
             if let Record::Frame(frame) = record {
+                if self.skipped.contains(&frame.branch) {
+                    continue;
+                }
                 if (frame.branch, frame.hour, frame.keyframe)
                     != (expected.branch, expected.hour, expected.keyframe)
                 {
@@ -210,21 +225,417 @@ fn campaign_filename(id: &[u8]) -> Result<&str> {
     std::str::from_utf8(id).map_err(|error| error.to_string())
 }
 
-/// Call only after detach and module-absence confirmation, or after process exit.
-pub fn finalize_session(session_dir: &Path, replay_dir: &Path) -> Result<Vec<PathBuf>> {
-    let (paths, errors) = finalize_session_outcome(session_dir, replay_dir)?;
-    if errors.is_empty() {
-        Ok(paths)
-    } else {
-        Err(errors.join("\n"))
+/// The campaign folders of a session that hold spool segments.
+pub(crate) fn spooled_campaigns(session_dir: &Path) -> Result<Vec<String>> {
+    let mut campaigns = Vec::new();
+    for entry in fs::read_dir(session_dir).map_err(|error| failure(session_dir, error))? {
+        let entry = entry.map_err(|error| failure(session_dir, error))?;
+        if !entry
+            .file_type()
+            .map_err(|error| failure(&entry.path(), error))?
+            .is_dir()
+            || segment_paths(&entry.path())?.is_empty()
+        {
+            continue;
+        }
+        if let Some(name) = entry.file_name().to_str() {
+            campaigns.push(name.to_owned());
+        }
+    }
+    campaigns.sort();
+    Ok(campaigns)
+}
+
+/// Whether any campaign folder of a session holds a spool segment.
+pub(crate) fn has_campaign_spools(session_dir: &Path) -> Result<bool> {
+    Ok(!spooled_campaigns(session_dir)?.is_empty())
+}
+
+/// The loads a Battle Plan Recorder session admitted, by campaign and the collector's
+/// load signal: the only hours the session publishes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Admissions {
+    pub loads: BTreeMap<String, BTreeSet<i64>>,
+    /// Loads refused, with why: kept to report what was left out, never to
+    /// decide what is published.
+    pub refused: BTreeMap<(String, i64), Refusal>,
+}
+
+/// A Battle Plan Recorder session's admission record in its folder: each admitted
+/// campaign and load signal with the folder the session publishes into, and
+/// each refused load with why, rewritten atomically as each load is decided.
+pub(crate) const ADMISSIONS_FILE: &str = "admitted.json";
+/// In the session's `bin` folder, written before the collector starts: it
+/// marks a Battle Plan Recorder session, so a missing admission record publishes
+/// nothing rather than everything.
+pub(crate) const ADMISSION_MARKER: &str = "recorder.json";
+
+impl Admissions {
+    fn to_json(&self, target: &Path) -> serde_json::Value {
+        let loads: Vec<_> = self
+            .loads
+            .iter()
+            .flat_map(|(campaign, loads)| {
+                loads.iter().map(move |load| {
+                    serde_json::json!({"campaign": campaign, "load": load, "target": target})
+                })
+            })
+            .collect();
+        let refused: Vec<_> = self
+            .refused
+            .iter()
+            .map(|((campaign, load), refusal)| {
+                serde_json::json!({"campaign": campaign, "load": load, "reason": refusal.as_str()})
+            })
+            .collect();
+        serde_json::json!({ "loads": loads, "refused": refused })
+    }
+
+    /// Admit a load: it is on disk before this returns, so a crash or an
+    /// unfinished session still publishes it, and nothing else.
+    pub(crate) fn admit(
+        &mut self,
+        session_dir: &Path,
+        target: &Path,
+        campaign: &str,
+        load: i64,
+    ) -> Result<()> {
+        let mut next = self.clone();
+        next.loads
+            .entry(campaign.to_owned())
+            .or_default()
+            .insert(load);
+        crate::recording::write_json(&session_dir.join(ADMISSIONS_FILE), &next.to_json(target))?;
+        *self = next;
+        Ok(())
+    }
+
+    /// Note why a load was refused, for reporting. It is never published
+    /// either way; a failed write only loses the reason.
+    pub(crate) fn refuse(
+        &mut self,
+        session_dir: &Path,
+        target: &Path,
+        campaign: &str,
+        load: i64,
+        refusal: Refusal,
+    ) -> Result<()> {
+        self.refused.insert((campaign.to_owned(), load), refusal);
+        crate::recording::write_json(&session_dir.join(ADMISSIONS_FILE), &self.to_json(target))
+    }
+
+    /// A left-out load as reported: refused with its reason, or never admitted.
+    fn omission(&self, campaign: &str, load: Option<i64>, hours: u64) -> Omission {
+        Omission {
+            campaign: campaign.to_owned(),
+            load,
+            hours,
+            refusal: load.and_then(|load| self.refused.get(&(campaign.to_owned(), load)).copied()),
+        }
     }
 }
 
-/// Keep successfully written campaigns visible when another campaign is incomplete.
-pub(crate) fn finalize_session_outcome(
-    session_dir: &Path,
-    replay_dir: &Path,
-) -> Result<(Vec<PathBuf>, Vec<String>)> {
+/// Start a Battle Plan Recorder session's admission record, with no load admitted,
+/// then its marker. Call before the collector starts.
+pub(crate) fn begin_admissions(session_dir: &Path, target: &Path) -> Result<()> {
+    fs::create_dir_all(session_dir.join("bin")).map_err(|error| failure(session_dir, error))?;
+    crate::recording::write_json(
+        &session_dir.join(ADMISSIONS_FILE),
+        &Admissions::default().to_json(target),
+    )?;
+    crate::recording::write_json(
+        &session_dir.join("bin").join(ADMISSION_MARKER),
+        &serde_json::json!({ "admission": ADMISSIONS_FILE }),
+    )
+}
+
+/// The loads a session admitted. `None`: not a Battle Plan Recorder session (the
+/// command line), so every load publishes as it always has. A Battle Plan Recorder
+/// session whose record is missing or unreadable refuses finalization, so
+/// nothing is published.
+pub(crate) fn session_admissions(session_dir: &Path) -> Result<Option<Admissions>> {
+    if !session_dir.join("bin").join(ADMISSION_MARKER).is_file() {
+        return Ok(None);
+    }
+    let path = session_dir.join(ADMISSIONS_FILE);
+    let unreadable = || {
+        failure(
+            &path,
+            "the admission record is missing or unreadable; nothing published; spool retained",
+        )
+    };
+    let record: serde_json::Value = fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .ok_or_else(unreadable)?;
+    let mut admissions = Admissions::default();
+    for entry in record["loads"].as_array().ok_or_else(unreadable)? {
+        let campaign = entry["campaign"].as_str().ok_or_else(unreadable)?;
+        let load = entry["load"].as_i64().ok_or_else(unreadable)?;
+        admissions
+            .loads
+            .entry(campaign.to_owned())
+            .or_default()
+            .insert(load);
+    }
+    if let Some(refused) = record.get("refused") {
+        for entry in refused.as_array().ok_or_else(unreadable)? {
+            let campaign = entry["campaign"].as_str().ok_or_else(unreadable)?;
+            let load = entry["load"].as_i64().ok_or_else(unreadable)?;
+            let refusal = entry["reason"]
+                .as_str()
+                .and_then(Refusal::parse)
+                .ok_or_else(unreadable)?;
+            admissions
+                .refused
+                .insert((campaign.to_owned(), load), refusal);
+        }
+    }
+    Ok(Some(admissions))
+}
+
+/// The first clock witness of a campaign's spool (its time and load signal).
+/// Reads only the first records of the first segment, so it is safe while the
+/// collector is still writing.
+fn first_witness(campaign_dir: &Path) -> Option<(u64, Option<i64>)> {
+    let (_, first) = segment_paths(campaign_dir).ok()?.into_iter().next()?;
+    let file = fs::File::open(&first).ok()?;
+    let length = usize::try_from(file.metadata().ok()?.len()).ok()?;
+    let mut reader = RecordReader::new(file, length);
+    while let Ok(Some(record)) = reader.next_record() {
+        if let Record::Control(ControlRecord::ClockWitness {
+            qpc, load_signal, ..
+        }) = record
+        {
+            return Some((qpc, load_signal));
+        }
+    }
+    None
+}
+
+/// Whether this session's spool for a campaign already holds hours from before
+/// load `load`: its first clock witness carries another load signal (or none).
+pub(crate) fn recorded_before_load(campaign_dir: &Path, load: i64) -> bool {
+    first_witness(campaign_dir).is_some_and(|(_, signal)| signal != Some(load))
+}
+
+/// The campaign this session loaded first, as its spool shows: the one whose
+/// first clock witness is earliest. Every campaign's witnesses share the
+/// session's clock. Reads only the first records of each campaign's spool.
+pub(crate) fn first_spooled_campaign(session_dir: &Path) -> Option<String> {
+    spooled_campaigns(session_dir)
+        .ok()?
+        .into_iter()
+        .filter(|campaign| is_campaign_uuid(campaign.as_bytes()))
+        .filter_map(|campaign| Some((first_witness(&session_dir.join(&campaign))?.0, campaign)))
+        .min_by_key(|(qpc, _)| *qpc)
+        .map(|(_, campaign)| campaign)
+}
+
+/// Each spool branch's load, first clock witness time and hours, read from
+/// its records: a branch's load is the first load signal its clock witnesses
+/// carry. A branch continuing into a later segment repeats its start there.
+#[derive(Default)]
+struct BranchLoads {
+    order: Vec<BranchId>,
+    loads: BTreeMap<BranchId, i64>,
+    first_qpc: BTreeMap<BranchId, u64>,
+    hours: BTreeMap<BranchId, u64>,
+    current: Option<BranchId>,
+}
+
+impl BranchLoads {
+    fn observe(&mut self, record: &Record) {
+        match record {
+            Record::SessionStart(_) => self.current = None,
+            Record::BranchStart(branch) => {
+                if !self.order.contains(&branch.id) {
+                    self.order.push(branch.id);
+                }
+                self.current = Some(branch.id);
+            }
+            Record::Control(ControlRecord::ClockWitness {
+                qpc, load_signal, ..
+            }) => {
+                if let Some(branch) = self.current {
+                    self.first_qpc.entry(branch).or_insert(*qpc);
+                    if let Some(signal) = load_signal {
+                        self.loads.entry(branch).or_insert(*signal);
+                    }
+                }
+            }
+            Record::Frame(frame) => *self.hours.entry(frame.branch).or_default() += 1,
+            _ => {}
+        }
+    }
+
+    /// The loads of `branches`, in spool order, with the hours each recorded;
+    /// hours of branches with no identified load count under `None`.
+    fn by_load(&self, branches: impl Iterator<Item = BranchId>) -> Vec<(Option<i64>, u64)> {
+        let mut result: Vec<(Option<i64>, u64)> = Vec::new();
+        for branch in branches {
+            let load = self.loads.get(&branch).copied();
+            let hours = self.hours.get(&branch).copied().unwrap_or(0);
+            match result.iter_mut().find(|(known, _)| *known == load) {
+                Some((_, total)) => *total += hours,
+                None => result.push((load, hours)),
+            }
+        }
+        result
+    }
+}
+
+/// A campaign's spool branches, read from each segment's valid prefix, as
+/// recovery reads it.
+fn read_branch_loads(campaign_dir: &Path) -> Result<BranchLoads> {
+    let mut branches = BranchLoads::default();
+    for (_, path) in segment_paths(campaign_dir)? {
+        let file = fs::File::open(&path).map_err(|error| failure(&path, error))?;
+        let length = file
+            .metadata()
+            .map_err(|error| failure(&path, error))?
+            .len();
+        let length = usize::try_from(length).map_err(|error| failure(&path, error))?;
+        let mut reader = RecordReader::new(file, length);
+        branches.current = None;
+        loop {
+            match reader.next_record() {
+                Ok(Some(record)) => branches.observe(&record),
+                Ok(None) => break,
+                // Damage ends a segment's readable prefix.
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
+                    ) =>
+                {
+                    break;
+                }
+                Err(error) => return Err(failure(&path, error)),
+            }
+        }
+    }
+    Ok(branches)
+}
+
+/// Each load in a campaign's spool, in spool order, with the hours it recorded.
+pub(crate) fn spool_loads(campaign_dir: &Path) -> Result<Vec<(Option<i64>, u64)>> {
+    let branches = read_branch_loads(campaign_dir)?;
+    Ok(branches.by_load(branches.order.iter().copied()))
+}
+
+/// Every load this session's spool identifies, in the order they were loaded
+/// across campaigns: by each load's first clock witness, since every
+/// campaign's witnesses share the session's clock.
+pub(crate) fn spooled_loads(session_dir: &Path) -> Result<Vec<(String, i64)>> {
+    let mut loads: Vec<(u64, String, i64)> = Vec::new();
+    for campaign in spooled_campaigns(session_dir)? {
+        if !is_campaign_uuid(campaign.as_bytes()) {
+            continue;
+        }
+        let branches = read_branch_loads(&session_dir.join(&campaign))?;
+        for branch in &branches.order {
+            if let (Some(load), Some(qpc)) =
+                (branches.loads.get(branch), branches.first_qpc.get(branch))
+            {
+                loads.push((*qpc, campaign.clone(), *load));
+            }
+        }
+    }
+    loads.sort_by_key(|(qpc, _, _)| *qpc);
+    let mut seen = BTreeSet::new();
+    Ok(loads
+        .into_iter()
+        .filter(|(_, campaign, load)| seen.insert((campaign.clone(), *load)))
+        .map(|(_, campaign, load)| (campaign, load))
+        .collect())
+}
+
+/// Keep only the branches of a campaign's recovered spool whose load is
+/// admitted. Each load starts its own branch, and a branch's load is the first
+/// load signal its clock witnesses carry; a branch with none is not admitted.
+/// `known` gives the load of the branch a validated failure witness names, for
+/// a branch that failed before its first clock witness. Dropping a branch
+/// drops every record in its context (its start, gaps, frames, clock witnesses
+/// and the controls after them), including its start repeated at the head of
+/// a later segment. Returns the dropped branches, and each left-out load with
+/// the hours it recorded.
+fn keep_admitted_loads(
+    segments: &mut [(u32, Recovery)],
+    admitted: &BTreeSet<i64>,
+    known: Option<(BranchId, i64)>,
+) -> (BTreeSet<BranchId>, Vec<(Option<i64>, u64)>) {
+    let mut branches = BranchLoads::default();
+    for record in segments.iter().flat_map(|(_, recovery)| &recovery.records) {
+        branches.observe(record);
+    }
+    if let Some((branch, load)) = known {
+        branches.loads.entry(branch).or_insert(load);
+    }
+    let dropped: BTreeSet<BranchId> = branches
+        .order
+        .iter()
+        .copied()
+        .filter(|branch| {
+            !branches
+                .loads
+                .get(branch)
+                .is_some_and(|load| admitted.contains(load))
+        })
+        .collect();
+    for (_, recovery) in segments.iter_mut() {
+        let mut dropping = false;
+        recovery.records.retain(|record| {
+            match record {
+                Record::SessionStart(_) => dropping = false,
+                Record::BranchStart(branch) => dropping = dropped.contains(&branch.id),
+                _ => {}
+            }
+            !dropping
+        });
+    }
+    let omitted = branches.by_load(
+        branches
+            .order
+            .iter()
+            .copied()
+            .filter(|branch| dropped.contains(branch)),
+    );
+    (dropped, omitted)
+}
+
+/// What one finalization published and left out.
+#[derive(Debug, Default)]
+pub(crate) struct Finalized {
+    pub replays: Vec<PathBuf>,
+    /// Campaigns that could not be published.
+    pub errors: Vec<String>,
+    /// Loads a Battle Plan Recorder session left out, with their hours and why.
+    pub omitted: Vec<Omission>,
+}
+
+#[cfg(test)]
+impl Finalized {
+    /// The recordings and errors, for tests of sessions that leave nothing out.
+    fn parts(self) -> (Vec<PathBuf>, Vec<String>) {
+        assert!(self.omitted.is_empty(), "{:?}", self.omitted);
+        (self.replays, self.errors)
+    }
+}
+
+/// Call only after detach and module-absence confirmation, or after process exit.
+pub fn finalize_session(session_dir: &Path, replay_dir: &Path) -> Result<Vec<PathBuf>> {
+    let finalized = finalize_session_outcome(session_dir, replay_dir)?;
+    if finalized.errors.is_empty() {
+        Ok(finalized.replays)
+    } else {
+        Err(finalized.errors.join("\n"))
+    }
+}
+
+/// Keep successfully written campaigns visible when another campaign is
+/// incomplete. A Battle Plan Recorder session publishes only the loads it admitted.
+pub(crate) fn finalize_session_outcome(session_dir: &Path, replay_dir: &Path) -> Result<Finalized> {
     finalize_session_outcome_with_progress(session_dir, replay_dir, &|| Ok(()))
 }
 
@@ -232,8 +643,10 @@ pub(crate) fn finalize_session_outcome_with_progress(
     session_dir: &Path,
     replay_dir: &Path,
     progress: &dyn Fn() -> std::io::Result<()>,
-) -> Result<(Vec<PathBuf>, Vec<String>)> {
+) -> Result<Finalized> {
     progress().map_err(|error| failure(session_dir, error))?;
+    let admissions = session_admissions(session_dir)?;
+    let mut finalized = Finalized::default();
     let witness = read_failure_witness(session_dir)?;
     if witness.is_none()
         && ["status.json", "completed.json"].iter().any(|name| {
@@ -258,62 +671,118 @@ pub(crate) fn finalize_session_outcome_with_progress(
             .is_dir()
         {
             let segments = segment_paths(&entry.path())?;
-            if !segments.is_empty() {
-                campaigns.push((entry.path(), segments));
+            if segments.is_empty() {
+                continue;
             }
+            let name = entry.file_name().to_str().map(str::to_owned);
+            // A Battle Plan Recorder session publishes nothing of a campaign without
+            // an admitted load; its hours are reported as left out.
+            let admitted = match &admissions {
+                None => None,
+                Some(admissions) => {
+                    match name.as_deref().and_then(|name| admissions.loads.get(name)) {
+                        Some(loads) => Some(loads),
+                        None => {
+                            if let Some(name) = &name {
+                                match spool_loads(&entry.path()) {
+                                    Ok(loads) => finalized.omitted.extend(loads.into_iter().map(
+                                        |(load, hours)| admissions.omission(name, load, hours),
+                                    )),
+                                    Err(error) => finalized.errors.push(error),
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                }
+            };
+            campaigns.push((entry.path(), name, segments, admitted));
         }
     }
     campaigns.sort_by(|left, right| left.0.cmp(&right.0));
-    if campaigns.is_empty() {
+    if campaigns.is_empty() && admissions.is_none() {
         return Err(failure(session_dir, "no campaign spool segments found"));
     }
-    let mut outputs = Vec::new();
-    let mut errors = Vec::new();
     let mut process_context = None;
-    for (campaign_dir, paths) in campaigns {
+    for (campaign_dir, name, paths, admitted) in campaigns {
         match finalize_campaign(
             &campaign_dir,
             &paths,
             replay_dir,
             &mut process_context,
             witness.as_ref(),
+            admitted,
             progress,
         ) {
-            Ok(path) => outputs.push(path),
-            Err(error) => errors.push(error),
+            Ok((path, omitted)) => {
+                finalized.replays.extend(path);
+                if let (Some(admissions), Some(name)) = (&admissions, &name) {
+                    finalized.omitted.extend(
+                        omitted
+                            .into_iter()
+                            .map(|(load, hours)| admissions.omission(name, load, hours)),
+                    );
+                }
+            }
+            Err(error) => finalized.errors.push(error),
         }
     }
-    Ok((outputs, errors))
+    if admissions.is_some() && finalized.replays.is_empty() && finalized.errors.is_empty() {
+        println!("No admitted load recorded an hour; nothing published.");
+    }
+    // By campaign; each campaign's loads stay in spool order.
+    finalized
+        .omitted
+        .sort_by(|left, right| left.campaign.cmp(&right.campaign));
+    for omission in &finalized.omitted {
+        println!(
+            "{}: {} hours of load {} left out ({}); kept in the session folder",
+            omission.campaign,
+            omission.hours,
+            omission
+                .load
+                .map_or_else(|| "unidentified".to_owned(), |load| load.to_string()),
+            omission.refusal.map_or("not admitted", Refusal::as_str)
+        );
+    }
+    Ok(finalized)
 }
 
+/// Publish one campaign's spool: every load, or with `admitted` (a the game
+/// Recorder session) only those loads. Returns the recording (`None` when no
+/// admitted load recorded an hour) and each load left out with its hours.
 fn finalize_campaign(
     campaign_dir: &Path,
     paths: &[(u32, PathBuf)],
     replay_dir: &Path,
     process_context: &mut Option<(SessionId, u32, u64, u64)>,
     witness: Option<&TerminalWitness>,
+    admitted: Option<&BTreeSet<i64>>,
     progress: &dyn Fn() -> std::io::Result<()>,
-) -> Result<PathBuf> {
+) -> Result<CampaignOutcome> {
     finalize_campaign_with_publisher(
         campaign_dir,
         paths,
         replay_dir,
         process_context,
         witness,
+        admitted,
         progress,
         |replay, destination| replay.write_atomic_with(destination, |_| progress()),
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finalize_campaign_with_publisher(
     campaign_dir: &Path,
     paths: &[(u32, PathBuf)],
     replay_dir: &Path,
     process_context: &mut Option<(SessionId, u32, u64, u64)>,
     witness: Option<&TerminalWitness>,
+    admitted: Option<&BTreeSet<i64>>,
     progress: &dyn Fn() -> std::io::Result<()>,
     publish: impl FnOnce(&Replay, &Path) -> std::io::Result<()>,
-) -> Result<PathBuf> {
+) -> Result<CampaignOutcome> {
     let started = Instant::now();
     let mut spool_bytes = 0_u64;
     let mut segments = Vec::with_capacity(paths.len());
@@ -452,14 +921,55 @@ fn finalize_campaign_with_publisher(
             format!("directory differs from recorded campaign {name}"),
         ));
     }
-    if let Some(witness) = witness {
+    // A Battle Plan Recorder session publishes only its admitted loads. A failure
+    // witness describes the end of the committed spool; when that end (or the
+    // load that failed) is not admitted, the failure is not this recording's
+    // and the published hours end cleanly before it. A branch that failed
+    // before its first clock witness takes its load from the validated witness.
+    let mut dropped = BTreeSet::new();
+    let mut omitted = Vec::new();
+    let mut failure_published = true;
+    if let Some(admitted) = admitted {
+        let last_branch = segments
+            .iter()
+            .flat_map(|(_, recovery)| &recovery.records)
+            .filter_map(|record| match record {
+                Record::BranchStart(branch) => Some(branch.id),
+                _ => None,
+            })
+            .next_back();
+        let known = witness
+            .filter(|_| failing_campaign)
+            .and_then(|witness| Some((witness.branch?, witness.load_signal?)));
+        (dropped, omitted) = keep_admitted_loads(&mut segments, admitted, known);
+        if !segments.iter().any(|(_, recovery)| {
+            recovery
+                .records
+                .iter()
+                .any(|record| matches!(record, Record::Frame(_)))
+        }) {
+            println!(
+                "{}: no admitted load recorded an hour; nothing published",
+                campaign_dir.display()
+            );
+            return Ok((None, omitted));
+        }
+        failure_published = last_branch.is_none_or(|branch| !dropped.contains(&branch))
+            && (!failing_campaign
+                || witness
+                    .and_then(|witness| witness.load_signal)
+                    .is_none_or(|signal| admitted.contains(&signal)));
+    }
+    if let Some(witness) = witness
+        && failure_published
+    {
         apply_failure_witness(&mut segments, witness, failing_campaign)
             .map_err(|error| failure(campaign_dir, error))?;
     }
     let destination = replay_dir.join(format!("{name}.battleplan"));
     let mut unchanged = false;
     let mut summary = Summary::default();
-    let mut frames = FinalizationFrames::new(paths, &segments);
+    let mut frames = FinalizationFrames::new(paths, &segments, dropped);
     let observe = |frame: &Frame, decoded: &DecodedFrame, sizes| {
         progress()?;
         summary
@@ -582,7 +1092,7 @@ fn finalize_campaign_with_publisher(
             );
         }
     }
-    Ok(destination)
+    Ok((Some(destination), omitted))
 }
 
 fn apply_failure_witness(
@@ -1453,6 +1963,27 @@ mod tests {
     use replay::branches::{BranchReason, BranchStart};
     use replay::spool::recover_prefix;
 
+    #[test]
+    fn a_session_without_campaign_segments_has_no_spool() {
+        let session = std::env::temp_dir().join(format!(
+            "hoi4-empty-session-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(session.join("bin")).unwrap();
+        fs::write(session.join("bin/collector.dll"), b"synthetic").unwrap();
+        fs::write(session.join("status.json"), b"{}").unwrap();
+        let campaign = session.join("00000000-0000-4000-8000-000000000000");
+        fs::create_dir_all(&campaign).unwrap();
+        assert!(!has_campaign_spools(&session).unwrap());
+        fs::write(campaign.join("spool.0001.h4s"), b"synthetic").unwrap();
+        assert!(has_campaign_spools(&session).unwrap());
+        fs::remove_dir_all(session).unwrap();
+    }
+
     fn long_finalization_records(promote_hour: Option<i32>) -> Vec<Record> {
         use replay::{
             frame::FrameEncoder,
@@ -1487,6 +2018,248 @@ mod tests {
             last_hour: Some(21),
         }));
         base
+    }
+
+    fn published_frames(path: &Path) -> Vec<(BranchId, Hour)> {
+        let replay = open(path).unwrap();
+        replay
+            .index
+            .iter()
+            .flat_map(|block| replay.read_block(block).unwrap())
+            .map(|frame| (frame.branch, frame.hour))
+            .collect()
+    }
+
+    #[test]
+    fn a_crash_between_admission_and_save_publishes_exactly_the_admitted_loads() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, THIRD_LOAD, allocation_test_directory,
+            three_load_records, write_campaign_spool,
+        };
+        let directory = allocation_test_directory("admitted-after-crash");
+        let session = directory.join("session");
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        let campaign = write_campaign_spool(&session, &three_load_records());
+        let spool = fs::read(campaign.join("spool.0000.h4s")).unwrap();
+        assert_eq!(recover_prefix(&spool).valid_bytes, spool.len());
+
+        // A command line session publishes every load, as before.
+        let everything = directory.join("everything");
+        let paths = finalize_session(&session, &everything).unwrap();
+        assert_eq!(
+            published_frames(&paths[0]),
+            [(9, 2), (9, 3), (9, 4), (10, 3), (10, 4), (11, 5), (11, 6)]
+        );
+
+        // A Battle Plan Recorder session admitted its first and third loads, each on
+        // disk as it was admitted; the second was never probed. The recorder
+        // then stopped before saving, so no completion record exists.
+        let target = directory.join("target");
+        begin_admissions(&session, &target).unwrap();
+        let mut admissions = Admissions::default();
+        for load in [FIRST_LOAD, THIRD_LOAD] {
+            admissions.admit(&session, &target, name, load).unwrap();
+        }
+        assert_eq!(session_admissions(&session).unwrap(), Some(admissions));
+        let record: serde_json::Value =
+            serde_json::from_slice(&fs::read(session.join(ADMISSIONS_FILE)).unwrap()).unwrap();
+        assert_eq!(record["loads"][1]["target"], target.to_str().unwrap());
+        let output = directory.join("output");
+        let paths = finalize_session(&session, &output).unwrap();
+        assert_eq!(
+            published_frames(&paths[0]),
+            [(9, 2), (9, 3), (9, 4), (11, 5), (11, 6)]
+        );
+        assert_eq!(
+            fs::read(campaign.join("spool.0000.h4s")).unwrap(),
+            spool,
+            "the evidence stays"
+        );
+        // Repeated, it publishes exactly the same, and reports the load left out.
+        let published = fs::read(&paths[0]).unwrap();
+        let again = finalize_session_outcome(&session, &output).unwrap();
+        assert_eq!(again.replays, paths);
+        assert_eq!(
+            again.omitted,
+            [Omission {
+                campaign: name.to_owned(),
+                load: Some(crate::test_support::RELOAD),
+                hours: 2,
+                refusal: None,
+            }]
+        );
+        assert_eq!(fs::read(&paths[0]).unwrap(), published);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_full_spool_with_nothing_admitted_reports_every_load_left_out() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, allocation_test_directory, two_load_records,
+            write_campaign_spool,
+        };
+        let directory = allocation_test_directory("nothing-admitted");
+        let session = directory.join("session");
+        let output = directory.join("output");
+        let target = directory.join("target");
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        write_campaign_spool(&session, &two_load_records());
+        begin_admissions(&session, &target).unwrap();
+        let mut admissions = Admissions::default();
+        admissions
+            .refuse(&session, &target, name, FIRST_LOAD, Refusal::Off)
+            .unwrap();
+        assert_eq!(
+            session_admissions(&session).unwrap().unwrap().refused,
+            BTreeMap::from([((name.to_owned(), FIRST_LOAD), Refusal::Off)])
+        );
+        // The session recorded hours, so it is not "nothing recorded".
+        assert!(has_campaign_spools(&session).unwrap());
+        let finalized = finalize_session_outcome(&session, &output).unwrap();
+        assert!(finalized.replays.is_empty() && finalized.errors.is_empty());
+        assert_eq!(
+            finalized.omitted,
+            [
+                Omission {
+                    campaign: name.to_owned(),
+                    load: Some(FIRST_LOAD),
+                    hours: 3,
+                    refusal: Some(Refusal::Off),
+                },
+                Omission {
+                    campaign: name.to_owned(),
+                    load: Some(RELOAD),
+                    hours: 2,
+                    refusal: None,
+                },
+            ]
+        );
+        assert!(fs::read_dir(&output).unwrap().next().is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// A Battle Plan Recorder session's load that failed after committing its branch
+    /// start and before its first clock witness keeps its gap and partial
+    /// outcome, exactly as an unmarked session does.
+    #[test]
+    fn a_marked_session_keeps_the_failure_of_an_admitted_load_before_its_first_clock() {
+        use crate::test_support::allocation_records;
+        let (session, output, mut witness) = allocation_session("marked-declared-no-clock");
+        let campaign = std::str::from_utf8(&witness.campaign_id.unwrap())
+            .unwrap()
+            .to_owned();
+        let mut records = allocation_records();
+        records.pop();
+        records.push(Record::BranchStart(BranchStart {
+            id: 10,
+            session: witness.session,
+            loaded_hour: Some(20),
+            first_hour: 21,
+            parent: Parentage::Unknown,
+            reason: BranchReason::LoadSignal,
+        }));
+        let mut spool = Vec::new();
+        for record in &records {
+            spool.extend(replay::spool::encode_record(record).unwrap());
+        }
+        witness.committed_bytes = spool.len() as u64;
+        witness.branch = Some(10);
+        witness.failed_hour = Some(21);
+        witness.load_signal = Some(21);
+        spool.extend_from_slice(b"torn bytes after declared branch");
+        fs::write(session.join(&campaign).join("spool.0000.h4s"), &spool).unwrap();
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        // The command line's recording of this spool.
+        let unmarked = finalize_session(&session, &output.join("unmarked")).unwrap();
+        let expected = fs::read(&unmarked[0]).unwrap();
+        let replay = Replay::open(expected.clone()).unwrap();
+        assert_eq!(replay.branches.len(), 2);
+        assert_eq!(replay.gaps.len(), 1);
+        // Both loads admitted: the same recording, gap and partial outcome included.
+        let target = output.join("marked");
+        begin_admissions(&session, &target).unwrap();
+        let mut admissions = Admissions::default();
+        for load in [19, 21] {
+            admissions
+                .admit(&session, &target, &campaign, load)
+                .unwrap();
+        }
+        let marked = finalize_session(&session, &target).unwrap();
+        assert_eq!(fs::read(&marked[0]).unwrap(), expected);
+        assert!(replay.controls.iter().any(|control| matches!(
+            control,
+            ControlRecord::Partial {
+                failed_hour: Some(21),
+                ..
+            }
+        )));
+        // The failing load not admitted: its failure is not this recording's.
+        let clean = output.join("clean");
+        begin_admissions(&session, &clean).unwrap();
+        let mut admissions = Admissions::default();
+        admissions.admit(&session, &clean, &campaign, 19).unwrap();
+        let finalized = finalize_session_outcome(&session, &clean).unwrap();
+        let replay = open(&finalized.replays[0]).unwrap();
+        assert_eq!(replay.branches.len(), 1);
+        assert!(replay.gaps.is_empty());
+        assert_eq!(
+            finalized.omitted,
+            [Omission {
+                campaign,
+                load: Some(21),
+                hours: 0,
+                refusal: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_tray_session_without_its_admission_record_publishes_nothing() {
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, write_campaign_spool,
+        };
+        let directory = allocation_test_directory("admission-record-missing");
+        let session = directory.join("session");
+        let output = directory.join("output");
+        write_campaign_spool(&session, &allocation_records());
+        begin_admissions(&session, &directory.join("target")).unwrap();
+        let nothing = |output: &Path| {
+            fs::read_dir(output).map_or(true, |mut entries| entries.next().is_none())
+        };
+        // Nothing admitted: nothing published, no error, and the load reported left out.
+        let finalized = finalize_session_outcome(&session, &output).unwrap();
+        assert!(finalized.replays.is_empty() && finalized.errors.is_empty());
+        assert_eq!(finalized.omitted.len(), 1);
+        assert!(nothing(&output));
+        // The record missing or unreadable: finalization refuses and publishes nothing.
+        fs::remove_file(session.join(ADMISSIONS_FILE)).unwrap();
+        assert!(session_admissions(&session).is_err());
+        assert!(finalize_session(&session, &output).is_err());
+        assert!(nothing(&output));
+        fs::write(session.join(ADMISSIONS_FILE), b"{\"loads\":").unwrap();
+        assert!(finalize_session(&session, &output).is_err());
+        assert!(nothing(&output));
+        // Without the marker it is a command line session, which publishes every load.
+        fs::remove_file(session.join("bin").join(ADMISSION_MARKER)).unwrap();
+        assert_eq!(finalize_session(&session, &output).unwrap().len(), 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_campaigns_earlier_hours_in_the_spool_count_as_recorded_before_a_reload() {
+        use crate::test_support::{
+            FIRST_LOAD, RELOAD, allocation_records, allocation_test_directory, write_campaign_spool,
+        };
+        let directory = allocation_test_directory("recorded-before-load");
+        let campaign = directory.join("session").join("missing");
+        // No spool yet: nothing recorded.
+        assert!(!recorded_before_load(&campaign, RELOAD));
+        let campaign = write_campaign_spool(&directory.join("session"), &allocation_records());
+        // Hours of the first load are in the spool: a reload has earlier hours,
+        // the first load itself does not.
+        assert!(recorded_before_load(&campaign, RELOAD));
+        assert!(!recorded_before_load(&campaign, FIRST_LOAD));
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -1605,6 +2378,7 @@ mod tests {
             &segment_paths(&campaign).unwrap(),
             &output,
             &mut None,
+            None,
             None,
             &|| Ok(()),
             |replay, path| {
@@ -1871,7 +2645,7 @@ mod tests {
             }
         }
         let output = session.join("replays");
-        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap();
+        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap().parts();
         assert_eq!(issues.len(), refused.len(), "{issues:?}");
         assert!(
             issues
@@ -1963,7 +2737,7 @@ mod tests {
         assert!(expected.is_empty(), "committed prefix frames were lost");
         assert_eq!(gap_found, gap_expected);
         assert_eq!(allocation_gap_count, usize::from(gap_expected));
-        let (again, repeated_issues) = finalize_session_outcome(&session, &output).unwrap();
+        let (again, repeated_issues) = finalize_session_outcome(&session, &output).unwrap().parts();
         assert_eq!(repeated_issues, issues);
         assert_eq!(again, paths);
         for (path, bytes) in paths.iter().zip(before) {
@@ -2112,7 +2886,7 @@ mod tests {
         }
         let spool_path = campaign.join("spool.0000.h4s");
         fs::write(&spool_path, &spool).unwrap();
-        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap();
+        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap().parts();
         assert!(paths.is_empty());
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert!(
@@ -2543,7 +3317,7 @@ mod tests {
             spool.extend(replay::spool::encode_record(record).unwrap());
         }
         fs::write(failed.join("spool.0000.h4s"), spool).unwrap();
-        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap();
+        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap().parts();
         assert_eq!(paths.len(), 1);
         assert_eq!(issues.len(), 1);
         assert!(issues[0].contains("no committed spool watermark"));
@@ -2640,7 +3414,7 @@ mod tests {
         let witness_bytes = witness.encode();
         fs::write(session.join(WITNESS_FILE_NAME), witness_bytes).unwrap();
 
-        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap();
+        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap().parts();
         assert_eq!(paths.len(), 1);
         assert_eq!(issues.len(), 1);
         assert!(issues[0].contains("no committed spool watermark"));
@@ -2666,7 +3440,7 @@ mod tests {
         );
         let before = fs::read(&paths[0]).unwrap();
         assert_eq!(
-            finalize_session_outcome(&session, &output).unwrap(),
+            finalize_session_outcome(&session, &output).unwrap().parts(),
             (paths.clone(), issues)
         );
         assert_eq!(fs::read(&paths[0]).unwrap(), before);
@@ -2689,7 +3463,7 @@ mod tests {
         witness.committed_segment = None;
         witness.committed_bytes = 0;
         fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
-        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap();
+        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap().parts();
         assert!(paths.is_empty());
         assert_eq!(issues.len(), 1);
         assert!(issues[0].contains("no committed spool watermark"));
@@ -2755,7 +3529,7 @@ mod tests {
         let witness_bytes = witness.encode();
         fs::write(session.join(WITNESS_FILE_NAME), witness_bytes).unwrap();
 
-        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap();
+        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap().parts();
         assert!(issues.is_empty(), "{issues:?}");
         assert_eq!(paths.len(), 2);
         let mut before = Vec::new();
@@ -2774,7 +3548,7 @@ mod tests {
             before.push(fs::read(path).unwrap());
         }
         assert_eq!(
-            finalize_session_outcome(&session, &output).unwrap(),
+            finalize_session_outcome(&session, &output).unwrap().parts(),
             (paths.clone(), Vec::new())
         );
         for (path, bytes) in paths.iter().zip(before) {
@@ -2813,7 +3587,7 @@ mod tests {
         witness.failed_hour = Some(5);
         witness.branch = None;
         fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
-        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap();
+        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap().parts();
         assert!(issues.is_empty(), "{issues:?}");
         assert_eq!(paths.len(), 2);
         for path in paths {

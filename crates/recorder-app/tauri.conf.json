@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Battle Plan Recorder",
+  "version": "0.1.0",
+  "identifier": "local.hoi4.recorder",
+  "build": {
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "../../ui/dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost http://localhost:1420 http://127.0.0.1:1420 ws://localhost:1420 ws://127.0.0.1:1420; object-src 'none'; frame-src 'none'; base-uri 'self'",
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'; base-uri 'self'"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["../desktop/icons/icon.ico", "../desktop/icons/icon.png"]
+  }
+}

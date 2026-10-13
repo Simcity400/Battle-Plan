@@ -5,10 +5,6 @@ pub(super) fn game_running() -> io::Result<bool> {
     process_running("hoi4.exe")
 }
 
-pub(super) fn recorder_running() -> io::Result<bool> {
-    process_running("recorder.exe")
-}
-
 fn process_running(name: &str) -> io::Result<bool> {
     use std::{mem::size_of, os::windows::ffi::OsStringExt};
     use windows_sys::Win32::{

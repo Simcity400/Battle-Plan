@@ -605,27 +605,8 @@ fn naming_tag<'a>(
     std::str::from_utf8(bytes).map_err(|_| format!("{what} is not UTF-8"))
 }
 
-/// Read the original-or-own tag bytes. An unread or historically absent
-/// exact suffix cannot be inferred from `name_tag`.
-pub fn original_tag<'a>(
-    country: &'a CountryRow,
-    appearance: &'a CountryAppearanceRow,
-) -> Result<&'a str, String> {
-    let reference = appearance
-        .original_tag_reference
-        .require("CountryAppearance.original_tag_reference")?
-        .ok_or("CountryAppearance.original_tag_reference capture refused")?;
-    let bytes = if reference > 0 {
-        appearance
-            .original_tag
-            .require("CountryAppearance.original_tag")?
-            .as_ref()
-            .ok_or("CountryAppearance.original_tag capture refused")?
-    } else {
-        &country.tag
-    };
-    std::str::from_utf8(bytes).map_err(|_| "country original-or-own tag is not UTF-8".into())
-}
+/// The original-or-own tag, shared with the collector's status summary.
+pub use replay::country_flags::original_tag;
 
 /// Per canonical slot: the operands, or why they are unavailable this hour.
 fn operands(frame: &DecodedFrame) -> BTreeMap<u32, Result<Operands, String>> {

@@ -1,3 +1,4 @@
+use replay::recorder_settings::RecorderSettings;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tauri::WebviewWindow;
@@ -14,7 +15,8 @@ pub struct ReplayLibrary {
     folder: Option<String>,
     pub(super) files: Vec<ReplayFile>,
 }
-#[derive(Serialize, Deserialize)]
+/// This app's own folder file, adopted once into Battle Plan Recorder's settings.
+#[derive(Deserialize)]
 struct Settings {
     folder: String,
 }
@@ -95,34 +97,40 @@ pub(super) fn scan_with(
     })
 }
 
-pub(super) fn configured_folder() -> Result<Option<PathBuf>, String> {
-    match std::fs::read(settings_path()?) {
-        Ok(bytes) => {
-            let settings: Settings =
-                serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-            Ok(Some(PathBuf::from(settings.folder)))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.to_string()),
+/// The recordings folder this app lists, shared with Battle Plan Recorder through its
+/// settings: the folder recordings are saved to. The app's own earlier choice
+/// becomes that folder once, when none was chosen there, so what it listed
+/// stays listed and nothing moves.
+fn shared_folder(settings: &Path, legacy: &Path) -> Result<PathBuf, String> {
+    if let Ok(bytes) = std::fs::read(legacy)
+        && let Ok(previous) = serde_json::from_slice::<Settings>(&bytes)
+    {
+        RecorderSettings::update_at(settings, |shared| {
+            if shared.save_folder.is_none() {
+                shared.save_folder = Some(PathBuf::from(previous.folder));
+            }
+        })
+        .map_err(|error| format!("Recorder settings could not be saved: {error}"))?;
+        std::fs::remove_file(legacy).map_err(|error| error.to_string())?;
     }
+    RecorderSettings::load_from(settings)
+        .map(|shared| shared.effective_save_folder())
+        .map_err(|error| format!("Recorder settings could not be read: {error}"))
+}
+
+pub(super) fn configured_folder() -> Result<PathBuf, String> {
+    shared_folder(&RecorderSettings::path(), &settings_path()?)
 }
 
 #[tauri::command]
 pub async fn replay_library() -> Result<ReplayLibrary, String> {
     tauri::async_runtime::spawn_blocking(|| {
-        let config = settings_path()?;
-        match std::fs::read(config) {
-            Ok(bytes) => {
-                let settings: Settings =
-                    serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-                scan(Path::new(&settings.folder))
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(ReplayLibrary {
-                folder: None,
-                files: Vec::new(),
-            }),
-            Err(error) => Err(error.to_string()),
+        let folder = configured_folder()?;
+        // The recorder creates its default folder when it first saves.
+        if folder == replay::recorder_settings::default_save_folder() {
+            std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
         }
+        scan(&folder)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -135,13 +143,10 @@ pub async fn set_replay_folder(folder: String) -> Result<ReplayLibrary, String> 
             return Err("Choose a replay folder.".into());
         }
         let library = scan(Path::new(&folder))?;
-        let config = settings_path()?;
-        std::fs::create_dir_all(config.parent().unwrap()).map_err(|e| e.to_string())?;
-        let bytes = serde_json::to_vec(&Settings {
-            folder: library.folder.clone().unwrap(),
-        })
-        .map_err(|e| e.to_string())?;
-        std::fs::write(config, bytes).map_err(|e| e.to_string())?;
+        // Kept as chosen: the recorder shows it under Save to.
+        let chosen = PathBuf::from(folder);
+        RecorderSettings::update(|shared| shared.save_folder = Some(chosen))
+            .map_err(|error| format!("Recorder settings could not be saved: {error}"))?;
         Ok(library)
     })
     .await
@@ -188,6 +193,53 @@ pub async fn choose_recording(window: WebviewWindow) -> Result<Option<String>, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_app_and_recorder_share_one_recordings_folder_adopting_the_apps_choice_once() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4-shared-folder-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let settings = root.join("settings.json");
+        let legacy = root.join("replay-folder.json");
+        // Nothing chosen anywhere: both use the recorder's default folder.
+        assert_eq!(
+            shared_folder(&settings, &legacy).unwrap(),
+            replay::recorder_settings::default_save_folder()
+        );
+        // The app's earlier folder becomes the shared one, once.
+        let listed = root.join("my recordings");
+        std::fs::write(
+            &legacy,
+            serde_json::to_vec(&serde_json::json!({"folder": listed})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(shared_folder(&settings, &legacy).unwrap(), listed);
+        assert!(!legacy.exists());
+        assert_eq!(
+            RecorderSettings::load_from(&settings).unwrap().save_folder,
+            Some(listed.clone())
+        );
+        // A folder already chosen in the recorder is kept; the app follows it.
+        let recorder = root.join("recorder folder");
+        RecorderSettings::update_at(&settings, |shared| {
+            shared.save_folder = Some(recorder.clone())
+        })
+        .unwrap();
+        std::fs::write(
+            &legacy,
+            serde_json::to_vec(&serde_json::json!({"folder": listed})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(shared_folder(&settings, &legacy).unwrap(), recorder);
+        assert!(!legacy.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn cancellation_interrupts_a_scan_between_recording_metadata_reads() {

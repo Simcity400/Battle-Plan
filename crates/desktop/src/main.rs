@@ -3,6 +3,7 @@
 mod compaction;
 mod dashboard_service;
 mod native;
+mod recorder;
 mod replay_library;
 mod video;
 
@@ -157,8 +158,9 @@ fn main() {
                     .map_err(|e| std::io::Error::other(e.to_string()))? = Err(error);
             }
             if let Err(error) = app.state::<compaction::CompactionHost>().start() {
-                eprintln!("Automatic compaction could not start: {error}");
+                eprintln!("Compaction hints could not be read: {error}");
             }
+            recorder::start_recorder();
             Ok(())
         })
         .manage(NativeHost::default())
@@ -185,7 +187,9 @@ fn main() {
             compaction::compact_replay_folder,
             compaction::compaction_progress,
             compaction::recording_compaction_status,
-            compaction::set_compaction_recording_open,
+            recorder::recording_preferences,
+            recorder::set_recording_names,
+            recorder::set_campaign_flag,
             open_replay,
             seek_map,
             dashboard_service::dashboard_open_source,

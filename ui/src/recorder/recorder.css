@@ -1,0 +1,81 @@
+/* Battle Plan Recorder tray panel: the approved 360 px design, drawn with the app's
+   theme roles so it follows the user's appearance. The window is the panel. */
+:root { background: var(--overlay); }
+.recorder { width: 100%; background: var(--overlay); color: var(--text); font-size: 0.8125rem; user-select: none; }
+
+.recorder-head { display: flex; align-items: center; gap: 11px; padding: 16px 16px 14px; }
+.recorder-glyph { display: grid; place-items: center; flex: none; width: 38px; height: 25px; color: var(--quiet); }
+.recorder-glyph svg { width: 20px; height: 20px; }
+.recorder-who { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.recorder-who strong { overflow: hidden; font-size: 0.84375rem; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+/* Status text truncates with an ellipsis; it never runs under a button. */
+.recorder-state { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--muted); font-size: 0.75rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.recorder-state > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.recorder-state .on { flex: none; color: var(--text); font-weight: 600; }
+.recorder-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+.recorder-dot.red { background: var(--error); }
+.recorder-dot.grey { background: var(--quiet); }
+.recorder-dot.blue { background: var(--accent); }
+.recorder-dot.green { background: var(--positive); }
+.recorder-spin { flex: none; width: 9px; height: 9px; border: 2px solid var(--line-strong); border-top-color: var(--text); border-radius: 50%; animation: spin .8s linear infinite; }
+[data-motion='reduced'] .recorder-spin { animation-duration: 2.4s; }
+
+.recorder .button.small { flex: none; height: 28px; min-height: 28px; padding: 0 11px; gap: 7px; font-size: 0.78125rem; font-weight: 600; }
+.recorder .button.is-pressed, .recorder .button.is-pressed:hover:not(:disabled) { background: var(--press); }
+.recorder-square { width: 8px; height: 8px; border-radius: 2px; background: var(--error); }
+.recorder-round { width: 8px; height: 8px; border-radius: 50%; background: var(--error); }
+.recorder .button.recorder-discard { padding: 0 8px; border-color: transparent; background: transparent; box-shadow: none; color: var(--error); }
+.recorder .button.recorder-discard:hover:not(:disabled) { border-color: transparent; background: var(--error-soft); }
+.recorder .icon-button { width: 28px; height: 28px; }
+
+.recorder-ask { display: flex; align-items: center; gap: 6px; padding: 9px 12px 9px 16px; box-shadow: 0 -1px 0 var(--line-soft); }
+.recorder-ask > span:first-child { flex: 1; min-width: 0; overflow: hidden; color: var(--muted); font-size: 0.75rem; white-space: nowrap; text-overflow: ellipsis; }
+.recorder-ask b { color: var(--text); font-weight: 600; }
+
+.recorder .notice { align-items: center; gap: 8px; margin: 0 16px 14px; padding: 8px 10px; border-radius: var(--r-md); font-size: 0.75rem; line-height: 1.4; }
+.recorder .notice > svg { width: 14px; height: 14px; margin-top: 0; }
+.recorder .notice > span { flex: 1; }
+.recorder-details { flex: none; padding: 0; border: 0; background: transparent; color: inherit; font-size: inherit; text-decoration: underline; text-underline-offset: 2px; }
+
+.recorder-bar { height: 3px; margin: 0 16px 14px; overflow: hidden; border-radius: 99px; background: color-mix(in srgb, var(--text) 8%, transparent); }
+.recorder-bar > i { display: block; width: 0; height: 100%; border-radius: 99px; background: var(--accent); transition: width var(--t) var(--ease); }
+/* Saving with no known end shows the app's moving meter sweep. */
+.recorder-bar.is-open > i { width: 100%; background: linear-gradient(90deg, transparent 0 40%, var(--accent) 50%, transparent 60% 100%);
+  background-size: 200% 100%; animation: recorder-sweep var(--meter-sweep-duration) linear infinite; }
+@keyframes recorder-sweep { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+.recorder-top { display: flex; align-items: center; gap: 6px; padding: 12px 10px 10px; font-size: 0.84375rem; font-weight: 600; }
+.recorder-section { padding: 10px 16px 8px; box-shadow: 0 -1px 0 var(--line-soft); }
+.recorder-section.is-first { padding-top: 6px; }
+.recorder-section.is-last { padding-bottom: 6px; }
+.recorder-label { padding: 2px 0 4px; color: var(--muted); font-size: 0.6875rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.recorder-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 36px; }
+.recorder-row > span:first-child { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.recorder-link { width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; }
+.recorder-info { display: inline-grid; color: var(--quiet); }
+.recorder-info svg { width: 13px; height: 13px; }
+.recorder-value { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); white-space: nowrap; }
+.recorder-value svg { width: 14px; height: 14px; color: var(--quiet); }
+
+.recorder input[type='checkbox'][role='switch'] { width: 30px; height: 18px; }
+.recorder input[type='checkbox'][role='switch']::before { top: 2px; left: 2px; }
+.recorder input[type='checkbox'][role='switch']:checked::before { transform: translateX(12px); }
+.recorder .segmented { flex: none; }
+.recorder .segmented > button { height: 22px; padding: 0 10px; font-size: 0.75rem; }
+.recorder .segmented > button[aria-pressed='true'] { font-weight: 600; }
+.recorder-path { display: flex; align-items: center; flex: 1; min-width: 0; max-width: 200px; height: 28px; padding: 0; overflow: hidden; border: 0; border-radius: var(--r-sm);
+  background: var(--field); box-shadow: inset 0 0 0 1px var(--line-soft); color: var(--muted); }
+.recorder-path > span { flex: 1; min-width: 0; padding: 0 9px; overflow: hidden; font-size: 0.75rem; white-space: nowrap; text-overflow: ellipsis; direction: rtl; text-align: left; }
+.recorder-path > i { display: grid; place-items: center; flex: none; width: 28px; height: 28px; box-shadow: -1px 0 0 var(--line-soft); }
+.recorder-path svg { width: 15px; height: 15px; }
+.recorder .select-trigger { flex: none; gap: 4px; width: auto; max-width: 180px; height: 28px; padding: 0; border: 0; background: transparent; box-shadow: none; color: var(--muted); }
+.recorder .select-trigger:hover:not(:disabled) { border: 0; background: transparent; color: var(--text); }
+.recorder .select-trigger > svg { color: var(--quiet); }
+
+.recorder-foot { display: flex; align-items: center; gap: 2px; padding: 8px 10px; box-shadow: 0 -1px 0 var(--line-soft); }
+.recorder-grow { flex: 1; }
+.recorder .button.quiet.recorder-brand { padding: 0 8px; font-weight: 500; }
+/* The viewed country's flag, fitted into the design's flag slot. */
+.recorder-flag { position: relative; display: block; flex: none; width: 38px; height: 25px; overflow: hidden; border-radius: 3px; }
+.recorder-flag .country-flag { display: block; width: 100%; height: 100%; }
+.recorder-flag::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 10%, transparent); pointer-events: none; }

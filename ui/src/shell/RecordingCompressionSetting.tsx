@@ -14,7 +14,7 @@ export function compactionSummary(progress: CompactionProgress): string {
   return `${progress.running ? 'Compacting' : 'Checked'} ${done} · Saved ${savedSize(progress.bytesSaved)}${skipped}`;
 }
 
-/** Recorder preferences stay in native settings; only the running app compacts. */
+/** Recorder preferences stay in native settings; the recorder compacts automatically, this app on request. */
 export default function RecordingCompressionSetting({ client, folder }: { client: DashboardClient; folder: string | null }) {
   const [settings, setSettings] = useState<RecorderSettings | null>(null);
   const [progress, setProgress] = useState<CompactionProgress | null>(null);
@@ -58,7 +58,7 @@ export default function RecordingCompressionSetting({ client, folder }: { client
   return <>
     <div className="settings-row" id="folders-compression">
       <span className="settings-row-text"><strong>Recording compression</strong>
-        <small>Recorder setting. Small compacts finished recordings while this app is open and the game is closed.</small></span>
+        <small>Recorder setting. With Small, Battle Plan Recorder compacts each recording after the game closes.</small></span>
       <Select label="Recording compression" value={settings?.compression ?? 'fast'} disabled={!settings || saving}
         options={[{ value: 'fast', label: 'Fast (larger files)' }, { value: 'small', label: 'Small (slower)' }]}
         onChange={value => { void save(value as RecordingCompression); }} />

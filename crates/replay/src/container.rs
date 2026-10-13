@@ -36,6 +36,7 @@ pub const MAX_BLOCK_RAW_BYTES: usize = 1 << 30;
 type FrameObserver<'a> =
     dyn FnMut(&Frame, &DecodedFrame, [usize; TABLE_COUNT]) -> io::Result<()> + 'a;
 type FrameReader<'a> = dyn FnMut(usize, &Frame) -> io::Result<Frame> + 'a;
+type TrailerSummary = (Option<ControlRecord>, Option<(Hour, Hour)>);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockIndex {
@@ -304,6 +305,22 @@ impl Replay {
         file: &mut (impl Read + Seek),
         length: u64,
     ) -> io::Result<Option<ControlRecord>> {
+        Ok(Self::read_trailer_summary(file, length)?.0)
+    }
+
+    /// The first and last recorded hours across every branch, from the
+    /// checksummed trailer's block index; `None` for a recording with no blocks.
+    pub fn read_hour_span(path: &Path) -> io::Result<Option<(Hour, Hour)>> {
+        let mut file = File::open(path)?;
+        let length = file.metadata()?.len();
+        Ok(Self::read_trailer_summary(&mut file, length)?.1)
+    }
+
+    /// The partial notice, when readable, and the recorded hour span.
+    fn read_trailer_summary(
+        file: &mut (impl Read + Seek),
+        length: u64,
+    ) -> io::Result<TrailerSummary> {
         if length < (FOOTER_SIZE + 6) as u64 {
             return Err(invalid("missing replay footer"));
         }
@@ -364,23 +381,35 @@ impl Replay {
             &mut damaged_parts,
         )?;
         let count = trailer.count(40)?;
-        trailer.take(count * 40)?;
-        // A readable trailer prefix still supplies the terminal notice. Full
-        // opening reports checksum failures and trailing bytes as warnings.
+        let mut span: Option<(Hour, Hour)> = None;
+        for _ in 0..count {
+            let _branch = trailer.u64()?;
+            let first = trailer.i32()?;
+            let last = trailer.i32()?;
+            trailer.take(24)?;
+            span = Some(match span {
+                Some((low, high)) => (low.min(first), high.max(last)),
+                None => (first, last),
+            });
+        }
+        // A readable trailer prefix still supplies the terminal notice and the
+        // hour span. Full opening reports checksum failures and trailing bytes
+        // as warnings.
         if validate_partial_controls(&controls).is_err() {
-            return Ok(None);
+            return Ok((None, span));
         }
         for control in &controls {
             if !sessions
                 .iter()
                 .any(|session| session.id == control.session())
             {
-                return Ok(None);
+                return Ok((None, span));
             }
         }
-        Ok(controls
+        let partial = controls
             .into_iter()
-            .find(|control| matches!(control, ControlRecord::Partial { .. })))
+            .find(|control| matches!(control, ControlRecord::Partial { .. }));
+        Ok((partial, span))
     }
 
     pub fn from_records(campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Self> {

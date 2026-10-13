@@ -2,12 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { DashboardClient, HistoryCacheReply } from '../dashboard/client';
 import { Icon } from '../components/Icons';
 import { errorMessage } from './api';
-
-/** Whole megabytes rounded up, or gigabytes to one decimal from 1 GB. */
-function size(bytes: number): string {
-  const megabytes = Math.ceil(bytes / 2 ** 20);
-  return megabytes < 1024 ? `${megabytes} MB` : `${+(megabytes / 1024).toFixed(1)} GB`;
-}
+import { formatMegabytes } from '../charts/numberFormat';
 
 /** The widget history the data service keeps on disk: its size, read when shown, and clearing it. */
 export default function HistoryCacheSetting({ client, contentReady }: { client: DashboardClient; contentReady: boolean }) {
@@ -28,7 +23,7 @@ export default function HistoryCacheSetting({ client, contentReady }: { client: 
     run(false);
     return () => pending.current?.abort();
   }, [client, contentReady]);
-  const status = !contentReady ? ' Available once the game folders are chosen.' : cache ? ` Using ${size(cache.bytes)} of ${size(cache.limit)}.` : busy ? ' Measuring…' : '';
+  const status = !contentReady ? ' Available once the game folders are chosen.' : cache ? ` Using ${formatMegabytes(cache.bytes)} of ${formatMegabytes(cache.limit)}.` : busy ? ' Measuring…' : '';
   return <>
     <div className="settings-row"><span className="settings-row-text"><strong>Saved history</strong>
       <small>Widgets keep their history here so campaigns you reopen load instantly.{status}</small></span>

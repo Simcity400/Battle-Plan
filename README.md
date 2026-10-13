@@ -13,6 +13,7 @@ Each component's README describes its layout, concepts and local rules.
 | [engine](crates/engine/README.md) | Supported executable, native layouts, guarded memory readers and hook site descriptors. |
 | [collector](crates/collector/README.md) | Injected DLL, native observation hooks, acquisition and recording pipeline. |
 | [recorder](crates/recorder/README.md) | Attach/detach, replay finalization, inspection and save comparison. |
+| [recorder-app](crates/recorder-app/README.md) | Battle Plan Recorder: the tray program that records campaigns while HOI4 runs. |
 | [replay](crates/replay/README.md) | Recording format, tables, branches and sample history. |
 | [store](crates/store/README.md) | Immutable prepared ranges, manifest publication and storage Clear. |
 | [installed-content](crates/installed-content/README.md) | Recorded content stack, game assets, text saves and identity verification. |

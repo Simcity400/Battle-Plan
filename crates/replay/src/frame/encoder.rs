@@ -112,6 +112,14 @@ impl FrameEncoder {
             && self.state.tables[table.index()].is_some()
     }
 
+    /// The latest committed complete rows of `T` and the hour that supplied
+    /// them. `None` when this encoder holds no complete baseline for `T`: never
+    /// committed, or truncated or unavailable at its last sample.
+    pub fn committed<T: TableSchema>(&self) -> Option<(Hour, &[T::Row])> {
+        let (hour, values) = self.state.tables[T::ID.index()].as_ref()?;
+        Some((*hour, values.as_ref().rows::<T>()?))
+    }
+
     /// Borrow a complete baseline for comparison with a new native sample.
     /// Callers must check all current acquisition/arena/uniqueness verdicts and
     /// exact row payloads before submitting `ComparedEqual`. The borrow is used
