@@ -1,9 +1,9 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
+import { breakdownOption, DRILL_OPTION, breakdownVariants } from '../../charts/drill/drillState.ts';
 import { SUNBURST_OPTIONS, levelOption } from '../../charts/sunburst/sunburstOptions.ts';
 
-export const DETAIL = { id: 'loss-details', label: 'Losses' };
+export const DETAIL = { id: 'loss-details', label: 'Recorded losses' };
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'landSource', section: 'options', label: 'Land losses from', kind: 'choice', default: 'destruction',
@@ -20,4 +20,5 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 11 },
   options: OPTIONS,
+  variants: breakdownVariants('Equipment losses', OPTIONS),
 } as const satisfies WidgetMeta;

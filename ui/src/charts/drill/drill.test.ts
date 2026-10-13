@@ -5,7 +5,7 @@ import { addGridItemBelow, seekPositionFor } from '../../dashboard/model.ts';
 import type { BoundTrack, GridLayouts, WidgetSpec } from '../../dashboard/model';
 import { resolveOptions, setOption, validOption } from '../../dashboard/options.ts';
 import { jumpItem } from '../jump.ts';
-import { breakdownOption, CLOSED, DRILL_OPTION, drillHour, FOLLOW_NEAR_HOURS, pinnedBreakdown, reduceDrill } from './drillState.ts';
+import { breakdownOption, breakdownTitle, breakdownVariants, CLOSED, DRILL_OPTION, drillHour, FOLLOW_NEAR_HOURS, pinnedBreakdown, reduceDrill } from './drillState.ts';
 
 test('a breakdown follows playback when playing or opened near the playhead, and pins a picked day', () => {
   const near = reduceDrill(CLOSED, { type: 'open', breakdown: 'income', hour: 1000, playing: false, playhead: 1000 + FOLLOW_NEAR_HOURS });
@@ -70,4 +70,17 @@ test('jump to asks the clock for a position inside the branch only', () => {
   assert.deepEqual(asked, [['t1', 1500]]);
   assert.equal(jumpItem(runtime, 't1', 5000).disabled, true);
   assert.equal(jumpItem(runtime, 'missing', 1500).disabled, true);
+});
+
+test('each breakdown is its own catalogue card, titled as Pin as widget titles it', () => {
+  const show = breakdownOption([{ id: 'income', label: 'Daily income' }, { id: 'spending', label: 'Spending that day' }], 'Balance');
+  const variants = breakdownVariants('Political power', [DRILL_OPTION, show]);
+  assert.deepEqual(variants, [
+    { key: 'show=income', initial: { title: 'Political power: Daily income', options: { show: 'income' } } },
+    { key: 'show=spending', initial: { title: 'Political power: Spending that day', options: { show: 'spending' } } }]);
+  const source: WidgetSpec = { id: 'source', kind: 'drill-test', configVersion: 1, title: 'Political power', campaign: 'default', trackIds: ['t'],
+    countries: { kind: 'selected' }, time: { mode: 'campaign' }, contentScale: 100 };
+  assert.equal(pinnedBreakdown(source, { id: 'income', label: 'Daily income' }, 't').title, variants[0].initial.title);
+  assert.equal(breakdownTitle('Political power', 'Daily income'), 'Political power: Daily income');
+  assert.deepEqual(breakdownVariants('Political power', [DRILL_OPTION]), [], 'a widget without a Show setting has no breakdown cards');
 });

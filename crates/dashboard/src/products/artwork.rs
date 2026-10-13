@@ -103,11 +103,20 @@ struct Preparation {
     inventory: Vec<String>,
     preparation_warnings: Vec<installed_content::Diagnostic>,
     warnings: Vec<String>,
+    /// Each technology's research folders in authored order.
+    technology_folders: Arc<BTreeMap<String, Vec<String>>>,
+    /// The research folders `common/technology_tags` defines, in content order.
+    folder_definitions: Arc<Vec<installed_content::technology::FolderDefinition>>,
+    /// Notes from reading research folders; only research replies carry them.
+    folder_warnings: Vec<String>,
 }
 
 impl Preparation {
     fn read(layers: &installed_content::ResolvedLayers, kind: Kind) -> io::Result<Self> {
         let mut warnings = Vec::new();
+        let mut technology_folders = BTreeMap::new();
+        let mut folder_definitions = Vec::new();
+        let mut folder_warnings = Vec::new();
         let (definitions, point_days, technology_names, inventory, preparation_warnings) =
             match kind {
                 Kind::Focus => {
@@ -128,6 +137,19 @@ impl Preparation {
                 }
                 Kind::Technology => {
                     let read = installed_content::technology::Database::read(layers)?;
+                    technology_folders = read.folders;
+                    // Folders only colour and group research; a failure to read
+                    // them never withholds technology text or artwork.
+                    match installed_content::technology::read_folders(layers) {
+                        Ok(folders) => {
+                            folder_definitions = folders.folders;
+                            folder_warnings
+                                .extend(folders.warnings.into_iter().map(|(_, message)| message));
+                        }
+                        Err(error) => {
+                            folder_warnings.push(format!("Research folders unavailable: {error}"));
+                        }
+                    }
                     warnings.extend(
                         read.equipment_warnings
                             .into_iter()
@@ -164,6 +186,9 @@ impl Preparation {
                 }
             };
         Ok(Self {
+            technology_folders: Arc::new(technology_folders),
+            folder_definitions: Arc::new(folder_definitions),
+            folder_warnings,
             definitions: Arc::new(definitions),
             point_days,
             technology_names: Arc::new(technology_names),
@@ -188,6 +213,11 @@ pub struct Context {
     warnings: Vec<String>,
     inventory: Vec<String>,
     preparation_warnings: Vec<installed_content::Diagnostic>,
+    technology_folders: Arc<BTreeMap<String, Vec<String>>>,
+    folder_definitions: Arc<Vec<installed_content::technology::FolderDefinition>>,
+    folder_warnings: Vec<String>,
+    /// Each folder's tab availability, decided once from content.
+    folder_availability: OnceLock<Vec<Option<bool>>>,
 }
 
 /// The source's artwork context for the configured folders, loaded on first use.
@@ -278,6 +308,9 @@ impl Context {
         let point_days = prepared.point_days;
         let inventory = prepared.inventory.clone();
         let preparation_warnings = prepared.preparation_warnings.clone();
+        let technology_folders = Arc::clone(&prepared.technology_folders);
+        let folder_definitions = Arc::clone(&prepared.folder_definitions);
+        let folder_warnings = prepared.folder_warnings.clone();
         warnings.extend(prepared.warnings.iter().cloned());
         warnings.extend(catalogue.warnings.iter().cloned());
         Ok(Self {
@@ -293,7 +326,66 @@ impl Context {
             warnings,
             inventory,
             preparation_warnings,
+            technology_folders,
+            folder_definitions,
+            folder_warnings,
+            folder_availability: OnceLock::new(),
         })
+    }
+
+    /// The research folders in content order with their localized names, the
+    /// folder each token is shown in ([`super::research::shown_folders`]) and
+    /// named notes for what could not be resolved. A folder without an
+    /// `available` trigger is always available; a trigger is decided from the
+    /// recorded content and DLC alone, else its availability stays unknown.
+    pub fn research_folders(
+        &self,
+        tokens: &BTreeSet<&str>,
+    ) -> (
+        Vec<crate::ResearchFolder>,
+        Vec<crate::ResearchTechnologyFolder>,
+        Vec<String>,
+    ) {
+        let availability = self.folder_availability.get_or_init(|| {
+            let world = self
+                .catalogue
+                .scripted_content()
+                .and_then(|content| content.unrecorded_trigger_world());
+            self.folder_definitions
+                .iter()
+                .map(|folder| match &folder.available {
+                    None => Some(true),
+                    Some(trigger) => world.as_ref().ok().and_then(|world| {
+                        world
+                            .evaluate(trigger, crate::triggers::Scopes::empty())
+                            .decided()
+                            .ok()
+                    }),
+                })
+                .collect()
+        });
+        let definitions: Vec<(&str, Option<bool>)> = self
+            .folder_definitions
+            .iter()
+            .zip(availability)
+            .map(|(folder, available)| (folder.key.as_str(), *available))
+            .collect();
+        let (shown, notes) = super::research::shown_folders(
+            &definitions,
+            &self.technology_folders,
+            tokens.iter().copied(),
+        );
+        let folders = self
+            .folder_definitions
+            .iter()
+            .map(|folder| crate::ResearchFolder {
+                key: folder.key.clone(),
+                name: self.localise(&folder.key),
+            })
+            .collect();
+        let mut warnings = self.folder_warnings.clone();
+        warnings.extend(notes);
+        (folders, shown, warnings)
     }
 
     /// Localized presentation text; absent keys stay unavailable. Defined empty

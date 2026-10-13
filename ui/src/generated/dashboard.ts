@@ -129,12 +129,14 @@ states: Array<ResearchSlotState>,
  * does not duplicate the complete modifier/source tree.
  */
 progress: Array<ResearchProgress>, };
-export type ResearchProgress = { firstHour: number, lastHour: number, entryFirstObservedHour: number,
+export type ResearchProgress = { firstHour: number, lastHour: number, entryFirstObservedHour: number | null,
 /**
  * Base duration in fixed5 days, calculated from recorded cost operands.
  */
 baseDaysRaw: string | null, progressRaw: string, };
 export type ResearchHistory = { coverage: Array<ResearchCoverage>, slots: Array<ResearchSlotHistory>, };
+export type ResearchFolder = { key: string, name: string | null, };
+export type ResearchTechnologyFolder = { token: string, folder: string | null, };
 export type MapGraphics = {
 /**
  * Viewer-local allied battle plans; no recorded client selection or toggle.
@@ -190,7 +192,7 @@ staticText?: Array<Artwork>, warnings: Array<string>, };
 export type FocusArtworkParams = { branchId: string, hour: number, tag: string, tokens: Array<string>, textOnly?: boolean, includeDescriptions?: boolean, iconsOnly?: boolean, };
 export type DatedFocusArtwork = { artwork: Artwork, reason: string | null, };
 export type FocusArtworkReply = { branchId: string, hour: number, tag: string, items: Array<DatedFocusArtwork>, warnings: Array<string>, };
-export type ResearchReply = { history: ResearchHistory, artwork: Array<Artwork>, warnings: Array<string>, };
+export type ResearchReply = { history: ResearchHistory, artwork: Array<Artwork>, folders: Array<ResearchFolder>, technologyFolders: Array<ResearchTechnologyFolder>, warnings: Array<string>, };
 export type TechnologyArtworkParams = { tokens: Array<string>, };
 export type TechnologyArtworkReply = { items: Array<Artwork>, warnings: Array<string>, };
 export type CountryFlagSize = "full" | "medium" | "small" | "shield" | "panel";

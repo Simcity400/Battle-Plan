@@ -1,7 +1,7 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { AFTER_PLAYHEAD_OPTION } from '../../dashboard/options.ts';
 import type { OptionField } from '../../dashboard/options';
-import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
+import { breakdownOption, DRILL_OPTION, breakdownVariants } from '../../charts/drill/drillState.ts';
 import { FUEL_DECIMALS_OPTION } from './fuelData.ts';
 
 export const BREAKDOWNS = [{ id: 'gain', label: 'Fuel gained' }, { id: 'burn', label: 'Fuel burned' },
@@ -41,4 +41,5 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 12, h: 10 },
   countries: { max: Number.MAX_SAFE_INTEGER }, options: OPTIONS,
+  variants: breakdownVariants('Fuel', OPTIONS),
 } as const satisfies WidgetMeta;

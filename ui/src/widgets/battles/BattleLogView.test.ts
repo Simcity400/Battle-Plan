@@ -115,3 +115,53 @@ test('actual battle loader refuses aligned Follow and stored Pin moments outside
     await vite.close();
   }
 });
+
+test('an adapter view gets the rows, an empty list, and names still loading told apart from unnamed places', async () => {
+  const host = globalThis as typeof globalThis & { __battleView?: { places: unknown; error?: string; rows: unknown[]; ranking?: unknown;
+    seen: { rows: unknown[]; pending: boolean[]; measure: string }[] } };
+  host.__battleView = { places: undefined, rows: [], seen: [] };
+  const replacements: Record<string, string> = {
+    '/charts/table/useTableHour.ts': 'export const useTableHour = () => 125;',
+    '/dashboard/products.ts': `export const useProduct = (_client, request) => ({
+      data: request?.product.endsWith('-manifest') ? { windows: [{ firstHour: 100, lastHour: 200 }], available: true, unavailable: null, contentWarnings: [] }
+        // Server rendering draws no rows, so the place-names hook asks for nothing yet.
+        : request?.product.endsWith('-ranking') ? globalThis.__battleView.ranking
+        : !request || request.product === 'place-names' ? globalThis.__battleView.places : undefined,
+      error: !request || request.product === 'place-names' ? globalThis.__battleView.error : undefined, retry() {} });`,
+    '/dashboard/productWindows.ts': 'export const useProductWindows = () => ({ data: new Map([[0, { observed: [[100, 200]], warnings: [], contentWarnings: [] }]]), errors: new Map(), retry() {} });',
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ retry() {} });',
+    '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
+  };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'battle-view-fixture', enforce: 'pre',
+      transform: (_source, id) => Object.entries(replacements).find(([suffix]) => id.replaceAll('\\', '/').endsWith(suffix))?.[1],
+    }] });
+  try {
+    const { default: View } = await vite.ssrLoadModule('/ui/src/widgets/battles/BattleLogView.tsx') as typeof import('./BattleLogView');
+    const view = ({ rows, context }: { rows: { provinceId: number; place: { hour: number } }[]; context: { placePending: (row: never) => boolean; rankedMeasure: string } }) => {
+      host.__battleView!.seen.push({ rows, pending: rows.map(row => context.placePending(row as never)), measure: context.rankedMeasure });
+      return null;
+    };
+    const row = (provinceId: number) => ({ id: String(provinceId), provinceId, windowIndex: 0, start: null, end: null, sides: [], winner: { unknown: 'x' }, place: { hour: 100, name: null } });
+    const props = { widget: { id: 'battles', trackIds: ['main'], countries: { kind: 'all' }, time: { mode: 'campaign' }, options: {} },
+      runtime: { tracks: [{ id: 'main', axisOffset: 0, source: { id: 'source', revision: '1' }, branch: { id: '1', firstHour: 100, lastHour: 200 } }],
+        clock: { getHour: () => 125, getSpeed: () => 0, subscribe: () => () => {} }, client: {} }, active: true, onDiagnostics() {},
+      adapter: { definition: { title: 'Battles', icon: 'target', options: [] }, product: 'battles', view,
+        validateManifest: (data: unknown) => data, validateWindow: (data: unknown) => data, validateRanking: (data: unknown) => data,
+        rows: () => host.__battleView!.rows, rankedRows: () => host.__battleView!.rows, labels: {}, measures: [{ label: 'losses' }, { label: 'size' }] },
+    } as unknown as WidgetProps & { adapter: BattleViewAdapter<never, never, never> };
+    const render = () => { host.__battleView!.seen = []; renderToStaticMarkup(createElement(View<never, never, never>, props)); return host.__battleView!.seen.at(-1); };
+    // No rows still reach the view, which draws its own empty list beside its header controls.
+    assert.deepEqual(render(), { rows: [], pending: [], measure: 'losses' });
+    host.__battleView.rows = [row(1), row(2)];
+    assert.deepEqual(render()?.pending, [true, true], 'nothing answered yet: both names are loading');
+    host.__battleView.places = { places: [{ provinceId: 1, hour: 100, name: null, missing: 'no name' }], states: [], warnings: [] };
+    assert.deepEqual(render()?.pending, [false, true], 'an answered place without a name is unnamed, not loading');
+    host.__battleView.error = 'Place names unavailable';
+    assert.deepEqual(render()?.pending, [false, false], 'a failed lookup is not loading');
+    // Biggest tells the view what the ranking ranked by, which falls back from the saved choice.
+    host.__battleView.ranking = { censusHour: 125, effectiveMeasure: 'size', warnings: [], contentWarnings: [] };
+    props.widget.options = { view: 'biggest', measure: 'losses' };
+    assert.equal(render()?.measure, 'size');
+  } finally { await vite.close(); delete host.__battleView; }
+});

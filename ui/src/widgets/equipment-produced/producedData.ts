@@ -10,7 +10,7 @@ import type { Run, Span } from '../../charts/series';
 import { shownRuns } from '../../charts/race/lines.ts';
 import { runIndexAt, stretchStarts } from '../../charts/series.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
-import { formatAmount } from '../../charts/valueAxis.ts';
+import { formatAmount, formatRate } from '../../charts/valueAxis.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { domainName, variantNameAt } from '../../dashboard/equipment.ts';
 import { readAt } from '../../dashboard/reads.ts';
@@ -21,11 +21,14 @@ import type { CountryIdentityRun, EquipmentProducedReply, HourSpan, ProducedCode
 export type Measure = ProducedMeasure;
 export type Grouping = ProducedGrouping;
 
-export const MEASURES: readonly { value: Measure; label: string; unit: string; hint: string }[] = [
-  { value: 'total', label: 'Running total', unit: 'produced', hint: 'Every unit delivered since the recording began counting' },
-  { value: 'week', label: 'Per week', unit: 'in the week before', hint: 'Units delivered in the seven days before the moment shown' },
-  { value: 'month', label: 'Per month', unit: 'in the month before', hint: 'Units delivered since the same day of the month before' },
+/** The windows the widget offers, per day first (spec: per day by default). The
+ * product also counts a week, which a reply may still name. */
+export const MEASURES: readonly { value: Measure; label: string }[] = [
+  { value: 'day', label: 'Per day' },
+  { value: 'month', label: 'Per month' },
+  { value: 'total', label: 'Since recording start' },
 ];
+const REPLY_MEASURES: readonly Measure[] = ['total', 'day', 'week', 'month'];
 
 export const GROUPINGS: readonly { value: Grouping; label: string; noun: string }[] = [
   { value: 'type', label: 'Equipment type', noun: 'type' },
@@ -51,7 +54,9 @@ const coded = (values: ProducedCoded) => typeof values === 'object' && values !=
 export function validateProducedReply(data: unknown): EquipmentProducedReply {
   const reply = data as EquipmentProducedReply;
   const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string'
-    && MEASURES.some(item => item.value === reply.measure) && GROUPINGS.some(item => item.value === reply.grouping)
+    && REPLY_MEASURES.includes(reply.measure) && GROUPINGS.some(item => item.value === reply.grouping)
+    && (reply.count === undefined || reply.count === 'units' || reply.count === 'ic')
+    && (reply.decimals === undefined || (Number.isInteger(reply.decimals) && reply.decimals >= 0 && reply.decimals <= 12))
     && Array.isArray(reply.types) && reply.types.every(type => typeof type.key === 'string' && type.key.length > 0 && text(type.name))
     && Array.isArray(reply.keys) && reply.keys.every(key => typeof key.key === 'string' && text(key.name) && text(key.typeKey)
       && Array.isArray(key.names) && key.names.every((name, index) => INT(name.firstHour) && text(name.name) && typeof name.known === 'boolean' && (index === 0 || key.names[index - 1].firstHour < name.firstHour)))
@@ -83,6 +88,14 @@ export function producedRequest(branchId: string, resolved: { tags: readonly str
   included: readonly string[], refits: boolean, count: ProducedCount = 'units'): ProducedParams {
   const common = { branchId, measure, count, grouping, included: [...included], refits };
   return resolved.top != null ? { ...common, tags: [], top: resolved.top } : { ...common, tags: [...resolved.tags], top: null };
+}
+
+/** The params as sent: units are the product's default, so a units request leaves
+ * `count` out and a bridge from before the IC count answers it too. */
+export function requestParams(params: ProducedParams): ProducedParams | Omit<ProducedParams, 'count'> {
+  if (params.count !== 'units') return params;
+  const { count: _units, ...rest } = params;
+  return rest;
 }
 
 /** A sample: the hours one value holds. */
@@ -291,11 +304,24 @@ export const bandLabel = (model: ProducedModel, band: KeyBand, hour: number) => 
 
 export const formatUnits = (value: number) => formatAmount(BigInt(Math.round(value)), 0);
 
+/** A recorded integer as the number the charts plot, in the count's own unit. */
+export const plotted = (raw: number, decimals: number) => raw / 10 ** decimals;
+
+/** A recorded integer written exactly: units whole; IC by the rate rule (whole from
+ * 10, two significant figures below), so a small nonzero amount never reads as 0. */
+export const formatRaw = (raw: number, decimals: number) =>
+  decimals === 0 ? formatAmount(BigInt(raw), 0, 0) : formatRate(BigInt(raw), decimals);
+
+/** A plotted value written as `formatRaw` writes its recorded integer, recovered
+ * exactly before formatting. */
+export const formatProduced = (value: number, decimals: number) => formatRaw(Math.round(value * 10 ** decimals), decimals);
+
 /** Ranked production and its optional groups for the shared view. A
  * band whose value is not known then (a type an unresolved variant could belong to)
  * has no part of its own: what the known bands leave of the exact total is hatched. */
 export function raceEntries(model: ProducedModel, ranked: readonly { tag: string; at: ProducedAt & { total: number } }[],
-  look: { split: boolean; bands: (tag: string) => readonly KeyBand[]; unknown: string }): CountryRaceEntry[] {
+  look: { split: boolean; bands: (tag: string) => readonly KeyBand[]; unknown: string; decimals?: number }): CountryRaceEntry[] {
+  const decimals = look.decimals ?? 0;
   return ranked.map(({ tag, at }) => {
     const series = model.series.get(tag)!;
     const parts = () => {
@@ -305,7 +331,7 @@ export function raceEntries(model: ProducedModel, ranked: readonly { tag: string
       return shown.length === parts.length ? shown : [...shown, { id: 'unknown', color: look.unknown, value: 0, hatched: rest }];
     };
     return {
-      tag, value: at.total, label: formatUnits(at.total), stretch: at.stretch,
+      tag, value: plotted(at.total, decimals), label: formatRaw(at.total, decimals), stretch: at.stretch,
       ...(look.split ? { parts: parts() } : {}),
     };
   });
@@ -331,9 +357,9 @@ function valueRuns(series: ProducedSeriesModel, pick: (index: number) => number)
 /** A country's value over time, cut to the hours it is shown (`membership`: a group's
  * hours; null: whenever recorded) and to the hours the widget shows (`range`), as the
  * race kit's `shownRuns` cuts. */
-export function totalRuns(model: ProducedModel, tag: string, membership: readonly Span[] | null, range: Span): Run[] {
+export function totalRuns(model: ProducedModel, tag: string, membership: readonly Span[] | null, range: Span, decimals = 0): Run[] {
   const series = model.series.get(tag);
-  return series ? shownRuns(valueRuns(series, index => valueAt(series.total, index)), membership, range) : [];
+  return series ? shownRuns(valueRuns(series, index => plotted(valueAt(series.total, index), decimals)), membership, range) : [];
 }
 
 /** One country's bands as runs to stack, cut as `totalRuns` cuts. */
@@ -352,14 +378,15 @@ export function countedSince(reply: EquipmentProducedReply, hour: number): numbe
  * first, unknown ones last), then the bands alone, each with the total and when the
  * value was read. */
 export function* producedTooltips(model: ProducedModel, tag: string, name: string, at: ProducedAt, hour: number, date: string,
-  bands: readonly KeyBand[]): Generator<TooltipContent> {
+  bands: readonly KeyBand[], what?: string, decimals = 0): Generator<TooltipContent> {
   const series = model.series.get(tag)!;
-  const measure = MEASURES.find(item => item.value === model.reply.measure)!;
+  const measure = MEASURES.find(item => item.value === model.reply.measure) ?? { label: 'Per week' };
+  const formatUnits = (raw: number) => formatRaw(raw, decimals);
   const colorOf = new Map(bands.flatMap(band => band.keys.map(key => [key, band.color] as const)));
   const since = model.reply.measure === 'total' ? countedSince(model.reply, hour) : null;
   const notes = since !== null ? [`Counted since ${formatDateTime(since)}.`] : [];
   const total: TooltipRow = { label: 'Total', value: at.total === null ? 'Not known' : formatUnits(at.total), strong: true, divider: true };
-  const base = { title: name, subtitle: `${date} · ${measure.label}`, ...(notes.length ? { note: notes.join(' ') } : {}) };
+  const base = { title: name, subtitle: `${date} · ${what ?? measure.label}`, ...(notes.length ? { note: notes.join(' ') } : {}) };
   const parts = [...series.values.keys()].flatMap(key => {
     const value = groupValue(series, key, at.index);
     return value !== 0 ? [{ key, value: known(value) }] : [];

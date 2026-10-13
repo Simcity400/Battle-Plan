@@ -11,11 +11,13 @@ export function availabilityRequest(definition: Pick<WidgetMeta, 'availability'>
   } : null;
 }
 
+/** Products whose reply has no reason field (the air ledger, casualty pairs,
+ * the division log) answer with `available` alone. */
 export function validateWidgetAvailability(value: unknown): WidgetAvailability {
-  const reply = value as WidgetAvailability;
-  if (!reply || ![true, false, null].includes(reply.available)
-    || !(reply.unavailable === null || typeof reply.unavailable === 'string')) throw new Error('Widget availability reply is malformed.');
-  return reply;
+  const reply = value as Partial<WidgetAvailability> | null;
+  if (!reply || ![true, false, null].includes(reply.available as boolean | null)
+    || !(reply.unavailable === undefined || reply.unavailable === null || typeof reply.unavailable === 'string')) throw new Error('Widget availability reply is malformed.');
+  return { available: reply.available as boolean | null, unavailable: reply.unavailable ?? null };
 }
 
 export function availabilityReason(required: boolean, track: boolean, data?: WidgetAvailability, error?: string): string | null {

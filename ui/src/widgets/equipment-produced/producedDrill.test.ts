@@ -24,13 +24,13 @@ test('a Rocket-unknown drill keeps combined inventory unknown and names the sign
     values: [{ key: 0, values: { from: 0, deltas: [], unknown: [0, 4] },
       equipmentValues: { from: 0, deltas: [-7], unknown: [] } }],
     total: { from: 0, deltas: [], unknown: [0, 4] } }] };
-  const drill = producedDrillData(producedModel(validateProducedReply(data)));
+  const drill = producedDrillData(producedModel(validateProducedReply(data)), { count: 'units', decimals: 0, type: 'recorded type' });
   assert.deepEqual(drill.at('MOD', 40)?.values, [null]);
   assert.equal(drill.at('MOD', 40)?.total, null);
   assert.ok(drill.bands('MOD', { firstHour: 8, lastHour: 127 }).every(runs => runs.length === 0));
   const tooltip = [...drill.tooltip('MOD', 40, 'Recorded country', new Map())!][0];
   assert.deepEqual(tooltip.rows?.map(row => [row.label, row.value]), [
-    ['recorded type', 'Not known'], ['recorded type — Equipment lines', '-7'], ['Running total', 'Not known'],
+    ['recorded type', 'Not known'], ['recorded type — Equipment lines', '−7'], ['Total', 'Not known'],
   ]);
 });
 
@@ -53,7 +53,8 @@ test('retained produced numbers preserve type classification through label refre
 });
 
 test('produced full drill keeps corrections, independent residual, unknown totals, supplying reads and identity breaks', () => {
-  const drill = producedDrillData(producedModel(validateProducedReply(reply)));
+  // Every type stacked (IC's chart): the product's exact total owns the residual.
+  const drill = producedDrillData(producedModel(validateProducedReply(reply)), { count: 'units', decimals: 0, type: null });
   assert.deepEqual(drill.at('MOD', 40)?.values, [12, -2, null]);
   assert.equal(countryPartsRemainder(drill.at('MOD', 40)), 7n);
   assert.equal(drill.readHour('MOD', 40), 32);
@@ -66,7 +67,7 @@ test('produced full drill keeps corrections, independent residual, unknown total
   assert.equal(drill.at('MOD', 104)?.total, 0);
   assert.deepEqual(drill.keyHours, [8, 32, 56, 104]);
   const tooltip = [...drill.tooltip('MOD', 40, 'Name at supplying read', new Map())!][0];
-  assert.equal(tooltip.rows.find(row => row.label === 'correction type')?.value, '-2');
+  assert.equal(tooltip.rows.find(row => row.label === 'correction type')?.value, '−2');
   assert.equal(tooltip.rows.find(row => row.label === 'unresolved type')?.value, 'Not known');
   assert.equal(tooltip.rows.find(row => row.label === 'Other')?.value, '7');
   assert.deepEqual(producedRequest('branch', { tags: ['MOD'] }, 'week', 'variant', ['mod type'], true),
@@ -95,7 +96,7 @@ test('exact amounts and residuals never round wide cancellation, missing totals 
 
 test('all produced designs remain accessible without expanding constant compact columns into sample arrays', () => {
   const count = 5000;
-  const keys = Array.from({ length: count }, (_, index) => key(`mod design ${index}`));
+  const keys = Array.from({ length: count }, (_, index) => ({ ...key(`mod design ${index}`), typeKey: 'mod type' }));
   keys[0].names = [{ firstHour: 0, name: 'Earlier design', known: true, design: null }, { firstHour: 624, name: 'Later design', known: true, design: null }];
   const firstHours = Array.from({ length: 50 }, (_, index) => index * 24);
   const source: EquipmentProducedReply = { ...reply, keys, grouping: 'variant', reads: firstHours,
@@ -103,7 +104,8 @@ test('all produced designs remain accessible without expanding constant compact 
       values: keys.map((_, key) => ({ key, values: { from: 0, deltas: [1], unknown: [] } })),
       total: { from: 0, deltas: [count], unknown: [] } }] };
   const model = producedModel(validateProducedReply(source));
-  const drill = producedDrillData(model);
+  // One type's every model is a part of its own.
+  const drill = producedDrillData(model, { count: 'units', decimals: 0, type: 'mod type' });
   const at = drill.at('MOD', 600)!;
   const rows = orderedDrillParts(drill.parts(600).map((part, index) => ({ ...part, value: at.values[index] })));
   assert.equal(rows.length, count);
@@ -123,7 +125,7 @@ test('production binding follows a peaceful original holder through rename and r
       identities: [{ firstHour: 11, lastHour: 20, slot: 3, countryId: 9 }],
       values: [{ key: 0, values: { from: 0, deltas: [12], unknown: [] } }], total: { from: 0, deltas: [12], unknown: [] } },
   ] };
-  const native = producedDrillData(producedModel(validateProducedReply(source)));
+  const native = producedDrillData(producedModel(validateProducedReply(source)), { count: 'units', decimals: 0, type: 'native design' });
   const binding = bindCountryParts(native, 'OLD', 10);
   assert.equal(binding.data.at('OLD', 10), null); // peaceful origin precedes the first production sample
   assert.equal(binding.tagAt(19), 'NEW');
@@ -136,14 +138,14 @@ test('production binding follows a peaceful original holder through rename and r
 
 test('5000 constant compact designs plus one changing daily design stay compact through the real chart boundary', () => {
   const count = 5000; const days = 3650;
-  const keys = Array.from({ length: count + 1 }, (_, index) => key(`native design ${index}`));
+  const keys = Array.from({ length: count + 1 }, (_, index) => ({ ...key(`native design ${index}`), typeKey: 'native type' }));
   const firstHours = Array.from({ length: days }, (_, day) => day * 24);
   const source: EquipmentProducedReply = { ...reply, keys, reads: firstHours,
     series: [{ tag: 'MOD', firstHours, lastHours: firstHours.map(hour => hour + 23), breaks: [0], membership: null,
       values: keys.map((_, key) => ({ key, values: { from: 0, deltas: key === count ? firstHours.map(() => 1) : [1], unknown: [] } })),
       total: { from: 0, deltas: firstHours.map((_, index) => index === 0 ? count + 1 : 1), unknown: [] } }] };
   const native = producedModel(validateProducedReply(source));
-  const drill = producedDrillData(native);
+  const drill = producedDrillData(native, { count: 'units', decimals: 0, type: 'native type' });
   const bands = drill.bands('MOD', { firstHour: 0, lastHour: days * 24 - 1 });
   assert.equal(bands.reduce((sum, runs) => sum + runs.length, 0), count + days + 1);
   assert.equal(storedValues(native), count + days * 2);

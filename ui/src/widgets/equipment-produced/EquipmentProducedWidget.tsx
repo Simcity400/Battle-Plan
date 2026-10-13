@@ -1,11 +1,12 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
+import ContentSetPicker from '../../components/ContentSetPicker';
+import { Segmented } from '../../components/Segmented';
 import { dayLabel } from '../../charts/draw';
 import CountryRaceView from '../../charts/race/CountryRaceView';
 import CountryPartsDrill from '../../charts/race/CountryPartsDrill';
 import { linesTooltip } from '../../charts/race/lines';
 import { mixCountry } from '../../charts/race/options';
-import type { RaceView } from '../../charts/race/options';
 import type { Span } from '../../charts/series';
 import { CHART_LAYOUT } from '../../charts/tokens';
 import { useChartTokens } from '../../charts/useChartTokens';
@@ -13,7 +14,7 @@ import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { isMember, rankedCandidates, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
-import { contentKey, contentSet, resolveOptions } from '../../dashboard/options';
+import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -21,23 +22,33 @@ import { NumericReply } from '../../dashboard/numericReply';
 import { groupNumbers } from '../../dashboard/groupsReply';
 import type { CountryGroupReply, EquipmentProducedReply } from '../../generated/dashboard';
 import { definition, OPTIONS } from './definition';
-import { bandLabel, bandValue, equipmentBandValue, foldsPerCountry, emptyRace, formatUnits, keyBands, MEASURES, mixBands, producedAt, producedModel, producedRequest, producedTooltips,
-  raceEntries, rankProduced, seriesBands, totalRuns, validateProducedReply } from './producedData';
-import type { Grouping, KeyBand, Measure } from './producedData';
+import { countedSince, emptyRace, formatProduced, MEASURES, producedAt, producedModel, producedRequest, producedTooltips,
+  raceEntries, rankProduced, requestParams, totalRuns, typeLabel, validateProducedReply } from './producedData';
+import type { Measure } from './producedData';
 import { producedDrillData, producedDrillNumbers } from './producedDrill';
+import { COUNTS, countDecimals, mostDelivered, producedCaption, producedWindowUnavailable } from './producedView';
+import type { Count } from './producedView';
+import ProducedDrillTable from './ProducedDrillTable';
+import { useProducedTypeList } from './useProducedTypes';
 import './equipmentProduced.css';
 
-/** Equipment each country produced: a race re-ranked
- * every hour, the same values as lines over time, or one country's equipment stacked
- * by group. */
+/** Clients whose dashboard bridge predates the per-day measure and IC count: their
+ * widgets show per month instead of per day (the caption says so) until it is rebuilt. */
+const olderBridges = new WeakSet<object>();
+const olderBridge = (error: string | undefined) => !!error && /unknown (variant|field) `(day|count)`/.test(error);
+
+/** Equipment each country delivered: one type at a time in units, or the factory IC
+ * put into equipment, as a race re-ranked every hour or as lines over time; a country's
+ * breakdown lists every type it made with its models. */
 export default function EquipmentProducedWidget(props: WidgetProps) {
-  const { widget, runtime, active, onDiagnostics } = props;
+  const { widget, runtime, active, onDiagnostics, setOption } = props;
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useChartTokens();
   const options = resolveOptions(OPTIONS, widget.options);
-  const view = (options.view as RaceView) ?? 'race';
-  const measure = (options.measure as Measure) ?? 'total';
-  const grouping = (options.grouping as Grouping) ?? 'type';
+  const view = options.view === 'lines' ? 'lines' : 'race';
+  const older = olderBridges.has(runtime.client as object);
+  const measure: Measure = older && options.measure === 'day' ? 'month' : options.measure as Measure;
+  const count: Count = options.count === 'ic' ? 'ic' : 'units';
   const included = useMemo(() => contentSet(options.included).map(contentKey), [options.included]);
   const refits = options.refits === true;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -45,7 +56,7 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
-  // The moment a race or a mix shows: the playhead, the end of a range, or the branch end.
+  // The moment a race shows: the playhead, the end of a range, or the branch end.
   const moment = Math.floor(playhead ?? extent[1]);
   const lastHour = track?.branch.lastHour ?? 0;
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
@@ -56,30 +67,40 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const fallback = defaultCountryTag(track);
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], numericGroups, lastHour, definition.countries.max),
     [widget.countries, fallback, numericGroups, lastHour]);
-  // Only what the widget draws is asked for: the chosen countries, or the top N, which
-  // the product ranks at every hour and cuts to the hours each was among them.
-  const params = track ? producedRequest(track.branch.id, resolved, measure, grouping, included, refits) : null;
-  const request = track && params && (params.top || params.tags.length)
-    ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-produced', params } : null;
+  const asks = (params: { top: number | null; tags: readonly string[] } | null) => !!params && (params.top != null || params.tags.length > 0);
+  const productRequest = (params: ReturnType<typeof producedRequest> | null) => track && params && asks(params)
+    ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-produced', params: requestParams(params) } : null;
+
+  // In units, until a type is chosen, the type the countries shown delivered most.
+  const pickingDefault = count === 'units' && !included.length;
+  const defaults = useProduct<EquipmentProducedReply>(runtime.client,
+    productRequest(pickingDefault && track ? producedRequest(track.branch.id, resolved, 'total', 'type', [], refits) : null), active, validateProducedReply);
+  // Kept while a refresh of the same countries is pending, so the race stays drawn.
+  const retainedDefaults = useMemo(() => new NumericReply<EquipmentProducedReply>(), [runtime.client]);
+  const defaultScope = JSON.stringify([track?.source.id, track?.branch.id, widget.countries, refits, pickingDefault]);
+  const defaultNumbers = retainedDefaults.update(defaultScope, defaults.data, producedDrillNumbers);
+  const defaultReply = defaults.data ?? defaultNumbers;
+  const mostType = useMemo(() => defaultReply ? mostDelivered(producedModel(defaultReply)) : null, [defaultReply]);
+  const shownTypes = useMemo(() => pickingDefault ? mostType ? [mostType] : [] : included, [pickingDefault, mostType, included]);
+  // A type's own models name its tooltip rows; all equipment in IC is split by type.
+  const grouping = count === 'ic' && !shownTypes.length ? 'type' : 'variant';
+  const params = track && !(pickingDefault && !mostType) ? producedRequest(track.branch.id, resolved, measure, grouping, shownTypes, refits, count) : null;
+  const request = productRequest(params);
   const { data, error, retry } = useProduct<EquipmentProducedReply>(runtime.client, request, active, validateProducedReply);
+  const [, recheck] = useReducer((value: number) => value + 1, 0);
+  useEffect(() => {
+    if (!olderBridge(error) || measure !== 'day' || olderBridges.has(runtime.client as object)) return;
+    olderBridges.add(runtime.client as object);
+    recheck();
+  }, [error, measure, runtime.client]);
   const numeric = useMemo(() => new NumericReply<EquipmentProducedReply>(), [runtime.client]);
   const pickScope = JSON.stringify([track?.source.id, track?.branch.id, view, widget.countries, params]);
   const pickNumbers = numeric.update(pickScope, data, producedDrillNumbers);
   const shownReply = data ?? pickNumbers;
   const model = useMemo(() => shownReply ? producedModel(shownReply) : null, [shownReply]);
+  const decimals = countDecimals(count, shownReply);
   const pickGroups = grouped ? numericGroups : undefined;
   const pickOwner = useMemo(() => ({ scope: pickScope, numbers: pickNumbers, membership: pickGroups }), [pickScope, pickNumbers, pickGroups]);
-  const bands = useMemo(() => model ? keyBands(model, tokens.categories, tokens.muted) : [], [model, tokens]);
-  // A country's bands: by exact variant each keeps its own largest in colour;
-  // otherwise they use the reply's bands, the same for every country.
-  const bandsFor = useMemo(() => {
-    const own = new Map<string, KeyBand[]>();
-    return (tag: string): readonly KeyBand[] => {
-      if (!model || !foldsPerCountry(model)) return bands;
-      if (!own.has(tag)) own.set(tag, seriesBands(model, tag, tokens.categories, tokens.muted));
-      return own.get(tag)!;
-    };
-  }, [model, bands, tokens]);
   const slots = resolved.top ?? Math.max(1, resolved.tags.length);
   // The top N rank only countries that have produced something.
   const produced = resolved.top != null;
@@ -89,100 +110,99 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
 
   // The countries at the moment, ranked by the value shown.
   const candidates = useMemo(() => model ? rankedCandidates(resolved, moment, model.tags) : [], [model, resolved, moment]);
-  const ranked = useMemo(() => model ? rankProduced(model, candidates, moment, slots, produced) : [],
-    [model, candidates, moment, slots, produced]);
+  const ranked = useMemo(() => model ? rankProduced(model, candidates, moment, slots, produced) : [], [model, candidates, moment, slots, produced]);
   const lineTags = useMemo(() => resolved.top != null ? model?.tags ?? [] : resolved.tags, [resolved, model]);
   const mixTag = mixCountry(widget.countries, fallback, ranked);
-  const shownTags = view === 'race' ? ranked.map(entry => entry.tag) : view === 'lines' ? lineTags : mixTag ? [mixTag] : [];
+  const shownTags = view === 'race' ? ranked.map(entry => entry.tag) : lineTags;
+  const entries = useMemo(() => model ? raceEntries(model, ranked, { split: false, bands: () => [], unknown: tokens.muted, decimals }) : [],
+    [model, ranked, tokens.muted, decimals]);
+  // A top-N reply's samples are already cut to its hours; a group's are cut here.
+  const cutTo = (tag: string): readonly Span[] | null => resolved.membership?.get(tag) ?? null;
+  const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const lines = useMemo(() => !model || view !== 'lines' ? [] : lineTags.flatMap(tag => {
+    const runs = totalRuns(model, tag, cutTo(tag), range, decimals);
+    return runs.length ? [{ tag, runs }] : [];
+  }), [model, view, lineTags, resolved.membership, range, decimals]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // What is counted, in words: the pill names the equipment, the caption the window and date.
+  const types = useProducedTypeList(runtime, track, active);
+  const typeName = (key: string) => typeLabel(types.find(type => type.key === key) ?? { key, name: shownReply?.types.find(type => type.key === key)?.name
+    ?? defaultReply?.keys.find(item => item.key === key)?.name ?? null });
+  const equipment = !shownTypes.length ? count === 'ic' ? 'All equipment' : 'Equipment'
+    : shownTypes.length === 1 ? typeName(shownTypes[0]) : `${shownTypes.length.toLocaleString()} types`;
+  const measureLabel = (MEASURES.find(item => item.value === measure) ?? MEASURES[0]).label;
+  const since = shownReply ? countedSince(shownReply, moment) : null;
+  const caption = producedCaption(count, measure, view === 'race' ? dayLabel(moment) : null, since == null ? null : dayLabel(since));
+  const what = `${count === 'ic' ? `IC, ${equipment === 'All equipment' ? 'all equipment' : equipment}` : equipment}, ${measureLabel.toLowerCase()}`;
+  const typeChoices = useMemo(() => types.map(type => ({ value: setToken(type.key), label: typeLabel(type) })), [types]);
+  const controls = <div className="produced-caption">
+    {setOption ? <ContentSetPicker label="Equipment" automatic={count === 'ic' ? 'All equipment' : 'Most delivered'} choices={typeChoices}
+      selected={contentSet(options.included)} single triggerClassName="produced-pill" trigger={<span>{equipment}</span>}
+      onToggle={value => setOption('included', value)} onReset={() => setOption('included', '')} />
+      : <span className="produced-pill"><span>{equipment}</span></span>}
+    <span className="produced-caption-text">{caption}</span>
+    {setOption && <Segmented value={count} options={COUNTS} label="Count" onChange={value => setOption('count', value)} />}
+  </div>;
 
   const warnings = useMemo(() => [...(data?.warnings ?? []), ...(groupReply.data?.warnings ?? [])], [data, groupReply.data]);
-  const drillParams = useCallback((tag: string) => producedRequest(track!.branch.id, { tags: [tag] }, measure, grouping, included, refits),
-    [track, measure, grouping, included, refits]);
-  const decodeDrill = useCallback((reply: EquipmentProducedReply) => producedDrillData(reply === data && model ? model : producedModel(reply)), [data, model]);
-  const pickDrillTag = (hour: number) => model ? mixCountry(widget.countries, fallback,
-    rankProduced(model, rankedCandidates(resolved, hour, model.tags), hour, slots, produced)) : null;
-
-  const split = options.split === true;
-  const entries = useMemo(() => model ? raceEntries(model, ranked, { split, bands: bandsFor, unknown: tokens.muted }) : [],
-    [model, ranked, split, bandsFor, tokens.muted]);
-
-  // The hours still to cut a country's runs to: a group's, counted at each hour. A
-  // top-N reply's samples are already cut to its hours, so they are not cut again.
-  const cutTo = (tag: string): readonly Span[] | null => resolved.membership?.get(tag) ?? null;
-  // The hours shown: a date range, or the branch. Nothing outside it is drawn, fitted
-  // or hovered, even where an axis is dragged past it.
-  const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Lines over time: one per country, cut to the hours it is shown.
-  const lines = useMemo(() => !model || view !== 'lines' ? [] : lineTags.flatMap(tag => {
-    const runs = totalRuns(model, tag, cutTo(tag), range);
-    return runs.length ? [{ tag, runs }] : [];
-  }), [model, view, lineTags, resolved.membership, range]); // eslint-disable-line react-hooks/exhaustive-deps
-  // One country's mix: its groups stacked, cut to the hours it is shown.
-  const mixMembership = mixTag ? membershipOf(mixTag) : null;
-  const mixCut = mixTag ? cutTo(mixTag) : null;
-  // The mix's bands: its country's own (by variant) or the reply's.
-  const mixKeyBands = useMemo(() => mixTag ? bandsFor(mixTag) : bands, [mixTag, bandsFor, bands]);
-  const mix = useMemo(() => {
-    if (!model || view !== 'mix' || !mixTag) return null;
-    return { tag: mixTag, bands: mixBands(model, mixTag, mixKeyBands, mixCut, range) };
-  }, [model, view, mixTag, mixKeyBands, mixCut, range]);
-
-  const measureInfo = MEASURES.find(item => item.value === measure) ?? MEASURES[0];
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="layers" message="Load a campaign to see the equipment it produced." />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-    if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+    if (error && olderBridge(error) && count === 'ic') return <WidgetState kind="unavailable" message="Counting in IC needs the updated dashboard bridge." />;
+    if (error && !(olderBridge(error) && measure === 'day')) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+    if (defaults.error) return <WidgetState kind="error" detail={defaults.error} onRetry={defaults.retry} />;
     if (grouped && groupReply.error) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon="layers" message={resolved.reason} />;
+    if (pickingDefault && defaultReply && !mostType) return <WidgetState kind="unavailable" message="No production data for these countries." />;
     // A group's members are not known until its history arrives; nothing is shown as empty meanwhile.
     if (!shownReply || !model || (grouped && !numericGroups)) return <WidgetState kind="loading" label="Loading equipment produced…" />;
     if (!shownReply.reads.length) return <WidgetState kind="unavailable" message="Production data is not in this recording." />;
-    // A shorter branch has no week/month value, which is not the same as no production.
-    if (!produced && !model.tags.length) return <WidgetState kind="unavailable" message={measure === 'total' ? 'No production data for these countries.'
-      : `A full ${measure === 'week' ? 'week' : 'month'} of production data is unavailable.`} />;
+    if (!produced && !model.tags.length) return <WidgetState kind="unavailable" message={producedWindowUnavailable(measure)} />;
     return null;
   })();
   // `name` names the country as recorded at the hour the tooltip is about.
   const tooltipAt = (tag: string, hour: number, name: string) => {
     if (!model) return null;
     const at = isMember(membershipOf(tag) ?? undefined, hour) ? producedAt(model, tag, hour) : null;
-    return at ? producedTooltips(model, tag, name, at, hour, dayLabel(hour), bandsFor(tag)) : null;
+    return at ? producedTooltips(model, tag, name, at, hour, dayLabel(hour), [], what, decimals) : null;
   };
-  const parts = bands.map(band => ({ id: band.id, label: bandLabel(model!, band, moment), color: band.color }));
-  const mixAt = model && mixTag && isMember(mixMembership ?? undefined, moment) ? producedAt(model, mixTag, moment) : null;
-  const mixSeries = model && mixTag ? model.series.get(mixTag) : null;
-  const mixParts = mixKeyBands.map(band => {
-    const value = mixAt && mixSeries ? bandValue(mixSeries, band, mixAt.index) : Number.NaN;
-    const equipment = Number.isNaN(value) && mixAt && mixSeries ? equipmentBandValue(mixSeries, band, mixAt.index) : Number.NaN;
-    return { id: band.id, label: bandLabel(model!, band, moment), color: band.color,
-      value: Number.isNaN(value) ? Number.isNaN(equipment) ? 'Not known' : `Not known · Equipment lines: ${formatUnits(equipment)}` : formatUnits(value) };
-  });
-  const window_ = measure === 'week' ? 'week' : 'month';
-  // The top N show a country once it has produced something; say so when none has.
   const nothingYet = produced && model && emptyRace(model, moment) === 'nothing'
-    ? (measure === 'total' ? `No production by ${dayLabel(moment)}.`
-      : `No production in the previous ${window_}.`)
-    : measure === 'total' ? `No production recorded on ${dayLabel(moment)}.`
-      : `A full ${window_} of production data is unavailable.`;
+    ? measure === 'total' ? `No production by ${dayLabel(moment)}.` : measure === 'day' ? `No production on ${dayLabel(moment)}.` : 'No production in the previous month.'
+    : producedWindowUnavailable(measure);
+
+  // The breakdown asks for the country's every model, in the count shown; its chart
+  // stacks the selected type's models, or every type in IC until one is chosen.
+  const [drillType, setDrillType] = useState<{ scope: string; type: string } | null>(null);
+  const drillScope = JSON.stringify([track?.source.id, track?.branch.id, count, measure, included, refits]);
+  const chartType = drillType?.scope === drillScope ? drillType.type : shownTypes.length === 1 ? shownTypes[0] : null;
+  const chartSpec = useMemo(() => ({ count, decimals: countDecimals(count), type: count === 'units' ? chartType ?? shownTypes[0] ?? null : chartType }),
+    [count, chartType, shownTypes]);
+  const drillParams = useCallback((tag: string) => requestParams(producedRequest(track!.branch.id, { tags: [tag] }, measure, 'variant', [], refits, count)),
+    [track, measure, refits, count]);
+  const decodeDrill = useCallback((reply: EquipmentProducedReply) => producedDrillData(producedModel(reply), { ...chartSpec, decimals: countDecimals(count, reply) }),
+    [chartSpec, count]);
+  const pickDrillTag = (hour: number) => model ? mixCountry(widget.countries, fallback,
+    rankProduced(model, rankedCandidates(resolved, hour, model.tags), hour, slots, produced)) : null;
 
   return <CountryPartsDrill {...props} widget={widget} runtime={runtime} active={active} onDiagnostics={onDiagnostics} track={track}
     options={options} extent={extent} playhead={playhead} moment={moment} product="equipment-produced" params={drillParams}
-    validate={validateProducedReply} decode={decodeDrill} numbers={producedDrillNumbers} defaultTag={mixTag} pickTag={pickDrillTag} title="Equipment produced breakdown" measure={measureInfo.label}
-    virtual positiveGeometry warnings={warnings} state={state}
-    resetKey={JSON.stringify([track?.source.id, track?.branch.id, measure, grouping, included, refits, widget.countries])}
-    main={(onPick, visible) => <CountryRaceView runtime={runtime} track={track} active={active && visible} options={options} view={view} extent={extent} playhead={playhead} state={state}
-    moment={moment} slots={slots} ranked={entries} lines={lines} countryTags={shownTags} parts={parts}
-    mix={mix ? { ...mix, parts: mixParts } : null} partsLabel="Equipment"
-    raceLegendParts={split && model && !foldsPerCountry(model) && bands.length > 1 ? parts : []}
-    label={`Equipment ${measureInfo.unit}`} empty={nothingYet} formatValue={formatUnits} tooltip={tooltipAt}
-    lineTooltip={(hour, _tags, labelAt, country) => [linesTooltip(hour, lines, labelAt, country, dayLabel(hour), measureInfo.label, formatUnits)]}
-    labels={{ race: `Equipment ${measureInfo.unit}, ${dayLabel(moment)}`, lines: `Equipment ${measureInfo.unit} over time`,
-      mix: name => `Equipment of ${name} ${measureInfo.unit}, by ${grouping}`, actions: 'Equipment produced actions' }}
-    presentation={{ exact: false, held: false,
-      strongMixName: true, mixKeyHours: 'starts', raceEmptyState: false, linePadding: CHART_LAYOUT.countryEndLabels, resetTimeView: true }}
-    pickOwner={pickOwner} lineEmpty={{ icon: 'layers', message: 'No countries to draw. Choose countries in the widget settings.' }}
-    mixEmpty={{ icon: 'layers', message: widget.countries.kind === 'group'
-      ? `No country of this group was recorded on ${dayLabel(moment)}.` : 'Choose a country in the widget settings.',
-      unavailable: name => `No production data for ${name}.` }}
-    resetKey={`${track?.source.id ?? ''}:${track?.branch.id ?? ''}:${measure}:${grouping}`} onPick={onPick} />} />;
+    validate={validateProducedReply} decode={decodeDrill} numbers={producedDrillNumbers} defaultTag={mixTag} pickTag={pickDrillTag}
+    title="Equipment types" measure={measureLabel} positiveGeometry warnings={warnings} state={state}
+    resetKey={JSON.stringify([track?.source.id, track?.branch.id, measure, count, included, refits, widget.countries])}
+    details={({ tag, hour, tagAt, key }) => track && <ProducedDrillTable runtime={runtime} track={track} active={active} tag={tag} hour={hour} tagAt={tagAt}
+      measure={measure} refits={refits} count={count} chartType={chartSpec.type} chartKey={key}
+      chartTitle={chartSpec.type == null ? `IC put into equipment ${measureLabel.toLowerCase()}, by type`
+        : `${typeName(chartSpec.type)}: ${count === 'ic' ? 'IC put in' : 'units delivered'} ${measureLabel.toLowerCase()}, by model`}
+      onChart={type => setDrillType({ scope: drillScope, type })} />}
+    main={(onPick, visible) => <div className="produced-main">
+      {track && controls}
+      <CountryRaceView runtime={runtime} track={track} active={active && visible} options={options} view={view} extent={extent} playhead={playhead} state={state}
+        moment={moment} slots={slots} ranked={entries} lines={lines} countryTags={shownTags} partsLabel="Equipment"
+        label={`${equipment}: ${caption}`} empty={nothingYet} formatValue={value => formatProduced(value, decimals)} tooltip={tooltipAt}
+        lineTooltip={(hour, _tags, labelAt, country) => [linesTooltip(hour, lines, labelAt, country, dayLabel(hour), what, value => formatProduced(value, decimals))]}
+        labels={{ race: `${equipment}: ${caption}`, lines: `${equipment}: ${caption}`, actions: 'Equipment produced actions' }}
+        presentation={{ exact: false, held: false, raceEmptyState: false, linePadding: CHART_LAYOUT.countryEndLabels, resetTimeView: true }}
+        pickOwner={pickOwner} lineEmpty={{ icon: 'layers', message: 'No countries to draw. Choose countries in the widget settings.' }}
+        resetKey={`${track?.source.id ?? ''}:${track?.branch.id ?? ''}:${measure}:${count}:${shownTypes.join(' ')}`} onPick={onPick} />
+    </div>} />;
 }

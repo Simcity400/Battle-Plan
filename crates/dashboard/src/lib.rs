@@ -75,6 +75,8 @@ pub fn typescript_contract() -> String {
         ResearchSlotHistory::decl(),
         ResearchProgress::decl(),
         ResearchHistory::decl(),
+        ResearchFolder::decl(),
+        ResearchTechnologyFolder::decl(),
         protocol::MapGraphics::decl(),
         protocol::CampaignMapSettings::decl(),
         map_settings::Reply::decl(),

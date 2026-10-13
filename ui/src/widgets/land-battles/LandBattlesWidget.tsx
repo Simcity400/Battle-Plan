@@ -5,6 +5,7 @@ import type { BattleViewAdapter } from '../battles/BattleLogView';
 import { battleValueText } from '../battles/battleRows';
 import type { BattleLabels, BattleMeasure, BattleSideSummary } from '../battles/battleRows';
 import { definition } from './definition';
+import LandBattleList from './LandBattleList';
 import { rankedLandBattleRows, landBattleRows, validateLandBattlesReply, validateLandBattlesManifest, validateLandBattlesRanking,
   casualtyRankingNote, landCasualtiesMissing, landCasualtyText, landDivisionText, landLossText } from './landBattlesData';
 import type { LandBattleRow, LandBattlesRanking, LandBattlesWindow } from './landBattlesData';
@@ -23,14 +24,17 @@ const MEASURES: readonly BattleMeasure<LandBattleRow>[] = [
   { label: 'Length', title: 'Length', value: row => row.length, format: value => `${battleValueText(value)} h` },
 ];
 
+/** What the ranked number in Biggest battles is. */
+const rankedBy = (measure: string) => `Ranked by ${measure === 'Peak size' ? 'most divisions at once' : measure === 'Length' ? 'length' : 'casualties, both sides'}.`;
+
 const adapter: BattleViewAdapter<LandBattleRow, LandBattlesWindow, LandBattlesRanking> = {
   definition, product: 'land-battles', landPlaceNames: true, validateManifest: validateLandBattlesManifest, validateWindow: validateLandBattlesReply,
   validateRanking: validateLandBattlesRanking, rows: landBattleRows, rankedRows: rankedLandBattleRows,
-  labels: LABELS, measures: MEASURES, compactSides: SIDES, formatLoss: landLossText,
+  labels: LABELS, measures: MEASURES, compactSides: SIDES, formatLoss: landLossText, view: LandBattleList,
   summary: (rows, ranking, measure, view) => {
     const casualtyNote = view === 'biggest' && measure === 'Casualties' ? casualtyRankingNote(ranking)
       : landCasualtiesMissing(rows) ? 'Casualties: Not in this recording.' : null;
-    return casualtyNote ?? '';
+    return casualtyNote ?? (view === 'biggest' ? rankedBy(ranking?.effectiveMeasure ?? measure) : '');
   },
 };
 export default function LandBattlesWidget(props: WidgetProps) {

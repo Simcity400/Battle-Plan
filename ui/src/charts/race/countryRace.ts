@@ -25,6 +25,27 @@ export function forEachCountryRaceSegment(stack: StackModel | CompactStackModel,
     segment => visit(held ? heldStackSegment(segment) : segment));
   else countryRaceSegments(stack, from, to, hoursPerPixel, held).forEach(visit);
 }
+/** The same pieces joined into one per unbroken stretch: filled apart, two pieces
+ * that meet at a shared edge leave a hairline seam there (anti-aliasing on both
+ * sides), so a stack that changes at every read would show vertical stripes. */
+export function forEachJoinedCountryRaceSegment(stack: StackModel | CompactStackModel, from: number, to: number, hoursPerPixel: number,
+  held: boolean, visit: (segment: StackSegment) => void): void {
+  let joined: StackSegment | null = null;
+  forEachCountryRaceSegment(stack, from, to, hoursPerPixel, held, segment => {
+    if (joined && !segment.start && joined.end !== true && joined.hours.at(-1) === segment.hours[0] && joined.bands.length === segment.bands.length) {
+      for (let index = 1; index < segment.hours.length; index++) joined.hours.push(segment.hours[index]);
+      segment.bands.forEach((band, layer) => {
+        for (let index = 1; index < band.low.length; index++) { joined!.bands[layer].low.push(band.low[index]); joined!.bands[layer].high.push(band.high[index]); }
+      });
+      joined.end = segment.end;
+      return;
+    }
+    if (joined) visit(joined);
+    joined = { ...segment, hours: [...segment.hours], bands: segment.bands.map(band => ({ low: [...band.low], high: [...band.high] })) };
+  });
+  if (joined) visit(joined);
+}
+
 export function countryRaceStackExtent(stack: StackModel | CompactStackModel, from: number, to: number): [number, number] | null {
   return 'bands' in stack ? compactStackExtent(stack, from, to) : stackExtent(stack, from, to);
 }

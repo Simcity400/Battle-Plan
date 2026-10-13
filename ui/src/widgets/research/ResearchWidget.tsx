@@ -1,145 +1,280 @@
+import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import ArtFallback from '../../components/ArtFallback';
-import { useMemo, useState } from 'react';
-import type { CSSProperties } from 'react';
+import ContentSetPicker from '../../components/ContentSetPicker';
+import { useContextMenu } from '../../components/ContextMenu';
+import { Icon } from '../../components/Icons';
+import { Popover, PopoverHeading, usePopover } from '../../components/Popover';
+import type { AnchorRect } from '../../components/Popover';
+import { Segmented } from '../../components/Segmented';
+import ListSkeleton from '../../components/Skeleton';
+import WidgetState from '../../components/WidgetState';
+import { jumpItem, rowJumpProps } from '../../charts/jump';
+import { usNumber } from '../../charts/numberFormat';
+import Table from '../../charts/table/Table';
+import type { TableColumn } from '../../charts/table/Table';
+import { tableSortOf } from '../../charts/table/options';
+import { hideTooltip, showTooltip } from '../../charts/tooltip';
+import type { TooltipContent } from '../../charts/tooltip';
+import { useChartTokens } from '../../charts/useChartTokens';
+import { HeaderActionsSlot } from '../../charts/ZoomReset';
+import { contentTitle } from '../../dashboard/contentTitles';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { resolveWindow } from '../../dashboard/model';
+import { contentKey, contentSet, resolveOptions, setToken, toggleContentSet } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
-import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { useTechnologyArtwork } from './useTechnologyArtwork';
-import type { ResearchEntry, ResearchReply, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
+import type { ResearchCoverage, ResearchEntry, ResearchSlotHistory } from '../../generated/dashboard';
+import { DEFAULT_SORT, OPTIONS, VIEWS } from './definition';
 import ResearchExplanation from './ResearchExplanation';
 import { researchNumber } from './researchBreakdown';
 import { researchJourney } from './researchJourney';
-import { isUnjoinedResearch, researchAt, researchArtworkTokens, researchColumns, researchProgressAt, researchRequest, researchStateAt, researchView, validateResearchReply } from './researchData';
+import { isUnjoinedResearch, researchArtworkTokens, researchAt, researchFolderList, researchFolderLooks, researchLatestProgress, researchStateAt } from './researchData';
+import type { ResearchFolderLook } from './researchData';
+import { completedRow, completedTooltip, coverageAt, currentTooltip, gapTooltip, heldRow, heldTooltip, researchDate, researchDateRange, researchDays, researchItemDate, researchLanes, researchRows } from './researchLayout';
+import type { ResearchItem, ResearchLane, ResearchRow, ResearchText } from './researchLayout';
+import { historyTokens, useResearchReply } from './useResearch';
+import { useTechnologyArtwork } from './useTechnologyArtwork';
 import '../national-focus/nationalFocus.css';
-import WidgetState from '../../components/WidgetState';
-import ListSkeleton from '../../components/Skeleton';
-import { Icon } from '../../components/Icons';
-import { useContextMenu } from '../../components/ContextMenu';
-import { rowJumpProps } from '../../charts/jump';
 import './research.css';
 
 const NO_WARNINGS: string[] = [];
-type Art = ResearchReply['artwork'][number] | undefined;
-function ResearchArt({ art }: { art: Art }) {
-  return <span className="focus-art is-large">{art?.icon ? <img src={art.icon} alt="" /> : <ArtFallback icon="flask" />}</span>;
+const NO_COVERAGE: ResearchCoverage[] = [];
+const NO_LANES: ResearchLane[] = [];
+const NO_LOOKS: ReadonlyMap<string, ResearchFolderLook> = new Map();
+type Breakdown = { slotIndex: number; entry: ResearchEntry };
+type Tip = (content: () => TooltipContent, key: string, x: number, y: number) => void;
+type Jump = (hour: number | (() => number | null)) => ReturnType<typeof rowJumpProps>;
+
+/** A technology's picture, or the flask when content has none. */
+function Art({ icon, className }: { icon: string | undefined; className: string }) {
+  return <span className={className}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>;
 }
 
-/** A completed technology. Its row opens the full explanation. */
-function ResearchCard({ history, slots, slot, entry, art, jump }: {
-  history: ResearchReply['history']; slots: ResearchSlotHistory[]; slot: ResearchSlotHistory; entry: ResearchEntry; art: Art;
-  jump: ReturnType<typeof rowJumpProps>;
+/** Hover and keyboard focus show the same tooltip. */
+function tipProps(tip: Tip, untip: () => void, key: string, content: () => TooltipContent) {
+  return {
+    onPointerMove: (event: { clientX: number; clientY: number }) => tip(content, key, event.clientX, event.clientY),
+    onPointerLeave: untip,
+    onFocus: (event: { currentTarget: Element }) => { const box = event.currentTarget.getBoundingClientRect(); tip(content, key, box.right, box.top); },
+    onBlur: untip,
+  };
+}
+
+/** One row of a slot's lane. A completion opens its breakdown; what an older
+ * recording's slot held, the gaps and the opening are read-only. */
+function LaneRow({ item, slots, coverage, text, dimmed, tip, untip, jump, onOpen }: {
+  item: ResearchItem; slots: readonly ResearchSlotHistory[]; coverage: readonly ResearchCoverage[]; text: ResearchText; dimmed: (token: string) => boolean;
+  tip: Tip; untip: () => void; jump: Jump; onOpen: (target: Breakdown, anchor: () => AnchorRect | null) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  return <li {...jump}><details className="focus-details research-details" onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary className="focus-row research-row" aria-label={`${contentTitle(art?.name, entry.token, 'Technology name unavailable')}, slot ${slot.index + 1}, show details`}>
-      <span className="focus-art">{art?.icon ? <img src={art.icon} alt="" width="66" height="64" /> : <ArtFallback icon="flask" />}</span>
-      <span className="focus-label"><strong data-tooltip={contentTitleHint(entry.token)}>{contentTitle(art?.name, entry.token, 'Technology name unavailable')}</strong></span>
-      <Icon name="chevron-down" className="focus-chevron" aria-hidden="true" />
-    </summary>
-    {open && <ResearchExplanation history={history} slots={slots} slot={slot} entry={entry} description={art?.description} />}
-  </details></li>;
+  if (item.kind === 'gap') return <div className="research-marker is-gap" tabIndex={0} {...tipProps(tip, untip, item.key, () => gapTooltip(item))}>
+    <span>Not recorded<br />{researchDateRange(item.hour, item.lastHour)}</span></div>;
+  if (item.kind === 'opened' || item.kind === 'closed') return <div className={`research-marker is-${item.kind}`}><span>{researchItemDate(item)}</span></div>;
+  const token = item.kind === 'completed' ? item.entry.token : item.run.token;
+  const name = text.name(token), date = researchItemDate(item);
+  const body = <><Art icon={text.icon(token)} className="research-cell-art" /><span className="research-cell-name">{name}</span><small>{date}</small></>;
+  const className = `research-cell${dimmed(token) ? ' is-dimmed' : ''}`;
+  if (item.kind === 'held') return <div className={`${className} is-held`} tabIndex={0} aria-label={`${name}, ${date}`}
+    {...tipProps(tip, untip, item.key, () => heldTooltip(heldRow(coverage, item.slot, item.run, item.hour), text))}
+    {...jump(item.run.endedByHour ?? item.run.lastHour)}>{body}</div>;
+  return <button type="button" className={className} aria-label={`${name}, completed ${date}, show time breakdown`}
+    onClick={event => { const target = event.currentTarget; untip(); onOpen({ slotIndex: item.slot.index, entry: item.entry }, () => target.isConnected ? target.getBoundingClientRect() : null); }}
+    {...tipProps(tip, untip, item.key, () => completedTooltip(completedRow(slots, item.slot, item.entry, item.hour), text))}
+    {...jump(item.hour)}>{body}</button>;
 }
 
-/** Live or pinned: the slot's assignment at that hour, with the game's
- * progress line along its lower edge. Clicking it opens the explanation. */
-function CurrentResearch({ history, slots, slot, entry, current, art, hour, live, jump }: {
-  history: ResearchReply['history']; slots: ResearchSlotHistory[]; slot: ResearchSlotHistory; entry: ResearchEntry;
-  current: ResearchSlotState; art: Art; hour: number; live: boolean;
-  jump: ReturnType<typeof rowJumpProps>;
+/** Live or pinned: what the slot is doing at this hour, under its lane. */
+function NowCell({ lane, slots, hour, text, tip, untip, jump, onOpen }: {
+  lane: ResearchLane; slots: readonly ResearchSlotHistory[]; hour: number; text: ResearchText;
+  tip: Tip; untip: () => void; jump: Jump; onOpen: (target: Breakdown, anchor: () => AnchorRect | null) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const progress = researchProgressAt(slot, entry.firstObservedHour, hour);
-  const left = current.details?.remainingDays ?? null;
-  const name = contentTitle(art?.name, entry.token, 'Technology name unavailable');
-  return <details className="research-now-details" onToggle={event => setOpen(event.currentTarget.open)} {...jump}>
-    <summary className="focus-now research-now" aria-label={`${name}, researching in slot ${slot.index + 1}, show details`}>
-      <ResearchArt art={art} />
-      <span className="focus-now-text"><strong data-tooltip={contentTitleHint(entry.token)}>{name}</strong>
-        <span className="focus-now-status" data-tooltip={left !== null ? 'The game’s estimate at this hour’s research speed' : undefined}>{live && <span className="live-dot" />}
-          {left !== null ? `${left} ${left === 1 ? 'day' : 'days'} left` : progress !== null ? `${Math.round(progress * 100)}% complete` : 'Researching'}</span></span>
-      <Icon name="chevron-down" className="focus-chevron" aria-hidden="true" />
-      {progress !== null && <span className="focus-progress" role="progressbar" aria-label={`${name} progress`} aria-valuemin={0} aria-valuemax={100}
-        aria-valuenow={Math.round(progress * 100)} style={{ '--focus-progress': progress } as CSSProperties}><span /></span>}
-    </summary>
-    {open && <ResearchExplanation history={history} slots={slots} slot={slot} entry={entry} description={art?.description} />}
-  </details>;
+  const { slot } = lane;
+  const state = researchStateAt(slot, hour);
+  if (!state) {
+    const closed = lane.items.at(-1)?.kind === 'closed';
+    return <div className="research-now-cell is-unavailable" role="status"><b>{closed ? 'Closed' : 'Unavailable'}</b>{!closed && <small>Not recorded at this hour</small>}</div>;
+  }
+  const entry = slots.find(owner => owner.index === slot.index)?.entries.find(candidate => candidate.outcome === 'active'
+    && candidate.firstObservedHour === state.entryFirstObservedHour && candidate.token === state.token);
+  if (!entry && !isUnjoinedResearch(state)) {
+    const banked = BigInt(state.bankedDaysRaw);
+    return <div className="research-now-cell is-idle" role="status"><Art icon={undefined} className="research-now-art is-idle" />
+      <b className="research-idle">Idle</b>{banked > 0n && <small>{researchNumber(banked)} days saved</small>}</div>;
+  }
+  const token = entry?.token ?? state.token!;
+  const name = text.name(token);
+  const progress = researchLatestProgress(slot, state, hour);
+  const left = state.details?.remainingDays ?? null;
+  const content = () => currentTooltip(token, slot.index, progress, left, !!entry, text);
+  const body = <>
+    <Art icon={text.icon(token)} className="research-now-art" /><b>{name}</b>
+    {progress && <small className="is-progress">{Math.round(progress.fraction * 100)}%</small>}
+    {progress && <span className="research-now-meter"><i style={{ width: `${progress.fraction * 100}%` }} /></span>}
+  </>;
+  const tips = tipProps(tip, untip, `now:${slot.index}`, content);
+  return entry
+    // Jump goes to the earliest joined assignment, including earlier slots.
+    ? <button type="button" className="research-now-cell" aria-label={`${name}, researching in slot ${slot.index + 1}, show time breakdown`} {...tips}
+      {...jump(() => researchJourney([...slots], slot, entry).firstHour)}
+      onClick={event => { const target = event.currentTarget; untip(); onOpen({ slotIndex: slot.index, entry }, () => target.isConnected ? target.getBoundingClientRect() : null); }}>{body}</button>
+    : <div className="research-now-cell" tabIndex={0} aria-label={`${name}, researching in slot ${slot.index + 1}`} {...tips}>{body}</div>;
 }
 
-/** Live or pinned: a technology the slot holds that no recorded assignment
- * joins (its occurrence was not recorded). Its name and the game's estimate
- * are known; its progress and history are not, so it has no details. */
-function UnjoinedResearch({ current, art, live }: { current: ResearchSlotState & { token: string }; art: Art; live: boolean }) {
-  const left = current.details?.remainingDays ?? null;
-  const name = contentTitle(art?.name, current.token, 'Technology name unavailable');
-  return <div className="focus-now research-now" role="status" aria-label={`${name}, researching`}>
-    <ResearchArt art={art} />
-    <span className="focus-now-text"><strong data-tooltip={contentTitleHint(current.token)}>{name}</strong>
-      <span className="focus-now-status" data-tooltip={left !== null ? 'The game’s estimate at this hour’s research speed' : undefined}>{live && <span className="live-dot" />}
-        {left !== null ? `${left} ${left === 1 ? 'day' : 'days'} left` : 'Researching'}</span></span>
-  </div>;
+/** The folders a filter shows: up to four colour dots and a short label. */
+function FolderTrigger({ folders, chosen }: { folders: readonly ResearchFolderLook[]; chosen: ReadonlySet<string> }) {
+  const picked = folders.filter(folder => chosen.has(folder.key));
+  const shown = (picked.length ? picked : folders).slice(0, 4);
+  return <span className="research-folder-trigger"><span className="research-folder-dots" aria-hidden="true">
+    {shown.map(folder => <i key={folder.key} style={{ background: folder.colour }} />)}</span>
+  <span>{picked.length === 0 ? 'All folders' : picked.length === 1 ? picked[0].name : `${picked.length} folders`}</span></span>;
 }
 
-function IdleSlot({ current }: { current: ResearchSlotState | null }) {
-  const banked = current ? BigInt(current.bankedDaysRaw) : 0n;
-  return <div className="focus-now is-idle research-now" role="status">
-    <span className="focus-art is-large"><span className="focus-missing-art"><Icon name="pause" /></span></span>
-    <span className="focus-now-text"><strong>{current ? 'Idle' : 'Unavailable'}</strong>
-      <span>{!current ? 'Not recorded at this hour' : banked > 0n ? `${researchNumber(banked)} days saved for the next research` : null}</span></span>
-  </div>;
-}
-
-export default function ResearchWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
+export default function ResearchWidget({ widget, runtime, active, onDiagnostics, headerSlot, setOption }: WidgetProps) {
   const menu = useContextMenu('Research actions');
+  const owner = useId();
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
+  const actions = useContext(HeaderActionsSlot);
+  const options = resolveOptions(OPTIONS, widget.options);
+  const view = options.view === 'list' ? 'list' : 'columns';
+  const { track, tag, data, error, retry } = useResearchReply(widget, runtime, active);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window?.lastHour;
-  const live = widget.time.mode === 'follow';
-  // A pinned moment shows each slot's assignment then, like Live but held still.
-  const moment = live || widget.time.mode === 'pin';
-  const request = track && tag ? researchRequest(track.source.id, track.source.revision, { branchId: track.branch.id, tag }) : null;
-  const { data, error, retry } = useProduct<ResearchReply>(runtime.client, request, active, validateResearchReply);
+  const moment = widget.time.mode === 'follow' || widget.time.mode === 'pin';
+  const { categories } = useChartTokens();
   const slots = useMemo(() => data && hour != null ? researchAt(data.history, hour) : null, [data, hour]);
-  const columns = useMemo(() => slots && researchColumns(researchView(slots)), [slots]);
+  const coverage = useMemo(() => data && hour != null ? coverageAt(data.history.coverage, hour) : NO_COVERAGE, [data, hour]);
+  const lanes = useMemo(() => slots && hour != null ? researchLanes(slots, coverage, hour) : NO_LANES, [slots, coverage, hour]);
+  // Colours follow the country's whole history, so they hold through playback.
+  const looks = useMemo(() => data ? researchFolderLooks(data, historyTokens(data.history), categories) : NO_LOOKS, [data, categories]);
+  const folders = useMemo(() => researchFolderList(looks), [looks]);
+  const chosenTokens = useMemo(() => contentSet(options.folders), [options.folders]);
+  const chosen = useMemo(() => new Set(chosenTokens.map(contentKey)), [chosenTokens]);
+  const dimmed = useCallback((token: string) => chosen.size > 0 && !chosen.has(looks.get(token)?.key ?? ''), [chosen, looks]);
   const imageTokens = useMemo(() => researchArtworkTokens(slots, hour, moment), [slots, hour, moment]);
   const images = useTechnologyArtwork(runtime.client, track, imageTokens, active && !!data);
   const diagnostics = useMemo(() => [...new Set([...(data?.warnings ?? NO_WARNINGS), ...images.warnings])], [data, images.warnings]);
   useDiagnostics(onDiagnostics, diagnostics);
   const artwork = useMemo(() => new Map(data?.artwork.map(art => [art.token, { ...art, icon: images.artwork.get(art.token)?.icon ?? art.icon }])), [data, images.artwork]);
+  const text = useMemo<ResearchText>(() => ({
+    name: token => contentTitle(artwork.get(token)?.name, token, 'Technology name unavailable'),
+    icon: token => artwork.get(token)?.icon ?? undefined,
+    folder: token => looks.get(token),
+  }), [artwork, looks]);
+  const tip = useCallback<Tip>((content, key, x, y) => showTooltip(owner, content(), x, y, key), [owner]);
+  const untip = useCallback(() => hideTooltip(owner), [owner]);
+  useEffect(() => untip, [untip]);
+  const breakdown = usePopover('start');
+  const [shown, setShown] = useState<Breakdown | null>(null);
+  const open = useCallback((target: Breakdown, anchor: () => AnchorRect | null) => { setShown(target); breakdown.openAt(anchor); }, [breakdown]);
+  const jump = useCallback<Jump>(at => track ? rowJumpProps(runtime, track.id, at, menu.open) : {}, [runtime, track, menu.open]);
+  const completed = lanes.reduce((total, lane) => total + lane.items.filter(item => item.kind === 'completed').length, 0);
+  const held = lanes.some(lane => lane.items.some(item => item.kind === 'held') || lane.slot.states.some(isUnjoinedResearch));
+  const slot = actions ?? headerSlot;
+  const header = <>
+    {slot && createPortal(<Segmented value={view} options={VIEWS} onChange={value => setOption?.('view', value)} label="Research view" />, slot)}
+    {headerSlot && completed > 0 && createPortal(<span className="pill">{usNumber.format(completed)} completed</span>, headerSlot)}
+  </>;
   if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
-  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <div className="dash-empty" role="status">This time is outside the recording.</div>;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (!data) return <ListSkeleton label="Loading research…" />;
-  if (!columns || !slots || !columns.length) return <div className="dash-empty" role="status">No research slots recorded by this date.</div>;
-  return <section key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} className="research-widget" aria-label="Research slot history">
-    <div className="research-scroll">
-      <div className="research-columns" style={{ minWidth: columns.length * 190 }}>
-        {columns.map(({ slot, offset }) => {
-          const current = moment ? researchStateAt(slot, hour) : null;
-          const currentEntry = current && slots.find(owner => owner.index === slot.index)?.entries.find(entry => entry.outcome === 'active'
-            && entry.firstObservedHour === current.entryFirstObservedHour && entry.token === current.token);
-          const earlier = slot.entries;
-          return <section className="research-column" key={slot.index} aria-label={`Slot ${slot.index + 1}`}>
-          <h3 className="research-column-heading">Slot {slot.index + 1}</h3>
-          {moment && (currentEntry && current
-            ? <CurrentResearch history={data.history} slots={slots} slot={slot} entry={currentEntry} current={current} art={artwork.get(currentEntry.token)} hour={hour} live={live}
-                jump={rowJumpProps(runtime, track.id, () => researchJourney(slots, slot, currentEntry).firstHour, menu.open)} />
-            : isUnjoinedResearch(current) ? <UnjoinedResearch current={current} art={artwork.get(current.token)} live={live} />
-            : <IdleSlot current={current} />)}
-          <ol className="research-entries" style={{ paddingTop: `calc(${offset} * var(--research-row-height))` }}>
-          {earlier.map(entry => <ResearchCard key={`${entry.firstObservedHour}:${entry.token}`} history={data.history} slots={slots} slot={slot} entry={entry}
-            art={artwork.get(entry.token)} jump={rowJumpProps(runtime, track.id, entry.endedByHour, menu.open)} />)}
-          </ol>
-          {!moment && earlier.length === 0 && <div className="research-empty-slot">
-            {slot.states.some(isUnjoinedResearch) ? 'Completed research not recorded' : 'No completed research'}</div>}
-        </section>; })}
-      </div>
-    </div>
+  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{header}<div className="dash-empty" role="status">This time is outside the recording.</div></>;
+  if (error) return <>{header}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
+  if (!data || !slots) return <>{header}<ListSkeleton label="Loading research…" /></>;
+  if (!lanes.length) return <>{header}<div className="dash-empty" role="status"><span className="empty-icon"><Icon name="history" /></span>
+    <p>No research slots recorded by {researchDate(hour)}.</p></div></>;
+  const shownSlot = shown ? slots.find(owner => owner.index === shown.slotIndex) : undefined;
+  const shownEntry = shownSlot?.entries.find(entry => entry.firstObservedHour === shown!.entry.firstObservedHour && entry.token === shown!.entry.token);
+  const choices = folders.map(folder => ({ value: setToken(folder.key), label: folder.name }));
+  const toggle = (token: string) => { const next = toggleContentSet(options.folders, token, Number.MAX_SAFE_INTEGER); if (next != null) setOption?.('folders', next); };
+  return <section key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} className="research-widget" aria-label="Research history">
+    {header}
+    {held && <p className="research-note" role="note"><Icon name="info" /><span>This recording is too old to show when research finished.
+      {view === 'columns' ? ' Each column lists what that slot worked on, in order; “until” is when it had left the slot, not a completion.'
+        : ' Rows are what each slot held; “until” is when it had left the slot, not a completion.'}</span></p>}
+    {choices.length > 0 && <div className="research-toolbar">
+      <ContentSetPicker label="Research folders" automatic="All folders" choices={choices} selected={chosenTokens} onToggle={toggle}
+        onReset={() => { if (chosenTokens.length) setOption?.('folders', ''); }} trigger={<FolderTrigger folders={folders} chosen={chosen} />}
+        triggerClassName="button small research-folder-button" />
+    </div>}
+    {view === 'columns'
+      ? <ResearchColumns lanes={lanes} slots={slots} coverage={coverage} hour={hour} moment={moment} text={text} dimmed={dimmed} tip={tip} untip={untip} jump={jump} onOpen={open} />
+      : <ResearchList lanes={lanes} slots={slots} coverage={coverage} held={held} text={text} chosen={chosen} looks={looks}
+        sort={tableSortOf(options.tableSort, DEFAULT_SORT)} density={options.density === 'compact' ? 'compact' : 'comfortable'}
+        setOption={setOption} menu={row => row.kind === 'gap' ? [] : [jumpItem(runtime, track.id, row.kind === 'held' ? row.run.endedByHour ?? row.run.lastHour : row.hour)]}
+        onOpen={open} />}
+    <Popover menu={breakdown} className="research-popover" aria-label="Research time breakdown">
+      {breakdown.open && shownSlot && shownEntry && <>
+        <PopoverHeading title={text.name(shownEntry.token)} menu={breakdown} />
+        <ResearchExplanation history={data.history} slots={slots} slot={shownSlot} entry={shownEntry} description={artwork.get(shownEntry.token)?.description} />
+      </>}
+    </Popover>
     {menu.menu}
   </section>;
+}
+
+/** One column per slot, oldest at the top. A slot that opened during the
+ * recording starts at the row the other columns had reached by then. */
+function ResearchColumns({ lanes, slots, coverage, hour, moment, text, dimmed, tip, untip, jump, onOpen }: {
+  lanes: readonly ResearchLane[]; slots: readonly ResearchSlotHistory[]; coverage: readonly ResearchCoverage[]; hour: number; moment: boolean; text: ResearchText;
+  dimmed: (token: string) => boolean; tip: Tip; untip: () => void; jump: Jump; onOpen: (target: Breakdown, anchor: () => AnchorRect | null) => void;
+}) {
+  return <div className="research-scroll">
+    <div className="research-lanes" style={{ '--research-slots': lanes.length } as CSSProperties}>
+      {lanes.map(lane => <div className="research-lane-head" key={`head:${lane.slot.index}`}>Slot {lane.slot.index + 1}</div>)}
+      {lanes.map(lane => <ol className="research-lane" key={`lane:${lane.slot.index}`} aria-label={`Slot ${lane.slot.index + 1}`}
+        style={{ marginTop: `calc(${lane.offset} * var(--research-row))` }}>
+        {lane.items.map(item => <li key={item.key}>
+          <LaneRow item={item} slots={slots} coverage={coverage} text={text} dimmed={dimmed} tip={tip} untip={untip} jump={jump} onOpen={onOpen} /></li>)}
+      </ol>)}
+      {moment && <>
+        <div className="research-now-label">Now · {researchDate(hour)}</div>
+        {lanes.map(lane => <div className="research-now-slot" key={`now:${lane.slot.index}`}>
+          <NowCell lane={lane} slots={slots} hour={hour} text={text} tip={tip} untip={untip} jump={jump} onOpen={onOpen} /></div>)}
+      </>}
+    </div>
+  </div>;
+}
+
+/** Every completed technology (or what an older recording's slots held) as one
+ * table row; the recording's gaps keep their place while sorted by date. */
+function ResearchList({ lanes, slots, coverage, held, text, chosen, looks, sort, density, setOption, menu, onOpen }: {
+  lanes: readonly ResearchLane[]; slots: readonly ResearchSlotHistory[]; coverage: readonly ResearchCoverage[]; held: boolean; text: ResearchText;
+  chosen: ReadonlySet<string>; looks: ReadonlyMap<string, ResearchFolderLook>; sort: { column: string; direction: 'ascending' | 'descending' };
+  density: 'comfortable' | 'compact'; setOption: WidgetProps['setOption'];
+  menu: (row: ResearchRow) => ReturnType<typeof jumpItem>[]; onOpen: (target: Breakdown, anchor: () => AnchorRect | null) => void;
+}) {
+  const pointer = useRef<{ x: number; y: number } | null>(null);
+  const rows = useMemo(() => researchRows(lanes, slots, coverage).filter(row => row.kind === 'gap'
+    ? sort.column === 'date' : chosen.size === 0 || chosen.has(looks.get(row.token)?.key ?? '')), [lanes, slots, coverage, sort.column, chosen, looks]);
+  const columns = useMemo<readonly TableColumn<ResearchRow>[]>(() => [
+    { key: 'date', label: 'Date', header: 'Date', width: 'max-content', value: row => row.hour, renderMissing: true,
+      render: row => <span className="research-list-date">{row.kind === 'gap' ? 'Not recorded' : researchItemDate(row)}</span> },
+    { key: 'technology', label: held ? 'Technology held' : 'Technology', header: held ? 'Technology held' : 'Technology', width: 'minmax(var(--table-name-min), 1fr)',
+      value: row => row.kind === 'gap' ? null : text.name(row.token), renderMissing: true,
+      render: row => row.kind === 'gap' ? <span className="research-list-gap">{researchDateRange(row.hour, row.lastHour)}</span>
+        : <span className="research-list-tech"><Art icon={text.icon(row.token)} className="research-list-art" /><span>{text.name(row.token)}</span></span> },
+    { key: 'folder', label: 'Folder', header: 'Folder', width: 'minmax(6em, 0.6fr)',
+      value: row => row.kind === 'gap' ? null : looks.get(row.token)?.name ?? null, renderMissing: true,
+      render: row => { const look = row.kind === 'gap' ? undefined : looks.get(row.token);
+        return look ? <span className="research-list-folder"><i style={{ background: look.colour }} />{look.name}</span> : null; } },
+    { key: 'slot', label: 'Slot', header: 'Slot', numeric: true, width: 'max-content', value: row => row.kind === 'gap' ? null : row.slot.index + 1, renderMissing: true,
+      render: row => row.kind === 'gap' ? null : row.slot.index + 1 },
+    { key: 'took', label: held ? 'Held' : 'Took', header: held ? 'Held' : 'Took', numeric: true, width: 'max-content',
+      value: row => row.kind === 'completed' ? row.tookHours : row.kind === 'held' ? row.heldHours : null, renderMissing: true,
+      render: row => { if (row.kind === 'gap') return null; const hours = row.kind === 'completed' ? row.tookHours : row.heldHours;
+        return hours === null ? <span className="research-list-missing">—</span> : researchDays(hours); } },
+  ], [held, text, looks]);
+  const tooltip = useCallback((row: ResearchRow) => row.kind === 'completed' ? completedTooltip(row, text) : row.kind === 'held' ? heldTooltip(row, text) : gapTooltip(row), [text]);
+  const click = (row: ResearchRow) => {
+    if (row.kind !== 'completed') return;
+    const at = pointer.current, focused = document.activeElement;
+    pointer.current = null;
+    const box: AnchorRect | null = at ? { left: at.x, right: at.x, top: at.y, bottom: at.y }
+      : focused instanceof HTMLElement ? focused.getBoundingClientRect() : null;
+    onOpen({ slotIndex: row.slot.index, entry: row.entry }, () => box);
+  };
+  const body: ReactNode = rows.length
+    ? <Table label="Research history" rows={rows} columns={columns} rowKey={row => row.key} sort={sort} setOption={setOption}
+      cellBars={false} rankMarkers={false} density={density} muted={row => row.kind === 'gap'} onRowClick={click} menu={menu} tooltip={tooltip} />
+    : <div className="dash-empty" role="status">No research in these folders by this date.</div>;
+  return <div className="research-list" onPointerDownCapture={event => { pointer.current = { x: event.clientX, y: event.clientY }; }}>{body}</div>;
 }

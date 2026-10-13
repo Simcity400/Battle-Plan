@@ -1,4 +1,4 @@
-import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption, TOP_COUNTRIES } from '../../charts/race/options.ts';
+import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption, TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { factionMemberChoice, factionMemberOptions } from '../../charts/race/factionPartsOptions.ts';
@@ -26,4 +26,5 @@ export const definition = {
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true, aggregate: true, factions: true }, defaultCountries: TOP_COUNTRIES,
   factionColours: true,
   options: OPTIONS,
+  variants: raceViewVariants('Territory', OPTIONS),
 } as const satisfies WidgetMeta;

@@ -66,7 +66,7 @@ function produced(reply: EquipmentProducedReply, tag = 'MOD', origin = 8, hour =
   return renderToStaticMarkup(createElement(CountryPartsDrill<EquipmentProducedReply>, {
     widget: widget(tag, origin), runtime, track, active: true, onDiagnostics() {}, options: { show: 'breakdown' },
     extent: [0, 200], moment: hour, playhead: null, product: 'equipment-produced', params: country => ({ tags: [country], top: null }),
-    validate: validateProducedReply, decode: value => producedDrillData(producedModel(value)), numbers: producedDrillNumbers,
+    validate: validateProducedReply, decode: value => producedDrillData(producedModel(value), { count: 'units', decimals: 0, type: null }), numbers: producedDrillNumbers,
     defaultTag: tag, pickTag: () => tag, title: 'Produced parts', measure: 'Running total', virtual: true, positiveGeometry: true,
     warnings: [], resetKey: 'source/branch/selection', main: () => null,
   }));

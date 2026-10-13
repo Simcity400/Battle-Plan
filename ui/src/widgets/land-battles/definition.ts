@@ -1,15 +1,21 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
-import { battleOptions } from '../battles/battleOptions.ts';
+import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
+import { battleOptions, battleVariants } from '../battles/battleOptions.ts';
 export { DEFAULT_SORT, DEFAULT_TOP_N } from '../battles/battleOptions.ts';
 
-export const OPTIONS = battleOptions([
-  { value: 'Casualties', label: 'Casualties' }, { value: 'Peak size', label: 'Peak size' }, { value: 'Length', label: 'Length' },
-]);
+/** Both views share one row, so the table's own controls (cell bars, rank markers, column sort) do not apply. */
+const TABLE_ONLY = new Set(['cellBars', 'rankMarkers', 'tableSort']);
+export const OPTIONS = [...battleOptions([
+  { value: 'Casualties', label: 'Casualties' }, { value: 'Peak size', label: 'Most divisions at once' }, { value: 'Length', label: 'Length' },
+]).filter(field => !TABLE_ONLY.has(field.key)), DRILL_OPTION];
+/** The header's view switch. */
+export const VIEWS = [{ value: 'log', label: 'Log' }, { value: 'biggest', label: 'Biggest' }] as const;
 export const definition = {
   kind: 'land-battles', version: 1, title: 'Land battles', icon: 'shield',
-  description: 'Land battles, division counts, losses and results.',
+  description: 'Land battles: where and when, who fought and who won, and what each side lost.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 10, h: 14 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   availability: { product: 'land-battles-manifest', params: {} },
   options: OPTIONS,
+  variants: battleVariants('Land battles', OPTIONS),
 } as const satisfies WidgetMeta;

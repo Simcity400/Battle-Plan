@@ -2,20 +2,19 @@ import { useMemo } from 'react';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
-import { resolveOptions, setToken } from '../../dashboard/options';
+import { setToken } from '../../dashboard/options';
 import { useProduct, useProducts } from '../../dashboard/products';
 import { NumericReply } from '../../dashboard/numericReply';
 import type { EquipmentStockpileReply } from '../../generated/dashboard';
 import { chartChoices, choiceKey, CHOSEN_KEYS, stockGroups, typeName, validateStockpileReply } from './stockpileData';
 import type { Grouping } from './stockpileData';
-import { stockpileCountryData, stockpileNumbers } from './stockpileDrill';
+import { pinnedGrouping, stockpileCountryData, stockpileNumbers } from './stockpileDrill';
 import { datedCountrySpans } from '../../dashboard/datedCountry';
 import type { DatedCountrySelection } from '../../dashboard/datedCountry';
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { BoundTrack } from '../../dashboard/model';
 import type { CountryGroupReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition';
 
 /** The widget's country and its equipment stockpile reply. */
 export function useEquipmentStockpile(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
@@ -41,9 +40,7 @@ export function useStockpileChoices(widget: WidgetSpec, runtime: WidgetRuntime):
   return {
     included: stockGroups(data, 'type', hour).map(group => ({ value: setToken(group.key), label: typeName(data, group.key) })),
     [CHOSEN_KEYS.type]: choices('type'),
-    [CHOSEN_KEYS.variant]: choices('variant'),
-    [CHOSEN_KEYS.domain]: choices('domain'),
-    partGroup: stockGroups(data, resolveOptions(OPTIONS, widget.options).grouping as Grouping, hour).flatMap(group => {
+    partGroup: stockGroups(data, pinnedGrouping(widget.options), hour).flatMap(group => {
       const key = choiceKey(group, hour);
       return key == null ? [] : [{ value: setToken(key), label: group.label }];
     }),

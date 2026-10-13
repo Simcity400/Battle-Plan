@@ -1,29 +1,42 @@
-import { TOP_COUNTRIES } from '../../charts/race/options.ts';
+import { TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
 import { partsRaceOptions } from '../../charts/race/partsRaceOptions.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { REFITS_OPTION } from '../../dashboard/equipment.ts';
 import type { OptionField } from '../../dashboard/options';
-import { GROUPINGS, MEASURES } from './producedData.ts';
-import { breakdownOption } from '../../charts/drill/drillState.ts';
+import { MEASURES } from './producedData.ts';
+import { COUNTS } from './producedView.ts';
+import { breakdownOption, breakdownVariants } from '../../charts/drill/drillState.ts';
+import { choiceVariants } from '../../dashboard/options.ts';
+
+/** The shared race settings without what this widget does not draw: one country's
+ * mix (the breakdown shows a country) and bars split by group (one type at a time,
+ * or IC, which the breakdown splits). */
+const RACE_OPTIONS: readonly OptionField[] = partsRaceOptions('equipment').flatMap((field): OptionField[] => {
+  if (field.key === 'split') return [];
+  if (field.key === 'show') return [breakdownOption([{ id: 'breakdown', label: 'Equipment types' }], 'Equipment produced')];
+  if (field.key === 'view' && field.kind === 'choice') return [{ ...field, choices: field.choices.filter(choice => choice.value !== 'mix') }];
+  return [field];
+});
 
 export const OPTIONS: readonly OptionField[] = [
-  ...partsRaceOptions('equipment').map(field => field.key === 'show'
-    ? breakdownOption([{ id: 'breakdown', label: 'Equipment produced breakdown' }], 'Equipment produced') : field),
-  { key: 'measure', section: 'options', label: 'Measure', hint: 'Uses the previous week or month.',
-    kind: 'choice', default: 'total', choices: MEASURES.map(item => ({ value: item.value, label: item.label })) },
-  { key: 'grouping', section: 'options', label: 'Group by', kind: 'choice', default: 'type',
-    choices: GROUPINGS.map(item => ({ value: item.value, label: item.label })) },
-  { key: 'included', section: 'options', label: 'Included types', kind: 'content-set',
-    automatic: 'All types', default: '' },
+  ...RACE_OPTIONS,
+  { key: 'count', section: 'options', label: 'Count', hint: 'IC is the factory IC put into equipment lines, as in Production spending: one currency, so every type adds up.',
+    kind: 'choice', default: 'units', choices: COUNTS.map(item => ({ value: item.value, label: item.label })) },
+  { key: 'measure', section: 'options', label: 'Measure', kind: 'choice', default: 'day',
+    choices: MEASURES.map(item => ({ value: item.value, label: item.label })) },
+  { key: 'included', section: 'options', label: 'Equipment', hint: 'Units count one type, the one delivered most until you choose; IC counts all equipment until you choose. Several types add up.',
+    kind: 'content-set', automatic: 'Most delivered, or all equipment in IC', default: '' },
   REFITS_OPTION,
 ];
 
 export const definition = {
   kind: 'equipment-produced', version: 1, title: 'Equipment produced', icon: 'layers',
-  description: 'Equipment production by country and type.',
+  description: 'Equipment each country delivers, one type at a time, or the IC it puts into all of it.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 },
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true },
   defaultCountries: TOP_COUNTRIES,
   options: OPTIONS,
+  variants: [...raceViewVariants('Equipment produced', OPTIONS), ...breakdownVariants('Equipment produced', OPTIONS),
+    ...choiceVariants(OPTIONS.find(field => field.key === 'count'), () => 'Equipment output (IC)', ['ic'])],
 } as const satisfies WidgetMeta;

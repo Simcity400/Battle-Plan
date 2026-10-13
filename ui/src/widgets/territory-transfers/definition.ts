@@ -3,6 +3,7 @@ import type { OptionField } from '../../dashboard/options';
 import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
 import { TABLE_OPTIONS, tableSortOptions } from '../../charts/table/options.ts';
 import type { Sort } from '../../charts/table/logic';
+import { choiceVariants } from '../../dashboard/options.ts';
 
 /** A pinned breakdown: one country's transfers, or links an earlier version pinned. */
 export const TRANSFER_BREAKDOWN = { id: 'parts', label: 'Country transfers' };
@@ -45,4 +46,5 @@ export const definition = {
   defaultCountries: { kind: 'all' }, minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 12 }, options: OPTIONS,
   // Version 1 drew a flow diagram; its size and ribbon-colour settings stay stored, unused.
   migrate: (_from, widget) => widget,
+  variants: choiceVariants(OPTIONS.find(field => field.key === 'show'), () => 'Territory transfer log', ['transfers']),
 } as const satisfies WidgetMeta;

@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { ResearchEntry, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
 import { completedResearchJourney, researchJourney, researchTimeSplit, savedResearchCredit } from './researchJourney.ts';
 import { researchTimeRows } from './researchTimeBar.ts';
-import { researchAt, researchView } from './researchData.ts';
+import { researchAt } from './researchData.ts';
 
 const start = 43_800_000 + 1938 * 8760;
 function assignment(index: number, from: number, to: number, speed: bigint, saved: bigint, initial: bigint, outcome: ResearchEntry['outcome']): ResearchSlotHistory {
@@ -43,7 +43,7 @@ test('juggling into a banked slot carries prior progress and adds the converted 
   assert.equal(result.comparison?.rateGain, 13500000n);
   assert.equal(result.comparison?.creditGain, 4500000n);
   assert.equal(result.comparison?.difference, 0n);
-  assert.deepEqual(researchView(slots).map(s => s.entries.length), [0, 1]);
+  assert.deepEqual(slots.map(s => s.entries.filter(e => e.outcome === 'completed').length), [0, 1]);
   assert.equal(slots[0].entries[0].outcome, 'switched'); // Kept for the explanation, not shown as another completion.
 });
 

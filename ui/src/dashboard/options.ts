@@ -4,6 +4,7 @@
  * its choices) and against the field when read, so a bad value falls back to the
  * field's default instead of reaching the widget. */
 
+import type { WidgetPreset } from './definitions';
 import type { CountrySelection, WidgetTime } from './model';
 
 export type OptionValue = boolean | number | string | null;
@@ -144,6 +145,15 @@ export function setOption(fields: readonly OptionField[] = [], stored: WidgetOpt
   if (value === field.default) delete next[key];
   else next[key] = value;
   return next;
+}
+
+/** Catalogue variants for a choice field: one per choice other than its default, or for each of
+ * `values`, opening the widget with that choice under the title `name` gives it. */
+export function choiceVariants(field: OptionField | undefined, name: (choice: { value: string; label: string }) => string,
+  values?: readonly string[]): WidgetPreset[] {
+  if (field?.kind !== 'choice') return [];
+  return field.choices.filter(choice => values ? values.includes(choice.value) : choice.value !== field.default)
+    .map(choice => ({ key: `${field.key}=${choice.value}`, initial: { title: name(choice), options: { [field.key]: choice.value } } }));
 }
 
 /** Fields shown in one settings section, in declaration order. */

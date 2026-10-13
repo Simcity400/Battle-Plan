@@ -115,7 +115,7 @@ An omitted state owner certifies the native signed nonpositive class and also su
 
 `SaveDocument` projects serializer output: a bare `=fixed5` directly inside any saved `variables` block retains an empty literal key, distinct from an anonymous value or an omitted map. Other tree readers keep their existing grammar. This preserves the writer's state; native text-load recovery consumes that malformed assignment differently and does not round-trip the empty name.
 
-Technology description catalogues retain every indexed declaration in native order, while case-insensitive name lookup selects the first. Saved technologies retain ordered repeated keys because the native serializer filters each instance independently.
+Technology description catalogues retain every indexed declaration in native order, while case-insensitive name lookup selects the first. The technology database keeps each technology's research folders in authored order, a later definition replacing an earlier one's; `read_folders` reads `common/technology_tags` folder definitions in directory order with their `available` triggers, keeping a repeated folder's first definition and refusing the repeat by name. Saved technologies retain ordered repeated keys because the native serializer filters each instance independently.
 
 ## Adding or changing a reader
 

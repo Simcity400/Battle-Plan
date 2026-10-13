@@ -25,13 +25,15 @@ test('registered Focus and Research rows Jump to their recorded bounds through p
     availability: [{ firstHour: first, lastHour: last }], states: [], progress: [], entries: [{ token: 'technology', technologyHandle: 7,
       continuityStartHour: first, level: 0, firstObservedHour: first + 10, startedAfterHour: first + 9,
       lastObservedHour: ended - 1, endedByHour: ended, outcomeObservedHour: confirmed, outcome: 'completed' }],
-  }] }, artwork: [], warnings: [] };
+  }] }, artwork: [], folders: [], technologyFolders: [], warnings: [] };
   const host = globalThis as typeof globalThis & { __datedRowData?: FocusReply | ResearchReply;
     __datedRowMenu?: { x: number; y: number; items: readonly MenuItem[] } };
   const shownMenu = () => host.__datedRowMenu;
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__datedRowData });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    // Server rendering has no document to read theme colours from.
+    '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: ['#3987e5'] }); export const useViewportHeight = () => 800;",
     '/national-focus/useFocusArtwork.ts': 'export const useFocusArtwork = () => ({ read: new Map(), warnings: [] });',
     '/components/ContextMenu.tsx': `import { createElement } from 'react'; export const useContextMenu = label => ({
       menu: createElement('span', { 'data-row-menu': label }),
@@ -97,20 +99,25 @@ test('registered Focus and Research rows Jump to their recorded bounds through p
 
     renderer = researchRenderer; props.widget.kind = 'research'; props.widget.time = { mode: 'follow' };
     host.__datedRowData = research;
+    type Jump = (at: number | (() => number | null)) => { onContextMenu: (event: unknown) => void };
+    // Lane cells sit inside the columns view, a hook-free component expanded here.
+    const columnsTree = () => { const view = nodes(tree).find(node => Array.isArray(node.props.lanes) && 'moment' in node.props);
+      return view ? nodes((view.type as (props: Record<string, unknown>) => ReactNode)(view.props)) : []; };
+    const completedCell = () => columnsTree().find(node => (node.props.item as { kind?: string } | undefined)?.kind === 'completed');
     hour = confirmed - 1; render();
-    assert.equal(nodes(tree).filter(node => node.props.entry).length, 0, 'a later completion classification cannot appear early');
+    assert.equal(completedCell(), undefined, 'a later completion classification cannot appear early');
     hour = confirmed;
     assert.match(render(), /data-row-menu="Research actions"/);
-    const card = nodes(tree).find(node => node.props.entry)!;
-    let cardTree: ReactNode = null;
-    function CardProbe() { cardTree = (card.type as (props: Record<string, unknown>) => ReactNode)(card.props); return cardTree; }
-    renderToStaticMarkup(createElement(CardProbe));
-    activate(nodes(cardTree).find(node => node.type === 'li')!, ended);
+    const cell = completedCell()!;
+    let cellTree: ReactNode = null;
+    function CellProbe() { cellTree = (cell.type as (props: Record<string, unknown>) => ReactNode)(cell.props); return cellTree; }
+    renderToStaticMarkup(createElement(CellProbe));
+    activate(nodes(cellTree).find(node => node.type === 'button')!, ended);
     const beforeOutside = seeks.length;
     track.branch.firstHour = ended + 1; render();
-    const outside = nodes(tree).find(node => node.props.entry)!;
-    const jump = outside.props.jump as { onContextMenu: (event: unknown) => void };
-    jump.onContextMenu({ clientX: 0, clientY: 0, preventDefault() {}, stopPropagation() {} });
+    const outside = completedCell()!;
+    (outside.props.jump as Jump)((outside.props.item as { hour: number }).hour)
+      .onContextMenu({ clientX: 0, clientY: 0, preventDefault() {}, stopPropagation() {} });
     assert.equal(shownMenu()?.items[0].disabled, true);
     assert.equal(seeks.length, beforeOutside, 'opening a disabled Jump never seeks');
 
@@ -127,11 +134,12 @@ test('registered Focus and Research rows Jump to their recorded bounds through p
           speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0', details: null }] },
       ] } };
       host.__datedRowData = ongoing; render();
-      const current = nodes(tree).find(node => node.props.current)!;
-      function CurrentProbe() { cardTree = (current.type as (props: Record<string, unknown>) => ReactNode)(current.props); return cardTree; }
+      const current = columnsTree().find(node => (node.props.lane as { slot?: { index: number } } | undefined)?.slot?.index === 1 && node.props.hour === last)!;
+      function CurrentProbe() { cellTree = (current.type as (props: Record<string, unknown>) => ReactNode)(current.props); return cellTree; }
       renderToStaticMarkup(createElement(CurrentProbe));
-      activate(nodes(cardTree).find(node => node.props.className === 'research-now-details')!, earlier.firstObservedHour);
-      const explanation = renderToStaticMarkup(createElement(Explanation, current.props));
+      activate(nodes(cellTree).find(node => node.type === 'button')!, earlier.firstObservedHour);
+      const slots = current.props.slots as ResearchReply['history']['slots'];
+      const explanation = renderToStaticMarkup(createElement(Explanation, { history: ongoing.history, slots, slot: slots[1], entry: slots[1].entries[0] }));
       assert.ok(explanation.includes(`<small>${startedAfterHour === null ? 'Started by' : 'Started'}</small>${formatDate(gameDate(earlier.firstObservedHour)!)}`),
         'the current menu and explanation use the earlier joined assignment, not the current slot start');
       assert.notEqual(earlier.firstObservedHour, ongoing.history.slots[1].entries[0].firstObservedHour);

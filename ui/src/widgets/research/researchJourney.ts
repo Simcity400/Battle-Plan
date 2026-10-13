@@ -57,10 +57,10 @@ function assignmentCredits(slot: ResearchSlotHistory, entry: ResearchEntry, endH
   return { credits, complete };
 }
 
-/** Follow a technology through slots within one continuous country identity.
- * Completion belongs only to its final slot, while its explanation retains the
- * earlier assignments. Never join across gaps, repeats, or ambiguous overlaps. */
-export function researchJourney(slots: ResearchSlotHistory[], slot: ResearchSlotHistory, entry: ResearchEntry) {
+/** The assignments a technology moved through to `entry`, earliest first, within
+ * one continuous country identity. Completion belongs only to its final slot.
+ * Never joined across gaps, repeats, or ambiguous overlaps. */
+export function researchAssignments(slots: readonly ResearchSlotHistory[], slot: ResearchSlotHistory, entry: ResearchEntry) {
   const candidates = slots.flatMap(owner => owner.entries.filter(e =>
     e.token === entry.token && e.technologyHandle === entry.technologyHandle && e.level === entry.level
     && e.continuityStartHour === entry.continuityStartHour && e.firstObservedHour <= entry.firstObservedHour,
@@ -72,7 +72,31 @@ export function researchJourney(slots: ResearchSlotHistory[], slot: ResearchSlot
     if (before.outcome !== 'switched' || before.endedByHour === null || before.endedByHour > after.firstObservedHour) break;
     firstIndex--;
   }
-  const assignments = target >= 0 ? candidates.slice(firstIndex, target + 1) : [{ slot, entry }];
+  return target >= 0 ? candidates.slice(firstIndex, target + 1) : [{ slot, entry }];
+}
+
+/** Whether a technology's first assignment, `entry` in `slot`, is when it
+ * started. Seeing a slot assignment does not prove the technology was untouched
+ * before recording: the read before must have seen it unassigned, and the
+ * progress read at the assignment must be explained by the witnessed credit and
+ * at most one native daily update between adjacent hourly observations. */
+export function researchStartKnown(slot: ResearchSlotHistory, entry: ResearchEntry): boolean {
+  if (entry.startedAfterHour === null) return false;
+  const opening = slot.progress.find(p => p.entryFirstObservedHour === entry.firstObservedHour && p.firstHour === entry.firstObservedHour);
+  const state = slot.states.find(s => s.firstHour === entry.firstObservedHour
+    && s.entryFirstObservedHour === entry.firstObservedHour && s.token === entry.token);
+  const credit = state ? savedResearchCredit(state) : null;
+  if (!opening || !state || credit === null) return false;
+  const rate = entry.startedAfterHour === entry.firstObservedHour - 1 ? researchRateAt(state, entry.firstObservedHour) : null;
+  const day = rate ? BigInt(rate.rateRaw) : 0n;
+  const initial = BigInt(opening.progressRaw);
+  return initial >= credit && initial <= credit + (day > 0n ? day : 0n);
+}
+
+/** Follow a technology through slots (see `researchAssignments`); its
+ * explanation retains the earlier assignments. */
+export function researchJourney(slots: ResearchSlotHistory[], slot: ResearchSlotHistory, entry: ResearchEntry) {
+  const assignments = researchAssignments(slots, slot, entry);
   const parts = assignments.map(p => ({ ...p, data: researchBreakdown(p.slot, p.entry) }));
   const first = parts[0], last = parts[parts.length - 1];
   const periods: ResearchJourneyPeriod[] = [];
@@ -117,18 +141,7 @@ export function researchJourney(slots: ResearchSlotHistory[], slot: ResearchSlot
   const observed = endSample ? BigInt(endSample.progressRaw) : null;
   const calculated = work / 24n + creditGain;
   const costChanged = samples.some(p => p.baseDaysRaw !== startSample?.baseDaysRaw);
-  const openingState = first.slot.states.find(state => state.firstHour === first.entry.firstObservedHour
-    && state.entryFirstObservedHour === first.entry.firstObservedHour && state.token === first.entry.token);
-  const openingCredit = openingState ? savedResearchCredit(openingState) : null;
-  const openingRate = openingState ? researchRateAt(openingState, first.entry.firstObservedHour) : null;
-  // Seeing a slot assignment does not prove the technology was untouched before
-  // recording. Its opening progress must be explained by the witnessed credit
-  // and at most one native daily update between adjacent hourly observations.
-  const openingDay = openingRate && first.entry.startedAfterHour === first.entry.firstObservedHour - 1
-    ? BigInt(openingRate.rateRaw) : 0n;
-  const startKnown = first.entry.startedAfterHour !== null && startSample?.firstHour === first.entry.firstObservedHour
-    && openingCredit !== null && initial !== null && initial >= openingCredit
-    && initial <= openingCredit + (openingDay > 0n ? openingDay : 0n);
+  const startKnown = researchStartKnown(first.slot, first.entry);
   return {
     periods, credits, creditsComplete, parts, firstHour: first.entry.firstObservedHour,
     startedAfterHour: first.entry.startedAfterHour, startKnown,

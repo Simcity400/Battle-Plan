@@ -84,7 +84,7 @@ fn progress_compresses_separately_from_modifier_and_countdown_states() {
             .last()
             .unwrap()
             .entry_first_observed_hour,
-        50
+        Some(50)
     );
     observe(&mut country, 51, &input(2, 0));
     assert_eq!(
@@ -93,7 +93,7 @@ fn progress_compresses_separately_from_modifier_and_countdown_states() {
             .last()
             .unwrap()
             .entry_first_observed_hour,
-        51
+        Some(51)
     );
 }
 
@@ -1017,7 +1017,10 @@ fn repeated_handle_assignments_do_not_complete_transfer_or_share_progress() {
     assert_eq!(slot.entries[0].outcome, ResearchOutcome::Switched);
     assert_eq!(slot.entries[1].outcome, ResearchOutcome::Active);
     assert_eq!(country.samples[&0].len(), 1);
-    assert_eq!(slot.progress.last().unwrap().entry_first_observed_hour, 48);
+    assert_eq!(
+        slot.progress.last().unwrap().entry_first_observed_hour,
+        Some(48)
+    );
     let unrelated = ResearchTechnologyRow {
         country: 11,
         database_index: 8,
@@ -1061,7 +1064,27 @@ fn historical_inputs_without_occurrence_keep_slot_state_but_join_no_assignment()
     let slot = &history.slots[0];
     assert_eq!(slot.availability.len(), 1);
     assert!(slot.entries.is_empty());
-    assert!(slot.progress.is_empty());
+    // Each read's progress is exact, attributed to the slot's held technology.
+    let progress: Vec<_> = slot
+        .progress
+        .iter()
+        .map(|p| {
+            (
+                p.first_hour,
+                p.last_hour,
+                p.entry_first_observed_hour,
+                p.base_days_raw.as_deref(),
+                p.progress_raw.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        progress,
+        [
+            (0, 0, None, Some("10000000"), "100000"),
+            (1, 1, None, Some("10000000"), "200000")
+        ]
+    );
     let state = slot.states.last().unwrap();
     assert_eq!(state.token.as_deref(), Some("tech_7"));
     assert_eq!(state.entry_first_observed_hour, None);
@@ -1072,9 +1095,104 @@ fn historical_inputs_without_occurrence_keep_slot_state_but_join_no_assignment()
     assert_eq!(country.unjoined_reads, 2);
     assert_eq!(
         super::unjoined_warning(2),
-        "2 research slot reads name their technology without its recorded occurrence, so they are not joined into assignments: completions, progress and time spent are unknown there."
+        "2 research slot reads name their technology without its recorded occurrence, so they are not joined into assignments: their completions and the time they took are unknown."
     );
     assert!(super::unjoined_warning(1).starts_with("1 research slot read names its technology"));
+}
+
+#[test]
+fn unjoined_progress_merges_only_within_one_held_technology() {
+    let mut country = Country::default();
+    let held = |handle: u32, progress: i64| {
+        let mut row = input(handle, progress);
+        row.database_index = replay::rows::Recorded::NotRecorded;
+        row
+    };
+    // The same technology read twice at equal progress is one sample.
+    observe(&mut country, 0, &held(7, 300_000));
+    observe(&mut country, 1, &held(7, 300_000));
+    // Another technology with equal cost and progress starts its own sample.
+    observe(&mut country, 2, &held(8, 300_000));
+    let slot = &country.history.slots[0];
+    let spans: Vec<_> = slot
+        .progress
+        .iter()
+        .map(|p| (p.first_hour, p.last_hour, p.progress_raw.as_str()))
+        .collect();
+    assert_eq!(spans, [(0, 1, "300000"), (2, 2, "300000")]);
+    assert!(
+        slot.progress
+            .iter()
+            .all(|p| p.entry_first_observed_hour.is_none())
+    );
+    assert_eq!(slot.states.last().unwrap().token.as_deref(), Some("tech_8"));
+}
+
+#[test]
+fn a_technology_is_shown_in_its_first_available_folder_and_unknowns_are_named() {
+    // An undecidable folder placed before an available one may be the one
+    // shown, so the technology's folder is unknown, not the later folder.
+    let definitions = [
+        ("armour_folder", Some(false)),
+        ("nsb_armour_folder", Some(true)),
+        ("mod_folder", None),
+        ("infantry_folder", Some(true)),
+    ];
+    let placed: BTreeMap<String, Vec<String>> = [
+        ("both_armour", vec!["armour_folder", "nsb_armour_folder"]),
+        ("old_armour", vec!["armour_folder"]),
+        ("modded", vec!["mod_folder"]),
+        ("modded_or_infantry", vec!["mod_folder", "infantry_folder"]),
+        ("infantry_or_modded", vec!["infantry_folder", "mod_folder"]),
+        ("stray", vec!["missing_folder"]),
+        ("hidden", vec![]),
+    ]
+    .into_iter()
+    .map(|(token, folders)| {
+        (
+            token.to_owned(),
+            folders.into_iter().map(str::to_owned).collect(),
+        )
+    })
+    .collect();
+    let (shown, notes) = super::shown_folders(
+        &definitions,
+        &placed,
+        [
+            "both_armour",
+            "old_armour",
+            "modded",
+            "modded_or_infantry",
+            "infantry_or_modded",
+            "stray",
+            "hidden",
+            "unknown_token",
+        ],
+    );
+    let folders: Vec<_> = shown
+        .iter()
+        .map(|s| (s.token.as_str(), s.folder.as_deref()))
+        .collect();
+    assert_eq!(
+        folders,
+        [
+            ("both_armour", Some("nsb_armour_folder")),
+            ("old_armour", None),
+            ("modded", None),
+            ("modded_or_infantry", None),
+            ("infantry_or_modded", Some("infantry_folder")),
+            ("stray", None),
+            ("hidden", None),
+            ("unknown_token", None),
+        ]
+    );
+    assert_eq!(
+        notes,
+        [
+            "2 technologies are placed in a research folder whose availability cannot be decided from content before any available folder, so their folder is unknown: modded, modded_or_infantry.",
+            "Research folder missing_folder is not defined in common/technology_tags, so 1 technology placed in it cannot be shown there: stray.",
+        ]
+    );
 }
 
 #[test]
@@ -1090,6 +1208,7 @@ fn a_finished_technology_left_in_a_slot_without_an_assignment_is_not_research() 
         observe(&mut country, 0, &row);
         let slot = &country.history.slots[0];
         assert!(slot.entries.is_empty());
+        assert!(slot.progress.is_empty());
         assert_eq!(slot.states[0].token, None);
         assert_eq!(slot.states[0].ahead_reduction_years_raw, None);
     }

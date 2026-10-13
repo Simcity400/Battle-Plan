@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isUnjoinedResearch, researchAt, researchArtworkTokens, researchColumns, researchProgressAt, researchRateAt, researchRequest, researchStateAt, validateResearchReply } from './researchData.ts';
+import { isUnjoinedResearch, researchAt, researchArtworkTokens, researchProgressAt, researchRateAt, researchRequest, researchStateAt, validateResearchReply } from './researchData.ts';
+import { coverageAt, researchLanes } from './researchLayout.ts';
 import { loadProduct } from '../../dashboard/products.ts';
 import type { ResearchEntry, ResearchHistory, ResearchReply } from '../../generated/dashboard';
 import type { DashboardClient, ProductRequest } from '../../dashboard/client';
@@ -15,17 +16,7 @@ const history: ResearchHistory = { coverage: [{ firstHour: 100, lastHour: 299 },
   { index: 1, availability: [{ firstHour: 100, lastHour: 400 }], states: [], progress: [], entries: [entry('D', 100, 220), entry('E', 220, null, 'active')] },
   { index: 2, availability: [{ firstHour: 230, lastHour: 400 }], states: [], progress: [], entries: [entry('F', 235, 245), entry('G', 245, null, 'active')] },
 ] };
-const reply: ResearchReply = { history, artwork: [], warnings: [] };
-
-test('research slots stay sequential; only the new column receives a time-based offset', () => {
-  const columns = researchColumns(researchAt(history, 400)!);
-  assert.deepEqual(columns.map(c => c.offset), [0, 0, 1]);
-  assert.equal(columns[0].slot.entries[1].token, 'B');
-  assert.equal(columns[1].slot.entries[1].token, 'E');
-  assert.equal(columns[2].slot.entries[1].token, 'G');
-  // Completion dates differ: these second entries still use consecutive rows.
-  assert.notEqual(columns[0].slot.entries[0].endedByHour, columns[1].slot.entries[0].endedByHour);
-});
+const reply: ResearchReply = { history, artwork: [], folders: [], technologyFolders: [], warnings: [] };
 
 test('research image selection follows displayed assignments and all completed rows without future or switched cards', () => {
   const samples: ResearchHistory = { coverage: [{ firstHour: 100, lastHour: 400 }], slots: [
@@ -80,7 +71,7 @@ test('an hour without a read keeps the history known by then and only its slot s
   for (const hour of [300, 401]) {
     const slots = researchAt(read, hour);
     assert.deepEqual(slots[0].entries.filter(e => e.outcome === 'completed').map(e => e.token), ['A']);
-    assert.deepEqual(researchColumns(slots).map(c => c.slot.index), [0, 1, 2]);
+    assert.deepEqual(researchLanes(slots, coverageAt(read.coverage, hour), hour).map(lane => lane.slot.index), [0, 1, 2]);
   }
   const gap = researchAt(read, 300)[0];
   assert.equal(researchStateAt(gap, 300), null, 'the unread hour has no slot state');
@@ -153,6 +144,24 @@ test('research responses reject stale identities, overlapping assignments and un
   for (const bad of [null, 'A', {}, { token: '', name: null, description: null, baseDurationDays: null, icon: null },
     { token: 'A', name: 1, description: null, baseDurationDays: null, icon: null }, { token: 'A', name: null, description: null, baseDurationDays: -1, icon: null }]) {
     assert.throws(() => validateResearchReply({ ...reply, artwork: [bad] } as unknown as ResearchReply), String(bad));
+  }
+});
+
+test('progress without an assignment needs the slot to hold an unjoined technology then, and folders are checked', () => {
+  const held = { firstHour: 100, lastHour: 200, token: 'radio', entryFirstObservedHour: null,
+    speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0' };
+  const slot = { index: 0, availability: [{ firstHour: 100, lastHour: 200 }], entries: [], states: [held],
+    progress: [{ firstHour: 124, lastHour: 124, entryFirstObservedHour: null, baseDaysRaw: '10000000', progressRaw: '2500000' }] };
+  const unjoined = { coverage: [{ firstHour: 100, lastHour: 200 }], slots: [slot] };
+  assert.equal(validateResearchReply({ ...reply, history: unjoined }).history.slots[0].progress.length, 1);
+  assert.throws(() => validateResearchReply({ ...reply, history: { ...unjoined, slots: [{ ...slot, states: [{ ...held, token: null }] }] } }),
+    'an idle slot has no technology to own progress');
+  const folders = { folders: [{ key: 'infantry_folder', name: 'Infantry' }, { key: 'mod_folder', name: null }],
+    technologyFolders: [{ token: 'A', folder: 'infantry_folder' }, { token: 'B', folder: null }] };
+  assert.deepEqual(validateResearchReply({ ...reply, ...folders }).technologyFolders.map(item => item.folder), ['infantry_folder', null]);
+  for (const bad of [{ folders: [{ key: '', name: null }] }, { folders: [{ key: 'a', name: 1 }] }, { technologyFolders: [{ token: 'A', folder: '' }] },
+    { technologyFolders: undefined }]) {
+    assert.throws(() => validateResearchReply({ ...reply, ...bad } as unknown as ResearchReply), JSON.stringify(bad));
   }
 });
 

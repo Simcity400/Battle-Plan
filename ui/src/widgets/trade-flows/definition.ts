@@ -1,6 +1,6 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
+import { breakdownOption, DRILL_OPTION, breakdownVariants } from '../../charts/drill/drillState.ts';
 import { TRADE_BREAKDOWN } from './tradeDrill.ts';
 
 export const OPTIONS: readonly OptionField[] = [
@@ -28,4 +28,5 @@ export const definition = {
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 12 },
   countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   options: OPTIONS,
+  variants: breakdownVariants('Trade flows', OPTIONS),
 } as const satisfies WidgetMeta;

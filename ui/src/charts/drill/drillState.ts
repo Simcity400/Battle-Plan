@@ -1,5 +1,7 @@
 import { createWidget } from '../../dashboard/model.ts';
 import type { WidgetSpec } from '../../dashboard/model';
+import { choiceVariants } from '../../dashboard/options.ts';
+import type { WidgetPreset } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 
 /** Drilling into what a value is made of: one pattern for every widget whose value
@@ -48,11 +50,19 @@ export function breakdownOption(breakdowns: readonly Breakdown[], mainLabel: str
     choices: [{ value: 'main', label: mainLabel }, ...breakdowns.map(item => ({ value: item.id, label: item.label }))] };
 }
 
+/** The title of a widget showing one breakdown, pinned or added from the catalogue. */
+export const breakdownTitle = (title: string, label: string) => `${title}: ${label}`.slice(0, 160);
+
+/** A catalogue card for each breakdown in the widget's Show setting, titled as Pin as widget titles it. */
+export function breakdownVariants(title: string, fields: readonly OptionField[]): WidgetPreset[] {
+  return choiceVariants(fields.find(field => field.key === 'show'), choice => breakdownTitle(title, choice.label));
+}
+
 /** "Pin as widget": a copy of the widget, for the same campaign, countries and time,
  * that shows one breakdown as its main view. */
 export function pinnedBreakdown(source: WidgetSpec, breakdown: Breakdown, trackId: string): WidgetSpec {
   const base = createWidget(source.kind, trackId);
   return { ...base, campaign: source.campaign, trackIds: [...source.trackIds], countries: source.countries, time: source.time,
-    contentScale: source.contentScale, title: `${source.title}: ${breakdown.label}`.slice(0, 160),
+    contentScale: source.contentScale, title: breakdownTitle(source.title, breakdown.label),
     options: { ...source.options, show: breakdown.id } };
 }

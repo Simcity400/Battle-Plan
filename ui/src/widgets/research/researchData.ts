@@ -1,6 +1,7 @@
 import type { ProductRequest } from '../../dashboard/client';
 import type { CountryParams, ResearchReply } from '../../generated/dashboard';
 import { artworkEntry, keepDrawableIcons } from '../../dashboard/artwork.ts';
+import { contentTitle } from '../../dashboard/contentTitles.ts';
 
 export const PRODUCT = 'research';
 
@@ -8,8 +9,6 @@ export function researchRequest(sourceId: string, revision: string, params: Coun
   return { sourceId, revision, product: PRODUCT, params };
 }
 import type { ResearchHistory, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
-
-export interface ResearchColumn { slot: ResearchSlotHistory; offset: number }
 
 /** Playback never exposes future outcomes, assignments, or slot additions.
  * History up to `hour` stays known when that hour itself has no read: only
@@ -70,21 +69,77 @@ export function researchRateAt(state: ResearchSlotState, hour: number): { rateRa
   return { rateRaw: (rate > minimum ? rate : minimum).toString(), penaltyRaw: penalty.toString(), floored: rate < minimum };
 }
 
-/** Only a slot's initial offset uses time. Every subsequent item occupies the
- * next row in that slot, regardless of other slots' dates or durations. */
-export function researchColumns(slots: ResearchSlotHistory[]): ResearchColumn[] {
-  const columns: ResearchColumn[] = [];
-  for (const slot of [...slots].sort((a, b) => a.availability[0].firstHour - b.availability[0].firstHour || a.index - b.index)) {
-    const appeared = slot.availability[0].firstHour;
-    let offset = 0;
-    for (const previous of columns) {
-      if (previous.slot.availability[0].firstHour >= appeared) continue;
-      const finished = previous.slot.entries.filter(e => e.endedByHour !== null && e.endedByHour <= appeared).length;
-      offset = Math.max(offset, previous.offset + finished);
-    }
-    columns.push({ slot, offset });
+/** A run of reads in which a slot held one technology without its recorded
+ * occurrence (older recordings). `endedByHour` is the read at which it had left
+ * the slot; null when the run ends at a gap or the slot closing, where the
+ * recording does not say. */
+export interface ResearchHeldRun { token: string; firstHour: number; lastHour: number; endedByHour: number | null }
+
+/** Consecutive slot states holding the same technology without a joined
+ * assignment, one run each. Never joined across a break in the slot's states. */
+export function researchHeldRuns(slot: ResearchSlotHistory): ResearchHeldRun[] {
+  const runs: ResearchHeldRun[] = [];
+  let open: ResearchHeldRun | null = null;
+  for (const state of slot.states ?? []) {
+    const contiguous = open !== null && open.lastHour + 1 === state.firstHour;
+    if (open && contiguous && isUnjoinedResearch(state) && state.token === open.token) { open.lastHour = state.lastHour; continue; }
+    if (open) { if (contiguous) open.endedByHour = state.firstHour; runs.push(open); open = null; }
+    if (isUnjoinedResearch(state)) open = { token: state.token, firstHour: state.firstHour, lastHour: state.lastHour, endedByHour: null };
   }
-  return columns.sort((a, b) => a.slot.index - b.slot.index);
+  if (open) runs.push(open);
+  return runs;
+}
+
+/** The latest recorded progress of what `state` holds, at or before `hour`, with
+ * the hour of the read it came from: the assignment's own samples, or for a
+ * technology held without its recorded occurrence, the samples since the slot
+ * has held it without a break. Never interpolated or taken from another
+ * technology; null without a sample or a known positive cost. */
+export function researchLatestProgress(slot: ResearchSlotHistory, state: ResearchSlotState, hour: number): { fraction: number; hour: number } | null {
+  let since = -Infinity;
+  if (state.entryFirstObservedHour === null) {
+    if (!state.token) return null;
+    const run = researchHeldRuns(slot).find(run => run.token === state.token && run.firstHour <= hour && hour <= run.lastHour);
+    if (!run) return null;
+    since = run.firstHour;
+  }
+  const sample = (slot.progress ?? []).filter(p => p.entryFirstObservedHour === state.entryFirstObservedHour
+    && p.firstHour <= hour && p.lastHour >= since).at(-1);
+  if (!sample?.baseDaysRaw) return null;
+  const base = BigInt(sample.baseDaysRaw), done = BigInt(sample.progressRaw);
+  if (base <= 0n || done < 0n) return null;
+  return { fraction: done >= base ? 1 : Number(done * 10_000n / base) / 10_000, hour: Math.min(sample.lastHour, hour) };
+}
+
+/** A technology's research folder, named and coloured; `order` is its place
+ * among the folders shown, in content order. */
+export interface ResearchFolderLook { key: string; name: string; colour: string; order: number }
+
+/** The folder each of `tokens` is shown in. Colours go to the folders these
+ * technologies show, in the content's folder order, so a country's colours hold
+ * through playback when `tokens` is its whole history. Past the palette's end
+ * colours repeat; the folder's name always tells them apart. */
+export function researchFolderLooks(reply: Pick<ResearchReply, 'folders' | 'technologyFolders'>, tokens: Iterable<string>,
+  palette: readonly string[]): Map<string, ResearchFolderLook> {
+  const byToken = new Map(reply.technologyFolders.map(item => [item.token, item.folder]));
+  const order = new Map(reply.folders.map((folder, index) => [folder.key, index]));
+  const names = new Map(reply.folders.map(folder => [folder.key, folder.name]));
+  const wanted = [...new Set(tokens)];
+  const shown = [...new Set(wanted.flatMap(token => byToken.get(token) ?? []))]
+    .sort((a, b) => (order.get(a) ?? Infinity) - (order.get(b) ?? Infinity) || (a < b ? -1 : a > b ? 1 : 0));
+  const looks = new Map(shown.map((key, index): [string, ResearchFolderLook] => [key, { key, order: index,
+    name: contentTitle(names.get(key), key, 'Folder name unavailable'), colour: palette.length ? palette[index % palette.length] : 'currentColor' }]));
+  return new Map(wanted.flatMap((token): [string, ResearchFolderLook][] => {
+    const key = byToken.get(token), look = key ? looks.get(key) : undefined;
+    return look ? [[token, look]] : [];
+  }));
+}
+
+/** The folders a set of looks reaches, in content order. */
+export function researchFolderList(looks: ReadonlyMap<string, ResearchFolderLook>): ResearchFolderLook[] {
+  const seen = new Map<string, ResearchFolderLook>();
+  for (const look of looks.values()) if (!seen.has(look.key)) seen.set(look.key, look);
+  return [...seen.values()].sort((a, b) => a.order - b.order);
 }
 
 /** Images for the cards displayed at this hour: current assignments first,
@@ -99,7 +154,11 @@ export function researchArtworkTokens(slots: readonly ResearchSlotHistory[] | nu
     if (entry) tokens.push(entry.token);
     else if (isUnjoinedResearch(current)) tokens.push(current.token);
   }
-  for (const slot of ordered) for (const entry of slot.entries) if (entry.outcome === 'completed') tokens.push(entry.token);
+  for (const slot of ordered) {
+    for (const entry of slot.entries) if (entry.outcome === 'completed') tokens.push(entry.token);
+    // A technology still held at this hour is not yet history.
+    for (const run of researchHeldRuns(slot)) if (run.lastHour < hour) tokens.push(run.token);
+  }
   return [...new Set(tokens)];
 }
 
@@ -137,9 +196,14 @@ export function validateResearchReply(input: unknown): ResearchReply {
           return ok;
         }) && intervals(s.progress) && s.progress.every(sample => {
           progress++;
-          return s.entries.some(e => e.firstObservedHour === sample.entryFirstObservedHour
-            && sample.firstHour >= e.firstObservedHour
-            && sample.lastHour <= (e.endedByHour ?? e.lastObservedHour))
+          // A sample without an assignment belongs to the technology the slot
+          // held without its recorded occurrence; that hour's state names it.
+          return (sample.entryFirstObservedHour === null
+            ? Array.isArray(s.states) && s.states.some(state => state.entryFirstObservedHour === null && typeof state.token === 'string'
+              && state.firstHour <= sample.firstHour && sample.firstHour <= state.lastHour)
+            : s.entries.some(e => e.firstObservedHour === sample.entryFirstObservedHour
+              && sample.firstHour >= e.firstObservedHour
+              && sample.lastHour <= (e.endedByHour ?? e.lastObservedHour)))
             && s.availability.some(span => span.firstHour <= sample.firstHour && sample.lastHour <= span.lastHour)
             && fixed(sample.progressRaw) && (sample.baseDaysRaw === null || (fixed(sample.baseDaysRaw) && BigInt(sample.baseDaysRaw) > 0n));
         }) && (s.states === undefined || (intervals(s.states) && s.states.every(state => {
@@ -171,14 +235,12 @@ export function validateResearchReply(input: unknown): ResearchReply {
       return valid;
     // Text-only history titles cover every technology reached by the history.
     // Each entry must have the product's shape; only an icon it cannot draw becomes missing art.
-    }) && entries <= 100000 && states <= 100000 && progress <= 100000 && reply.artwork.every(artworkEntry);
+    }) && entries <= 100000 && states <= 100000 && progress <= 100000 && reply.artwork.every(artworkEntry)
+    && Array.isArray(reply.folders) && reply.folders.every(folder => typeof folder?.key === 'string' && folder.key.length > 0
+      && (folder.name === null || typeof folder.name === 'string'))
+    && Array.isArray(reply.technologyFolders) && reply.technologyFolders.every(item => typeof item?.token === 'string' && item.token.length > 0
+      && (item.folder === null || (typeof item.folder === 'string' && item.folder.length > 0)));
   if (!valid) throw new Error('Research history does not match this country and recording.');
   keepDrawableIcons(reply.artwork);
   return reply;
-}
-
-/** Only the finishing slot owns a historical completion. Switched assignments
- * remain in the full history for transfer/credit calculations. */
-export function researchView(slots: ResearchSlotHistory[]): ResearchSlotHistory[] {
-  return slots.map(slot => ({ ...slot, entries: slot.entries.filter(e => e.outcome === 'completed') }));
 }

@@ -1,7 +1,7 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
-import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
+import { breakdownOption, DRILL_OPTION, breakdownVariants } from '../../charts/drill/drillState.ts';
 import type { OptionField } from '../../dashboard/options';
-import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, TOP_COUNTRIES } from '../../charts/race/options.ts';
+import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'race',
@@ -28,4 +28,5 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 }, countries: { max: Number.MAX_SAFE_INTEGER, ranked: true },
   defaultCountries: TOP_COUNTRIES, options: OPTIONS,
+  variants: [...raceViewVariants('Naval losses', OPTIONS), ...breakdownVariants('Naval losses', OPTIONS)],
 } as const satisfies WidgetMeta;

@@ -1,7 +1,7 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { AFTER_PLAYHEAD_OPTION } from '../../dashboard/options.ts';
 import type { OptionField } from '../../dashboard/options';
-import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
+import { breakdownOption, DRILL_OPTION, breakdownVariants } from '../../charts/drill/drillState.ts';
 import type { Breakdown } from '../../charts/drill/drillState';
 
 /** The breakdowns a click opens, and that Pin as widget can show as the widget itself. */
@@ -40,4 +40,5 @@ export const definition = {
   minSize: { w: 4, h: 6 }, defaultSize: { w: 12, h: 10 },
   countries: { max: Number.MAX_SAFE_INTEGER },
   options: STABILITY_OPTIONS,
+  variants: breakdownVariants('Stability & War support', STABILITY_OPTIONS),
 } as const satisfies WidgetMeta;

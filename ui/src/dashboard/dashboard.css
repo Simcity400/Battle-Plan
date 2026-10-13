@@ -296,6 +296,8 @@
 .widget-card-icon { display: grid; place-items: center; flex: none; width: 34px; height: 34px; border-radius: var(--r-sm);
   background: color-mix(in srgb, var(--group-colour) 16%, transparent); color: var(--group-colour); }
 .widget-card-icon svg { width: 19px; height: 19px; }
+/* A view of the widget before it: an outlined icon instead of a filled one. */
+.widget-card[data-variant] .widget-card-icon { background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--group-colour) 45%, transparent); }
 .widget-card-text { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 100%; min-width: 0; }
 .widget-card-text strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 0.78125rem; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
 .widget-card-text small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 0.6875rem; line-height: 1.3; }

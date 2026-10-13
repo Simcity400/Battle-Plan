@@ -1,3 +1,5 @@
+import { choiceVariants } from '../../dashboard/options.ts';
+import type { WidgetPreset } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { LOG_OPTIONS } from '../../charts/log/logOptions.ts';
 import { TABLE_OPTIONS, tableSortOptions } from '../../charts/table/options.ts';
@@ -17,4 +19,9 @@ export function battleOptions(measures: readonly { value: string; label: string 
     ...tableSortOptions([{ key: 'measure', label: 'Selected measure' }, ...measures.map(measure => ({ key: measure.value, label: measure.label })),
       { key: 'date', label: 'Date' }, { key: 'winner', label: 'Winner' }], DEFAULT_SORT).map(field => ({ ...field, visibleWhen: biggest })),
   ];
+}
+
+/** The Biggest battles view as its own catalogue card: "Biggest land battles". */
+export function battleVariants(title: string, fields: readonly OptionField[]): WidgetPreset[] {
+  return choiceVariants(fields.find(field => field.key === 'view'), () => `Biggest ${title.toLowerCase()}`);
 }

@@ -1,5 +1,6 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
+import { choiceVariants } from '../../dashboard/options.ts';
 
 export const VIEWS = [{ value: 'live', label: 'Current' }, { value: 'history', label: 'History' }] as const;
 export const OPTIONS: readonly OptionField[] = [
@@ -14,4 +15,5 @@ export const definition = {
   // Current once dropped completed projects after a chosen number of game days; it now lists them all.
   migrate: (_from, { options: { completedRetentionDays: _retention, ...options } = {}, ...widget }) => ({ ...widget,
     ...(Object.keys(options).length ? { options } : {}) }),
+  variants: choiceVariants(OPTIONS.find(field => field.key === 'view'), () => 'Special project history'),
 } as const satisfies WidgetMeta;

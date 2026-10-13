@@ -28,7 +28,7 @@ import { useChartTokens, useViewportHeight } from '../useChartTokens';
 import { shownUntil } from '../view';
 import type { PlaybackMode } from '../view';
 import { useCountryColours } from './countryColours';
-import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRacePickTag, countryRaceReadHour, countryRaceStack, countryRaceStackExtent, countryRaceTooltipTags, forEachCountryRaceSegment, partColours } from './countryRace';
+import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRacePickTag, countryRaceReadHour, countryRaceStack, countryRaceStackExtent, countryRaceTooltipTags, forEachJoinedCountryRaceSegment, partColours } from './countryRace';
 import type { CountryRaceEntry, CountryRaceLine, CountryRaceLooks, CountryRacePart } from './countryRace';
 import { linesAt, linesTooltip } from './lines';
 import type { LabelAt } from './lines';
@@ -83,6 +83,8 @@ export interface CountryRaceViewProps {
     strongMixName?: boolean; mixKeyHours?: 'boundaries' | 'starts'; raceEmptyState?: boolean;
     resetTimeView?: boolean;
     windowedLegend?: boolean;
+    /** False when the caller draws the mix's key itself. */
+    mixLegend?: boolean;
   };
   label: string; empty: string; formatValue: (value: number) => string;
 }
@@ -176,7 +178,7 @@ export default function CountryRaceView({ runtime, track, active, options, view,
     draw: (ctx, frame, chartTokens, state) => {
       const hoursPerPixel = (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth);
       const palette = mixParts.map(part => mixColours.get(part.id) ?? chartTokens.muted);
-      forEachCountryRaceSegment(stack, frame.x[0], Math.min(frame.x[1], state.playhead ?? frame.x[1]),
+      forEachJoinedCountryRaceSegment(stack, frame.x[0], Math.min(frame.x[1], state.playhead ?? frame.x[1]),
         hoursPerPixel, presentation.held !== false,
         segment => drawBands(ctx, frame, chartTokens, segment.hours, segment.bands, palette, segment));
     },
@@ -250,7 +252,7 @@ export default function CountryRaceView({ runtime, track, active, options, view,
   return <div className="country-race">
     {view === 'mix' && mix && <p className={`country-race-country${presentation.strongMixName ? ' is-strong' : ''}`}>{mixName}</p>}
     {view === 'race' && legend(raceLegendParts, colours)}
-    {view === 'mix' && !linesView && legend(mixParts, mixColours)}
+    {view === 'mix' && !linesView && presentation.mixLegend !== false && legend(mixParts, mixColours)}
     {view === 'lines' && !endLabels && (presentation.countryLooks !== false || entityLooks) && <Legend label={lineLegendLabel} windowed={presentation.windowedLegend}
       items={[...new Set(lines.map(line => line.tag))].map(tag => ({ id: tag, label: nameOf(tag), color: country(tag) }))} />}
     {beforeChart}

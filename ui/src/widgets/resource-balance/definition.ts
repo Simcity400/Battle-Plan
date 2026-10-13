@@ -1,5 +1,5 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
-import { AFTER_PLAYHEAD_OPTION, contentSet } from '../../dashboard/options.ts';
+import { AFTER_PLAYHEAD_OPTION, contentSet, choiceVariants } from '../../dashboard/options.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
 
@@ -43,4 +43,5 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 13 },
   countries: { max: Number.MAX_SAFE_INTEGER }, options: OPTIONS,
+  variants: choiceVariants(OPTIONS.find(field => field.key === 'view'), () => 'Resources over time'),
 } as const satisfies WidgetMeta;

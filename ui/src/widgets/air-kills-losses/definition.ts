@@ -1,7 +1,7 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { WidgetOptions, OptionField } from '../../dashboard/options';
 import { END_LABELS_OPTION } from '../../dashboard/lineChartOptions.ts';
-import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, TOP_COUNTRIES } from '../../charts/race/options.ts';
+import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
 import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
 
 export const OPTIONS: readonly OptionField[] = [
@@ -27,6 +27,7 @@ export const definition = {
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 10 }, countries: { max: Number.MAX_SAFE_INTEGER, ranked: true }, defaultCountries: TOP_COUNTRIES,
   migrate: (_from, widget) => ({ ...widget, configVersion: 2, options: normaliseAirOptions(widget.options) }),
   availability: { product: 'military-air-ledger', params: { family: 'airLosses' } }, options: OPTIONS,
+  variants: raceViewVariants('Air kills & losses', OPTIONS, { breakdown: 'Aircraft loss causes' }),
 } as const satisfies WidgetMeta;
 
 /** Fold saved Chart/Loss causes and race/lines settings into the visible View. */

@@ -1,14 +1,10 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import ArtFallback from '../../components/ArtFallback';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Select } from '../../components/Select';
-import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { ChipSet } from '../../components/ChipSet';
+import ContentSetPicker from '../../components/ContentSetPicker';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
-import { barEndLabel, divergingBar } from '../../charts/divergingBar';
 import { dayLabel, drawLine, drawValueRule, placeEndLabels } from '../../charts/draw';
-import { easeTau } from '../../charts/easing';
 import { jumpItem } from '../../charts/jump';
 import { pickLines } from '../../charts/linePick';
 import DrillHost from '../../charts/drill/DrillHost';
@@ -20,11 +16,8 @@ import { clipToSpans, extentOfAll, lineEndHour, runAt } from '../../charts/serie
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
 import type { ChartTokens } from '../../charts/tokens';
-import { tooltipText } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
-import { movingRowClass, useRowMotion } from '../../charts/useRowMotion';
-import { useRowTooltips } from '../../charts/useRowTooltips';
-import { formatAmount, formatAxisPercent, formatSigned } from '../../charts/valueAxis';
+import { formatAmount, formatAxisPercent } from '../../charts/valueAxis';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
 import { chosenShown, storedChoices, toggleChosen } from '../../dashboard/chosen';
@@ -40,31 +33,27 @@ import { resolveWindow } from '../../dashboard/model';
 import type { BoundTrack } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { readAt } from '../../dashboard/reads';
-import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { EquipmentStockpileReply } from '../../generated/dashboard';
 import { BREAKDOWN, OPTIONS } from './definition';
-import { AI_NOTE, automaticLines, CHOSEN_KEYS, hasRecords, balanceAt, balanceMode, barExtent, chartRuns, choiceKey, choiceRow, formatPercent, oneChoicePerRow, GROUP_NOUNS, groupLabel, groupTooltip, labelAt,
-  SAVED_DESIGN_UNAVAILABLE, orderGroups, otherDesigns, overTimeTooltip, shareModeOf, shareOf, shareScale, stockAt, stockChoices, stockGroups, typesComplete, undrawableReason, dailyAt, columnVars } from './stockpileData';
-import type { Grouping, RowOrder, StockGroup } from './stockpileData';
+import { AI_NOTE, automaticLines, CHOSEN_KEYS, hasRecords, balanceAt, balanceMode, chartRuns, choiceKey, choiceRow, formatPercent, oneChoicePerRow, GROUP_NOUNS, labelAt,
+  SAVED_DESIGN_UNAVAILABLE, overTimeTooltip, shareModeOf, shareOf, stockAt, stockChoices, stockGroups, dailyAt } from './stockpileData';
+import type { Grouping, StockGroup } from './stockpileData';
 import { useEquipmentStockpile, useStockpileCountry } from './useEquipmentStockpile';
-import { useStockpileArtwork } from './useStockpileArtwork';
 import StockpileDrill from './StockpileDrill.tsx';
-import { pinStockpileDrill, stockpileDrillGroup } from './stockpileDrill';
+import StockpileTable from './StockpileTable';
+import type { StockCount } from './stockpileView';
+import { pinnedGrouping, pinStockpileDrill, stockpileDrillGroup } from './stockpileDrill';
 import type { StockpileMode } from './stockpileDrill';
 import './equipmentStockpile.css';
 
 const NO_WARNINGS: string[] = [];
-/** How often each record is read, for the note under a value read earlier. */
-/** One bar row's height; rows slide by it when the order changes. */
-const ROW_HEIGHT = 34;
 /** Room for the names at the line ends, at the right of the plot. */
 const END_LABEL_ROOM = 136;
 
-/** One country's equipment stockpile: for a player-controlled
- * country each equipment type's surplus or shortage as a share of what is needed, as
- * bars or over time; for an AI-controlled one, for which the game computes none, what
- * it holds. The hover adds output per day and the variants in stock. */
+/** One country's equipment stockpile: for a player-controlled country each equipment
+ * type's surplus or shortage (the game's Logistics figure), as a table or over time; for
+ * an AI-controlled one, for which the game computes none, what it holds. Rows name the
+ * models held or being made and their output a day; the hover adds the models in stock. */
 export default function EquipmentStockpileWidget(props: WidgetProps) {
   return props.widget.options?.show === BREAKDOWN.id ? <EquipmentStockpileCountry {...props} />
     : <CountryComparisons {...props} component={EquipmentStockpileCountry} />;
@@ -83,12 +72,14 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const head = Math.floor(playhead ?? extent[1]);
   const menu = useContextMenu('Stockpile actions');
-  const grouping = (options.grouping as Grouping) ?? 'type';
+  // Types, each listing its models (a model's own row is its type's breakdown).
+  const grouping = pinnedGrouping(widget.options);
+  const count: StockCount = options.count === 'ic' ? 'ic' : 'units';
   const includedText = typeof options.included === 'string' ? options.included : '';
   // Stored as `setToken(key)`, so a key a setting cannot store can be included too.
   const included = useMemo(() => contentSet(includedText).map(contentKey), [includedText]);
   const anchor = useRef<HTMLDivElement>(null);
-  const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag, grouping, included, options.show, options.stockpileCountry, options.partGroup, options.partMode, widget.time, within]);
+  const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag, grouping, included, options.show, options.stockpileCountry, options.partGroup, widget.time, within]);
   const pickOwner = useMemo(() => ({ scope, client: runtime.client, numbers }), [scope, runtime.client, numbers]);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   const [drillOwner, setDrillOwner] = useState<object | null>(null);
@@ -96,7 +87,8 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const shownDrill = drillOwner === pickOwner ? drill : CLOSED;
   const saved = options.show === BREAKDOWN.id;
   const groups = useMemo(() => data ? stockGroups(data, grouping, Infinity, included) : [], [data, grouping, included]);
-  const mode = saved ? options.partMode as StockpileMode : selection?.mode ?? 'balance';
+  // The breakdown shows a type's models; the mode a pin records follows the row opened.
+  const mode: StockpileMode = selection?.mode ?? 'stock';
   const clockHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || shownDrill.breakdown !== null && shownDrill.follow));
   const playbackHour = Math.floor(clockHour) + (track?.axisOffset ?? 0);
   const detailHead = shownDrill.breakdown !== null && shownDrill.follow ? playbackHour : playhead ?? head;
@@ -158,16 +150,14 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
       ? <OverTime data={data} tokens={tokens} viewport={viewport} options={options} runtime={runtime} track={track} extent={extent} playhead={playhead}
         active={active && (shownDrill.breakdown === null || options.drill === 'popout')} grouping={grouping} groups={groups}
         onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} setOption={setOption} pickOwner={pickOwner} onPick={open} />
-      : <StockBars data={data} tokens={tokens} hour={head} grouping={grouping} included={included} allGroups={groups} order={options.order as RowOrder}
-        scale={options.scale === 'moment' ? 'moment' : 'campaign'} owner={`equipment-stockpile:${widget.id}:${tag}`}
+      : <StockpileTable data={data} hour={head} included={included} count={count} setCount={setOption ? value => setOption('count', value) : undefined}
         active={active && (shownDrill.breakdown === null || options.drill === 'popout')} viewport={viewport}
-        runtime={runtime} track={track} onDiagnostics={onDiagnostics} onPick={open}
-        hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} />}
+        runtime={runtime} track={track} onDiagnostics={onDiagnostics} onPick={open} />}
   </div> : null;
   const detail = !selectedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
     : actor.error ? <WidgetState kind="error" detail={actor.error} onRetry={actor.retry} />
       : actor.reason ? <WidgetState kind="unavailable" message={actor.reason} />
-        : picked && detailData ? <StockpileDrill data={detailData} group={picked} mode={mode} percentage={mode === 'balance'} hour={at}
+        : picked && detailData ? <StockpileDrill data={detailData} group={picked} hour={at}
     extent={extent} playhead={detailHead} playback="cursor" afterPlayhead selectedHour={at} branchStart={track.branch.firstHour}
     hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active && (saved || shownDrill.breakdown !== null)}
     pickOwner={detailPickOwner} onPick={hour => act(saved
@@ -181,7 +171,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
         onClick={() => act({ type: 'open', breakdown: BREAKDOWN.id, hour: playbackHour, playing: true, playhead: playbackHour })}>Follow playback</button>}{detail}
     </div> : <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={shownDrill.breakdown !== null}
       title={picked ? labelAt(picked, grouping, at) : BREAKDOWN.label} day={dayLabel(at)} following={shownDrill.follow}
-      returnFocus={options.view === 'time' ? '.stockpile-chart canvas' : picked ? `[data-stockpile-key="${setToken(picked.key)}"]` : undefined}
+      returnFocus={options.view === 'time' ? '.stockpile-chart canvas' : '.stockpile-table-rows tr'}
       canFollow onClose={() => act({ type: 'close' })} onFollow={() => act({ type: 'follow' })} main={main}
       onPin={picked && selectedCountry && !actor.reason && choiceKey(picked, at) !== null ? () => {
         if (!ownerRef.current.active || ownerRef.current.owner !== pickOwner) return;
@@ -189,128 +179,6 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
         if (pinned) runtime.addWidgetBelow(widget.id, pinned);
       } : undefined}>{detail}</DrillHost>}
     {menu.menu}
-  </div>;
-}
-
-const percent = (fraction: number) => `${Math.round(fraction * 100000) / 1000}%`;
-
-/** One row per group, sliding to a new order. For a
- * player-controlled country each row's surplus (right) or shortage (left, red) as a
- * share of what is needed, all on one scale, with the exact amount at the bar's end;
- * else a bar from zero to what is in stock. Rows are focusable: hover or focus shows
- * the group's tooltip, right-click or the menu key jumps to the read shown. */
-function StockBars({ data, tokens, hour, grouping, included, allGroups, order, scale, owner, active, viewport, hoursPerSecond, onMenu, runtime, track, onDiagnostics, onPick }: {
-  data: EquipmentStockpileReply; tokens: ChartTokens; hour: number; grouping: Grouping; included: readonly string[]; order: RowOrder;
-  allGroups: StockGroup[];
-  scale: 'campaign' | 'moment'; owner: string; active: boolean; viewport: number; hoursPerSecond: number; onMenu: (hour: number, x: number, y: number) => void;
-  runtime: WidgetProps['runtime']; track: BoundTrack; onDiagnostics: WidgetProps['onDiagnostics'];
-  onPick: (group: StockGroup, hour: number, mode: StockpileMode) => void;
-}) {
-  const groups = useMemo(() => stockGroups(data, grouping, hour, included), [data, grouping, hour, included]);
-  const mode = grouping === 'variant' ? 'variant' : balanceMode(data, hour);
-  const artCoverage = mode === 'player' ? data.balanceHours : data.stockHours;
-  const artHour = runAt(artCoverage, hour) ? readAt(mode === 'player' ? data.logisticsReads : data.reads, hour) : null;
-  const variants = useMemo(() => grouping === 'variant' ? groups.flatMap(group => group.variants.map(variant => variant.id)) : [], [groups, grouping]);
-  const artwork = useStockpileArtwork(runtime, track, data.tag, artHour, variants, active);
-  const art = useMemo(() => new Map(artwork?.data?.entries.map(entry => [entry.key, entry]) ?? []), [artwork]);
-  const diagnostics = useMemo(() => [...data.warnings, ...(artwork?.data?.warnings ?? []), ...(artwork?.error ? [artwork.error] : [])], [data, artwork]);
-  useDiagnostics(onDiagnostics, diagnostics);
-  // The campaign scales depend on the groups, not on the names shown at an hour.
-  const campaignStock = useMemo(() => barExtent(data, allGroups, null), [data, allGroups]);
-  const campaignShare = useMemo(() => shareScale(data, allGroups, null), [data, allGroups]);
-  const diverging = mode === 'player';
-  const stockExtent = scale === 'moment' ? barExtent(data, groups, hour) : campaignStock;
-  const share = scale === 'moment' ? shareScale(data, groups, hour) : campaignShare;
-  const read = diverging ? readAt(data.logisticsReads, hour) : readAt(data.reads, hour);
-  const jumpHour = read ?? hour;
-  // The hour drawn last, so a bar glides only within one stretch of recording.
-  const drawnHour = useRef(hour);
-  useEffect(() => { drawnHour.current = hour; }, [hour]);
-  const spans = diverging ? data.balanceHours : data.stockHours;
-  const glides = runAt(spans, drawnHour.current) === runAt(spans, hour);
-  const items = useMemo(() => orderGroups(data, groups, hour, order).map(group => ({ key: group.key, item: group })), [data, groups, hour, order]);
-  const rows = useRowMotion(items);
-  const byKey = useMemo(() => new Map(groups.map(group => [group.key, group])), [groups]);
-  // Every group's tooltip and spoken text, built once per hour (and reply, grouping
-  // and window); moving the pointer reuses them.
-  const described = useMemo(() => new Map(groups.map(group => {
-    const picture = art.get(grouping === 'variant' ? `variant:${group.variants[0]?.id}` : `type:${group.key}`);
-    const note = grouping === 'type' ? picture?.name ?? undefined : undefined;
-    const content = groupTooltip(data, group, grouping, hour, { title: group.label, subtitle: dayLabel(hour), note }, viewport);
-    return [group.key, { content, text: tooltipText(content) }] as const;
-  })), [data, groups, grouping, hour, viewport, art]);
-  const content = useCallback((key: string) => described.get(key)?.content ?? null, [described]);
-  const rowTips = useRowTooltips<string>({ owner, active, content, revision: `${hour}:${data.branchId}:${grouping}`, onMenu: (_, x, y) => onMenu(jumpHour, x, y) });
-  const glide = Math.round(3 * easeTau(tokens.motion, hoursPerSecond, tokens.reducedMotion));
-  // Rows are placed apart so they can slide, so every row and the shortage/surplus header
-  // share one name column, as wide as the longest name over the campaign (so it never
-  // jumps), set on their common parent.
-  const labels = useMemo(() => allGroups.map(group => group.label), [allGroups]);
-  const amounts = groups.map(group => {
-    const value = diverging ? balanceAt(data, group, hour)?.balance ?? null : stockAt(data, group, hour);
-    return value == null ? 'Not recorded' : diverging ? formatSigned(value, data.decimals) : formatAmount(value, data.decimals);
-  });
-  const columns = columnVars(labels, amounts) as CSSProperties;
-  const style = { '--stock-glide': `${glides ? glide : 0}ms`, '--row-glide': `${glide * 2}ms`, height: items.length * ROW_HEIGHT } as CSSProperties;
-  const caption = diverging ? 'Surplus / shortage (% of need)' : 'In stock';
-
-  const divergingRow = (group: StockGroup) => {
-    const logistics = balanceAt(data, group, hour);
-    // An arm a type of unknown arm could belong to is not known; otherwise not recorded.
-    if (!logistics) return <span className="stockpile-missing">{group.types.length && !typesComplete(data, group, hour) ? 'Not known' : 'Not recorded'}</span>;
-    const value = shareOf(logistics);
-    // A row whose need is not derived (or is none) has no share: only its exact amount shows.
-    const bar = value != null && share > 0 ? divergingBar(value, share, share) : { zero: 0.5, start: 0.5, width: 0 };
-    const label = barEndLabel(bar, logistics.balance < 0n ? -1 : 1);
-    const negative = logistics.balance < 0n;
-    return <span className="stockpile-track is-diverging" aria-hidden="true">
-      <i className="stockpile-zero" style={{ left: '50%' }} />
-      {value != null && <i className={`stockpile-bar${negative ? ' is-negative' : ''}`} style={{ left: percent(bar.start), width: percent(bar.width) }} />}
-      <b className={`stockpile-end is-${label.side}${negative ? ' is-negative' : ''}${value == null ? ' is-unshared' : ''}`} style={{ left: percent(label.at) }}>
-        {formatSigned(logistics.balance, data.decimals)}
-      </b>
-    </span>;
-  };
-  const stockRow = (group: StockGroup) => {
-    const stock = stockAt(data, group, hour);
-    if (stock == null) return <span className="stockpile-missing">Not recorded</span>;
-    const bar = divergingBar(Number(stock), Number(stockExtent.negative), Number(stockExtent.positive));
-    return <>
-      <span className="stockpile-track" aria-hidden="true">
-        {stockExtent.negative > 0n && <i className="stockpile-zero" style={{ left: percent(bar.zero) }} />}
-        <i className={`stockpile-bar${stock < 0n ? ' is-negative' : ''}`} style={{ left: percent(bar.start), width: percent(bar.width) }} />
-      </span>
-      <b className={stock < 0n ? 'is-negative' : undefined}>{formatAmount(stock, data.decimals)}</b>
-    </>;
-  };
-  return <div className="stockpile-rows" style={columns}>
-    <p className="stockpile-caption">{caption}</p>
-    {diverging && <p className="stockpile-sides" aria-hidden="true"><span>shortage</span><span>surplus</span></p>}
-    {items.length === 0 ? <p className="stockpile-empty">Nothing of the included types was recorded.</p>
-      : <ol className={`stockpile-bars${diverging ? ' is-diverging' : ''}`} style={style} aria-label={`${diverging ? 'Surplus or shortage' : 'Equipment in stock'} on ${dayLabel(hour)}`}>
-        {rows.map(row => {
-          const group = byKey.get(row.key) ?? row.item;
-          const picture = art.get(grouping === 'variant' ? `variant:${group.variants[0]?.id}` : `type:${group.key}`);
-          const pick = () => { const current = byKey.get(row.key); if (current) onPick(current, hour, diverging ? 'balance' : 'stock'); };
-          return <li key={row.key} className={movingRowClass(row)} style={{ transform: `translateY(${row.slot * ROW_HEIGHT}px)`, height: ROW_HEIGHT }}
-            aria-label={groupLabel(data, group, hour)} data-stockpile-key={setToken(group.key)} {...rowTips.rowProps(row.key)}
-            onClick={pick}
-            onKeyDown={event => {
-              rowTips.rowProps(row.key).onKeyDown?.(event);
-              if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pick(); }
-            }}>
-            {/* The full tooltip, even where the window trims it (the tooltip layer is not read out). */}
-            <span id={rowTips.descriptionId(row.key)} className="sr-only">{described.get(row.key)?.text}</span>
-            <span className="stockpile-name">
-              {picture?.icon
-                ? <img className="stockpile-art" src={picture.icon} alt="" />
-                : <span className="stockpile-art"><ArtFallback icon="hammer" /></span>}
-              <span>{group.label}</span>
-            </span>
-            {diverging ? divergingRow(group) : stockRow(group)}
-          </li>;
-        })}
-      </ol>}
   </div>;
 }
 
@@ -347,8 +215,6 @@ function OverTime({ data, tokens, viewport, options, runtime, track, extent, pla
   }), [automatic, groups, head]);
   const chosenTokens = useMemo(() => oneChoicePerRow(chosenShown(source, stored, automaticTokens)), [source, stored, automaticTokens]);
   const chosen = useMemo(() => chosenTokens.map(token => choiceRow(contentKey(token))), [chosenTokens]);
-  // Saved choices whose handle holds another design here: shown, never drawn.
-  const others = useMemo(() => otherDesigns(groups, stored.map(contentKey)), [groups, stored]);
   const playback = (options.playback as PlaybackMode) ?? 'draw-in';
   const until = shownUntil(playhead, playback, options.afterPlayhead === true);
   // Each line keeps its colour from the game's order where it is free.
@@ -387,12 +253,10 @@ function OverTime({ data, tokens, viewport, options, runtime, track, extent, pla
   const endLabels = options.endLabels !== false;
   const caption = shareMode ? 'Surplus / shortage (% of need)' : 'In stock';
   return <>
-    {setOption && <ChipSet label="Shown over time" chips={[...groups.map(group => {
-      const action = actions.get(group.key);
-      const cannot = !drawable.includes(group) ? undrawableReason(data, grouping) : undefined;
-      return { value: group.key, label: labelAt(group, grouping, head), unavailable: cannot ?? (action && 'reason' in action ? action.reason : undefined) };
-    }), ...others.map(other => ({ value: setToken(other.key), label: `${labelAt(other.group, grouping, head)} (saved design)`, unavailable: other.reason }))]}
-      selected={chosen} max={Number.MAX_SAFE_INTEGER} onToggle={pick} />}
+    {setOption && <div className="stockpile-caption-line"><span>Types shown</span>
+      <ContentSetPicker label="Types shown over time" automatic="Main types"
+        choices={drawable.map(group => ({ value: setToken(group.key), label: labelAt(group, grouping, head) }))}
+        selected={chosen.map(setToken)} onToggle={value => pick(contentKey(value))} onReset={() => setOption(chosenKey, '')} /></div>}
     {!endLabels && <Legend label="Shown over time" items={lines.map(line => {
       if (shareMode) {
         const value = shareOf(balanceAt(data, line.group, head));

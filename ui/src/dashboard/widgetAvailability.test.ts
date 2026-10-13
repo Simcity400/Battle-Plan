@@ -16,4 +16,10 @@ test('availability never treats missing as false or an empty success', () => {
   assert.throws(() => validateWidgetAvailability({}), /malformed/);
   assert.throws(() => validateWidgetAvailability({ available: 0, unavailable: null }), /malformed/);
   assert.equal(validateWidgetAvailability({ available: null, unavailable: null }).available, null);
+  assert.throws(() => validateWidgetAvailability({ available: true, unavailable: 3 }), /malformed/);
+});
+
+test('a reply with no reason field is read by its availability alone', () => {
+  assert.deepEqual(validateWidgetAvailability({ available: true, firstHour: 1, lastHour: 2 }), { available: true, unavailable: null });
+  assert.equal(availabilityReason(true, true, validateWidgetAvailability({ available: false })), 'Not in this recording');
 });

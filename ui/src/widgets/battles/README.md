@@ -8,10 +8,10 @@
 
 **Notable behaviour:**
 
-- BattleViewAdapter supplies validators, row lookups, measures, labels, loss formatting, details and diagnostics. Shared code never infers winners or domain duration conventions.
+- BattleViewAdapter supplies validators, row lookups, measures, labels, loss formatting, details and diagnostics. An adapter may supply its own `view` of the same rows and props, with the source, track, shown hour and place-name state; it then also draws the empty list. Shared code never infers winners or domain duration conventions.
 - Log windows follow recording blocks and drawn rows. Ranking filters countries before top N; logs filter locally. Each country matches at its own supplying hour, following native holders through aliases. Unknown participant lists must survive filters; pending identities stay loading.
 - Null start means unrecorded; null end means ongoing; an unknown end is distinct. **By** dates remain bounds. Logs sort endings by observation hour; Jump uses start, else place hour, never an absent ending read. Live pins ongoing rows.
-- Place naming, country facts and count/loss reads have separate dates. Details and looks are requested only for drawn rows. Compact flags and fitted tooltips retain complete accessible lists.
+- Place naming, country facts and count/loss reads have separate dates. Details and looks are requested only for drawn rows. Place names already read stay while the next drawn rows load; a name still loading reads **Loading…**, never the unnamed label. Compact flags and fitted tooltips retain complete accessible lists.
 - Measures use unique string labels across each side's counts/losses; ambiguous labels refuse a row, and an unknown side keeps a sum unknown. Values may be fractional; row IDs preserve focus during motion.
 
 **Files:** [BattleLogView.tsx](BattleLogView.tsx) owns requests/filtering/browsing; `BattleLog.tsx` composes LogList/Table; `BattleSides.tsx` renders sides; [battleRows.ts](battleRows.ts) validates rows/windows and re-exports generated types; `battleOptions.ts` and `battles.css` own settings/style. Adjacent tests cover the shared contract.

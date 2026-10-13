@@ -208,7 +208,10 @@ pub struct ResearchSlotHistory {
 pub struct ResearchProgress {
     pub first_hour: i32,
     pub last_hour: i32,
-    pub entry_first_observed_hour: i32,
+    // The assignment this progress belongs to; none for a technology the slot
+    // held without its recorded occurrence (older recordings), whose slot state
+    // at the same hours names it.
+    pub entry_first_observed_hour: Option<i32>,
     /// Base duration in fixed5 days, calculated from recorded cost operands.
     pub base_days_raw: Option<String>,
     pub progress_raw: String,
@@ -281,6 +284,25 @@ pub struct ResearchBonus {
     #[ts(optional = nullable)]
     pub cost_reduction_raw: Option<String>,
     pub ahead_reduction_years_raw: Option<String>,
+}
+
+// A research folder (a tab of the technology screen), in content order, with
+// its localized name when the content defines one.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchFolder {
+    pub key: String,
+    pub name: Option<String>,
+}
+
+// The folder a technology is shown in: the first folder it is placed in whose
+// tab is available. None when it is in no available folder or when a folder it
+// is placed in before any available one cannot be decided from content.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchTechnologyFolder {
+    pub token: String,
+    pub folder: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]

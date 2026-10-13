@@ -1,4 +1,4 @@
-import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption } from '../../charts/race/options.ts';
+import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption, raceViewVariants } from '../../charts/race/options.ts';
 import { END_LABELS_OPTION } from '../../dashboard/lineChartOptions.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
@@ -22,4 +22,5 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true, all: true },
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 10 }, options: OPTIONS,
+  variants: raceViewVariants('Occupation trend', OPTIONS, { mix: 'Occupation trend of one country' }),
 } as const satisfies WidgetMeta;

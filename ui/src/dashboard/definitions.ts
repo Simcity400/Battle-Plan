@@ -108,14 +108,17 @@ export interface WidgetMeta {
   availability?: { product: string; params: Readonly<Record<string, unknown>> };
   /** Upgrades settings saved by an older `version`; null keeps them unchanged. */
   migrate?: (from: number, widget: WidgetSpec) => WidgetSpec | null;
+  /** The widget's other views as their own catalogue cards, listed after its own: each adds this
+   * kind opening in that view, and the view stays switchable in its settings. */
+  variants?: readonly WidgetPreset[];
 }
 
 /** Run-time choices for a widget's content-choice and content-set fields, by field
  * key; a content set shows each choice's icon (an image URL) when it has one. */
 export type OptionChoices = Readonly<Record<string, readonly { value: string; label: string; icon?: string | null }[]>>;
 
-/** One catalogue entry derived from the campaign's content (one idea category). It is its own
- * card and stores the definition's kind with this title and these options. */
+/** One catalogue entry for a view of the widget (`variants`) or derived from the campaign's content
+ * (one idea category). It is its own card and stores the definition's kind with this title and these options. */
 export interface WidgetPreset { key: string; initial: Pick<WidgetSpec, 'title' | 'options'> }
 /** A content-derived widget's entries for the shown campaign; `reason` says why there are none yet. */
 export interface WidgetPresets { presets: readonly WidgetPreset[]; reason: string | null }

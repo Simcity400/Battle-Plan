@@ -317,7 +317,7 @@ test('the tooltip lists every group, most first, unknown last, with the total an
   const bands = keyBands(model, ['#a', '#b'], '#muted');
   const [full, compact] = [...producedTooltips(model, 'GER', 'Germany', producedAt(model, 'GER', 40)!, 40, '2 Jan', bands)];
   assert.deepEqual(full.rows.map(row => [row.label, row.value]), [['Infantry Equipment', '10'], ['Fighter', '3'], ['Total', '13']]);
-  assert.equal(full.subtitle, '2 Jan · Running total');
+  assert.equal(full.subtitle, '2 Jan · Since recording start');
   assert.match(full.note!, /^Counted since [^.]*\.$/);
   assert.equal(compact.rows.length, 3);
   const [unknown] = [...producedTooltips(model, 'GER', 'Germany', producedAt(model, 'GER', 60)!, 60, '3 Jan', bands)];
@@ -361,13 +361,22 @@ test('production selection and ranking accept every recorded country', () => {
   assert.equal(rankProduced(model, tags, 40, tags.length).length, tags.length);
 });
 
-test('a new widget races the top 10 of all countries by running total, date overlay off', () => {
+test('a new widget races the top 10 of all countries in units per day, date overlay off', () => {
   const widget = createWidget('equipment-produced', 'track-1', 'w1');
   assert.deepEqual(widget.countries, { kind: 'group', group: { type: 'top', count: 10 }, membership: 'hour', aggregate: false });
   const options = resolveOptions(OPTIONS, widget.options);
   assert.equal(options.view, 'race');
-  assert.equal(options.measure, 'total');
-  assert.equal(options.grouping, 'type');
+  assert.equal(options.measure, 'day');
+  assert.equal(options.count, 'units');
+  // One type until chosen; no grouping, split or one-country mix to set.
+  assert.equal(options.included, '');
+  assert.equal(OPTIONS.some(field => ['grouping', 'split'].includes(field.key)), false);
+  const viewField = OPTIONS.find(field => field.key === 'view');
+  assert.deepEqual(viewField?.kind === 'choice' ? viewField.choices.map(choice => choice.value) : [], ['race', 'lines']);
+  // A saved week, mix or grouping resolves to what the widget draws now.
+  const saved = resolveOptions(OPTIONS, { measure: 'week', view: 'mix', grouping: 'variant' });
+  assert.equal(saved.measure, 'day');
+  assert.equal(saved.view, 'race');
   assert.equal(options.refits, false);
   assert.equal(options[DATE_OVERLAY_OPTION.key], false);
   const resolved = resolveCountries(widget.countries, [], undefined, 100, 30);

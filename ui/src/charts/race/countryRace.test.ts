@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRacePickTag, countryRaceReadHour, countryRaceSegments, countryRaceTooltipTags, heldStackSegment, partColours } from './countryRace.ts';
+import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRacePickTag, countryRaceReadHour, countryRaceSegments, countryRaceStack, countryRaceTooltipTags, forEachCountryRaceSegment, forEachJoinedCountryRaceSegment, heldStackSegment, partColours } from './countryRace.ts';
 import { barExtent, selectRaceRow, stepRace } from './race.ts';
 import { linesAt, linesTooltip } from './lines.ts';
 import { buildStack, stackedSegments } from '../stack.ts';
@@ -201,4 +201,20 @@ test('shared country races accept dated faction looks without changing country d
     'campaign faction colour');
   assert.match(countryRaceEnds([{ tag: 'opaque faction', runs: [{ firstHour: 1, lastHour: 7, value: 4 }] }],
     1, 10, null, looks.name, looks.color, String)[0].text, /Faction at 7 · last members/);
+});
+
+test('a stack changing at every read fills as one shape per stretch, never as seamed strips', () => {
+  // Two bands that change every day for 60 days, then a gap and two more days.
+  const days = Array.from({ length: 60 }, (_, day) => day);
+  const band = (scale: number) => [...days.map(day => ({ firstHour: day * 24, lastHour: day * 24 + 23, value: scale * (day % 7 + 1) })),
+    { firstHour: 70 * 24, lastHour: 71 * 24 + 23, value: scale, breakBefore: true }];
+  const stack = countryRaceStack([band(1), band(2)], true);
+  const pieces: number[] = [];
+  forEachCountryRaceSegment(stack, 0, 72 * 24, 1, true, () => { pieces.push(1); });
+  const joined: { hours: number[] }[] = [];
+  forEachJoinedCountryRaceSegment(stack, 0, 72 * 24, 1, true, segment => { joined.push(segment); });
+  assert.ok(pieces.length > joined.length);
+  assert.equal(joined.length, 2);
+  for (const segment of joined) assert.ok(segment.hours.every((hour, index) => index === 0 || segment.hours[index - 1] <= hour));
+  assert.ok(joined[0].hours.at(-1)! < joined[1].hours[0]);
 });

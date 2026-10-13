@@ -1,5 +1,5 @@
 import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
-import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, TOP_COUNTRIES } from '../../charts/race/options.ts';
+import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { WidgetOptions, OptionField } from '../../dashboard/options';
 
@@ -31,6 +31,7 @@ export const definition = {
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 },
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true }, defaultCountries: TOP_COUNTRIES, options: OPTIONS,
   migrate: (_from, widget) => ({ ...widget, configVersion: 2, options: normaliseArmyOptions(widget.options) }),
+  variants: raceViewVariants('Army size', OPTIONS, { mix: 'Army composition', breakdown: 'Army breakdown' }),
 } as const satisfies WidgetMeta;
 
 /** Saved breakdowns retain their view; chart views retain race, lines or mix. */

@@ -2,6 +2,7 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { TABLE_OPTIONS, tableSortOf, tableSortOptions } from '../../charts/table/options.ts';
 import { DATE_OVERLAY_OPTION } from '../../charts/race/options.ts';
+import { choiceVariants } from '../../dashboard/options.ts';
 
 export const DEFAULT_SORT = { column: 'land', direction: 'descending' } as const;
 export const OPTIONS: readonly OptionField[] = [
@@ -29,4 +30,5 @@ export const definition = {
   // falls back to the default column.
   migrate: (_from, { options: { multiplierPrecision: _precision, tableSort, ...options } = {}, ...widget }) => ({ ...widget,
     options: tableSort === undefined || tableSortOf(tableSort, DEFAULT_SORT).column === 'multiplier' ? options : { ...options, tableSort } }),
+  variants: choiceVariants(OPTIONS.find(field => field.key === 'view'), () => 'Game score race'),
 } as const satisfies WidgetMeta;

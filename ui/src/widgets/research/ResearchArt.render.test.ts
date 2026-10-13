@@ -3,28 +3,30 @@ import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
+import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
 
-test('current and completed research reserve a flask fallback without artwork reasons', async () => {
+test('history cells reserve a flask fallback without artwork reasons and say what they open', async () => {
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'research-art-fixture', enforce: 'pre',
       transform(source, id) {
-        if (id.replaceAll('\\', '/').endsWith('/research/ResearchWidget.tsx')) return `${source}\nexport { ResearchArt, ResearchCard };`;
+        if (id.replaceAll('\\', '/').endsWith('/research/ResearchWidget.tsx')) return `${source}\nexport { Art, LaneRow };`;
       },
     }] });
   try {
-    const { ResearchArt, ResearchCard } = await vite.ssrLoadModule('/ui/src/widgets/research/ResearchWidget.tsx');
-    const art = { name: 'Mod technology', icon: null, missing: 'Private artwork reason' };
-    for (const element of [createElement(ResearchArt, { art }), createElement(ResearchCard, {
-      art, history: {}, slots: [], slot: { index: 0 }, entry: { token: 'mod_technology' }, jump: {},
-    })]) {
-      const markup = renderToStaticMarkup(element);
-      assert.match(markup, /art-fallback/);
-      assert.doesNotMatch(markup, /Private artwork reason|artwork unavailable|\?>/i);
-    }
-    assert.match(renderToStaticMarkup(createElement(ResearchCard, {
-      art, history: {}, slots: [], slot: { index: 0 }, entry: { token: 'mod_technology' }, jump: {},
-    })), /Mod technology, slot 1, show details/);
-    const pictured = renderToStaticMarkup(createElement(ResearchArt, { art: { ...art, icon: 'data:image/png;base64,YQ==' } }));
+    const { Art, LaneRow } = await vite.ssrLoadModule('/ui/src/widgets/research/ResearchWidget.tsx');
+    const ended = HOUR_EPOCH + 1944 * 8760 + 12;
+    const entry = { token: 'mod_technology', technologyHandle: 1, continuityStartHour: ended - 240, level: 0, firstObservedHour: ended - 240,
+      startedAfterHour: null, lastObservedHour: ended - 24, endedByHour: ended, outcome: 'completed' };
+    const slot = { index: 0, availability: [], entries: [entry], states: [], progress: [] };
+    const props = { item: { kind: 'completed', key: 'c', hour: ended, slot, entry }, slots: [slot], coverage: [],
+      text: { name: () => 'Mod technology', icon: () => undefined, folder: () => undefined }, dimmed: () => false,
+      tip() {}, untip() {}, jump: () => ({}), onOpen() {} };
+    const cell = renderToStaticMarkup(createElement(LaneRow, props));
+    assert.match(cell, /art-fallback/);
+    assert.doesNotMatch(cell, /artwork unavailable|\?>/i);
+    assert.match(cell, /aria-label="Mod technology, completed 1 Jan 1944, show time breakdown"/);
+    assert.match(cell, /<small>1 Jan 1944<\/small>/, 'the plain date sits under the name');
+    const pictured = renderToStaticMarkup(createElement(Art, { icon: 'data:image/png;base64,YQ==', className: 'research-cell-art' }));
     assert.match(pictured, /<img/);
     assert.doesNotMatch(pictured, /art-fallback/);
   } finally { await vite.close(); }

@@ -5,8 +5,8 @@ import { resolveY } from '../../charts/view.ts';
 import { chosenShown, storedChoices, toggleChosen } from '../../dashboard/chosen.ts';
 import { contentKey, contentSet, setToken, storableToken } from '../../dashboard/options.ts';
 import { OPTIONS } from './definition.ts';
-import { automaticGroups, automaticLines, chartChoices, chartRuns, choiceKey, choiceRow, CHOSEN_KEYS, oneChoicePerRow, columnVars, designAt, hasRecords, otherDesigns, stockChoices, typeName, undrawableReason, variantKey, balanceAt, typesComplete, variantsComplete, balanceMode, barExtent, formatPercent, groupChoices, groupLabel, groupTooltip, labelAt, orderGroups, overTimeTooltip,
-  shareOf, shareRuns, shareScale, stockAt, stockGroups, stockRuns, validateStockpileReply, variantName, dailyAt } from './stockpileData.ts';
+import { automaticGroups, automaticLines, chartChoices, chartRuns, choiceKey, choiceRow, CHOSEN_KEYS, oneChoicePerRow, designAt, hasRecords, stockChoices, typeName, variantKey, balanceAt, typesComplete, variantsComplete, balanceMode, formatPercent, groupChoices, groupLabel, groupTooltip, labelAt, overTimeTooltip,
+  shareOf, shareRuns, stockAt, stockGroups, stockRuns, validateStockpileReply, variantName, dailyAt } from './stockpileData.ts';
 
 const U = 100000;
 const run = (firstHour: number, lastHour: number, amount: number): AmountRun => ({ firstHour, lastHour, amountRaw: String(Math.round(amount * U)) });
@@ -111,14 +111,8 @@ test('shares of need scale the bars, order the shortages and draw over time', ()
   assert.equal(shareOf(balanceAt(REPLY, antiTank, 110)), -1);
   assert.equal(shareOf(balanceAt(REPLY, trucks, 110)), null);
   assert.equal(shareOf({ balance: 5n, need: 0n }), null);
-  // The campaign scale is the largest share at any logistics read: the full shortage.
-  assert.equal(shareScale(REPLY, groups, null), 1);
   assert.equal(formatPercent(-0.3413), '−34%');
   assert.equal(formatPercent(0.0107), '+1%');
-  // Biggest shortage first; groups without a balance keep the game's order after.
-  assert.deepEqual(orderGroups(REPLY, groups, 110, 'shortage').map(group => group.key),
-    ['anti_tank_equipment', 'light_tank_chassis', 'motorized_equipment', 'infantry_equipment', 'cas_equipment', 'fighter_equipment']);
-  assert.deepEqual(orderGroups(REPLY, groups, 145, 'shortage').map(group => group.key), groups.map(group => group.key));
   // Over time: the share in per cent, changing where the record does, nothing for trucks.
   assert.deepEqual(shareRuns(REPLY, infantry).map(item => [item.firstHour, item.lastHour, Math.round(item.value * 100) / 100, item.breakBefore]),
     [[96, 119, 1.07, true], [120, 130, Math.round(1000 / 144666 * 10000) / 100, false]]);
@@ -126,7 +120,7 @@ test('shares of need scale the bars, order the shortages and draw over time', ()
   assert.deepEqual(shareRuns(REPLY, trucks), []);
 });
 
-test('stock, daily output and stock bars work for AI countries and variants', () => {
+test('stock and daily output work for AI countries and variants', () => {
   const [infantry, tanks, , , cas, fighters] = stockGroups(REPLY, 'type', 110);
   assert.equal(stockAt(REPLY, tanks, 110), 2116n * 100000n);
   assert.equal(stockAt(REPLY, fighters, 110), 0n);
@@ -136,8 +130,6 @@ test('stock, daily output and stock bars work for AI countries and variants', ()
   assert.equal(stockAt(REPLY, cas, 126), 157n * 100000n);
   assert.deepEqual(stockRuns(REPLY, infantry).map(item => [item.firstHour, item.lastHour, item.value, item.breakBefore]),
     [[100, 123, 145666, true], [124, 130, 146000, false], [140, 150, 140000, true]]);
-  assert.deepEqual(barExtent(REPLY, stockGroups(REPLY, 'type', 110), null), { positive: 146000n * 100000n, negative: 0n });
-  assert.deepEqual(orderGroups(REPLY, stockGroups(REPLY, 'type', 110), 145, 'stock').map(group => group.key).slice(0, 2), ['infantry_equipment', 'light_tank_chassis']);
 });
 
 test('the automatic lines are the main land and air types; chips toggle groups', () => {
@@ -259,25 +251,15 @@ test('a variant name is the entry that applies at the hour, then a descriptive v
   assert.equal(variantName(named([{ firstHour: 0, name: null, known: true }], ''), 5), 'Variant 5');
 });
 
-test('each grouping keeps its own lines chosen over time', () => {
-  assert.equal(new Set(Object.values(CHOSEN_KEYS)).size, 3);
-  for (const grouping of ['type', 'variant', 'domain'] as const) {
-    const options = { view: 'time', grouping };
-    const shown = OPTIONS.filter(field => Object.values(CHOSEN_KEYS).includes(field.key) && (!field.visibleWhen || field.visibleWhen(options)));
-    assert.deepEqual(shown.map(field => field.key), [CHOSEN_KEYS[grouping]]);
-    assert.equal(shown[0].kind, 'content-set');
-  }
-});
-
-test('most in stock first sorts by the stock each row shows', () => {
-  // The logistics record counts more light tanks than the stockpile read later.
-  const reply: EquipmentStockpileReply = { ...REPLY, logistics: REPLY.logistics.map(item => item.key === 'light_tank_chassis'
-    ? { ...item, stock: [run(96, 130, 200000)] } : item) };
-  const groups = stockGroups(reply, 'type', 110);
-  // A player row shows the record's stock: light tanks first.
-  assert.equal(orderGroups(reply, groups, 110, 'stock')[0].key, 'light_tank_chassis');
-  // An AI hour shows the stockpile: infantry first.
-  assert.equal(orderGroups(reply, stockGroups(reply, 'type', 145), 145, 'stock')[0].key, 'infantry_equipment');
+test('types are the only grouping: over time chooses types, and the table needs no order or bar settings', () => {
+  const shown = OPTIONS.filter(field => Object.values(CHOSEN_KEYS).includes(field.key) && (!field.visibleWhen || field.visibleWhen({ view: 'time' })));
+  assert.deepEqual(shown.map(field => field.key), [CHOSEN_KEYS.type]);
+  assert.equal(shown[0].kind, 'content-set');
+  assert.equal(OPTIONS.some(field => ['grouping', 'order', 'scale', 'partMode', 'chosenVariant', 'chosenDomain'].includes(field.key)), false);
+  const count = OPTIONS.find(field => field.key === 'count');
+  assert.deepEqual(count?.kind === 'choice' ? count.choices.map(choice => choice.value) : [], ['units', 'ic']);
+  // Count changes only the table's output column.
+  assert.deepEqual([count?.visibleWhen?.({ view: 'bars' }), count?.visibleWhen?.({ view: 'time' })], [true, false]);
 });
 
 test('a group whose variants cannot be told has unknown stock and production, never zero', () => {
@@ -298,14 +280,13 @@ test('a group whose variants cannot be told has unknown stock and production, ne
   assert.equal(dailyAt(unresolved, stockGroups(unresolved, 'variant', 110)[0], 110), 7000000n);
 });
 
-test('a tiny share of need is kept exactly and never collapses the scale', () => {
+test('a tiny share of need is kept exactly', () => {
   const tiny: EquipmentStockpileReply = { ...REPLY, logistics: [{ key: 'infantry_equipment', available: [], balance: [run(96, 130, 1)], stock: [run(96, 130, 2000001)] }],
     variants: REPLY.variants.filter(item => item.archetype === 'infantry_equipment') };
   const infantry = stockGroups(tiny, 'type', 110)[0];
   const logistics = balanceAt(tiny, infantry, 110)!;
   assert.equal(logistics.need, 2000000n * 100000n);
   assert.equal(shareOf(logistics), 5e-7);
-  assert.equal(shareScale(tiny, [infantry], null), 5e-7);
   assert.equal(formatPercent(5e-7), '+0.00005%');
   assert.equal(formatPercent(-0.3413), '−34%');
   assert.ok(shareRuns(tiny, infantry).every(item => item.value > 0));
@@ -334,9 +315,10 @@ test('a variant of unknown type makes every type and arm total unknown, never ze
   assert.deepEqual(stockRuns(unread, infantry).map(item => [item.firstHour, item.lastHour]), [[140, 150]]);
 });
 
-test('a recorded negative stock draws left of zero', () => {
+test('a recorded negative stock is summed as recorded, never clamped to zero', () => {
   const negative: EquipmentStockpileReply = { ...REPLY, variants: [...REPLY.variants, variant('9', 'cas_2', 'cas_equipment', [run(100, 130, -200)])] };
-  assert.deepEqual(barExtent(negative, stockGroups(negative, 'type', 110), null), { positive: 146000n * 100000n, negative: 43n * 100000n });
+  const cas = stockGroups(negative, 'type', 110).find(group => group.key === 'cas_equipment')!;
+  assert.equal(stockAt(negative, cas, 110), -43n * 100000n);
 });
 
 test('a saved list keeps one choice per row, the first', () => {
@@ -378,7 +360,6 @@ test('an arm is unknown wherever an unresolved logistics type could belong to it
   const tip = groupTooltip(reply, land, 'domain', 110, { title: 'Land' }, 1000);
   assert.equal(tip.rows.find(row => row.label === 'Surplus or shortage')?.value, 'Not known');
   assert.equal(tip.note, 'Total unavailable.');
-  assert.deepEqual(orderGroups(reply, arms, 110, 'shortage').map(group => group.key), ['unresolved', 'land']);
   // The unresolved arm is exactly its own types; a type's own row is exact.
   assert.equal(balanceAt(reply, arms.find(group => group.key === 'unresolved')!, 110)?.balance, -100n * 100000n);
   assert.equal(balanceAt(reply, stockGroups(reply, 'type', 110).find(group => group.key === 'light_tank_chassis')!, 110)?.balance, -50n * 100000n);
@@ -404,11 +385,6 @@ test('log scale applies to a share chart only where every share shown is positiv
   assert.equal(resolveY(view as never, { yMin: null, yMax: null, log: true }, [-10, 50]).log, false);
   // Without log, an auto-fitted share axis holds zero on both signs.
   assert.ok(resolveY(view as never, { yMin: null, yMax: null, log: false }, [5, 50]).range[0] <= 0);
-});
-
-test('the header and every row share one name and amount column', () => {
-  assert.deepEqual(columnVars(['Infantry Equipment', 'x'.repeat(40)], ['+1,549', '−373']), { '--stockpile-name': 'calc(28ch + 38px)', '--stockpile-amount': '7ch' });
-  assert.deepEqual(columnVars([], []), { '--stockpile-name': 'calc(8ch + 38px)', '--stockpile-amount': '5ch' });
 });
 
 test('a modded campaign’s types, arms and default lines come from its own data', () => {
@@ -594,25 +570,23 @@ test('a saved variant choice is its design: another design under the handle is s
   const inA = stockChoices(rowsA, 'variant');
   assert.equal(inA.lines(chosenEarly), 1);
   assert.equal(inA.lines(choiceKey(row, 125)!), 1);
-  assert.deepEqual(otherDesigns(rowsA, [chosenEarly]), []);
   // A reload of an earlier save gave the handle to another design of the same type.
   const branchB: EquipmentStockpileReply = { ...REPLY, variants: [tank([[90, 'bbbb']])] };
   const rowsB = stockGroups(branchB, 'variant', 110);
   assert.equal(rowsB[0].key, row.key, 'same campaign, handle and token');
   assert.equal(stockChoices(rowsB, 'variant').lines(chosenEarly), 0);
-  assert.deepEqual(otherDesigns(rowsB, [chosenEarly]).map(other => [other.group.key, other.reason]), [[row.key, 'Saved design unavailable. Choose another.']]);
   // A choice without a design, or of a variant whose design was never recorded, never matches.
   assert.equal(stockChoices(rowsB, 'variant').lines(row.key), 0);
   const unrecorded: EquipmentStockpileReply = { ...REPLY, variants: [tank([[90, null]])] };
   const rowsU = stockGroups(unrecorded, 'variant', 110);
   assert.equal(choiceKey(rowsU[0], 110), null);
-  assert.deepEqual(otherDesigns(rowsU, [chosenEarly]).map(other => other.reason), ['Saved design unavailable. Choose another.']);
+  assert.equal(stockChoices(rowsU, 'variant').lines(chosenEarly), 0);
   // Types and arms are chosen by their keys.
   const types = stockGroups(REPLY, 'type', 110);
   assert.equal(choiceKey(types[0], 110), types[0].key);
 });
 
-test('settings offer only what can be drawn, and each chip says why it cannot', () => {
+test('settings offer only what can be drawn', () => {
   // Trucks (a supply_truck type) have a recorded balance but no derivable need.
   const types = stockGroups(REPLY, 'type', Infinity);
   const trucks = types.find(group => group.key === 'motorized_equipment')!;
@@ -620,7 +594,6 @@ test('settings offer only what can be drawn, and each chip says why it cannot', 
   const offered = chartChoices(REPLY, 'type').map(choice => contentKey(choice.value));
   assert.ok(!offered.includes('motorized_equipment'), offered.join(', '));
   assert.ok(offered.includes('infantry_equipment'));
-  assert.match(undrawableReason(REPLY, 'type'), /^Need data unavailable\.$/);
   // Chosen alone, it draws nothing, so the automatic lines show instead of an empty chart.
   const source = stockChoices(types, 'equipment type', group => chartRuns(REPLY, group, 'type').length > 0);
   assert.equal(source.lines('motorized_equipment'), 0);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { contentKey, contentSet, MAX_OPTION_KEYS, parseStoredOptions, resolveOptions, sectionFields, setLimit, setOption, setToken, storableToken,
+import { choiceVariants, contentKey, contentSet, MAX_OPTION_KEYS, parseStoredOptions, resolveOptions, sectionFields, setLimit, setOption, setToken, storableToken,
   toggleContentSet, UNSTORABLE } from './options.ts';
 import type { OptionField } from './options';
 import { settingsSections, SETTINGS_SECTIONS } from './settingsSections.ts';
@@ -187,4 +187,15 @@ test('content-set escapes require Unicode scalars while scalar choices preserve 
     assert.equal(contentKey(token), String.fromCodePoint(point));
   }
   assert.equal(contentKey(':ffffff:'), ':ffffff:');
+});
+
+test('a choice lists its other values as catalogue variants, each opening the widget with that value', () => {
+  const view: OptionField = { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'table',
+    choices: [{ value: 'table', label: 'Table' }, { value: 'race', label: 'Race' }, { value: 'map', label: 'Map' }] };
+  assert.deepEqual(choiceVariants(view, choice => `Score ${choice.label.toLowerCase()}`), [
+    { key: 'view=race', initial: { title: 'Score race', options: { view: 'race' } } },
+    { key: 'view=map', initial: { title: 'Score map', options: { view: 'map' } } }], 'every value but the default');
+  assert.deepEqual(choiceVariants(view, () => 'Score map', ['map']).map(item => item.key), ['view=map'], 'or only the values named');
+  assert.deepEqual(choiceVariants(undefined, () => 'None'), []);
+  assert.deepEqual(choiceVariants({ key: 'grow', section: 'axes', label: 'Grow', kind: 'toggle', default: false }, () => 'Grow'), [], 'only choices have views');
 });

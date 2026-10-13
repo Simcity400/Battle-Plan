@@ -351,17 +351,6 @@ export function shareOf(value: Pick<GroupBalance, 'balance' | 'need'> | null): n
   return Number(value.balance) / Number(value.need);
 }
 
-/** The largest share of need any group shows, as a magnitude: over every logistics
- * read (the bars' shared scale, which never rescales during playback) or at one hour. */
-export function shareScale(reply: EquipmentStockpileReply, groups: readonly StockGroup[], hour: number | null): number {
-  let most = 0;
-  for (const group of groups) for (const at of hour == null ? balanceChangeHours(reply, group) : [hour]) {
-    const share = shareOf(balanceAt(reply, group, at));
-    if (share != null && Math.abs(share) > most) most = Math.abs(share);
-  }
-  return most;
-}
-
 /** A group's surplus as a percentage of need over time, broken where the balance is
  * not known or the need is not derived. */
 export function shareRuns(reply: EquipmentStockpileReply, group: Pick<StockGroup, 'types'> & Partial<Pick<StockGroup, 'kind' | 'key' | 'scope'>>): Run[] {
@@ -425,21 +414,6 @@ export function stockRuns(reply: EquipmentStockpileReply, group: Summed): Run[] 
   return runs;
 }
 
-/** The most any group held and the most any group was short (a recorded negative
- * stock), as magnitudes: over the whole branch (the bars' shared scale, which never
- * rescales during playback) or at one hour. Over the branch each group is looked at
- * only where its stock can change, which gives the same extent as every read. */
-export function barExtent(reply: EquipmentStockpileReply, groups: readonly StockGroup[], hour: number | null): { positive: bigint; negative: bigint } {
-  let positive = 0n;
-  let negative = 0n;
-  for (const group of groups) for (const at of hour == null ? changeHours(reply, group.variants) : [hour]) {
-    const stock = stockAt(reply, group, at);
-    if (stock != null && stock > positive) positive = stock;
-    if (stock != null && -stock > negative) negative = -stock;
-  }
-  return { positive, negative };
-}
-
 /** Hours at which a group's logistics values can change: each balance span's start and
  * every run edge of its types and of the types that decide its completeness. */
 export function balanceChangeHours(reply: EquipmentStockpileReply, group: Pick<StockGroup, 'types'> & Partial<Pick<StockGroup, 'kind' | 'key' | 'scope'>>): number[] {
@@ -451,28 +425,6 @@ export function balanceChangeHours(reply: EquipmentStockpileReply, group: Pick<S
     for (const run of [...item.balance, ...item.stock, ...item.available]) { hours.add(run.firstHour); hours.add(run.lastHour + 1); }
   }
   return [...hours].sort((a, b) => a - b);
-}
-
-export type RowOrder = 'game' | 'shortage' | 'stock';
-
-/** Groups in the game's order, biggest shortage first (most negative balance) or most
- * in stock first; groups whose value is not known keep the game's order after the others. */
-export function orderGroups(reply: EquipmentStockpileReply, groups: readonly StockGroup[], hour: number, order: RowOrder): StockGroup[] {
-  if (order === 'game') return [...groups];
-  const key = (group: StockGroup): bigint | null => {
-    const logistics = balanceAt(reply, group, hour);
-    if (order === 'shortage') return logistics?.balance ?? null;
-    // By the stock the row shows: the logistics record's where the balance is shown.
-    const stock = logistics ? logistics.stock : stockAt(reply, group, hour);
-    return stock == null ? null : -stock;
-  };
-  return groups.map((group, index) => ({ group, index, key: key(group) }))
-    .sort((a, b) => {
-      if ((a.key == null) !== (b.key == null)) return a.key == null ? 1 : -1;
-      if (a.key != null && b.key != null && a.key !== b.key) return a.key < b.key ? -1 : 1;
-      return a.index - b.index;
-    })
-    .map(entry => entry.group);
 }
 
 /** The largest stock a group held, or need it had, at any read. */
@@ -509,15 +461,6 @@ export function automaticLines(reply: EquipmentStockpileReply, groups: readonly 
   const main = automaticGroups(reply, shown, grouping);
   if (grouping === 'domain' || main.length >= count) return main;
   return [...main, ...shown.map(group => group.key).filter(key => !main.includes(key))].slice(0, Math.max(main.length, count));
-}
-
-/** The widths every bar row and the shortage/surplus header share, as CSS variables
- * for their common parent: the name column as wide as the longest label (within
- * reason), the amount column as wide as the longest amount. */
-export function columnVars(labels: readonly string[], amounts: readonly string[]): Record<'--stockpile-name' | '--stockpile-amount', string> {
-  const name = Math.min(28, labels.reduce((width, label) => Math.max(width, label.length), 8));
-  const amount = amounts.reduce((width, text) => Math.max(width, text.length), 4);
-  return { '--stockpile-name': `calc(${name}ch + 38px)`, '--stockpile-amount': `${amount + 1}ch` };
 }
 
 /** The groups as chips choose them: one line each. */
@@ -607,18 +550,6 @@ export const choiceRow = rowOf;
 
 export const SAVED_DESIGN_UNAVAILABLE = 'Saved design unavailable. Choose another.';
 
-/** Stored variant choices whose handle holds another design here (or one never
- * recorded): each with its row and why it is not drawn. They are shown as unavailable,
- * never drawn as the other design. */
-export function otherDesigns(groups: readonly StockGroup[], stored: readonly string[]): { key: string; group: StockGroup; reason: string }[] {
-  const byRow = new Map(groups.filter(group => group.kind === 'variant').map(group => [group.key, group]));
-  return stored.flatMap(key => {
-    const group = byRow.get(rowOf(key));
-    if (!group || !key.includes(DESIGN_MARK) || chosenGroup(byRow, key)) return [];
-    return [{ key, group, reason: SAVED_DESIGN_UNAVAILABLE }];
-  });
-}
-
 /** Whether the chart shows each group's share of need (a recorded balance, and not by
  * variant, which has none of its own) or its stock. */
 export const shareModeOf = (reply: EquipmentStockpileReply, grouping: Grouping) => grouping !== 'variant' && reply.balanceHours.length > 0;
@@ -636,11 +567,6 @@ export function chartChoices(reply: EquipmentStockpileReply, grouping: Grouping)
     const key = choiceKey(group, Infinity);
     return key != null && chartRuns(reply, group, grouping).length > 0 ? [{ value: setToken(key), label: group.label }] : [];
   });
-}
-
-/** Missing stock and missing need remain distinct chart states. */
-export function undrawableReason(reply: EquipmentStockpileReply, grouping: Grouping): string {
-  return shareModeOf(reply, grouping) ? 'Need data unavailable.' : 'No stock history.';
 }
 
 export const GROUP_NOUNS: Record<Grouping, string> = { type: 'equipment type', variant: 'variant', domain: 'arm' };

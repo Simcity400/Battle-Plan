@@ -1,7 +1,7 @@
-import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption, TOP_COUNTRIES } from '../../charts/race/options.ts';
+import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption, TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
+import { breakdownOption, DRILL_OPTION, breakdownVariants } from '../../charts/drill/drillState.ts';
 
 export const OPTIONS: readonly OptionField[] = [
   { ...raceViewOption('nuke type'), visibleWhen: options => options.show === 'main' },
@@ -22,4 +22,5 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 },
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true }, defaultCountries: TOP_COUNTRIES, options: OPTIONS,
+  variants: [...raceViewVariants('Nuclear arsenal', OPTIONS), ...breakdownVariants('Nuclear arsenal', OPTIONS)],
 } as const satisfies WidgetMeta;

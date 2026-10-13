@@ -27,13 +27,18 @@ import { CLOSED_PARTS_RACE, partsRaceDrillActors, reducePartsRaceDrill, UNATTRIB
 /** Factory and delivered-equipment drills share controls; their native models own the amounts. */
 export default function CountryPartsDrill<T>({ widget, runtime, active, countrySlot = null, onDiagnostics, track, options, extent, playhead, moment,
   product, params, validate, decode, numbers, defaultTag, pickTag, title, measure, virtual = false, positiveGeometry = false, warnings,
-  resetKey, state, main }: Pick<WidgetProps, 'widget' | 'runtime' | 'active' | 'countrySlot' | 'onDiagnostics'> & {
+  resetKey, state, main, details }: Pick<WidgetProps, 'widget' | 'runtime' | 'active' | 'countrySlot' | 'onDiagnostics'> & {
   track: BoundTrack | undefined; options: Readonly<Record<string, OptionValue>>; extent: [number, number]; playhead: number | null; moment: number;
   product: string; params: (tag: string) => unknown; validate: (value: unknown) => T; decode: (reply: T) => CountryPartsData;
   numbers: (reply: T) => T;
   defaultTag: string | null; pickTag: (hour: number) => string | null; title: string; measure: string;
   virtual?: boolean; positiveGeometry?: boolean; warnings: readonly string[]; resetKey: string; state?: ReactNode;
   main: (onPick: (hour: number, tag?: string, choices?: readonly string[]) => void, visible: boolean) => ReactNode;
+  /** Replaces the parts list and the chart's key with the widget's own: the country's
+   * holder at each hour (`tagAt`), the hour shown, and the chart's parts with their
+   * colours and exact values then (the residual only when it holds something). */
+  details?: (view: { tag: string; hour: number; tagAt: (hour: number) => string | null;
+    key: readonly { id: string; label: string; color?: string; value: number | null }[] }) => ReactNode;
 }) {
   const contextKey = JSON.stringify([resetKey, track?.source.id, track?.source.metadata.campaignKey, track?.branch.id,
     widget.countries, options.show, widget.options?.holder, widget.options?.drillOriginHour]);
@@ -145,16 +150,19 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
       value: index === parts.length - 1 ? remainder == null ? 'Not known' : exactPartAmount(remainder)
         : at?.values[index] == null ? 'Not known' : exactPartAmount(at.values[index]!) })) } : null}
     tooltip={(country, shownHour, name, chartColours) => model?.tooltip(country, shownHour, name, chartColours) ?? null}
-    presentation={{ held: true, strongMixName: true, mixKeyHours: 'starts', windowedLegend: virtual }}
+    presentation={{ held: true, strongMixName: true, mixKeyHours: 'starts', windowedLegend: virtual, mixLegend: details === undefined }}
     mixEmpty={{ message: 'Choose a country in the widget settings.', unavailable: name => `Breakdown unavailable for ${name}.` }}
     beforeChart={<div className="parts-race-details">
       {pinned && <p className="drill-empty">{dayLabel(hour)} {tag && liveHour != null && <FollowControl following={following} onFollow={follow} onPause={pause} />}</p>}
-      <DrillParts parts={rows} format={exactPartAmount} total={at?.total ?? null} showShares={at?.total != null}
+      {details && tag && binding ? details({ tag, hour, tagAt: binding.tagAt, key: [
+        ...parts.slice(0, -1).map((part, index) => ({ id: part.id, label: part.label, color: colours.get(part.id), value: at?.values[index] ?? null })),
+        ...(remainder ? [{ id: UNATTRIBUTED_PART.id, label: UNATTRIBUTED_PART.label, color: colours.get(UNATTRIBUTED_PART.id), value: Number(remainder) }] : [])] })
+        : <><DrillParts parts={rows} format={exactPartAmount} total={at?.total ?? null} showShares={at?.total != null}
         virtual={virtual} active={active} positiveBars={positiveGeometry} signedShares
         unattributed={remainder == null ? undefined : { ...UNATTRIBUTED_PART, value: Number(remainder), raw: remainder,
           shareText: exactPartShare(remainder, at?.total ?? null), text: exactPartAmount(remainder), color: colours.get('') }}
         totalRow={{ label: measure, value: at == null ? 'Not recorded' : at.total == null ? 'Not known' : exactPartAmount(at.total) }} />
-      {at?.note && <p className="drill-empty">{at.note}</p>}
+      {at?.note && <p className="drill-empty">{at.note}</p>}</>}
     </div>}
     onPick={tag ? picked => { if (current()) dispatch({ type: 'open', breakdown: tag, hour: picked, playing: false,
       playhead: null, owner: contextOwner }); } : undefined} />;

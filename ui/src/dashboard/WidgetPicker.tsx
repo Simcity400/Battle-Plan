@@ -13,7 +13,7 @@ import type { CatalogueEntry, WidgetGroup } from './widgetCategories';
 
 type Add = (kind: string, initial?: Pick<WidgetSpec, 'title' | 'options'>) => void;
 type Entry = CatalogueEntry<WidgetDefinition>;
-/** Presets carry the widget spec's own title and options (see WidgetPreset). */
+/** Views and presets carry the widget spec's own title and options (see WidgetPreset). */
 const initialOf = (entry: Entry) => entry.initial as Pick<WidgetSpec, 'title' | 'options'> | undefined;
 interface Shared { runtime: WidgetRuntime; track: BoundTrack | undefined; active: boolean; disabled: boolean; onAdd: Add }
 
@@ -42,7 +42,7 @@ function Card({ entry, placed, selected, onSelect, ...shared }: Shared & { entry
   const reason = useUnavailable(definition, shared);
   const [added, markAdded] = useAdded();
   const add = () => { shared.onAdd(definition.kind, initialOf(entry)); markAdded(); };
-  return <div role="listitem" className="widget-card" data-selected={selected || undefined} style={groupColour(entry.group)}>
+  return <div role="listitem" className="widget-card" data-selected={selected || undefined} data-variant={entry.variant || undefined} style={groupColour(entry.group)}>
     <button type="button" className="widget-card-main" aria-pressed={selected} data-tooltip={entry.title} onClick={onSelect}
       onDoubleClick={() => { if (!shared.disabled && reason === null) add(); }}>
       <span className="widget-card-icon" aria-hidden="true"><Icon name={definition.icon} /></span>
@@ -70,6 +70,7 @@ function Details({ entry, ...shared }: Shared & { entry: Entry }) {
         <span style={groupColour(entry.group)}><i aria-hidden="true" />{entry.group.label}</span>
         <span>{definition.scope === 'history' ? 'Over time' : 'One moment'}</span>
         {countries && <span>{countries}</span>}
+        {entry.variant && <span>View of {definition.title}</span>}
       </div>
     </div>
     {(reason ?? entry.note) && <p className="widget-details-reason" role="status">{reason ?? entry.note}</p>}

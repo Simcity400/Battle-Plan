@@ -42,6 +42,8 @@ export interface BattleLogProps<T extends BattleRow> {
   description?: (row: T) => string | null;
   tooltipRows?: (row: T) => readonly TooltipRow[];
   onVisibleRows: (rows: readonly T[]) => void;
+  /** A place name still loading reads Loading…, never the unnamed label. */
+  placePending?: (row: T) => boolean;
 }
 
 function Side<T extends BattleRow>({ row, index, country, formatLoss }: { row: T; index: number; country: BattleCountryLabel; formatLoss?: BattleLossFormatter<T> }) {
@@ -59,7 +61,7 @@ function Side<T extends BattleRow>({ row, index, country, formatLoss }: { row: T
 
 /** The caller supplies every measure and word; no battle-domain facts live here. */
 export default function BattleLog<T extends BattleRow>({ rows, label, labels, country, live, view, log, measures, resultMeasure, sort,
-  setOption, cellBars, rankMarkers, hoursPerSecond, menu, empty, note, formatLoss, compactSides, description, tooltipRows, onVisibleRows }: BattleLogProps<T>) {
+  setOption, cellBars, rankMarkers, hoursPerSecond, menu, empty, note, formatLoss, compactSides, description, tooltipRows, onVisibleRows, placePending }: BattleLogProps<T>) {
   const viewportHeight = useViewportHeight();
   const logs = useMemo(() => view === 'log' ? battleLogRows(rows, live) : [], [rows, live, view]);
   const tooltip = useCallback((row: T) => {
@@ -70,8 +72,8 @@ export default function BattleLog<T extends BattleRow>({ rows, label, labels, co
   const sides = (row: T) => compactSides ? <BattleSides row={row} country={country} summary={compactSides} compact={view === 'biggest'} />
     : <span className="battle-sides">{row.sides.map((_: BattleSide, index: number) => <Side key={index} row={row} index={index} country={country} formatLoss={formatLoss} />)}</span>;
   const place = (row: T, logRow: boolean) => {
-    const name = logRow ? <b className="log-text" title={row.place.name ?? labels.unknownPlace}>{row.place.name ?? labels.unknownPlace}</b>
-      : <span className="battle-place" title={row.place.name ?? labels.unknownPlace}>{row.place.name ?? labels.unknownPlace}</span>;
+    const text = row.place.name ?? (placePending?.(row) ? 'Loading…' : labels.unknownPlace);
+    const name = logRow ? <b className="log-text" title={text}>{text}</b> : <span className="battle-place" title={text}>{text}</span>;
     const detail = description?.(row);
     return detail ? <span className="battle-row-place">{name}<span className="battle-row-description" title={detail}>{detail}</span></span> : name;
   };

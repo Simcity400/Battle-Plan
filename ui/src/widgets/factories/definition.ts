@@ -1,9 +1,9 @@
-import { TOP_COUNTRIES } from '../../charts/race/options.ts';
+import { TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
 import { partsRaceOptions } from '../../charts/race/partsRaceOptions.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { COUNT_MODES } from './factoriesData.ts';
-import { breakdownOption } from '../../charts/drill/drillState.ts';
+import { breakdownOption, breakdownVariants } from '../../charts/drill/drillState.ts';
 
 export const OPTIONS: readonly OptionField[] = [
   ...partsRaceOptions('type').map(field => field.key === 'show'
@@ -23,4 +23,5 @@ export const definition = {
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true },
   defaultCountries: TOP_COUNTRIES,
   options: OPTIONS,
+  variants: [...raceViewVariants('Factories', OPTIONS), ...breakdownVariants('Factories', OPTIONS)],
 } as const satisfies WidgetMeta;

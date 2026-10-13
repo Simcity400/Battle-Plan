@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { ComponentType } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { logSettings } from '../../charts/log/logOptions';
 import { tableSortOf } from '../../charts/table/options';
@@ -8,7 +9,8 @@ import type { TooltipRow } from '../../charts/tooltip';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { MAX_NAME_HOURS } from '../../dashboard/countryFacts';
 import { selectedTags } from '../../dashboard/countrySelection';
-import type { WidgetMeta, WidgetProps } from '../../dashboard/definitions';
+import type { WidgetMeta, WidgetProps, WidgetRuntime } from '../../dashboard/definitions';
+import type { WidgetSpec } from '../../dashboard/model';
 import { countryMatch, countryMatchFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -17,10 +19,11 @@ import { useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import type { BattleRow, BattleWindow, BattleWarning, PlaceNamesReply } from '../../generated/dashboard';
+import type { BattleRow, BattleWindow, BattleWarning, PlaceName, PlaceNamesReply } from '../../generated/dashboard';
 import BattleLog from './BattleLog';
+import type { BattleLogProps } from './BattleLog';
 import { battleCountryRequests, battleJumpHour, battlePlaceRequests, namedBattles, battleWindowIndex, battleWindows, battleWarnings, shownBattleCensusHour } from './battleRows';
-import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
+import { placeKey, validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
 import type { BattleLabels, BattleLossFormatter, BattleMeasure, BattleSideSummary } from './battleRows';
 import { DEFAULT_SORT, DEFAULT_TOP_N } from './battleOptions';
 import './battles.css';
@@ -29,6 +32,18 @@ interface ViewRow extends BattleRow { provinceId: number; windowIndex: number }
 interface ManifestReply { windows: BattleWindow[]; available: boolean; unavailable: string | null; contentWarnings: string[] }
 interface WindowReply { observed: [number, number][]; contentWarnings: string[]; warnings: BattleWarning[] }
 interface RankingReply { censusHour: number | null; effectiveMeasure: string; warnings: BattleWarning[]; contentWarnings: string[] }
+/** What an adapter's own view needs beyond the shared log props. */
+export interface BattleViewContext {
+  runtime: WidgetRuntime; track: WidgetRuntime['tracks'][number]; active: boolean; widget: WidgetSpec;
+  setOption?: WidgetProps['setOption'];
+  /** The hour the rows show. */
+  shownHour: number;
+  /** What Biggest ranks by: the ranking's effective measure, which falls back
+   * from the chosen one where the recording lacks it. */
+  rankedMeasure: string;
+  /** A place name still loading, as opposed to a read that named nothing. */
+  placePending: (row: BattleRow & { provinceId: number }) => boolean;
+}
 export interface BattleViewAdapter<Row extends ViewRow, Window extends WindowReply, Ranking extends RankingReply> {
   definition: WidgetMeta;
   product: string;
@@ -49,6 +64,8 @@ export interface BattleViewAdapter<Row extends ViewRow, Window extends WindowRep
   tooltipRows?: (row: Row) => readonly TooltipRow[];
   onVisibleRows?: (rows: readonly Row[]) => void;
   diagnostics?: readonly string[];
+  /** Replaces the shared log and table with the widget's own view of the same rows. */
+  view?: ComponentType<BattleLogProps<Row> & { context: BattleViewContext }>;
 }
 const NO_ROWS: readonly never[] = [];
 const NO_WARNINGS: string[] = [];
@@ -106,7 +123,25 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
   const placeRequest = track && places.length ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'place-names', params: { branchId: track.branch.id, places, states: [], land: adapter.landPlaceNames === true } } : null;
   const placeData = useProduct<PlaceNamesReply>(runtime.client, placeRequest, active, validatePlaceNamesReply);
-  const named = useMemo(() => namedBattles(shown, placeData.data), [shown, placeData.data]);
+  // Names already read stay while the next drawn rows load, so scrolling never blanks them.
+  const [placeNames, setPlaceNames] = useState<{ identity: string | null; names: ReadonlyMap<string, PlaceName> }>({ identity: null, names: new Map() });
+  useEffect(() => {
+    const places = placeData.data?.places;
+    if (!places?.length) return;
+    setPlaceNames(previous => {
+      const names = new Map(previous.identity === identity ? previous.names : []);
+      for (const place of places) names.set(placeKey(place.provinceId, place.hour), place);
+      return { identity, names };
+    });
+  }, [placeData.data, identity]);
+  const knownNames = placeNames.identity === identity ? placeNames.names : null;
+  const named = useMemo(() => namedBattles(shown, knownNames ? { places: [...knownNames.values()], states: [], warnings: [] } : placeData.data),
+    [shown, knownNames, placeData.data]);
+  const answered = useMemo(() => new Set(placeData.data?.places.map(place => placeKey(place.provinceId, place.hour))), [placeData.data]);
+  const placePending = useCallback((row: BattleRow & { provinceId: number }) => {
+    const key = placeKey(row.provinceId, row.place.namedAt ?? row.place.hour);
+    return placeData.error === undefined && !knownNames?.has(key) && !answered.has(key);
+  }, [placeData.error, knownNames, answered]);
   const onVisibleRows = useCallback((drawn: readonly Row[]) => {
     setVisible(previous => {
       const next = drawn.map(row => currentRows.get(row.id) ?? row);
@@ -142,25 +177,31 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
   const preceding = wantedWindows.filter(index => index <= browseIndex);
   const oldest = preceding.length ? preceding.reduce((oldest, index) => Math.min(oldest, index)) : 0;
   const earlier = view === 'log' && oldest > 0 && manifest.data.windows[oldest - 1].lastHour >= first;
-  const earlierButton = earlier && <button type="button" onClick={() => { setBrowse({ identity, hour: manifest.data!.windows[oldest - 1].lastHour }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Earlier battles</button>;
+  const earlierButton = earlier && <button type="button" className="button small" onClick={() => { setBrowse({ identity, hour: manifest.data!.windows[oldest - 1].lastHour }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Earlier battles</button>;
   const navigation = view === 'log' && <div className="battle-navigation">{earlierButton}
-    {shownHour !== hour && <button type="button" onClick={() => { setBrowse({ identity, hour: null }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Latest battles</button>}
+    {shownHour !== hour && <button type="button" className="button small" onClick={() => { setBrowse({ identity, hour: null }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Latest battles</button>}
   </div>;
-  if (!shown.length) return <div className="battle-widget">{navigation}<WidgetState kind={censusHour === null ? 'unavailable' : 'empty'}
+  // An adapter's own view draws its empty list, keeping its header controls.
+  if (!shown.length && !(adapter.view && censusHour !== null)) return <div className="battle-widget">{navigation}<WidgetState kind={censusHour === null ? 'unavailable' : 'empty'}
     message={censusHour === null ? 'Not in this recording' : `No recorded ${adapter.definition.title.toLowerCase()} match these settings.`} /></div>;
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const summary = adapter.summary?.(shown, ranking.data, measure, view);
+  const rankedMeasure = ranking.data?.effectiveMeasure ?? measure;
   return <div className="battle-widget">
     {summary && <p className="battle-note">{summary}</p>}
     {/* A range cuts battles short; their peak and duration are still the whole battle's. */}
     {widget.time.mode === 'range' && <p className="battle-note">Peak and duration cover the whole battle.</p>}
     {navigation}
     {view === 'log' && wantedWindows.some(index => !history.data.has(index) && !history.errors.has(index)) && <p className="battle-note" role="status">Updating…</p>}
-    <BattleLog rows={named} label={adapter.definition.title} labels={adapter.labels} country={country} live={live && shownHour === hour} view={view}
-      log={logSettings(options)} measures={adapter.measures} sort={sort.column === 'measure' ? { ...sort, column: ranking.data?.effectiveMeasure ?? measure } : sort}
-      setOption={setOption} cellBars={options.cellBars === true} rankMarkers={options.rankMarkers === true} hoursPerSecond={hoursPerSecond}
-      menu={row => [jumpItem(runtime, track.id, battleJumpHour(row))]} empty={`No recorded ${adapter.definition.title.toLowerCase()} match these settings.`}
-      note={adapter.note} formatLoss={adapter.formatLoss} compactSides={adapter.compactSides} resultMeasure={adapter.resultMeasure}
-      description={adapter.description} tooltipRows={adapter.tooltipRows} onVisibleRows={onVisibleRows} />
+    {(() => {
+      const props: BattleLogProps<Row> = { rows: named, label: adapter.definition.title, labels: adapter.labels, country, live: live && shownHour === hour, view,
+        log: logSettings(options), measures: adapter.measures, sort: sort.column === 'measure' ? { ...sort, column: rankedMeasure } : sort,
+        setOption, cellBars: options.cellBars === true, rankMarkers: options.rankMarkers === true, hoursPerSecond,
+        menu: row => [jumpItem(runtime, track.id, battleJumpHour(row))], empty: `No recorded ${adapter.definition.title.toLowerCase()} match these settings.`,
+        note: adapter.note, formatLoss: adapter.formatLoss, compactSides: adapter.compactSides, resultMeasure: adapter.resultMeasure,
+        description: adapter.description, tooltipRows: adapter.tooltipRows, onVisibleRows, placePending };
+      const View = adapter.view;
+      return View ? <View {...props} context={{ runtime, track, active, widget, setOption, shownHour: shownHour!, rankedMeasure, placePending }} /> : <BattleLog {...props} />;
+    })()}
   </div>;
 }

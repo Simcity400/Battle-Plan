@@ -14,7 +14,14 @@
 //! A slot read whose technology occurrence was not recorded (recordings made
 //! before it was) keeps its coverage and slot state, named by the read's own
 //! technology key, but joins no assignment: equal handles and names can belong
-//! to repeated occurrences. Such reads are counted in a named warning.
+//! to repeated occurrences. Such reads are counted in a named warning. Their
+//! progress is still exact at each read and is kept without an assignment,
+//! merged only while the slot holds that same technology without a break.
+//!
+//! The reply names each technology's research folder (a tab of the technology
+//! screen) through the recorded content stack: the first folder the technology
+//! is placed in whose tab is available, with tab availability decided from
+//! content and recorded DLC alone ([`shown_folders`]).
 use super::{CountryParams, LoadContext, Product, artwork};
 use crate::{
     Artwork, ResearchBonus, ResearchCoverage, ResearchDetails, ResearchEntry, ResearchHistory,
@@ -28,7 +35,7 @@ use replay::{
 };
 use serde::Serialize;
 use std::{
-    collections::{BTreeMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
     io,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -562,7 +569,7 @@ impl Country {
             let sample = ResearchProgress {
                 first_hour: hour,
                 last_hour: hour,
-                entry_first_observed_hour: entry.first_observed_hour,
+                entry_first_observed_hour: Some(entry.first_observed_hour),
                 base_days_raw: base_cost(input).map(|cost| cost.to_string()),
                 progress_raw: input.progress_raw.to_string(),
             };
@@ -570,6 +577,50 @@ impl Country {
                 continuous
                     && follows(read_after, last.last_hour, hour)
                     && last.entry_first_observed_hour == sample.entry_first_observed_hour
+                    && last.base_days_raw == sample.base_days_raw
+                    && last.progress_raw == sample.progress_raw
+            }) {
+                last.last_hour = hour;
+            } else {
+                slot.progress.push(sample);
+            }
+        }
+        // A technology held without its recorded occurrence still has exact
+        // progress at its read; the slot's state at the same hour names it.
+        for input in inputs.iter().filter(|input| {
+            input.technology_present != 0
+                && !matches!(input.database_index, replay::rows::Recorded::Value(_))
+        }) {
+            let Some(slot) = self
+                .history
+                .slots
+                .iter_mut()
+                .find(|s| s.index == input.index)
+            else {
+                continue;
+            };
+            // A finished technology still linked to the slot names no state.
+            if !slot.states.last().is_some_and(|state| {
+                state.last_hour == hour
+                    && state.token.as_deref().map(str::as_bytes) == Some(input.token.as_slice())
+            }) {
+                continue;
+            }
+            let held_since = unjoined_run_start(&slot.states);
+            let sample = ResearchProgress {
+                first_hour: hour,
+                last_hour: hour,
+                entry_first_observed_hour: None,
+                base_days_raw: base_cost(input).map(|cost| cost.to_string()),
+                progress_raw: input.progress_raw.to_string(),
+            };
+            // Equal values merge only while the slot held this same technology
+            // without a break, never across another technology's reads.
+            if let Some(last) = slot.progress.last_mut().filter(|last| {
+                continuous
+                    && follows(read_after, last.last_hour, hour)
+                    && last.entry_first_observed_hour.is_none()
+                    && held_since.is_some_and(|start| last.last_hour >= start)
                     && last.base_days_raw == sample.base_days_raw
                     && last.progress_raw == sample.progress_raw
             }) {
@@ -848,6 +899,93 @@ impl Country {
 
 /// Only a recorded occurrence identifies a technology across reads; equal
 /// handles and names can belong to repeated occurrences.
+/// The first hour of the unbroken run of states, ending with the last, that
+/// hold the last state's technology without a joined assignment.
+fn unjoined_run_start(states: &[ResearchSlotState]) -> Option<i32> {
+    let last = states.last()?;
+    let token = last.token.as_ref()?;
+    if last.entry_first_observed_hour.is_some() {
+        return None;
+    }
+    let mut start = last.first_hour;
+    for pair in states.windows(2).rev() {
+        let (before, after) = (&pair[0], &pair[1]);
+        if before.token.as_ref() != Some(token)
+            || before.entry_first_observed_hour.is_some()
+            || before.last_hour.checked_add(1) != Some(after.first_hour)
+        {
+            break;
+        }
+        start = before.first_hour;
+    }
+    Some(start)
+}
+
+/// The folder each token is shown in: the first folder it is placed in whose
+/// tab is available, as the game's technology screen shows it in each available
+/// tab. A token placed only in unavailable folders is shown in none. One placed
+/// in a folder whose availability cannot be decided from content, before any
+/// available folder, stays unknown: that folder may be the one shown. A folder
+/// `technology_folders` does not define is never available. Unknown folders and
+/// undefined folders are named and counted.
+pub(crate) fn shown_folders<'a>(
+    definitions: &[(&str, Option<bool>)],
+    placed: &BTreeMap<String, Vec<String>>,
+    tokens: impl IntoIterator<Item = &'a str>,
+) -> (Vec<crate::ResearchTechnologyFolder>, Vec<String>) {
+    let mut undecided: Vec<&str> = Vec::new();
+    let mut undefined: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut shown = Vec::new();
+    for token in tokens {
+        let mut folder = None;
+        let mut unknown = false;
+        for key in placed.get(token).into_iter().flatten() {
+            match definitions
+                .iter()
+                .find(|(defined, _)| *defined == key.as_str())
+            {
+                Some((_, Some(true))) => {
+                    folder = Some(key.clone());
+                    break;
+                }
+                Some((_, Some(false))) => {}
+                Some((_, None)) => {
+                    unknown = true;
+                    break;
+                }
+                None => undefined.entry(key.as_str()).or_default().push(token),
+            }
+        }
+        if unknown {
+            undecided.push(token);
+        }
+        shown.push(crate::ResearchTechnologyFolder {
+            token: token.to_owned(),
+            folder,
+        });
+    }
+    let mut notes = Vec::new();
+    if !undecided.is_empty() {
+        let one = undecided.len() == 1;
+        notes.push(format!(
+            "{} {} placed in a research folder whose availability cannot be decided from content before any available folder, so {} folder is unknown: {}.",
+            undecided.len(),
+            if one { "technology is" } else { "technologies are" },
+            if one { "its" } else { "their" },
+            undecided.join(", ")
+        ));
+    }
+    for (key, tokens) in undefined {
+        notes.push(format!(
+            "Research folder {key} is not defined in common/technology_tags, so {} {} placed in it cannot be shown there: {}.",
+            tokens.len(),
+            if tokens.len() == 1 { "technology" } else { "technologies" },
+            tokens.join(", ")
+        ));
+    }
+    (shown, notes)
+}
+
 fn same_assignment(a: &replay::rows::ResearchInputRow, b: &replay::rows::ResearchInputRow) -> bool {
     a.country == b.country
         && a.technology_present == b.technology_present
@@ -880,7 +1018,7 @@ fn remaining(row: &replay::rows::ResearchInputRow, rate: i128) -> Option<u32> {
 /// The named refusal for slot reads whose technology occurrence was not recorded.
 fn unjoined_warning(reads: usize) -> String {
     format!(
-        "{reads} research slot {} technology without its recorded occurrence, so {} not joined into assignments: completions, progress and time spent are unknown there.",
+        "{reads} research slot {} technology without its recorded occurrence, so {} not joined into assignments: their completions and the time they took are unknown.",
         if reads == 1 {
             "read names its"
         } else {
@@ -1164,6 +1302,8 @@ pub struct Research;
 pub struct ResearchReply {
     pub history: ResearchHistory,
     pub artwork: Vec<Artwork>,
+    pub folders: Vec<crate::ResearchFolder>,
+    pub technology_folders: Vec<crate::ResearchTechnologyFolder>,
     pub warnings: Vec<String>,
 }
 
@@ -1202,7 +1342,7 @@ impl Product for Research {
             content,
             artwork::Kind::Technology,
         )?;
-        let tokens = history
+        let tokens: BTreeSet<&str> = history
             .slots
             .iter()
             .flat_map(|s| {
@@ -1212,7 +1352,9 @@ impl Product for Research {
                     .chain(s.states.iter().filter_map(|state| state.token.as_deref()))
             })
             .collect();
+        let (folders, technology_folders, folder_warnings) = art.research_folders(&tokens);
         let (artwork, mut warnings) = art.text_catalogue(tokens, cancelled)?;
+        warnings.extend(folder_warnings);
         for slot in &mut history.slots {
             for state in &mut slot.states {
                 if let Some(modifiers) = state.details.as_mut().and_then(|d| d.modifiers.as_mut()) {
@@ -1244,6 +1386,8 @@ impl Product for Research {
         Ok(ResearchReply {
             history,
             artwork,
+            folders,
+            technology_folders,
             warnings,
         })
     }

@@ -13,7 +13,7 @@ import type { WidgetSpec } from '../../dashboard/model';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { registerWidgets } from '../../dashboard/definitions.ts';
 import { NumericReply } from '../../dashboard/numericReply.ts';
-import { contentKey, resolveOptions } from '../../dashboard/options.ts';
+import { contentKey, resolveOptions, setToken } from '../../dashboard/options.ts';
 import { PlaybackController } from '../../dashboard/playback.ts';
 import { object } from '../../dashboard/validation.ts';
 import type { DashboardClient, ProductRequest } from '../../dashboard/client';
@@ -34,7 +34,7 @@ const reply: EquipmentStockpileReply = {
   types: [{ key: 'mod/rifles', name: 'Authored rifles', domain: 'land', needNote: null },
     { key: 'mod/trucks', name: 'Authored trucks', domain: 'land', needNote: null }],
   variants: [{ id: '9007199254741001', token: 'mod_rifle_a', archetype: 'mod/rifles',
-    names: [{ firstHour: 100, known: true, name: 'Recorded rifles', design: 'design-a' }], stock: raw('1200000'), daily: raw('99900000'), dailyIc: [], unitCostLow: [], unitCostHigh: [] },
+    names: [{ firstHour: 100, known: true, name: 'Recorded rifles', design: 'design-a' }], stock: raw('1200000'), daily: raw('99900000'), dailyIc: raw('4500000'), unitCostLow: raw('55000'), unitCostHigh: raw('65000') },
     { id: '9007199254741002', token: 'mod_truck_a', archetype: 'mod/trucks', names: [], stock: raw('800000'), daily: [], dailyIc: [], unitCostLow: [], unitCostHigh: [] }],
   logistics: [{ key: 'mod/rifles', available: raw('2000000'), balance: raw('500000'), stock: raw('99900000') },
     { key: 'mod/trucks', available: raw('800000'), balance: raw('-200000'), stock: raw('800000') }],
@@ -124,6 +124,14 @@ async function fixture() {
           globalThis.__stockTooltip = props.content; return { rowProps: () => ({ tabIndex: 0 }), descriptionId: key => key }; };`;
         if (path.endsWith('/equipment-stockpile/useStockpileArtwork.ts')) return 'export const useStockpileArtwork = () => ({ data: globalThis.__stockArtwork });';
         if (path.endsWith('/charts/TimeChart.tsx')) return 'export default props => { globalThis.__stockCharts?.push(props); return null; };';
+        // The table's rows register their activation and tooltip by key, as the kit's would.
+        if (path.endsWith('/charts/table/Table.tsx')) return `import { createElement } from 'react';
+          export default props => {
+            for (const row of props.rows) globalThis.__stockRowPick?.(props.rowKey(row), () => props.onRowClick?.(row));
+            globalThis.__stockTooltip = key => { const row = props.rows.find(item => props.rowKey(item) === key); return row && props.tooltip ? props.tooltip(row) : null; };
+            return createElement('table', null, createElement('tbody', null, props.rows.map(row => createElement('tr', { key: props.rowKey(row) },
+              props.columns.map(column => createElement('td', { key: column.key }, column.render ? column.render(row) : String(column.value(row))))))));
+          };`;
         if (path.endsWith('/charts/drill/DrillParts.tsx')) return source.replace('const rows = useMemo(', 'globalThis.__stockParts = parts; const rows = useMemo(');
         if (path.endsWith('/charts/drill/DrillHost.tsx')) return `export default props => {
           globalThis.__stockHost = props; return props.open ? props.children : props.main;
@@ -183,10 +191,9 @@ test('stockpile artwork slots use a fallback and best-design names appear only o
     ] };
     const html = view.render();
     assert.equal((html.match(/class="art-fallback"/g) ?? []).length, 2);
-    const visible = html.replace(/<span[^>]*class="sr-only"[^>]*>.*?<\/span>/g, '');
-    assert.doesNotMatch(visible, /<small>|Best rifle design/);
-    assert.doesNotMatch(html, /Native picture refused/);
-    assert.match(html, /class="sr-only">[^<]*Best rifle design/);
+    // The best design's name is the type's picture, named on hover; rows name the models held.
+    assert.doesNotMatch(html, /Best rifle design|Native picture refused/);
+    assert.match(html, /<small>Recorded rifles · 12 in stock<\/small>/);
     const tooltip = host.__stockTooltip!('mod/rifles')!;
     assert.match(tooltip.note ?? '', /Best rifle design/);
     assert.doesNotMatch(tooltip.note ?? '', /Picture:|read |Native picture refused/);
@@ -233,6 +240,21 @@ test('a reloaded stockpile pin dates its body/header through local picks, Follow
   } finally { await view.close(); }
 });
 
+test('a breakdown pinned by variant, when variants could be grouped, still opens on its variant and design', async () => {
+  const view = await fixture();
+  try {
+    const pinned = { ...view.widget, time: { mode: 'pin', windows: { track: { firstOffset: 150, lastOffset: 150 } } }, options: {
+      show: 'stockpile', grouping: 'variant', partMode: 'stock', partGroup: setToken(`${variantKey(reply, reply.variants[0])}#design-a`),
+      stockpileCountry: datedCountryToken({ campaign: 'campaign-a', branch: '1', tag: 'AAA', originOffset: 150 }),
+    } } as WidgetSpec;
+    assert.doesNotMatch(view.render(pinned), /not defined by this campaign/);
+    assert.deepEqual(host.__stockParts!.map(part => [part.label, part.raw]), [['Recorded rifles', 1200000n]]);
+    // Another design under the same handle is not drawn as the saved one.
+    const other = { ...pinned, options: { ...pinned.options, partGroup: setToken(`${variantKey(reply, reply.variants[0])}#design-b`) } };
+    assert.match(view.render(other), /not defined by this campaign/);
+  } finally { await view.close(); }
+});
+
 test('an actual row opens inside, history holds its picked day, Follow uses playback and Pin keeps country/type/time', async () => {
   const view = await fixture();
   try {
@@ -240,9 +262,9 @@ test('an actual row opens inside, history holds its picked day, Follow uses play
     assert.equal(host.__stockHost!.mode, 'inline');
     view.rows.get('mod/rifles')!(); view.render();
     assert.equal(host.__stockHost!.open, true);
-    assert.equal(host.__stockHost!.returnFocus, '[data-stockpile-key="mod:2f:rifles"]');
-    assert.deepEqual(host.__stockParts!.map(part => part.raw), [2000000n, -1500000n, 0n]);
-    assert.deepEqual(host.__stockParts!.map(part => part.text), ['+20.00000', '−15.00000', '0.00000']);
+    assert.equal(host.__stockHost!.returnFocus, '.stockpile-table-rows tr');
+    // The breakdown lists the type's models in stock, in whole units.
+    assert.deepEqual(host.__stockParts!.map(part => [part.label, part.raw, part.text]), [['Recorded rifles', 1200000n, '12']]);
     assert.equal(host.__stockHour, 200);
     host.__stockCharts!.at(-1)!.onPick!(110); view.render();
     assert.deepEqual(host.__stockDrill, { breakdown: 'stockpile', follow: false, hour: 110 });
@@ -251,22 +273,24 @@ test('an actual row opens inside, history holds its picked day, Follow uses play
     const pinned = view.pins[0], options = resolveOptions(OPTIONS, pinned.options);
     assert.deepEqual(pinned.countries, { kind: 'tags', tags: ['AAA'] });
     assert.equal(contentKey(String(options.partGroup)), 'mod/rifles');
-    assert.equal(options.partMode, 'balance');
+    assert.equal(pinned.options?.partMode, 'balance');
     assert.deepEqual(pinned.time, { mode: 'pin', windows: { track: { firstOffset: 110, lastOffset: 110 } } });
     host.__stockHost!.onFollow(); view.render();
     assert.equal(host.__stockHour, 150);
     view.render({ ...view.widget, options: { drill: 'popout' } });
     assert.equal(host.__stockHost!.mode, 'popout');
-    assert.match(view.render(pinned), /Available/);
-    assert.match(view.render(pinned), /Needed/);
+    // The game's logistics equation: 20 available − 15 needed = a surplus of 5.
+    assert.match(view.render(pinned), /Available <b>20<\/b> − needed <b>15<\/b> = <b class="is-positive">surplus \+5<\/b>/);
+    // Per model: the game's output a day, the IC its lines put in a day, and their lowest to highest cost per unit.
+    assert.match(view.render(pinned), /<span role="cell">Recorded rifles<\/span><b role="cell">999<\/b><b role="cell">45<\/b><b role="cell">0\.55–0\.65<\/b>/);
     assert.ok(host.__stockRequests!.every(request => object(request.params) && request.params.tag === 'AAA' && request.product === 'equipment-stockpile'));
   } finally { await view.close(); }
 });
 
-test('an aligned campaign follows its native hour and pins the dated variant title, design and held moment', async () => {
+test('an aligned campaign follows its native hour and pins the type with its models named as recorded then', async () => {
   const view = await fixture();
   try {
-    const widget = { ...view.widget, options: { grouping: 'variant' } };
+    const widget = view.widget;
     const dated = { ...reply, variants: [{ ...reply.variants[0], names: [
       { firstHour: 100, known: true, name: 'Original rifles', design: 'original-design' },
       { firstHour: 140, known: true, name: 'Aligned rifles', design: 'aligned-design' },
@@ -278,26 +302,26 @@ test('an aligned campaign follows its native hour and pins the dated variant tit
     const runtime = { ...view.runtime, tracks: [{ ...view.runtime.tracks[0], axisOffset: 100,
       branch: { ...branch, firstHour: 100 } }], clock };
     view.render(widget, runtime);
-    const row = view.rows.get(variantKey(dated, dated.variants[0]))!;
+    const row = view.rows.get('mod/rifles')!;
     row(); view.render(widget, runtime);
     assert.equal(host.__stockHost!.open, true);
     assert.equal(host.__stockDrill!.follow, true);
     assert.equal(host.__stockHour, 150);
-    assert.equal(host.__stockHost!.title, 'Aligned rifles');
-    assert.deepEqual(host.__stockParts!.map(part => part.raw), [1200000n]);
+    assert.equal(host.__stockHost!.title, 'Authored rifles');
+    assert.deepEqual(host.__stockParts!.map(part => [part.label, part.raw]), [['Aligned rifles', 1200000n]]);
     host.__stockHost!.onPin!();
     const following = view.pins[0];
-    assert.equal(following.title, `${widget.title}: Aligned rifles`);
-    assert.equal(contentKey(String(resolveOptions(OPTIONS, following.options).partGroup)), `${variantKey(dated, dated.variants[0])}#aligned-design`);
+    assert.equal(following.title, `${widget.title}: Authored rifles`);
+    assert.equal(contentKey(String(resolveOptions(OPTIONS, following.options).partGroup)), 'mod/rifles');
     assert.deepEqual(following.time, { mode: 'follow' });
     host.__stockCharts!.at(-1)!.onPick!(110); view.render(widget, runtime);
     assert.equal(host.__stockHour, 110);
-    assert.equal(host.__stockHost!.title, 'Original rifles');
+    assert.deepEqual(host.__stockParts!.map(part => part.label), ['Original rifles']);
     host.__stockHost!.onPin!();
     assert.deepEqual(view.pins[1].time, { mode: 'pin', windows: { track: { firstOffset: 10, lastOffset: 10 } } });
     host.__stockHost!.onFollow(); view.render(widget, runtime);
     assert.equal(host.__stockHour, 150);
-    assert.equal(host.__stockHost!.title, 'Aligned rifles');
+    assert.deepEqual(host.__stockParts!.map(part => part.label), ['Aligned rifles']);
     const replacement = { ...runtime, client: fixtureClient() };
     view.render(widget, replacement);
     assert.equal(host.__stockHost!.open, false);

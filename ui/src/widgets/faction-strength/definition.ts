@@ -1,9 +1,11 @@
-import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption } from '../../charts/race/options.ts';
+import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption, raceViewVariants } from '../../charts/race/options.ts';
 import { COUNT_MODES } from '../../dashboard/factoryMeasure.ts';
 import { factionMemberOptions } from '../../charts/race/factionPartsOptions.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { MEASURES } from './factionStrengthData.ts';
+import { breakdownVariants } from '../../charts/drill/drillState.ts';
+import { choiceVariants } from '../../dashboard/options.ts';
 
 export const OPTIONS: readonly OptionField[] = [
   raceViewOption(),
@@ -30,4 +32,6 @@ export const definition = {
   factionColours: true,
   defaultCountries: { kind: 'factions', count: Number.MAX_SAFE_INTEGER, membership: 'hour' },
   options: OPTIONS,
+  variants: [...raceViewVariants('Faction strength', OPTIONS), ...breakdownVariants('Faction strength', OPTIONS),
+    ...choiceVariants(OPTIONS.find(field => field.key === 'measure'), () => 'Faction territory', ['territory'])],
 } as const satisfies WidgetMeta;

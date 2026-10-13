@@ -1,35 +1,38 @@
-# Research
+# Research history
 
 ## What it shows
 
-Research-slot histories and current assignments, with recorded progress, days-left estimates and an expected/took time explanation.
+The order each research slot worked through, as **Columns** (the default) or a **List**. The catalogue also offers it as **Research list**, the same widget opening on List. What each slot researches now is the separate [Active research](../active-research/README.md) widget.
+
+- **Columns**: one even column per slot, a dense list of that slot's completions in order, oldest at the top. Each row has the technology's picture, its name on one line and its completion date under it. Columns are not kept level; the only offset is a slot that opened during the recording, which starts at the row the other slots had reached by then under an "Opened by" marker. Live and Pin add a Now row under the columns: each slot's current technology with its latest read progress, or Idle with its saved days.
+- **List**: one table row per completed technology: Date, Technology, Folder, Slot and Took. It sorts by any column, oldest first by default.
 
 ## Products it reads
 
-[`research`](../../../../crates/dashboard/src/products/research.rs) supplies slot states, journeys, modifier credits and localized text; playback resolves them locally. [`technology-artwork`](../../../../crates/dashboard/src/products/technology_artwork.rs) loads images in small independent batches, so history and titles do not wait for rendering. Hovering a title reveals its technology key.
+[`research`](../../../../crates/dashboard/src/products/research.rs) supplies slot states, assignments, progress, modifier credits, localized text and each technology's research folder; playback resolves them locally. [`technology-artwork`](../../../../crates/dashboard/src/products/technology_artwork.rs) loads pictures in small batches, so names and dates do not wait for them.
 
 ## Settings
 
-Country and campaign/follow/pin; Whole campaign is the default. No widget-specific options.
+Country and campaign/follow/pin; Whole campaign is the default. View (Columns or List), switched from the header too; Research folders, a filter also in the widget; and, for the List, Sort by and Density.
 
 ## Notable behaviour
 
-- Dates are observation bounds. A later technology-inventory read can confirm completion, but the row stays hidden until confirmation. Jump retains the recorded ending bound.
-- Missing technology pictures use a flask icon. Idle slots retain saved days without a repeated empty-assignment caption.
-- The product’s sliced observations govern progress/modifiers; modifier-only changes wait for the next country read. Coverage, slots and slot states hold over the hours carried from a read until the next is due; progress keeps its read hour. Never invent fresher samples or interpolate through gaps.
-- An hour with no read (a gap, or a missed read) still shows the completed history known by then; only that hour's slot cards read “Unavailable”.
-- A slot read whose technology occurrence was not recorded (older recordings) shows the technology by name with the game’s days-left estimate, without details, progress or a history row; the product counts such reads in a named diagnostic. Whole-campaign columns of those slots say completed research was not recorded rather than that there was none.
-- Expected/took attribution keeps saved-day juggling, prior work, unfinished work, out-of-slot time, minimum-speed recovery and unexplained residuals separate. Additive bonuses are not independent multiplicative discounts.
-- Current-card Jump uses the earliest joined assignment observation, including earlier slots. No pre-recording start is inferred. Enter/Space open details.
-- Diagnostics update when their text changes and clear on unmount; equal warnings do not restart a render cycle while images load.
-- Failed image requests report a counted diagnostic while successful images and independent history titles remain available. Source or content changes clear those image results and failures.
-- Image batches follow the displayed cards, prioritising current assignments before completed rows. Live and pinned moments request no future technologies; repeated technologies share one image.
+- Dates are shown plainly: a completion's date is the read at which it had left the slot, and its tooltip says "Completed by …" with the last read still researching it. Started is bounded the same way, and Took counts from its first assignment, including earlier slots, as its time breakdown does. When the breakdown cannot confirm that assignment as the start (a start before the first read, or research resumed with earlier progress), Started reads "by" that assignment and Took is a dash.
+- A completion classified at a later read appears only from that read, dated to when it left the slot. Completion belongs to the slot that finished it; a technology moved between slots says which slot it started in.
+- Coverage, slots and slot states hold over the hours carried from a read until the next is due; progress keeps its read hour and is never interpolated. An hour without a read keeps the history known by then; the Now row reads "Unavailable".
+- A stretch the recording lacks shows as a hatched "Not recorded" marker inside each column whose slot was open on both sides of it, and as a row in the List while sorted by date. A slot first listed after such a gap is "Recorded from" that date; a slot that stops being listed is "Closed by".
+- Folder colours come from the shared categorical palette, given to the folders this country's whole history shows in the content's folder order, so they hold through playback. The filter dims other folders in Columns, keeping their shape, and removes them from the List.
+- A completed cell or row opens its time breakdown (expected against took, with saved-day juggling, prior work, out-of-slot time, minimum speed and unexplained residuals kept separate). Right-click or Shift+F10 offers Jump to its date; the current technology's Jump goes to its earliest joined assignment.
+- Older recordings that do not identify which occurrence a slot held show what each slot held, in order, dated "until" the read at which it had left; nothing claims a completion, and a note says so. Their progress is the latest read of that technology.
+- Missing pictures use the flask. Image requests follow the shown cells, current technologies first, and repeated technologies share one image; failed batches report a counted diagnostic.
 
 ## Files
 
 | File | Responsibility |
 |---|---|
-| [ResearchWidget.tsx](ResearchWidget.tsx), [researchData.ts](researchData.ts) | Slot cards, rows and local lookups. |
+| [ResearchWidget.tsx](ResearchWidget.tsx) | Header switch, folder filter, Columns, List and the breakdown popover. |
+| [researchLayout.ts](researchLayout.ts) | Lanes, opening offsets, gap markers, List rows, dates and tooltips; adjacent tests. |
+| [researchData.ts](researchData.ts), [useResearch.ts](useResearch.ts) | Validation, playback lookups, held runs, latest progress, folder looks and the shared reply. |
 | [researchJourney.ts](researchJourney.ts), [researchBreakdown.ts](researchBreakdown.ts) | Joined assignments and exact time/modifier parts; adjacent tests. |
-| [ResearchExplanation.tsx](ResearchExplanation.tsx), [researchTimeBar.ts](researchTimeBar.ts) | Shared explanation rows and segment presentation. |
-| [definition.ts](definition.ts), [index.ts](index.ts), [research.css](research.css) | Metadata, registration and layout. |
+| [ResearchExplanation.tsx](ResearchExplanation.tsx), [researchTimeBar.ts](researchTimeBar.ts) | The time breakdown and its segments. |
+| [definition.ts](definition.ts), [index.ts](index.ts), [research.css](research.css) | Settings, the Research list card, registration and layout. |

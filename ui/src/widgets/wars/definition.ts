@@ -1,5 +1,6 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
+import { choiceVariants } from '../../dashboard/options.ts';
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'gantt',
@@ -20,4 +21,5 @@ export const definition = {
   // The viewpoint was its own option; a picked country stays, anything else follows the dashboard.
   migrate: (_from, { options: { viewpoint, ...options } = {}, ...widget }) => ({ ...widget, options,
     countries: viewpoint === 'country' && widget.countries.kind === 'tags' && widget.countries.tags.length ? widget.countries : { kind: 'selected' } }),
+  variants: choiceVariants(OPTIONS.find(field => field.key === 'view'), () => 'Wars by country'),
 } as const satisfies WidgetMeta;

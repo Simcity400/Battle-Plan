@@ -1,6 +1,7 @@
 import { TOP_COUNTRIES } from '../../charts/race/options.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
+import { choiceVariants } from '../../dashboard/options.ts';
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'Views', kind: 'choice', default: 'butterfly',
@@ -16,4 +17,5 @@ export const definition = {
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 10 }, countries: { max: Number.MAX_SAFE_INTEGER, ranked: true },
   defaultCountries: TOP_COUNTRIES,
   options: OPTIONS,
+  variants: choiceVariants(OPTIONS.find(field => field.key === 'view'), () => 'Losses race'),
 } as const satisfies WidgetMeta;

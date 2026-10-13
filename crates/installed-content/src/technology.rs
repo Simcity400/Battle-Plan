@@ -62,14 +62,23 @@ fn parse_with_registry(
     registry: &units::Registry,
     names: &KeyNames,
 ) -> Result<ParsedPresentation, ParseError> {
-    parse_with_tokens(input, registry, names, &mut Vec::new())
+    parse_with_tokens(
+        input,
+        registry,
+        names,
+        &mut Vec::new(),
+        &mut BTreeMap::new(),
+    )
 }
 
+/// `folders` receives every technology this file defines, with the research
+/// folders it is placed in, only when the whole file reads.
 fn parse_with_tokens(
     input: &[u8],
     registry: &units::Registry,
     names: &KeyNames,
     tokens: &mut Vec<String>,
+    folders: &mut BTreeMap<String, Vec<String>>,
 ) -> Result<ParsedPresentation, ParseError> {
     let (read, undecided, refused) = read_templates_with_tokens(input, registry, names, tokens);
     if let Some(cause) = read.unsettled {
@@ -86,6 +95,8 @@ fn parse_with_tokens(
     }
     let mut result = BTreeMap::new();
     let mut display_keys = BTreeMap::new();
+    let mut placements = BTreeMap::new();
+    let mut folder_notes = Vec::new();
     for root in read
         .items
         .iter()
@@ -119,8 +130,30 @@ fn parse_with_tokens(
             let mut unlocks: Vec<String> = Vec::new();
             let mut conditional = false;
             let mut candidates = Vec::new();
+            // The research folders (tabs) the technology is placed in, in authored
+            // order; a folder block's last `name` names it.
+            let mut placed: Vec<String> = Vec::new();
             for field in technology.value.items().unwrap_or_default() {
                 if field.keyword_is("folder") {
+                    if let Some(name) = field
+                        .value
+                        .items()
+                        .unwrap_or_default()
+                        .iter()
+                        .rfind(|item| item.keyword_is("name"))
+                    {
+                        match name.value.read_str() {
+                            Ok(name) => {
+                                if !placed.iter().any(|old| old == name) {
+                                    placed.push(name.to_owned());
+                                }
+                            }
+                            Err(error) => folder_notes.push((
+                                crate::DiagnosticKind::Refused,
+                                format!("technology {token} folder name: {error}"),
+                            )),
+                        }
+                    }
                     for position in field
                         .value
                         .items()
@@ -208,14 +241,17 @@ fn parse_with_tokens(
                 token.to_owned(),
                 (!conditional && unlocks.len() == 1).then(|| unlocks.remove(0)),
             );
+            placements.insert(token.to_owned(), placed);
         }
     }
+    folders.extend(placements);
     Ok((
         result,
         display_keys,
         read.misreads
             .iter()
             .map(|note| (note.kind, note.to_string()))
+            .chain(folder_notes)
             .collect(),
     ))
 }
@@ -302,6 +338,9 @@ impl PresentationName {
 pub struct Database {
     pub equipment: BTreeMap<String, String>,
     pub tokens: Vec<String>,
+    /// Each technology's research folders in authored order; a technology
+    /// redefined by a later file keeps the later definition's folders.
+    pub folders: BTreeMap<String, Vec<String>>,
     pub equipment_warnings: Vec<crate::Diagnostic>,
     pub inventory_warnings: Vec<crate::Diagnostic>,
     pub names: BTreeMap<String, Result<PresentationName, String>>,
@@ -313,12 +352,19 @@ impl Database {
         let names = layers.key_names()?;
         let mut result = BTreeMap::new();
         let mut tokens = Vec::new();
+        let mut folders = BTreeMap::new();
         let mut presentation_names = BTreeMap::new();
         let mut equipment_warnings = Vec::new();
         let mut inventory_warnings = Vec::new();
         // Enumerate this directory without recursion.
         for path in layers.directory_files("common/technologies", ".txt")? {
-            match parse_with_tokens(&layers.read(&path)?, &registry, &names, &mut tokens) {
+            match parse_with_tokens(
+                &layers.read(&path)?,
+                &registry,
+                &names,
+                &mut tokens,
+                &mut folders,
+            ) {
                 Ok((definitions, display_names, notes)) => {
                     result.extend(definitions);
                     presentation_names.extend(display_names);
@@ -349,11 +395,143 @@ impl Database {
                 .filter_map(|(token, equipment)| equipment.map(|equipment| (token, equipment)))
                 .collect(),
             tokens,
+            folders,
             equipment_warnings,
             inventory_warnings,
             names: presentation_names,
         })
     }
+}
+
+/// A research folder (a tab of the technology screen), in content order.
+#[derive(Clone, Debug)]
+pub struct FolderDefinition {
+    pub key: String,
+    /// The tab's `available` trigger, read in country scope; none means the
+    /// tab is always available. A folder's last `available` is kept.
+    pub available: Option<Vec<Item>>,
+}
+
+/// Every research folder `common/technology_tags` defines, in file order, and
+/// the notes from reading them.
+#[derive(Clone, Debug, Default)]
+pub struct Folders {
+    pub folders: Vec<FolderDefinition>,
+    pub warnings: Vec<crate::Diagnostic>,
+}
+
+/// Reads `technology_folders` from every `common/technology_tags` file, in
+/// directory order. A folder defined again keeps its first definition and the
+/// repeat is refused by name. A file that cannot be read whole adds nothing.
+pub fn read_folders(layers: &ResolvedLayers) -> io::Result<Folders> {
+    let names = layers.key_names()?;
+    let mut read = Folders::default();
+    for path in layers.directory_files("common/technology_tags", ".txt")? {
+        match parse_folders(&layers.read(&path)?, &names) {
+            Ok((folders, notes)) => {
+                read.warnings.extend(
+                    notes
+                        .into_iter()
+                        .map(|(kind, note)| (kind, format!("{path}: {note}"))),
+                );
+                for folder in folders {
+                    if read.folders.iter().any(|old| old.key == folder.key) {
+                        read.warnings.push((
+                            crate::DiagnosticKind::Refused,
+                            format!(
+                                "{path}: research folder {} is defined again; its first definition is used",
+                                folder.key
+                            ),
+                        ));
+                    } else {
+                        read.folders.push(folder);
+                    }
+                }
+            }
+            Err(error) => read.warnings.push((
+                crate::DiagnosticKind::Unsettled,
+                format!("{path}: research folders unavailable: {error}"),
+            )),
+        }
+    }
+    Ok(read)
+}
+
+/// One `common/technology_tags` file's research folders, in authored order.
+pub fn parse_folders(
+    input: &[u8],
+    names: &KeyNames,
+) -> io::Result<(Vec<FolderDefinition>, Vec<crate::Diagnostic>)> {
+    #[derive(Clone, Copy)]
+    enum Tag {
+        File,
+        Folders,
+        Folder,
+    }
+    let read = native::read_in_effect_scope(
+        input,
+        native::Mode::KeepMark,
+        native::Top::File(Tag::File),
+        Some(names),
+        ScopeKind::Country.bit(),
+        &mut |node, field| match (node, field.keyword().as_deref()) {
+            (Tag::File, Some(b"technology_folders")) => Shape::Object(Tag::Folders),
+            (Tag::File, Some(b"technology_categories")) => Shape::RawList,
+            (Tag::File, _) => Shape::Skip,
+            (Tag::Folders, _) => Shape::Object(Tag::Folder),
+            (Tag::Folder, Some(b"available")) => Shape::Trigger,
+            (Tag::Folder, Some(b"ledger")) => Shape::One,
+            (Tag::Folder, _) => Shape::Skip,
+        },
+    );
+    if let Some(cause) = read.unsettled {
+        return Err(invalid(format!("technology folders: {cause}")));
+    }
+    let mut folders: Vec<FolderDefinition> = Vec::new();
+    let mut notes: Vec<crate::Diagnostic> = read
+        .misreads
+        .iter()
+        .map(|note| (note.kind, note.to_string()))
+        .collect();
+    for root in read
+        .items
+        .iter()
+        .filter(|item| item.keyword_is("technology_folders"))
+    {
+        for folder in root.value.items().unwrap_or_default() {
+            let Ok(key) = std::str::from_utf8(crate::parser::c_string(
+                folder.key.as_deref().unwrap_or_default(),
+            )) else {
+                notes.push((
+                    crate::DiagnosticKind::Refused,
+                    "research folder key is not UTF-8".into(),
+                ));
+                continue;
+            };
+            if key.is_empty() {
+                continue;
+            }
+            if folders.iter().any(|old| old.key == key) {
+                notes.push((
+                    crate::DiagnosticKind::Refused,
+                    format!("research folder {key} is defined again; its first definition is used"),
+                ));
+                continue;
+            }
+            let available = folder
+                .value
+                .items()
+                .unwrap_or_default()
+                .iter()
+                .rfind(|field| field.keyword_is("available"))
+                .map(|field| field.value.items().unwrap_or_default().to_vec());
+            folders.push(FolderDefinition {
+                key: key.to_owned(),
+                available,
+            });
+        }
+    }
+    Ok((folders, notes))
 }
 
 pub fn read_equipment(
@@ -716,6 +894,107 @@ pub fn read_enablers(layers: &ResolvedLayers) -> io::Result<Enablers> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn technologies_keep_their_folders_in_authored_order_only_when_the_file_reads() {
+        let mut folders = BTreeMap::new();
+        parse_with_tokens(
+            b"technologies = { two = { folder = { name = infantry_folder position = { x = 0 y = 0 } } folder = { name = support_folder position = { x = 1 y = 2 } } folder = { name = infantry_folder } } none = { research_cost = 1 } renamed = { folder = { name = first name = second } } }",
+            &units::Registry::default(),
+            &KeyNames::default(),
+            &mut Vec::new(),
+            &mut folders,
+        )
+        .unwrap();
+        assert_eq!(folders["two"], ["infantry_folder", "support_folder"]);
+        assert!(folders["none"].is_empty());
+        assert_eq!(folders["renamed"], ["second"]);
+        // A file that cannot be read whole contributes no placements.
+        let before = folders.clone();
+        assert!(
+            parse_with_tokens(
+                b"technologies = { added = { folder = { name = armour_folder } } broken = { folder = { position = { 1 } } } }",
+                &units::Registry::default(),
+                &KeyNames::default(),
+                &mut Vec::new(),
+                &mut folders,
+            )
+            .is_err()
+        );
+        assert_eq!(folders, before);
+    }
+
+    #[test]
+    fn research_folders_keep_file_order_triggers_and_refuse_repeats_by_name() {
+        let (folders, notes) = parse_folders(
+            b"technology_categories = { infantry_weapons }\ntechnology_folders = { infantry_folder = { ledger = army } armour_folder = { ledger = army available = { always = no } } nsb_armour_folder = { available = { always = yes } } infantry_folder = { ledger = navy } }",
+            &KeyNames::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            folders.iter().map(|f| f.key.as_str()).collect::<Vec<_>>(),
+            ["infantry_folder", "armour_folder", "nsb_armour_folder"]
+        );
+        assert!(folders[0].available.is_none());
+        assert!(folders[1].available.as_ref().is_some_and(|t| !t.is_empty()));
+        assert!(folders[2].available.is_some());
+        assert!(notes.iter().any(|(kind, note)| *kind == crate::DiagnosticKind::Refused
+            && note == "research folder infantry_folder is defined again; its first definition is used"));
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn a_mod_adds_research_folders_after_the_base_game_and_cannot_redefine_one() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        struct TempRoot(std::path::PathBuf);
+        impl Drop for TempRoot {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = TempRoot(std::env::temp_dir().join(format!(
+            "technology-folders-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )));
+        let (base, addon) = (root.0.join("base"), root.0.join("mod"));
+        for (layer, path, text) in [
+            (
+                &base,
+                "common/technology_tags/00_technology.txt",
+                "technology_folders = { infantry_folder = { ledger = army } air_folder = { ledger = air } }",
+            ),
+            (
+                &addon,
+                "common/technology_tags/zz_mod.txt",
+                "technology_folders = { mod_folder = { ledger = army } infantry_folder = { ledger = navy } }",
+            ),
+        ] {
+            let file = layer.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        }
+        let layers = ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
+        let read = read_folders(&layers).unwrap();
+        assert_eq!(
+            read.folders
+                .iter()
+                .map(|f| f.key.as_str())
+                .collect::<Vec<_>>(),
+            ["infantry_folder", "air_folder", "mod_folder"]
+        );
+        assert_eq!(
+            read.warnings,
+            [(
+                crate::DiagnosticKind::Refused,
+                "common/technology_tags/zz_mod.txt: research folder infantry_folder is defined again; its first definition is used".into(),
+            )]
+        );
+    }
 
     #[cfg(feature = "test-support")]
     #[test]

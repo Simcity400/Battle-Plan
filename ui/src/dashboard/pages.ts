@@ -36,8 +36,8 @@ export const PAGES = [
     ['construction-log', 0, 52, 12, 10],
   ] },
   { id: 'research', label: 'Research', icon: 'flask', panels: [
-    ['research', 0, 0, 7, 18], ['special-projects', 7, 0, 5, 10],
-    ['nuclear-arsenal', 7, 10, 5, 8],
+    ['active-research', 0, 0, 7, 9], ['research', 0, 9, 7, 13],
+    ['special-projects', 7, 0, 5, 10], ['nuclear-arsenal', 7, 10, 5, 8],
   ] },
   { id: 'land', label: 'Army', icon: 'helmet', panels: [
     ['army-size', 0, 0, 6, 10], ['casualties', 6, 0, 6, 10],

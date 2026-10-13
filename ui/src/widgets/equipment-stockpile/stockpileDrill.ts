@@ -107,6 +107,14 @@ export function stockpilePartHistory(reply: EquipmentStockpileReply, group: Stoc
   return { series, hours };
 }
 
+/** The grouping a widget shows: types, each listing its models. A breakdown pinned
+ * when variants or arms could be grouped keeps the one it saved, so it still opens on
+ * the variant or arm it names. */
+export function pinnedGrouping(options: WidgetSpec['options']): Grouping {
+  const saved = options?.show === BREAKDOWN.id ? options.grouping : undefined;
+  return saved === 'variant' || saved === 'domain' ? saved : 'type';
+}
+
 /** Reuse the existing campaign/design-authenticated semantic choice contract. */
 export function stockpileDrillGroup(groups: readonly StockGroup[], stored: string): StockGroup | undefined {
   const key = contentKey(stored);

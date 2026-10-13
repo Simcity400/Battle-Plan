@@ -1,40 +1,28 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
-import { AFTER_PLAYHEAD_OPTION } from '../../dashboard/options.ts';
+import { AFTER_PLAYHEAD_OPTION, choiceVariants } from '../../dashboard/options.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
 
 export const BREAKDOWN = { id: 'stockpile', label: 'Stockpile breakdown' };
 
 const overTime = (options: Readonly<Record<string, OptionValue>>) => options.view === 'time';
-const grouping = (options: Readonly<Record<string, OptionValue>>) => options.grouping ?? 'type';
-const bars = (options: Readonly<Record<string, OptionValue>>) => options.view !== 'time';
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'stockpileCountry', section: 'options', label: 'Selected country', kind: 'content-choice', automatic: 'Selected country', default: '', visibleWhen: () => false },
   breakdownOption([BREAKDOWN], 'Equipment stockpile'), DRILL_OPTION,
   { key: 'partGroup', section: 'options', label: 'Breakdown equipment', kind: 'content-choice', default: '',
     automatic: 'Choose an equipment row', visibleWhen: options => options.show === BREAKDOWN.id },
-  { key: 'partMode', section: 'options', label: 'Breakdown measure', kind: 'choice', default: 'balance',
-    visibleWhen: options => options.show === BREAKDOWN.id,
-    choices: [{ value: 'balance', label: 'Surplus or shortage' }, { value: 'stock', label: 'In stock' }] },
+  // The table keeps the saved value `bars`, so older layouts open on it.
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'bars',
-    choices: [{ value: 'bars', label: 'Bars' }, { value: 'time', label: 'Over time' }] },
-  { key: 'grouping', section: 'options', label: 'Group by', kind: 'choice', default: 'type',
-    choices: [{ value: 'type', label: 'Equipment type' }, { value: 'variant', label: 'Exact variant' }, { value: 'domain', label: 'Land, air and naval' }] },
+    choices: [{ value: 'bars', label: 'Table' }, { value: 'time', label: 'Over time' }] },
+  { key: 'count', section: 'options', label: 'Count', kind: 'choice', default: 'units',
+    hint: 'IC shows output as the IC its lines put in a day. Stock and surplus stay in units: the game gives stock no IC value.',
+    choices: [{ value: 'units', label: 'Units' }, { value: 'ic', label: 'IC' }], visibleWhen: options => !overTime(options) },
   { key: 'included', section: 'options', label: 'Included types', kind: 'content-set',
     automatic: 'All types', default: '' },
-  // One choice per grouping (`CHOSEN_KEYS`), so switching grouping keeps each one's own.
   { key: 'chosen', section: 'options', label: 'Types shown over time', kind: 'content-set',
-    automatic: 'Main types', default: '', visibleWhen: options => overTime(options) && grouping(options) === 'type' },
-  { key: 'chosenVariant', section: 'options', label: 'Variants shown over time', kind: 'content-set',
-    automatic: 'Top five', default: '', visibleWhen: options => overTime(options) && grouping(options) === 'variant' },
-  { key: 'chosenDomain', section: 'options', label: 'Arms shown over time', kind: 'content-set',
-    automatic: 'All branches', default: '', visibleWhen: options => overTime(options) && grouping(options) === 'domain' },
+    automatic: 'Main types', default: '', visibleWhen: overTime },
   { key: 'endLabels', section: 'options', label: 'Names at the line ends', kind: 'toggle', default: true, visibleWhen: overTime },
-  { key: 'order', section: 'options', label: 'Order', kind: 'choice', default: 'game', visibleWhen: bars,
-    choices: [{ value: 'game', label: 'Game order' }, { value: 'shortage', label: 'Biggest shortage first' }, { value: 'stock', label: 'Most in stock first' }] },
-  { key: 'scale', section: 'options', label: 'Bar length', kind: 'choice', default: 'campaign', visibleWhen: bars,
-    choices: [{ value: 'campaign', label: 'Same scale all campaign' }, { value: 'moment', label: 'Fit the moment shown' }] },
   { key: 'playback', section: 'time', label: 'While following playback', kind: 'choice', default: 'draw-in', visibleWhen: overTime,
     choices: [{ value: 'draw-in', label: 'Grow to now' }, { value: 'cursor', label: 'Whole campaign' }, { value: 'window', label: 'Recent window' }] },
   { ...AFTER_PLAYHEAD_OPTION, visibleWhen: options => overTime(options) && options.playback === 'cursor' },
@@ -47,8 +35,9 @@ export const OPTIONS: readonly OptionField[] = [
 
 export const definition = {
   kind: 'equipment-stockpile', version: 1, title: 'Equipment stockpile', icon: 'grid',
-  description: 'Each equipment type’s surplus or shortage as a share of what is needed, and what a country holds and makes per day.',
+  description: 'What a country holds of each equipment type and model, where the game says it is short, and what it makes a day.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 13 },
   countries: { max: Number.MAX_SAFE_INTEGER }, options: OPTIONS,
+  variants: choiceVariants(OPTIONS.find(field => field.key === 'view'), () => 'Stockpile over time'),
 } as const satisfies WidgetMeta;

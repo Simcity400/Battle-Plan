@@ -1,9 +1,10 @@
 /** Settings every race widget shares (Factories, Equipment produced, Territory,
- * Army size…): the view (race, lines over time, one country's mix; spec: the same
- * data in a similar chart is a setting, not another widget), the corner date, the
- * line chart's playback, and the default top 10 of all countries. */
+ * Army size…): the view (race, lines over time, one country's mix; a setting, and each
+ * other view also its own catalogue card), the corner date, the line chart's playback,
+ * and the default top 10 of all countries. */
 import { DEFAULT_TOP } from '../../dashboard/groups.ts';
-import { AFTER_PLAYHEAD_OPTION } from '../../dashboard/options.ts';
+import { AFTER_PLAYHEAD_OPTION, choiceVariants } from '../../dashboard/options.ts';
+import type { WidgetPreset } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import type { CountrySelection } from '../../dashboard/model';
 
@@ -28,6 +29,16 @@ export function raceViewOption(mixLabel?: string, defaultView: RaceView = 'race'
   return { key: 'view', section: 'options', label: 'View', kind: 'choice', default: defaultView,
     choices: [{ value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines over time' },
       ...(mixLabel === undefined ? [] : [{ value: 'mix', label: `One country by ${mixLabel}` }]), ...extraViews] };
+}
+
+const VIEW_TITLES: Readonly<Record<string, (title: string) => string>> = {
+  race: title => `${title} race`, lines: title => `${title} over time`, share: title => `${title} share` };
+
+/** A catalogue card for each view other than the widget's default: "Army size over time",
+ * "Occupation trend race", or the title and the view's name; `names` titles a widget's own views. */
+export function raceViewVariants(title: string, fields: readonly OptionField[], names: Readonly<Record<string, string>> = {}): WidgetPreset[] {
+  return choiceVariants(fields.find(field => field.key === 'view'), choice =>
+    names[choice.value] ?? VIEW_TITLES[choice.value]?.(title) ?? `${title}: ${choice.label}`);
 }
 
 const inRace = (options: Readonly<Record<string, unknown>>) => (options.view ?? 'race') === 'race';

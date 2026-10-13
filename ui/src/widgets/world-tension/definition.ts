@@ -1,7 +1,7 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
-import { AFTER_PLAYHEAD_OPTION } from '../../dashboard/options.ts';
+import { AFTER_PLAYHEAD_OPTION, choiceVariants } from '../../dashboard/options.ts';
 import type { OptionField } from '../../dashboard/options';
-import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
+import { breakdownOption, DRILL_OPTION, breakdownVariants } from '../../charts/drill/drillState.ts';
 import { TENSION_BREAKDOWN } from './tensionDrill.ts';
 
 /** Settings: Top 5 + Other layers by default or Top
@@ -36,4 +36,6 @@ export const definition = {
   // Every country by default; chosen countries or a group narrow the layers to them.
   countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   options: OPTIONS,
+  variants: [...breakdownVariants('World tension & threat', OPTIONS),
+    ...choiceVariants(OPTIONS.find(field => field.key === 'values'), () => 'World tension contributions')],
 } as const satisfies WidgetMeta;

@@ -82,7 +82,11 @@ test('the catalogue splits the idea timeline into a card per content category an
     const { OptionFields } = await vite.ssrLoadModule('/ui/src/dashboard/settings/OptionFields.tsx') as typeof import('./settings/OptionFields.tsx');
     const { useIdeaTimelinePresets } = await vite.ssrLoadModule('/ui/src/widgets/idea-timeline/ideaTimelinePresets.ts');
     const { default: Picker } = await vite.ssrLoadModule('/ui/src/dashboard/WidgetPicker.tsx');
-    registerWidgets([{ ...definition, usePresets: useIdeaTimelinePresets }, { ...definition, kind: 'plain-widget', title: 'Plain widget' }]);
+    // The plain widget also opens in a second view, listed as its own card.
+    const view = { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'race',
+      choices: [{ value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines over time' }] };
+    registerWidgets([{ ...definition, usePresets: useIdeaTimelinePresets }, { ...definition, kind: 'plain-widget', title: 'Plain widget',
+      options: [...OPTIONS, view], variants: [{ key: 'view=lines', initial: { title: 'Plain widget over time', options: { view: 'lines' } } }] }]);
     const template: DashboardTemplate = { version: 1, name: 'Synthetic', alignment: 'calendar', roles: [{ id: 'primary', label: 'Primary', selectedTag: null }, { id: 'active', label: 'Active', selectedTag: null }],
       tracks: [{ id: 'selected', roleId: 'active', label: 'Selected', branchIndex: 0, anchorOffset: null }], widgets: [], layouts: {} };
     const track = { ...template.tracks[0], selectedTag: null, source: { id: 'source-a', revision: 'revision-a',
@@ -106,7 +110,7 @@ test('the catalogue splits the idea timeline into a card per content category an
     assert.doesNotMatch(markup, /<strong>Idea timeline<\/strong>/, 'the categories replace the generic idea timeline card');
     assert.match(markup, /<strong>Plain widget<\/strong>/);
     assert.doesNotMatch(markup, /Hidden category|Outside politics|Empty category/);
-    assert.match(markup, /<span>Politics<\/span><small>3<\/small>[\s\S]*<span>Other<\/span><small>1<\/small>/, 'the rail counts each category card');
+    assert.match(markup, /<span>Politics<\/span><small>3<\/small>[\s\S]*<span>Other<\/span><small>2<\/small>/, 'the rail counts each category and view card');
     assert.match(markup, /<strong>Mod laws<\/strong>[\s\S]*<strong>Plain widget<\/strong>/, 'cards follow the subject order');
     const extra = card(MOD_CATEGORY)!;
     assert.ok(extra, 'the mod category is its own card'); extra.add();
@@ -152,5 +156,13 @@ test('the catalogue splits the idea timeline into a card per content category an
     const page = render([createWidget('plain-widget', 'selected', 'placed-a'), createWidget('plain-widget', 'selected', 'placed-b')]);
     assert.match(page, /<span>On this page<\/span><small>1<\/small>/, 'the rail counts the cards already on the page');
     assert.match(page, /<strong>Plain widget<\/strong>[\s\S]*?On page ×2/, 'a card says how many of it the page has');
+    assert.match(page, /<strong>Plain widget<\/strong>[\s\S]*?<div role="listitem" class="widget-card" data-variant="true"[^>]*>[\s\S]*?<strong>Plain widget over time<\/strong><\/span>/,
+      'a view card follows its widget’s own card, marked as a view and not counting the widget’s other copies');
+    fixture.cards.find(item => item.entry.key === 'plain-widget:view=lines')!.add();
+    const lines = added.at(-1)!;
+    assert.deepEqual([lines.kind, lines.title, lines.options], ['plain-widget', 'Plain widget over time', { view: 'lines' }], 'adding a view card opens the widget in that view');
+    assert.match(render([lines, createWidget('plain-widget', 'selected', 'placed-a')]),
+      /<strong>Plain widget<\/strong><small class="widget-card-placed">On page<\/small>[\s\S]*?<strong>Plain widget over time<\/strong><small class="widget-card-placed">On page<\/small>/,
+      'each card counts only the copies showing its view');
   } finally { fixture.unmount(); await vite.close(); delete globals.__ideaPicker; }
 });

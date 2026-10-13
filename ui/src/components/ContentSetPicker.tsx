@@ -1,4 +1,5 @@
 import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { Popover, usePopover } from './Popover';
 import { Icon } from './Icons';
 import { COUNTRY_ROW_HEIGHT, moveIndex, revealRow } from './countryList';
@@ -8,10 +9,12 @@ import './ContentSetPicker.css';
 
 const LIST_HEIGHT = 340;
 
-/** A complete multi-choice catalogue, with only the visible rows mounted. */
-export default function ContentSetPicker({ label, automatic, choices, selected, onToggle, onReset }: {
+/** A complete multi-choice catalogue, with only the visible rows mounted. `single`
+ * picks one choice and closes; `trigger` and `triggerClassName` dress its button. */
+export default function ContentSetPicker({ label, automatic, choices, selected, onToggle, onReset, single = false, trigger, triggerClassName }: {
   label: string; automatic: string; choices: readonly ContentChoice[]; selected: readonly string[];
   onToggle: (value: string) => void; onReset: () => void;
+  single?: boolean; trigger?: ReactNode; triggerClassName?: string;
 }) {
   const id = useId();
   const listId = `${id}-list`;
@@ -40,12 +43,12 @@ export default function ContentSetPicker({ label, automatic, choices, selected, 
   };
   const toggle = (index: number) => {
     const row = filtered[index];
-    if (row && !row.unavailable) onToggle(row.value);
+    if (row && !row.unavailable) { onToggle(row.value); if (single) menu.close(); }
   };
   return <div className="content-set-picker">
     <button type="button" ref={menu.trigger} popoverTarget={id} aria-label={`Choose ${label.toLowerCase()}`}
-      aria-haspopup="dialog" aria-expanded={menu.open} className="button small quiet">
-      <span>{selected.length ? `${selected.length.toLocaleString()} selected` : automatic}</span><Icon name="chevron-down" />
+      aria-haspopup="dialog" aria-expanded={menu.open} className={triggerClassName ?? 'button small quiet'}>
+      {trigger ?? <span>{selected.length ? `${selected.length.toLocaleString()} selected` : automatic}</span>}<Icon name="chevron-down" />
     </button>
     <Popover menu={menu} portal={false} id={id} aria-label={label} className="content-picker"
       onToggle={event => { if (event.newState === 'closed') { setQuery(''); reset(); } }}>
@@ -55,10 +58,10 @@ export default function ContentSetPicker({ label, automatic, choices, selected, 
           onChange={event => { setQuery(event.currentTarget.value); reset(); }}
           onKeyDown={event => { if (event.key === 'ArrowDown' && filtered.length) { event.preventDefault(); listbox.current?.focus({ preventScroll: true }); moveTo(0); } }} />
           <span className="pill">{rows.length.toLocaleString()}</span></div>
-        <button type="button" className="button small quiet" aria-pressed={!selected.length} onClick={onReset}>{automatic}</button>
+        <button type="button" className="button small quiet" aria-pressed={!selected.length} onClick={() => { onReset(); if (single) menu.close(); }}>{automatic}</button>
         <div ref={list} className="content-picker-list" onScroll={event => setView({ scrollTop: event.currentTarget.scrollTop,
           height: event.currentTarget.clientHeight || LIST_HEIGHT })}>
-          <div ref={listbox} id={listId} role="listbox" aria-label={label} aria-multiselectable="true" tabIndex={filtered.length ? 0 : -1}
+          <div ref={listbox} id={listId} role="listbox" aria-label={label} aria-multiselectable={!single} tabIndex={filtered.length ? 0 : -1}
             className="content-picker-options" style={{ height: filtered.length * COUNTRY_ROW_HEIGHT }}
             aria-activedescendant={active >= window.start && active < window.end ? optionId(active) : undefined}
             onFocus={event => { if (event.target === event.currentTarget && active < 0 && filtered.length) setActive(Math.min(filtered.length - 1, Math.ceil(view.scrollTop / COUNTRY_ROW_HEIGHT))); }}
